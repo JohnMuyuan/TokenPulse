@@ -85,6 +85,8 @@
 
 到 [**Releases**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) 下载最新版本：
 
+> **当前版本：v0.2.2** — 换用全新的额度环品牌图标，应用窗口、系统托盘、可执行文件与安装包保持一致。
+
 | 文件 | 说明 |
 |------|------|
 | `TokenPulse-x.y.z-Setup.exe` | **安装版（推荐）**。可选安装路径，自动创建开始菜单快捷方式 |
@@ -159,11 +161,12 @@
 
 ```bash
 npm install
-npm run icons     # 生成 packaging/icon.png 和 tray.png
-npm start         # 编译并启动
-npm test          # 33 项额度检查 + 3 项扫描检查 + 6 组看板数据回归
-npm run test:ui   # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
-npm run dist      # 打包到 dist/
+npm run icons         # 生成 packaging/icon.png 和 tray.png
+npm run dist:portable # 只编译免安装版，供本机测试
+npm start             # 编译并启动
+npm test              # 33 项额度检查 + 3 项扫描检查 + 6 组看板数据回归
+npm run test:ui       # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
+npm run dist          # 重新生成图标并打包安装版与免安装版到 dist/
 ```
 
 TypeScript 编译到 `build/`，安装包输出到 `dist/`。开发模式下**不会写入开机启动项**，只有打包版才会真正设置自启。

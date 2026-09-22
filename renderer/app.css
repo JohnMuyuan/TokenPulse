@@ -172,12 +172,16 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   width: 38px; height: 38px; flex: none;
   display: grid; place-items: center;
   border-radius: 11px;
-  background: linear-gradient(145deg, #1a9a6e, #0f6e4e);
-  box-shadow: 0 6px 16px -4px #14855f80, inset 0 1px 0 #ffffff33;
+  background: linear-gradient(145deg, #245b4a, #0d3730);
+  box-shadow: 0 6px 16px -4px #245b4a66, inset 0 1px 0 #ffffff26;
   transition: transform .4s var(--spring);
 }
 .brand:hover .brand-mark { transform: rotate(-6deg) scale(1.05); }
-.brand-mark svg { width: 22px; height: 22px; fill: none; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.brand-mark svg { width: 25px; height: 25px; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.brand-mark .brand-track { stroke: #8fc8ad; stroke-width: 2; opacity: .32; }
+.brand-mark .brand-progress { stroke: #b9e2ce; stroke-width: 2.25; }
+.brand-mark .brand-bar { fill: #ddf7e9; stroke: none; }
+.brand-mark .brand-node { fill: #f0fff7; stroke: #245b4a; stroke-width: 1; }
 .brand-text { font: 700 18px/1.2 var(--font-display); letter-spacing: -.02em; white-space: nowrap; }
 .brand-text small { display: block; margin-top: 3px; font: 500 11px/1.2 var(--font); color: var(--muted); letter-spacing: 0; }
 

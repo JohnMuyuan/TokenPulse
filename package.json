@@ -1,6 +1,6 @@
 {
   "name": "tokenpulse",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
@@ -12,7 +12,8 @@
     "icons": "node scripts/make-icon.cjs",
     "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs",
     "test:ui": "npm run compile && electron scripts/test-ui.cjs",
-    "dist": "npm run compile && electron-builder"
+    "dist:portable": "npm run icons && npm run compile && electron-builder --win portable",
+    "dist": "npm run icons && npm run compile && electron-builder"
   },
   "build": {
     "appId": "com.tokenpulse.app",
