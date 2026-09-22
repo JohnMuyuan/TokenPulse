@@ -1,0 +1,46 @@
+{
+  "name": "tokenpulse",
+  "version": "0.2.0",
+  "private": true,
+  "description": "TokenPulse — Your AI usage, at a glance.",
+  "author": "TokenPulse",
+  "main": "build/main/index.js",
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "start": "npm run compile && electron .",
+    "dev": "npm run compile && electron . --dev",
+    "icons": "node scripts/make-icon.cjs",
+    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-dashboard.cjs",
+    "test:ui": "npm run compile && electron scripts/test-ui.cjs",
+    "dist": "npm run compile && electron-builder"
+  },
+  "build": {
+    "appId": "com.tokenpulse.app",
+    "productName": "TokenPulse",
+    "directories": { "output": "dist", "buildResources": "packaging" },
+    "files": ["build/**/*", "renderer/**/*", "package.json"],
+    "extraResources": [{ "from": "packaging", "to": "packaging", "filter": ["*.png"] }],
+    "win": {
+      "icon": "packaging/icon.png",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "TokenPulse-${version}-Setup.${ext}",
+      "shortcutName": "TokenPulse"
+    },
+    "portable": {
+      "artifactName": "TokenPulse-${version}-Portable.${ext}"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2"
+  }
+}
