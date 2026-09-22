@@ -42,12 +42,24 @@ export function readQuotaHistory(): QuotaHistory {
   return { version: 1, accounts: {} };
 }
 
+/**
+ * 重置时间在一分钟内算同一个。
+ * Claude 每次返回的 resets_at 都带着几百毫秒的抖动（实测 `08:19:59.398` / `08:20:00.474`
+ * 交替出现），逐字比较的话「没变化」永远不成立，15 分钟去重形同虚设。
+ */
+export function sameReset(a?: string, b?: string) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const diff = Math.abs(Date.parse(a) - Date.parse(b));
+  return Number.isFinite(diff) && diff < 60_000;
+}
+
 function same(a: QuotaSample, b: QuotaSample) {
   return (
     a.five === b.five &&
     a.week === b.week &&
-    a.fiveReset === b.fiveReset &&
-    a.weekReset === b.weekReset &&
+    sameReset(a.fiveReset, b.fiveReset) &&
+    sameReset(a.weekReset, b.weekReset) &&
     a.resetCredits === b.resetCredits
   );
 }

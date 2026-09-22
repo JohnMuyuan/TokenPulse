@@ -10,7 +10,7 @@
  *   - 窗口里百分比掉下来（重置 / 用了重置次数）之前的点不能算进速度；
  *   - 采样之后已经到点重置：按新窗口从 0 算，别拿上周的 95% 报警；
  *   - 已用不到 2% 不折算整窗额度（整数百分比误差太大）；
- *   - 采样器：没变化的 15 分钟内只记一次、45 天前的清掉。
+ *   - 采样器：没变化的 15 分钟内只记一次（重置时间的亚秒抖动不算变化）、45 天前的清掉。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -24,7 +24,7 @@ const { analyzeAccount, HOUR_MS, WEEK_MS } = require(path.join(ROOT, "build", "c
 // 采样器直接写文件，得给它一个一次性的数据目录，别碰用户真实的 ~/.tokenpulse。
 const data = fs.mkdtempSync(path.join(os.tmpdir(), "tokenpulse-quota-history-"));
 process.env.TOKENPULSE_DATA_DIR = data;
-const { recordQuotaSamples, readQuotaHistory } = require(path.join(ROOT, "build", "core", "quota-history.js"));
+const { recordQuotaSamples, readQuotaHistory, sameReset } = require(path.join(ROOT, "build", "core", "quota-history.js"));
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -211,6 +211,12 @@ try {
     recordQuotaSamples(map(10), t0);
     recordQuotaSamples(map(10), t0 + 5 * 60_000);
     check("没变化的 15 分钟内只记一次", readQuotaHistory().accounts.claude.length === 1);
+    // Claude 每次返回的 resets_at 有几百毫秒抖动（实测 08:19:59.398 / 08:20:00.474），不算变化
+    const jittered = map(10);
+    jittered.claude.weekReset = iso(t0 + WEEK_MS - 602);
+    recordQuotaSamples(jittered, t0 + 10 * 60_000);
+    check("重置时间只有亚秒抖动，仍算没变化", readQuotaHistory().accounts.claude.length === 1);
+    check("重置时间差一小时算变化", !sameReset(iso(t0), iso(t0 + HOUR_MS)) && sameReset(iso(t0), iso(t0 + 900)));
     recordQuotaSamples(map(10), t0 + 16 * 60_000);
     check("没变化但过了 15 分钟，再记一笔「还是这么多」", readQuotaHistory().accounts.claude.length === 2);
     recordQuotaSamples(map(11), t0 + 17 * 60_000);

@@ -20,7 +20,7 @@ app.on('web-contents-created', (_, contents) => {
       console.log('Real data:', JSON.stringify(summary));
       const capture = async (name, script) => {
         if (script) await contents.executeJavaScript(script);
-        await pause(250);
+        await pause(1800);
         contents.invalidate(); await pause(100);
         fs.writeFileSync(path.join(output, name + '.png'), (await contents.capturePage()).toPNG());
       };

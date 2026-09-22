@@ -9,9 +9,11 @@ export type Prefs = {
   startMinimized: boolean;
   /** 额度过线就弹通知的阈值（百分比），0 = 不提醒。 */
   notifyAt: number;
+  /** 界面主题。界面自己用 localStorage 记，这里再存一份给主进程：建窗口时要用它定底色。 */
+  theme: "light" | "dark";
 };
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85 };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light" };
 
 function file() {
   return dataFile("prefs.json");

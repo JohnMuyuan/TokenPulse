@@ -26,8 +26,12 @@ const QUOTA_EVERY_MS = 5 * 60_000;
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
-/** 已经就这个窗口提醒过一次了，别每 5 分钟弹一遍。窗口重置后清掉。 */
-const notified = new Set<string>();
+/** 「账号:窗口」→ 已经提醒过的那个窗口的重置时间。同一个窗口只提醒一次。 */
+const notified = new Map<string, number>();
+/** 两次重置时间差不到这么多，就当是同一个窗口（接口返回的时间有抖动，见 maybeNotify）。 */
+const SAME_WINDOW_MS = 30 * 60_000;
+
+const BACKGROUND = { light: "#f7f8fa", dark: "#15181c" } as const;
 
 /* ---------------- 窗口 ---------------- */
 
@@ -38,7 +42,8 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    backgroundColor: "#09090b",
+    // 跟界面主题一致，否则拉大窗口、首帧没画完时会闪一下反色的底。
+    backgroundColor: BACKGROUND[readPrefs().theme],
     title: "TokenPulse",
     icon: windowIcon(),
     autoHideMenuBar: true,
@@ -144,8 +149,11 @@ function formatTokens(value: number) {
 
 /**
  * 额度过线弹一次通知。
- * 按「账号 + 窗口 + 这个窗口的重置时间」去重 —— 窗口一重置，键就变了，
+ * 按「账号 + 窗口」记住提醒过的那个重置时间 —— 窗口一重置，重置时间往后跳，
  * 下个窗口再过线会重新提醒，但同一个窗口里不会反复吵。
+ *
+ * 不能拿重置时间原样当去重键：Claude 每次返回的 resets_at 都有几百毫秒抖动，
+ * 键每次都不一样，过线之后就变成每 5 分钟弹一次。
  */
 function maybeNotify(snapshot: Snapshot) {
   const limit = readPrefs().notifyAt;
@@ -157,9 +165,11 @@ function maybeNotify(snapshot: Snapshot) {
       ["周", account.week],
     ] as const) {
       if (!report || report.used < limit) continue;
-      const key = `${account.kind}:${label}:${report.resetAt ?? 0}`;
-      if (notified.has(key)) continue;
-      notified.add(key);
+      const key = `${account.kind}:${label}`;
+      const resetAt = report.resetAt ?? 0;
+      const previous = notified.get(key);
+      if (previous != null && Math.abs(resetAt - previous) < SAME_WINDOW_MS) continue;
+      notified.set(key, resetAt);
       new Notification({
         title: `${names[account.kind] ?? account.kind} ${label}额度已用 ${Math.round(report.used)}%`,
         body: report.resetAt
@@ -205,29 +215,48 @@ function backgroundRefresh(withQuota: boolean) {
  * 跑一轮：扫会话文件 +（需要时）问官方额度，然后把新快照推给窗口。
  * `withQuota` 为 false 时只扫本地，用于那个 1 分钟的快节奏定时器。
  */
-async function refresh(withQuota: boolean): Promise<Snapshot> {
-  // 同一时间只跑一轮，重入的调用共用这一次的结果。
-  if (refreshing) return refreshing;
-  refreshing = (async () => {
-    // 先展示已有统计，再更新本地文件；网络慢或断网时仍然可以使用界面。
-    await getInitialSnapshot();
-    let snapshot = publishSnapshot(await loadSnapshot(true));
-    if (withQuota) {
-      try {
-        await fetchOfficialQuota(true);
-        snapshot = publishSnapshot(await loadSnapshot(false));
-      } catch (error) {
-        console.error("[TokenPulse] 额度接口失败", error);
-      }
+async function runRefresh(withQuota: boolean): Promise<Snapshot> {
+  // 先展示已有统计，再更新本地文件；网络慢或断网时仍然可以使用界面。
+  await getInitialSnapshot();
+  let snapshot = publishSnapshot(await loadSnapshot(true));
+  if (withQuota) {
+    try {
+      await fetchOfficialQuota(true);
+      snapshot = publishSnapshot(await loadSnapshot(false));
+    } catch (error) {
+      console.error("[TokenPulse] 额度接口失败", error);
     }
-    if (withQuota) maybeNotify(snapshot);
-    return snapshot;
-  })();
-  try {
-    return await refreshing;
-  } finally {
-    refreshing = null;
+    maybeNotify(snapshot);
   }
+  return snapshot;
+}
+
+let refreshingQuota = false;
+let queuedQuota: Promise<Snapshot> | null = null;
+
+/**
+ * 同一时间只跑一轮，重入的调用共用这一次的结果 ——
+ * 但正在跑的那轮只扫本地、而这次要问额度时不能共用：手动「刷新数据」
+ * 正好撞上 1 分钟的本地扫描，就会拿回一份没问过额度的快照。这种情况排一轮在后面。
+ */
+function refresh(withQuota: boolean): Promise<Snapshot> {
+  if (refreshing) {
+    if (!withQuota || refreshingQuota) return refreshing;
+    queuedQuota ??= refreshing
+      .catch(() => undefined)
+      .then(() => {
+        queuedQuota = null;
+        return refresh(true);
+      });
+    return queuedQuota;
+  }
+  refreshingQuota = withQuota;
+  // finally 里清状态，排在后面的那轮挂在它之后，看到的一定是已经空出来的 refreshing。
+  refreshing = runRefresh(withQuota).finally(() => {
+    refreshing = null;
+    refreshingQuota = false;
+  });
+  return refreshing;
 }
 
 /* ---------------- 设置 ---------------- */
@@ -277,12 +306,20 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("refresh", async () => refresh(true));
     ipcMain.handle("prefs:read", () => readPrefs());
     ipcMain.handle("prefs:write", (_event, patch: Partial<Prefs>) => applyPrefs(patch));
+    ipcMain.handle("theme", (_event, theme: unknown) => {
+      if (theme !== "light" && theme !== "dark") return;
+      win?.setBackgroundColor(BACKGROUND[theme]);
+      if (readPrefs().theme !== theme) writePrefs({ theme });
+    });
     ipcMain.handle("open-data-dir", () => shell.openPath(dataDir()));
     ipcMain.handle("export-csv", async (_event, content: unknown) => {
       if (typeof content !== "string" || Buffer.byteLength(content) > 10 * 1024 * 1024) {
         throw new Error("导出内容无效或过大");
       }
-      const options = { title: "导出用量明细", defaultPath: `TokenPulse-${new Date().toISOString().slice(0, 10)}.csv`, filters: [{ name: "CSV", extensions: ["csv"] }] };
+      // 文件名用本地日期：toISOString 是 UTC，东八区早上 8 点前导出会标成前一天。
+      const now = new Date();
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const options = { title: "导出用量明细", defaultPath: `TokenPulse-${today}.csv`, filters: [{ name: "CSV", extensions: ["csv"] }] };
       const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
       if (result.canceled || !result.filePath) return false;
       await fs.writeFile(result.filePath, "\uFEFF" + content, "utf8");
@@ -298,9 +335,13 @@ if (!app.requestSingleInstanceLock()) {
     });
   });
 
-  // 窗口全关了也不退出：这是个常驻托盘的工具。
+  /*
+   * 「关闭窗口时收进托盘」开着，close 事件里已经拦下改成隐藏，走不到这里。
+   * 走到这里说明用户关掉了这个选项、明确要「关窗口就退出」：以前这里不退，
+   * 进程带着托盘继续跑，那个开关等于没用。
+   */
   app.on("window-all-closed", () => {
-    if (quitting) app.quit();
+    if (quitting || !readPrefs().closeToTray) app.quit();
   });
 
   app.on("before-quit", () => {

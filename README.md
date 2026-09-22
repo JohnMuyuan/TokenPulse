@@ -128,7 +128,7 @@
 - **整窗容量折算**：比如这周用了 9800 万 token、官方显示已用 24%，折算下来整周大约 4 亿 token。已用不到 2% 时不给出这个数，已用越多越准，界面上会标出可信度。
 - **跨越重置**：到点重置或手动重置之前的样本不计入。如果已经过了重置时间、接口还没再查过，就按新窗口从 0 开始算，不会沿用上个窗口的数字。
 
-进度条上叠了三层：**实心**是已用，**半透明**是按当前速度推算到重置时的位置，**竖线**是窗口时间已走过的比例。实心越过竖线，就说明额度消耗得比时间快。
+总览卡片上的圆环显示**剩余最少的那个窗口**，避免周额度充足时掩盖了 5 小时窗口快要用完；卡片底部直接给出「重置时预计已用多少」或「约多久后用完」。
 
 </details>
 
@@ -161,7 +161,7 @@
 npm install
 npm run icons     # 生成 packaging/icon.png 和 tray.png
 npm start         # 编译并启动
-npm test          # 31 项额度检查 + 6 组看板数据回归
+npm test          # 33 项额度检查 + 3 项扫描检查 + 6 组看板数据回归
 npm run test:ui   # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
 npm run dist      # 打包到 dist/
 ```
@@ -183,6 +183,7 @@ src/core/            纯逻辑，不依赖 Electron，可以单独 require 测�
 src/main/            Electron 主进程：托盘、定时器、IPC、通知
 renderer/            界面：原生 JS、无构建步骤，图表为手写内联 SVG
   data.js            日期筛选、聚合、对比与 CSV 编码（浏览器 / Node 共用）
+  brand.js           官方品牌图标（Claude / OpenAI / Grok）的 SVG 路径
 scripts/             测试、截图与图标生成
 ```
 
@@ -222,7 +223,7 @@ node_modules/app-builder-bin/win/x64/app-builder.exe download-artifact --name wi
 
 ## 🗺 路线图
 
-- [ ] 补充 `usage-scan.ts` 单元测试
+- [ ] 扩充 `usage-scan.ts` 单元测试（目前覆盖 Codex 型号识别）
 - [ ] 在真实账号上验证 Grok 额度链路
 - [ ] 托盘菜单增加「暂停记录」
 - [ ] 按项目 / 目录维度统计用量

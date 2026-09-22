@@ -58,7 +58,7 @@ type FileState = {
   offset: number;
   /** 这个文件自己贡献的账。文件被重写时整份丢掉重算。 */
   days: DayBuckets;
-  /** Codex 的型号写在前面的 thread_settings_applied 里，跨批次要记住。 */
+  /** Codex 的型号写在前面的 turn_context / thread_settings_applied 里，跨批次要记住。 */
   model?: string;
   /**
    * 上一条 Claude 用量行的 requestId。
@@ -97,7 +97,8 @@ export type UsageRollups = {
   scannedAt?: number;
 };
 
-const STATE_VERSION = 1;
+/** 2：Codex 型号改为同时认 turn_context（旧账本里第一轮都是「未知模型」，需重扫）。 */
+const STATE_VERSION = 2;
 /** 按小时的账只留这么久：额度监控最多看一周，多留点余量。 */
 const HOURS_KEEP_MS = 40 * 86_400_000;
 const HOUR_MS = 3_600_000;
@@ -517,7 +518,16 @@ function scanFile(file: string, kind: Kind, state: FileState) {
       if (obj.type === "session_meta" && typeof payload?.model_provider === "string") {
         state.provider = payload.model_provider;
       }
-      // 型号写在这一轮开头的设置里，后面的 usage 行自己不带。
+      /*
+       * usage 行自己不带型号，得从前面的记录里记下来。两处都有：
+       * - `turn_context`：每一轮开头都写，**一定在这一轮的 usage 之前**，以它为准；
+       * - `thread_settings_applied`：只在设置变化时写，而且会话第一轮它排在第一条 usage **之后**
+       *   （实测 01a06b8a…：turn_context → usage → thread_settings_applied）。
+       *   只认它的话每个会话第一轮都落成「未知模型」，还有的会话压根没有这一条。
+       */
+      if (obj.type === "turn_context" && typeof payload?.model === "string" && payload.model) {
+        state.model = payload.model;
+      }
       if (payload?.type === "thread_settings_applied") {
         const settings = payload.thread_settings as Record<string, unknown> | undefined;
         const model = String(settings?.model || "");

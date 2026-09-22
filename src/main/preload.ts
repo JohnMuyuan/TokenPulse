@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   readPrefs: () => ipcRenderer.invoke("prefs:read"),
   writePrefs: (patch: Record<string, unknown>) => ipcRenderer.invoke("prefs:write", patch),
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
+  setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
   exportCsv: (content: string) => ipcRenderer.invoke("export-csv", content),
   onError: (handler: (message: string) => void) => {
     const listener = (_event: unknown, message: string) => handler(message);
