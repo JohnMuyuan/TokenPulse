@@ -172,7 +172,7 @@ npm install
 npm run icons         # 生成 packaging/icon.png 和 tray.png
 npm run dist:portable # 只编译免安装版，供本机测试
 npm start             # 编译并启动
-npm test              # 47 项额度检查 + 3 项扫描检查 + 6 组看板数据 + 28 项官方账号与续期检查
+npm test              # 50 项额度检查 + 3 项扫描检查 + 6 组看板数据 + 28 项官方账号与续期检查
 npm run test:ui       # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
 npm run test:update   # 自动更新：本地假更新服务器上走完检查 → 下载 → 校验 → 静默安装触发
 npm run dist          # 重新生成图标并打包安装版与免安装版到 dist/（不会自动发布）
