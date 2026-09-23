@@ -1,6 +1,6 @@
 import { estimateCost, priceOf } from "./model-pricing";
 import { analyzeAccount, ACCOUNT_KINDS, type AccountKind, type AccountReport, type HourRow } from "./quota-monitor";
-import { readQuotaHistory } from "./quota-history";
+import { readQuotaChecks, readQuotaHistory } from "./quota-history";
 import { readRollups, emptyBucket, addUsage, type DayBuckets, type UsageBucket } from "./usage-scan";
 
 /**
@@ -79,6 +79,7 @@ const ACCOUNT_OF_KIND: Record<string, AccountKind> = {
 export function buildSnapshot(now = Date.now()): Snapshot {
   const rollups = readRollups();
   const history = readQuotaHistory();
+  const checks = readQuotaChecks();
 
   /* ---- 1. 全量：按天 / 来源 / 型号 ---- */
   const days: DayBuckets = {};
@@ -142,8 +143,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
     daily.push({ day, tokens: hit?.tokens ?? 0, costUsd: hit?.costUsd ?? 0, requests: hit?.requests ?? 0 });
   }
 
-  /* ---- 2. 官方账号的用量，按小时 ---- */
-  const since = now - 8 * 24 * HOUR_MS;
+  /* ---- 2. 官方账号的用量，按小时（全部历史：额度容量的历史折线要用） ---- */
   const rows: Record<AccountKind, HourRow[]> = { claude: [], chatgpt: [], grok: [] };
   const sessions: Snapshot["sessions"] = {
     claude: { included: 0, excluded: 0 },
@@ -160,7 +160,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
     sessions[account].included += 1;
     for (const [key, models] of Object.entries(file.hours ?? {})) {
       const hour = Number(key);
-      if (!Number.isFinite(hour) || hour + HOUR_MS <= since) continue;
+      if (!Number.isFinite(hour)) continue;
       for (const [model, bucket] of Object.entries(models)) {
         rows[account].push({
           hour,
@@ -177,7 +177,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   /* ---- 3. 额度监控 ---- */
   // 没采到过额度的账号不显示：没有百分比，就谈不上监控。
   const accounts = ACCOUNT_KINDS.map((kind) =>
-    analyzeAccount(kind, Array.isArray(history.accounts[kind]) ? history.accounts[kind] : [], rows[kind], now),
+    analyzeAccount(kind, Array.isArray(history.accounts[kind]) ? history.accounts[kind] : [], rows[kind], now, checks[kind]),
   ).filter((report) => report.sampleCount > 0);
 
   return {

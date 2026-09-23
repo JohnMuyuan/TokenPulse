@@ -51,6 +51,15 @@ app.on('web-contents-created', (_, contents) => {
       console.log('PASS local statistics render while quota is pending');
       assert.match(await evaluate("document.getElementById('quota-cards').textContent"), /50.0/);
       assert.equal(await evaluate("document.querySelectorAll('.quota-card').length"), 3);
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .ring-value').length"), 2);
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .ring-value.ring-five').length"), 1);
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .ring-value.ring-week').length"), 1);
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.grok .ring-track').length"), 1);
+      assert.doesNotMatch(await evaluate("document.getElementById('quota-cards').textContent"), /可能提前耗尽/);
+      // 「已用」的预警橙色不能被标题行的样式盖掉
+      await evaluate("document.querySelector('.quota-card .quota-mini-head').insertAdjacentHTML('beforeend', '<span class=\"mini-used\"><span class=\"num warn-text\" id=\"warn-probe\">x</span></span>')");
+      assert.equal(await evaluate("getComputedStyle(document.getElementById('warn-probe')).color === getComputedStyle(document.documentElement).getPropertyValue('--warn').trim() || getComputedStyle(document.getElementById('warn-probe')).fontWeight === '600'"), true);
+      await evaluate("document.getElementById('warn-probe').parentElement.remove()");
       assert.match(await evaluate("document.querySelectorAll('.quota-card')[2].textContent"), /等待新采样/);
       await evaluate("document.getElementById('settings-open').click()");
       await until("!document.getElementById('settings').hidden");
@@ -72,6 +81,11 @@ app.on('web-contents-created', (_, contents) => {
       assert.doesNotMatch(await evaluate("document.getElementById('official-accounts').innerHTML"), /token|access_token|refresh/i);
       await evaluate("document.querySelector('[data-settings-tab=about]').click()");
       assert.ok((await evaluate("document.querySelector('.about-name').textContent")).includes('v' + require(path.join(appRoot, 'package.json')).version));
+      // 软件更新区：开发环境不检查更新，要说明原因、不显示开关
+      await until("document.getElementById('update-card').textContent.length > 0");
+      assert.match(await evaluate("document.getElementById('update-card').textContent"), /当前版本 v\d+\.\d+\.\d+/);
+      assert.match(await evaluate("document.getElementById('update-card').textContent"), /开发模式不检查更新/);
+      assert.equal(await evaluate("document.getElementById('pref-autoUpdate')"), null);
       // 这一版去掉的：关于里的「本机 CLI」、侧栏「本机持续记录」、总览「数据只保存在本机」；「偏好设置」改叫「设置」。
       assert.equal(await evaluate("document.body.textContent.includes('本机 CLI') || document.body.textContent.includes('本机持续记录') || document.body.textContent.includes('数据只保存在本机')"), false);
       assert.equal(await evaluate("document.getElementById('settings-open').textContent.trim()"), '设置');
@@ -98,8 +112,29 @@ app.on('web-contents-created', (_, contents) => {
       console.log(`PASS refresh completes; maximum main event-loop gap ${maxGap} ms`);
       await evaluate("document.querySelector('[data-page=quota]').click()");
       assert.equal(await evaluate("document.querySelectorAll('.quota-window-grid .panel').length"), 2);
-      assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /87.5%/);
+      assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /122.0%/);
       assert.equal(await evaluate("document.querySelectorAll('#quota-detail rect.col').length"), 24);
+      // Token / 费用预测：剩余可用、重置时预计用量、整窗容量都换算成 Token 和费用
+      assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /剩余可用（估算）[\s\S]*整窗容量折算/);
+      assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /重置时预计用量/);
+      assert.equal(await evaluate("byCapacity({ capacity: { tokens: 1000, costUsd: 10 } }, 150).tokens"), 1000, '预计超过 100% 时按整窗容量封顶');
+      assert.equal(await evaluate("byCapacity({ capacity: { tokens: 1000, costUsd: 10 } }, 25).costUsd"), 2.5);
+      assert.equal(await evaluate("byCapacity({}, 50)"), null, '没有容量折算时不给数');
+      // 历史容量折线：周 / 5 小时、Tokens / 费用可以切换
+      assert.equal(await evaluate("document.querySelectorAll('.capacity-panel').length"), 1);
+      await evaluate("document.querySelector('[data-cap-window=five]').click(); document.querySelector('[data-cap-metric=costUsd]').click()");
+      assert.equal(await evaluate("state.capWindow + '/' + state.capMetric"), 'five/costUsd');
+      assert.equal(await evaluate("Boolean(document.querySelector('.capacity-chart svg, .capacity-chart .empty'))"), true);
+      await evaluate("document.querySelector('[data-cap-window=week]').click(); document.querySelector('[data-cap-metric=tokens]').click()");
+      // 定时刷新（onSnapshot / 30 秒重绘）不能把页面拉回顶部
+      await evaluate("window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' })");
+      const scrolled = await evaluate("window.scrollY");
+      assert.ok(scrolled > 300, `test page should be scrollable, got ${scrolled}`);
+      await evaluate("render({ ...current, now: Date.now() })");
+      assert.equal(await evaluate("window.scrollY"), scrolled, '刷新后滚动位置不变');
+      // 指标小卡片：三组、每组都有卡片
+      assert.equal(await evaluate("document.querySelectorAll('.quota-window-grid .window-panel')[0].querySelectorAll('.metric-group').length"), 3);
+      await evaluate("window.scrollTo({ top: 0, behavior: 'instant' })");
       await evaluate("document.querySelector('[data-account=grok]').click()");
       assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /历史记录/);
       await evaluate("document.querySelector('[data-account=claude]').click()");

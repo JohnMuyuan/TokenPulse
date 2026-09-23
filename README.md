@@ -7,7 +7,7 @@
 **Your AI usage, at a glance.**
 
 一个常驻托盘的桌面小工具：记下本机所有 AI CLI 的 token 消耗，<br>
-盯住各家官方订阅的 5 小时 / 周额度，告诉你按现在的节奏会不会提前用完。
+盯住各家官方订阅的 5 小时 / 周额度，按最近趋势估计达到上限的时间，并显示重置时预计使用比例。
 
 [![Release](https://img.shields.io/github/v/release/JohnMuyuan/TokenPulse?style=flat-square&color=34735e)](https://github.com/JohnMuyuan/TokenPulse/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/JohnMuyuan/TokenPulse/total?style=flat-square&color=34735e)](https://github.com/JohnMuyuan/TokenPulse/releases)
@@ -35,8 +35,8 @@
 </td>
 <td width="50%" valign="top">
 
-### ⏱️ 官方额度，提前预警
-复用 CLI 已保存的登录凭据查询官方 5 小时 / 周额度，不用再登录一次。显示重置倒计时和预计耗尽时间，到阈值时发系统通知。
+### ⏱️ 官方额度，掌握节奏
+复用 CLI 已保存的登录凭据查询官方 5 小时 / 周额度，不用再登录一次。显示双窗口剩余、重置倒计时、按最近趋势估计的达到上限时间和重置时预计使用比例。
 
 </td>
 </tr>
@@ -85,7 +85,7 @@
 
 到 [**Releases**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) 下载最新版本：
 
-> **当前版本：v0.3.0** — 支持在设置中通过官方 OAuth 登录 Claude、ChatGPT 和 Grok（自动续期），并查看活动账号的额度。
+> **当前版本：v0.3.1** — 支持在设置中通过官方 OAuth 登录 Claude、ChatGPT 和 Grok（自动续期），并查看活动账号的额度。
 
 | 文件 | 说明 |
 |------|------|
@@ -93,6 +93,8 @@
 | `TokenPulse-x.y.z-Portable.exe` | 免安装单文件，双击即用 |
 
 启动后 TokenPulse 会常驻系统托盘。关闭窗口只会收回托盘，**退出请用托盘右键菜单**。
+
+**自动更新**：安装版会在后台检查并下载新版本，等窗口收进托盘或最小化时静默安装、自动重启，不需要手动操作；可在「设置 → 关于」里改成「只提醒」或手动检查。便携版不支持自动更新，请到 Releases 下载新版本。
 
 > [!TIP]
 > 安装包没有代码签名，Windows SmartScreen 第一次运行时可能拦截，点「更多信息 → 仍要运行」即可。
@@ -125,9 +127,10 @@
 
 官方接口只给出**当前时刻**的已用百分比，既没有历史，也不说额度到底是多少 token。所以 TokenPulse 每 5 分钟采一次样，自己积累历史：
 
-- **速度按「墙上时钟平均」计算**：已用百分比 ÷ 窗口已经过去的时间。额度按墙钟重置，睡觉、开会、关机的时间照样在走，必须留在分母里。如果只拿「涨得快的那几小时」外推，9% 的真实用量能被外推成重置时 135%，而实际大约只有 53%。
+- **达到上限的时间以最近趋势为主**：在最近 24 小时（5 小时窗口取最近 1 小时）里，用多个采样跨度计算加权中位数，降低单次跳点的影响；近期跨度不足时才退回整窗平均。近期没有新增用量时不输出虚假的耗尽时间。
 - **最近 24 小时的速度**只用来提示「最快可能什么时候用完」，不当作结论。
 - **整窗容量折算**：比如这周用了 9800 万 token、官方显示已用 24%，折算下来整周大约 4 亿 token。已用不到 2% 时不给出这个数，已用越多越准，界面上会标出可信度。
+- **Token 与费用预测**：用整窗容量把百分比换成 Token 和费用——剩余还能用多少、按当前趋势到重置时会用多少。额度详情里还有「额度容量趋势」折线，看每个历史窗口折算出的总额度有没有变化；用得太少（< 2%）或本机没有用量的窗口不计入，已用不到 5% 的标为偏差较大。
 - **跨越重置**：到点重置或手动重置之前的样本不计入。如果已经过了重置时间、接口还没再查过，就按新窗口从 0 开始算，不会沿用上个窗口的数字。
 
 总览卡片上的圆环显示**剩余最少的那个窗口**，避免周额度充足时掩盖了 5 小时窗口快要用完；卡片底部直接给出「重置时预计已用多少」或「约多久后用完」。
@@ -165,9 +168,10 @@ npm install
 npm run icons         # 生成 packaging/icon.png 和 tray.png
 npm run dist:portable # 只编译免安装版，供本机测试
 npm start             # 编译并启动
-npm test              # 34 项额度检查 + 3 项扫描检查 + 6 组看板数据 + 28 项官方账号与续期检查
+npm test              # 47 项额度检查 + 3 项扫描检查 + 6 组看板数据 + 28 项官方账号与续期检查
 npm run test:ui       # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
-npm run dist          # 重新生成图标并打包安装版与免安装版到 dist/
+npm run test:update   # 自动更新：本地假更新服务器上走完检查 → 下载 → 校验 → 静默安装触发
+npm run dist          # 重新生成图标并打包安装版与免安装版到 dist/（不会自动发布）
 ```
 
 打开「设置 → 官方账号」即可添加或切换多个官方账号。点击「添加账号」后，TokenPulse 调用对应的官方 CLI，在你的**默认浏览器**里打开官方授权页（浏览器里已登录的账号可以直接确认）；登录写进一个隔离的临时目录，不会动 CLI 自己的登录。额度查询使用「当前使用」的那个账号。
@@ -241,4 +245,3 @@ node_modules/app-builder-bin/win/x64/app-builder.exe download-artifact --name wi
 <br>
 <sub>Made with ☕ for people who live in the terminal.</sub>
 </div>
-

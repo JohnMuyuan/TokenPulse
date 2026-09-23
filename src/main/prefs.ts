@@ -11,9 +11,11 @@ export type Prefs = {
   notifyAt: number;
   /** 界面主题。界面自己用 localStorage 记，这里再存一份给主进程：建窗口时要用它定底色。 */
   theme: "light" | "dark";
+  /** 自动更新：后台下载新版本，在窗口收起时静默安装并重启。默认开。 */
+  autoUpdate: boolean;
 };
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light" };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true };
 
 function file() {
   return dataFile("prefs.json");

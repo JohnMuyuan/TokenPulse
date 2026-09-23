@@ -7,6 +7,7 @@ import type { Snapshot } from "../core/report";
 import { loadSnapshot } from "./snapshot";
 import { readPrefs, writePrefs, type Prefs } from "./prefs";
 import { trayIcon, windowIcon } from "./icon";
+import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
 import { listOfficialOAuthStatus, loginOfficialOAuth } from "./oauth";
 import { setActiveOfficialAccount } from "../core/accounts";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
@@ -27,6 +28,8 @@ const SCAN_EVERY_MS = 60_000;
 const QUOTA_EVERY_MS = 5 * 60_000;
 
 let win: BrowserWindow | null = null;
+/** 上次是在托盘里被自动更新重启的：这次启动也只进托盘，别弹窗口打扰用户。 */
+let relaunchHidden = false;
 let tray: Tray | null = null;
 let quitting = false;
 /** 「账号:窗口」→ 已经提醒过的那个窗口的重置时间。同一个窗口只提醒一次。 */
@@ -64,7 +67,7 @@ function createWindow() {
   win = next;
   next.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"));
   next.once("ready-to-show", () => {
-    if (!process.argv.includes("--hidden") && !readPrefs().startMinimized) next.show();
+    if (!process.argv.includes("--hidden") && !readPrefs().startMinimized && !relaunchHidden) next.show();
   });
   // 外链走系统浏览器，别在应用里开一个没有地址栏的窗口。
   next.webContents.setWindowOpenHandler(({ url }) => {
@@ -79,6 +82,9 @@ function createWindow() {
   next.on("closed", () => {
     if (win === next) win = null;
   });
+  // 用户不在看窗口了：下载好的更新趁这个时候静默装上（见 updater.ts）。
+  next.on("hide", onWindowAway);
+  next.on("minimize", onWindowAway);
   const sendState = () => next.webContents.send("window-state", { maximized: next.isMaximized() });
   next.on("maximize", sendState);
   next.on("unmaximize", sendState);
@@ -279,6 +285,7 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
    * 开发时（`npm start`）跑的是 node_modules 里的 electron.exe，把它登记进启动项，
    * 开机会启动一个空的 Electron 而不是 TokenPulse —— 既没用又难找。
    */
+  if ("autoUpdate" in patch) setAutoUpdate(next.autoUpdate);
   if ("autoLaunch" in patch && app.isPackaged && process.platform !== "linux") {
     app.setLoginItemSettings({
       openAtLogin: next.autoLaunch,
@@ -314,8 +321,10 @@ if (!app.requestSingleInstanceLock()) {
     // --hidden 只影响本次自启，不能永久改掉用户手动启动时的偏好。
     applyPrefs({ autoLaunch: prefs.autoLaunch });
 
+    relaunchHidden = consumeRelaunchHidden();
     initTray();
     createWindow();
+    initUpdater({ window: () => win, autoUpdate: readPrefs().autoUpdate });
 
     ipcMain.handle("snapshot", () => getInitialSnapshot());
     ipcMain.handle("refresh", async () => refresh(true));
@@ -346,6 +355,10 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("window:close", () => win?.close());
     ipcMain.handle("window:state", () => ({ maximized: Boolean(win?.isMaximized()) }));
     // 直接读 package.json：app.getVersion() 在测试 / 截图脚本里（electron 加载的不是本应用目录）返回的是 Electron 自己的版本。
+    ipcMain.handle("update:state", () => updateState());
+    ipcMain.handle("update:check", () => checkForUpdates(true));
+    ipcMain.handle("update:download", () => downloadUpdate());
+    ipcMain.handle("update:install", () => installUpdate());
     ipcMain.handle("app:version", () => (require("../../package.json") as { version: string }).version);
     ipcMain.handle("export-csv", async (_event, content: unknown) => {
       if (typeof content !== "string" || Buffer.byteLength(content) > 10 * 1024 * 1024) {

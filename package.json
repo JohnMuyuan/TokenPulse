@@ -1,6 +1,6 @@
 {
   "name": "tokenpulse",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
@@ -12,8 +12,9 @@
     "icons": "node scripts/make-icon.cjs",
     "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs",
     "test:ui": "npm run compile && electron scripts/test-ui.cjs",
-    "dist:portable": "npm run icons && npm run compile && electron-builder --win portable",
-    "dist": "npm run icons && npm run compile && electron-builder"
+    "dist:portable": "npm run icons && npm run compile && electron-builder --win portable --publish never",
+    "dist": "npm run icons && npm run compile && electron-builder --publish never",
+    "test:update": "npm run compile && electron scripts/test-updater.cjs"
   },
   "build": {
     "appId": "com.tokenpulse.app",
@@ -61,12 +62,23 @@
     },
     "portable": {
       "artifactName": "TokenPulse-${version}-Portable.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "JohnMuyuan",
+        "repo": "TokenPulse",
+        "releaseType": "release"
+      }
+    ]
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "electron": "^33.3.1",
     "electron-builder": "^25.1.8",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

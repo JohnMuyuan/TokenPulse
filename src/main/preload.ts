@@ -15,6 +15,15 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
   /** 版本号从 package.json 来，界面上不再手写（以前每次发版都要记得改 index.html）。 */
   version: () => ipcRenderer.invoke("app:version"),
+  updateState: () => ipcRenderer.invoke("update:state"),
+  checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  downloadUpdate: () => ipcRenderer.invoke("update:download"),
+  installUpdate: () => ipcRenderer.invoke("update:install"),
+  onUpdateState: (handler: (state: unknown) => void) => {
+    const listener = (_event: unknown, state: unknown) => handler(state);
+    ipcRenderer.on("update-state", listener);
+    return () => ipcRenderer.off("update-state", listener);
+  },
   /** 自绘标题栏的三个按钮（窗口是 frame: false）。 */
   windowMinimize: () => ipcRenderer.invoke("window:minimize"),
   windowToggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),

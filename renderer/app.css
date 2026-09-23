@@ -30,6 +30,8 @@
   --warn-soft: #fdf1dd;
   --danger: #cf3f36;
   --danger-soft: #fde9e7;
+  --ring-five: #14855f;
+  --ring-week: #5f70c8;
   --claude: #d97757;
   --claude-soft: #fbece5;
   --openai: #10a37f;
@@ -67,6 +69,8 @@
   --warn-soft: #3a2c14;
   --danger: #f2766c;
   --danger-soft: #3d1c1a;
+  --ring-five: #3fcf8e;
+  --ring-week: #9aaeff;
   --claude-soft: #33221c;
   --grok: #aab3c0;
   --tile-neutral: #232830;
@@ -342,7 +346,8 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
 
 /* ---------------- 额度卡片 ---------------- */
 
-.quota-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-bottom: 34px; }
+/* 卡片至少 320px：再窄放不下双环 + 文字（窗口 1100–1360px 时三列只剩 276px，状态标签压住账号名）。 */
+.quota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; margin-bottom: 34px; }
 .quota-card { display: flex; flex-direction: column; padding: 20px 22px 0; overflow: hidden; position: relative; }
 .quota-card::before {
   content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
@@ -356,6 +361,7 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
 .account-title { display: flex; flex-direction: column; min-width: 0; }
 .account-name { font-size: 16px; font-weight: 650; }
 .plan { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.account-name, .plan { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .badge {
   display: inline-flex; align-items: center; gap: 6px;
@@ -374,9 +380,24 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
 .ring-track { fill: none; stroke: var(--surface-2); stroke-width: 9; }
 :root[data-theme=dark] .ring-track { stroke: var(--line); }
 .ring-value { fill: none; stroke: var(--accent); stroke-width: 9; stroke-linecap: round; transition: stroke-dashoffset 1s var(--ease), stroke .3s; }
+.ring-value.ring-five { stroke: var(--ring-five); }
+.ring-value.ring-week { stroke: var(--ring-week); }
 .ring.warning .ring-value { stroke: var(--warn); }
 .ring.critical .ring-value { stroke: var(--danger); }
+.ring-value.warning { stroke: var(--warn); }
+.ring-value.critical { stroke: var(--danger); }
 .ring-center { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+/* 双环：外环 5 小时、内环周。环放大一点、数字缩小一点，保证数字完整落在内环里面。 */
+.ring.double { width: 124px; height: 124px; }
+.ring.double .ring-track.ring-five, .ring.double .ring-value.ring-five { stroke-width: 8; }
+.ring.double .ring-track.ring-week, .ring.double .ring-value.ring-week { stroke-width: 7; }
+.ring.double .quota-remaining { font-size: 19px; }
+.ring.double .quota-remaining small { font-size: 12px; }
+.win-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: var(--ring-five); vertical-align: 1px; }
+.win-dot.week { background: var(--ring-week); }
+.mini-label small { margin-left: 6px; font-size: 12px; font-weight: 500; color: var(--faint); }
+.warn-text { color: var(--warn); font-weight: 600; }
+.mini-left { color: var(--muted); }
 .quota-remaining { font: 650 24px/1 var(--font-display); letter-spacing: -.035em; }
 .quota-remaining small { font-size: 13px; font-weight: 600; color: var(--muted); margin-left: 1px; letter-spacing: 0; }
 .empty-number { color: var(--faint); }
@@ -387,7 +408,7 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
 
 .quota-mini { margin-bottom: 14px; }
 .quota-mini-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-bottom: 7px; }
-.quota-mini-head span:first-child { color: var(--text-2); font-weight: 550; }
+.quota-mini-head > span:first-child { color: var(--text-2); font-weight: 550; }
 .mini-reset { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
 .mini-reset .icon { width: 13px; height: 13px; }
 
@@ -399,6 +420,8 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
   transform-origin: left center;
 }
 .track-fill.warning { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 65%, #fff), var(--warn)); }
+.track-fill.five { background: var(--ring-five); }
+.track-fill.week { background: var(--ring-week); }
 .track-fill.critical { background: linear-gradient(90deg, color-mix(in srgb, var(--danger) 65%, #fff), var(--danger)); }
 
 .quota-missing { flex: 1; font-size: 13.5px; color: var(--muted); line-height: 1.7; padding-bottom: 20px; }
@@ -409,6 +432,18 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
   margin: auto -22px 0; padding: 13px 22px; min-height: 50px;
   border-top: 1px solid var(--line); background: var(--surface-2);
   font-size: 13px; color: var(--text-2);
+}
+
+/* 卡片偏窄（320–380px）时收紧：跟卡片宽度走，而不是跟窗口宽度走。 */
+.quota-card { container-type: inline-size; }
+.quota-card .badge { flex: none; }
+@container (max-width: 380px) {
+  .quota-hero { gap: 14px; }
+  .ring { width: 100px; height: 100px; }
+  .ring.double { width: 108px; height: 108px; }
+  .quota-remaining { font-size: 20px; }
+  .ring.double .quota-remaining { font-size: 17px; }
+  .quota-hero-value { font-size: 15px; }
 }
 
 /* ---------------- 筛选条 ---------------- */
@@ -598,10 +633,53 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
 }
 .prediction-line .icon { width: 18px; height: 18px; }
 .prediction-line.caution { background: var(--warn-soft); color: var(--warn); }
-.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 26px; }
-.detail-item { padding: 12px 0; border-bottom: 1px solid var(--line); min-width: 0; }
-.detail-item small { display: block; margin-bottom: 4px; font-size: 12.5px; color: var(--muted); }
-.detail-item b { font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
+/* 额度详情的指标小卡片：按「Token 与费用 / 预测 / 速度与时间」分组，每张卡一个数。 */
+.window-panel { container-type: inline-size; }
+.metric-group { margin-top: 20px; }
+.metric-group h3 { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+.metric-group h3 .icon { width: 15px; height: 15px; color: var(--accent); }
+.metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.metric-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.metric {
+  min-width: 0; padding: 12px 14px 13px;
+  border: 1px solid var(--line); border-radius: 13px; background: var(--surface-2);
+  transition: border-color .2s, transform .25s var(--ease), box-shadow .25s;
+}
+.metric:hover { border-color: var(--line-strong); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.metric-label { display: block; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric-value { display: flex; align-items: baseline; gap: 5px; min-width: 0; margin-top: 6px; }
+.metric-value b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 650 20px/1.2 var(--font-display); letter-spacing: -.02em; }
+.metric-value small { flex: none; font-size: 12px; color: var(--muted); }
+.metric-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 4px; font-size: 12.5px; color: var(--text-2); }
+.metric.accent { background: var(--accent-soft); border-color: transparent; }
+.metric.accent .metric-value b { color: var(--accent); }
+.metric.warn { background: var(--warn-soft); border-color: transparent; }
+.metric.warn .metric-value b { color: var(--warn); }
+.metric-chip { padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.metric-chip.high { color: var(--accent); }
+.metric-chip.medium { color: var(--text-2); }
+.metric-chip.low, .metric-chip.warn { color: var(--warn); }
+@container (max-width: 520px) {
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 两列时三张卡会剩一张孤零零地挂在左下：让它占满整行。 */
+  .metric-grid:not(.two) > .metric:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+@container (max-width: 340px) { .metric-grid, .metric-grid.two { grid-template-columns: minmax(0, 1fr); } }
+main.entering .metric { animation: fade-up .5s var(--ease) both; animation-delay: calc(var(--i, 0) * 45ms + 300ms); }
+
+.capacity-panel { margin-bottom: 18px; }
+.capacity-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.capacity-chart { --cap: var(--ring-five); height: 240px; }
+.capacity-chart.week { --cap: var(--ring-week); }
+.cap-line { fill: none; stroke: var(--cap); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.cap-dot { stroke: var(--cap); stroke-width: 2.4; transform-box: fill-box; transform-origin: center; cursor: default; transition: r .15s; }
+.cap-dot.solid { fill: var(--cap); }
+.cap-dot.low { fill: var(--surface); stroke-dasharray: 3 2; }
+.cap-dot.current { fill: var(--surface); stroke-width: 3; }
+.cap-dot:hover, .cap-dot:focus { outline: none; stroke-width: 3.4; }
+.cap-median { stroke: var(--faint); stroke-width: 1.2; stroke-dasharray: 5 5; }
+.cap-current-label { fill: var(--muted); }
+.chart-enter .cap-dot { animation: pop-in .4s var(--spring) both; }
 .quota-footnote { margin-top: 14px; font-size: 12.5px; line-height: 1.8; color: var(--muted); }
 .quota-history-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; }
 .stale-note {
@@ -775,6 +853,24 @@ body.modal-open { overflow: hidden; }
 .about-name { font: 700 20px/1.3 var(--font-display); }
 .about-name .app-version { margin-left: 6px; font: 500 13px var(--font); color: var(--muted); }
 .about-hero p { margin-top: 3px; font-size: 13.5px; color: var(--muted); }
+.update-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; margin-bottom: 12px;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--surface-2);
+}
+.update-icon { flex: none; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; background: var(--surface); color: var(--muted); border: 1px solid var(--line); }
+.update-icon .icon { width: 19px; height: 19px; }
+.update-icon.spinning .icon { animation: spin 1.1s linear infinite; }
+.update-card.ok .update-icon, .update-card.accent .update-icon { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.update-card.warn .update-icon { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.update-card.accent { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.update-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.update-text b { font-size: 14.5px; font-weight: 650; }
+.update-text span { font-size: 13px; color: var(--muted); }
+.update-text .track { margin-top: 6px; }
+.update-actions { flex: none; display: flex; gap: 8px; }
+.settings-panel .update-card .btn { margin-top: 0; }
+.update-auto:empty { display: none; }
 .settings-panel a.btn { margin-top: 12px; color: var(--text); text-decoration: none; }
 
 /* ---------------- 骨架屏 ---------------- */
@@ -851,6 +947,8 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 @media (max-width: 1280px) {
   .quota-hero { gap: 14px; }
   .ring { width: 104px; height: 104px; }
+  .ring.double { width: 112px; height: 112px; }
+  .ring.double .quota-remaining { font-size: 17px; }
   .quota-remaining { font-size: 21px; }
   .stat-value { font-size: 28px; }
   .breakdown-grid { grid-template-columns: repeat(3, 1fr); }
@@ -866,12 +964,11 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
   .nav-indicator::before { left: -12px; }
   main { padding: 28px 24px 24px; }
   .topbar { padding: 0 24px; }
-  .quota-grid { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .quota-grid { gap: 14px; }
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .analysis-grid { grid-template-columns: minmax(0, 1.8fr) minmax(220px, 1fr); gap: 14px; }
   .split-grid, .quota-window-grid, .quota-history-grid { gap: 14px; }
   .panel { padding: 18px 20px; }
-  .detail-grid { gap: 0 16px; }
 }
 
 @media (max-width: 860px) {

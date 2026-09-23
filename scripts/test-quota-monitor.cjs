@@ -19,12 +19,12 @@ const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
 // tsc 已经把 core/ 编成 CommonJS 了，直接 require 编译产物，不用再 bundle 一次。
-const { analyzeAccount, HOUR_MS, WEEK_MS } = require(path.join(ROOT, "build", "core", "quota-monitor.js"));
+const { analyzeAccount, capacityHistory, sumRows, HOUR_MS, WEEK_MS } = require(path.join(ROOT, "build", "core", "quota-monitor.js"));
 
 // 采样器直接写文件，得给它一个一次性的数据目录，别碰用户真实的 ~/.tokenpulse。
 const data = fs.mkdtempSync(path.join(os.tmpdir(), "tokenpulse-quota-history-"));
 process.env.TOKENPULSE_DATA_DIR = data;
-const { recordQuotaSamples, readQuotaHistory, sameReset } = require(path.join(ROOT, "build", "core", "quota-history.js"));
+const { recordQuotaSamples, readQuotaHistory, readQuotaChecks, sameReset } = require(path.join(ROOT, "build", "core", "quota-history.js"));
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -67,10 +67,10 @@ try {
     check("最近 24 小时每小时涨 1 个点", near(w.recentPerH, 1), String(w.recentPerH));
     // 窗口已经走了 96 小时、总共用掉 50%：墙钟平均就是 0.52%/h，哪怕最近 10 小时在猛用
     check("平均速度按墙钟算（含没采样的时间）", near(w.averagePerH, 50 / 96), String(w.averagePerH));
-    check("预测用平均速度，不用最近的爆发", near(w.ratePerH, 50 / 96), String(w.ratePerH));
-    check("重置时按平均推算 87.5%，不算提前用完", near(w.projectedAtReset, 87.5) && !w.runsOutBeforeReset, `${w.projectedAtReset}`);
-    check("最近的爆发只进上限：按它推是 122%", near(w.projectedHigh, 122) && near(w.fastPerH, 1), `${w.projectedHigh} ${w.fastPerH}`);
-    check("上限会超 100 时提示有点紧，而不是断言会提前用完", report.health.reason === "tight", JSON.stringify(report.health));
+    check("预测优先使用最近趋势", near(w.ratePerH, 1), String(w.ratePerH));
+    check("重置时按最近趋势推算 122%，并标记重置前会用完", near(w.projectedAtReset, 122) && w.runsOutBeforeReset, `${w.projectedAtReset}`);
+    check("较快趋势上界也是 122%", near(w.projectedHigh, 122) && near(w.fastPerH, 1), `${w.projectedHigh} ${w.fastPerH}`);
+    check("重置前会用完时显示压力较高", report.health.reason === "runs-out", JSON.stringify(report.health));
     // 96 小时 × 100 万 = 9600 万 token，已用 50% → 整周 1.92 亿；花费同理 $96 → $192
     check(
       "折算整周额度 = 窗口用量 ÷ 已用百分比",
@@ -87,7 +87,7 @@ try {
     const w = report.week;
     check("最近 24 小时没涨，最近速度是 0", near(w.recentPerH, 0), String(w.recentPerH));
     // 已经用掉的 50% 是真金白银，不能因为最近没动就当作没用过
-    check("仍按墙钟平均预测", near(w.ratePerH, 50 / 96) && near(w.projectedAtReset, 87.5), `${w.ratePerH} / ${w.projectedAtReset}`);
+    check("近期没增长时不继续沿用旧平均", near(w.ratePerH, 0) && near(w.projectedAtReset, 50), `${w.ratePerH} / ${w.projectedAtReset}`);
   }
 
   // ---- 3. 窗口里用了一次重置：掉下来之前的点不算 ----
@@ -183,7 +183,7 @@ try {
     const report = analyzeAccount("claude", hourlySamples(10, 40, 50), rows, NOW);
     const w = report.week;
     check("大约三分之一的时间在用", near(w.activeShare, 32 / 96), String(w.activeShare));
-    check("有休息也不改用最近爆发去外推", near(w.ratePerH, 50 / 96) && !w.runsOutBeforeReset, String(w.ratePerH));
+    check("有休息时限制近期趋势的放大倍数", near(w.ratePerH, 1) && w.runsOutBeforeReset, String(w.ratePerH));
   }
 
   // ---- 10. 真实场景回归（2026-09-16 的 Claude 账号）----
@@ -199,9 +199,9 @@ try {
     }
     const report = analyzeAccount("claude", samples, [], NOW);
     const w = report.week;
-    check("集中使用后仍按墙钟平均算（约 0.31%/h）", near(w.ratePerH, 9 / 28.8, 0.02), String(w.ratePerH));
-    check("重置时约 52%，不是「提前两天用完」", w.projectedAtReset < 60 && !w.runsOutBeforeReset, String(w.projectedAtReset));
-    check("这种情况判成健康", report.health.reason === "ok", JSON.stringify(report.health));
+    check("集中使用后限制近期趋势的放大倍数", near(w.ratePerH, 0.62, 0.02), String(w.ratePerH));
+    check("重置时约 95%，不把它直接说成必然耗尽", w.projectedAtReset > 90 && w.projectedAtReset < 100 && !w.runsOutBeforeReset, String(w.projectedAtReset));
+    check("这种情况显示用量偏高", report.health.reason === "tight", JSON.stringify(report.health));
   }
 
   // ---- 10b. 切换账号：只看当前账号的采样 ----
@@ -220,6 +220,75 @@ try {
     );
   }
 
+  // ---- 10c. 用最近趋势预测，不让整窗平均掩盖当前节奏 ----
+  {
+    const samples = hourlySamples(10, 40, 50);
+    const report = analyzeAccount("claude", samples, [], NOW);
+    const w = report.week;
+    check("最近趋势作为主预测速度", near(w.ratePerH, 1, 0.05), String(w.ratePerH));
+    check("按最近趋势预计 50 小时后达到上限", w.etaAt != null && near((w.etaAt - NOW) / HOUR_MS, 50, 1), String(w.etaAt && (w.etaAt - NOW) / HOUR_MS));
+    check("最近趋势显示重置前会达到上限", w.runsOutBeforeReset && near(w.projectedAtReset, 122, 3), String(w.projectedAtReset));
+  }
+
+  // ---- 10d. 最近没有新增用量时，不继续输出虚假的耗尽时间 ----
+  {
+    const samples = hourlySamples(10, 50, 50);
+    const report = analyzeAccount("claude", samples, [], NOW);
+    const w = report.week;
+    check("最近没有增长时速度为 0", near(w.ratePerH, 0), String(w.ratePerH));
+    check("最近没有增长时不输出耗尽时间", w.etaAt == null && !w.runsOutBeforeReset, JSON.stringify({ etaAt: w.etaAt, runsOutBeforeReset: w.runsOutBeforeReset }));
+  }
+
+  // ---- 10c. 按小时用量按重叠时长折算 ----
+  {
+    const h0 = Date.UTC(2026, 8, 13, 4, 0, 0);
+    const rows = [
+      { hour: h0, model: "m", tokens: 600, costUsd: 6, requests: 1 },
+      { hour: h0 + HOUR_MS, model: "m", tokens: 100, costUsd: 1, requests: 1 },
+    ];
+    // 窗口从 04:45 开始：04:00 这一小时只算后 15 分钟 = 600 × 1/4
+    const part = sumRows(rows, h0 + 45 * 60_000, h0 + 2 * HOUR_MS);
+    check("窗口边界不在整点时按重叠时长折算（以前整小时都算进去）", near(part.tokens, 250) && near(part.costUsd, 2.5), JSON.stringify(part));
+    // 当前这一小时只到 now 为止：05:30 时 05:00 这一小时的用量全都已经发生了
+    const live = sumRows(rows, h0, h0 + HOUR_MS + 30 * 60_000, h0 + HOUR_MS + 30 * 60_000);
+    check("当前这一小时的用量全部计入（它只到现在为止）", near(live.tokens, 700), JSON.stringify(live));
+  }
+
+  // ---- 10d. 历史窗口的容量折线 ----
+  {
+    const r1 = NOW - 20 * HOUR_MS, r2 = NOW - 15 * HOUR_MS, r3 = NOW - 10 * HOUR_MS, r4 = NOW - 5 * HOUR_MS, r5 = NOW + 2 * HOUR_MS;
+    const at = (reset, before) => reset - before;
+    const samples = [
+      // 窗口 1：用到 40%，重置时间带亚秒抖动也算同一个窗口
+      { at: at(r1, 3 * HOUR_MS), five: 10, fiveReset: iso(r1 + 400) },
+      { at: at(r1, 1 * HOUR_MS), five: 40, fiveReset: iso(r1 - 300) },
+      // 窗口 2：只用到 1%，没法估
+      { at: at(r2, 1 * HOUR_MS), five: 1, fiveReset: iso(r2) },
+      // 窗口 3：用到 4%，但本机没有用量（用在了别的设备上）
+      { at: at(r3, 1 * HOUR_MS), five: 4, fiveReset: iso(r3) },
+      // 窗口 4：中途手动重置过（百分比掉下来），前后用量说不清
+      { at: at(r4, 3 * HOUR_MS), five: 30, fiveReset: iso(r4) },
+      { at: at(r4, 1 * HOUR_MS), five: 5, fiveReset: iso(r4) },
+      // 没用过的窗口（0%，ChatGPT 每次把重置时间往后挪）：直接忽略，不计进跳过数
+      { at: at(r4, 30 * 60_000) + 10 * 60_000, five: 0, fiveReset: iso(r4 + 4 * HOUR_MS) },
+      // 窗口 5：进行中，用到 3%（可信度低）
+      { at: NOW, five: 3, fiveReset: iso(r5) },
+    ];
+    // 每小时 100 万 token、$1，只有窗口 3 那 5 个小时没有本机用量
+    const rows = [];
+    for (let hour = r1 - 5 * HOUR_MS; hour < NOW; hour += HOUR_MS) if (hour < r3 - 5 * HOUR_MS || hour >= r3) rows.push({ hour, model: "m", tokens: 1_000_000, costUsd: 1, requests: 1 });
+    const history = capacityHistory(samples, rows, "five", NOW);
+    const [w1, w5] = history.points;
+    check("历史容量：每个可估的窗口一个点，按重置时间归组（容忍抖动）", history.points.length === 2, JSON.stringify(history.points.map((p) => p.pct)));
+    // 窗口 1 从 r1-5h 到最后一次采样 r1-1h：400 万 token，已用 40% → 整窗 1000 万
+    check("容量 = 窗口开始到最后一次采样的本机用量 ÷ 那次的已用百分比", near(w1.capacityTokens, 10_000_000, 10_000) && near(w1.capacityCostUsd, 10, 0.01) && w1.confidence === "high", JSON.stringify(w1));
+    check("已用不到 2% / 本机没有用量的窗口不计入，只计数；0% 的窗口直接忽略", history.skipped.tooLow === 1 && history.skipped.noLocal === 1, JSON.stringify(history.skipped));
+    check("中途手动重置过的窗口不计入（前后用量说不清）", !history.points.some((p) => p.resetAt === r4));
+    check("进行中的窗口标出来，已用 2–5% 标为可信度低", w5.current && w5.confidence === "low" && !w1.current, JSON.stringify({ current: w5.current, confidence: w5.confidence }));
+    const report = analyzeAccount("chatgpt", samples, rows, NOW);
+    check("账号报告里带上周 / 5 小时两条历史", report.capacityHistory.five.points.length === 2 && Array.isArray(report.capacityHistory.week.points));
+  }
+
   // ---- 11. 采样器 ----
   {
     const t0 = Date.UTC(2026, 8, 13, 0, 0, 0);
@@ -233,6 +302,12 @@ try {
     recordQuotaSamples(jittered, t0 + 10 * 60_000);
     check("重置时间只有亚秒抖动，仍算没变化", readQuotaHistory().accounts.claude.length === 1);
     check("重置时间差一小时算变化", !sameReset(iso(t0), iso(t0 + HOUR_MS)) && sameReset(iso(t0), iso(t0 + 900)));
+    // 数值没变被去重时，「最后一次查询成功」照样要更新：以前拿最后一条采样判断过期，额度一不动就误报
+    check("采样被去重时，查询成功时间照样更新", readQuotaChecks().claude?.at === t0 + 10 * 60_000, JSON.stringify(readQuotaChecks().claude));
+    const idle = analyzeAccount("claude", readQuotaHistory().accounts.claude, [], t0 + 12 * 60_000, readQuotaChecks().claude);
+    check("账号报告的 lastCheckedAt 取两者中较新的", idle.lastSampleAt === t0 && idle.lastCheckedAt === t0 + 10 * 60_000, JSON.stringify({ sample: idle.lastSampleAt, checked: idle.lastCheckedAt }));
+    const other = analyzeAccount("claude", [{ at: t0, week: 10, account: "claude:a" }], [], t0 + 12 * 60_000, { at: t0 + 10 * 60_000, account: "claude:b" });
+    check("切换账号后不采用上一个账号的查询时间", other.lastCheckedAt === t0);
     recordQuotaSamples(map(10), t0 + 16 * 60_000);
     check("没变化但过了 15 分钟，再记一笔「还是这么多」", readQuotaHistory().accounts.claude.length === 2);
     recordQuotaSamples(map(11), t0 + 17 * 60_000);

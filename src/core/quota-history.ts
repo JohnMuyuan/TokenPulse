@@ -64,8 +64,36 @@ function same(a: QuotaSample, b: QuotaSample) {
   );
 }
 
-/** 记一轮采样。返回有没有真的写文件。 */
+/**
+ * 每家最后一次**查询成功**的时间，和采样历史分开记。
+ *
+ * 采样历史为了不膨胀，数值没变时 15 分钟才记一条；界面以前拿「最后一条采样」判断过期（阈值也是 15 分钟），
+ * 于是额度一不动（= 用户没在用），最后一条采样就落后 15–20 分钟，明明每 5 分钟都查成功了却显示「采样已过期」。
+ * 过期要看的是「最后一次查询成功」，这里每次都更新；单独一个小文件，免得每 5 分钟重写整份历史。
+ */
+export type QuotaChecks = Partial<Record<AccountKind, { at: number; account?: string }>>;
+
+function checksFile() {
+  return dataFile("quota-checked.json");
+}
+
+export function readQuotaChecks(): QuotaChecks {
+  const parsed = readJson<QuotaChecks | null>(checksFile(), null);
+  return parsed && typeof parsed === "object" ? parsed : {};
+}
+
+/** 记一轮采样。返回有没有真的写（采样历史）文件；查询成功时间每次都更新。 */
 export function recordQuotaSamples(map: OfficialQuotaMap, now = Date.now()) {
+  const checks = readQuotaChecks();
+  let checked = false;
+  for (const kind of KINDS) {
+    const quota = map[kind];
+    if (!quota || (quota.weekPct == null && quota.fiveHourPct == null)) continue;
+    checks[kind] = { at: now, account: quota.accountId };
+    checked = true;
+  }
+  if (checked) writeJson(checksFile(), checks);
+
   const history = readQuotaHistory();
   let changed = false;
   for (const kind of KINDS) {

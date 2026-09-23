@@ -14,9 +14,10 @@ const OAUTH_META = {
   grok: { name: 'Grok', brand: 'grok' }
 };
 const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok' };
-const HEALTH = { good: '节奏正常', warning: '留意用量', serious: '可能提前耗尽', critical: '额度紧张', unknown: '暂无数据' };
-const state = { page: 'overview', days: 30, follow: false, source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0 };
+const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
+const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0 };
 const RING = 2 * Math.PI * 44;
+const INNER_RING = 2 * Math.PI * 34;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let current = null;
 let analysis = null;
@@ -188,39 +189,76 @@ function moveIndicator() {
 
 function showStatus(message, error = false) { $('app-status').textContent = message; $('app-status').hidden = false; $('app-status').setAttribute('role', error ? 'alert' : 'status'); }
 function empty(message) { return el('div', { class: 'empty', text: message }); }
-function track(pct, warning = false, label = '已用额度') {
-  const fill = el('span', { class: 'track-fill' + (pct >= 90 ? ' critical' : warning ? ' warning' : '') });
+function track(pct, warning = false, label = '已用额度', identity = '') {
+  // identity：双环卡片里进度条用和环一样的身份色（5 小时 / 周），预警改由文字颜色表达；快用完（≥90%）仍然变红。
+  const tone = pct >= 90 ? ' critical' : identity ? ` ${identity}` : warning ? ' warning' : '';
+  const fill = el('span', { class: 'track-fill' + tone });
   fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
   return el('div', { class: 'track', role: 'meter', 'aria-label': label, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.min(100, Math.max(0, pct)) }, [fill]);
 }
-function isStale(account) { return !account?.lastSampleAt || Date.now() - account.lastSampleAt > 15 * 60000; }
-function waitingReset(account, window) { return window?.startAt != null && account?.lastSampleAt < window.startAt; }
+/** 最后一次查询成功的时间。采样历史数值不变时 15 分钟才记一条，不能拿它判断过期。 */
+function checkedAt(account) { return account?.lastCheckedAt ?? account?.lastSampleAt; }
+function isStale(account) { return !checkedAt(account) || Date.now() - checkedAt(account) > 15 * 60000; }
+function waitingReset(account, window) { return window?.startAt != null && checkedAt(account) < window.startAt; }
 function prediction(window, account) {
   if (!window) return '暂无窗口数据';
   if (waitingReset(account, window)) return '窗口已重置，等待新采样确认';
   if (isStale(account)) return '采样已过期，刷新后再判断';
   if (window.used >= 100) return '额度已用完，请等待重置';
-  if (window.runsOutBeforeReset && window.etaAt) return `按平均速度，约 ${duration(window.etaAt - Date.now())}后用完`;
-  if (window.projectedAtReset != null) return `按平均速度，重置时预计已用 ${percent(window.projectedAtReset)}`;
-  return '采样尚少，暂不预测耗尽时间';
+  if (window.runsOutBeforeReset && window.etaAt) return `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限`;
+  if (window.ratePerH === 0) return '近期没有新增用量，暂不估计达到上限的时间';
+  if (window.projectedAtReset != null) return `按最近趋势，重置时预计使用 ${percent(window.projectedAtReset)}`;
+  return '采样跨度还不够，暂不估计达到上限的时间';
 }
+
+/**
+ * 按「整窗容量折算」把百分比换成 Token 和费用。容量是倒推出来的估算（已用 Token ÷ 已用百分比），
+ * 已用不到 2% 时没有容量，这里也就不给数。超过 100% 的预测按 100% 算：一个窗口最多就用这么多。
+ */
+function byCapacity(report, pct) {
+  const capacity = report?.capacity;
+  if (!capacity || pct == null || !Number.isFinite(pct)) return null;
+  const share = Math.max(0, Math.min(100, pct)) / 100;
+  return { tokens: capacity.tokens * share, costUsd: capacity.costUsd * share };
+}
+const CONFIDENCE = { low: '可信度较低 · 已用不到 5%', medium: '可信度中等', high: '可信度较高' };
 
 /* ---------------- 总览：额度卡片 ---------------- */
 
-function ring(remaining, level) {
+function ring({ five, week, account } = {}) {
   const node = svg('svg', { viewBox: '0 0 100 100', 'aria-hidden': 'true' });
-  node.append(svg('circle', { class: 'ring-track', cx: 50, cy: 50, r: 44 }));
-  if (remaining != null) {
-    const value = Math.max(0, Math.min(100, remaining));
-    node.append(svg('circle', { class: 'ring-value', cx: 50, cy: 50, r: 44, 'stroke-dasharray': RING, 'stroke-dashoffset': RING * (1 - value / 100) }));
+  const both = Boolean(five && week);
+  /*
+   * 双环时颜色只表示「哪个窗口」（外环 5 小时、内环周），预警交给右上角的状态和「已用」文字；
+   * 以前两种含义叠在一起，ChatGPT 两个环都变成橙色，外环 / 内环的图例对不上。快用完（≥90%）仍然变红。
+   */
+  const tone = (win) => !win || waitingReset(account, win) ? '' : win.used >= 90 ? 'critical' : !both && win.runsOutBeforeReset ? 'warning' : '';
+  const add = (name, win, radius, circumference) => {
+    const remaining = win && !waitingReset(account, win) ? Math.max(0, 100 - win.used) : null;
+    node.append(svg('circle', { class: `ring-track ring-${name}`, cx: 50, cy: 50, r: radius }));
+    if (remaining != null) {
+      node.append(svg('circle', {
+        class: `ring-value ring-${name} ${tone(win)}`,
+        cx: 50, cy: 50, r: radius,
+        'stroke-dasharray': circumference,
+        'stroke-dashoffset': circumference * (1 - remaining / 100),
+      }));
+    }
+  };
+  if (both) {
+    add('five', five, 44, RING);
+    add('week', week, 34, INNER_RING);
+  } else {
+    add(five ? 'five' : 'week', five || week, 44, RING);
   }
-  return el('div', { class: 'ring ' + level }, [node]);
+  const wrapper = el('div', { class: 'ring' + (both ? ' double' : ''), title: both ? '外环：5 小时额度　内环：周额度' : null }, [node]);
+  return wrapper;
 }
 function quotaCard(kind) {
   const account = current.accounts.find(a => a.kind === kind);
   const meta = META[kind];
   const stale = account && isStale(account);
-  // 首页优先展示剩余最少的有效窗口，避免周额度充足掩盖 5 小时窗口即将耗尽。
+  // 首页优先展示剩余最少的有效窗口，让环中心和说明都对应当前压力更高的窗口。
   const windows = [account?.five, account?.week].filter(Boolean);
   const report = windows.filter(win => !waitingReset(account, win)).sort((a, b) => b.used - a.used)[0] || windows[0];
   const waiting = report && waitingReset(account, report);
@@ -231,29 +269,38 @@ function quotaCard(kind) {
   ]);
   const body = [head];
   if (account && (account.five || account.week)) {
-    const remainingPct = report && !waiting ? Math.max(0, 100 - report.used) : null;
-    const level = remainingPct == null ? '' : report.used >= 90 ? 'critical' : report.runsOutBeforeReset ? 'warning' : '';
+    const remainingValues = windows.filter(win => !waitingReset(account, win)).map(win => Math.max(0, 100 - win.used));
+    const remainingPct = remainingValues.length ? Math.min(...remainingValues) : null;
     const value = el('div', { class: 'quota-remaining' + (remainingPct == null ? ' empty-number' : ''), text: remainingPct == null ? '—' : remainingPct.toFixed(1) }, remainingPct == null ? [] : [el('small', { text: '%' })]);
-    const windowLabel = report === account.week ? '周额度' : '5 小时额度';
+    const windowLabel = account.five && account.week ? '当前较低窗口' : report === account.week ? '周额度' : '5 小时额度';
     const hero = el('div', { class: 'quota-hero-text' }, [
       el('span', { class: 'quota-hero-label', text: `${stale ? '上次' : ''}${windowLabel}剩余` }),
       el('span', { class: 'quota-hero-value', text: waiting ? '等待新采样' : report?.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' }),
       el('span', { class: 'quota-hero-sub', text: report?.resetAt && !waiting ? `${date(report.resetAt)} · 本地时间` : '旧窗口已结束' })
     ]);
-    const ringNode = ring(remainingPct, level);
+    const ringNode = ring({ five: account.five, week: account.week, account });
     ringNode.append(el('div', { class: 'ring-center' }, [value]));
     body.push(el('div', { class: 'quota-hero' }, [ringNode, hero]));
-    for (const [label, win] of [['5 小时', account.five], ['周额度', account.week]]) {
+    const both = Boolean(account.five && account.week);
+    for (const [name, label, ring, win] of [['five', '5 小时', '外环', account.five], ['week', '周额度', '内环', account.week]]) {
       if (!win) continue;
       const pending = waitingReset(account, win);
+      // 双环时标题前的圆点就是图例：颜色和对应的环一致。
+      const title = both ? el('span', { class: 'mini-label' }, [el('i', { class: `win-dot ${name}`, 'aria-hidden': true }), label, el('small', { text: ring })]) : el('span', { text: label });
+      const usedClass = 'num' + (!pending && win.used < 90 && win.runsOutBeforeReset ? ' warn-text' : '');
+      const left = !pending && !stale ? byCapacity(win, 100 - win.used) : null;
+      const usedText = el('span', { class: 'mini-used' }, [
+        el('span', { class: usedClass, text: pending ? '等待确认' : `已用 ${percent(win.used)}` }),
+        left ? el('span', { class: 'mini-left num', text: ` · 剩约 ${tokens(left.tokens)}`, title: `按整窗容量折算：剩余约 ${tokens(left.tokens)} Tokens · ${money(left.costUsd)}` }) : null
+      ]);
       body.push(el('div', { class: 'quota-mini' }, [
-        el('div', { class: 'quota-mini-head' }, [el('span', { text: label }), el('span', { class: 'num', text: pending ? '等待确认' : `已用 ${percent(win.used)}` })]),
-        pending ? el('div', { class: 'track' }) : track(win.used, win.runsOutBeforeReset),
+        el('div', { class: 'quota-mini-head' }, [title, usedText]),
+        pending ? el('div', { class: 'track' }) : track(win.used, win.runsOutBeforeReset, '已用额度', both ? name : ''),
         el('div', { class: 'mini-reset' }, [icon('clock'), pending ? '旧窗口已结束，正在等待新数据' : win.resetAt ? `${duration(win.resetAt - Date.now())}后重置 · ${date(win.resetAt)}` : '接口未提供重置时间'])
       ]));
     }
   } else {
-    const ringNode = ring(null, '');
+    const ringNode = ring({});
     ringNode.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining empty-number', text: '—' })]));
     body.push(el('div', { class: 'quota-hero' }, [ringNode, el('div', { class: 'quota-hero-text' }, [el('span', { class: 'quota-hero-label', text: '额度剩余' }), el('span', { class: 'quota-hero-value', text: '尚未取得官方额度' })])]));
     body.push(el('div', { class: 'quota-missing' }, [el('p', { text: '可能尚未登录、凭据过期或网络未连通。本机用量仍正常记录。' })]));
@@ -261,9 +308,10 @@ function quotaCard(kind) {
   const link = el('button', { class: 'text-btn', 'aria-label': `${meta.name} 额度详情` }, ['详情', icon('arrow')]);
   link.addEventListener('click', () => { state.account = kind; navigate('quota'); });
   const forecast = !stale && !waiting && report?.used >= 100 ? '额度已用完，等待重置'
-    : !stale && !waiting && report?.etaAt && report.runsOutBeforeReset ? `约 ${duration(report.etaAt - Date.now())}后用完`
-    : !stale && !waiting && report?.projectedAtReset != null ? `重置时预计已用 ${percent(report.projectedAtReset)}`
-    : `${date(account?.lastSampleAt)} 采样`;
+    : !stale && !waiting && report?.etaAt && report.runsOutBeforeReset ? `约 ${duration(report.etaAt - Date.now())} 后达到上限`
+    : !stale && !waiting && report?.ratePerH === 0 ? '近期没有新增用量，暂不估计'
+    : !stale && !waiting && report?.projectedAtReset != null ? `重置时预计使用 ${percent(report.projectedAtReset)}`
+    : `${date(checkedAt(account))} 更新`;
   body.push(el('div', { class: 'quota-card-foot' }, [el('span', { text: account ? forecast : `${meta.source} 本地凭据` }), link]));
   return el('article', { class: 'quota-card ' + kind }, body);
 }
@@ -425,31 +473,138 @@ function stagger(node, i) { node.style.setProperty('--i', i); return node; }
 
 /* ---------------- 额度详情 ---------------- */
 
-function detailItem(label, value) { return el('div', { class: 'detail-item' }, [el('small', { text: label }), el('b', { class: 'num', text: value })]); }
+/** 一个指标小卡片：灰色小标签、大号数字（带单位）、下面一行补充说明。tone：accent 高亮 / warn 预警。 */
+function metric(label, value, { unit, sub, tone, chip } = {}) {
+  return el('div', { class: 'metric' + (tone ? ` ${tone}` : '') }, [
+    el('span', { class: 'metric-label', text: label }),
+    el('div', { class: 'metric-value' }, [el('b', { class: 'num', text: value, title: value }), unit ? el('small', { text: unit }) : null]),
+    sub || chip ? el('div', { class: 'metric-sub' }, [sub ? el('span', { text: sub }) : null, chip ? el('span', { class: `metric-chip ${chip.tone}`, text: chip.text }) : null]) : null
+  ]);
+}
+function metricGroup(title, iconName, cards, layout = '') {
+  cards.forEach((card, i) => card.style.setProperty('--i', i));
+  return el('section', { class: 'metric-group' }, [el('h3', {}, [icon(iconName), title]), el('div', { class: `metric-grid ${layout}`.trim() }, cards)]);
+}
+/** Token + 费用的卡片：折算不出来时如实写原因，不编数。 */
+function tokenMetric(label, value, extra = {}) {
+  if (!value) return metric(label, '—', { sub: extra.missing || '样本不足，暂无法折算' });
+  return metric(label, tokens(value.tokens), { unit: 'Tokens', sub: money(value.costUsd), ...extra });
+}
 function windowPanel(label, report, account) {
-  const panel = el('article', { class: 'panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: label }), el('span', { class: 'section-tag', text: '官方额度窗口' })])]);
+  const panel = el('article', { class: 'panel window-panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: label }), el('span', { class: 'section-tag', text: '官方额度窗口' })])]);
   if (!report) { panel.append(empty('接口未提供此窗口')); return panel; }
-  const pending = waitingReset(account, report), stale = isStale(account);
+  const pending = waitingReset(account, report), stale = isStale(account), unknown = stale || pending;
   panel.append(el('div', { class: 'window-number' }, [el('strong', { text: pending ? '—' : percent(Math.max(0, 100 - report.used)) }), el('span', { text: stale ? '上次采样剩余' : '剩余额度' })]));
   const bar = pending ? el('div', { class: 'track' }) : track(report.used, report.runsOutBeforeReset); bar.classList.add('window-track'); panel.append(bar);
   panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { text: report.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' })]));
-  const caution = report.runsOutBeforeReset || stale || pending;
+  const caution = report.runsOutBeforeReset || unknown;
   panel.append(el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(report, account)]));
-  const speed = n => n == null || stale || pending ? '—' : `${n.toFixed(2)} 百分点 / 小时`;
+
   const capacity = report.capacity;
-  panel.append(el('div', { class: 'detail-grid' }, [
-    detailItem('重置时间 · 本地时区', report.resetAt ? date(report.resetAt, true) : '未知'),
-    detailItem('窗口开始', report.startAt ? date(report.startAt, true) : '未知'),
-    detailItem('窗口平均消耗速度', speed(report.averagePerH)),
-    detailItem(label.startsWith('5') ? '最近 1 小时速度' : '最近 24 小时速度', speed(report.recentPerH)),
-    detailItem('按平均速度耗尽', stale || pending ? '等待有效采样' : report.used >= 100 ? '已用完' : report.etaAt ? `${date(report.etaAt)}${report.resetAt && report.etaAt > report.resetAt ? '（重置后）' : ''}` : '暂无法估计'),
-    detailItem('按较快速度耗尽', stale || pending ? '等待有效采样' : report.etaFastAt ? date(report.etaFastAt) : '暂无法估计'),
-    detailItem('本机官方会话 Tokens', tokens(report.usedTokens)),
-    detailItem('本机参考费用', money(report.usedCostUsd)),
-    detailItem('整窗容量折算', capacity && !stale && !pending ? `约 ${tokens(capacity.tokens)} Tokens` : '样本不足或已过期'),
-    detailItem('容量折算可信度', capacity && !stale && !pending ? ({ low: '较低 · 仅供参考', medium: '中等', high: '较高' })[capacity.confidence] : '—')
+  const waitText = '等待有效采样';
+  panel.append(metricGroup('Token 与费用', 'tokens', [
+    metric('本窗口已用（本机）', tokens(report.usedTokens), { unit: 'Tokens', sub: money(report.usedCostUsd) }),
+    unknown ? metric('剩余可用（估算）', '—', { sub: waitText }) : tokenMetric('剩余可用（估算）', byCapacity(report, 100 - report.used), { tone: 'accent' }),
+    unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : '已用不到 2%，暂无法折算' })
+      : tokenMetric('整窗容量折算', byCapacity(report, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } })
   ]));
-  panel.append(el('p', { class: 'quota-footnote', text: '预测按墙钟平均速度计算，包含休息时间；使用强度变化会影响结果。容量折算不是官方 token 上限。' }));
+
+  const willRunOut = !unknown && report.used < 100 && report.etaAt && report.runsOutBeforeReset;
+  const limit = unknown ? metric('预计达到上限', '—', { sub: waitText })
+    : report.used >= 100 ? metric('预计达到上限', '已用完', { sub: '等待重置', tone: 'warn' })
+    : willRunOut ? metric('预计达到上限', date(report.etaAt), { sub: `约 ${duration(report.etaAt - Date.now())}后`, tone: 'warn' })
+    : metric('预计达到上限', report.ratePerH === 0 ? '暂无新增' : '不会', { sub: report.ratePerH === 0 ? '近期没有新增用量' : '重置前不会达到上限' });
+  panel.append(metricGroup('预测', 'trend', [
+    limit,
+    metric('重置时预计使用', unknown || report.projectedAtReset == null ? '—' : percent(report.projectedAtReset), { sub: unknown ? waitText : report.projectedAtReset == null ? '暂无法估计' : '按最近趋势', tone: !unknown && report.projectedAtReset >= 100 ? 'warn' : '' }),
+    unknown || report.projectedAtReset == null ? metric('重置时预计用量', '—', { sub: unknown ? waitText : '暂无法估计' })
+      : tokenMetric('重置时预计用量', byCapacity(report, report.projectedAtReset), report.projectedAtReset > 100 ? { chip: { tone: 'warn', text: '会用满' } } : {})
+  ]));
+
+  const speed = n => n == null || unknown ? '—' : n.toFixed(2);
+  panel.append(metricGroup('速度与时间', 'clock', [
+    metric('窗口平均速度', speed(report.averagePerH), { unit: report.averagePerH == null || unknown ? '' : '点 / 时', sub: '整个窗口，含休息时间' }),
+    metric(label.startsWith('5') ? '最近 1 小时速度' : '最近 24 小时速度', speed(report.recentPerH), { unit: report.recentPerH == null || unknown ? '' : '点 / 时', sub: '预测主要依据' }),
+    metric('窗口开始', report.startAt ? date(report.startAt) : '未知', { sub: report.startAt ? new Date(report.startAt).getFullYear() + ' 年 · 本地时间' : '' }),
+    metric('重置时间', report.resetAt ? date(report.resetAt) : '未知', { sub: report.resetAt ? `${duration(report.resetAt - Date.now())}后` : '' })
+  ], 'two'));
+  panel.append(el('p', { class: 'quota-footnote', text: 'Token 和费用按「本机已用 ÷ 已用百分比」倒推，只统计这台电脑；在别的设备上也用这个账号时会偏低，也不是官方公布的上限。' }));
+  return panel;
+}
+/** 历史窗口的「整窗容量」折线：看官方给的总额度有没有变。 */
+function capacityChart(host, history, windowName, metric, animate) {
+  host.replaceChildren();
+  host.classList.toggle('week', windowName === 'week');
+  const points = history?.points || [];
+  if (!points.length) { host.append(empty('还没有能折算的历史窗口：需要窗口已用 ≥ 2%，并且本机在这个窗口里有用量')); return; }
+  const value = p => metric === 'costUsd' ? p.capacityCostUsd : p.capacityTokens;
+  const fmt = metric === 'costUsd' ? money : tokens;
+  const w = Math.max(320, host.clientWidth), h = host.clientHeight || 240, left = 56, right = 24, top = 18, bottom = 30;
+  const reference = points.filter(p => !p.current && p.confidence !== 'low').map(value).sort((a, b) => a - b);
+  const median = reference.length ? reference[Math.floor((reference.length - 1) / 2)] : null;
+  const max = Math.max(...points.map(value), median ?? 0) * 1.15 || 1;
+  const from = points[0].startAt, span = Math.max(1, points.at(-1).startAt - from);
+  // 两头各留 14px：点落在坐标轴上看着像被截了一半
+  const x = p => points.length === 1 ? (left + w - right) / 2 : left + 14 + (p.startAt - from) / span * (w - left - right - 28);
+  const y = v => top + (1 - v / max) * (h - top - bottom);
+  const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': windowName === 'week' ? '历史周额度容量折线' : '历史 5 小时额度容量折线' });
+  for (const f of [0, .5, 1]) {
+    const yy = y(max * f); node.append(svg('line', { class: 'grid', x1: left, x2: w - right, y1: yy, y2: yy }));
+    const label = svg('text', { class: 'axis', x: left - 9, y: yy + 4, 'text-anchor': 'end' }); label.textContent = f ? fmt(max * f) : '0'; node.append(label);
+  }
+  // 中位数的数值写在图下方的说明里：写在线尾会和「进行中」的点、标签撞在一起。
+  if (median != null) node.append(svg('line', { class: 'cap-median', x1: left, x2: w - right, y1: y(median), y2: y(median) }));
+  if (points.length > 1) node.append(svg('path', { class: 'trend-line cap-line', d: points.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(value(p)).toFixed(1)}`).join(' '), pathLength: 1, 'stroke-dasharray': 1 }));
+  const dayLabel = at => new Date(at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  points.forEach((p, i) => {
+    const text = `${date(p.startAt)} → ${date(p.resetAt)}${p.current ? '（进行中）' : ''}\n最后一次采样已用 ${percent(p.pct)}\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
+    const dot = svg('circle', { class: `cap-dot ${p.confidence === 'low' ? 'low' : 'solid'}${p.current ? ' current' : ''}`, cx: x(p), cy: y(value(p)), r: p.current ? 6 : 4.5, tabindex: 0, 'aria-label': text });
+    dot.style.animationDelay = `${Math.round(600 + i * 60)}ms`;
+    dot.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
+    dot.addEventListener('pointerleave', () => { $('tip').hidden = true; });
+    dot.addEventListener('focus', () => { const box = dot.getBoundingClientRect(); tipAt(text, box.x, box.y); });
+    dot.addEventListener('blur', () => { $('tip').hidden = true; });
+    node.append(dot);
+    if (p.current) { const tag = svg('text', { class: 'axis cap-current-label', x: x(p), y: y(value(p)) - 12, 'text-anchor': 'middle' }); tag.textContent = '进行中'; node.append(tag); }
+    if (i === 0 || i === points.length - 1 || (points.length > 6 && i === Math.floor(points.length / 2))) {
+      const tick = svg('text', { class: 'axis', x: x(p), y: h - 8, 'text-anchor': points.length === 1 ? 'middle' : i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle' });
+      tick.textContent = dayLabel(p.startAt); node.append(tick);
+    }
+  });
+  host.append(node);
+  playChart(host, animate);
+  return median == null ? null : fmt(median);
+}
+function capacityPanel(account) {
+  const host = el('div', { class: 'chart capacity-chart' });
+  const note = el('p', { class: 'sample-caption' });
+  const windowSeg = el('div', { class: 'seg compact', 'aria-label': '额度窗口' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),
+    ...[['week', '周额度'], ['five', '5 小时']].map(([id, label]) => el('button', { 'data-cap-window': id, class: state.capWindow === id ? 'on' : null, text: label }))]);
+  const metricSeg = el('div', { class: 'seg compact', 'aria-label': '单位' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),
+    ...[['tokens', 'Tokens'], ['costUsd', '费用']].map(([id, label]) => el('button', { 'data-cap-metric': id, class: state.capMetric === id ? 'on' : null, text: label }))]);
+  const draw = animate => {
+    const history = account.capacityHistory?.[state.capWindow];
+    const median = capacityChart(host, history, state.capWindow, state.capMetric, animate);
+    const { tooLow = 0, noLocal = 0 } = history?.skipped || {};
+    const skipped = [tooLow && `${tooLow} 个已用不到 2%`, noLocal && `${noLocal} 个本机没有用量（可能用在别的设备上）`].filter(Boolean);
+    note.textContent = `${median ? `已结束且较可信的窗口中位数约 ${median}（虚线）。` : ''}${skipped.length ? `未计入 ${tooLow + noLocal} 个窗口：${skipped.join('，')}。` : ''}实心点可信，空心点已用不到 5%、偏差较大。按本机用量倒推，多设备使用时会偏低。`;
+  };
+  const panel = el('article', { class: 'panel capacity-panel' }, [
+    el('div', { class: 'panel-heading' }, [
+      el('div', {}, [el('h2', { text: '额度容量趋势' }), el('p', { text: '每个历史窗口折算出的「整窗能用多少」，看官方给的总额度有没有变化' })]),
+      el('div', { class: 'capacity-controls' }, [windowSeg, metricSeg])
+    ]),
+    host, note
+  ]);
+  panel.addEventListener('click', event => {
+    const button = event.target.closest('[data-cap-window], [data-cap-metric]'); if (!button) return;
+    if (button.dataset.capWindow) state.capWindow = button.dataset.capWindow; else state.capMetric = button.dataset.capMetric;
+    for (const item of panel.querySelectorAll('[data-cap-window]')) item.classList.toggle('on', item.dataset.capWindow === state.capWindow);
+    for (const item of panel.querySelectorAll('[data-cap-metric]')) item.classList.toggle('on', item.dataset.capMetric === state.capMetric);
+    syncSegs();
+    draw(true);
+  });
+  panel.draw = draw;
   return panel;
 }
 function trendChart(host, points, animate) {
@@ -478,13 +633,15 @@ function renderQuota() {
   host.append(el('div', { class: 'quota-context' }, [
     avatar(state.account),
     el('div', {}, [el('h2', { text: meta.name + (account?.plan ? ' · ' + account.plan : '') }), el('p', { class: 'muted', text: `${number(sessions.included)} 个官方会话 · ${number(sessions.excluded)} 个中转 / API Key 会话未计入额度` })]),
-    el('div', { class: 'context-meta', text: account ? `${date(account.lastSampleAt)} 更新 · ${number(account.sampleCount)} 个采样点` : '尚无额度采样' })
+    el('div', { class: 'context-meta', text: account ? `${date(checkedAt(account))} 更新 · ${number(account.sampleCount)} 个采样点` : '尚无额度采样' })
   ]));
   if (!account) {
     host.append(el('article', { class: 'panel empty large' }, [el('h3', { text: '暂时还没有这个账号的额度数据' }), el('p', { text: `确认 ${meta.source} 已登录官方账号，然后点击「刷新数据」。` }), el('p', { text: '凭据过期或网络错误也可能导致采样失败；这不会影响本机用量统计。' })])); return;
   }
-  if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `上次采样是 ${date(account.lastSampleAt, true)}，已超过 15 分钟。以下是历史记录，当前剩余额度需刷新确认。`]));
+  if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `最后一次成功查询是 ${date(checkedAt(account), true)}，已超过 15 分钟（可能是网络不通或凭据过期）。以下是历史记录，当前剩余额度需刷新确认。`]));
   host.append(el('div', { class: 'quota-window-grid' }, [windowPanel('5 小时窗口', account.five, account), windowPanel('周额度窗口', account.week, account)]));
+  const capacity = capacityPanel(account);
+  host.append(capacity);
   const hourly = el('div', { class: 'chart' });
   const history = el('article', { class: 'panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '最近 24 小时 · 官方会话用量' })]), hourly, el('p', { class: 'sample-caption', text: '仅统计本机归属该官方账号的会话。横轴按本地时间，含当前未结束的小时。' })]);
   const trend = el('div', { class: 'chart quota-trend' });
@@ -493,6 +650,8 @@ function renderQuota() {
   const animate = entering();
   chart(hourly, account.hourly, 'tokens', true, animate);
   trendChart(trend, account.trend, animate);
+  capacity.draw(animate);
+  syncSegs();
 }
 
 /* ---------------- 用量明细 ---------------- */
@@ -530,6 +689,20 @@ function render(snapshot) {
   const first = !current;
   current = snapshot;
   if (first) enter();
+  /*
+   * 定时刷新（每分钟推送 + 每 30 秒重绘）会把额度详情、明细表、图表整块清空再重建。
+   * 清空那一刻页面变矮，浏览器把滚动位置夹到顶部附近，内容回来后也不会自己滚回去 ——
+   * 看起来就是「一刷新就被拉回最上面」。重建期间锁住主区高度，重建完还原滚动位置。
+   */
+  const main = $('main'), scrollY = window.scrollY;
+  main.style.minHeight = `${main.offsetHeight}px`;
+  try { renderPage(snapshot); }
+  finally {
+    main.style.minHeight = '';
+    if (window.scrollY !== scrollY) window.scrollTo({ top: scrollY, behavior: 'instant' });
+  }
+}
+function renderPage(snapshot) {
   if ($('app-status').getAttribute('role') !== 'alert') $('app-status').hidden = true;
   updateRange(); renderStats();
   if (state.page === 'overview') renderOverview();
@@ -543,7 +716,7 @@ function render(snapshot) {
 function navigate(page) {
   if (!['overview', 'quota', 'usage'].includes(page)) page = 'overview';
   state.page = page;
-  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与耗尽预测，集中在这里。'], usage: ['用量明细', '每一笔用量，都有迹可循', '按日期、工具与模型查看消耗，找到值得关注的变化。'] }[page];
+  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，都有迹可循', '按日期、工具与模型查看消耗，找到值得关注的变化。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
@@ -689,6 +862,67 @@ function prefRow(row, prefs) {
   const options = row.options.some(option => option.value === value) || !row.custom ? row.options : [...row.options, { value, label: row.custom(value), hint: '当前自定义值' }];
   return settingRow(row.title, row.hint, optionSelect({ id: 'pref-' + row.key, label: row.title, value, options, onChange: next => savePref(row.key, next) }));
 }
+/* ---------------- 软件更新（关于页） ---------------- */
+
+const RELEASES_URL = 'https://github.com/JohnMuyuan/TokenPulse/releases/latest';
+let updateInfo = null;
+/** 更新状态卡片：一个图标 + 一句话 + 一行说明 + 进度 / 按钮。状态由主进程推送（updater.ts）。 */
+function renderUpdate(info = updateInfo) {
+  updateInfo = info;
+  if (!info) return;
+  const current = `v${info.currentVersion}`;
+  const next = info.version ? `v${info.version}` : '';
+  const checked = info.checkedAt ? `上次检查 ${date(info.checkedAt)}` : '';
+  const view = {
+    unsupported: ['info', `当前版本 ${current}`, info.reason, 'muted'],
+    idle: ['update', `当前版本 ${current}`, info.autoUpdate ? '会在后台定期检查新版本' : '自动更新已关闭，可以手动检查', ''],
+    checking: ['update', '正在检查更新…', '连接 GitHub 发布页', 'busy'],
+    latest: ['check', `已是最新版本 ${current}`, checked, 'ok'],
+    available: ['download', `发现新版本 ${next}`, '自动更新已关闭，点「下载更新」获取', 'accent'],
+    downloading: ['download', `正在下载 ${next}`, `${info.progress ?? 0}% · 在后台进行，可以继续使用`, 'busy'],
+    downloaded: ['check', `新版本 ${next} 已下载`, info.autoUpdate ? '窗口收进托盘或最小化后会自动安装并重启，也可以现在就更新' : '点「立即重启并更新」完成安装', 'accent'],
+    error: ['alert', '检查更新失败', info.error || '稍后会自动重试', 'warn']
+  }[info.status] || ['update', `当前版本 ${current}`, '', ''];
+  const [iconName, title, sub, tone] = view;
+  const actions = [];
+  const action = (text, handler, primary = false, iconId) => {
+    const button = el('button', { class: 'btn' + (primary ? ' btn-accent' : '') }, [iconId ? icon(iconId) : null, text]);
+    button.addEventListener('click', async () => { button.disabled = true; try { renderUpdate(await handler()); } catch { /* 状态由主进程推送 */ } finally { button.disabled = false; } });
+    return button;
+  };
+  if (info.status === 'unsupported') actions.push(el('a', { class: 'btn', href: RELEASES_URL, target: '_blank', rel: 'noreferrer' }, [icon('external'), '前往 GitHub 下载']));
+  else if (info.status === 'downloaded') actions.push(action('立即重启并更新', () => api.installUpdate(), true, 'update'));
+  else if (info.status === 'available') actions.push(action('下载更新', () => api.downloadUpdate(), true, 'download'));
+  if (['idle', 'latest', 'error', 'available'].includes(info.status)) actions.push(action(info.status === 'error' ? '重试' : '检查更新', () => api.checkForUpdates(), false, 'refresh'));
+  $('update-card').className = `update-card ${tone}`.trim();
+  // replaceChildren 会把 null 当成文字「null」渲染出来，先滤掉。只有「检查中」的刷新图标转圈，下载箭头转起来是倒的。
+  $('update-card').replaceChildren(...[
+    el('span', { class: 'update-icon' + (info.status === 'checking' ? ' spinning' : '') }, [icon(iconName)]),
+    el('div', { class: 'update-text' }, [
+      el('b', { text: title }),
+      sub ? el('span', { text: sub }) : null,
+      info.status === 'downloading' ? track(info.progress ?? 0, false, '下载进度', 'five') : null
+    ]),
+    actions.length ? el('div', { class: 'update-actions' }, actions) : null
+  ].filter(Boolean));
+  // 不支持自动更新的版本（便携版 / 免安装版）不显示开关，免得误以为打开就能更新。
+  if (info.status === 'unsupported') { $('update-auto').replaceChildren(); return; }
+  if (!$('pref-autoUpdate')) {
+    $('update-auto').replaceChildren(optionSelect({
+      id: 'pref-autoUpdate', label: '自动更新', value: info.autoUpdate,
+      options: [
+        { value: true, label: '自动更新（推荐）', hint: '后台下载，窗口收起时静默安装并重启' },
+        { value: false, label: '只提醒', hint: '发现新版本时在这里提示，由你决定何时安装' }
+      ],
+      onChange: next => savePref('autoUpdate', next)
+    }));
+  }
+}
+function loadUpdateState() {
+  api.updateState?.().then(renderUpdate).catch(() => {});
+}
+api.onUpdateState?.(renderUpdate);
+
 function renderSettings(prefs) {
   $('settings-general').replaceChildren(
     settingRow('外观', '深浅色。选「跟随系统」就跟着 Windows 的设置走。', optionSelect({ id: 'pref-theme', label: '外观', value: themeMode, options: THEME_OPTIONS, onChange: setThemeMode })),
@@ -715,6 +949,8 @@ async function openSettings(tab = 'general') {
   showSettingsTab(tab);
   // 账号状态要探测 CLI，慢一点；先把设置窗口打开，列表随后填上。
   loadOfficialAccounts();
+  $('update-auto').replaceChildren();
+  loadUpdateState();
 }
 /* ---------------- 事件 ---------------- */
 
