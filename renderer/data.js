@@ -34,7 +34,8 @@
     const n = dayCount(from, to);
     const previous = select(rows, shift(from, -n), shift(from, -1), source);
     const byDay = new Map(group(selected, ['day']).map(row => [row.day, row]));
-    const daily = Array.from({ length: Math.max(0, Math.min(n, 366)) }, (_, i) => {
+    // 不再封顶 366 天：数据永久保存，「全部」可能跨好几年；图表那边再按周 / 月合并。
+    const daily = Array.from({ length: Math.max(0, n) }, (_, i) => {
       const day = shift(from, i);
       return byDay.get(day) || { day, ...empty() };
     });

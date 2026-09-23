@@ -10,7 +10,7 @@
  *   - 窗口里百分比掉下来（重置 / 用了重置次数）之前的点不能算进速度；
  *   - 采样之后已经到点重置：按新窗口从 0 算，别拿上周的 95% 报警；
  *   - 已用不到 2% 不折算整窗额度（整数百分比误差太大）；
- *   - 采样器：没变化的 15 分钟内只记一次（重置时间的亚秒抖动不算变化）、45 天前的清掉。
+ *   - 采样器：没变化的 15 分钟内只记一次（重置时间的亚秒抖动不算变化）、历史永久保留。
  */
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -204,6 +204,22 @@ try {
     check("这种情况判成健康", report.health.reason === "ok", JSON.stringify(report.health));
   }
 
+  // ---- 10b. 切换账号：只看当前账号的采样 ----
+  {
+    const samples = [
+      { at: NOW - 3 * HOUR_MS, week: 60, weekReset: iso(RESET) },
+      { at: NOW - 2 * HOUR_MS, week: 62, weekReset: iso(RESET), account: "claude:a" },
+      { at: NOW - HOUR_MS, week: 5, weekReset: iso(RESET), account: "claude:b" },
+      { at: NOW, week: 63, weekReset: iso(RESET), account: "claude:a" },
+    ];
+    const report = analyzeAccount("claude", samples, [], NOW);
+    check(
+      "切回账号 A 时不把 B 的 5% 连进曲线（否则像一小时涨了 58 点）",
+      report.trend.map((p) => p.pct).join(",") === "60,62,63" && report.sampleCount === 3,
+      JSON.stringify(report.trend.map((p) => p.pct)),
+    );
+  }
+
   // ---- 11. 采样器 ----
   {
     const t0 = Date.UTC(2026, 8, 13, 0, 0, 0);
@@ -230,7 +246,7 @@ try {
     fs.writeFileSync(file, JSON.stringify(history));
     recordQuotaSamples(map(12), t0 + 30 * 60_000);
     const after = readQuotaHistory().accounts.claude;
-    check("45 天前的采样被清掉", after.length === 4 && after[0].at === t0, after.map((s) => iso(s.at)).join(" / "));
+    check("50 天前的采样照样保留（额度历史永久保存）", after.length === 5 && after[0].at === t0 - 50 * 24 * HOUR_MS, after.map((s) => iso(s.at)).join(" / "));
   }
 } finally {
   fs.rmSync(data, { recursive: true, force: true });

@@ -9,7 +9,22 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   refresh: () => ipcRenderer.invoke("refresh"),
   readPrefs: () => ipcRenderer.invoke("prefs:read"),
   writePrefs: (patch: Record<string, unknown>) => ipcRenderer.invoke("prefs:write", patch),
+  officialAccounts: () => ipcRenderer.invoke("accounts:list"),
+  loginOfficialAccount: (kind: string) => ipcRenderer.invoke("accounts:login", kind),
+  activateOfficialAccount: (kind: string, id: string) => ipcRenderer.invoke("accounts:activate", kind, id),
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
+  /** 版本号从 package.json 来，界面上不再手写（以前每次发版都要记得改 index.html）。 */
+  version: () => ipcRenderer.invoke("app:version"),
+  /** 自绘标题栏的三个按钮（窗口是 frame: false）。 */
+  windowMinimize: () => ipcRenderer.invoke("window:minimize"),
+  windowToggleMaximize: () => ipcRenderer.invoke("window:toggle-maximize"),
+  windowClose: () => ipcRenderer.invoke("window:close"),
+  windowState: () => ipcRenderer.invoke("window:state"),
+  onWindowState: (handler: (state: { maximized: boolean }) => void) => {
+    const listener = (_event: unknown, state: { maximized: boolean }) => handler(state);
+    ipcRenderer.on("window-state", listener);
+    return () => ipcRenderer.off("window-state", listener);
+  },
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
   exportCsv: (content: string) => ipcRenderer.invoke("export-csv", content),
   onError: (handler: (message: string) => void) => {

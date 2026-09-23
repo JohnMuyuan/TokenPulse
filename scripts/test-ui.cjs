@@ -54,8 +54,35 @@ app.on('web-contents-created', (_, contents) => {
       assert.match(await evaluate("document.querySelectorAll('.quota-card')[2].textContent"), /等待新采样/);
       await evaluate("document.getElementById('settings-open').click()");
       await until("!document.getElementById('settings').hidden");
+      // 设置按 AllAi 的布局：顶部标签页、每项「标题 + 说明 + 选择器」。
+      assert.equal(await evaluate("document.querySelectorAll('#settings-tabs [data-settings-tab]').length"), 5);
+      assert.equal(await evaluate("document.querySelector('[data-panel=general]').hidden"), false);
+      assert.match(await evaluate("document.getElementById('pref-theme').textContent"), /日间|夜间|跟随系统/);
+      await evaluate("document.getElementById('pref-notifyAt').click()");
+      await until("!document.getElementById('option-menu').hidden");
+      await evaluate("document.querySelector('#option-menu [data-value=\"90\"]').click()");
+      await until("document.getElementById('prefs-status').textContent.includes('已保存')");
+      assert.equal(await evaluate("window.tokenpulse.readPrefs().then(p => p.notifyAt)"), 90);
+      assert.match(await evaluate("document.getElementById('pref-notifyAt').textContent"), /90%/);
+      await evaluate("document.querySelector('[data-settings-tab=accounts]').click()");
+      assert.equal(await evaluate("document.querySelector('[data-panel=general]').hidden"), true);
+      // 账号列表在设置窗口打开后才异步加载（要探测 CLI），先等它出来。
+      await until("document.querySelectorAll('#official-accounts .oauth-card').length === 3");
+      assert.match(await evaluate("document.getElementById('official-accounts').textContent"), /添加账号|未检测到官方 CLI/);
+      assert.doesNotMatch(await evaluate("document.getElementById('official-accounts').innerHTML"), /token|access_token|refresh/i);
+      await evaluate("document.querySelector('[data-settings-tab=about]').click()");
+      assert.ok((await evaluate("document.querySelector('.about-name').textContent")).includes('v' + require(path.join(appRoot, 'package.json')).version));
+      // 这一版去掉的：关于里的「本机 CLI」、侧栏「本机持续记录」、总览「数据只保存在本机」；「偏好设置」改叫「设置」。
+      assert.equal(await evaluate("document.body.textContent.includes('本机 CLI') || document.body.textContent.includes('本机持续记录') || document.body.textContent.includes('数据只保存在本机')"), false);
+      assert.equal(await evaluate("document.getElementById('settings-open').textContent.trim()"), '设置');
+      // 自绘标题栏：三个窗口按钮都在，颜色跟着主题变量走
+      assert.equal(await evaluate("document.querySelectorAll('#titlebar .titlebar-buttons button').length"), 3);
       await evaluate("document.getElementById('settings-close').click()");
       assert.equal(await evaluate("getComputedStyle(document.getElementById('settings')).display"), 'none');
+      // 页脚「统计口径」直接打开设置的「数据」页。
+      await evaluate("document.getElementById('methodology-open').click()");
+      await until("!document.getElementById('settings').hidden && !document.querySelector('[data-panel=data]').hidden");
+      await evaluate("document.getElementById('settings-close').click()");
       await evaluate("document.querySelector('[data-days=\"30\"]').click()");
       assert.equal(await evaluate("document.querySelectorAll('#daily-chart rect.col').length"), 30);
       console.log('PASS settings and chart buttons respond while quota is pending');
@@ -99,13 +126,52 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("document.getElementById('export-csv').disabled"), true);
       await evaluate("document.getElementById('source-filter').value='all'; document.getElementById('source-filter').dispatchEvent(new Event('change')); document.getElementById('model-search').value=''; document.getElementById('model-search').dispatchEvent(new Event('input')); document.querySelector('[data-page=overview]').click()");
       console.log('PASS search, sorting, pagination, source filtering and complete CSV export');
-      await evaluate("document.getElementById('theme-toggle').click()");
+      // 外观移进了设置 → 通用：日间 / 夜间 / 跟随系统。
+      await evaluate("document.getElementById('settings-open').click()");
+      await until("!document.getElementById('settings').hidden");
+      await evaluate("document.getElementById('pref-theme').click()");
+      await until("!document.getElementById('option-menu').hidden");
+      await evaluate("document.querySelector('#option-menu [data-value=dark]').click()");
       assert.equal(await evaluate("document.documentElement.dataset.theme"), 'dark');
       assert.equal(await evaluate("localStorage.getItem('tokenpulse-theme')"), 'dark');
-      await evaluate("document.getElementById('theme-toggle').click(); document.getElementById('custom-range-toggle').click()");
-      await evaluate(`document.getElementById('date-from').value='${dayKey(fixtureNow)}'; document.getElementById('date-to').value='${dayKey(fixtureNow)}'; document.getElementById('custom-range').requestSubmit()`);
+      await evaluate("setThemeMode('system')");
+      assert.equal(await evaluate("localStorage.getItem('tokenpulse-theme')"), 'system');
+      assert.equal(await evaluate("document.documentElement.dataset.theme"), await evaluate("matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'"));
+      await evaluate("setThemeMode('light'); document.getElementById('settings-close').click()");
+      // 夜间模式下标题栏跟着变色（系统标题栏做不到）
+      await evaluate("setThemeMode('dark')");
+      await delay(600); // 切换主题有 0.35 秒的颜色过渡
+      assert.equal(await evaluate("getComputedStyle(document.getElementById('titlebar')).backgroundColor"), 'rgb(18, 20, 25)');
+      await evaluate("setThemeMode('light')");
+      await delay(600);
+      // 时间选择器（参照 AllAi）：输入框选自定义范围
+      const today = dayKey(fixtureNow);
+      await evaluate("document.getElementById('range-button').click()");
+      assert.equal(await evaluate("document.getElementById('range-popover').hidden"), false);
+      assert.equal(await evaluate("document.querySelectorAll('#cal-grid .cal-day').length"), 42);
+      await evaluate(`const f = document.getElementById('date-from'); f.value='${today}'; f.dispatchEvent(new Event('change')); const t = document.getElementById('date-to'); t.value='${today}'; t.dispatchEvent(new Event('change')); document.getElementById('custom-range').requestSubmit()`);
+      assert.equal(await evaluate("document.getElementById('range-popover').hidden"), true);
       assert.equal(await evaluate("document.querySelectorAll('#daily-chart rect.col').length"), 1);
+      assert.match(await evaluate("document.getElementById('range-button-label').textContent"), /自定义/);
+      // 日历点选：第一下开始、第二下结束；开始晚于结束时不能确定
+      await evaluate("document.getElementById('range-button').click(); document.getElementById('range-follow').checked = false; document.getElementById('range-follow').dispatchEvent(new Event('change'))");
+      await evaluate(`document.querySelector('#cal-grid [data-day="${today}"]').click()`);
+      assert.equal(await evaluate("document.getElementById('range-apply').disabled"), true);
+      await evaluate(`document.querySelector('#cal-grid [data-day="${today}"]').click()`);
+      assert.equal(await evaluate("document.getElementById('range-apply').disabled"), false);
+      assert.equal(await evaluate("[...document.querySelectorAll('#cal-grid .cal-day')].filter(d => !d.disabled && d.dataset.day > '" + today + "').length"), 0);
+      await evaluate("document.getElementById('range-cancel').click()");
+      // 「全部」：数据永久保存，从有记录的第一天算起；不再有 366 天上限
+      await evaluate("document.querySelector('[data-days=\"all\"]').click()");
+      assert.match(await evaluate("document.getElementById('range-button-label').textContent"), /全部/);
+      // 界面测试会真的扫描本机会话，所以「全部」从本机最早的那条记录算起
+      assert.equal(await evaluate("state.from === current.usage.reduce((min, row) => row.day < min ? row.day : min, D.dayKey(Date.now())) && analysis.daily.length === D.dayCount(state.from, state.to)"), true);
+      assert.equal(await evaluate("D.analyze([], '2023-01-01', '2026-01-01').daily.length"), 1097);
+      assert.equal(await evaluate("groupDaily(D.analyze([], '2026-01-01', '2026-03-01').daily).unit"), '天');
+      assert.equal(await evaluate("groupDaily(D.analyze([], '2025-06-01', '2026-06-01').daily).unit"), '周');
+      assert.equal(await evaluate("groupDaily(D.analyze([], '2023-01-01', '2025-12-31').daily).rows.length"), 36);
       await evaluate("document.querySelector('[data-days=\"30\"]').click()");
+      assert.equal(await evaluate("document.querySelectorAll('#daily-chart rect.col').length"), 30);
       const window = BrowserWindow.fromWebContents(contents);
       window.setSize(900, 650); await delay(150);
       assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true);
@@ -114,7 +180,7 @@ app.on('web-contents-created', (_, contents) => {
         assert.equal(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, `Overflow at 900px: ${page}`);
       }
       window.setSize(1380, 920); await delay(150);
-      console.log('PASS theme persistence, custom dates and 900px layout');
+      console.log("PASS theme, title bar, AllAi-style range picker, unlimited ranges and 900px layout");
       if (process.env.TOKENPULSE_SCREENSHOT) {
         await delay(200);
         fs.writeFileSync(process.env.TOKENPULSE_SCREENSHOT, (await contents.capturePage()).toPNG());

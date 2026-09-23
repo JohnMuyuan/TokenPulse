@@ -44,13 +44,13 @@
 <td valign="top">
 
 ### 🔍 明细可查，随时导出
-按日期 + 工具 + 模型聚合，支持今天 / 7 / 30 / 60 天和自定义范围，可搜索、排序、分页。CSV 导出当前筛选下的**全部**匹配记录，不受分页限制。
+按日期 + 工具 + 模型聚合。时间选择器支持今天 / 7 / 14 / 30 / 90 天 / 全部，也可以在月历上点选任意起止日期；数据永久保存，范围不设上限。可搜索、排序、分页。CSV 导出当前筛选下的**全部**匹配记录，不受分页限制。
 
 </td>
 <td valign="top">
 
 ### 🪶 安静地待在托盘
-关掉窗口也不退出，开机自启，悬停托盘图标就能看到当前额度。浅色 / 深色主题可切换，扫描放在后台线程，不卡界面。
+关掉窗口也不退出，开机自启，悬停托盘图标就能看到当前额度。外观支持日间 / 夜间 / 跟随系统，扫描放在后台线程，不卡界面。
 
 </td>
 </tr>
@@ -85,7 +85,7 @@
 
 到 [**Releases**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) 下载最新版本：
 
-> **当前版本：v0.2.2** — 换用全新的额度环品牌图标，应用窗口、系统托盘、可执行文件与安装包保持一致。
+> **当前版本：v0.3.0** — 支持在设置中通过官方 OAuth 登录 Claude、ChatGPT 和 Grok（自动续期），并查看活动账号的额度。
 
 | 文件 | 说明 |
 |------|------|
@@ -152,10 +152,11 @@
 | 文件 | 内容 | 删除后 |
 |------|------|--------|
 | `usage-rollups.json` | 每个会话文件的扫描进度和统计结果 | 从头重扫一遍，几秒钟，不丢数据 |
-| `quota-history.json` | 官方额度采样历史（保留 45 天） | 速度和预测要重新积累，**官方不提供历史，删了就找不回来** |
+| `quota-history.json` | 官方额度采样历史（永久保留） | 速度和预测要重新积累，**官方不提供历史，删了就找不回来** |
+| `official-accounts.json` | 登记过的官方账号、活动选择，以及在 TokenPulse 里添加的账号的凭据（含 refresh token） | 回到使用各 CLI 当前登录的账号；在 TokenPulse 里添加的账号需要重新添加 |
 | `prefs.json` | 开机自启、关窗收进托盘、提醒阈值 | 恢复默认设置 |
 
-明细只按「日期 + 工具 + 模型」聚合，不读取、展示或导出会话正文。唯一的系统级副作用是开机启动项（`HKCU\...\Run\com.tokenpulse.app`），可以在设置里关闭。
+明细只按「日期 + 工具 + 模型」聚合，不读取、展示或导出会话正文。官方 CLI 自己的登录只读取、不复制；在设置里额外添加的 OAuth 账号，凭据（access token 和续期用的 refresh token）保存在本机 `~/.tokenpulse/official-accounts.json`，仅用于额度查询、不会上传，并在过期前自动续期；这个文件应按密码文件保护。CLI 自己的登录不会被 TokenPulse 续期，免得把 CLI 登出。唯一的系统级副作用是开机启动项（`HKCU\...\Run\com.tokenpulse.app`），可以在设置里关闭。
 
 ## 🛠 开发
 
@@ -164,10 +165,12 @@ npm install
 npm run icons         # 生成 packaging/icon.png 和 tray.png
 npm run dist:portable # 只编译免安装版，供本机测试
 npm start             # 编译并启动
-npm test              # 33 项额度检查 + 3 项扫描检查 + 6 组看板数据回归
+npm test              # 34 项额度检查 + 3 项扫描检查 + 6 组看板数据 + 28 项官方账号与续期检查
 npm run test:ui       # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
 npm run dist          # 重新生成图标并打包安装版与免安装版到 dist/
 ```
+
+打开「设置 → 官方账号」即可添加或切换多个官方账号。点击「添加账号」后，TokenPulse 调用对应的官方 CLI，在你的**默认浏览器**里打开官方授权页（浏览器里已登录的账号可以直接确认）；登录写进一个隔离的临时目录，不会动 CLI 自己的登录。额度查询使用「当前使用」的那个账号。
 
 TypeScript 编译到 `build/`，安装包输出到 `dist/`。开发模式下**不会写入开机启动项**，只有打包版才会真正设置自启。
 
@@ -238,3 +241,4 @@ node_modules/app-builder-bin/win/x64/app-builder.exe download-artifact --name wi
 <br>
 <sub>Made with ☕ for people who live in the terminal.</sub>
 </div>
+

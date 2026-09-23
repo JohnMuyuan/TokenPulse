@@ -3,6 +3,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { promisify } from "util";
+import { renewStoredCredentials, resolveActiveAccount } from "./accounts";
+import { curlBin, curlJson } from "./curl";
+import type { OfficialAccountKind } from "./credentials";
 import { recordQuotaSamples } from "./quota-history";
 
 /**
@@ -32,33 +35,18 @@ export type OfficialQuota = {
   weekStart?: string;
   /** 订阅档位（plus / pro …），目前只有 ChatGPT 给。 */
   plan?: string;
+  /** 查的是哪个账号（accounts.ts 的 id）。采样历史按它分开，切换账号不会把两个人的百分比连成一条线。 */
+  accountId?: string;
 };
 
-export type AccountKind = "claude" | "chatgpt" | "grok";
+export type AccountKind = OfficialAccountKind;
 export type OfficialQuotaMap = Partial<Record<AccountKind, OfficialQuota>>;
 
 let cache: { at: number; value: OfficialQuotaMap } | null = null;
 const CACHE_MS = 120_000;
 
-function curlBin() {
-  return process.platform === "win32" ? "curl.exe" : "curl";
-}
-
 function tmpName(prefix: string) {
   return path.join(os.tmpdir(), `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`);
-}
-
-async function curlJson(url: string, headers: string[], timeout = 15000) {
-  const args = ["-sS", "-m", "12", "--http1.1", url];
-  for (const header of headers) args.push("-H", header);
-  const { stdout } = await execFileAsync(curlBin(), args, {
-    timeout,
-    windowsHide: true,
-    maxBuffer: 2 * 1024 * 1024,
-  });
-  const text = stdout.trim();
-  if (!text.startsWith("{") && !text.startsWith("[")) throw new Error("not json");
-  return JSON.parse(text) as Record<string, unknown>;
 }
 
 async function curlBinary(url: string, headers: string[], bodyFile: string) {
@@ -184,10 +172,14 @@ function parseGrokResets(buf: Buffer): number | undefined {
 
 /* ---------------- 三家 ---------------- */
 
-function grokKey(): string | undefined {
-  const file = path.join(os.homedir(), ".grok", "auth.json");
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, { key?: string }>;
-  return Object.values(parsed).find((row) => row && typeof row.key === "string")?.key;
+/**
+ * 活动账号的可用凭据。没有、或已过期就返回 undefined（该账号这轮不显示），
+ * 不回退到 CLI 当前那个账号 —— 否则切换之后额度会悄悄变成另一个人的。
+ */
+function activeCredential(kind: AccountKind) {
+  const account = resolveActiveAccount(kind);
+  if (!account.credential || account.expired) return undefined;
+  return { ...account.credential, accountId: account.id, workspace: account.credential.accountId };
 }
 
 async function grokCreditsConfig(key: string) {
@@ -252,8 +244,9 @@ async function grokResetCount(key: string) {
 }
 
 async function grokQuota(): Promise<OfficialQuota | undefined> {
-  const key = grokKey();
-  if (!key) return undefined;
+  const active = activeCredential("grok");
+  if (!active) return undefined;
+  const key = active.token;
   const [config, resets] = await Promise.all([grokCreditsConfig(key), grokResetCount(key).catch(() => undefined)]);
   if (!config && resets == null) return undefined;
   return {
@@ -262,17 +255,15 @@ async function grokQuota(): Promise<OfficialQuota | undefined> {
     weekReset: config?.weekReset,
     weekStart: config?.weekStart,
     resetCredits: resets,
+    accountId: active.accountId,
   };
 }
 
 async function chatgptQuota(): Promise<OfficialQuota | undefined> {
-  const file = path.join(os.homedir(), ".codex", "auth.json");
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as {
-    tokens?: { access_token?: string; account_id?: string };
-  };
-  const token = parsed.tokens?.access_token;
-  const account = parsed.tokens?.account_id;
-  if (!token) return undefined;
+  const active = activeCredential("chatgpt");
+  if (!active) return undefined;
+  const token = active.token;
+  const account = active.workspace;
   const headers = [`Authorization: Bearer ${token}`, "Accept: application/json"];
   if (account) headers.push(`ChatGPT-Account-Id: ${account}`);
   const [usage, resets] = await Promise.all([
@@ -304,18 +295,15 @@ async function chatgptQuota(): Promise<OfficialQuota | undefined> {
     fiveHourReset: fiveResetAt ? new Date(fiveResetAt * 1000).toISOString() : undefined,
     plan: typeof usage.plan_type === "string" ? usage.plan_type : undefined,
     resetCredits,
+    accountId: active.accountId,
   };
 }
 
 async function claudeQuota(): Promise<OfficialQuota | undefined> {
-  const file = path.join(os.homedir(), ".claude", ".credentials.json");
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as {
-    claudeAiOauth?: { accessToken?: string; expiresAt?: number };
-  };
-  const token = parsed.claudeAiOauth?.accessToken;
-  if (!token) return undefined;
-  const expires = parsed.claudeAiOauth?.expiresAt;
-  if (typeof expires === "number" && expires < Date.now() + 30_000) return undefined;
+  // 过期判断在 activeCredential 里：Claude Code 只在自己被使用时才刷新 token，太久没用就会过期。
+  const active = activeCredential("claude");
+  if (!active) return undefined;
+  const token = active.token;
   const json = await curlJson("https://api.anthropic.com/api/oauth/usage", [
     `Authorization: Bearer ${token}`,
     "anthropic-beta: oauth-2025-04-20",
@@ -330,6 +318,7 @@ async function claudeQuota(): Promise<OfficialQuota | undefined> {
     weekPct: week?.pct ?? 0,
     weekReset: week?.reset,
     fiveHourReset: five?.reset,
+    accountId: active.accountId,
   };
 }
 
@@ -339,6 +328,8 @@ async function claudeQuota(): Promise<OfficialQuota | undefined> {
  */
 export async function fetchOfficialQuota(force = false): Promise<OfficialQuotaMap> {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.value;
+  // 先给快过期的 TokenPulse 账号续期，再查额度；续期失败不影响别的账号。
+  await renewStoredCredentials().catch(() => 0);
   const value: OfficialQuotaMap = {};
   const jobs: Array<() => Promise<void>> = [
     async () => {

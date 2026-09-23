@@ -32,10 +32,29 @@
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8h.01"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.7l2 2.2h7.3A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5v-10Z"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 7"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-win-min" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-win-max" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="1.5"/></symbol>
+  <symbol id="i-win-restore" viewBox="0 0 24 24"><rect x="5" y="8.5" width="10.5" height="10.5" rx="1.5"/><path d="M8.5 8.5V6.5A1.5 1.5 0 0 1 10 5h7.5A1.5 1.5 0 0 1 19 6.5V14a1.5 1.5 0 0 1-1.5 1.5h-2"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></symbol>
   <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
   <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
   <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
 </svg>
+
+<header id="titlebar" class="titlebar">
+  <span class="titlebar-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle class="brand-track" cx="12" cy="12" r="7.5"/><path class="brand-progress" d="M7.9 5.7A7.5 7.5 0 0 1 17.6 17"/><rect class="brand-bar" x="7.8" y="13.2" width="2" height="3.8" rx="1"/><rect class="brand-bar" x="11" y="10.8" width="2" height="6.2" rx="1"/><rect class="brand-bar" x="14.2" y="8" width="2" height="9" rx="1"/></svg></span>
+  <span class="titlebar-name">TokenPulse</span>
+  <div class="titlebar-buttons">
+    <button id="win-min" aria-label="最小化" title="最小化"><svg class="icon"><use href="#i-win-min"/></svg></button>
+    <button id="win-max" aria-label="最大化" title="最大化"><svg class="icon"><use href="#i-win-max"/></svg></button>
+    <button id="win-close" class="win-close" aria-label="关闭" title="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+</header>
 
 <aside class="sidebar">
   <a class="brand" href="#overview" aria-label="TokenPulse 总览">
@@ -51,18 +70,9 @@
     <button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span></button>
   </nav>
 
-  <div class="sidebar-note">
-    <div class="sidebar-note-head"><span class="live-dot"></span><b>本机持续记录</b></div>
-    <p>本地用量每分钟更新<br>官方额度每 5 分钟采样</p>
-  </div>
-
   <div class="sidebar-bottom">
-    <button id="theme-toggle" class="nav-item" title="切换主题">
-      <span class="theme-icon" aria-hidden="true"><svg class="icon moon"><use href="#i-moon"/></svg><svg class="icon sun"><use href="#i-sun"/></svg></span>
-      <span id="theme-label" class="nav-label">切换深色</span>
-    </button>
-    <button id="settings-open" class="nav-item" title="偏好设置"><svg class="icon"><use href="#i-settings"/></svg><span class="nav-label">偏好设置</span></button>
-    <div class="version">TokenPulse<span>本地数据 · v0.2.2</span></div>
+    <button id="settings-open" class="nav-item" title="设置"><svg class="icon"><use href="#i-settings"/></svg><span class="nav-label">设置</span></button>
+    <div class="version">TokenPulse<span>本地数据 · <span class="app-version"></span></span></div>
   </div>
 </aside>
 
@@ -84,7 +94,6 @@
         <h1 id="page-title">今天的用量与额度</h1>
         <p id="page-description" class="subtitle">看看还剩多少额度，再安排接下来的工作。</p>
       </div>
-      <span class="local-badge"><svg class="icon"><use href="#i-lock"/></svg>数据只保存在本机</span>
     </section>
 
     <section id="page-overview" class="page">
@@ -98,21 +107,35 @@
     </section>
 
     <div id="usage-filters" class="filterbar">
-      <div id="daily-range" class="seg" aria-label="用量时间范围">
-        <span class="seg-thumb" aria-hidden="true"></span>
-        <button data-days="1">今天</button><button data-days="7">7 天</button><button data-days="30" class="on">30 天</button><button data-days="60">60 天</button><button id="custom-range-toggle"><svg class="icon"><use href="#i-calendar"/></svg>自定义</button>
+      <div class="range-picker">
+        <button id="range-button" class="range-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="range-popover">
+          <svg class="icon"><use href="#i-calendar"/></svg><span id="range-button-label">30 天</span><svg class="icon range-chevron"><use href="#i-chevron"/></svg>
+        </button>
+        <div id="range-popover" class="range-popover" role="dialog" aria-label="时间范围" hidden>
+          <div id="range-presets" class="range-presets">
+            <button data-days="1">今天</button><button data-days="7">7 天</button><button data-days="14">14 天</button><button data-days="30" class="on">30 天</button><button data-days="90">90 天</button><button data-days="all">全部</button>
+          </div>
+          <div class="range-body">
+            <form id="custom-range" class="range-fields">
+              <label>开始日期<input id="date-from" type="date"></label>
+              <label>结束日期<input id="date-to" type="date"></label>
+              <label class="range-follow"><input id="range-follow" type="checkbox">结束日期跟随今天</label>
+              <p id="range-error" class="range-error" hidden>开始日期不能晚于结束日期</p>
+              <div class="range-actions"><button id="range-cancel" type="button" class="btn">取消</button><button id="range-apply" type="submit" class="btn btn-accent">确定</button></div>
+            </form>
+            <div class="range-calendar">
+              <div class="cal-head"><button id="cal-prev" type="button" aria-label="上个月"><svg class="icon"><use href="#i-left"/></svg></button><b id="cal-title"></b><button id="cal-next" type="button" aria-label="下个月"><svg class="icon"><use href="#i-right"/></svg></button></div>
+              <div class="cal-week"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+              <div id="cal-grid" class="cal-grid"></div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="filter-right">
         <span id="range-label" class="range-label"></span>
         <label class="sr-only" for="source-filter">筛选工具</label>
         <select id="source-filter"><option value="all">全部工具</option><option>Claude Code</option><option>Codex CLI</option><option>Grok Build</option></select>
       </div>
-      <form id="custom-range" class="custom-range" hidden>
-        <label>从 <input id="date-from" type="date" required></label>
-        <label>到 <input id="date-to" type="date" required></label>
-        <button class="btn btn-accent" type="submit">应用范围</button>
-        <span class="muted">最多 366 天</span>
-      </form>
     </div>
 
     <section id="usage-summary">
@@ -203,37 +226,72 @@
 <div id="tip" class="tooltip" role="tooltip" hidden></div>
 
 <div id="settings" class="modal" hidden>
-  <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-    <div class="modal-heading">
-      <div><p class="eyebrow">PREFERENCES</p><h2 id="settings-title">让它按你的习惯工作</h2></div>
-      <button id="settings-close" class="btn icon-only" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
+  <section class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <header class="settings-head">
+      <div><h2 id="settings-title">设置</h2><p>外观、官方账号、额度提醒和本地数据都在这里。</p></div>
+      <button id="settings-close" class="icon-circle" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
+    </header>
+    <div class="settings-tabs-wrap">
+      <div id="settings-tabs" class="seg settings-tabs" role="tablist" aria-label="设置分类">
+        <span class="seg-thumb" aria-hidden="true"></span>
+        <button role="tab" data-settings-tab="general" class="on"><svg class="icon"><use href="#i-settings"/></svg>通用</button>
+        <button role="tab" data-settings-tab="accounts"><svg class="icon"><use href="#i-user"/></svg>官方账号</button>
+        <button role="tab" data-settings-tab="alerts"><svg class="icon"><use href="#i-bell"/></svg>提醒</button>
+        <button role="tab" data-settings-tab="data"><svg class="icon"><use href="#i-folder"/></svg>数据</button>
+        <button role="tab" data-settings-tab="about"><svg class="icon"><use href="#i-info"/></svg>关于</button>
+      </div>
     </div>
-    <label class="setting-row"><span><b>开机自启</b><small>登录电脑后继续记录用量（打包版生效）</small></span><input id="pref-autoLaunch" type="checkbox" role="switch"></label>
-    <label class="setting-row"><span><b>关闭窗口时收进托盘</b><small>保留后台扫描，使用托盘菜单退出；关闭后点 × 即退出</small></span><input id="pref-closeToTray" type="checkbox" role="switch"></label>
-    <label class="setting-row"><span><b>启动时不弹窗口</b><small>手动启动也直接进入托盘</small></span><input id="pref-startMinimized" type="checkbox" role="switch"></label>
-    <label class="setting-row"><span><b>额度提醒阈值</b><small>任一窗口达到该百分比时通知；0 表示关闭</small></span><span class="number-input"><input id="pref-notifyAt" type="number" min="0" max="100" step="5">%</span></label>
-    <div class="modal-footer"><span id="prefs-status" role="status">修改后自动保存</span><button id="open-data" class="btn"><svg class="icon"><use href="#i-folder"/></svg>打开数据目录</button></div>
+
+    <div class="settings-body">
+      <section class="settings-panel" data-panel="general" role="tabpanel"><div id="settings-general"></div></section>
+
+      <section class="settings-panel" data-panel="accounts" role="tabpanel" hidden>
+        <div class="setting-block">
+          <div class="setting-title">官方账号</div>
+          <p class="setting-hint">每家可以登记多个账号，额度按「当前使用」的那个查询。点「添加账号」会用你的默认浏览器打开官方授权页，已登录的浏览器账号可以直接确认。</p>
+          <div id="official-accounts" class="official-account-list"></div>
+          <p class="account-security-note"><svg class="icon"><use href="#i-lock"/></svg>CLI 自己的登录只读取不复制，也不会被续期；在这里添加的账号，凭据（含续期用的 refresh token）保存在本机 official-accounts.json，仅用于查询额度，不会上传，并在过期前自动续期。</p>
+        </div>
+      </section>
+
+      <section class="settings-panel" data-panel="alerts" role="tabpanel" hidden><div id="settings-alerts"></div></section>
+
+      <section class="settings-panel" data-panel="data" role="tabpanel" hidden>
+        <div class="setting-block">
+          <div class="setting-title">数据位置</div>
+          <p class="setting-hint">用量账本、额度采样历史和设置都只保存在本机 <code>~/.tokenpulse/</code>，不会上传。删掉用量账本会从头重扫、不丢数据；额度采样历史官方不提供，删了就找不回来。</p>
+          <button id="open-data" class="btn"><svg class="icon"><use href="#i-folder"/></svg>打开数据目录</button>
+        </div>
+        <div class="setting-block methodology-copy">
+          <div class="setting-title">统计口径</div>
+          <h3>本机用量</h3>
+          <p>读取 Claude Code、Codex CLI、Grok Build 的会话记录。时间范围按本地自然日（含今天）计算，对比紧邻的上一段等长时间；今天尚未结束。</p>
+          <h3>输入、输出与缓存</h3>
+          <p>总 Tokens = 输入 + 输出。缓存读取和缓存写入已包含在输入中，推理 Tokens 已包含在输出中，不能再次累加。缓存读取占比 = 缓存读取 / 全部输入。</p>
+          <h3>额度与预测</h3>
+          <p>官方账号额度独立采样。平均速度按整个窗口已经过去的时间计算，包括休息时间。预测是使用节奏的参考；最近速度、最快耗尽时间和折算容量并非官方承诺。超过 15 分钟的采样标为过期，重置后需等待新采样确认。</p>
+          <h3>费用与导出</h3>
+          <p>优先使用日志自报费用，其余按项目内单价表估算。未知模型不会被当作免费。CSV 导出当前时间、工具和搜索筛选下的全部匹配明细，不受分页限制。</p>
+        </div>
+      </section>
+
+      <section class="settings-panel" data-panel="about" role="tabpanel" hidden>
+        <div class="about-hero">
+          <span class="brand-mark about-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle class="brand-track" cx="12" cy="12" r="7.5"/><path class="brand-progress" d="M7.9 5.7A7.5 7.5 0 0 1 17.6 17"/><rect class="brand-bar" x="7.8" y="13.2" width="2" height="3.8" rx="1"/><rect class="brand-bar" x="11" y="10.8" width="2" height="6.2" rx="1"/><rect class="brand-bar" x="14.2" y="8" width="2" height="9" rx="1"/><circle class="brand-node" cx="17.6" cy="17" r="1.5"/></svg></span>
+          <div><div class="about-name">TokenPulse <span class="app-version"></span></div><p>Your AI usage, at a glance. 常驻托盘，记录本机 AI CLI 的用量，盯住官方订阅额度。</p></div>
+        </div>
+        <div class="setting-block">
+          <div class="setting-title">开源与反馈</div>
+          <a class="btn" href="https://github.com/JohnMuyuan/TokenPulse" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-external"/></svg>GitHub · JohnMuyuan/TokenPulse</a>
+        </div>
+      </section>
+    </div>
+
+    <footer class="settings-foot"><span id="prefs-status" role="status">修改后自动保存</span></footer>
   </section>
 </div>
 
-<div id="methodology" class="modal" hidden>
-  <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="methodology-title">
-    <div class="modal-heading">
-      <div><p class="eyebrow">METHODOLOGY</p><h2 id="methodology-title">这些数字是怎么算的？</h2></div>
-      <button id="methodology-close" class="btn icon-only" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
-    </div>
-    <div class="methodology-copy">
-      <h3>本机用量</h3>
-      <p>读取 Claude Code、Codex CLI、Grok Build 的会话记录。时间范围按本地自然日（含今天）计算，对比紧邻的上一段等长时间；今天尚未结束。</p>
-      <h3>输入、输出与缓存</h3>
-      <p>总 Tokens = 输入 + 输出。缓存读取和缓存写入已包含在输入中，推理 Tokens 已包含在输出中，不能再次累加。缓存读取占比 = 缓存读取 / 全部输入。</p>
-      <h3>额度与预测</h3>
-      <p>官方账号额度独立采样。平均速度按整个窗口已经过去的时间计算，包括休息时间。预测是使用节奏的参考；最近速度、最快耗尽时间和折算容量并非官方承诺。超过 15 分钟的采样标为过期，重置后需等待新采样确认。</p>
-      <h3>费用与导出</h3>
-      <p>优先使用日志自报费用，其余按项目内单价表估算。未知模型不会被当作免费。CSV 导出当前时间、工具和搜索筛选下的全部匹配明细，不受分页限制。</p>
-    </div>
-  </section>
-</div>
+<div id="option-menu" class="option-menu" role="menu" hidden></div>
 
 <script src="brand.js"></script>
 <script src="data.js"></script>

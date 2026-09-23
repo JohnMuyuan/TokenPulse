@@ -239,7 +239,14 @@ function healthOf(week: WindowReport | null, five: WindowReport | null, now: num
 }
 
 export function analyzeAccount(kind: AccountKind, input: QuotaSample[], rows: HourRow[], now: number): AccountReport {
-  const samples = input.filter((sample) => Number.isFinite(sample.at) && sample.at <= now).sort((a, b) => a.at - b.at);
+  const sorted = input.filter((sample) => Number.isFinite(sample.at) && sample.at <= now).sort((a, b) => a.at - b.at);
+  /*
+   * 只看当前账号的采样。切换账号后，A 的 80% 和 B 的 10% 连成一条线：
+   * 从 B 切回 A 时像是一小时涨了 70 个点，预测直接报警。
+   * 没记账号的老采样（0.3 以前）只可能来自 CLI 当时登录的那一个，算作同一个。
+   */
+  const current = sorted.at(-1)?.account;
+  const samples = current ? sorted.filter((sample) => !sample.account || sample.account === current) : sorted;
   const latest = samples.at(-1);
 
   let week: WindowReport | null = null;

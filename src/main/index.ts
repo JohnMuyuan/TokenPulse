@@ -7,6 +7,9 @@ import type { Snapshot } from "../core/report";
 import { loadSnapshot } from "./snapshot";
 import { readPrefs, writePrefs, type Prefs } from "./prefs";
 import { trayIcon, windowIcon } from "./icon";
+import { listOfficialOAuthStatus, loginOfficialOAuth } from "./oauth";
+import { setActiveOfficialAccount } from "../core/accounts";
+import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 
 /**
  * TokenPulse 的主进程。
@@ -44,6 +47,11 @@ function createWindow() {
     show: false,
     // 跟界面主题一致，否则拉大窗口、首帧没画完时会闪一下反色的底。
     backgroundColor: BACKGROUND[readPrefs().theme],
+    /*
+     * 自己画标题栏（renderer 的 #titlebar）：系统那条跟着 Windows 的主题色走，
+     * 软件切到夜间时顶上还是一条白的，关闭按钮那一行和界面对不上。
+     */
+    frame: false,
     title: "TokenPulse",
     icon: windowIcon(),
     autoHideMenuBar: true,
@@ -71,6 +79,9 @@ function createWindow() {
   next.on("closed", () => {
     if (win === next) win = null;
   });
+  const sendState = () => next.webContents.send("window-state", { maximized: next.isMaximized() });
+  next.on("maximize", sendState);
+  next.on("unmaximize", sendState);
   return next;
 }
 
@@ -285,6 +296,10 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
   return next;
 }
 
+function isOfficialAccountKind(value: unknown): value is OfficialAccountKind {
+  return OFFICIAL_KINDS.includes(value as OfficialAccountKind);
+}
+
 /* ---------------- 启动 ---------------- */
 
 // 只允许一个实例：两个进程同时往同一个账本里写会互相覆盖。
@@ -306,12 +321,32 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("refresh", async () => refresh(true));
     ipcMain.handle("prefs:read", () => readPrefs());
     ipcMain.handle("prefs:write", (_event, patch: Partial<Prefs>) => applyPrefs(patch));
+    ipcMain.handle("accounts:list", () => listOfficialOAuthStatus());
+    ipcMain.handle("accounts:login", async (_event, kind: unknown) => {
+      if (!isOfficialAccountKind(kind)) throw new Error("官方账号类型无效");
+      const result = await loginOfficialOAuth(kind);
+      if (result.ok) backgroundRefresh(true);
+      return result;
+    });
+    ipcMain.handle("accounts:activate", async (_event, kind: unknown, id: unknown) => {
+      if (!isOfficialAccountKind(kind) || typeof id !== "string") throw new Error("官方账号参数无效");
+      setActiveOfficialAccount(kind, id);
+      backgroundRefresh(true);
+      return listOfficialOAuthStatus();
+    });
     ipcMain.handle("theme", (_event, theme: unknown) => {
       if (theme !== "light" && theme !== "dark") return;
       win?.setBackgroundColor(BACKGROUND[theme]);
       if (readPrefs().theme !== theme) writePrefs({ theme });
     });
     ipcMain.handle("open-data-dir", () => shell.openPath(dataDir()));
+    ipcMain.handle("window:minimize", () => win?.minimize());
+    ipcMain.handle("window:toggle-maximize", () => (win?.isMaximized() ? win.unmaximize() : win?.maximize()));
+    // 走 close() 而不是 destroy()：「关闭窗口时」的设置（收进托盘 / 直接退出）在 close 事件里处理。
+    ipcMain.handle("window:close", () => win?.close());
+    ipcMain.handle("window:state", () => ({ maximized: Boolean(win?.isMaximized()) }));
+    // 直接读 package.json：app.getVersion() 在测试 / 截图脚本里（electron 加载的不是本应用目录）返回的是 Electron 自己的版本。
+    ipcMain.handle("app:version", () => (require("../../package.json") as { version: string }).version);
     ipcMain.handle("export-csv", async (_event, content: unknown) => {
       if (typeof content !== "string" || Buffer.byteLength(content) > 10 * 1024 * 1024) {
         throw new Error("导出内容无效或过大");

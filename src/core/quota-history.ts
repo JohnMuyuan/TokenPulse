@@ -8,7 +8,7 @@ import type { AccountKind, OfficialQuotaMap } from "./quota";
  * 所以每次真的去问了接口（`fetchOfficialQuota` 没走缓存的那次），就在这里记一笔。
  *
  * 存 `~/.tokenpulse/quota-history.json`：
- * - 只留 45 天（额度监控最多看一周，多留点给以后画长期曲线）；
+ * - 永久保留：官方不给历史，删了就再也找不回来；
  * - 百分比和重置时间都没变的，15 分钟内只记一次 —— 否则一晚上不用也要写几百条一样的；
  *   但也不能完全不记：隔一段时间记一笔「还是这么多」，曲线上才看得出这段时间确实没涨。
  */
@@ -22,14 +22,13 @@ export type QuotaSample = {
   weekStart?: string;
   resetCredits?: number;
   plan?: string;
+  /** 哪个账号的采样（0.3 起）。更早的采样没有这一项，都来自 CLI 当时登录的账号。 */
+  account?: string;
 };
 
 export type QuotaHistory = { version: 1; accounts: Record<string, QuotaSample[]> };
 
-const KEEP_MS = 45 * 86_400_000;
 const FLAT_EVERY_MS = 15 * 60_000;
-/** 5 分钟一条、45 天也就一万出头，这个上限只防意外（比如时钟乱跳）。 */
-const MAX_PER_ACCOUNT = 20_000;
 const KINDS: AccountKind[] = ["claude", "chatgpt", "grok"];
 
 function historyFile() {
@@ -60,7 +59,8 @@ function same(a: QuotaSample, b: QuotaSample) {
     a.week === b.week &&
     sameReset(a.fiveReset, b.fiveReset) &&
     sameReset(a.weekReset, b.weekReset) &&
-    a.resetCredits === b.resetCredits
+    a.resetCredits === b.resetCredits &&
+    a.account === b.account
   );
 }
 
@@ -80,16 +80,13 @@ export function recordQuotaSamples(map: OfficialQuotaMap, now = Date.now()) {
       weekStart: quota.weekStart,
       resetCredits: quota.resetCredits,
       plan: quota.plan,
+      account: quota.accountId,
     };
     const list = (history.accounts[kind] ??= []);
     const last = list.at(-1);
     if (last && now <= last.at) continue;
     if (last && same(last, sample) && now - last.at < FLAT_EVERY_MS) continue;
     list.push(sample);
-    const cutoff = now - KEEP_MS;
-    const firstKept = list.findIndex((item) => item.at >= cutoff);
-    if (firstKept > 0) list.splice(0, firstKept);
-    if (list.length > MAX_PER_ACCOUNT) list.splice(0, list.length - MAX_PER_ACCOUNT);
     changed = true;
   }
   if (!changed) return false;

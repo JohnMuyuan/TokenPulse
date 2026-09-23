@@ -24,13 +24,13 @@ app.on('web-contents-created', (_, contents) => {
         contents.invalidate(); await pause(100);
         fs.writeFileSync(path.join(output, name + '.png'), (await contents.capturePage()).toPNG());
       };
-      await contents.executeJavaScript("if(document.documentElement.dataset.theme==='dark') document.getElementById('theme-toggle').click()");
+      await contents.executeJavaScript("setThemeMode('light')");
       await capture('overview-light');
       await capture('quota-light', "document.querySelector('[data-page=quota]').click()");
       await capture('usage-light', "document.querySelector('[data-page=usage]').click()");
-      await capture('overview-dark', "document.querySelector('[data-page=overview]').click(); document.getElementById('theme-toggle').click()");
+      await capture('overview-dark', "document.querySelector('[data-page=overview]').click(); setThemeMode('dark')");
       window.setSize(900, 650);
-      await capture('compact-light', "document.getElementById('theme-toggle').click()");
+      await capture('compact-light', "setThemeMode('light')");
       console.log('Saved 5 real-data screenshots to artifacts/ui');
       clearTimeout(timeout); app.exit(0);
     } catch (error) { console.error(error); app.exit(1); }

@@ -78,7 +78,7 @@ type FileState = {
    * undefined = 还没判断出来。
    */
   official?: boolean;
-  /** 按小时的账：`hours[整点时间戳][型号]`。只留 HOURS_KEEP_MS，额度监控用。 */
+  /** 按小时的账：`hours[整点时间戳][型号]`。额度监控用，和按天的账一样永久保留。 */
   hours?: Record<string, Record<string, UsageBucket>>;
   /** 账本结构版本，见 STATE_VERSION。 */
   v?: number;
@@ -97,10 +97,12 @@ export type UsageRollups = {
   scannedAt?: number;
 };
 
-/** 2：Codex 型号改为同时认 turn_context（旧账本里第一轮都是「未知模型」，需重扫）。 */
-const STATE_VERSION = 2;
-/** 按小时的账只留这么久：额度监控最多看一周，多留点余量。 */
-const HOURS_KEEP_MS = 40 * 86_400_000;
+/**
+ * 账本结构版本，改了解析逻辑或 bucket 结构就 +1（老账本自动重扫）。
+ * 2：Codex 型号改为同时认 turn_context（旧账本里第一轮都是「未知模型」）。
+ * 3：按小时的账不再只留 40 天，重扫一遍把已经裁掉的小时账从会话文件里补回来。
+ */
+const STATE_VERSION = 3;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -546,10 +548,8 @@ function scanFile(file: string, kind: Kind, state: FileState) {
         state.lastId = row.id;
       }
       addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
-      if (row.at >= Date.now() - HOURS_KEEP_MS) {
-        const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
-        addUsage((byModel[model] ??= emptyBucket()), row.usage);
-      }
+      const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
+      addUsage((byModel[model] ??= emptyBucket()), row.usage);
       touched = true;
     }
   }
@@ -600,10 +600,6 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     // CLI 自己清掉的老会话：账留着（那些 token 确实花过），只是不会再更新。
     for (const key of Object.keys(rollups.files)) {
       if (!alive.has(key) && !Object.keys(rollups.files[key].days).length) delete rollups.files[key];
-    }
-    const cutoff = Date.now() - HOURS_KEEP_MS;
-    for (const state of Object.values(rollups.files)) {
-      for (const key of Object.keys(state.hours ?? {})) if (Number(key) < cutoff) delete state.hours![key];
     }
     rollups.scannedAt = Date.now();
     writeRollups(rollups);

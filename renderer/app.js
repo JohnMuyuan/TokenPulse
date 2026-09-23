@@ -8,17 +8,25 @@ const META = {
   claude: { name: 'Claude', brand: 'claude', source: 'Claude Code' },
   grok: { name: 'Grok', brand: 'grok', source: 'Grok Build' }
 };
+const OAUTH_META = {
+  chatgpt: { name: 'ChatGPT', brand: 'openai' },
+  claude: { name: 'Claude', brand: 'claude' },
+  grok: { name: 'Grok', brand: 'grok' }
+};
 const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok' };
 const HEALTH = { good: '节奏正常', warning: '留意用量', serious: '可能提前耗尽', critical: '额度紧张', unknown: '暂无数据' };
-const state = { page: 'overview', days: 30, source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0 };
+const state = { page: 'overview', days: 30, follow: false, source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0 };
 const RING = 2 * Math.PI * 44;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let current = null;
 let analysis = null;
 let filteredRecords = [];
 let lastFocus = null;
-let theme = 'light';
-try { theme = localStorage.getItem('tokenpulse-theme') === 'dark' ? 'dark' : 'light'; } catch {}
+/** 外观模式：light / dark / system。存模式而不是最终颜色 —— 选「跟随系统」后，Windows 一切换深浅这边就要跟着变。 */
+const THEME_KEY = 'tokenpulse-theme';
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+let themeMode = 'light';
+try { const stored = localStorage.getItem(THEME_KEY); if (['light', 'dark', 'system'].includes(stored)) themeMode = stored; } catch {}
 
 /* ---------------- DOM 小工具 ---------------- */
 
@@ -62,6 +70,40 @@ function sourceLogo(source) {
 }
 function miniLogo(source) {
   return el('span', { class: 'mini-logo', 'aria-hidden': true }, [brandSvg(BRAND_OF_SOURCE[source])]);
+}
+
+/** 设置页的官方账号列表。数据来自主进程，不含任何凭据。 */
+function renderOfficialAccounts(statuses = []) {
+  const host = $('official-accounts');
+  host.replaceChildren(...statuses.map(status => {
+    const meta = OAUTH_META[status.kind] || { name: status.kind };
+    const add = status.installed
+      ? el('button', { class: 'btn btn-accent', 'data-account-action': 'login', 'data-account-kind': status.kind }, [icon('plus'), '添加账号'])
+      : el('span', { class: 'oauth-card-state', text: '未检测到官方 CLI' });
+    const rows = status.accounts.map(account => {
+      const state = account.needsLogin ? '需重新登录'
+        : !account.usable ? (account.autoRenew ? '等待自动续期' : '凭据已过期')
+        : account.active ? '当前使用' : account.inCli ? 'CLI 当前登录' : '已保存';
+      const action = !account.active && account.usable
+        ? el('button', { class: 'btn', 'data-account-action': 'activate', 'data-account-kind': status.kind, 'data-account-id': account.id }, ['使用'])
+        : null;
+      return el('div', { class: 'oauth-account' + (account.active ? ' active' : '') + (account.usable ? '' : ' expired') }, [
+        el('span', { class: 'oauth-account-name', text: account.email || account.label, title: account.email || account.label }),
+        account.autoRenew ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，不用重新登录' }) : null,
+        el('span', { class: 'oauth-card-state' + (account.active && account.usable ? ' ok' : !account.usable ? ' warn' : ''), text: state }),
+        action
+      ]);
+    });
+    return el('div', { class: 'oauth-card' }, [
+      el('div', { class: 'oauth-card-head' }, [avatar(status.kind), el('span', { class: 'oauth-card-title', text: meta.name }), add]),
+      rows.length ? el('div', { class: 'oauth-account-list' }, rows) : el('p', { class: 'oauth-empty', text: status.installed ? '还没有登录的账号' : '安装官方 CLI 后即可添加账号' })
+    ]);
+  }));
+}
+async function loadOfficialAccounts() {
+  $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '正在读取账号状态…' }));
+  try { renderOfficialAccounts(await api.officialAccounts()); }
+  catch { $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' })); }
 }
 
 /* ---------------- 格式化 ---------------- */
@@ -228,11 +270,22 @@ function quotaCard(kind) {
 
 /* ---------------- 用量统计 ---------------- */
 
+const PRESET_LABELS = { 1: '今天', 7: '7 天', 14: '14 天', 30: '30 天', 90: '90 天', all: '全部' };
 function updateRange() {
-  if (state.days !== 'custom') { state.to = D.dayKey(current.now); state.from = D.shift(state.to, 1 - state.days); }
+  const today = D.dayKey(current.now);
+  if (state.days === 'all') {
+    // 数据永久保存，「全部」从有记录的第一天算起。
+    state.from = (current.usage || []).reduce((min, row) => row.day < min ? row.day : min, today);
+    state.to = today;
+  } else if (state.days !== 'custom') {
+    state.to = today; state.from = D.shift(today, 1 - state.days);
+  } else if (state.follow) {
+    state.to = today;
+  }
   $('range-label').textContent = `${state.from.replaceAll('-', '.')} — ${state.to.replaceAll('-', '.')}`;
-  $('date-from').value = state.from; $('date-to').value = state.to;
-  $('date-from').max = $('date-to').max = D.dayKey(current.now);
+  $('range-button-label').textContent = state.days === 'custom'
+    ? `自定义 · ${state.from.slice(5).replace('-', '/')} → ${state.follow ? '今天' : state.to.slice(5).replace('-', '/')}`
+    : PRESET_LABELS[state.days];
   analysis = D.analyze(current.usage || [], state.from, state.to, state.source);
 }
 function delta(now, previous) {
@@ -273,6 +326,35 @@ function playChart(host, animate) {
   clearTimeout(host._enterTimer);
   host._enterTimer = setTimeout(() => host.classList.remove('chart-enter'), 2000);
 }
+/**
+ * 选「全部」或很长的自定义范围时，按天画几百上千根柱子挤成一片：超过 120 天按周合并，超过两年按月合并。
+ * 合并后的柱子带 label（悬停提示）和 tick（横轴刻度）。
+ */
+function groupDaily(daily) {
+  if (daily.length <= 120) return { rows: daily, unit: '天' };
+  const byMonth = daily.length > 730;
+  const today = D.dayKey(Date.now());
+  const groups = new Map();
+  for (const row of daily) {
+    const d = new Date(`${row.day}T12:00:00`);
+    const key = byMonth ? row.day.slice(0, 7) : D.shift(row.day, -d.getDay());
+    const hit = groups.get(key) || { day: row.day, tokens: 0, costUsd: 0, requests: 0, first: row.day, last: row.day };
+    hit.tokens += row.tokens; hit.costUsd += row.costUsd; hit.requests += row.requests; hit.last = row.day;
+    groups.set(key, hit);
+  }
+  const rows = [...groups.values()].map(row => ({
+    ...row,
+    current: row.first <= today && today <= row.last,
+    label: byMonth ? row.first.slice(0, 7).replace('-', ' 年 ') + ' 月' : `${row.first} ~ ${row.last}`,
+    tick: byMonth ? row.first.slice(2, 7).replace('-', '/') : row.first.slice(5)
+  }));
+  return { rows, unit: byMonth ? '月' : '周' };
+}
+function dailyChart(animate) {
+  const { rows, unit } = groupDaily(analysis.daily);
+  $('chart-caption').textContent = `按${unit}汇总 · 本机时间`;
+  chart($('daily-chart'), rows, state.metric, false, animate);
+}
 function chart(host, rows, metric = 'tokens', hourly = false, animate = entering()) {
   host.replaceChildren();
   if (!rows.length) { host.append(empty('所选范围暂无记录')); return; }
@@ -292,9 +374,9 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
   rows.forEach((row, i) => {
     const barHeight = Math.max(row[metric] > 0 ? 2 : 0, ((row[metric] || 0) / max) * (h - top - bottom));
     const x = left + i * slot + (slot - barWidth) / 2;
-    const label = hourly ? `${new Date(row.hour).getHours()}:00` : row.day;
+    const label = hourly ? `${new Date(row.hour).getHours()}:00` : row.label || row.day;
     const text = `${hourly ? date(row.hour) : label}\n${tokens(row.tokens)} Tokens\n${money(row.costUsd)} · ${number(row.requests)} 次请求`;
-    const rect = svg('rect', { class: 'col' + (row.day === today ? ' today' : ''), x, y: h - bottom - barHeight, width: barWidth, height: barHeight, rx: Math.min(4, barWidth / 2), tabindex: 0, 'aria-label': text });
+    const rect = svg('rect', { class: 'col' + (row.current || row.day === today ? ' today' : ''), x, y: h - bottom - barHeight, width: barWidth, height: barHeight, rx: Math.min(4, barWidth / 2), tabindex: 0, 'aria-label': text });
     rect.style.animationDelay = `${Math.round(i * step)}ms`;
     rect.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
     rect.addEventListener('pointerleave', () => { $('tip').hidden = true; });
@@ -302,7 +384,7 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
     rect.addEventListener('blur', () => { $('tip').hidden = true; });
     node.append(rect);
     if (i % Math.max(1, Math.ceil(rows.length / 7)) === 0 || i === rows.length - 1) {
-      const tick = svg('text', { class: 'axis', x: x + barWidth / 2, y: h - 6, 'text-anchor': 'middle' }); tick.textContent = hourly ? label : label.slice(5); node.append(tick);
+      const tick = svg('text', { class: 'axis', x: x + barWidth / 2, y: h - 6, 'text-anchor': 'middle' }); tick.textContent = hourly ? label : row.tick || row.day.slice(5); node.append(tick);
     }
   });
   host.append(node);
@@ -313,7 +395,7 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
 
 function renderOverview() {
   $('quota-cards').replaceChildren(...Object.keys(META).map(quotaCard));
-  chart($('daily-chart'), analysis.daily, state.metric);
+  dailyChart(entering());
   const t = analysis.total, n = analysis.daily.length || 1;
   const peak = [...analysis.daily].sort((a, b) => b.tokens - a.tokens)[0];
   $('chart-summary').replaceChildren(el('span', {}, ['日均', el('b', { text: tokens(t.tokens / n) + ' Tokens' })]), el('span', {}, ['活跃天数', el('b', { text: `${analysis.activeDays} / ${n} 天` })]));
@@ -475,52 +557,276 @@ function navigate(page) {
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 let themeTimer = 0;
+function resolvedTheme() { return themeMode === 'system' ? (darkQuery.matches ? 'dark' : 'light') : themeMode; }
 function applyTheme(animate = false) {
   if (animate && !reducedMotion.matches) {
     document.documentElement.classList.add('theme-anim');
     clearTimeout(themeTimer);
     themeTimer = setTimeout(() => document.documentElement.classList.remove('theme-anim'), 450);
   }
-  document.documentElement.dataset.theme = theme;
-  $('theme-label').textContent = theme === 'light' ? '切换深色' : '切换浅色';
-  $('theme-toggle').setAttribute('aria-label', $('theme-label').textContent);
-  $('theme-toggle').title = $('theme-label').textContent;
+  document.documentElement.dataset.theme = resolvedTheme();
   // 主进程据此设置窗口底色，避免拉伸窗口时露出另一种主题的底。
-  api.setTheme?.(theme).catch(() => {});
+  api.setTheme?.(resolvedTheme()).catch(() => {});
+}
+function setThemeMode(mode) {
+  themeMode = mode;
+  try { localStorage.setItem(THEME_KEY, mode); } catch {}
+  applyTheme(true);
 }
 
+/* ---------------- 选项选择器（设置页通用，参照 AllAi 的 OptionSelect） ---------------- */
+
+let menuOwner = null;
+function closeOptionMenu(restoreFocus = false) {
+  const menu = $('option-menu');
+  if (menu.hidden) return;
+  menu.hidden = true;
+  menuOwner?.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) menuOwner?.focus();
+  menuOwner = null;
+}
+function openOptionMenu(trigger, label, options, value, pick) {
+  closeOptionMenu();
+  const menu = $('option-menu');
+  menu.setAttribute('aria-label', label);
+  menu.replaceChildren(el('div', { class: 'option-menu-label', text: label }), ...options.map(option => {
+    const selected = option.value === value;
+    const item = el('button', { class: 'option-item', type: 'button', role: 'menuitemradio', 'aria-checked': selected, 'data-value': String(option.value), tabindex: -1 }, [
+      el('span', { class: 'option-item-text' }, [el('b', { text: option.label }), option.hint ? el('small', { text: option.hint }) : null]),
+      selected ? icon('check', 'icon option-check') : null
+    ]);
+    item.addEventListener('click', () => { closeOptionMenu(true); if (!selected) pick(option.value); });
+    return item;
+  }));
+  menu.hidden = false;
+  menuOwner = trigger;
+  trigger.setAttribute('aria-expanded', 'true');
+  // 菜单挂在 body 上、按触发按钮定位：放在设置页的滚动区里会被裁掉。
+  const rect = trigger.getBoundingClientRect(), width = Math.min(Math.max(rect.width, 280), window.innerWidth - 24);
+  menu.style.width = `${width}px`;
+  menu.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
+  const height = menu.offsetHeight;
+  menu.style.top = `${window.innerHeight - rect.bottom - 12 >= height ? rect.bottom + 6 : Math.max(12, rect.top - height - 6)}px`;
+  (menu.querySelector('[aria-checked="true"]') || menu.querySelector('.option-item'))?.focus();
+}
+function optionSelect({ id, label, options, value, onChange }) {
+  const text = el('span', { class: 'ui-select-text' });
+  const trigger = el('button', { class: 'ui-select', id, type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, [text, icon('chevron', 'icon ui-select-chevron')]);
+  const show = next => {
+    value = next;
+    text.textContent = options.find(option => option.value === next)?.label ?? '未选择';
+    trigger.setAttribute('aria-label', `${label}：${text.textContent}`);
+  };
+  show(value);
+  trigger.addEventListener('click', () => {
+    if (menuOwner === trigger) { closeOptionMenu(); return; }
+    openOptionMenu(trigger, label, options, value, async next => {
+      const previous = value;
+      show(next);
+      // onChange 返回 false 表示没保存成功，界面退回原来的值。
+      if (await onChange(next) === false) show(previous);
+    });
+  });
+  return trigger;
+}
+$('option-menu').addEventListener('keydown', event => {
+  const items = [...$('option-menu').querySelectorAll('.option-item')];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeOptionMenu(true); }
+  else if (event.key === 'Tab') { event.preventDefault(); closeOptionMenu(true); }
+  else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next]?.focus();
+  }
+});
+document.addEventListener('pointerdown', event => {
+  if (menuOwner && !$('option-menu').contains(event.target) && !menuOwner.contains(event.target)) closeOptionMenu();
+});
+window.addEventListener('scroll', event => { if (!$('option-menu').contains(event.target)) closeOptionMenu(); }, true);
+
+/* ---------------- 设置 ---------------- */
+
+const THEME_OPTIONS = [
+  { value: 'light', label: '日间', hint: '一直用浅色' },
+  { value: 'dark', label: '夜间', hint: '一直用深色' },
+  { value: 'system', label: '跟随系统', hint: '跟着 Windows 的深浅色走，系统一换这边立刻跟着变' }
+];
+/** 存进 prefs.json 的设置项。外观不在这里：它要在读 prefs 之前就生效，存在 localStorage。 */
+const PREF_ROWS = {
+  general: [
+    { key: 'closeToTray', title: '关闭窗口时', hint: '收进托盘后照常每分钟记录用量、每 5 分钟采样额度。真正退出请用托盘图标的右键菜单。', options: [
+      { value: true, label: '收进托盘继续运行', hint: '默认。后台记录不中断' },
+      { value: false, label: '直接退出', hint: '关掉窗口就结束进程，期间不记录用量' }] },
+    { key: 'autoLaunch', title: '开机自启', hint: '登录电脑后自动在托盘里开始记录。只对安装版和免安装版生效，开发模式不会写入启动项。', options: [
+      { value: true, label: '开机自动启动', hint: '默认。电脑开着就一直记' },
+      { value: false, label: '不自动启动', hint: '需要时手动打开' }] },
+    { key: 'startMinimized', title: '启动时', hint: '手动打开 TokenPulse 时是否弹出窗口。开机自启那一次总是直接进托盘。', options: [
+      { value: false, label: '显示窗口', hint: '默认' },
+      { value: true, label: '直接进入托盘', hint: '点托盘图标再打开窗口' }] }
+  ],
+  alerts: [
+    { key: 'notifyAt', title: '额度提醒', hint: '任一官方额度窗口（5 小时或每周）的已用比例达到这个值时，发一条系统通知。同一个窗口只提醒一次，重置后重新计算。', custom: value => `已用 ${value}% 时提醒`, options: [
+      { value: 0, label: '不提醒', hint: '关闭额度通知' },
+      { value: 70, label: '已用 70% 时提醒', hint: '留出充足余量' },
+      { value: 80, label: '已用 80% 时提醒' },
+      { value: 85, label: '已用 85% 时提醒', hint: '默认' },
+      { value: 90, label: '已用 90% 时提醒' },
+      { value: 95, label: '已用 95% 时提醒', hint: '快用完才提醒' }] }
+  ]
+};
+function settingRow(title, hint, control) {
+  return el('div', { class: 'setting-block' }, [el('div', { class: 'setting-title', text: title }), el('p', { class: 'setting-hint', text: hint }), control]);
+}
+async function savePref(key, value) {
+  $('prefs-status').textContent = '正在保存…';
+  try { await api.writePrefs({ [key]: value }); $('prefs-status').textContent = '设置已保存'; return true; }
+  catch { $('prefs-status').textContent = '保存失败，请检查数据目录权限'; return false; }
+}
+function prefRow(row, prefs) {
+  const value = prefs[row.key];
+  // 手改过 prefs.json、值不在预设里时，把它当成一个选项显示出来，而不是显示「未选择」。
+  const options = row.options.some(option => option.value === value) || !row.custom ? row.options : [...row.options, { value, label: row.custom(value), hint: '当前自定义值' }];
+  return settingRow(row.title, row.hint, optionSelect({ id: 'pref-' + row.key, label: row.title, value, options, onChange: next => savePref(row.key, next) }));
+}
+function renderSettings(prefs) {
+  $('settings-general').replaceChildren(
+    settingRow('外观', '深浅色。选「跟随系统」就跟着 Windows 的设置走。', optionSelect({ id: 'pref-theme', label: '外观', value: themeMode, options: THEME_OPTIONS, onChange: setThemeMode })),
+    ...PREF_ROWS.general.map(row => prefRow(row, prefs)));
+  $('settings-alerts').replaceChildren(...PREF_ROWS.alerts.map(row => prefRow(row, prefs)));
+}
+function showSettingsTab(tab) {
+  closeOptionMenu();
+  for (const button of $('settings-tabs').querySelectorAll('button')) {
+    button.classList.toggle('on', button.dataset.settingsTab === tab);
+    button.setAttribute('aria-selected', button.dataset.settingsTab === tab);
+  }
+  for (const panel of $('settings').querySelectorAll('.settings-panel')) panel.hidden = panel.dataset.panel !== tab;
+  $('settings').querySelector('.settings-body').scrollTop = 0;
+  syncSeg($('settings-tabs'));
+}
+async function openSettings(tab = 'general') {
+  let prefs;
+  try { prefs = await api.readPrefs(); }
+  catch { showStatus('设置读取失败，请重试。', true); return; }
+  renderSettings(prefs);
+  $('prefs-status').textContent = '修改后自动保存';
+  openModal('settings');
+  showSettingsTab(tab);
+  // 账号状态要探测 CLI，慢一点；先把设置窗口打开，列表随后填上。
+  loadOfficialAccounts();
+}
 /* ---------------- 事件 ---------------- */
 
 for (const slot of document.querySelectorAll('[data-brand]')) slot.append(brandSvg(slot.dataset.brand));
 applyTheme();
+darkQuery.addEventListener('change', () => { if (themeMode === 'system') applyTheme(true); });
 moveIndicator();
-$('theme-toggle').addEventListener('click', () => { theme = theme === 'light' ? 'dark' : 'light'; applyTheme(true); try { localStorage.setItem('tokenpulse-theme', theme); } catch {} });
+api.version?.().then(version => { for (const node of document.querySelectorAll('.app-version')) node.textContent = 'v' + version; }).catch(() => {});
 for (const button of document.querySelectorAll('[data-page], [data-go]')) button.addEventListener('click', () => navigate(button.dataset.page || button.dataset.go));
 document.querySelector('.brand').addEventListener('click', e => { e.preventDefault(); navigate('overview'); });
-$('daily-range').addEventListener('click', event => {
-  const button = event.target.closest('[data-days]'); if (!button) return;
-  state.days = Number(button.dataset.days); state.tablePage = 0;
-  for (const item of $('daily-range').querySelectorAll('button')) { item.classList.toggle('on', item === button); item.setAttribute('aria-pressed', item === button); }
-  $('custom-range').hidden = true;
-  syncSeg($('daily-range'));
-  if (current) { render(current); if (state.page === 'overview') playChart($('daily-chart'), true); }
-});
-$('custom-range-toggle').addEventListener('click', () => { $('custom-range').hidden = !$('custom-range').hidden; });
-$('custom-range').addEventListener('submit', event => {
-  event.preventDefault(); const from = $('date-from').value, to = $('date-to').value;
-  if (!from || !to || from > to || to > D.dayKey(Date.now()) || D.dayCount(from, to) > 366) { showStatus('请选择有效日期范围，最多 366 天，结束日期不能晚于今天。', true); return; }
-  state.from = from; state.to = to; state.days = 'custom'; state.tablePage = 0;
-  for (const button of $('daily-range').querySelectorAll('button')) button.classList.toggle('on', button.id === 'custom-range-toggle');
+const picker = { from: '', to: '', follow: false, month: '' };
+function monthOf(day) { return day.slice(0, 7); }
+function shiftMonth(month, n) { const [y, m] = month.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
+function pickerValid() { return Boolean(picker.from && picker.to && picker.from <= picker.to); }
+function renderPicker() {
+  const today = D.dayKey(Date.now());
+  if (picker.follow) picker.to = today;
+  $('date-from').value = picker.from; $('date-to').value = picker.to;
+  $('date-from').max = $('date-to').max = today;
+  $('date-to').disabled = picker.follow;
+  $('range-follow').checked = picker.follow;
+  $('range-error').hidden = !(picker.from && picker.to) || pickerValid();
+  $('range-apply').disabled = !pickerValid();
+  for (const button of $('range-presets').querySelectorAll('button')) button.classList.toggle('on', String(state.days) === button.dataset.days);
+  const [y, m] = picker.month.split('-').map(Number);
+  $('cal-title').textContent = `${y} 年 ${m} 月`;
+  $('cal-next').disabled = picker.month >= monthOf(today);
+  const first = new Date(y, m - 1, 1);
+  $('cal-grid').replaceChildren(...Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(y, m - 1, 1 - first.getDay() + i), key = D.dayKey(d.getTime());
+    const outside = d.getMonth() !== m - 1, future = key > today;
+    const edge = !outside && (key === picker.from || key === picker.to);
+    const inside = !outside && picker.from && picker.to && key > picker.from && key < picker.to;
+    const cell = el('button', { type: 'button', class: 'cal-day' + (edge ? ' edge' : inside ? ' inside' : '') + (key === today ? ' today' : ''), 'data-day': key, text: d.getDate() });
+    cell.disabled = outside || future;
+    return cell;
+  }));
+}
+function openPicker() {
+  picker.from = state.from; picker.to = state.to; picker.follow = state.days === 'custom' ? state.follow : state.days !== 'custom' && state.to === D.dayKey(Date.now());
+  picker.month = monthOf(picker.from || D.dayKey(Date.now()));
+  $('range-popover').hidden = false;
+  $('range-button').setAttribute('aria-expanded', 'true');
+  renderPicker();
+  // 按钮在页面中下部时，浮层往下展开会被窗口底边截掉：滚到能看全为止。
+  // 要等弹出动画（从 92% 放大）播完再量，否则量到的高度偏小、滚得不够。
+  const reveal = () => {
+    const overflow = $('range-popover').getBoundingClientRect().bottom - (window.innerHeight - 16);
+    if (overflow > 0) window.scrollBy({ top: overflow, behavior: reducedMotion.matches ? 'instant' : 'smooth' });
+  };
+  if (reducedMotion.matches) reveal(); else $('range-popover').addEventListener('animationend', reveal, { once: true });
+}
+function closePicker() {
+  $('range-popover').hidden = true;
+  $('range-button').setAttribute('aria-expanded', 'false');
+}
+function applyRange(days, from, to, follow = false) {
+  state.days = days; state.tablePage = 0;
+  if (days === 'custom') { state.from = from; state.to = to; state.follow = follow; }
+  closePicker();
   $('app-status').hidden = true;
   if (current) { render(current); if (state.page === 'overview') playChart($('daily-chart'), true); }
+}
+$('range-button').addEventListener('click', () => { if ($('range-popover').hidden) openPicker(); else closePicker(); });
+$('range-presets').addEventListener('click', event => {
+  const button = event.target.closest('[data-days]'); if (!button) return;
+  applyRange(button.dataset.days === 'all' ? 'all' : Number(button.dataset.days));
 });
+// 点日历：第一下定开始，第二下定结束；第二下早于开始就重新从这一天开始（和 AllAi 一样）。
+$('cal-grid').addEventListener('click', event => {
+  const key = event.target.closest('[data-day]')?.dataset.day; if (!key) return;
+  if (picker.follow) picker.from = key; // 结束日期跟着今天走，点哪天就是从哪天开始
+  else if (!picker.from || picker.to || key < picker.from) { picker.from = key; picker.to = ''; }
+  else picker.to = key;
+  renderPicker();
+});
+$('cal-prev').addEventListener('click', () => { picker.month = shiftMonth(picker.month, -1); renderPicker(); });
+$('cal-next').addEventListener('click', () => { picker.month = shiftMonth(picker.month, 1); renderPicker(); });
+$('date-from').addEventListener('change', event => { picker.from = event.target.value; if (picker.from) picker.month = monthOf(picker.from); renderPicker(); });
+$('date-to').addEventListener('change', event => { picker.to = event.target.value; if (picker.to) picker.month = monthOf(picker.to); renderPicker(); });
+$('range-follow').addEventListener('change', event => { picker.follow = event.target.checked; renderPicker(); });
+$('range-cancel').addEventListener('click', closePicker);
+$('custom-range').addEventListener('submit', event => {
+  event.preventDefault();
+  if (!pickerValid()) { renderPicker(); return; }
+  applyRange('custom', picker.from, picker.to, picker.follow);
+});
+document.addEventListener('pointerdown', event => {
+  if (!$('range-popover').hidden && !event.target.closest('.range-picker')) closePicker();
+});
+$('range-popover').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); closePicker(); $('range-button').focus(); } });
+
+/* ---------------- 标题栏（窗口 frame: false，按钮跟着主题走） ---------------- */
+
+$('win-min').addEventListener('click', () => api.windowMinimize?.());
+$('win-max').addEventListener('click', () => api.windowToggleMaximize?.());
+$('win-close').addEventListener('click', () => api.windowClose?.());
+function showWindowState(maximized) {
+  $('win-max').replaceChildren(icon(maximized ? 'win-restore' : 'win-max'));
+  $('win-max').setAttribute('aria-label', maximized ? '还原' : '最大化');
+  $('win-max').title = maximized ? '还原' : '最大化';
+}
+api.windowState?.().then(state => showWindowState(state.maximized)).catch(() => {});
+api.onWindowState?.(state => showWindowState(state.maximized));
+
 $('source-filter').addEventListener('change', event => { state.source = event.target.value; state.tablePage = 0; if (current) render(current); });
 $('chart-metric').addEventListener('click', event => {
   const button = event.target.closest('[data-metric]'); if (!button) return;
   state.metric = button.dataset.metric;
   for (const item of $('chart-metric').querySelectorAll('button')) { item.classList.toggle('on', item === button); item.setAttribute('aria-pressed', item === button); }
   syncSeg($('chart-metric'));
-  if (analysis) chart($('daily-chart'), analysis.daily, state.metric, false, true);
+  if (analysis) dailyChart(true);
 });
 $('account-tabs').addEventListener('click', event => {
   const button = event.target.closest('[data-account]'); if (!button) return;
@@ -551,34 +857,50 @@ function openModal(id) {
   $(id + '-close').focus();
 }
 function closeModal(id) {
+  closeOptionMenu();
   $(id).hidden = true; document.body.classList.remove('modal-open');
   document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = false;
   lastFocus?.focus();
 }
-for (const id of ['settings', 'methodology']) {
-  $(id + '-close').addEventListener('click', () => closeModal(id));
-  $(id).addEventListener('click', event => { if (event.target === $(id)) closeModal(id); });
-}
-$('methodology-open').addEventListener('click', () => openModal('methodology'));
-$('settings-open').addEventListener('click', async () => {
-  try { const prefs = await api.readPrefs(); for (const key of ['autoLaunch', 'closeToTray', 'startMinimized']) $('pref-' + key).checked = Boolean(prefs[key]); $('pref-notifyAt').value = prefs.notifyAt; openModal('settings'); }
-  catch { showStatus('设置读取失败，请重试。', true); }
+$('settings-close').addEventListener('click', () => closeModal('settings'));
+$('settings').addEventListener('click', event => { if (event.target === $('settings')) closeModal('settings'); });
+$('settings-tabs').addEventListener('click', event => { const button = event.target.closest('[data-settings-tab]'); if (button) showSettingsTab(button.dataset.settingsTab); });
+$('settings-open').addEventListener('click', () => openSettings());
+// 统计口径并进了设置的「数据」页。
+$('methodology-open').addEventListener('click', () => openSettings('data'));
+// 官方 OAuth 登录由 CLI 打开浏览器完成；界面只拿到成功后的账号列表，不接触 token。
+$('official-accounts').addEventListener('click', async event => {
+  const button = event.target.closest('[data-account-action]');
+  if (!button) return;
+  const { accountAction: action, accountKind: kind, accountId: id } = button.dataset;
+  const buttons = [...$('official-accounts').querySelectorAll('button')];
+  buttons.forEach(item => { item.disabled = true; });
+  $('prefs-status').textContent = action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : '正在切换活动账号…';
+  try {
+    let statuses;
+    if (action === 'login') {
+      const result = await api.loginOfficialAccount(kind);
+      if (!result?.ok) throw new Error(result?.error || 'OAuth 登录失败');
+      statuses = result.statuses;
+    } else {
+      statuses = await api.activateOfficialAccount(kind, id);
+    }
+    renderOfficialAccounts(statuses);
+    // 主进程已经在后台刷新额度；这里等它的结果，好让提示和界面同步。
+    render(await api.refresh());
+    $('prefs-status').textContent = action === 'login' ? '登录成功，已切换到新账号并刷新额度' : '已切换活动账号，额度已刷新';
+  } catch (error) {
+    $('prefs-status').textContent = String(error?.message || '账号操作失败，请重试').replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  } finally {
+    $('official-accounts').querySelectorAll('button').forEach(item => { item.disabled = false; });
+  }
 });
-for (const key of ['autoLaunch', 'closeToTray', 'startMinimized', 'notifyAt']) {
-  $('pref-' + key).addEventListener('change', async event => {
-    const input = event.target; const value = key === 'notifyAt' ? Math.min(100, Math.max(0, Number(input.value) || 0)) : input.checked;
-    input.disabled = true; $('prefs-status').textContent = '正在保存…';
-    try { const prefs = await api.writePrefs({ [key]: value }); if (key === 'notifyAt') input.value = prefs[key]; else input.checked = prefs[key]; $('prefs-status').textContent = '设置已保存'; }
-    catch { if (key !== 'notifyAt') input.checked = !value; $('prefs-status').textContent = '保存失败，请检查数据目录权限'; }
-    finally { input.disabled = false; }
-  });
-}
 $('open-data').addEventListener('click', async () => { try { const error = await api.openDataDir(); if (error) $('prefs-status').textContent = '无法打开数据目录：' + error; } catch { $('prefs-status').textContent = '无法打开数据目录'; } });
 document.addEventListener('keydown', event => {
-  const modal = ['settings', 'methodology'].find(id => !$(id).hidden); if (!modal) return;
+  const modal = ['settings'].find(id => !$(id).hidden); if (!modal || menuOwner) return;
   if (event.key === 'Escape') { event.preventDefault(); closeModal(modal); }
   if (event.key === 'Tab') {
-    const controls = [...$(modal).querySelectorAll('button:not(:disabled), input:not(:disabled)')];
+    const controls = [...$(modal).querySelectorAll('button:not(:disabled), input:not(:disabled), a[href]')].filter(item => item.offsetParent);
     if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
     else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
   }
@@ -586,9 +908,9 @@ document.addEventListener('keydown', event => {
 let width = 0;
 new ResizeObserver(() => {
   const next = $('daily-chart').clientWidth;
-  if (next && Math.abs(next - width) > 2 && analysis && state.page === 'overview') { width = next; chart($('daily-chart'), analysis.daily, state.metric, false, entering()); }
+  if (next && Math.abs(next - width) > 2 && analysis && state.page === 'overview') { width = next; dailyChart(entering()); }
 }).observe($('daily-chart'));
-window.addEventListener('resize', () => { moveIndicator(); syncSegs(); });
+window.addEventListener('resize', () => { moveIndicator(); syncSegs(); closeOptionMenu(); });
 api.onSnapshot(render);
 api.onError(message => showStatus(message, true));
 api.snapshot().then(render).catch(() => showStatus('本地数据读取失败，请点击刷新重试。', true));
