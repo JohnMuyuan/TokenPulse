@@ -72,8 +72,12 @@
 
 <table>
 <tr>
-<td><img src="artifacts/ui/quota-light.png" alt="额度详情"><p align="center"><sub>额度详情：速度、预测与容量折算</sub></p></td>
+<td><img src="artifacts/ui/quota-light.png" alt="额度详情"><p align="center"><sub>额度详情：达到上限预测、Token 与费用折算</sub></p></td>
+<td><img src="artifacts/ui/capacity-light.png" alt="额度容量趋势"><p align="center"><sub>额度容量趋势：历史窗口的总额度走势</sub></p></td>
+</tr>
+<tr>
 <td><img src="artifacts/ui/usage-light.png" alt="用量明细"><p align="center"><sub>用量明细：筛选、排序与 CSV 导出</sub></p></td>
+<td><img src="artifacts/ui/settings-light.png" alt="设置"><p align="center"><sub>设置：外观、官方账号、提醒、数据与自动更新</sub></p></td>
 </tr>
 <tr>
 <td><img src="artifacts/ui/overview-dark.png" alt="深色主题"><p align="center"><sub>深色主题</sub></p></td>
@@ -197,7 +201,7 @@ renderer/            界面：原生 JS、无构建步骤，图表为手写内�
 scripts/             测试、截图与图标生成
 ```
 
-`scripts/capture-ui.cjs` 用真实本机数据生成截图到 `artifacts/ui/`，读写都在隔离的临时目录里进行，不会改动现有账本。
+`scripts/capture-ui.cjs` 用真实本机数据生成截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`），读写都在隔离的临时目录里进行；只复制一份额度采样历史进去画预测和趋势图，不会改动现有账本，也不带任何账号凭据。
 
 </details>
 

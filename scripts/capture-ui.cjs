@@ -6,6 +6,12 @@ const path = require('node:path');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-preview-'));
 process.env.TOKENPULSE_DATA_DIR = path.join(temp, 'data');
 app.setPath('userData', path.join(temp, 'electron'));
+// 额度预测和历史折线图要靠采样历史，复制一份本机的过来（只复制采样，不带任何账号凭据）。
+const realData = path.join(os.homedir(), '.tokenpulse');
+fs.mkdirSync(process.env.TOKENPULSE_DATA_DIR, { recursive: true });
+for (const name of ['quota-history.json', 'quota-checked.json']) {
+  if (fs.existsSync(path.join(realData, name))) fs.copyFileSync(path.join(realData, name), path.join(process.env.TOKENPULSE_DATA_DIR, name));
+}
 const output = path.resolve(__dirname, '../artifacts/ui');
 fs.mkdirSync(output, { recursive: true });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -26,12 +32,16 @@ app.on('web-contents-created', (_, contents) => {
       };
       await contents.executeJavaScript("setThemeMode('light')");
       await capture('overview-light');
-      await capture('quota-light', "document.querySelector('[data-page=quota]').click()");
+      // Claude 的两个窗口都在用，预测和容量卡片都有数；容量折线图在页面下方，单独截一张。
+      await capture('quota-light', "document.querySelector('[data-page=quota]').click(); document.querySelector('#account-tabs [data-account=claude]').click()");
+      await capture('capacity-light', "document.querySelector('.capacity-panel')?.scrollIntoView({ block: 'center' })");
       await capture('usage-light', "document.querySelector('[data-page=usage]').click()");
       await capture('overview-dark', "document.querySelector('[data-page=overview]').click(); setThemeMode('dark')");
+      await capture('settings-light', "setThemeMode('light'); openSettings().then(() => document.activeElement?.blur())");
+      await contents.executeJavaScript("closeModal('settings')");
       window.setSize(900, 650);
       await capture('compact-light', "setThemeMode('light')");
-      console.log('Saved 5 real-data screenshots to artifacts/ui');
+      console.log('Saved 7 real-data screenshots to artifacts/ui');
       clearTimeout(timeout); app.exit(0);
     } catch (error) { console.error(error); app.exit(1); }
   });
