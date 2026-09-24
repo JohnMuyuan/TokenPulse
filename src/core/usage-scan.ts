@@ -3,6 +3,7 @@ import os from "os";
 import path from "path";
 import { dataFile, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
+import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, type LoginTimeline } from "./login-timeline";
 
 /**
  * 统计**这台电脑上所有** AI CLI 的 token 消耗 —— 不管那一轮是在终端里跑的、
@@ -82,6 +83,11 @@ type FileState = {
   /** 按小时的账：`hours[整点时间戳][型号]`。额度监控用，和按天的账一样永久保留。 */
   hours?: Record<string, Record<string, UsageBucket>>;
   /**
+   * 官方会话按账号拆开的小时账：`accountHours[账号][整点时间戳][型号]`。
+   * 空账号键表示流水无法归属到某个登录账号，不能拿去给某个账号折算容量。
+   */
+  accountHours?: Record<string, Record<string, Record<string, UsageBucket>>>;
+  /**
    * 客户端**请求**的型号，给请求流水做型号核验（见 request-verify.ts）。跨批次要记住：
    * - Claude Code：`attachment.identity.modelId`，会话开头写一次、换型号时再写；
    *   `session_context` 带 `changed`（reason = session_start）说明进程重新接上了这个会话，
@@ -122,8 +128,9 @@ export type UsageRollups = {
  * 3：按小时的账不再只留 40 天，重扫一遍把已经裁掉的小时账从会话文件里补回来。
  * 4：开始记每一次请求的流水（requests/*.jsonl），重扫一遍把历史请求补进去。
  * 5：流水里记下 Claude 会话自带的账号（accountRef / accountEmail），重扫补上。
+ * 6：官方小时账按账号拆分，修复多个账号的额度容量互相污染。
  */
-const STATE_VERSION = 5;
+const STATE_VERSION = 6;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -511,7 +518,15 @@ function grokCwd(file: string) {
   }
 }
 
-function scanFile(file: string, kind: Kind, state: FileState, out: ScanOutput = { records: [], rescanned: false }) {
+type AccountContext = { timeline: LoginTimeline; labels: Map<string, string> };
+
+function scanFile(
+  file: string,
+  kind: Kind,
+  state: FileState,
+  out: ScanOutput = { records: [], rescanned: false },
+  accountContext: AccountContext = { timeline: readLoginTimeline(), labels: accountLabels() },
+) {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(file);
@@ -523,6 +538,7 @@ function scanFile(file: string, kind: Kind, state: FileState, out: ScanOutput = 
     state.offset = 0;
     state.days = {};
     state.hours = {};
+    state.accountHours = {};
     state.model = undefined;
     state.lastId = undefined;
     state.requested = undefined;
@@ -626,6 +642,19 @@ function scanFile(file: string, kind: Kind, state: FileState, out: ScanOutput = 
       addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
       const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
       addUsage((byModel[model] ??= emptyBucket()), row.usage);
+      if (state.official === true) {
+        const account = resolveAccount(
+          KIND_OF_SOURCE[source],
+          row.at,
+          { ref: state.accountRef, email: state.accountEmail },
+          accountContext.timeline,
+          accountContext.labels,
+        );
+        const accountKey = account?.id ?? "";
+        const byAccount = ((state.accountHours ??= {})[accountKey] ??= {});
+        const byAccountHour = (byAccount[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
+        addUsage((byAccountHour[model] ??= emptyBucket()), row.usage);
+      }
       if (row.cwd) state.cwd = row.cwd;
       out.records.push({
         // 没有 ID 的（极少）用时间 + 型号 + token 凑一个，重读时还是同一个键
@@ -682,6 +711,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     const alive = new Set<string>();
     const official = configOfficial();
     const codex = codexAuthContext((rollups.codexProviders ??= {}));
+    const accountContext: AccountContext = { timeline: readLoginTimeline(), labels: accountLabels() };
     let changed = 0;
     let files = 0;
     const out: ScanOutput = { records: [], rescanned: false };
@@ -693,8 +723,11 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
         applyAttribution(file, kind, state, official, codex);
         // 大小和改动时间都没变就跳过（新文件记的是 0，不会误判成没变）。
         const stat = safeStat(file);
-        if (stat && state.v === STATE_VERSION && stat.size === state.size && stat.mtimeMs === state.mtimeMs) continue;
-        if (scanFile(file, kind, state, out)) changed += 1;
+        const needsAccountHours =
+          state.official === true &&
+          (!state.accountHours || (Object.keys(state.accountHours).length === 0 && Object.keys(state.hours ?? {}).length > 0));
+        if (stat && state.v === STATE_VERSION && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours) continue;
+        if (scanFile(file, kind, state, out, accountContext)) changed += 1;
       }
     }
     // CLI 自己清掉的老会话：账留着（那些 token 确实花过），只是不会再更新。

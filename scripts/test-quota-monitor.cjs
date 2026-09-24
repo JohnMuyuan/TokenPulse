@@ -220,6 +220,24 @@ try {
     );
   }
 
+  // ---- 10b2. 切换账号：容量和预测也只看当前账号的本机用量 ----
+  {
+    const samples = [
+      { at: NOW - 2 * HOUR_MS, week: 10, weekReset: iso(RESET), account: "claude:a" },
+      { at: NOW, week: 20, weekReset: iso(RESET), account: "claude:a" },
+    ];
+    const rows = [
+      { hour: NOW - HOUR_MS, model: "claude-opus-5", tokens: 100, costUsd: 1, requests: 1, account: "claude:a" },
+      { hour: NOW - HOUR_MS, model: "claude-opus-5", tokens: 10_000, costUsd: 100, requests: 1, account: "claude:b" },
+    ];
+    const report = analyzeAccount("claude", samples, rows, NOW);
+    check(
+      "账号 A 的额度容量只按账号 A 的本机用量折算",
+      report.week.usedTokens === 100 && near(report.week.capacity.tokens, 500),
+      JSON.stringify({ usedTokens: report.week.usedTokens, capacity: report.week.capacity }),
+    );
+  }
+
   // ---- 10c. 用最近趋势预测，不让整窗平均掩盖当前节奏 ----
   {
     const samples = hourlySamples(10, 40, 50);
@@ -322,6 +340,23 @@ try {
     recordQuotaSamples(map(12), t0 + 30 * 60_000);
     const after = readQuotaHistory().accounts.claude;
     check("50 天前的采样照样保留（额度历史永久保存）", after.length === 5 && after[0].at === t0 - 50 * 24 * HOUR_MS, after.map((s) => iso(s.at)).join(" / "));
+
+    // 0.3.3：一家好几个账号同时查。采样交错排在一起，去重要跟同一个账号的上一条比
+    const t1 = t0 + 60 * 60_000;
+    const two = (a, b) => ({ all: [
+      { kind: "grok", name: "Grok 账号", weekPct: a, weekReset: iso(t1 + WEEK_MS), accountId: "grok:a" },
+      { kind: "grok", name: "Grok 账号", weekPct: b, weekReset: iso(t1 + WEEK_MS), accountId: "grok:b" },
+    ] });
+    recordQuotaSamples(two(10, 50), t1);
+    recordQuotaSamples(two(10, 50), t1 + 5 * 60_000);
+    const grok = readQuotaHistory().accounts.grok;
+    check("两个账号各记一条，互不打断去重", grok.length === 2 && grok[0].account === "grok:a" && grok[1].account === "grok:b", JSON.stringify(grok.map((s) => s.account)));
+    recordQuotaSamples(two(10, 51), t1 + 6 * 60_000);
+    check("只有变了的那个账号多记一条", readQuotaHistory().accounts.grok.length === 3 && readQuotaHistory().accounts.grok.at(-1).account === "grok:b");
+    const checks = readQuotaChecks();
+    check("每个账号各自记最后一次查询成功的时间", checks.accounts["grok:a"] === t1 + 6 * 60_000 && checks.accounts["grok:b"] === t1 + 6 * 60_000);
+    const onlyA = analyzeAccount("grok", readQuotaHistory().accounts.grok.filter((s) => s.account === "grok:a"), [], t1 + 7 * 60_000, { at: checks.accounts["grok:a"], account: "grok:a" });
+    check("按账号分开的采样各自出报告", onlyA.accountId === "grok:a" && onlyA.week && Math.round(onlyA.week.used) === 10);
   }
 } finally {
   fs.rmSync(data, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 import { dataFile, readJson, writeJson } from "./paths";
-import type { AccountKind, OfficialQuotaMap } from "./quota";
+import type { AccountKind, OfficialQuota, OfficialQuotaMap } from "./quota";
 
 /**
  * 官方额度的历史采样，额度监控靠它算「消耗速度」「预计什么时候用完」。
@@ -71,7 +71,10 @@ function same(a: QuotaSample, b: QuotaSample) {
  * 于是额度一不动（= 用户没在用），最后一条采样就落后 15–20 分钟，明明每 5 分钟都查成功了却显示「采样已过期」。
  * 过期要看的是「最后一次查询成功」，这里每次都更新；单独一个小文件，免得每 5 分钟重写整份历史。
  */
-export type QuotaChecks = Partial<Record<AccountKind, { at: number; account?: string }>>;
+export type QuotaChecks = Partial<Record<AccountKind, { at: number; account?: string }>> & {
+  /** 0.3.3 起一家可以同时查好几个账号：每个账号各自最后一次查询成功的时间。 */
+  accounts?: Record<string, number>;
+};
 
 function checksFile() {
   return dataFile("quota-checked.json");
@@ -82,23 +85,29 @@ export function readQuotaChecks(): QuotaChecks {
   return parsed && typeof parsed === "object" ? parsed : {};
 }
 
+/** 这一轮查到的所有账号：有 all 用 all（0.3.3 起），否则按家各取一份（老调用方式、测试）。 */
+function quotasOf(map: OfficialQuotaMap): Array<OfficialQuota & { kind: AccountKind }> {
+  const list = map.all ?? KINDS.map((kind) => (map[kind] ? { ...map[kind]!, kind } : undefined));
+  return list.filter((quota): quota is OfficialQuota & { kind: AccountKind } =>
+    Boolean(quota?.kind && KINDS.includes(quota.kind) && (quota.weekPct != null || quota.fiveHourPct != null)),
+  );
+}
+
 /** 记一轮采样。返回有没有真的写（采样历史）文件；查询成功时间每次都更新。 */
 export function recordQuotaSamples(map: OfficialQuotaMap, now = Date.now()) {
+  const quotas = quotasOf(map);
   const checks = readQuotaChecks();
-  let checked = false;
-  for (const kind of KINDS) {
-    const quota = map[kind];
-    if (!quota || (quota.weekPct == null && quota.fiveHourPct == null)) continue;
-    checks[kind] = { at: now, account: quota.accountId };
-    checked = true;
+  for (const quota of quotas) {
+    // 按家那一项留给老版本读：记排在最前的那个账号
+    if (!checks[quota.kind] || checks[quota.kind]!.at !== now) checks[quota.kind] = { at: now, account: quota.accountId };
+    if (quota.accountId) (checks.accounts ??= {})[quota.accountId] = now;
   }
-  if (checked) writeJson(checksFile(), checks);
+  if (quotas.length) writeJson(checksFile(), checks);
 
   const history = readQuotaHistory();
   let changed = false;
-  for (const kind of KINDS) {
-    const quota = map[kind];
-    if (!quota || (quota.weekPct == null && quota.fiveHourPct == null)) continue;
+  for (const quota of quotas) {
+    const kind = quota.kind;
     const sample: QuotaSample = {
       at: now,
       five: quota.fiveHourPct,
@@ -111,7 +120,9 @@ export function recordQuotaSamples(map: OfficialQuotaMap, now = Date.now()) {
       account: quota.accountId,
     };
     const list = (history.accounts[kind] ??= []);
-    const last = list.at(-1);
+    // 同一家好几个账号的采样交错排在一起：去重要和**同一个账号**的上一条比
+    let last: QuotaSample | undefined;
+    for (let i = list.length - 1; i >= 0 && !last; i--) if (list[i].account === sample.account) last = list[i];
     if (last && now <= last.at) continue;
     if (last && same(last, sample) && now - last.at < FLAT_EVERY_MS) continue;
     list.push(sample);

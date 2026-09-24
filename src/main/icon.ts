@@ -13,7 +13,8 @@ function iconPath(name: string) {
 }
 
 export function windowIcon() {
-  return nativeImage.createFromPath(iconPath("icon.png"));
+  const ico = nativeImage.createFromPath(iconPath("icon.ico"));
+  return ico.isEmpty() ? nativeImage.createFromPath(iconPath("icon.png")) : ico;
 }
 
 /**

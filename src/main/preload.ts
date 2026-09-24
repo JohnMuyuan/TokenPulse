@@ -11,7 +11,10 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   writePrefs: (patch: Record<string, unknown>) => ipcRenderer.invoke("prefs:write", patch),
   officialAccounts: () => ipcRenderer.invoke("accounts:list"),
   loginOfficialAccount: (kind: string) => ipcRenderer.invoke("accounts:login", kind),
-  activateOfficialAccount: (kind: string, id: string) => ipcRenderer.invoke("accounts:activate", kind, id),
+  /** 账号管理：remove 删除（CLI 还登录着的只是藏起来），restore 恢复藏起来的，rename 改名（空字符串 = 去掉名字）。 */
+  manageOfficialAccount: (action: "remove" | "restore" | "rename", id: string, alias?: string) => ipcRenderer.invoke("accounts:manage", action, id, alias),
+  /** 拖拽排序：这一家账号的新顺序。 */
+  reorderOfficialAccounts: (kind: string, ids: string[]) => ipcRenderer.invoke("accounts:reorder", kind, ids),
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
   /** 版本号从 package.json 来，界面上不再手写（以前每次发版都要记得改 index.html）。 */
   version: () => ipcRenderer.invoke("app:version"),
@@ -38,6 +41,20 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   exportCsv: (content: string, kind?: "requests") => ipcRenderer.invoke("export-csv", content, kind),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */
   requests: (query: Record<string, unknown>) => ipcRenderer.invoke("requests:query", query),
+  /** 会话管理：列表、详情（只读本机 CLI 的会话文件）。 */
+  sessions: () => ipcRenderer.invoke("sessions:list"),
+  sessionDetail: (kind: string, id: string) => ipcRenderer.invoke("sessions:detail", kind, id),
+  copySessionProject: (kind: string, id: string) => ipcRenderer.invoke("sessions:copy-project", kind, id),
+  copyText: (text: string) => ipcRenderer.invoke("sessions:copy-text", text),
+  /** 在 TokenPulse 里直接回复：返回 runId，过程通过 onSessionReply 推回来。 */
+  replySession: (kind: string, id: string, prompt: string, mode: "readonly" | "edit") => ipcRenderer.invoke("sessions:reply", kind, id, prompt, mode),
+  stopSessionReply: (runId: string) => ipcRenderer.invoke("sessions:reply-stop", runId),
+  onSessionReply: (handler: (event: unknown) => void) => {
+    const listener = (_event: unknown, event: unknown) => handler(event);
+    ipcRenderer.on("session-reply", listener);
+    return () => ipcRenderer.off("session-reply", listener);
+  },
+  openSessionTerminal: (kind: string, id: string) => ipcRenderer.invoke("sessions:terminal", kind, id),
   /** 模型知识库（型号单价和等价规则）：当前版本、上次检查；手动检查更新。 */
   knowledgeState: () => ipcRenderer.invoke("knowledge:state"),
   checkKnowledge: () => ipcRenderer.invoke("knowledge:check"),

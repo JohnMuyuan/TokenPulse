@@ -5,15 +5,18 @@ import path from "path";
 import { promisify } from "util";
 import {
   accountIdOf,
-  fresherCredential,
   readOfficialAccountStore,
   rememberOfficialAccount,
+  removeOfficialAccount,
+  renameOfficialAccount,
   renewStoredCredentials,
-  resolveActiveAccount,
-  setActiveOfficialAccount,
+  reorderOfficialAccounts,
+  resolveAccountCredential,
+  restoreOfficialAccount,
 } from "../core/accounts";
 import { OFFICIAL_KINDS, cliDir, isExpired, readCliAccounts, type OfficialAccountKind } from "../core/credentials";
 import { dataDir } from "../core/paths";
+import { cleanAgentEnv } from "./session-reply";
 
 /**
  * 设置页的官方账号管理：探测 CLI、调用官方 CLI 做 OAuth 登录、给界面一份**不含凭据**的账号列表。
@@ -30,6 +33,8 @@ export type AccountView = {
   id: string;
   email: string;
   label: string;
+  /** 用户起的名字（没有就是空）。 */
+  alias: string;
   /** CLI 当前正登录着它。 */
   inCli: boolean;
   /** 有可用（未过期）的凭据，能查额度。 */
@@ -38,7 +43,8 @@ export type AccountView = {
   autoRenew: boolean;
   /** 续期被官方拒绝，只能重新登录。 */
   needsLogin: boolean;
-  active: boolean;
+  /** 删掉了、但 CLI 还登录着，只是藏起来（见 accounts.ts 的 hidden）。 */
+  hidden: boolean;
 };
 export type OfficialOAuthStatus = {
   kind: OfficialAccountKind;
@@ -122,7 +128,8 @@ function loginArgs(kind: OfficialAccountKind) {
  * 实测只设这三个变量，三家都读不到真实登录，真实的 ~/.claude.json 也不会被改。
  */
 export function isolatedEnv(tempHome: string, base: NodeJS.ProcessEnv = process.env) {
-  const env: NodeJS.ProcessEnv = { ...base };
+  // 从别的 Agent 终端里启动时继承的会话标记也去掉（见 session-reply.ts 的 cleanAgentEnv）
+  const env: NodeJS.ProcessEnv = cleanAgentEnv(base);
   // 官方登录不能被用户环境里的 API Key / 中转地址带偏。
   for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "XAI_API_KEY", "XAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete env[key];
   env.CLAUDE_CONFIG_DIR = cliDir("claude", tempHome);
@@ -177,9 +184,8 @@ async function runLogin(kind: OfficialAccountKind): Promise<LoginResult> {
     while (Date.now() < Math.min(deadline, graceUntil)) {
       const current = signature(kind, tempHome);
       if (current && current !== before) {
-        let id = "";
-        for (const account of readCliAccounts(kind, tempHome)) id = rememberOfficialAccount(account, true);
-        if (id) setActiveOfficialAccount(kind, id);
+        // 登录进来的账号排在这一家的最后；以前删过 / 藏过的同一个账号会恢复
+        for (const account of readCliAccounts(kind, tempHome)) rememberOfficialAccount(account, true);
         return { ok: true, statuses: await listOfficialOAuthStatus() };
       }
       if (exited && graceUntil === Infinity) graceUntil = Date.now() + 3_000;
@@ -220,23 +226,42 @@ export async function listOfficialOAuthStatus(now = Date.now()): Promise<Officia
       }
     }
     const store = readOfficialAccountStore();
-    const active = resolveActiveAccount(kind, now, live, store);
-    const liveIds = new Set(live.map((item) => accountIdOf(kind, item.ref)));
     const accounts = store.accounts
       .filter((item) => item.kind === kind)
       .map((item) => {
-        const liveHit = live.find((row) => accountIdOf(kind, row.ref) === item.id);
+        const { credential, inCli } = resolveAccountCredential(item, now, live);
         return {
           id: item.id,
           email: item.email,
           label: item.label,
-          inCli: liveIds.has(item.id),
-          usable: !isExpired(fresherCredential(liveHit?.credential, item.credential, now), now),
+          alias: item.alias ?? "",
+          inCli,
+          usable: !isExpired(credential, now),
           autoRenew: Boolean(item.credential?.refreshToken) && !item.renewFailed,
-          needsLogin: Boolean(item.renewFailed) && !liveHit,
-          active: item.id === active.id,
+          needsLogin: Boolean(item.renewFailed) && !inCli,
+          hidden: Boolean(item.hidden),
         };
       });
     return { kind, label: LABELS[kind], installed: Boolean(installed[index]), accounts };
   });
+}
+
+/**
+ * 设置里的账号管理：删除、恢复、改名。返回新的账号列表。
+ * 删除时要知道 CLI 现在是不是还登录着它（那样只能藏起来），这个由这里现读，不信界面传来的。
+ */
+export async function manageOfficialAccount(action: "remove" | "restore" | "rename", id: string, alias = "") {
+  const store = readOfficialAccountStore();
+  const target = store.accounts.find((item) => item.id === id);
+  if (!target) throw new Error("找不到这个官方账号");
+  if (action === "rename") renameOfficialAccount(id, alias);
+  else if (action === "restore") restoreOfficialAccount(id);
+  else removeOfficialAccount(id, readCliAccounts(target.kind).some((item) => accountIdOf(target.kind, item.ref) === id));
+  return listOfficialOAuthStatus();
+}
+
+/** 拖拽排序：这一家账号的新顺序。 */
+export async function reorderOfficialAccountsOf(kind: OfficialAccountKind, ids: string[]) {
+  reorderOfficialAccounts(kind, ids);
+  return listOfficialOAuthStatus();
 }

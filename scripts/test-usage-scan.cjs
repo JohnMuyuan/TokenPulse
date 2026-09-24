@@ -59,6 +59,26 @@ try {
   check("第一轮按 turn_context 记型号，不是「未知模型」", !models["未知模型"] && models["codex-auto-review"] === 1, JSON.stringify(models));
   check("换型号的下一轮跟着 turn_context 走", models["gpt-5.6-sol"] === 1, JSON.stringify(models));
   check("没有 thread_settings_applied 的会话也认得型号", models["gpt-6-astra"] === 1, JSON.stringify(models));
+
+  // 官方小时账按账号拆分：后续额度容量不能把别的账号的请求算进来。
+  const loginTimeline = require(path.join(__dirname, "..", "build", "core", "login-timeline.js"));
+  const claudeHome = path.join(process.env.HOME, ".claude");
+  fs.mkdirSync(path.join(claudeHome, "projects", "fixture"), { recursive: true });
+  fs.writeFileSync(path.join(claudeHome, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "claude-token", refreshToken: "claude-refresh" } }));
+  fs.writeFileSync(path.join(process.env.HOME, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "uuid-a", emailAddress: "a@example.com" } }));
+  const claudeAt = new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(
+    path.join(claudeHome, "projects", "fixture", "session.jsonl"),
+    JSON.stringify({ type: "assistant", timestamp: claudeAt, requestId: "req-claude-1", message: { id: "msg-claude-1", model: "claude-opus-5", usage: { input_tokens: 100, output_tokens: 10 } } }) + "\n",
+  );
+  loginTimeline.recordCliLogins(Date.now());
+  scanLocalUsage();
+  const claudeState = Object.values(readRollups().files).find((state) => state.kind === "claude-code");
+  check(
+    "官方小时账记录账号维度",
+    claudeState?.accountHours?.["claude:uuid-a"] && Object.keys(claudeState.accountHours["claude:uuid-a"]).length === 1,
+    JSON.stringify(Object.keys(claudeState?.accountHours ?? {})),
+  );
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

@@ -1,3 +1,4 @@
+import { threadId } from "worker_threads";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -17,7 +18,8 @@ export function dataFile(name: string) {
  */
 export function writeJson(file: string, value: unknown) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  // 几个 worker 线程共用一个 pid（比如扫描顺手预热会话索引时，用户正好打开会话页），临时文件名要带上线程号
+  const tmp = `${file}.${process.pid}.${threadId}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value));
   fs.renameSync(tmp, file);
 }

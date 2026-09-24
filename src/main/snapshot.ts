@@ -2,6 +2,7 @@ import path from "path";
 import { Worker } from "worker_threads";
 import type { Snapshot } from "../core/report";
 import type { RequestPage, RequestQuery } from "../core/request-log";
+import type { SessionDetail, SessionSummary } from "../core/sessions";
 
 /** 一次任务一个 worker，完成后自动退出；失败会传回调用方，不留下悬空的 IPC。 */
 function runWorker<T>(workerData: Record<string, unknown>): Promise<T> {
@@ -27,4 +28,13 @@ export function loadSnapshot(scan: boolean, ccSwitch = false): Promise<Snapshot>
 /** 请求流水查询。流水按月分文件，读几个月的量在主线程上会卡界面。 */
 export function loadRequests(query: RequestQuery): Promise<RequestPage> {
   return runWorker<RequestPage>({ query });
+}
+
+/** 会话列表和详情也放到 worker，读取几十个 Agent 会话文件时不阻塞窗口。 */
+export function loadSessions(): Promise<SessionSummary[]> {
+  return runWorker<SessionSummary[]>({ sessions: "list" });
+}
+
+export function loadSessionDetail(kind: string, id: string): Promise<SessionDetail | null> {
+  return runWorker<SessionDetail | null>({ sessions: "detail", kind, id });
 }

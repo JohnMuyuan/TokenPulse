@@ -46,3 +46,39 @@ test('real snapshot exports aggregated usage with matching totals and exact 7-da
   assert.equal(s.daily.length, 60); assert.equal(s.daily.at(-1).day, '2026-09-22');
   assert.equal(s.usage.some(r => 'path' in r || 'content' in r), false);
 });
+test('quota reports: one per account, in settings order, hidden / removed skipped, old samples join the first account', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-multi-'));
+  process.env.TOKENPULSE_DATA_DIR = dir;
+  const { buildSnapshot } = require('../build/core/report.js');
+  const now = new Date(2026, 8, 22, 12).getTime(), h = 3600000;
+  const reset = new Date(now + 3 * 24 * h).toISOString();
+  const sample = (at, week, account) => ({ at, week, weekReset: reset, ...(account ? { account } : {}) });
+  fs.writeFileSync(path.join(dir, 'usage-rollups.json'), JSON.stringify({ version: 1, files: {} }));
+  fs.writeFileSync(path.join(dir, 'quota-history.json'), JSON.stringify({ version: 1, accounts: {
+    grok: [sample(now - 5 * h, 10), sample(now - 4 * h, 12, 'grok:a'), sample(now - 3 * h, 40, 'grok:b'), sample(now - 2 * h, 70, 'grok:c'), sample(now - h, 5, 'grok:d')],
+    claude: [sample(now - h, 30)]
+  } }));
+  const account = (ref, extra = {}) => ({ id: `grok:${ref}`, kind: 'grok', ref, email: `${ref}@example.com`, label: ref, createdAt: now, lastSeenAt: now, ...extra });
+  // 设置里的顺序：b 在 a 前面；c 被藏起来；d 被删掉
+  fs.writeFileSync(path.join(dir, 'official-accounts.json'), JSON.stringify({ version: 2, active: {}, removed: ['grok:d'], accounts: [account('b'), account('a'), account('c', { hidden: true })] }));
+  const s = buildSnapshot(now);
+  const grok = s.accounts.filter(r => r.kind === 'grok');
+  assert.deepEqual(grok.map(r => r.key), ['grok:b', 'grok:a']);
+  assert.ok(grok.every(r => r.siblings === 2));
+  assert.deepEqual(grok.map(r => r.displayName), ['b', 'a']);
+  // 没记账号的老采样归给最早出现的账号 a
+  assert.equal(grok.find(r => r.key === 'grok:a').sampleCount, 2);
+  // 一个带账号的采样都没有的家：单独一份，键是家名
+  const claude = s.accounts.filter(r => r.kind === 'claude');
+  assert.equal(claude.length, 1); assert.equal(claude[0].key, 'claude'); assert.equal(claude[0].siblings, 1);
+  assert.equal(claude[0].displayName ?? '', '');
+  // 短名字撞车：ada@one 和 ada@two 不能都显示成 ada；起了别名的用别名；不撞的仍用 @ 前面
+  fs.writeFileSync(path.join(dir, 'official-accounts.json'), JSON.stringify({ version: 2, active: {}, accounts: [
+    account('b', { email: 'ada@one.com' }),
+    account('d', { email: 'ada@three.com' }),
+    account('a', { email: 'ada@two.com', alias: '工作' }),
+    account('c', { email: 'eve@two.com' }),
+  ] }));
+  const named = buildSnapshot(now).accounts.filter(r => r.kind === 'grok');
+  assert.deepEqual(named.map(r => r.displayName), ['ada@one.com', 'ada@three.com', '工作', 'eve']);
+});

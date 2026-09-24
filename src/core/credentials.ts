@@ -80,7 +80,17 @@ export function jwtClaims(token: string): Record<string, any> {
   }
 }
 
-function tokenRef(token: string) {
+/** Grok 账号的用户 ID：auth.json 的 user_id，没有就取 token（JWT）的 sub —— 本机实测两者相同。 */
+export function grokUserOf(token: string, userId?: unknown) {
+  return str(userId) || str(jwtClaims(token).sub);
+}
+
+/** 0.3.3 之前 Grok 账号的 ref 是 auth.json 的键（「https://auth.x.ai::client id」），不分用户。 */
+export function isLegacyGrokRef(ref: string) {
+  return ref.includes("::");
+}
+
+export function tokenRef(token: string) {
   return "token:" + createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 
@@ -129,10 +139,13 @@ function grokAccounts(home: string): CliAccount[] {
   const parsed = readJsonFile(authFile("grok", home));
   if (!parsed || typeof parsed !== "object") return [];
   const out: CliAccount[] = [];
-  for (const [ref, row] of Object.entries<any>(parsed)) {
+  for (const row of Object.values<any>(parsed)) {
     const token = str(row?.key);
     if (!token) continue;
     const email = str(row.email);
+    // 身份用用户 ID。auth.json 的键是「签发方::客户端 ID」（https://auth.x.ai::<Grok CLI 的 client id>），
+    // 谁登录都一样 —— 0.3.3 之前拿它当身份，第二个 Grok 账号一登录就把第一个顶掉了。
+    const ref = grokUserOf(token, row.user_id) || tokenRef(str(row.refresh_token) || token);
     const expires = Date.parse(str(row.expires_at));
     out.push({
       kind: "grok",

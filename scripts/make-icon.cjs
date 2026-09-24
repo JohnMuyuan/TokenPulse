@@ -49,6 +49,59 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
+/**
+ * ICO 里的传统位图（BITMAPINFOHEADER + 自下而上的 BGRA + AND 掩码）。
+ * 小尺寸不能直接塞 PNG：GDI+ 和 Electron 读窗口图标时把 PNG 当位图解，出来是满屏彩色噪点（任务栏上像「星空」）。
+ * 只有 256 那张按惯例用 PNG。
+ */
+function encodeDib(size, rgba) {
+  const header = Buffer.alloc(40);
+  header.writeUInt32LE(40, 0);
+  header.writeInt32LE(size, 4);
+  header.writeInt32LE(size * 2, 8); // 高度含 AND 掩码，所以是两倍
+  header.writeUInt16LE(1, 12);
+  header.writeUInt16LE(32, 14);
+  const pixels = Buffer.alloc(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const from = (y * size + x) * 4;
+      const to = ((size - 1 - y) * size + x) * 4;
+      pixels[to] = rgba[from + 2];
+      pixels[to + 1] = rgba[from + 1];
+      pixels[to + 2] = rgba[from];
+      pixels[to + 3] = rgba[from + 3];
+    }
+  }
+  // 32 位图靠 alpha 通道，AND 掩码全 0 即可；每行按 4 字节对齐
+  const mask = Buffer.alloc(Math.ceil(size / 32) * 4 * size);
+  return Buffer.concat([header, pixels, mask]);
+}
+
+// Windows 任务栏 / 快捷方式优先读取 ICO，用多尺寸让系统按缩放比例选择清晰的一张。
+function encodeIco(images) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // icon
+  header.writeUInt16LE(images.length, 4);
+  const directory = Buffer.alloc(images.length * 16);
+  let offset = 6 + directory.length;
+  const payloads = [];
+  images.forEach(({ size, png }, index) => {
+    const entry = index * 16;
+    directory[entry] = size >= 256 ? 0 : size;
+    directory[entry + 1] = size >= 256 ? 0 : size;
+    directory[entry + 2] = 0;
+    directory[entry + 3] = 0;
+    directory.writeUInt16LE(1, entry + 4);
+    directory.writeUInt16LE(32, entry + 6);
+    directory.writeUInt32LE(png.length, entry + 8);
+    directory.writeUInt32LE(offset, entry + 12);
+    payloads.push(png);
+    offset += png.length;
+  });
+  return Buffer.concat([header, directory, ...payloads]);
+}
+
 function canvas(size) {
   return { size, data: new Float32Array(size * size * 4) };
 }
@@ -227,5 +280,6 @@ fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, "tray-color.png"), encodePng(32, 32, drawColorTray(32)));
 fs.writeFileSync(path.join(OUT, "tray-color-16.png"), encodePng(16, 16, drawSmallTray()));
 fs.writeFileSync(path.join(OUT, "icon.png"), encodePng(512, 512, drawAppIcon(512)));
+fs.writeFileSync(path.join(OUT, "icon.ico"), encodeIco([16, 24, 32, 48, 64, 128, 256].map(size => { const rgba = drawAppIcon(size); return { size, png: size >= 256 ? encodePng(size, size, rgba) : encodeDib(size, rgba) }; })));
 fs.writeFileSync(path.join(OUT, "tray.png"), encodePng(32, 32, drawTrayIcon(32)));
-console.log("TokenPulse icon.png (512) + tray.png (32) →", OUT);
+console.log("TokenPulse icon.png (512) + icon.ico + tray icons →", OUT);

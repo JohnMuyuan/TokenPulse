@@ -1,6 +1,6 @@
 {
   "name": "tokenpulse",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
@@ -10,7 +10,7 @@
     "start": "npm run compile && electron .",
     "dev": "npm run compile && electron . --dev",
     "icons": "node scripts/make-icon.cjs",
-    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs",
+    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs && node scripts/test-sessions.cjs",
     "test:ui": "npm run compile && electron scripts/test-ui.cjs",
     "dist:portable": "npm run icons && npm run compile && electron-builder --win portable --publish never",
     "dist": "npm run icons && npm run compile && electron-builder --publish never",
@@ -34,7 +34,8 @@
         "from": "packaging",
         "to": "packaging",
         "filter": [
-          "*.png"
+          "*.png",
+          "*.ico"
         ]
       }
     ],

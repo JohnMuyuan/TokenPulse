@@ -150,6 +150,18 @@ try {
   check("英文词典里没有漏翻的中文", Object.values(EN).every((en) => !/[\u4e00-\u9fff]/.test(en) || /简体中文/.test(en)));
   check("不含中文的内容（型号、路径、数字）原样不动", translate("claude-opus-5 · D:\\work · 1,234") === "claude-opus-5 · D:\\work · 1,234");
   check("模板都能编译", PATTERNS.every(([re]) => re instanceof RegExp));
+
+  /* ---------------- 窗口图标 ---------------- */
+  // 小尺寸必须是传统位图：塞 PNG 的话 Electron / GDI+ 读出来是彩色噪点，任务栏上像「星空」
+  const ico = fs.readFileSync(path.join(__dirname, "..", "packaging", "icon.ico"));
+  const entries = Array.from({ length: ico.readUInt16LE(4) }, (_, i) => {
+    const at = 6 + i * 16;
+    const size = ico[at] || 256;
+    const offset = ico.readUInt32LE(at + 12);
+    return { size, png: ico.subarray(offset, offset + 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47])), dib: ico.readUInt32LE(offset) === 40 };
+  });
+  check("icon.ico 各尺寸都在，256 以下都是位图", [16, 32, 48, 256].every((size) => entries.some((entry) => entry.size === size))
+    && entries.every((entry) => (entry.size >= 256 ? entry.png : entry.dib)), entries.map((entry) => `${entry.size}:${entry.png ? "png" : entry.dib ? "bmp" : "?"}`).join(" "));
 } catch (error) {
   console.error(error);
   results.push(false);

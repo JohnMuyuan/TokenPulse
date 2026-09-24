@@ -3,9 +3,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { promisify } from "util";
-import { renewStoredCredentials, resolveActiveAccount } from "./accounts";
+import { rememberOfficialAccount, renewStoredCredentials, resolveAccountCredential, visibleAccounts } from "./accounts";
 import { curlBin, curlJson } from "./curl";
-import type { OfficialAccountKind } from "./credentials";
+import { readCliAccounts, type OfficialAccountKind } from "./credentials";
 import { recordQuotaSamples } from "./quota-history";
 
 /**
@@ -23,6 +23,7 @@ import { recordQuotaSamples } from "./quota-history";
 const execFileAsync = promisify(execFile);
 
 export type OfficialQuota = {
+  kind?: AccountKind;
   name: string;
   fiveHourPct?: number;
   weekPct?: number;
@@ -40,7 +41,11 @@ export type OfficialQuota = {
 };
 
 export type AccountKind = OfficialAccountKind;
-export type OfficialQuotaMap = Partial<Record<AccountKind, OfficialQuota>>;
+/**
+ * 每家一份（该家排第一的账号，老代码和测试按家取）+ all：所有账号的，按设置里的顺序。
+ * 0.3.3 起一家可以同时查好几个账号。
+ */
+export type OfficialQuotaMap = Partial<Record<AccountKind, OfficialQuota>> & { all?: OfficialQuota[] };
 
 let cache: { at: number; value: OfficialQuotaMap } | null = null;
 const CACHE_MS = 120_000;
@@ -172,14 +177,29 @@ function parseGrokResets(buf: Buffer): number | undefined {
 
 /* ---------------- 三家 ---------------- */
 
+/** 查一个账号要用的：token、ChatGPT 的工作区、账号 id（采样历史按它分开）。 */
+type Target = { token: string; workspace?: string; accountId: string };
+
 /**
- * 活动账号的可用凭据。没有、或已过期就返回 undefined（该账号这轮不显示），
- * 不回退到 CLI 当前那个账号 —— 否则切换之后额度会悄悄变成另一个人的。
+ * 这一家所有要查的账号。CLI 现在登录的先登记进账号库（和设置页一样），再按设置里的顺序取没隐藏的；
+ * 凭据没有或已过期的这轮跳过（设置页会标出来），不拿别的账号的凭据顶替。
  */
-function activeCredential(kind: AccountKind) {
-  const account = resolveActiveAccount(kind);
-  if (!account.credential || account.expired) return undefined;
-  return { ...account.credential, accountId: account.id, workspace: account.credential.accountId };
+function targetsOf(kind: AccountKind, now = Date.now()): Target[] {
+  const live = readCliAccounts(kind);
+  for (const account of live) {
+    try {
+      rememberOfficialAccount(account, false, now);
+    } catch {
+      // 数据目录只读：照样查，只是记不住名字
+    }
+  }
+  const out: Target[] = [];
+  for (const account of visibleAccounts(kind)) {
+    const { credential, expired } = resolveAccountCredential(account, now, live);
+    if (!credential || expired) continue;
+    out.push({ token: credential.token, workspace: credential.accountId, accountId: account.id });
+  }
+  return out;
 }
 
 async function grokCreditsConfig(key: string) {
@@ -243,9 +263,7 @@ async function grokResetCount(key: string) {
   }
 }
 
-async function grokQuota(): Promise<OfficialQuota | undefined> {
-  const active = activeCredential("grok");
-  if (!active) return undefined;
+async function grokQuota(active: Target): Promise<OfficialQuota | undefined> {
   const key = active.token;
   const [config, resets] = await Promise.all([grokCreditsConfig(key), grokResetCount(key).catch(() => undefined)]);
   if (!config && resets == null) return undefined;
@@ -259,9 +277,7 @@ async function grokQuota(): Promise<OfficialQuota | undefined> {
   };
 }
 
-async function chatgptQuota(): Promise<OfficialQuota | undefined> {
-  const active = activeCredential("chatgpt");
-  if (!active) return undefined;
+async function chatgptQuota(active: Target): Promise<OfficialQuota | undefined> {
   const token = active.token;
   const account = active.workspace;
   const headers = [`Authorization: Bearer ${token}`, "Accept: application/json"];
@@ -299,10 +315,8 @@ async function chatgptQuota(): Promise<OfficialQuota | undefined> {
   };
 }
 
-async function claudeQuota(): Promise<OfficialQuota | undefined> {
-  // 过期判断在 activeCredential 里：Claude Code 只在自己被使用时才刷新 token，太久没用就会过期。
-  const active = activeCredential("claude");
-  if (!active) return undefined;
+async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
+  // 过期判断在 targetsOf 里：Claude Code 只在自己被使用时才刷新 token，太久没用就会过期。
   const token = active.token;
   const json = await curlJson("https://api.anthropic.com/api/oauth/usage", [
     `Authorization: Bearer ${token}`,
@@ -331,27 +345,21 @@ export async function fetchOfficialQuota(force = false): Promise<OfficialQuotaMa
   // 先给快过期的 TokenPulse 账号续期，再查额度；续期失败不影响别的账号。
   await renewStoredCredentials().catch(() => 0);
   const value: OfficialQuotaMap = {};
-  const jobs: Array<() => Promise<void>> = [
-    async () => {
-      const claude = await claudeQuota();
-      if (claude) value.claude = claude;
-    },
-    async () => {
-      const chatgpt = await chatgptQuota();
-      if (chatgpt) value.chatgpt = chatgpt;
-    },
-    async () => {
-      const grok = await grokQuota();
-      if (grok) value.grok = grok;
-    },
-  ];
-  await Promise.all(
-    jobs.map((job) =>
-      job().catch(() => {
-        // 额度接口不是每次都能通（没登录、token 过期、网络不好）：这家就没有，别影响别家。
-      }),
+  const query = { claude: claudeQuota, chatgpt: chatgptQuota, grok: grokQuota };
+  // 所有账号一起查；结果按「家 → 设置里的顺序」排好，第一个也放进 value[家] 给按家取的地方用
+  const jobs = (["claude", "chatgpt", "grok"] as AccountKind[]).flatMap((kind) =>
+    targetsOf(kind).map((target) =>
+      query[kind](target).then(
+        (quota) => (quota ? { ...quota, kind } : undefined),
+        // 额度接口不是每次都能通（token 过期、网络不好）：这个账号这轮就没有，别影响别的。
+        () => undefined,
+      ),
     ),
   );
+  const all: OfficialQuota[] = [];
+  for (const quota of await Promise.all(jobs)) if (quota) all.push(quota);
+  value.all = all;
+  for (const quota of all) if (quota.kind && !value[quota.kind]) value[quota.kind] = quota;
   cache = { at: Date.now(), value };
   try {
     recordQuotaSamples(value);

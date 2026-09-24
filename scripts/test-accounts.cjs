@@ -166,6 +166,109 @@ try {
   write(path.join(process.env.TOKENPULSE_DATA_DIR, "official-accounts.json"), { version: 1, accounts: [{ id: "claude:default", kind: "claude", credentialRef: "default", email: "", label: "x", createdAt: 1, lastSeenAt: 1 }], active: { claude: "claude:default" } });
   check("1 版账号库（Claude 全叫 default）直接丢弃，重新识别", accounts.readOfficialAccountStore().accounts.length === 0);
 
+  // ---- Grok 多账号 ----
+  // auth.json 的键是「签发方::客户端 ID」，谁登录都一样；0.3.3 之前拿它当身份，第二个账号把第一个顶掉。
+  const GROK_KEY = "https://auth.x.ai::00000000-0000-4000-8000-00000000c1d0";
+  const grokHome = (home, user, email) => write(path.join(home, ".grok", "auth.json"), {
+    [GROK_KEY]: { key: jwt({ sub: user, exp: NOW / 1000 + 6 * 3600 }), user_id: user, email, refresh_token: `r-${user}`, expires_at: new Date(NOW + 6 * HOUR).toISOString() },
+  });
+  grokHome(path.join(root, "grok-a"), "user-a", "a@example.com");
+  grokHome(path.join(root, "grok-b"), "user-b", "b@example.com");
+  const grokA = creds.readCliAccounts("grok", path.join(root, "grok-a"))[0];
+  const grokB = creds.readCliAccounts("grok", path.join(root, "grok-b"))[0];
+  check("Grok 账号的身份是用户 ID，不是 auth.json 的键", grokA.ref === "user-a" && grokB.ref === "user-b", `${grokA.ref} / ${grokB.ref}`);
+  fs.rmSync(path.join(process.env.TOKENPULSE_DATA_DIR, "official-accounts.json"), { force: true });
+  accounts.rememberOfficialAccount(grokA, false, NOW);
+  accounts.rememberOfficialAccount(grokB, true, NOW);
+  const grokStored = accounts.readOfficialAccountStore().accounts.filter((item) => item.kind === "grok");
+  check("登第二个 Grok 账号不会顶掉第一个", grokStored.length === 2 && grokStored.some((item) => item.email === "a@example.com") && grokStored.some((item) => item.email === "b@example.com"));
+  // 没有 user_id 时退到 token 的 sub
+  write(path.join(root, "grok-c", ".grok", "auth.json"), { [GROK_KEY]: { key: jwt({ sub: "user-c" }), email: "c@example.com" } });
+  check("没有 user_id 时用 token 的 sub", creds.readCliAccounts("grok", path.join(root, "grok-c"))[0].ref === "user-c");
+
+  // ---- 旧版 Grok 数据迁移 ----
+  const { migrateLegacyGrokAccounts } = build("core/grok-migrate.js");
+  const legacyId = `grok:${GROK_KEY}`;
+  const dataPath = (name) => path.join(process.env.TOKENPULSE_DATA_DIR, name);
+  // 本机实测的样子：一条旧记录，名字是 CLI 当前账号 A 的，存的凭据却是后来在 TokenPulse 里登录的 B 的
+  accounts.writeOfficialAccountStore({ version: 2, active: { grok: legacyId }, accounts: [
+    { id: legacyId, kind: "grok", ref: GROK_KEY, email: "a@example.com", label: "a@example.com", credential: { token: jwt({ sub: "user-b" }), refreshToken: "r-b", expiresAt: NOW + HOUR }, createdAt: 1, lastSeenAt: 2 },
+    { id: "claude:x", kind: "claude", ref: "x", email: "", label: "x", createdAt: 1, lastSeenAt: 1 },
+  ] });
+  write(dataPath("cli-logins.json"), { version: 1, kinds: { grok: [{ from: 1, id: legacyId, email: "a@example.com", label: "a" }] } });
+  write(dataPath("quota-history.json"), { version: 1, accounts: { grok: [{ at: 1, week: 10, account: legacyId }, { at: 2, week: 11 }] } });
+  const moved = migrateLegacyGrokAccounts(() => [grokA]);
+  const migrated = accounts.readOfficialAccountStore();
+  const accountB = migrated.accounts.find((item) => item.id === "grok:user-b");
+  check("迁移：旧记录按凭据的主人变成独立账号，凭据留着", moved === 1 && accountB && accountB.credential.refreshToken === "r-b" && !migrated.accounts.some((item) => item.id === legacyId));
+  check("迁移：邮箱不是凭据主人的就不沿用（留空，重新登录补上）", accountB.email === "" && accountB.label === "Grok 账号");
+  check("迁移：CLI 当前账号马上按新身份登记（不存凭据）", migrated.accounts.some((item) => item.id === "grok:user-a" && item.email === "a@example.com" && !item.credential));
+  check("迁移：活动账号指向凭据的主人；别家账号不动", migrated.active.grok === "grok:user-b" && migrated.accounts.some((item) => item.id === "claude:x"));
+  const spans = JSON.parse(fs.readFileSync(dataPath("cli-logins.json"), "utf8")).kinds.grok;
+  const samples = JSON.parse(fs.readFileSync(dataPath("quota-history.json"), "utf8")).accounts.grok;
+  check("迁移：登录时间线和额度采样的旧 id 记作 CLI 当前账号", spans[0].id === "grok:user-a" && samples[0].account === "grok:user-a" && samples[1].account === undefined);
+  const before = fs.statSync(dataPath("official-accounts.json")).mtimeMs;
+  check("迁移只做一次：再跑什么都不写", migrateLegacyGrokAccounts(() => [grokA]) === 0 && fs.statSync(dataPath("official-accounts.json")).mtimeMs === before);
+
+  // ---- 账号管理：排序、删除、隐藏、恢复（0.3.3） ----
+  {
+    const store = { version: 2, accounts: [], active: {} };
+    const add = (kind, ref, extra = {}) => store.accounts.push({ id: `${kind}:${ref}`, kind, ref, email: `${ref}@example.com`, label: ref, createdAt: NOW, lastSeenAt: NOW, ...extra });
+    add("grok", "g1", { credential: { token: "tg1", refreshToken: "rg1" } });
+    add("claude", "c1");
+    add("grok", "g2");
+    add("grok", "g3", { credential: { token: "tg3" } });
+    accounts.writeOfficialAccountStore(store);
+    const grokIds = () => accounts.visibleAccounts("grok").map((item) => item.ref).join(",");
+    check("每家按登记顺序列出，三家混放互不影响", grokIds() === "g1,g2,g3" && accounts.visibleAccounts("claude").length === 1);
+    accounts.reorderOfficialAccounts("grok", ["grok:g3", "grok:g1", "grok:g2"]);
+    check("拖拽排序：只重排这一家占的位置，别家的账号不动", grokIds() === "g3,g1,g2" && accounts.readOfficialAccountStore().accounts[1].kind === "claude", grokIds());
+    const stale = (ids) => { try { accounts.reorderOfficialAccounts("grok", ids); return false; } catch { return true; } };
+    check("顺序列表对不上（少了、多了、重复）就报错，不去猜", stale(["grok:g3", "grok:g1"]) && stale(["grok:g3", "grok:g1", "grok:g1"]) && stale(["grok:g3", "grok:g1", "grok:x"]) && grokIds() === "g3,g1,g2");
+
+    accounts.renameOfficialAccount("grok:g2", "  工作   号 ");
+    check("重命名：多余空白收起来", accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g2").alias === "工作 号");
+    accounts.renameOfficialAccount("grok:g2", "x".repeat(80));
+    check("名字最长 40 个字", accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g2").alias.length === 40);
+    accounts.renameOfficialAccount("grok:g2", "g2@example.com");
+    check("改成和邮箱一样 / 清空就是去掉名字", accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g2").alias === undefined);
+    accounts.renameOfficialAccount("grok:g2", "备用");
+    const { accountLabels, resolveAccount } = build("core/login-timeline.js");
+    const labels = accountLabels();
+    check("显示名用别名", labels.get("grok:g2") === "备用");
+    check("按邮箱对账号时不受别名影响，对上后显示别名", resolveAccount("grok", NOW, { email: "G2@example.com" }, { version: 1, kinds: {} }, labels)?.id === "grok:g2" && resolveAccount("grok", NOW, { email: "g2@example.com" }, { version: 1, kinds: {} }, labels)?.label === "备用");
+
+    accounts.removeOfficialAccount("grok:g3", false);
+    const afterRemove = accounts.readOfficialAccountStore();
+    check("删除 TokenPulse 登录的账号：账号和凭据一起删，记进 removed", !afterRemove.accounts.some((item) => item.id === "grok:g3") && afterRemove.removed.includes("grok:g3"));
+    accounts.rememberOfficialAccount({ kind: "grok", ref: "g3", email: "", label: "g3", credential: { token: "cli" } }, false, NOW);
+    check("删掉的账号，只读 CLI 时不会被登记回来", !accounts.readOfficialAccountStore().accounts.some((item) => item.id === "grok:g3"));
+    accounts.rememberOfficialAccount({ kind: "grok", ref: "g3", email: "", label: "g3", credential: { token: "new" } }, true, NOW);
+    const relogin = accounts.readOfficialAccountStore();
+    check("在 TokenPulse 里重新登录就回来了，removed 里去掉", relogin.accounts.some((item) => item.id === "grok:g3") && !(relogin.removed || []).includes("grok:g3"));
+
+    accounts.removeOfficialAccount("grok:g1", true);
+    const hidden = accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g1");
+    check("CLI 还登录着的账号删不掉，只藏起来，TokenPulse 存的凭据删掉", hidden?.hidden === true && !hidden.credential && !grokIds().includes("g1"), grokIds());
+    accounts.rememberOfficialAccount({ kind: "grok", ref: "g1", email: "", label: "g1", credential: { token: "cli" } }, false, NOW);
+    check("读 CLI 不会把藏起来的账号放出来", accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g1").hidden === true);
+    const seen = accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g2").lastSeenAt;
+    accounts.rememberOfficialAccount({ kind: "grok", ref: "g2", email: "", label: "g2", credential: { token: "ignored" } }, false, NOW + 60_000);
+    const again = accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g2");
+    check("邮箱和名字都没变就不再写账号库（额度轮询每 5 分钟会登记一次）", again.lastSeenAt === seen && again.alias === "备用");
+    accounts.restoreOfficialAccount("grok:g1");
+    check("恢复后回到原来的位置（g3 删掉后重新登录，排到最后）", grokIds() === "g1,g2,g3", grokIds());
+    check("找不到的账号报错，不会悄悄什么都不做", (() => { try { accounts.renameOfficialAccount("grok:nope", "x"); return false; } catch { return true; } })());
+
+    // 每个账号自己的凭据：CLI 正登录着它就用 CLI 的（更新时），否则用存的
+    const g2 = accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g2");
+    const resolved = accounts.resolveAccountCredential(g2, NOW, [{ kind: "grok", ref: "g2", email: "", label: "", credential: { token: "live-g2", expiresAt: NOW + HOUR } }]);
+    check("CLI 正登录着的账号用 CLI 文件里的凭据", resolved.credential.token === "live-g2" && resolved.inCli && !resolved.expired);
+    const g3 = accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g3");
+    check("CLI 没登录的账号用 TokenPulse 存的凭据", accounts.resolveAccountCredential(g3, NOW, []).credential.token === "new");
+    accounts.writeOfficialAccountStore({ version: 2, accounts: [], active: {} });
+  }
+
   // ---- 登录隔离 ----
   const temp = path.join(root, "oauth-temp");
   const real = { USERPROFILE: "C:\\real", APPDATA: "C:\\real\\Roaming", LOCALAPPDATA: "C:\\real\\Local" };
