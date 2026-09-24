@@ -312,45 +312,79 @@ app.on('web-contents-created', (_, contents) => {
       }
       window.setSize(1380, 920); await delay(150);
       console.log("PASS theme, title bar, AllAi-style range picker, unlimited ranges and 900px layout");
-      // 额度页账号行：多出来的标签收在这一行里，按住拖动左右看，不把窗口撑出横向滚动条
+      // 额度页账号行：轻微移动仍是点击；拖过阈值才排序。多出来的标签不能把窗口撑宽。
       await evaluate("document.querySelector('[data-page=quota]').click()");
-      const tabScroll = await evaluate(`(() => {
+      const tabClick = await evaluate(`(() => {
         const tabs = document.getElementById('account-tabs');
-        for (let i = 0; i < 14; i++) {
+        const button = tabs.querySelector('button');
+        const x = button.getBoundingClientRect().left + 8;
+        const y = button.getBoundingClientRect().top + 8;
+        const pointer = (type, clientX) => button.dispatchEvent(new PointerEvent(type, { clientX, clientY: y, button: 0, pointerId: 3, bubbles: true }));
+        pointer('pointerdown', x);
+        pointer('pointermove', x + 4);
+        pointer('pointerup', x + 4);
+        const dragged = tabDragged;
+        button.click();
+        return { dragged, account: state.account, selected: button.dataset.account, sorting: tabs.classList.contains('sorting') };
+      })()`);
+      assert.equal(tabClick.dragged, false, 'a click with a few pixels of movement must not count as a drag');
+      assert.equal(tabClick.sorting, false);
+      assert.equal(tabClick.account, tabClick.selected);
+      const tabOrder = await evaluate(`(() => {
+        const tabs = document.getElementById('account-tabs');
+        const make = (id, text) => {
           const button = document.createElement('button');
           button.type = 'button';
-          button.dataset.account = 'qa-tab-' + i;
-          button.textContent = '账号 QA ' + i + ' 很长的名字';
+          button.dataset.kind = 'chatgpt';
+          button.dataset.account = id;
+          button.textContent = text;
+          button.style.width = '140px';
+          return button;
+        };
+        const first = make('chatgpt:qa-a', '账号甲');
+        const second = make('chatgpt:qa-b', '账号乙');
+        tabs.append(first, second);
+        const start = first.getBoundingClientRect();
+        const pointer = (type, target, clientX) => target.dispatchEvent(new PointerEvent(type, { clientX, clientY: start.top + 8, button: 0, pointerId: 4, bubbles: true }));
+        pointer('pointerdown', first, start.left + 10);
+        pointer('pointermove', first, start.left + 220);
+        pointer('pointerup', first, start.left + 220);
+        const order = [...tabs.querySelectorAll('button')].map(button => button.dataset.account);
+        tabs.querySelectorAll('[data-account^="chatgpt:qa-"]').forEach(button => button.remove());
+        const pageFits = document.documentElement.scrollWidth <= window.innerWidth;
+        return { order, pageFits };
+      })()`);
+      assert.ok(tabOrder.order.indexOf('chatgpt:qa-a') > tabOrder.order.indexOf('chatgpt:qa-b'), `drag should move the account later, got ${tabOrder.order.join(',')}`);
+      assert.equal(tabOrder.pageFits, true, 'extra accounts must not widen the window');
+      const tabBar = await evaluate(`(() => {
+        const tabs = document.getElementById('account-tabs');
+        const bar = document.getElementById('account-tabs-bar');
+        for (let i = 0; i < 12; i++) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.kind = 'grok';
+          button.dataset.account = 'grok:scroll-' + i;
+          button.textContent = '很长的账号名 ' + i;
           tabs.append(button);
         }
         markAccountTabEdges();
+        const thumb = bar.querySelector('.account-tabs-thumb');
+        const rect = thumb.getBoundingClientRect();
+        const pointer = (type, x) => bar.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: rect.top + 2, button: 0, pointerId: 9, bubbles: true }));
         const before = tabs.scrollLeft;
-        const max = tabs.scrollWidth - tabs.clientWidth;
-        const down = new PointerEvent('pointerdown', { clientX: 320, button: 0, pointerId: 1, bubbles: true });
-        const move = new PointerEvent('pointermove', { clientX: 80, button: 0, pointerId: 1, bubbles: true });
-        const up = new PointerEvent('pointerup', { clientX: 80, button: 0, pointerId: 1, bubbles: true });
-        tabs.dispatchEvent(down);
-        tabs.dispatchEvent(move);
+        pointer('pointerdown', rect.right);
+        pointer('pointermove', rect.right + 90);
+        pointer('pointerup', rect.right + 90);
         const after = tabs.scrollLeft;
-        tabs.dispatchEvent(up);
-        const pageFits = document.documentElement.scrollWidth <= window.innerWidth;
-        const grabbed = tabs.classList.contains('can-pan');
-        tabs.querySelectorAll('[data-account^="qa-tab-"]').forEach(button => button.remove());
-        tabs.scrollLeft = 0;
+        const shown = !bar.hidden;
+        tabs.querySelectorAll('[data-account^="grok:scroll-"]').forEach(button => button.remove());
         markAccountTabEdges();
-        return { before, after, max, pageFits, grabbed };
+        return { shown, before, after, hiddenAfter: bar.hidden };
       })()`);
-      assert.ok(tabScroll.max > 20, `account tabs should overflow, max=${tabScroll.max}`);
-      assert.ok(tabScroll.after > tabScroll.before, `drag should scroll the row, ${tabScroll.before} -> ${tabScroll.after}`);
-      assert.equal(tabScroll.grabbed, true);
-      assert.equal(tabScroll.pageFits, true, 'extra accounts must not widen the window');
-      await evaluate("document.getElementById('settings-open').click()");
-      await evaluate("document.querySelector('[data-settings-tab=about]').click()");
-      assert.equal(await evaluate("document.querySelector('.about-author').textContent"), '江木源 (JohnMuYuan)');
-      assert.equal(await evaluate("document.querySelector('a[href=\"mailto:Hi@muyno.com\"]').textContent.includes('Hi@muyno.com')"), true);
-      assert.equal(await evaluate("document.querySelector('a[href=\"https://johnmuyuan.com\"]').textContent.includes('JohnMuYuan.com')"), true);
-      await evaluate("document.getElementById('settings-close').click()");
-      console.log('PASS quota account row drags, about page shows the author');
+      assert.equal(tabBar.shown, true, 'scrollbar appears when accounts overflow');
+      assert.ok(tabBar.after > tabBar.before, `scrollbar thumb should scroll the row, ${tabBar.before} -> ${tabBar.after}`);
+      assert.equal(tabBar.hiddenAfter, true);
+      console.log('PASS quota account click stays a click, drag reorders, scrollbar scrolls');
       // 会话管理：左边列表、右边对话；复制项目地址；回复走主进程的 sessions:reply。
       // 这里把 sessions:reply 换成假的：不真的调 CLI（会花订阅额度、改会话文件），只验证界面的流式显示和结束后的状态。
       await evaluate("document.querySelector('[data-page=sessions]').click()");

@@ -190,8 +190,13 @@
 
     <section id="page-quota" class="page" hidden>
       <div class="quota-toolbar">
-        <div class="seg" id="account-tabs">
-          <span class="seg-thumb" aria-hidden="true"></span>
+        <div class="account-tabs-wrap">
+          <div class="seg" id="account-tabs">
+            <span class="seg-thumb" aria-hidden="true"></span>
+          </div>
+          <div id="account-tabs-bar" class="account-tabs-bar" role="scrollbar" aria-orientation="horizontal" aria-controls="account-tabs" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="拖动下方滚动条查看更多账号" hidden>
+            <div class="account-tabs-thumb"></div>
+          </div>
         </div>
         <span class="muted"><svg class="icon"><use href="#i-info"/></svg>官方窗口独立于用量筛选</span>
       </div>
