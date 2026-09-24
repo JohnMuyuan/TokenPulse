@@ -32,6 +32,12 @@ try {
   check("内置知识库能读到并通过校验", bundled.source === "bundled" && bundled.knowledge.prices.length > 10, bundled.knowledge.version);
   check("单价从知识库来：Claude Opus / GPT-5.6 / 免费模型", pricing.priceOf("claude-opus-5")?.input === 5 && pricing.priceOf("gpt-5.6-sol")?.output === 30 && pricing.priceOf("nemotron-3-ultra-free")?.input === 0);
   check("认不出的型号不编价格", pricing.priceOf("totally-new-model") === null);
+  // 2026-09-24 新版 Codex 开始报缓存写入：GPT 没有单独的写入价，按输入价算，不能当免费（实测一条请求少算 96%）
+  const cacheWriteRow = { input: 78824, output: 13, cacheRead: 22132, cacheWrite: 56692 };
+  const expected = (56692 * 5 + 13 * 30 + 22132 * 0.5) / 1e6;
+  check("没有单独写入价的型号：缓存写入按输入价算", Math.abs(pricing.estimateCost("gpt-5.6-sol-excel", cacheWriteRow) - expected) < 1e-9, pricing.estimateCost("gpt-5.6-sol-excel", cacheWriteRow).toFixed(4));
+  check("有单独写入价的（Claude 1.25 倍）照旧", pricing.estimateCost("claude-opus-5", { input: 1e6, output: 0, cacheRead: 0, cacheWrite: 1e6 }) === 6.25);
+  check("免费模型的缓存写入还是 0", pricing.estimateCost("nemotron-3-ultra-free", cacheWriteRow) === 0);
   check("型号等价规则从知识库来", verify.normalizeModel("claude-opus-5[1m]") === "claude-opus-5" && verify.normalizeModel("grok-4.6-build") === "grok-4.6");
   check("版本比较", knowledge.compareVersions("2026.10.01", "2026.09.24") > 0 && knowledge.compareVersions("2026.09.24.1", "2026.09.24") > 0 && knowledge.compareVersions("2026.09.24", "2026.09.24") === 0);
   check("格式不对的知识库拒收", knowledge.parseKnowledge({ schema: 2, version: "2026.09.30", prices: [] }) === null && knowledge.parseKnowledge({ schema: 1, version: "latest", prices: [] }) === null);

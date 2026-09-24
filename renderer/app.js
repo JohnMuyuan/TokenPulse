@@ -441,7 +441,9 @@ function quotaSlots() {
 }
 /** 卡片和标签上的短名字。报表里已经处理过别名和重名（见 report.ts 的 displayNames）。 */
 function accountWho(account) {
-  return account?.displayName || '';
+  const name = account?.displayName || '';
+  // 「未命名账号」是程序给的占位名，不是用户起的：放进 translate="no" 的元素之前先翻好
+  return name === '未命名账号' && window.PulseI18n?.lang() === 'en' ? window.PulseI18n.t(name) : name;
 }
 function quotaCard({ kind, key, account }) {
   const meta = META[kind];
@@ -1964,7 +1966,9 @@ $('account-tabs').addEventListener('click', event => {
   if (current) { enter(); renderQuota(); }
 });
 $('account-tabs').addEventListener('pointerdown', event => {
-  if (event.button !== 0 || tabGesture) return;
+  // 还在「按下未拖动」状态的旧手势（上次在这一行外面松的手，这里收不到 pointerup）直接作废，不能挡住这一次
+  if (event.button !== 0 || tabGesture?.mode === 'reorder') return;
+  tabGesture = null;
   tabDragged = false;
   const button = event.target.closest('#account-tabs > button');
   if (!button) return;
@@ -2024,6 +2028,10 @@ $('account-tabs-bar').addEventListener('pointerup', endTabBarDrag);
 $('account-tabs-bar').addEventListener('pointercancel', endTabBarDrag);
 $('account-tabs').addEventListener('pointerup', event => finishTabGesture(event, true));
 $('account-tabs').addEventListener('pointercancel', event => finishTabGesture(event, false));
+// 拖动中指针捕获丢了（切走窗口等）：当作取消，别让这一行停在「排序中」
+$('account-tabs').addEventListener('lostpointercapture', event => finishTabGesture(event, false));
+// 按下后还没开始拖（没捕获指针）就在别处松手：这一行收不到 pointerup，在窗口上收尾
+window.addEventListener('pointerup', event => { if (tabGesture?.mode === 'pending' && event.pointerId === tabGesture.id) tabGesture = null; });
 $('account-tabs').addEventListener('scroll', markAccountTabEdges);
 $('model-search').addEventListener('input', event => { state.search = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
 $('record-sort').addEventListener('change', event => { state.sort = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });

@@ -88,12 +88,6 @@ const ACCOUNT_OF_KIND: Record<string, AccountKind> = {
 };
 
 /**
- * 一家的额度采样按账号分组，按设置里的账号顺序排。
- * - 设置里删掉 / 藏起来的账号不出现（采样历史还在）；
- * - 没记账号的老采样（0.3 以前）只可能来自 CLI 当时登录的那一个：归给最早出现的那个账号；一个带账号的都没有就单独一组；
- * - 账号库里没有、但历史里有的账号（账号库被删过）排在最后，照样显示。
- */
-/**
  * 卡片和托盘上的短名字。别名优先；没别名且这一家有多个账号时用邮箱 @ 前面那段。
  * 短名字重复就改用完整邮箱，否则 ada@one.com 和 ada@two.com 在首页上是同一行字。
  */
@@ -113,6 +107,12 @@ function displayNames(rows: { alias?: string; email?: string; label?: string; mu
   });
 }
 
+/**
+ * 一家的额度采样按账号分组，按设置里的账号顺序排。
+ * - 设置里删掉 / 藏起来的账号不出现（采样历史还在）；
+ * - 没记账号的老采样（0.3 以前）只可能来自 CLI 当时登录的那一个：归给最早出现的那个账号；一个带账号的都没有就单独一组；
+ * - 账号库里没有、但历史里有的账号（账号库被删过）排在最后，照样显示。
+ */
 function samplesByAccount(samples: QuotaSample[], kind: AccountKind, store: ReturnType<typeof readOfficialAccountStore>) {
   const skip = new Set([...(store.removed ?? []), ...store.accounts.filter((item) => item.hidden).map((item) => item.id)]);
   const firstLabelled = samples.filter((sample) => sample.account).sort((a, b) => a.at - b.at)[0]?.account;

@@ -346,6 +346,9 @@ app.on('web-contents-created', (_, contents) => {
         tabs.append(first, second);
         const start = first.getBoundingClientRect();
         const pointer = (type, target, clientX) => target.dispatchEvent(new PointerEvent(type, { clientX, clientY: start.top + 8, button: 0, pointerId: 4, bubbles: true }));
+        // 先在账号上按下、跑到这一行外面才松手：这一行收不到 pointerup。下一次拖动不能被这次残留的起点卡住
+        pointer('pointerdown', first, start.left + 220);
+        pointer('pointerup', document.body, start.left + 220);
         pointer('pointerdown', first, start.left + 10);
         pointer('pointermove', first, start.left + 220);
         pointer('pointerup', first, start.left + 220);
