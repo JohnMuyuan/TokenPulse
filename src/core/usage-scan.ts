@@ -120,6 +120,11 @@ export type UsageRollups = {
   codexProviders?: Record<string, boolean>;
   /** 上次扫完的时间，界面上显示「刚刚更新」。 */
   scannedAt?: number;
+  /**
+   * 请求流水整理过一遍的标记（0.3.4）。以前被杀进程留下的重复行不会自己消失（见 scanLocalUsage 里的 pending），
+   * 没有这个标记的账本先整体整理一次。
+   */
+  requestsCompacted?: number;
 };
 
 /**
@@ -151,6 +156,7 @@ export function readRollups(): UsageRollups {
     files: parsed.files ?? {},
     codexProviders: parsed.codexProviders ?? {},
     scannedAt: parsed.scannedAt,
+    requestsCompacted: parsed.requestsCompacted,
   };
 }
 
@@ -708,6 +714,9 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
   scanning = true;
   try {
     const rollups = readRollups();
+    // 上一轮写了流水、没写完账本就被杀了（见文末的说明）
+    const pendingFile = dataFile("requests-pending");
+    const interrupted = fs.existsSync(pendingFile);
     const alive = new Set<string>();
     const official = configOfficial();
     const codex = codexAuthContext((rollups.codexProviders ??= {}));
@@ -727,6 +736,8 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
           state.official === true &&
           (!state.accountHours || (Object.keys(state.accountHours).length === 0 && Object.keys(state.hours ?? {}).length > 0));
         if (stat && state.v === STATE_VERSION && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours) continue;
+        // 缺按账号的小时账：得从头重读这个文件才补得出来。只把它交给 scanFile 的话，偏移没变它直接返回，永远补不上
+        if (needsAccountHours) state.v = 0;
         if (scanFile(file, kind, state, out, accountContext)) changed += 1;
       }
     }
@@ -735,13 +746,25 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
       if (!alive.has(key) && !Object.keys(rollups.files[key].days).length) delete rollups.files[key];
     }
     /*
-     * 先写流水再写账本：写流水后被杀进程，下次从旧偏移重读，重复的由整理去掉；
-     * 反过来的话偏移已经推进，这一段请求就永远补不回来了。
+     * 先写流水再写账本：反过来的话偏移已经推进，这一段请求就永远补不回来了。
+     * 代价是写完流水、账本还没写就被杀进程时，下次从旧偏移重读会把这一段再追加一遍 —— 这不是「重读」（rescanned），
+     * 以前不会触发整理，重复行就一直留着（实测强制关掉程序后当天流水 749 行里 234 行是重复的）。
+     * 所以追加前留一个 pending 标记、账本写完再删；开扫时发现它还在，说明上一轮死在中间，这轮扫完整理一遍。
      */
+    if (interrupted || rollups.requestsCompacted !== 1) out.rescanned = true;
+    if (out.records.length) {
+      // 第一次运行时数据目录可能还不存在
+      fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
+      fs.writeFileSync(pendingFile, String(Date.now()));
+    }
     appendRequests(out.records);
-    if (out.rescanned) compactRequests();
+    if (out.rescanned) {
+      compactRequests();
+      rollups.requestsCompacted = 1;
+    }
     rollups.scannedAt = Date.now();
     writeRollups(rollups);
+    fs.rmSync(pendingFile, { force: true });
     return { files, changed, skipped: false, records: out.records };
   } finally {
     scanning = false;

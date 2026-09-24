@@ -79,6 +79,42 @@ try {
     claudeState?.accountHours?.["claude:uuid-a"] && Object.keys(claudeState.accountHours["claude:uuid-a"]).length === 1,
     JSON.stringify(Object.keys(claudeState?.accountHours ?? {})),
   );
+
+  // 按账号的小时账丢了（比如文件先被当成非官方扫过）：要从头重读补回来，不能每轮都「需要补」却什么都不做
+  {
+    const file = path.join(process.env.TOKENPULSE_DATA_DIR, "usage-rollups.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    const key = Object.keys(saved.files).find((name) => saved.files[name].kind === "claude-code");
+    saved.files[key].accountHours = {};
+    fs.writeFileSync(file, JSON.stringify(saved));
+    scanLocalUsage();
+    const repaired = readRollups().files[key];
+    check("缺按账号的小时账时重读文件补回来", Object.keys(repaired.accountHours ?? {}).length === 1, JSON.stringify(Object.keys(repaired.accountHours ?? {})));
+  }
+
+  // 写了流水、账本没写完就被杀：下次从旧偏移重读会再追加一遍，必须整理掉
+  {
+    const requestDir = path.join(process.env.TOKENPULSE_DATA_DIR, "requests");
+    const lines = () => fs.readdirSync(requestDir).flatMap((name) => fs.readFileSync(path.join(requestDir, name), "utf8").split("\n").filter(Boolean));
+    const before = lines().length;
+    const unique = new Set(lines().map((line) => { const r = JSON.parse(line); return r.kind + "|" + r.id; })).size;
+    check("正常扫描之后流水没有重复行", before === unique, `${before} 行 / ${unique} 个请求`);
+    // 模拟：流水追加了、账本还停在旧偏移、pending 标记留着
+    const file = path.join(process.env.TOKENPULSE_DATA_DIR, "usage-rollups.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    const key = Object.keys(saved.files).find((name) => saved.files[name].kind === "codex");
+    const month = fs.readdirSync(requestDir)[0];
+    const codexLines = lines().filter((line) => JSON.parse(line).kind === "codex");
+    fs.appendFileSync(path.join(requestDir, month), codexLines.join("\n") + "\n");
+    saved.files[key].offset = 0; saved.files[key].size = 0; saved.files[key].days = {}; saved.files[key].hours = {};
+    fs.writeFileSync(file, JSON.stringify(saved));
+    fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, "requests-pending"), "1");
+    scanLocalUsage();
+    const after = lines();
+    const afterUnique = new Set(after.map((line) => { const r = JSON.parse(line); return r.kind + "|" + r.id; })).size;
+    check("上一轮死在中间（pending 还在）：这一轮扫完整理掉重复行", after.length === afterUnique && afterUnique === unique, `${after.length} 行 / ${afterUnique} 个请求`);
+    check("扫完删掉 pending 标记", !fs.existsSync(path.join(process.env.TOKENPULSE_DATA_DIR, "requests-pending")));
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

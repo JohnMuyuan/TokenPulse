@@ -50,11 +50,18 @@ export function estimateCost(modelId: string, tokens: TokenCounts): number {
   if (!price) return 0;
   // `input` 含缓存读和缓存写（见 electron/usage-scan.ts 的口径说明），两个都要扣掉再按全价算。
   const fresh = Math.max(0, tokens.input - tokens.cacheRead - tokens.cacheWrite);
+  /*
+   * 表里 cacheWrite 为 0 的意思是「这家没有单独的缓存写入价」（OpenAI / xAI / DeepSeek 都这样），
+   * 写缓存的 token 照常按输入价收，**不是免费**。以前按 0 算，平时没事 —— Codex 一直报 0 条缓存写入；
+   * 2026-09-24 起新版 Codex（gpt-5.6-sol-excel）开始报 `cache_write_input_tokens`，
+   * 实测一条 78,824 输入、56,692 缓存写入的请求只算了 $0.0115（应为约 $0.29），当天 Codex 费用少算一大截。
+   */
+  const writePrice = price.cacheWrite > 0 ? price.cacheWrite : price.input;
   return (
     (fresh * price.input +
       tokens.output * price.output +
       tokens.cacheRead * price.cacheRead +
-      tokens.cacheWrite * price.cacheWrite) /
+      tokens.cacheWrite * writePrice) /
     1_000_000
   );
 }
