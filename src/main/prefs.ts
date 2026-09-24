@@ -13,9 +13,15 @@ export type Prefs = {
   theme: "light" | "dark";
   /** 自动更新：后台下载新版本，在窗口收起时静默安装并重启。默认开。 */
   autoUpdate: boolean;
+  /** 发现请求的型号和上游返回的对不上（或响应存疑）时发系统通知。默认开。 */
+  notifyMismatch: boolean;
+  /** 从 CC Switch 导入缺的用量（core/cc-switch.ts 在 worker 里直接读这个字段）。默认开。 */
+  ccSwitch: boolean;
+  /** 界面语言。界面自己用 localStorage 记（加载前就要知道），这里再存一份给托盘菜单和通知。 */
+  language: "system" | "zh" | "en";
 };
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system" };
 
 function file() {
   return dataFile("prefs.json");

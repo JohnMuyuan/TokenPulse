@@ -102,6 +102,10 @@ export type AccountReport = {
   lastCheckedAt?: number;
   resetCredits?: number;
   plan?: string;
+  /** 这份额度是哪个账号的（TokenPulse 里「当前使用」的那个，= 最后一条采样的账号）。 */
+  accountId?: string;
+  /** 这个账号的名字（邮箱），report.ts 从账号登记里补上。 */
+  accountLabel?: string;
   week: WindowReport | null;
   five: WindowReport | null;
   /** 当前周窗口里的采样点，画曲线用。 */
@@ -491,6 +495,7 @@ export function analyzeAccount(
     sampleCount: samples.length,
     firstSampleAt: samples[0]?.at,
     lastSampleAt: latest?.at,
+    accountId: latest?.account,
     // 查询成功时间只认同一个账号的：切换账号后，上一个账号的查询时间不能让新账号显得「刚更新」。
     lastCheckedAt:
       latest && checked && checked.at <= now && (!checked.account || !latest.account || checked.account === latest.account)

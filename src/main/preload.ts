@@ -35,7 +35,20 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("window-state", listener);
   },
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
-  exportCsv: (content: string) => ipcRenderer.invoke("export-csv", content),
+  exportCsv: (content: string, kind?: "requests") => ipcRenderer.invoke("export-csv", content, kind),
+  /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */
+  requests: (query: Record<string, unknown>) => ipcRenderer.invoke("requests:query", query),
+  /** 模型知识库（型号单价和等价规则）：当前版本、上次检查；手动检查更新。 */
+  knowledgeState: () => ipcRenderer.invoke("knowledge:state"),
+  checkKnowledge: () => ipcRenderer.invoke("knowledge:check"),
+  /** 立刻从 CC Switch 的库同步一次，返回新快照。 */
+  syncCcSwitch: () => ipcRenderer.invoke("ccswitch:sync"),
+  /** 主进程让界面跳到某一页（点了型号不一致的通知）。 */
+  onOpenPage: (handler: (target: { page: string; status?: string }) => void) => {
+    const listener = (_event: unknown, target: { page: string; status?: string }) => handler(target);
+    ipcRenderer.on("open-page", listener);
+    return () => ipcRenderer.off("open-page", listener);
+  },
   onError: (handler: (message: string) => void) => {
     const listener = (_event: unknown, message: string) => handler(message);
     ipcRenderer.on("refresh-error", listener);

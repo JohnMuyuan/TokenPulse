@@ -4,8 +4,11 @@ import path from "path";
 import { dataDir } from "../core/paths";
 import { fetchOfficialQuota } from "../core/quota";
 import type { Snapshot } from "../core/report";
-import { loadSnapshot } from "./snapshot";
+import { loadRequests, loadSnapshot } from "./snapshot";
+import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
+import type { RequestQuery } from "../core/request-log";
 import { readPrefs, writePrefs, type Prefs } from "./prefs";
+import { tr } from "./i18n";
 import { trayIcon, windowIcon } from "./icon";
 import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
 import { listOfficialOAuthStatus, loginOfficialOAuth } from "./oauth";
@@ -108,24 +111,24 @@ function revealWindow() {
 function buildTrayMenu() {
   const prefs = readPrefs();
   return Menu.buildFromTemplate([
-    { label: "打开 TokenPulse", click: revealWindow },
+    { label: tr("打开 TokenPulse"), click: revealWindow },
     { type: "separator" },
     {
-      label: "立即刷新",
+      label: tr("立即刷新"),
       click: () => {
         backgroundRefresh(true);
       },
     },
     {
-      label: "开机自启",
+      label: tr("开机自启"),
       type: "checkbox",
       checked: prefs.autoLaunch,
       click: (item) => applyPrefs({ autoLaunch: item.checked }),
     },
-    { label: "打开数据目录", click: () => shell.openPath(dataDir()) },
+    { label: tr("打开数据目录"), click: () => shell.openPath(dataDir()) },
     { type: "separator" },
     {
-      label: "退出",
+      label: tr("退出"),
       click: () => {
         quitting = true;
         app.quit();
@@ -152,7 +155,7 @@ function updateTrayTip(snapshot: Snapshot) {
     return `${names[account.kind] ?? account.kind}  ${[five, week].filter(Boolean).join("  ")}`.trim();
   });
   const head = `TokenPulse · 今日 ${formatTokens(snapshot.totals.today.tokens)} tokens`;
-  tray.setToolTip([head, ...lines].join(String.fromCharCode(10)));
+  tray.setToolTip([head, ...lines].map(tr).join(String.fromCharCode(10)));
 }
 
 function formatTokens(value: number) {
@@ -188,14 +191,66 @@ function maybeNotify(snapshot: Snapshot) {
       if (previous != null && Math.abs(resetAt - previous) < SAME_WINDOW_MS) continue;
       notified.set(key, resetAt);
       new Notification({
-        title: `${names[account.kind] ?? account.kind} ${label}额度已用 ${Math.round(report.used)}%`,
-        body: report.resetAt
-          ? `${new Date(report.resetAt).toLocaleString()} 重置`
-          : "注意节奏",
+        title: tr(`${names[account.kind] ?? account.kind} ${label}额度已用 ${Math.round(report.used)}%`),
+        body: tr(report.resetAt ? `${new Date(report.resetAt).toLocaleString()} 重置` : "注意节奏"),
         icon: windowIcon(),
       }).show();
     }
   }
+}
+
+/** 已经通知过的请求，免得同一条在下一轮扫描里又弹一次。 */
+const notifiedRequests = new Set<string>();
+
+/**
+ * 型号核验出问题的请求，弹一条通知。一轮里有好几条就合成一条，点开直接跳到请求记录。
+ * 扫描那边只交最近 15 分钟的，第一次运行补历史时不会刷屏。
+ */
+function notifyRequests(snapshot: Snapshot) {
+  const alerts = (snapshot.requestAlerts ?? []).filter((row) => !notifiedRequests.has(row.key));
+  if (!alerts.length || !readPrefs().notifyMismatch || !Notification.isSupported()) return;
+  for (const row of alerts) notifiedRequests.add(row.key);
+  const mismatch = alerts.filter((row) => row.status === "mismatch");
+  const first = mismatch[0] ?? alerts[0];
+  const title = mismatch.length
+    ? `${mismatch.length} 次请求的返回型号和请求的不一致`
+    : `${alerts.length} 次请求的响应存疑`;
+  const notification = new Notification({
+    title: tr(title),
+    body: tr(`${first.source}：${first.reasons[0] ?? first.statusLabel}`),
+    icon: windowIcon(),
+  });
+  notification.on("click", () => {
+    revealWindow();
+    win?.webContents.send("open-page", { page: "requests", status: mismatch.length ? "mismatch" : "suspect" });
+  });
+  notification.show();
+}
+
+/** 界面传来的查询条件：只收认识的字段，日期格式不对就拒绝。 */
+function parseRequestQuery(value: unknown): RequestQuery {
+  const input = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const day = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+  const from = day(input.from);
+  const to = day(input.to);
+  if (!from || !to) throw new Error("查询日期无效");
+  const status = ["all", "match", "mismatch", "suspect", "unverified"].includes(String(input.status)) ? (input.status as RequestQuery["status"]) : "all";
+  const sort = ["time", "tokens", "cost"].includes(String(input.sort)) ? (input.sort as RequestQuery["sort"]) : "time";
+  return {
+    from,
+    to,
+    source: typeof input.source === "string" ? input.source.slice(0, 40) : "all",
+    status,
+    search: typeof input.search === "string" ? input.search.slice(0, 200) : "",
+    sort,
+    page: Math.max(0, Math.floor(Number(input.page) || 0)),
+    pageSize: Math.min(200, Math.max(1, Math.floor(Number(input.pageSize) || 20))),
+    all: input.all === true,
+    account: typeof input.account === "string" && input.account ? input.account.slice(0, 300) : undefined,
+    since: Number.isFinite(input.since) ? Number(input.since) : undefined,
+    aggregate: input.aggregate === true,
+    until: Number.isFinite(input.until) ? Number(input.until) : undefined,
+  };
 }
 
 /* ---------------- 刷新 ---------------- */
@@ -236,6 +291,7 @@ async function runRefresh(withQuota: boolean): Promise<Snapshot> {
   // 先展示已有统计，再更新本地文件；网络慢或断网时仍然可以使用界面。
   await getInitialSnapshot();
   let snapshot = publishSnapshot(await loadSnapshot(true));
+  notifyRequests(snapshot);
   if (withQuota) {
     try {
       await fetchOfficialQuota(true);
@@ -325,6 +381,8 @@ if (!app.requestSingleInstanceLock()) {
     initTray();
     createWindow();
     initUpdater({ window: () => win, autoUpdate: readPrefs().autoUpdate });
+    // 知识库更新了（新型号的单价）：重算一遍，界面上的费用跟着变
+    scheduleKnowledgeChecks(() => backgroundRefresh(false));
 
     ipcMain.handle("snapshot", () => getInitialSnapshot());
     ipcMain.handle("refresh", async () => refresh(true));
@@ -360,14 +418,23 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("update:download", () => downloadUpdate());
     ipcMain.handle("update:install", () => installUpdate());
     ipcMain.handle("app:version", () => (require("../../package.json") as { version: string }).version);
-    ipcMain.handle("export-csv", async (_event, content: unknown) => {
+    ipcMain.handle("knowledge:state", () => knowledgeState());
+    ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
+    ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
+    ipcMain.handle("requests:query", (_event, query: unknown) => loadRequests(parseRequestQuery(query)));
+    ipcMain.handle("export-csv", async (_event, content: unknown, kind: unknown) => {
       if (typeof content !== "string" || Buffer.byteLength(content) > 10 * 1024 * 1024) {
         throw new Error("导出内容无效或过大");
       }
       // 文件名用本地日期：toISOString 是 UTC，东八区早上 8 点前导出会标成前一天。
       const now = new Date();
       const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-      const options = { title: "导出用量明细", defaultPath: `TokenPulse-${today}.csv`, filters: [{ name: "CSV", extensions: ["csv"] }] };
+      const requests = kind === "requests";
+      const options = {
+        title: tr(requests ? "导出请求记录" : "导出用量明细"),
+        defaultPath: requests ? `TokenPulse-${tr("请求记录") === "请求记录" ? "请求记录" : "requests"}-${today}.csv` : `TokenPulse-${today}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      };
       const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
       if (result.canceled || !result.filePath) return false;
       await fs.writeFile(result.filePath, "\uFEFF" + content, "utf8");

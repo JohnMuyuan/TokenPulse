@@ -41,7 +41,10 @@ const CHECK_EVERY_MS = 4 * 60 * 60_000;
 const INSTALL_DELAY_MS = 20_000;
 const RELAUNCH_FILE = "update-relaunch.json";
 
-let state: UpdateState = { status: "idle", currentVersion: app.getVersion(), autoUpdate: true };
+// 版本号从 package.json 读：开发时从别的入口启动，app.getVersion() 拿到的是 Electron 自己的版本
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const packageVersion = (require("../../package.json") as { version: string }).version;
+let state: UpdateState = { status: "idle", currentVersion: packageVersion, autoUpdate: true };
 let getWindow: () => BrowserWindow | null = () => null;
 let installTimer: NodeJS.Timeout | null = null;
 let checking: Promise<UpdateState> | null = null;

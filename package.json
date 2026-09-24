@@ -1,6 +1,6 @@
 {
   "name": "tokenpulse",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
@@ -10,7 +10,7 @@
     "start": "npm run compile && electron .",
     "dev": "npm run compile && electron . --dev",
     "icons": "node scripts/make-icon.cjs",
-    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs",
+    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs",
     "test:ui": "npm run compile && electron scripts/test-ui.cjs",
     "dist:portable": "npm run icons && npm run compile && electron-builder --win portable --publish never",
     "dist": "npm run icons && npm run compile && electron-builder --publish never",
@@ -26,6 +26,7 @@
     "files": [
       "build/**/*",
       "renderer/**/*",
+      "knowledge/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -74,8 +75,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "electron": "^33.3.1",
-    "electron-builder": "^25.1.8",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.7.2"
   },
   "dependencies": {

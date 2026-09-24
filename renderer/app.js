@@ -3,6 +3,8 @@ const api = window.tokenpulse;
 const D = window.PulseData;
 const BRAND = window.PulseBrand;
 const $ = id => document.getElementById(id);
+/** 日期格式跟着界面语言走。 */
+function dateLocale() { return window.PulseI18n?.lang() === 'en' ? 'en-US' : 'zh-CN'; }
 const META = {
   chatgpt: { name: 'ChatGPT', brand: 'openai', source: 'Codex CLI' },
   claude: { name: 'Claude', brand: 'claude', source: 'Claude Code' },
@@ -15,7 +17,7 @@ const OAUTH_META = {
 };
 const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
-const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0 };
+const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
 const INNER_RING = 2 * Math.PI * 34;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -65,12 +67,15 @@ function avatar(kind, extra = '') {
   const brand = META[kind]?.brand || kind;
   return el('span', { class: `account-avatar ${kind} ${extra}`.trim(), 'aria-hidden': true }, [brandSvg(brand)]);
 }
+/** 没有官方图标的来源（OpenCode 等从 CC Switch 导入的）用首字母。 */
+function letterMark(source) { return el('b', { class: 'letter-mark', text: String(source || '?').trim().charAt(0).toUpperCase() }); }
 function sourceLogo(source) {
   const brand = BRAND_OF_SOURCE[source];
-  return el('span', { class: 'account-avatar source-logo ' + (brand === 'claude' ? 'claude' : ''), 'aria-hidden': true }, [brandSvg(brand)]);
+  return el('span', { class: 'account-avatar source-logo ' + (brand === 'claude' ? 'claude' : ''), 'aria-hidden': true }, [brand ? brandSvg(brand) : letterMark(source)]);
 }
 function miniLogo(source) {
-  return el('span', { class: 'mini-logo', 'aria-hidden': true }, [brandSvg(BRAND_OF_SOURCE[source])]);
+  const brand = BRAND_OF_SOURCE[source];
+  return el('span', { class: 'mini-logo', 'aria-hidden': true }, [brand ? brandSvg(brand) : letterMark(source)]);
 }
 
 /** 设置页的官方账号列表。数据来自主进程，不含任何凭据。 */
@@ -110,17 +115,37 @@ async function loadOfficialAccounts() {
 /* ---------------- 格式化 ---------------- */
 
 function number(n) { return (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 0 }); }
+/** 简写（图表坐标轴、句子里用）。 */
 function tokens(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return number(n);
 }
+/*
+ * 数字显示：卡片、表格里的 Token 和请求数默认精确到个位（3,031,245,120），设置里可以换回简写（3.03B）。
+ * 中文界面在后面再跟一个小字「≈30.3亿」—— 中文读者对「亿 / 万」比对 B / M 反应快得多。图表坐标轴和句子里仍用简写。
+ */
+const NUMBER_KEY = 'tokenpulse-number';
+let numberMode = 'exact';
+try { numberMode = localStorage.getItem(NUMBER_KEY) === 'compact' ? 'compact' : 'exact'; } catch { /* 读不到就用默认 */ }
+function amount(n) { return numberMode === 'compact' ? tokens(n) : number(Math.round(n || 0)); }
+function cnApprox(n) {
+  if (window.PulseI18n?.lang() === 'en' || !Number.isFinite(n) || n < 1e4) return '';
+  const [value, unit] = n >= 1e8 ? [n / 1e8, '亿'] : [n / 1e4, '万'];
+  const text = value >= 100 ? Math.round(value).toLocaleString('en-US') : String(Number(value.toPrecision(3)));
+  return `≈${text}${unit}`;
+}
+/** 数字 + 中文小字，作为一组节点塞进卡片、表格。 */
+function qty(n) {
+  const approx = cnApprox(n);
+  return [amount(n), approx ? el('small', { class: 'cn-approx', text: approx }) : null];
+}
 function money(n) { return n > 0 && n < .01 ? '<$0.01' : '$' + (n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function percent(n) { return n == null || !Number.isFinite(n) ? '—' : n.toFixed(1) + '%'; }
 function date(at, full = false) {
   if (!at) return '尚未采样';
-  return new Date(at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', ...(full ? { year: 'numeric' } : {}), hour12: false });
+  return new Date(at).toLocaleString(dateLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', ...(full ? { year: 'numeric' } : {}), hour12: false });
 }
 function duration(ms) {
   if (ms == null || !Number.isFinite(ms)) return '时间未知';
@@ -318,10 +343,15 @@ function quotaCard(kind) {
 
 /* ---------------- 用量统计 ---------------- */
 
-const PRESET_LABELS = { 1: '今天', 7: '7 天', 14: '14 天', 30: '30 天', 90: '90 天', all: '全部' };
+const PRESET_LABELS = { 1: '今天', '24h': '一天', 7: '7 天', 14: '14 天', 30: '30 天', 90: '90 天', all: '全部' };
 function updateRange() {
   const today = D.dayKey(current.now);
-  if (state.days === 'all') {
+  state.since = undefined;
+  if (state.days === '24h') {
+    // 滚动的 24 小时：跨两个自然日，精确的数字从逐条流水里汇总（windowAnalysis）
+    state.since = current.now - 86400000;
+    state.from = D.dayKey(state.since); state.to = today;
+  } else if (state.days === 'all') {
     // 数据永久保存，「全部」从有记录的第一天算起。
     state.from = (current.usage || []).reduce((min, row) => row.day < min ? row.day : min, today);
     state.to = today;
@@ -330,11 +360,45 @@ function updateRange() {
   } else if (state.follow) {
     state.to = today;
   }
-  $('range-label').textContent = `${state.from.replaceAll('-', '.')} — ${state.to.replaceAll('-', '.')}`;
+  $('range-label').textContent = state.days === '24h'
+    ? `过去 24 小时 · ${date(state.since)} 起`
+    : `${state.from.replaceAll('-', '.')} — ${state.to.replaceAll('-', '.')}`;
   $('range-button-label').textContent = state.days === 'custom'
     ? `自定义 · ${state.from.slice(5).replace('-', '/')} → ${state.follow ? '今天' : state.to.slice(5).replace('-', '/')}`
     : PRESET_LABELS[state.days];
-  analysis = D.analyze(current.usage || [], state.from, state.to, state.source);
+  analysis = state.days === '24h' ? windowAnalysis() : D.analyze(current.usage || [], state.from, state.to, state.source);
+}
+
+/*
+ * 「一天」= 过去 24 小时。按天记的账切不出来，改由 worker 从逐条流水里汇总：这 24 小时和再往前的 24 小时（算环比）。
+ * 结果按「快照时间 + 工具」缓存；还没回来时先给一份空的，回来后重画。
+ */
+const windowCache = new Map();
+function windowAnalysis() {
+  const key = `${current.now}|${state.source}`;
+  const hit = windowCache.get(key);
+  if (!hit) {
+    windowCache.set(key, null);
+    const now = current.now, base = { source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true };
+    Promise.all([
+      api.requests({ ...base, from: D.dayKey(now - 86400000), to: D.dayKey(now), since: now - 86400000, until: now }),
+      api.requests({ ...base, from: D.dayKey(now - 2 * 86400000), to: D.dayKey(now - 86400000), since: now - 2 * 86400000, until: now - 86400000 - 1 })
+    ]).then(([cur, prev]) => {
+      windowCache.set(key, { cur: cur.aggregate, prev: prev.aggregate });
+      while (windowCache.size > 6) windowCache.delete(windowCache.keys().next().value);
+      if (state.days === '24h' && current) render(current);
+    }).catch(() => { windowCache.delete(key); showStatus('过去 24 小时的数据读取失败，请重试。', true); });
+  }
+  const data = windowCache.get(key);
+  const result = D.analyze(data?.cur.rows || [], state.from, state.to, state.source);
+  result.previous = D.sum(D.select(data?.prev.rows || [], '0000-00-00', '9999-99-99', state.source));
+  // 24 个整点小时，没用的小时补 0，图表才连续
+  const byHour = new Map((data?.cur.hours || []).map(row => [row.hour, row]));
+  // 画最近 24 个整点小时（含当前这一小时）；24 小时窗口开头那半个小时只进合计，不单独占一根柱子
+  const firstHour = Math.floor(current.now / 3600000) * 3600000 - 23 * 3600000;
+  result.hourly = Array.from({ length: 24 }, (_, i) => byHour.get(firstHour + i * 3600000) || { hour: firstHour + i * 3600000, tokens: 0, costUsd: 0, requests: 0 });
+  result.loading = !data;
+  return result;
 }
 function delta(now, previous) {
   if (!previous) return [now ? '上一时段无记录' : '暂无变化'];
@@ -345,17 +409,18 @@ function renderStats() {
   const t = analysis.total, p = analysis.previous;
   const cache = t.input ? t.cacheRead / t.input * 100 : null;
   const stats = [
-    ['tokens', '总 Tokens', t.tokens, tokens, delta(t.tokens, p.tokens), '输入 + 输出'],
+    ['tokens', '总 Tokens', t.tokens, amount, delta(t.tokens, p.tokens), '输入 + 输出'],
     ['cost', '参考费用', t.costUsd, money, analysis.unpriced ? [`${number(analysis.unpriced)} 次请求未定价`] : delta(t.costUsd, p.costUsd), 'USD'],
-    ['requests', '请求次数', t.requests, number, delta(t.requests, p.requests), '次'],
+    ['requests', '请求次数', t.requests, amount, delta(t.requests, p.requests), '次'],
     ['cache', '缓存读取占比', cache, percent, [`${tokens(t.cacheRead)} 缓存读取 / ${tokens(t.input)} 输入`], '输入口径']
   ];
   $('tiles').replaceChildren(...stats.map(([name, label, value, format, sub, unit]) => {
-    const valueNode = el('div', { class: 'stat-value' });
+    const valueNode = el('span', { class: 'num' });
     countTo(valueNode, 'stat:' + name, value, format);
+    const approx = format === amount ? cnApprox(value) : '';
     return el('article', { class: 'stat' }, [
       el('div', { class: 'stat-label' }, [el('span', { class: 'stat-icon' }, [icon(name)]), el('span', { text: label }), el('span', { class: 'stat-unit', text: unit })]),
-      valueNode,
+      el('div', { class: 'stat-value' + (format === amount && numberMode === 'exact' && value >= 1e9 ? ' long' : ''), title: format === amount ? number(value) : '' }, [valueNode, approx ? el('small', { class: 'cn-approx', text: approx }) : null]),
       el('div', { class: 'stat-sub' }, sub)
     ]);
   }));
@@ -399,6 +464,11 @@ function groupDaily(daily) {
   return { rows, unit: byMonth ? '月' : '周' };
 }
 function dailyChart(animate) {
+  if (analysis.hourly) {
+    $('chart-caption').textContent = '按小时 · 过去 24 小时';
+    chart($('daily-chart'), analysis.hourly, state.metric, true, animate);
+    return;
+  }
   const { rows, unit } = groupDaily(analysis.daily);
   $('chart-caption').textContent = `按${unit}汇总 · 本机时间`;
   chart($('daily-chart'), rows, state.metric, false, animate);
@@ -444,11 +514,23 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
 function renderOverview() {
   $('quota-cards').replaceChildren(...Object.keys(META).map(quotaCard));
   dailyChart(entering());
-  const t = analysis.total, n = analysis.daily.length || 1;
-  const peak = [...analysis.daily].sort((a, b) => b.tokens - a.tokens)[0];
-  $('chart-summary').replaceChildren(el('span', {}, ['日均', el('b', { text: tokens(t.tokens / n) + ' Tokens' })]), el('span', {}, ['活跃天数', el('b', { text: `${analysis.activeDays} / ${n} 天` })]));
-  const rhythms = [['日均请求', `${number(t.requests / n)} 次`], ['单次平均用量', t.requests ? `${tokens(t.tokens / t.requests)} Tokens` : '—'], ['用量最高的一天', peak?.tokens ? peak.day.slice(5).replace('-', ' / ') : '—'], ['峰值用量', peak?.tokens ? tokens(peak.tokens) : '—']];
-  $('rhythm').replaceChildren(...rhythms.map(([label, value], i) => stagger(el('div', { class: 'rhythm-row' }, [el('span', { text: label }), el('b', { text: value })]), i)), el('p', { class: 'rhythm-note', text: '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。' }));
+  const t = analysis.total;
+  // 过去 24 小时按小时算节奏，其余按天
+  const hourly = Boolean(analysis.hourly);
+  const slots = hourly ? analysis.hourly : analysis.daily, n = slots.length || 1;
+  const peak = [...slots].sort((a, b) => b.tokens - a.tokens)[0];
+  const active = hourly ? slots.filter(row => row.requests > 0).length : analysis.activeDays;
+  $('chart-summary').replaceChildren(
+    el('span', {}, [hourly ? '每小时平均' : '日均', el('b', { text: tokens(t.tokens / n) + ' Tokens' })]),
+    el('span', {}, [hourly ? '活跃小时' : '活跃天数', el('b', { text: hourly ? `${active} / ${n} 小时` : `${active} / ${n} 天` })]));
+  const rhythms = [
+    [hourly ? '每小时平均请求' : '日均请求', `${number(t.requests / n)} 次`],
+    ['单次平均用量', t.requests ? `${tokens(t.tokens / t.requests)} Tokens` : '—'],
+    [hourly ? '用量最高的一小时' : '用量最高的一天', peak?.tokens ? (hourly ? date(peak.hour) : peak.day.slice(5).replace('-', ' / ')) : '—'],
+    ['峰值用量', peak?.tokens ? amount(peak.tokens) : '—']
+  ];
+  $('rhythm').replaceChildren(...rhythms.map(([label, value], i) => stagger(el('div', { class: 'rhythm-row' }, [el('span', { text: label }), el('b', { text: value })]), i)),
+    el('p', { class: 'rhythm-note', text: hourly ? '过去 24 小时，按小时统计，对比再往前的 24 小时。' : '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。' }));
   const sources = [...analysis.sources].sort((a, b) => b.tokens - a.tokens);
   $('sources').replaceChildren(...(sources.length ? sources.map((row, i) => {
     const share = t.tokens ? row.tokens / t.tokens * 100 : 0;
@@ -466,7 +548,7 @@ function renderOverview() {
     el('span', { class: 'rank-number', text: String(i + 1).padStart(2, '0') }),
     sourceLogo(row.source),
     el('div', { class: 'rank-body' }, [el('div', { class: 'rank-name', text: row.model, title: row.model }), el('div', { class: 'rank-meta', text: row.source })]),
-    el('div', { class: 'rank-value' }, [tokens(row.tokens), el('div', { class: 'rank-meta', text: row.unpriced ? '部分未定价' : money(row.costUsd) })])
+    el('div', { class: 'rank-value', title: number(row.tokens) }, [...qty(row.tokens), el('div', { class: 'rank-meta', text: row.unpriced ? '部分未定价' : money(row.costUsd) })])
   ]), i)) : [empty('所选范围还没有模型用量')]));
 }
 function stagger(node, i) { node.style.setProperty('--i', i); return node; }
@@ -474,10 +556,10 @@ function stagger(node, i) { node.style.setProperty('--i', i); return node; }
 /* ---------------- 额度详情 ---------------- */
 
 /** 一个指标小卡片：灰色小标签、大号数字（带单位）、下面一行补充说明。tone：accent 高亮 / warn 预警。 */
-function metric(label, value, { unit, sub, tone, chip } = {}) {
+function metric(label, value, { unit, sub, tone, chip, approx } = {}) {
   return el('div', { class: 'metric' + (tone ? ` ${tone}` : '') }, [
     el('span', { class: 'metric-label', text: label }),
-    el('div', { class: 'metric-value' }, [el('b', { class: 'num', text: value, title: value }), unit ? el('small', { text: unit }) : null]),
+    el('div', { class: 'metric-value' }, [el('b', { class: 'num', text: value, title: value }), unit ? el('small', { text: unit }) : null, approx ? el('small', { class: 'cn-approx', text: approx }) : null]),
     sub || chip ? el('div', { class: 'metric-sub' }, [sub ? el('span', { text: sub }) : null, chip ? el('span', { class: `metric-chip ${chip.tone}`, text: chip.text }) : null]) : null
   ]);
 }
@@ -488,7 +570,7 @@ function metricGroup(title, iconName, cards, layout = '') {
 /** Token + 费用的卡片：折算不出来时如实写原因，不编数。 */
 function tokenMetric(label, value, extra = {}) {
   if (!value) return metric(label, '—', { sub: extra.missing || '样本不足，暂无法折算' });
-  return metric(label, tokens(value.tokens), { unit: 'Tokens', sub: money(value.costUsd), ...extra });
+  return metric(label, amount(value.tokens), { unit: 'Tokens', sub: money(value.costUsd), approx: cnApprox(value.tokens), ...extra });
 }
 function windowPanel(label, report, account) {
   const panel = el('article', { class: 'panel window-panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: label }), el('span', { class: 'section-tag', text: '官方额度窗口' })])]);
@@ -503,7 +585,7 @@ function windowPanel(label, report, account) {
   const capacity = report.capacity;
   const waitText = '等待有效采样';
   panel.append(metricGroup('Token 与费用', 'tokens', [
-    metric('本窗口已用（本机）', tokens(report.usedTokens), { unit: 'Tokens', sub: money(report.usedCostUsd) }),
+    metric('本窗口已用（本机）', amount(report.usedTokens), { unit: 'Tokens', approx: cnApprox(report.usedTokens), sub: money(report.usedCostUsd) }),
     unknown ? metric('剩余可用（估算）', '—', { sub: waitText }) : tokenMetric('剩余可用（估算）', byCapacity(report, 100 - report.used), { tone: 'accent' }),
     unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : '已用不到 2%，暂无法折算' })
       : tokenMetric('整窗容量折算', byCapacity(report, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } })
@@ -555,7 +637,7 @@ function capacityChart(host, history, windowName, metric, animate) {
   // 中位数的数值写在图下方的说明里：写在线尾会和「进行中」的点、标签撞在一起。
   if (median != null) node.append(svg('line', { class: 'cap-median', x1: left, x2: w - right, y1: y(median), y2: y(median) }));
   if (points.length > 1) node.append(svg('path', { class: 'trend-line cap-line', d: points.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(value(p)).toFixed(1)}`).join(' '), pathLength: 1, 'stroke-dasharray': 1 }));
-  const dayLabel = at => new Date(at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  const dayLabel = at => new Date(at).toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
   points.forEach((p, i) => {
     const text = `${date(p.startAt)} → ${date(p.resetAt)}${p.current ? '（进行中）' : ''}\n最后一次采样已用 ${percent(p.pct)}\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
     const dot = svg('circle', { class: `cap-dot ${p.confidence === 'low' ? 'low' : 'solid'}${p.current ? ' current' : ''}`, cx: x(p), cy: y(value(p)), r: p.current ? 6 : 4.5, tabindex: 0, 'aria-label': text });
@@ -647,6 +729,7 @@ function renderQuota() {
   const trend = el('div', { class: 'chart quota-trend' });
   const trendPanel = el('article', { class: 'panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '本周额度采样' })]), trend, el('p', { class: 'sample-caption', text: `手动重置次数：${account.resetCredits ?? '接口未提供'} · 活跃时间占比：${account.week?.activeShare == null ? '样本不足' : percent(account.week.activeShare * 100)}` })]);
   host.append(el('div', { class: 'quota-history-grid' }, [history, trendPanel]));
+  host.append(accountRequestsPanel(account, meta));
   const animate = entering();
   chart(hourly, account.hourly, 'tokens', true, animate);
   trendChart(trend, account.trend, animate);
@@ -658,6 +741,7 @@ function renderQuota() {
 
 function renderRecords() {
   const q = state.search.trim().toLowerCase();
+  // 过去 24 小时的「按日汇总」：行来自逐条流水（最多两天：昨天那几个小时 + 今天）
   filteredRecords = analysis.selected.filter(row => !q || `${row.model} ${row.source}`.toLowerCase().includes(q)).sort((a, b) => state.sort === 'day' ? b.day.localeCompare(a.day) || b.tokens - a.tokens : b[state.sort] - a[state.sort] || b.day.localeCompare(a.day));
   const pageSize = 15, pages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
   state.tablePage = Math.min(state.tablePage, pages - 1);
@@ -666,7 +750,7 @@ function renderRecords() {
   $('export-csv').disabled = !filteredRecords.length;
   $('records').replaceChildren(...visible.map((row, i) => stagger(el('tr', {}, [
     el('td', {}, [row.day, el('small', {}, [miniLogo(row.source), row.source])]), el('td', { class: 'model-cell', text: row.model, title: row.model }),
-    ...['requests', 'input', 'output', 'cacheRead', 'tokens'].map(key => el('td', { class: 'n' + (key === 'tokens' ? ' token-strong' : ''), text: key === 'requests' ? number(row[key]) : tokens(row[key]), title: number(row[key]) })),
+    ...['requests', 'input', 'output', 'cacheRead', 'tokens'].map(key => el('td', { class: 'n' + (key === 'tokens' ? ' token-strong' : ''), title: number(row[key]) }, qty(row[key]))),
     el('td', { class: 'n', text: row.priced === false ? '未定价' : money(row.costUsd) })
   ]), i)));
   if (!visible.length) $('records').append(el('tr', {}, [el('td', { colspan: 8, class: 'empty', text: '没有匹配的记录，试试其他时间、工具或关键词。' })]));
@@ -676,11 +760,278 @@ function renderRecords() {
 function renderUsage() {
   const t = analysis.total;
   $('token-breakdown').replaceChildren(...[['输入 Tokens', 'input', '含缓存读取与写入'], ['输出 Tokens', 'output', '含推理 Tokens'], ['缓存读取', 'cacheRead', '输入的一部分'], ['缓存写入', 'cacheWrite', '输入的一部分'], ['推理 Tokens', 'reasoning', '输出的一部分']].map(([label, key, note]) => {
-    const value = el('strong', { title: number(t[key]) });
-    countTo(value, 'breakdown:' + key, t[key], tokens);
-    return el('div', { class: 'breakdown-item' }, [el('small', { text: label }), value, el('span', { text: note })]);
+    const value = el('span', { class: 'num' });
+    countTo(value, 'breakdown:' + key, t[key], amount);
+    const approx = cnApprox(t[key]);
+    return el('div', { class: 'breakdown-item' }, [el('small', { text: label }), el('strong', { title: number(t[key]) }, [value, approx ? el('small', { class: 'cn-approx', text: approx }) : null]), el('span', { text: note })]);
   }));
   renderRecords();
+}
+
+/* ---------------- 额度详情：这个账号的请求 ---------------- */
+
+/**
+ * 额度是「当前使用」那个账号的，这里把同一个账号发出的请求接在下面：当前 5 小时 / 周窗口里用了多少、
+ * 核验结果、最近几次请求，以及这个工具下各账号的分布（多账号时）。
+ * 按窗口查流水要走 worker，异步回来；结果按条件缓存，定时刷新时先用缓存画，免得面板一空一满、页面跳。
+ */
+const accountPanelCache = new Map();
+function accountRequestsPanel(account, meta) {
+  const panel = el('article', { class: 'panel account-requests' });
+  const now = Date.now();
+  const weekStart = account.week?.startAt ?? now - 7 * 86400000;
+  const fiveStart = account.five?.startAt;
+  const key = [account.kind, account.accountId, weekStart, fiveStart, current?.scannedAt].join('|');
+  const draw = data => drawAccountRequests(panel, account, meta, data);
+  const cached = accountPanelCache.get(key) || [...accountPanelCache.entries()].reverse().find(([k]) => k.startsWith(`${account.kind}|${account.accountId}|`))?.[1];
+  draw(cached || null);
+  if (accountPanelCache.has(key)) return panel;
+  const base = { from: D.dayKey(Math.min(weekStart, fiveStart ?? weekStart)), to: D.dayKey(now), source: meta.source, status: 'all', search: '', sort: 'time', page: 0 };
+  Promise.all([
+    api.requests({ ...base, since: weekStart, pageSize: 8, account: account.accountId || 'none' }),
+    fiveStart ? api.requests({ ...base, since: fiveStart, pageSize: 1, account: account.accountId || 'none' }) : Promise.resolve(null)
+  ]).then(([week, five]) => {
+    accountPanelCache.set(key, { week, five });
+    if (accountPanelCache.size > 12) accountPanelCache.delete(accountPanelCache.keys().next().value);
+    if (panel.isConnected) keepScroll(() => draw({ week, five }));
+  }).catch(() => { if (panel.isConnected) panel.querySelector('.account-requests-body')?.replaceChildren(empty('请求记录读取失败，请重试。')); });
+  return panel;
+}
+function drawAccountRequests(panel, account, meta, data) {
+  const label = account.accountLabel || meta.name + ' 账号';
+  const openAll = el('button', { class: 'text-btn' }, ['在请求记录里查看全部', icon('arrow')]);
+  openAll.addEventListener('click', () => {
+    state.reqAccount = account.accountId || ''; state.reqStatus = 'all'; state.reqPage = 0; $('request-status').value = 'all';
+    showUsageView('requests');
+    navigate('usage');
+  });
+  const heading = el('div', { class: 'panel-heading' }, [
+    el('div', {}, [el('h2', {}, ['这个账号的请求 ', el('span', { class: 'section-tag', text: label })]), el('p', { text: '本机 CLI 用这个账号发出的请求。额度按 TokenPulse 里「当前使用」的账号查询，请求按 CLI 当时登录的账号归属。' })]),
+    openAll
+  ]);
+  const body = el('div', { class: 'account-requests-body' });
+  panel.replaceChildren(heading, body);
+  if (!data) { body.append(el('p', { class: 'muted', text: '正在读取这个账号的请求…' })); return; }
+  const { week, five } = data;
+  const verdicts = week.counts;
+  const inferred = (week.accounts.find(item => item.id === (account.accountId || 'none'))?.inferred) || 0;
+  const cards = [
+    five ? metric('当前 5 小时窗口', amount(five.tokens), { unit: 'Tokens', approx: cnApprox(five.tokens), sub: `${number(five.counts.all)} 次请求 · ${money(five.costUsd)}` }) : null,
+    metric('当前周窗口', amount(week.tokens), { unit: 'Tokens', approx: cnApprox(week.tokens), sub: `${number(verdicts.all)} 次请求 · ${money(week.costUsd)}` }),
+    metric('型号核验', number(verdicts.mismatch + verdicts.suspect), {
+      unit: '次异常', tone: verdicts.mismatch + verdicts.suspect ? 'warn' : '',
+      sub: `${number(verdicts.match)} 次一致 · ${number(verdicts.unverified)} 次无法核验`
+    })
+  ].filter(Boolean);
+  body.append(metricGroup('本周窗口', 'requests', cards, cards.length === 2 ? 'two' : ''));
+  if (inferred) body.append(el('p', { class: 'sample-caption', text: `其中 ${number(inferred)} 次是 TokenPulse 开始记录登录之前的请求，按最早记下的账号推断。` }));
+  if (week.rows.length) {
+    body.append(el('div', { class: 'table-scroll compact-table' }, [el('table', {}, [
+      el('thead', {}, [el('tr', {}, ['时间', '项目', '型号', 'Tokens', '参考费用', '核验'].map((text, i) => el('th', { class: i === 3 || i === 4 ? 'n' : '', text })))]),
+      el('tbody', {}, week.rows.map(row => { const t = clock(row.at); return el('tr', { class: `request-row ${row.status}` }, [
+        el('td', { class: 'request-time', title: t.full }, [el('b', { text: `${t.day} ${t.time}` })]),
+        el('td', { class: 'project-cell', text: projectOf(row.cwd), title: row.cwd || '' }),
+        modelCell(row),
+        el('td', { class: 'n token-strong', title: number(row.tokens) }, qty(row.tokens)),
+        el('td', { class: 'n', text: row.priced ? money(row.costUsd) : '未定价' }),
+        el('td', {}, [el('span', { class: 'badge ' + VERIFY_TONE[row.status], text: row.statusLabel, title: row.reasons[0] || '' })])
+      ]); }))
+    ])]));
+  } else {
+    body.append(el('p', { class: 'muted account-empty', text: '当前周窗口里还没有从本机发出、归到这个账号的请求。' }));
+  }
+  // 这个工具下不止一个账号（或者有走中转的）：列出各账号本周的量
+  const others = week.accounts.filter(item => item.source === meta.source);
+  if (others.length > 1 || (others.length === 1 && others[0].id !== (account.accountId || 'none'))) {
+    body.append(el('div', { class: 'account-split' }, [
+      el('h3', {}, [icon('user'), `本周 ${meta.source} 各账号`]),
+      ...others.map(item => el('div', { class: 'account-split-row' + (item.id === account.accountId ? ' current' : '') }, [
+        el('span', { class: 'account-split-name', text: accountName(item), title: accountName(item) }),
+        el('span', { text: `${number(item.requests)} 次` }),
+        el('span', { text: `${tokens(item.tokens)} Tokens` }),
+        el('span', { text: money(item.costUsd) })
+      ]))
+    ]));
+  }
+}
+
+/* ---------------- 请求记录与型号核验 ---------------- */
+
+const VERIFY_TONE = { match: 'good', mismatch: 'critical', suspect: 'warning', unverified: 'neutral' };
+const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话']];
+let requestPage = null, requestSeq = 0, requestKey = '';
+const openRequests = new Set();
+function projectOf(cwd) { return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd : '—'; }
+function clock(at) {
+  const d = new Date(at), pad = n => String(n).padStart(2, '0');
+  return { day: `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`, full: d.toLocaleString(dateLocale(), { hour12: false }) };
+}
+function requestQuery(extra = {}) {
+  return { from: state.from, to: state.to, since: state.since, source: state.source, status: state.reqStatus, search: state.reqSearch.trim(), sort: state.reqSort, page: state.reqPage, pageSize: 20, account: state.reqAccount || undefined, ...extra };
+}
+/** 流水在主进程的 worker 里查；同样的条件、账本也没更新时直接用上一次的结果重画。 */
+async function loadRequests() {
+  const query = requestQuery();
+  const key = JSON.stringify(query) + '|' + (current?.scannedAt || '');
+  if (key === requestKey && requestPage) { drawRequests(); return; }
+  requestKey = key;
+  const seq = ++requestSeq;
+  if (!requestPage) $('request-rows').replaceChildren(el('tr', {}, [el('td', { colspan: 9, class: 'empty', text: '正在读取请求记录…' })]));
+  try {
+    const page = await api.requests(query);
+    if (seq !== requestSeq) return;
+    requestPage = page; state.reqPage = page.page;
+    // 查询是异步回来的，不在 render() 的滚动锁里；定时刷新时整表重画，同样要锁
+    keepScroll(drawRequests);
+  } catch {
+    if (seq === requestSeq) { requestKey = ''; showStatus('请求记录读取失败，请重试。', true); }
+  }
+}
+/** 核验结论的筛选标签。和上面的用量卡片放一起时四张大卡太重复，改成一排小标签。 */
+function verifyChip(status, label, value, extra = '') {
+  // 不一致 / 存疑为 0 时不上色，免得一片红黄吓人
+  const tone = status === 'all' || (!value && status !== 'match') ? '' : VERIFY_TONE[status];
+  return el('button', { class: `verify-chip ${tone}${state.reqStatus === status ? ' on' : ''}`, 'data-verify': status, 'aria-pressed': String(state.reqStatus === status) }, [
+    status === 'all' ? null : el('i', { 'aria-hidden': 'true' }),
+    el('span', { text: label }), el('b', { text: number(value) }), extra ? el('small', { text: extra }) : null
+  ]);
+}
+function modelCell(row) {
+  const main = row.returned || row.requested || row.model;
+  let sub = null;
+  if (row.status === 'mismatch') sub = [icon('alert'), `请求的是 ${row.requested}`];
+  else if (!row.returned) sub = ['返回型号未记录'];
+  else if (!row.requested) sub = ['请求型号未记录'];
+  // [1m] 只是 Claude Code 标的 1M 上下文，响应里本来就没有，不值得单独写一行
+  else if (row.requested.replace(/\[[^\]]*\]$/, '') !== row.returned) sub = [`请求 ${row.requested}`];
+  return el('td', { class: 'request-model' }, [el('b', { text: main, title: main }), sub ? el('small', {}, sub) : null].filter(Boolean));
+}
+/* 账号 */
+const ACCOUNT_BASIS = { session: '会话记录', timeline: '登录时间线', inferred: '推断' };
+const ACCOUNT_BASIS_HINT = {
+  session: '会话文件里直接记下了这个账号',
+  timeline: '按请求时间，对上当时 CLI 登录的账号',
+  inferred: 'TokenPulse 开始记录登录之前的请求，按最早记下的账号推断'
+};
+/** 项目和账号放一格：上面项目，下面是发出这次请求的账号。 */
+function projectAccountCell(row) {
+  const account = row.account
+    ? el('small', { class: 'account-line', title: `${row.account.label}\n${ACCOUNT_BASIS_HINT[row.account.basis]}` }, [icon('user'), el('span', { text: row.account.label }), row.account.basis === 'inferred' ? el('em', { text: '推断' }) : null])
+    : el('small', { class: 'account-line muted', text: row.official === false ? 'API Key / 中转站' : '账号未知' });
+  return el('td', { class: 'account-cell' }, [el('span', { class: 'project-name', text: projectOf(row.cwd), title: row.cwd || '' }), account]);
+}
+
+/**
+ * 这次请求大约占了多少官方额度：Token ÷ 它所在窗口折算出的整窗容量（capacityHistory，按本机用量倒推）。
+ * 只算走官方账号、而且就是 TokenPulse 查额度的那个账号的请求；窗口没折算出容量的（已用不到 2% 等）不编数。
+ */
+const KIND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'chatgpt', 'Grok Build': 'grok' };
+function quotaShare(row) {
+  const report = current?.accounts?.find(item => item.kind === KIND_OF_SOURCE[row.source]);
+  if (!report || !row.account || (report.accountId && row.account.id !== report.accountId)) return null;
+  const share = name => {
+    const point = report.capacityHistory?.[name]?.points?.find(p => row.at >= p.startAt && row.at < p.resetAt);
+    return point?.capacityTokens ? { pct: row.tokens / point.capacityTokens * 100, confidence: point.confidence } : null;
+  };
+  const week = share('week'), five = share('five');
+  return week || five ? { week, five } : null;
+}
+function sharePct(value) { return value < 0.01 ? '<0.01%' : value < 1 ? value.toFixed(2) + '%' : value.toFixed(1) + '%'; }
+function quotaCell(row) {
+  const share = quotaShare(row);
+  if (!share) return el('td', { class: 'n muted quota-share', text: '—', title: '走中转 / 没对上账号，或者这个窗口还折算不出整窗容量' });
+  const lines = [share.five ? `5 小时 ${sharePct(share.five.pct)}` : null, share.week ? `周 ${sharePct(share.week.pct)}` : null].filter(Boolean);
+  const low = [share.five, share.week].some(item => item && item.confidence === 'low');
+  return el('td', { class: 'n quota-share' + (low ? ' low' : ''), title: `≈ 这次请求的 Token ÷ 窗口整窗容量（按本机用量倒推的估算）${low ? '\n窗口已用不到 5%，偏差较大' : ''}` },
+    lines.map(text => el('span', { text: '≈ ' + text })));
+}
+function accountName(item) { return item.id === 'none' ? '没对上账号（中转 / API Key 等）' : item.label || item.id; }
+/** 账号筛选的选项跟着数据走：当前时间和工具下出现过的账号。 */
+function syncAccountOptions(page) {
+  const select = $('request-account');
+  const items = page.accounts || [];
+  const wanted = ['', ...items.map(item => item.id)];
+  if (state.reqAccount && !wanted.includes(state.reqAccount)) wanted.push(state.reqAccount);
+  const have = [...select.options].map(option => option.value);
+  if (wanted.join('\u0000') !== have.join('\u0000')) {
+    select.replaceChildren(el('option', { value: '', text: '全部账号' }), ...wanted.slice(1).map(id => {
+      const item = items.find(entry => entry.id === id);
+      return el('option', { value: id, text: item ? `${accountName(item)} · ${item.source}` : id });
+    }));
+  }
+  select.value = state.reqAccount;
+}
+
+/** request-verify.ts 里「问题」排在「说明」前面；说明都以这些开头。 */
+const NOTE_PREFIX = /^(这段会话|Codex 会话|这一轮|这次请求接的是|走的是|经 |grok-|来自 CC Switch)/;
+function requestDetail(row) {
+  const t = clock(row.at);
+  const fields = [
+    ['时间', t.full], ['请求型号', row.requested || '未记录'], ['返回型号', row.returned || '未记录'], ['响应格式', row.channel],
+    ['账号', row.account ? row.account.label : row.official === false ? 'API Key / 中转站' : '对不上'],
+    ['账号依据', row.account ? `${ACCOUNT_BASIS[row.account.basis]}：${ACCOUNT_BASIS_HINT[row.account.basis]}` : '—'],
+    ['账号类型', row.official === true ? '官方登录账号' : row.official === false ? 'API Key / 中转站' : '未知'],
+    ['额度占用（估算）', (share => share ? [share.five ? `5 小时 ${sharePct(share.five.pct)}` : '', share.week ? `周 ${sharePct(share.week.pct)}` : ''].filter(Boolean).join(' · ') : '—')(quotaShare(row))],
+    ['Tokens', number(row.tokens)],
+    ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.session, true],
+    ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)], ['推理 Tokens', number(row.reasoning)],
+    ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : [])
+  ];
+  return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 9 }, [
+    el('div', { class: 'detail-grid' }, fields.map(([label, value, mono]) => el('div', {}, [el('small', { text: label }), el('span', { class: mono ? 'mono' : '', text: value, title: value })]))),
+    row.reasons.length ? el('div', { class: 'detail-reasons' }, row.reasons.map(reason => {
+      const problem = (row.status === 'mismatch' || row.status === 'suspect') && !NOTE_PREFIX.test(reason);
+      return el('p', { class: problem ? 'problem' : '' }, [icon(problem ? 'alert' : 'info'), reason]);
+    })) : null
+  ].filter(Boolean))]);
+}
+function drawRequests() {
+  const page = requestPage; if (!page) return;
+  const c = page.counts;
+  const verifiable = c.match + c.mismatch + c.suspect;
+  $('verify-tiles').replaceChildren(
+    el('span', { class: 'verify-chips-label', text: '型号核验' }),
+    verifyChip('all', '全部请求', c.all),
+    verifyChip('match', '型号一致', c.match, verifiable ? `${(Math.floor(c.match / verifiable * 1000) / 10).toFixed(1)}%` : ''),
+    verifyChip('mismatch', '型号不一致', c.mismatch),
+    verifyChip('suspect', '响应存疑', c.suspect),
+    verifyChip('unverified', '无法核验', c.unverified)
+  );
+  $('request-count').textContent = `${number(page.total)} 条`;
+  syncAccountOptions(page);
+  $('export-requests').disabled = !page.total;
+  const rows = [];
+  page.rows.forEach((row, i) => {
+    const t = clock(row.at), open = openRequests.has(row.key);
+    rows.push(stagger(el('tr', { class: `request-row ${row.status}${open ? ' open' : ''}`, 'data-key': row.key, tabindex: '0', 'aria-expanded': String(open) }, [
+      el('td', { class: 'request-time', title: t.full }, [el('b', { text: `${t.day} ${t.time}` }), el('small', {}, [miniLogo(row.source), row.source])]),
+      projectAccountCell(row),
+      modelCell(row),
+      el('td', { class: 'n', title: number(row.input) }, qty(row.input)),
+      el('td', { class: 'n', title: number(row.output) }, qty(row.output)),
+      el('td', { class: 'n', title: number(row.cacheRead) }, qty(row.cacheRead)),
+      quotaCell(row),
+      el('td', { class: 'n', text: row.priced ? money(row.costUsd) : '未定价' }),
+      el('td', {}, [el('span', { class: 'badge ' + VERIFY_TONE[row.status], text: row.statusLabel, title: row.reasons[0] || '' })])
+    ]), i));
+    if (open) rows.push(requestDetail(row));
+  });
+  if (!rows.length) rows.push(el('tr', {}, [el('td', { colspan: 9, class: 'empty', text: c.all ? '这个核验结论下没有请求，换一个试试。' : '所选时间和工具下没有请求记录。' })]));
+  $('request-rows').replaceChildren(...rows);
+  $('request-pagination').textContent = `第 ${page.page + 1} / ${page.pages} 页 · 共 ${number(page.total)} 次请求`;
+  $('request-prev').disabled = page.page === 0; $('request-next').disabled = page.page >= page.pages - 1;
+}
+/** 侧栏上的红点：最近 7 天型号不一致 / 响应存疑的次数（快照里带着，不用进页面才知道）。 */
+function renderRequestAlert(snapshot) {
+  const n = snapshot.requestFlags?.flagged || 0;
+  $('nav-request-alert').hidden = !n;
+  $('nav-request-alert').textContent = n > 99 ? '99+' : String(n);
+  $('nav-request-alert').title = n ? `最近 7 天有 ${n} 次请求型号不一致或响应存疑` : '';
+}
+function requeryRequests(resetPage = true) {
+  if (resetPage) state.reqPage = 0;
+  openRequests.clear();
+  if (current && requestsVisible()) loadRequests();
 }
 
 /* ---------------- 渲染与导航 ---------------- */
@@ -694,12 +1045,18 @@ function render(snapshot) {
    * 清空那一刻页面变矮，浏览器把滚动位置夹到顶部附近，内容回来后也不会自己滚回去 ——
    * 看起来就是「一刷新就被拉回最上面」。重建期间锁住主区高度，重建完还原滚动位置。
    */
-  const main = $('main'), scrollY = window.scrollY;
+  keepScroll(() => renderPage(snapshot));
+}
+/** 重建期间锁住主区高度，重建完还原滚动位置。 */
+/** 滚动的是工作区，不是整个窗口（标题栏下面那块，见 app.css 的 .workspace）。 */
+const scroller = document.querySelector('.workspace');
+function keepScroll(rebuild) {
+  const main = $('main'), scrollY = scroller.scrollTop;
   main.style.minHeight = `${main.offsetHeight}px`;
-  try { renderPage(snapshot); }
+  try { rebuild(); }
   finally {
     main.style.minHeight = '';
-    if (window.scrollY !== scrollY) window.scrollTo({ top: scrollY, behavior: 'instant' });
+    if (scroller.scrollTop !== scrollY) scroller.scrollTo({ top: scrollY, behavior: 'instant' });
   }
 }
 function renderPage(snapshot) {
@@ -708,15 +1065,46 @@ function renderPage(snapshot) {
   if (state.page === 'overview') renderOverview();
   if (state.page === 'quota') renderQuota();
   if (state.page === 'usage') renderUsage();
-  $('today-label').textContent = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  if (requestsVisible()) loadRequests();
+  renderRequestAlert(snapshot);
+  syncSourceOptions(snapshot);
+  $('today-label').textContent = new Date().toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
   $('stamp').textContent = snapshot.scannedAt ? `${date(snapshot.scannedAt)} 已更新` : '正在扫描本地会话…';
   $('data-summary').textContent = `${number(snapshot.fileCount || 0)} 个会话文件 · ${number(snapshot.totals.all.requests)} 次历史请求 · 本机时区`;
   syncSegs();
 }
+/** 逐条请求在用量明细页里，是它的默认视图。 */
+function requestsVisible() { return state.page === 'usage' && state.usageView === 'requests'; }
+function showUsageView(view) {
+  state.usageView = view === 'daily' ? 'daily' : 'requests';
+  const requests = state.usageView === 'requests';
+  $('view-requests').hidden = !requests; $('view-daily').hidden = requests;
+  $('request-count').hidden = !requests; $('record-count').hidden = requests;
+  // 标题栏上的按钮跟着视图换：说明和逐条导出只属于逐条请求
+  $('verify-help').hidden = $('export-requests').hidden = !requests; $('export-csv').hidden = requests;
+  $('detail-caption').textContent = requests
+    ? '每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情'
+    : '按日期、工具、模型聚合；费用为参考估算';
+  for (const button of $('usage-view').querySelectorAll('[data-view]')) { const on = button.dataset.view === state.usageView; button.classList.toggle('on', on); button.setAttribute('aria-pressed', String(on)); }
+  syncSeg($('usage-view'));
+}
+/**
+ * 时间范围按页面各管各的：总览默认 30 天、改了会记住；用量明细每次打开都从「今天」开始（看明细一般是看今天的）。
+ */
+const overviewRange = { days: 30, from: '', to: '', follow: false };
 function navigate(page) {
+  // 以前的「请求记录」页并进了用量明细（通知、额度详情的链接还会传 requests 过来）
+  if (page === 'requests') { page = 'usage'; showUsageView('requests'); }
   if (!['overview', 'quota', 'usage'].includes(page)) page = 'overview';
+  const rangePage = state.rangePage || 'overview';
+  if (page === 'usage' && state.page !== 'usage') {
+    if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
+    Object.assign(state, { days: 1, follow: false, tablePage: 0, reqPage: 0 });
+  }
+  if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
+  if (page !== 'quota') state.rangePage = page;
   state.page = page;
-  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，都有迹可循', '按日期、工具与模型查看消耗，找到值得关注的变化。'] }[page];
+  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
@@ -727,7 +1115,7 @@ function navigate(page) {
   enter();
   if (current) render(current);
   syncSegs();
-  window.scrollTo({ top: 0, behavior: 'instant' });
+  scroller.scrollTo({ top: 0, behavior: 'instant' });
 }
 let themeTimer = 0;
 function resolvedTheme() { return themeMode === 'system' ? (darkQuery.matches ? 'dark' : 'light') : themeMode; }
@@ -845,7 +1233,10 @@ const PREF_ROWS = {
       { value: 80, label: '已用 80% 时提醒' },
       { value: 85, label: '已用 85% 时提醒', hint: '默认' },
       { value: 90, label: '已用 90% 时提醒' },
-      { value: 95, label: '已用 95% 时提醒', hint: '快用完才提醒' }] }
+      { value: 95, label: '已用 95% 时提醒', hint: '快用完才提醒' }] },
+    { key: 'notifyMismatch', title: '型号核验提醒', hint: '新请求的返回型号和请求的对不上、或者响应格式不像官方时，发一条系统通知，点开直接跳到请求记录。', options: [
+      { value: true, label: '发现就提醒', hint: '默认' },
+      { value: false, label: '不提醒', hint: '只在请求记录页和侧栏红点里显示' }] }
   ]
 };
 function settingRow(title, hint, control) {
@@ -923,11 +1314,133 @@ function loadUpdateState() {
 }
 api.onUpdateState?.(renderUpdate);
 
+/* ---------------- CC Switch 导入（数据页） ---------------- */
+
+function renderCcSwitch(status = current?.ccSwitch, prefs) {
+  if (!status) return;
+  let title, sub, tone = '';
+  if (!status.enabled) { title = '已关闭导入'; sub = '统计里只有 TokenPulse 自己扫描到的记录'; }
+  else if (!status.found) { title = '没有找到 CC Switch'; sub = `本机没有 ${status.path || '~/.cc-switch/cc-switch.db'}，装了 CC Switch 之后会自动导入`; }
+  else if (status.error) { title = '读取 CC Switch 失败'; sub = status.error; tone = 'warn'; }
+  else {
+    const requests = status.sources.reduce((n, item) => n + item.requests, 0);
+    title = requests ? `已补入 ${number(requests)} 次请求` : '没有需要补的记录';
+    sub = [
+      status.sources.length ? status.sources.map(item => `${item.source} ${number(item.requests)}`).join(' · ') : '',
+      `${number(status.importedDays)} 个「天 × 工具」来自 CC Switch，${number(status.skippedDays)} 个本机已有、跳过`,
+      status.proxyRequests ? `${number(status.proxyRequests)} 次代理请求用于型号核验` : '',
+      status.syncedAt ? `${date(status.syncedAt)} 同步` : ''
+    ].filter(Boolean).join('；');
+    tone = 'ok';
+  }
+  const sync = el('button', { class: 'btn', id: 'cc-switch-sync' }, [icon('refresh'), '立即同步']);
+  sync.disabled = !status.enabled;
+  sync.addEventListener('click', async () => {
+    sync.disabled = true; sync.classList.add('is-busy');
+    try { render(await api.syncCcSwitch()); renderCcSwitch(); }
+    catch { $('prefs-status').textContent = '同步失败，请重试'; }
+    finally { sync.disabled = false; sync.classList.remove('is-busy'); }
+  });
+  $('cc-switch-card').className = `update-card ${tone}`.trim();
+  $('cc-switch-card').replaceChildren(
+    el('span', { class: 'update-icon' }, [icon(status.found && status.enabled && !status.error ? 'check' : 'info')]),
+    el('div', { class: 'update-text' }, [el('b', { text: title }), el('span', { text: sub })]),
+    el('div', { class: 'update-actions' }, [sync])
+  );
+  if (prefs) {
+    $('cc-switch-pref').replaceChildren(optionSelect({
+      id: 'pref-ccSwitch', label: '从 CC Switch 导入', value: prefs.ccSwitch !== false,
+      options: [
+        { value: true, label: '自动导入', hint: '默认。检测到 CC Switch 就补上缺的记录' },
+        { value: false, label: '不导入', hint: '只统计 TokenPulse 自己扫描到的' }
+      ],
+      onChange: async next => { if (await savePref('ccSwitch', next)) { render(await api.refresh()); renderCcSwitch(); } }
+    }));
+  }
+}
+
+/** 工具筛选的选项跟着数据走：导入了 OpenCode 之类的才会出现。 */
+function syncSourceOptions(snapshot) {
+  const select = $('source-filter');
+  const names = ['Claude Code', 'Codex CLI', 'Grok Build', ...(snapshot.sources || []).map(item => item.source)].filter((name, i, all) => all.indexOf(name) === i);
+  const currentNames = [...select.options].slice(1).map(option => option.value);
+  if (names.join('\u0000') === currentNames.join('\u0000')) return;
+  select.replaceChildren(el('option', { value: 'all', text: '全部工具' }), ...names.map(name => el('option', { value: name, text: name })));
+  select.value = names.includes(state.source) ? state.source : 'all';
+}
+
+/* ---------------- 模型知识库（关于页） ---------------- */
+
+/** 知识库写的是哪天就显示哪天：按时区换算的话，东八区零点的日期在别的时区会变成前一天。 */
+function knowledgeDate(value) {
+  const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12).toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric' }) : '—';
+}
+function renderKnowledge(info) {
+  if (!info) return;
+  const tone = info.error ? 'warn' : info.updated ? 'accent' : '';
+  const sub = [
+    `${knowledgeDate(info.updatedAt)} 更新`,
+    `${number(info.prices)} 条定价规则 · ${number(info.aliases)} 条型号等价规则`,
+    info.source === 'downloaded' ? '已从 GitHub 更新' : '随安装包内置',
+    info.error || (info.checkedAt ? `${date(info.checkedAt)} 检查过${info.updated ? '，已更新到最新' : '，已是最新'}` : '')
+  ].filter(Boolean).join(' · ');
+  const check = el('button', { class: 'btn', id: 'knowledge-check' }, [icon('refresh'), '检查更新']);
+  check.addEventListener('click', async () => {
+    check.disabled = true; check.classList.add('is-busy');
+    try { renderKnowledge(await api.checkKnowledge()); }
+    catch { $('prefs-status').textContent = '检查知识库失败，请重试'; }
+    finally { check.disabled = false; check.classList.remove('is-busy'); }
+  });
+  $('knowledge-card').className = `update-card ${tone}`.trim();
+  $('knowledge-card').replaceChildren(
+    el('span', { class: 'update-icon' }, [icon('cost')]),
+    el('div', { class: 'update-text' }, [el('b', { text: `知识库 v${info.version}` }), el('span', { text: sub })]),
+    el('div', { class: 'update-actions' }, [check])
+  );
+  renderKnowledgeGaps();
+}
+/** 数据里还没有定价的型号：用户一眼就知道知识库缺什么。 */
+function renderKnowledgeGaps() {
+  const gaps = new Map();
+  for (const row of current?.usage || []) if (row.priced === false) gaps.set(row.model, (gaps.get(row.model) || 0) + row.requests);
+  const list = [...gaps].sort((a, b) => b[1] - a[1]);
+  $('knowledge-gaps').hidden = !list.length;
+  $('knowledge-gaps').replaceChildren(
+    icon('alert'),
+    el('span', { text: `${number(list.length)} 个型号还没有定价：${list.slice(0, 6).map(([model, n]) => `${model}（${number(n)} 次）`).join('、')}${list.length > 6 ? ' 等' : ''}。更新知识库后会自动重算。` })
+  );
+}
+function loadKnowledge() { api.knowledgeState?.().then(renderKnowledge).catch(() => {}); }
+
+const NUMBER_OPTIONS = [
+  { value: 'exact', label: '精确到个位', hint: '默认。例如 3,031,245,120' },
+  { value: 'compact', label: '简写', hint: '例如 3.03B、240.3M' }
+];
+function setNumberMode(mode) {
+  numberMode = mode === 'compact' ? 'compact' : 'exact';
+  try { localStorage.setItem(NUMBER_KEY, numberMode); } catch { /* 存不下就只对这次生效 */ }
+  if (current) render(current);
+}
+const LANGUAGE_OPTIONS = [
+  { value: 'system', label: '跟随系统', hint: '跟着 Windows 的显示语言走' },
+  { value: 'zh', label: '简体中文' },
+  { value: 'en', label: 'English' }
+];
 function renderSettings(prefs) {
   $('settings-general').replaceChildren(
     settingRow('外观', '深浅色。选「跟随系统」就跟着 Windows 的设置走。', optionSelect({ id: 'pref-theme', label: '外观', value: themeMode, options: THEME_OPTIONS, onChange: setThemeMode })),
+    settingRow('数字显示', 'Token 和请求数怎么显示。中文界面会在数字后面再加一个小字，例如「≈30.3亿」，方便按中文习惯读。图表坐标轴始终用简写。', optionSelect({
+      id: 'pref-number', label: '数字显示', value: numberMode, options: NUMBER_OPTIONS, onChange: setNumberMode
+    })),
+    settingRow('语言', '界面语言。切换后界面会重新加载。', optionSelect({
+      id: 'pref-language', label: '语言', value: window.PulseI18n?.mode() || 'system', options: LANGUAGE_OPTIONS,
+      // 主进程的托盘菜单和通知也跟着换：先存进 prefs，再重新加载界面
+      onChange: async next => { await savePref('language', next); window.PulseI18n?.setMode(next); }
+    })),
     ...PREF_ROWS.general.map(row => prefRow(row, prefs)));
   $('settings-alerts').replaceChildren(...PREF_ROWS.alerts.map(row => prefRow(row, prefs)));
+  renderCcSwitch(current?.ccSwitch, prefs);
 }
 function showSettingsTab(tab) {
   closeOptionMenu();
@@ -951,6 +1464,7 @@ async function openSettings(tab = 'general') {
   loadOfficialAccounts();
   $('update-auto').replaceChildren();
   loadUpdateState();
+  loadKnowledge();
 }
 /* ---------------- 事件 ---------------- */
 
@@ -999,7 +1513,7 @@ function openPicker() {
   // 要等弹出动画（从 92% 放大）播完再量，否则量到的高度偏小、滚得不够。
   const reveal = () => {
     const overflow = $('range-popover').getBoundingClientRect().bottom - (window.innerHeight - 16);
-    if (overflow > 0) window.scrollBy({ top: overflow, behavior: reducedMotion.matches ? 'instant' : 'smooth' });
+    if (overflow > 0) scroller.scrollBy({ top: overflow, behavior: reducedMotion.matches ? 'instant' : 'smooth' });
   };
   if (reducedMotion.matches) reveal(); else $('range-popover').addEventListener('animationend', reveal, { once: true });
 }
@@ -1017,7 +1531,7 @@ function applyRange(days, from, to, follow = false) {
 $('range-button').addEventListener('click', () => { if ($('range-popover').hidden) openPicker(); else closePicker(); });
 $('range-presets').addEventListener('click', event => {
   const button = event.target.closest('[data-days]'); if (!button) return;
-  applyRange(button.dataset.days === 'all' ? 'all' : Number(button.dataset.days));
+  applyRange(['all', '24h'].includes(button.dataset.days) ? button.dataset.days : Number(button.dataset.days));
 });
 // 点日历：第一下定开始，第二下定结束；第二下早于开始就重新从这一天开始（和 AllAi 一样）。
 $('cal-grid').addEventListener('click', event => {
@@ -1056,7 +1570,63 @@ function showWindowState(maximized) {
 api.windowState?.().then(state => showWindowState(state.maximized)).catch(() => {});
 api.onWindowState?.(state => showWindowState(state.maximized));
 
-$('source-filter').addEventListener('change', event => { state.source = event.target.value; state.tablePage = 0; if (current) render(current); });
+$('source-filter').addEventListener('change', event => { state.source = event.target.value; state.tablePage = 0; state.reqPage = 0; openRequests.clear(); if (current) render(current); });
+$('verify-tiles').addEventListener('click', event => {
+  const tile = event.target.closest('[data-verify]'); if (!tile) return;
+  // 再点一次同一张卡片 = 取消筛选
+  state.reqStatus = tile.dataset.verify === state.reqStatus ? 'all' : tile.dataset.verify;
+  $('request-status').value = state.reqStatus;
+  requeryRequests();
+});
+$('request-status').addEventListener('change', event => { state.reqStatus = event.target.value; requeryRequests(); });
+$('usage-view').addEventListener('click', event => {
+  const button = event.target.closest('[data-view]'); if (!button || button.dataset.view === state.usageView) return;
+  showUsageView(button.dataset.view);
+  if (current) render(current);
+});
+$('request-account').addEventListener('change', event => { state.reqAccount = event.target.value; requeryRequests(); });
+$('request-sort').addEventListener('change', event => { state.reqSort = event.target.value; requeryRequests(); });
+let requestSearchTimer = 0;
+$('request-search').addEventListener('input', event => {
+  state.reqSearch = event.target.value;
+  clearTimeout(requestSearchTimer);
+  // 每敲一个字就起一个查询线程太浪费，停下来 250ms 再查
+  requestSearchTimer = setTimeout(() => requeryRequests(), 250);
+});
+$('request-prev').addEventListener('click', () => { state.reqPage--; requeryRequests(false); });
+$('request-next').addEventListener('click', () => { state.reqPage++; requeryRequests(false); });
+/**
+ * 展开 / 收起只动这一行下面的详情，不整表重画：整表 replaceChildren 时被点的那一行（刚拿到焦点）
+ * 被删掉再插回来，Chromium 的滚动锚点跟着丢了，页面会往上跳好几百像素（真实鼠标点击才复现）。
+ */
+function toggleRequest(row) {
+  const key = row.dataset.key;
+  const data = requestPage?.rows.find(item => item.key === key); if (!data) return;
+  const open = !openRequests.has(key);
+  if (open) { openRequests.add(key); row.after(requestDetail(data)); }
+  else { openRequests.delete(key); if (row.nextElementSibling?.classList.contains('request-detail')) row.nextElementSibling.remove(); }
+  row.classList.toggle('open', open);
+  row.setAttribute('aria-expanded', String(open));
+}
+$('request-rows').addEventListener('click', event => { const row = event.target.closest('.request-row'); if (row) toggleRequest(row); });
+$('request-rows').addEventListener('keydown', event => {
+  const row = event.target.closest('.request-row');
+  if (row && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggleRequest(row); }
+});
+$('verify-help').addEventListener('click', () => {
+  const open = $('verify-method').hidden;
+  $('verify-method').hidden = !open;
+  $('verify-help').setAttribute('aria-expanded', String(open));
+});
+$('export-requests').addEventListener('click', async () => {
+  const button = $('export-requests'); button.disabled = true;
+  try {
+    const page = await api.requests(requestQuery({ all: true }));
+    const rows = page.rows.map(row => ({ ...row, time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
+    if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
+  } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
+  finally { button.disabled = !requestPage?.total; }
+});
 $('chart-metric').addEventListener('click', event => {
   const button = event.target.closest('[data-metric]'); if (!button) return;
   state.metric = button.dataset.metric;
@@ -1148,6 +1718,10 @@ new ResizeObserver(() => {
 }).observe($('daily-chart'));
 window.addEventListener('resize', () => { moveIndicator(); syncSegs(); closeOptionMenu(); });
 api.onSnapshot(render);
+api.onOpenPage?.(target => {
+  if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
+  navigate(target?.page || 'overview');
+});
 api.onError(message => showStatus(message, true));
 api.snapshot().then(render).catch(() => showStatus('本地数据读取失败，请点击刷新重试。', true));
 setInterval(() => { if (current && !document.hidden) render({ ...current, now: Date.now() }); }, 30000);
