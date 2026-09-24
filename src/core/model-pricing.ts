@@ -9,9 +9,11 @@
  * 所以这张表算出来的一律是**估算**，界面上要标出来。定价随时会变，而且第三方中转站
  * 的价格和官方也不一样 —— 它只是让「这个月大概花了多少」有个量级，别当账单。
  *
- * 匹配从上往下，第一条命中生效，所以具体的要排在笼统的前面
- * （`claude.*haiku` 必须在 `claude` 前面），和 lib/context-window.ts 的表一个规矩。
+ * 匹配从上往下，第一条命中生效，所以具体的要排在笼统的前面（`claude.*haiku` 必须在 `claude` 前面）。
+ * 表本身在 `knowledge/models.json`，能在线更新（knowledge.ts）。
  */
+
+import { priceRules } from "./knowledge";
 
 export type ModelPrice = {
   /** 每百万 token 多少美元。 */
@@ -22,38 +24,11 @@ export type ModelPrice = {
   note: string;
 };
 
-const TABLE: { test: RegExp; price: ModelPrice }[] = [
-  // Anthropic
-  { test: /claude.*haiku/i, price: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25, note: "Claude Haiku" } },
-  { test: /claude.*opus.*4[.-]?[01]?$/i, price: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75, note: "Claude Opus 4 / 4.1" } },
-  { test: /claude.*opus/i, price: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25, note: "Claude Opus 4.5 及之后" } },
-  { test: /claude.*(sonnet|fable)/i, price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, note: "Claude Sonnet" } },
-  { test: /claude/i, price: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75, note: "Claude（按 Sonnet 估）" } },
-
-  // OpenAI / Codex
-  { test: /gpt-5\.4-nano/i, price: { input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0, note: "GPT-5.4 nano" } },
-  { test: /gpt-5\.4-mini/i, price: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0, note: "GPT-5.4 mini" } },
-  { test: /gpt-5\.4/i, price: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0, note: "GPT-5.4" } },
-  { test: /gpt-5\.2/i, price: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0, note: "GPT-5.2" } },
-  { test: /gpt-(5\.[56]|6)/i, price: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0, note: "GPT-5.5 及之后" } },
-  { test: /gpt-4o|gpt-4-turbo/i, price: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0, note: "GPT-4o" } },
-  { test: /^o[34]/i, price: { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0, note: "o 系列" } },
-
-  // xAI（Grok 自己会报花费，这里只是兜底）
-  { test: /grok.*(code|build)/i, price: { input: 0.2, output: 1.5, cacheRead: 0.02, cacheWrite: 0, note: "grok-code / build" } },
-  { test: /grok/i, price: { input: 3, output: 15, cacheRead: 0.75, cacheWrite: 0, note: "Grok" } },
-
-  // 其它常见的
-  { test: /gemini.*(flash|lite)/i, price: { input: 0.3, output: 2.5, cacheRead: 0.075, cacheWrite: 0, note: "Gemini Flash" } },
-  { test: /gemini/i, price: { input: 1.25, output: 10, cacheRead: 0.31, cacheWrite: 0, note: "Gemini Pro" } },
-  { test: /deepseek/i, price: { input: 0.28, output: 0.42, cacheRead: 0.028, cacheWrite: 0, note: "DeepSeek" } },
-  { test: /qwen|glm|kimi|moonshot/i, price: { input: 0.6, output: 2, cacheRead: 0.06, cacheWrite: 0, note: "国产长文模型" } },
-];
-
+/** 单价表在 knowledge/models.json 里（见 knowledge.ts），这里只负责匹配。 */
 export function priceOf(modelId: string): ModelPrice | null {
   const id = (modelId || "").trim();
   if (!id) return null;
-  for (const row of TABLE) if (row.test.test(id)) return row.price;
+  for (const row of priceRules()) if (row.test.test(id)) return row.price;
   return null;
 }
 

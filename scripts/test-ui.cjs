@@ -20,6 +20,15 @@ fs.writeFileSync(path.join(dataPath, 'quota-history.json'), JSON.stringify({ ver
   chatgpt: Array.from({ length: 5 }, (_, i) => ({ at: fixtureNow - (4 - i) * hour, five: 20, fiveReset: iso(fixtureNow + 3 * hour), week: 46 + i, weekReset: iso(fixtureNow + 72 * hour), plan: 'plus', resetCredits: 1 })),
   grok: [{ at: fixtureNow - 2 * hour, week: 95, weekReset: iso(fixtureNow - hour) }]
 } }));
+// 请求流水：一条型号不一致、一条一致、一条 Codex（无法核验）。型号名带 QA 前缀，和真实会话区分开。
+const requestMonth = (() => { const d = new Date(fixtureNow); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })();
+fs.mkdirSync(path.join(dataPath, 'requests'), { recursive: true });
+const qaRequest = (id, minutesAgo, extra) => ({ id, at: fixtureNow - minutesAgo * 60000, kind: 'claude-code', file: 'ui-test-claude', cwd: 'D:\\qa\\tp-ui-fixture', input: 1200, output: 80, cacheRead: 900, cacheWrite: 10, reasoning: 0, costUsd: 0, calls: 1, ...extra });
+fs.writeFileSync(path.join(dataPath, 'requests', `${requestMonth}.jsonl`), [
+  qaRequest('qa-1', 3, { model: 'claude-QA-sonnet', requested: 'claude-QA-opus[1m]', returned: 'claude-QA-sonnet', responseId: 'msg_01' + 'A'.repeat(22), requestId: 'req_011C' + 'B'.repeat(20) }),
+  qaRequest('qa-2', 2, { model: 'claude-QA-opus', requested: 'claude-QA-opus[1m]', returned: 'claude-QA-opus', responseId: 'msg_01' + 'C'.repeat(22), requestId: 'req_011C' + 'D'.repeat(20) }),
+  qaRequest('qa-3', 1, { kind: 'codex', file: 'ui-test-codex', model: 'gpt-QA', requested: 'gpt-QA', responseId: 'resp_' + 'e'.repeat(50) })
+].map(row => JSON.stringify(row)).join('\n') + '\n');
 const exportPath = path.join(temp, 'export.csv');
 dialog.showSaveDialog = async () => ({ canceled: false, filePath: exportPath });
 let finishQuota;
@@ -86,6 +95,21 @@ app.on('web-contents-created', (_, contents) => {
       assert.match(await evaluate("document.getElementById('update-card').textContent"), /当前版本 v\d+\.\d+\.\d+/);
       assert.match(await evaluate("document.getElementById('update-card').textContent"), /开发模式不检查更新/);
       assert.equal(await evaluate("document.getElementById('pref-autoUpdate')"), null);
+      // 当前版本来自 package.json，不是 Electron 自己的版本号
+      assert.ok((await evaluate("document.getElementById('update-card').textContent")).includes('v' + require(path.join(appRoot, 'package.json')).version));
+      // 模型知识库：版本、规则数、检查按钮
+      await until("document.getElementById('knowledge-card').textContent.includes('知识库 v')");
+      assert.match(await evaluate("document.getElementById('knowledge-card').textContent"), /条定价规则.*条型号等价规则/);
+      assert.equal(await evaluate("Boolean(document.getElementById('knowledge-check'))"), true);
+      // 数据页：CC Switch 导入的状态卡片和开关
+      await evaluate("document.querySelector('[data-settings-tab=data]').click()");
+      assert.ok((await evaluate("document.getElementById('cc-switch-card').textContent")).length > 0);
+      assert.equal(await evaluate("Boolean(document.getElementById('pref-ccSwitch'))"), true);
+      // 通用页：语言切换（中文 / English / 跟随系统），词典已加载
+      await evaluate("document.querySelector('[data-settings-tab=general]').click()");
+      assert.match(await evaluate("document.getElementById('pref-language').textContent"), /跟随系统|简体中文|English/);
+      assert.equal(await evaluate("window.PulseI18n.t('请求记录')"), 'Requests');
+      await evaluate("document.querySelector('[data-settings-tab=about]').click()");
       // 这一版去掉的：关于里的「本机 CLI」、侧栏「本机持续记录」、总览「数据只保存在本机」；「偏好设置」改叫「设置」。
       assert.equal(await evaluate("document.body.textContent.includes('本机 CLI') || document.body.textContent.includes('本机持续记录') || document.body.textContent.includes('数据只保存在本机')"), false);
       assert.equal(await evaluate("document.getElementById('settings-open').textContent.trim()"), '设置');
@@ -127,14 +151,16 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("Boolean(document.querySelector('.capacity-chart svg, .capacity-chart .empty'))"), true);
       await evaluate("document.querySelector('[data-cap-window=week]').click(); document.querySelector('[data-cap-metric=tokens]').click()");
       // 定时刷新（onSnapshot / 30 秒重绘）不能把页面拉回顶部
-      await evaluate("window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' })");
-      const scrolled = await evaluate("window.scrollY");
+      // 滚动的是工作区，不是整个窗口
+      assert.equal(await evaluate("getComputedStyle(document.body).overflow"), 'hidden');
+      await evaluate("scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'instant' })");
+      const scrolled = await evaluate("scroller.scrollTop");
       assert.ok(scrolled > 300, `test page should be scrollable, got ${scrolled}`);
       await evaluate("render({ ...current, now: Date.now() })");
-      assert.equal(await evaluate("window.scrollY"), scrolled, '刷新后滚动位置不变');
+      assert.equal(await evaluate("scroller.scrollTop"), scrolled, '刷新后滚动位置不变');
       // 指标小卡片：三组、每组都有卡片
       assert.equal(await evaluate("document.querySelectorAll('.quota-window-grid .window-panel')[0].querySelectorAll('.metric-group').length"), 3);
-      await evaluate("window.scrollTo({ top: 0, behavior: 'instant' })");
+      await evaluate("scroller.scrollTo({ top: 0, behavior: 'instant' })");
       await evaluate("document.querySelector('[data-account=grok]').click()");
       assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /历史记录/);
       await evaluate("document.querySelector('[data-account=claude]').click()");
@@ -144,7 +170,14 @@ app.on('web-contents-created', (_, contents) => {
       assert.match(await evaluate("document.querySelector('.quota-card .quota-card-foot').textContent"), /额度已用完，等待重置/);
       assert.doesNotMatch(await evaluate("document.querySelector('.quota-card .quota-card-foot').textContent"), /235/);
       console.log('PASS exhausted quota shows a reset instruction instead of a projection');
-      await evaluate("document.querySelector('[data-page=usage]').click(); document.getElementById('model-search').value='QA-model'; document.getElementById('model-search').dispatchEvent(new Event('input'))");
+      // 用量明细默认是逐条请求；按日汇总是另一个视图
+      await evaluate("document.querySelector('[data-page=usage]').click()");
+      assert.equal(await evaluate("document.getElementById('view-requests').hidden"), false, 'per-request view is the default');
+      assert.equal(await evaluate("document.querySelectorAll('[data-page=requests]').length"), 0, 'request log merged into usage');
+      await evaluate("document.querySelector('#usage-view [data-view=daily]').click()");
+      assert.equal(await evaluate("document.getElementById('view-daily').hidden"), false);
+      assert.equal(await evaluate("document.getElementById('view-requests').hidden"), true);
+      await evaluate("document.getElementById('model-search').value='QA-model'; document.getElementById('model-search').dispatchEvent(new Event('input'))");
       assert.equal(await evaluate("document.querySelectorAll('#records tr').length"), 15);
       assert.match(await evaluate("document.getElementById('record-count').textContent"), /22/);
       await evaluate("document.getElementById('next-page').click()");
@@ -161,6 +194,67 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("document.getElementById('export-csv').disabled"), true);
       await evaluate("document.getElementById('source-filter').value='all'; document.getElementById('source-filter').dispatchEvent(new Event('change')); document.getElementById('model-search').value=''; document.getElementById('model-search').dispatchEvent(new Event('input')); document.querySelector('[data-page=overview]').click()");
       console.log('PASS search, sorting, pagination, source filtering and complete CSV export');
+      // 请求记录：逐条列出、核验结论、展开详情、按结论筛选、导出。只看 QA 的三条。
+      // 以前的「请求记录」入口（通知、额度详情的链接）会跳到用量明细的逐条请求视图
+      await evaluate("navigate('requests'); document.getElementById('request-search').value='tp-ui-fixture'; document.getElementById('request-search').dispatchEvent(new Event('input'))");
+      assert.equal(await evaluate("state.page + '/' + state.usageView"), 'usage/requests');
+      await until("document.querySelectorAll('#request-rows .request-row').length === 3");
+      assert.equal(await evaluate("document.getElementById('usage-summary').hidden"), false, 'usage tiles stay on the merged page');
+      assert.equal(await evaluate("document.querySelectorAll('#verify-tiles .verify-chip').length"), 5);
+      assert.match(await evaluate("document.querySelector('.request-table thead').textContent"), /额度占用/);
+      assert.equal(await evaluate("document.querySelectorAll('.request-row .quota-share').length"), 3);
+      // 账号：表头有「账号」列、有账号筛选，每行都有账号格
+      assert.match(await evaluate("document.querySelector('.request-table thead').textContent"), /账号/);
+      assert.equal(await evaluate("document.querySelectorAll('.request-row .account-cell').length"), 3);
+      assert.ok(await evaluate("document.getElementById('request-account').options.length >= 1"));
+      assert.match(await evaluate("document.querySelector('[data-verify=mismatch] b').textContent"), /1/);
+      assert.match(await evaluate("document.querySelector('.request-row.mismatch').textContent"), /claude-QA-sonnet.*请求的是 claude-QA-opus\[1m\].*型号不一致/);
+      assert.match(await evaluate("document.querySelector('.request-row.unverified').textContent"), /返回型号未记录.*无法核验/);
+      assert.match(await evaluate("document.querySelector('.request-row.mismatch .project-name').textContent"), /^tp-ui-fixture$/);
+      await evaluate("document.querySelector('.request-row.mismatch').click()");
+      await until("document.querySelector('.request-detail')");
+      assert.match(await evaluate("document.querySelector('.request-detail').textContent"), /msg_01A+.*req_011CB+.*请求的是 claude-QA-opus\[1m\]，上游返回的是 claude-QA-sonnet/);
+      assert.equal(await evaluate("document.querySelectorAll('.request-detail .problem').length"), 1);
+      await evaluate("document.querySelector('.request-row.mismatch').click()");
+      await until("!document.querySelector('.request-detail')");
+      await evaluate("document.querySelector('[data-verify=mismatch]').click()");
+      await until("document.querySelectorAll('#request-rows .request-row').length === 1");
+      assert.equal(await evaluate("document.getElementById('request-status').value"), 'mismatch');
+      assert.equal(await evaluate("document.querySelectorAll('#verify-tiles .verify-chip').length"), 5, 'chip counts stay while filtering');
+      await evaluate("document.getElementById('verify-help').click()");
+      assert.equal(await evaluate("document.getElementById('verify-method').hidden"), false);
+      await evaluate("document.getElementById('export-requests').click()");
+      for (const deadline = Date.now() + 5000; !(fs.existsSync(exportPath) && fs.readFileSync(exportPath, 'utf8').includes('请求型号')); await delay(50)) assert.ok(Date.now() < deadline, 'request export timed out');
+      const requestCsv = fs.readFileSync(exportPath, 'utf8');
+      assert.match(requestCsv, /请求型号.*返回型号.*核验/);
+      assert.equal(requestCsv.trim().split('\r\n').length, 2);
+      assert.match(requestCsv, /claude-QA-opus\[1m\].*claude-QA-sonnet.*型号不一致/);
+      assert.match(await evaluate("document.getElementById('nav-request-alert').textContent"), /^\d+$/);
+      await evaluate("document.querySelector('[data-verify=mismatch]').click(); document.getElementById('request-search').value=''; document.getElementById('request-search').dispatchEvent(new Event('input')); document.querySelector('[data-page=overview]').click()");
+      assert.equal(await evaluate("document.getElementById('usage-summary').hidden"), false);
+      console.log('PASS request log lists every request, flags model mismatches, expands details and exports');
+      // 时间范围：总览默认 30 天；用量明细每次打开都是「今天」；回到总览还是原来的范围
+      await evaluate("document.querySelector('[data-page=overview]').click()");
+      assert.equal(await evaluate("String(state.days)"), '30');
+      await evaluate("document.querySelector('[data-page=usage]').click()");
+      assert.equal(await evaluate("String(state.days)"), '1', 'usage opens on today');
+      assert.match(await evaluate("document.getElementById('range-button-label').textContent"), /今天/);
+      await evaluate("document.querySelector('[data-page=overview]').click()");
+      assert.equal(await evaluate("String(state.days)"), '30', 'overview keeps its own range');
+      // 「一天」= 过去 24 小时：从逐条流水汇总，图表按小时
+      await evaluate("document.getElementById('range-button').click(); document.querySelector('#range-presets [data-days=\"24h\"]').click()");
+      await until("state.days === '24h' && analysis && !analysis.loading");
+      assert.match(await evaluate("document.getElementById('range-label').textContent"), /过去 24 小时/);
+      assert.match(await evaluate("document.getElementById('chart-caption').textContent"), /按小时/);
+      assert.equal(await evaluate("analysis.hourly.length"), 24);
+      assert.ok(await evaluate("analysis.total.tokens > 0"), 'the fixture requests fall inside the past 24 hours');
+      // 数字：默认精确到个位，中文后面跟「≈X万 / 亿」；可以换成简写
+      assert.match(await evaluate("document.querySelector('#tiles .stat .num').textContent"), /^\d{1,3}(,\d{3})*$/);
+      assert.match(await evaluate("document.querySelector('#tiles .stat .cn-approx')?.textContent || ''"), /^≈[\d,.]+[万亿]$/);
+      await evaluate("setNumberMode('compact')");
+      assert.match(await evaluate("document.querySelector('#tiles .stat .num').textContent"), /^[\d.]+[KMB]?$/);
+      await evaluate("setNumberMode('exact'); document.getElementById('range-button').click(); document.querySelector('#range-presets [data-days=\"30\"]').click()");
+      console.log('PASS usage opens on today, 24-hour range, exact numbers with Chinese approximations');
       // 外观移进了设置 → 通用：日间 / 夜间 / 跟随系统。
       await evaluate("document.getElementById('settings-open').click()");
       await until("!document.getElementById('settings').hidden");
@@ -176,7 +270,9 @@ app.on('web-contents-created', (_, contents) => {
       // 夜间模式下标题栏跟着变色（系统标题栏做不到）
       await evaluate("setThemeMode('dark')");
       await delay(600); // 切换主题有 0.35 秒的颜色过渡
-      assert.equal(await evaluate("getComputedStyle(document.getElementById('titlebar')).backgroundColor"), 'rgb(18, 20, 25)');
+      // 标题栏是两段渐变（左边接侧栏、右边接内容区），深色时两段都要是深色
+      const titlebarBackground = await evaluate("getComputedStyle(document.getElementById('titlebar')).backgroundImage");
+      assert.ok(titlebarBackground.includes('rgb(18, 20, 25)'), titlebarBackground);
       await evaluate("setThemeMode('light')");
       await delay(600);
       // 时间选择器（参照 AllAi）：输入框选自定义范围

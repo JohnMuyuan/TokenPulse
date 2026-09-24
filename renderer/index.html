@@ -24,6 +24,7 @@
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
   <symbol id="i-tokens" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12.5 9 5 9-5M3 17l9 5 9-5"/></symbol>
   <symbol id="i-cost" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M14.8 9.3c-.5-1-1.6-1.6-2.8-1.6-1.6 0-2.8.9-2.8 2.1 0 2.9 5.6 1.5 5.6 4.4 0 1.2-1.2 2.1-2.8 2.1-1.2 0-2.3-.6-2.8-1.6M12 6v1.7M12 16.3V18"/></symbol>
+  <symbol id="i-trace" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/><path d="m7.9 10.7 1.8 1.8 3.4-3.6"/></symbol>
   <symbol id="i-requests" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14 2.5-7h4"/></symbol>
   <symbol id="i-cache" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></symbol>
@@ -37,9 +38,10 @@
   <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 7"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-update" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 0 1-15.2 5.2M3.5 12A8.5 8.5 0 0 1 18.7 6.8"/><path d="M19 3v4h-4M5 21v-4h4"/></symbol>
-  <symbol id="i-win-min" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
-  <symbol id="i-win-max" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="1.5"/></symbol>
-  <symbol id="i-win-restore" viewBox="0 0 24 24"><rect x="5" y="8.5" width="10.5" height="10.5" rx="1.5"/><path d="M8.5 8.5V6.5A1.5 1.5 0 0 1 10 5h7.5A1.5 1.5 0 0 1 19 6.5V14a1.5 1.5 0 0 1-1.5 1.5h-2"/></symbol>
+  <symbol id="i-win-min" viewBox="0 0 24 24"><path d="M7 12.5h10"/></symbol>
+  <symbol id="i-win-max" viewBox="0 0 24 24"><path d="M9.5 5.5h-2a2 2 0 0 0-2 2v2M14.5 5.5h2a2 2 0 0 1 2 2v2M9.5 18.5h-2a2 2 0 0 1-2-2v-2M14.5 18.5h2a2 2 0 0 0 2-2v-2"/></symbol>
+  <symbol id="i-win-restore" viewBox="0 0 24 24"><path d="M9 5.5h7.5a2 2 0 0 1 2 2V15"/><rect x="5.5" y="9" width="9.5" height="9.5" rx="2"/></symbol>
+  <symbol id="i-win-close" viewBox="0 0 24 24"><path d="M7.5 7.5l9 9M16.5 7.5l-9 9"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16Z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol>
   <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v4.5A1.5 1.5 0 0 1 16.5 20h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></symbol>
   <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
@@ -53,7 +55,7 @@
   <div class="titlebar-buttons">
     <button id="win-min" aria-label="最小化" title="最小化"><svg class="icon"><use href="#i-win-min"/></svg></button>
     <button id="win-max" aria-label="最大化" title="最大化"><svg class="icon"><use href="#i-win-max"/></svg></button>
-    <button id="win-close" class="win-close" aria-label="关闭" title="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
+    <button id="win-close" class="win-close" aria-label="关闭" title="关闭"><svg class="icon"><use href="#i-win-close"/></svg></button>
   </div>
 </header>
 
@@ -68,7 +70,7 @@
     <span class="nav-indicator" aria-hidden="true"></span>
     <button class="nav-item active" data-page="overview" title="总览"><svg class="icon"><use href="#i-overview"/></svg><span class="nav-label">总览</span></button>
     <button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button>
-    <button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span></button>
+    <button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button>
   </nav>
 
   <div class="sidebar-bottom">
@@ -114,7 +116,7 @@
         </button>
         <div id="range-popover" class="range-popover" role="dialog" aria-label="时间范围" hidden>
           <div id="range-presets" class="range-presets">
-            <button data-days="1">今天</button><button data-days="7">7 天</button><button data-days="14">14 天</button><button data-days="30" class="on">30 天</button><button data-days="90">90 天</button><button data-days="all">全部</button>
+            <button data-days="1">今天</button><button data-days="24h" title="过去 24 小时">一天</button><button data-days="7">7 天</button><button data-days="14">14 天</button><button data-days="30" class="on">30 天</button><button data-days="90">90 天</button><button data-days="all">全部</button>
           </div>
           <div class="range-body">
             <form id="custom-range" class="range-fields">
@@ -190,28 +192,79 @@
         <div class="panel-heading"><h2>Token 构成</h2><span class="muted">输入含缓存读写，推理为输出子集</span></div>
         <div id="token-breakdown" class="breakdown-grid"></div>
       </article>
-      <article class="panel records-panel">
+      <article class="panel records-panel usage-records">
         <div class="panel-heading">
-          <div><h2>用量明细 <span id="record-count" class="section-tag"></span></h2><p>按日期、工具、模型聚合；费用为参考估算</p></div>
-          <button id="export-csv" class="btn"><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
+          <div>
+            <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span></h2>
+            <p id="detail-caption">每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情</p>
+          </div>
+          <div class="panel-actions">
+            <button id="verify-help" class="btn" aria-expanded="false" aria-controls="verify-method"><svg class="icon"><use href="#i-info"/></svg>说明</button>
+            <button id="export-requests" class="btn"><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
+            <button id="export-csv" class="btn" hidden><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
+            <div id="usage-view" class="seg compact" role="tablist" aria-label="明细视图"><span class="seg-thumb" aria-hidden="true"></span><button data-view="requests" class="on" aria-pressed="true">逐条请求</button><button data-view="daily" aria-pressed="false">按日汇总</button></div>
+          </div>
         </div>
-        <div class="table-toolbar">
-          <label class="search-field"><svg class="icon"><use href="#i-search"/></svg><span class="sr-only">搜索</span><input id="model-search" type="search" placeholder="搜索模型或工具名称…" autocomplete="off"></label>
-          <label class="sort-field">排序
-            <select id="record-sort"><option value="day">日期：最近优先</option><option value="tokens">Tokens：从多到少</option><option value="costUsd">费用：从高到低</option><option value="requests">请求：从多到少</option></select>
-          </label>
+
+        <div id="view-requests">
+          <div id="verify-tiles" class="verify-chips" role="group" aria-label="按核验结论筛选"></div>
+          <div id="verify-method" class="verify-method" hidden>
+            <div><b>请求型号 vs 返回型号</b><p>Claude Code 和 Grok Build 的会话文件同时记下了「要的型号」和「上游回的型号」，两者对不上就标<span class="badge critical">型号不一致</span>。</p></div>
+            <div><b>响应特征</b><p>Anthropic 官方的响应 ID 是 msg_ 加 24 位、每次都带 req_ 开头的请求 ID。号称 Claude、ID 却是 OpenAI 或 UUID 等格式，说明请求被别家接口转换过，标<span class="badge warning">响应存疑</span>。</p></div>
+            <div><b>无法核验</b><p>Codex 的会话文件不记录上游返回的型号；旧版 Claude Code 不记录请求的型号。这些只核对了响应格式。</p></div>
+            <div><b>额度占用</b><p>这次请求的 Token ÷ 它所在额度窗口折算出的整窗容量，是估算；只算走官方账号、而且窗口能折算出容量的请求。</p></div>
+            <div><b>局限</b><p>只读本机记录，不额外发请求、不花额度。中转站可以把型号名和 ID 都伪造成官方的样子，「一致」只说明没露馅，「不一致」和「存疑」才是实打实的证据。</p></div>
+          </div>
+          <div class="table-toolbar">
+            <label class="search-field"><svg class="icon"><use href="#i-search"/></svg><span class="sr-only">搜索请求</span><input id="request-search" type="search" placeholder="搜索型号、项目、账号、会话或响应 ID…" autocomplete="off"></label>
+            <div class="toolbar-group">
+              <label class="sort-field">账号
+                <select id="request-account"><option value="">全部账号</option></select>
+              </label>
+              <label class="sort-field">核验
+                <select id="request-status"><option value="all">全部</option><option value="mismatch">型号不一致</option><option value="suspect">响应存疑</option><option value="match">型号一致</option><option value="unverified">无法核验</option></select>
+              </label>
+              <label class="sort-field">排序
+                <select id="request-sort"><option value="time">时间：最近优先</option><option value="tokens">Tokens：从多到少</option><option value="cost">费用：从高到低</option></select>
+              </label>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="request-table">
+              <thead><tr><th>时间 / 工具</th><th>项目 / 账号</th><th>型号</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取</th><th class="n">额度占用</th><th class="n">参考费用</th><th>核验</th></tr></thead>
+              <tbody id="request-rows"></tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <span id="request-pagination"></span>
+            <div class="pager">
+              <button id="request-prev" class="btn icon-btn" aria-label="上一页"><svg class="icon"><use href="#i-left"/></svg>上一页</button>
+              <button id="request-next" class="btn icon-btn" aria-label="下一页">下一页<svg class="icon"><use href="#i-right"/></svg></button>
+            </div>
+          </div>
         </div>
-        <div class="table-scroll">
-          <table>
-            <thead><tr><th>日期 / 工具</th><th>模型</th><th class="n">请求</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取</th><th class="n">Tokens</th><th class="n">参考费用</th></tr></thead>
-            <tbody id="records"></tbody>
-          </table>
-        </div>
-        <div class="table-footer">
-          <span id="pagination-label"></span>
-          <div class="pager">
-            <button id="prev-page" class="btn icon-btn" aria-label="上一页"><svg class="icon"><use href="#i-left"/></svg>上一页</button>
-            <button id="next-page" class="btn icon-btn" aria-label="下一页">下一页<svg class="icon"><use href="#i-right"/></svg></button>
+
+        <div id="view-daily" hidden>
+          <div class="table-toolbar">
+            <label class="search-field"><svg class="icon"><use href="#i-search"/></svg><span class="sr-only">搜索</span><input id="model-search" type="search" placeholder="搜索模型或工具名称…" autocomplete="off"></label>
+            <div class="toolbar-group">
+              <label class="sort-field">排序
+                <select id="record-sort"><option value="day">日期：最近优先</option><option value="tokens">Tokens：从多到少</option><option value="costUsd">费用：从高到低</option><option value="requests">请求：从多到少</option></select>
+              </label>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>日期 / 工具</th><th>模型</th><th class="n">请求</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取</th><th class="n">Tokens</th><th class="n">参考费用</th></tr></thead>
+              <tbody id="records"></tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <span id="pagination-label"></span>
+            <div class="pager">
+              <button id="prev-page" class="btn icon-btn" aria-label="上一页"><svg class="icon"><use href="#i-left"/></svg>上一页</button>
+              <button id="next-page" class="btn icon-btn" aria-label="下一页">下一页<svg class="icon"><use href="#i-right"/></svg></button>
+            </div>
           </div>
         </div>
       </article>
@@ -263,10 +316,16 @@
           <p class="setting-hint">用量账本、额度采样历史和设置都只保存在本机 <code>~/.tokenpulse/</code>，不会上传。删掉用量账本会从头重扫、不丢数据；额度采样历史官方不提供，删了就找不回来。</p>
           <button id="open-data" class="btn"><svg class="icon"><use href="#i-folder"/></svg>打开数据目录</button>
         </div>
+        <div class="setting-block">
+          <div class="setting-title">从 CC Switch 导入</div>
+          <p class="setting-hint">只读 CC Switch 的本地库，补上 TokenPulse 自己没有的那部分：CLI 已经清掉的老会话、OpenCode 这类不扫描的工具。同一天同一个工具两边都有时只算 TokenPulse 自己的，不会重复。走 CC Switch 代理的请求还会用它记下的上游返回型号来核验。</p>
+          <div id="cc-switch-card" class="update-card"></div>
+          <div id="cc-switch-pref"></div>
+        </div>
         <div class="setting-block methodology-copy">
           <div class="setting-title">统计口径</div>
           <h3>本机用量</h3>
-          <p>读取 Claude Code、Codex CLI、Grok Build 的会话记录。时间范围按本地自然日（含今天）计算，对比紧邻的上一段等长时间；今天尚未结束。</p>
+          <p>读取 Claude Code、Codex CLI、Grok Build 的会话记录，并按天补上 CC Switch 里有、本机会话已经没有的记录。时间范围按本地自然日（含今天）计算，对比紧邻的上一段等长时间；今天尚未结束。</p>
           <h3>输入、输出与缓存</h3>
           <p>总 Tokens = 输入 + 输出。缓存读取和缓存写入已包含在输入中，推理 Tokens 已包含在输出中，不能再次累加。缓存读取占比 = 缓存读取 / 全部输入。</p>
           <h3>额度与预测</h3>
@@ -288,6 +347,12 @@
           <div id="update-auto" class="update-auto"></div>
         </div>
         <div class="setting-block">
+          <div class="setting-title">模型知识库</div>
+          <p class="setting-hint">各个型号的单价和「哪些名字是同一个型号」的规则。新型号出来后，这里更新一下就能认出来、算出费用，不用等新版本。每天会自动检查一次。</p>
+          <div id="knowledge-card" class="update-card"></div>
+          <div id="knowledge-gaps" class="knowledge-gaps" hidden></div>
+        </div>
+        <div class="setting-block">
           <div class="setting-title">开源与反馈</div>
           <a class="btn" href="https://github.com/JohnMuyuan/TokenPulse" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-external"/></svg>GitHub · JohnMuyuan/TokenPulse</a>
         </div>
@@ -300,6 +365,7 @@
 
 <div id="option-menu" class="option-menu" role="menu" hidden></div>
 
+<script src="i18n.js"></script>
 <script src="brand.js"></script>
 <script src="data.js"></script>
 <script src="app.js"></script>

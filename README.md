@@ -44,13 +44,36 @@
 <td valign="top">
 
 ### 🔍 明细可查，随时导出
-按日期 + 工具 + 模型聚合。时间选择器支持今天 / 7 / 14 / 30 / 90 天 / 全部，也可以在月历上点选任意起止日期；数据永久保存，范围不设上限。可搜索、排序、分页。CSV 导出当前筛选下的**全部**匹配记录，不受分页限制。
+逐条看每一次请求：用了多少 Token、约占多少 5 小时 / 周额度、谁发的、型号对不对；也能切到按日期 + 工具 + 模型聚合。时间选择器支持今天 / 一天（过去 24 小时）/ 7 / 14 / 30 / 90 天 / 全部，也可以在月历上点选任意起止日期；数据永久保存，范围不设上限。数字默认精确到个位，中文界面再附一个「≈30.3亿」方便读。可搜索、排序、分页。CSV 导出当前筛选下的**全部**匹配记录，不受分页限制。
 
 </td>
 <td valign="top">
 
 ### 🪶 安静地待在托盘
 关掉窗口也不退出，开机自启，悬停托盘图标就能看到当前额度。外观支持日间 / 夜间 / 跟随系统，扫描放在后台线程，不卡界面。
+
+</td>
+</tr>
+<tr>
+<td colspan="2" valign="top">
+
+### 🧾 每一次请求，都能核对型号
+「用量明细」逐条列出本机的每一次 API 请求：时间、项目、**发出的账号**、型号、token、费用、响应 ID；额度详情里每个账号下面也能看到它自己的请求。并核对**你要的型号**和**上游返回的型号**是不是同一个 ——
+对不上标「型号不一致」，型号名对得上但响应格式不像官方（比如号称 Claude、响应 ID 却是 OpenAI 格式）标「响应存疑」，发现就发系统通知。只读本机记录，不额外发请求、不花额度。
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🔄 CC Switch 历史，一并补上
+只读 [CC Switch](https://github.com/farion1231/cc-switch) 的本地库，补上 CLI 早已清掉的老会话和 OpenCode 这类 TokenPulse 不扫描的工具。同一天同一个工具两边都有时只算一份，不会重复。走它本地代理的请求，还会用代理看到的上游型号来核验。
+
+</td>
+<td valign="top">
+
+### 📚 模型知识库 · 🌐 English
+单价和型号等价规则放在 `knowledge/models.json`，新型号出来后在「设置 → 关于」里更新一下就能认出来、算出费用，不用等新版本。界面支持简体中文和 English，托盘菜单和通知一起切换。
 
 </td>
 </tr>
@@ -76,7 +99,7 @@
 <td><img src="artifacts/ui/capacity-light.png" alt="额度容量趋势"><p align="center"><sub>额度容量趋势：历史窗口的总额度走势</sub></p></td>
 </tr>
 <tr>
-<td><img src="artifacts/ui/usage-light.png" alt="用量明细"><p align="center"><sub>用量明细：筛选、排序与 CSV 导出</sub></p></td>
+<td><img src="artifacts/ui/usage-light.png" alt="用量明细"><p align="center"><sub>用量明细：逐条请求、账号、额度占用与型号核验</sub></p></td>
 <td><img src="artifacts/ui/settings-light.png" alt="设置"><p align="center"><sub>设置：外观、官方账号、提醒、数据与自动更新</sub></p></td>
 </tr>
 <tr>
@@ -89,7 +112,7 @@
 
 到 [**Releases**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) 下载最新版本：
 
-> **当前版本：v0.3.1** — 支持在设置中通过官方 OAuth 登录 Claude、ChatGPT 和 Grok（自动续期），并查看活动账号的额度。
+> **当前版本：v0.3.2** — 新增「请求记录」与型号核验、从 CC Switch 导入历史用量、可在线更新的模型知识库、英文界面。
 
 | 文件 | 说明 |
 |------|------|
@@ -160,6 +183,10 @@
 |------|------|--------|
 | `usage-rollups.json` | 每个会话文件的扫描进度和统计结果 | 从头重扫一遍，几秒钟，不丢数据 |
 | `quota-history.json` | 官方额度采样历史（永久保留） | 速度和预测要重新积累，**官方不提供历史，删了就找不回来** |
+| `cc-switch.json` | 从 CC Switch 库里读出来的副本（只读它的库，不改） | 下次扫描重新读 |
+| `cli-logins.json` | 各 CLI 登录过哪些账号、从什么时候开始（只有账号 id 和邮箱，不含凭据），用来把请求对到账号上 | 以后的请求照常对；之前的按最早的账号推断 |
+| `knowledge.json` | 从 GitHub 下载的新版模型知识库（单价、型号等价规则） | 回到安装包内置的那份 |
+| `requests/<年-月>.jsonl` | 每一次请求的元数据（时间、型号、token、响应 ID、工作目录，不含正文） | 会话文件还在的部分下次扫描补回；CLI 已经清掉的会话就找不回来了 |
 | `official-accounts.json` | 登记过的官方账号、活动选择，以及在 TokenPulse 里添加的账号的凭据（含 refresh token） | 回到使用各 CLI 当前登录的账号；在 TokenPulse 里添加的账号需要重新添加 |
 | `prefs.json` | 开机自启、关窗收进托盘、提醒阈值 | 恢复默认设置 |
 
@@ -172,7 +199,7 @@ npm install
 npm run icons         # 生成 packaging/icon.png 和 tray.png
 npm run dist:portable # 只编译免安装版，供本机测试
 npm start             # 编译并启动
-npm test              # 50 项额度检查 + 3 项扫描检查 + 6 组看板数据 + 28 项官方账号与续期检查
+npm test              # 额度、扫描、看板、官方账号、请求流水与型号核验、知识库 / CC Switch / 英文词典
 npm run test:ui       # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
 npm run test:update   # 自动更新：本地假更新服务器上走完检查 → 下载 → 校验 → 静默安装触发
 npm run dist          # 重新生成图标并打包安装版与免安装版到 dist/（不会自动发布）
@@ -193,6 +220,10 @@ src/core/            纯逻辑，不依赖 Electron，可以单独 require 测�
   quota-monitor.ts   速度、预测、健康度（纯函数）
   model-pricing.ts   模型单价表
   report.ts          汇总成界面使用的快照
+  request-log.ts     每一次请求的流水（按月追加、去重、查询）
+  request-verify.ts  型号核验规则（纯函数）
+  cc-switch.ts       只读导入 CC Switch 的用量（node:sqlite）
+  knowledge.ts       模型知识库：单价和型号等价规则（knowledge/models.json，可在线更新）
   report-worker.ts   在后台线程执行扫描与汇总
 src/main/            Electron 主进程：托盘、定时器、IPC、通知
 renderer/            界面：原生 JS、无构建步骤，图表为手写内联 SVG

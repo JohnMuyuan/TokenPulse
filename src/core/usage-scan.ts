@@ -2,6 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { dataFile, readJson, writeJson } from "./paths";
+import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 
 /**
  * 统计**这台电脑上所有** AI CLI 的 token 消耗 —— 不管那一轮是在终端里跑的、
@@ -80,6 +81,24 @@ type FileState = {
   official?: boolean;
   /** 按小时的账：`hours[整点时间戳][型号]`。额度监控用，和按天的账一样永久保留。 */
   hours?: Record<string, Record<string, UsageBucket>>;
+  /**
+   * 客户端**请求**的型号，给请求流水做型号核验（见 request-verify.ts）。跨批次要记住：
+   * - Claude Code：`attachment.identity.modelId`，会话开头写一次、换型号时再写；
+   *   `session_context` 带 `changed`（reason = session_start）说明进程重新接上了这个会话，
+   *   可能换了型号却还没写新的 identity —— 这时清掉，宁可「无法核验」也别误报不一致；
+   * - Grok：每条用户消息的 `_meta.modelId`；
+   * - Codex：就是上面的 `model`（turn_context）。
+   */
+  requested?: string;
+  /** 工作目录（Codex 在 session_meta 里；Claude 每行都有；Grok 在目录名里）。 */
+  cwd?: string;
+  /**
+   * 会话里直接记下的账号（只有 Claude Code 有，而且只是部分会话）：
+   * `bridge-session.ownerAccountUuid`（= 凭据里的 accountUuid）和 `session_context.context.userEmail`。
+   * 没有的按登录时间线对（login-timeline.ts）。
+   */
+  accountRef?: string;
+  accountEmail?: string;
   /** 账本结构版本，见 STATE_VERSION。 */
   v?: number;
 };
@@ -101,8 +120,10 @@ export type UsageRollups = {
  * 账本结构版本，改了解析逻辑或 bucket 结构就 +1（老账本自动重扫）。
  * 2：Codex 型号改为同时认 turn_context（旧账本里第一轮都是「未知模型」）。
  * 3：按小时的账不再只留 40 天，重扫一遍把已经裁掉的小时账从会话文件里补回来。
+ * 4：开始记每一次请求的流水（requests/*.jsonl），重扫一遍把历史请求补进去。
+ * 5：流水里记下 Claude 会话自带的账号（accountRef / accountEmail），重扫补上。
  */
-const STATE_VERSION = 3;
+const STATE_VERSION = 5;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -376,7 +397,17 @@ function roots(): { kind: Kind; dir: string }[] {
 
 /* ---------------- 解析一行 ---------------- */
 
-type Row = { at: number; model: string; usage: UsageBucket; id?: string };
+type Row = {
+  at: number;
+  model: string;
+  usage: UsageBucket;
+  id?: string;
+  /** 上游返回的型号（响应里写的那个）。Codex 不记。 */
+  returned?: string;
+  responseId?: string;
+  requestId?: string;
+  cwd?: string;
+};
 
 function claudeRow(obj: Record<string, unknown>): Row | null {
   if (obj.type !== "assistant") return null;
@@ -390,6 +421,10 @@ function claudeRow(obj: Record<string, unknown>): Row | null {
     at,
     id: String(obj.requestId || message?.id || ""),
     model: String(message?.model || "") || "未知模型",
+    returned: message?.model ? String(message.model) : undefined,
+    responseId: message?.id ? String(message.id) : undefined,
+    requestId: obj.requestId ? String(obj.requestId) : undefined,
+    cwd: typeof obj.cwd === "string" ? obj.cwd : undefined,
     usage: {
       /*
        * **口径统一**：`input` 一律表示「这一轮送进去的全部输入」，缓存读和缓存写是其中的明细。
@@ -419,6 +454,7 @@ function codexRow(obj: Record<string, unknown>): Row | null {
     at,
     id: String(payload?.response_id || ""),
     model: "",
+    responseId: payload?.response_id ? String(payload.response_id) : undefined,
     usage: {
       input: num(usage.input_tokens),
       output: num(usage.output_tokens),
@@ -441,10 +477,13 @@ function grokRows(obj: Record<string, unknown>): Row[] {
   if (!at) return [];
   const perModel = usage.modelUsage as Record<string, Record<string, unknown>> | undefined;
   // 有按型号拆分就用它，没有就整轮记成一条。
-  const entries: [string, Record<string, unknown>][] = perModel ? Object.entries(perModel) : [["未知模型", usage]];
+  const entries: [string, Record<string, unknown>][] = perModel && Object.keys(perModel).length ? Object.entries(perModel) : [["", usage]];
+  const prompt = String(update.prompt_id || "");
   return entries.map(([model, row]) => ({
     at,
+    id: prompt ? `${prompt}:${model}` : "",
     model: model || "未知模型",
+    returned: model || undefined,
     usage: {
       input: num(row.inputTokens),
       output: num(row.outputTokens),
@@ -460,7 +499,19 @@ function grokRows(obj: Record<string, unknown>): Row[] {
 
 /* ---------------- 扫一个文件 ---------------- */
 
-function scanFile(file: string, kind: Kind, state: FileState) {
+/** 一轮扫描里攒下的请求流水。rescanned：有文件从头重读过，流水里会有重复，扫完要整理。 */
+type ScanOutput = { records: RequestRecord[]; rescanned: boolean };
+
+/** Grok 的会话目录是 `<工作目录 URL 编码>/<会话 ID>/updates.jsonl`。 */
+function grokCwd(file: string) {
+  try {
+    return decodeURIComponent(path.basename(path.dirname(path.dirname(file))));
+  } catch {
+    return undefined;
+  }
+}
+
+function scanFile(file: string, kind: Kind, state: FileState, out: ScanOutput = { records: [], rescanned: false }) {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(file);
@@ -468,11 +519,15 @@ function scanFile(file: string, kind: Kind, state: FileState) {
     return false;
   }
   const reset = () => {
+    if (state.offset > 0) out.rescanned = true;
     state.offset = 0;
     state.days = {};
     state.hours = {};
     state.model = undefined;
     state.lastId = undefined;
+    state.requested = undefined;
+    state.accountRef = undefined;
+    state.accountEmail = undefined;
   };
   if (state.v !== STATE_VERSION) {
     state.v = STATE_VERSION;
@@ -515,11 +570,32 @@ function scanFile(file: string, kind: Kind, state: FileState) {
     } catch {
       continue;
     }
+    if (kind === "claude-code" && obj.type === "bridge-session" && typeof obj.ownerAccountUuid === "string" && obj.ownerAccountUuid) {
+      state.accountRef = obj.ownerAccountUuid;
+    }
+    if (kind === "claude-code" && obj.type === "attachment") {
+      const context = (obj.attachment as Record<string, unknown> | undefined)?.context as Record<string, unknown> | undefined;
+      // 这个字段后面还跟着一句说明（实测「xxx@gmail.com. Use it only to identify the user…」），只取邮箱本身
+      const email = typeof context?.userEmail === "string" ? context.userEmail.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/)?.[0] : undefined;
+      if (email) state.accountEmail = email.replace(/\.$/, "");
+    }
+    if (kind === "claude-code" && obj.type === "attachment") {
+      const attachment = obj.attachment as Record<string, unknown> | undefined;
+      if (attachment?.type === "session_context" && attachment.changed) state.requested = undefined;
+      const identity = attachment?.identity as Record<string, unknown> | undefined;
+      if (typeof identity?.modelId === "string" && identity.modelId) state.requested = identity.modelId;
+    }
+    if (kind === "grok-build") {
+      const update = (obj.params as Record<string, unknown> | undefined)?.update as Record<string, unknown> | undefined;
+      const meta = update?._meta as Record<string, unknown> | undefined;
+      if (update?.sessionUpdate === "user_message_chunk" && typeof meta?.modelId === "string" && meta.modelId) state.requested = meta.modelId;
+    }
     if (kind === "codex") {
       const payload = obj.payload as Record<string, unknown> | undefined;
       if (obj.type === "session_meta" && typeof payload?.model_provider === "string") {
         state.provider = payload.model_provider;
       }
+      if (obj.type === "session_meta" && typeof payload?.cwd === "string") state.cwd = payload.cwd;
       /*
        * usage 行自己不带型号，得从前面的记录里记下来。两处都有：
        * - `turn_context`：每一轮开头都写，**一定在这一轮的 usage 之前**，以它为准；
@@ -550,6 +626,29 @@ function scanFile(file: string, kind: Kind, state: FileState) {
       addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
       const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
       addUsage((byModel[model] ??= emptyBucket()), row.usage);
+      if (row.cwd) state.cwd = row.cwd;
+      out.records.push({
+        // 没有 ID 的（极少）用时间 + 型号 + token 凑一个，重读时还是同一个键
+        id: row.id || `${row.at}:${model}:${row.usage.input}:${row.usage.output}`,
+        at: row.at,
+        kind,
+        file,
+        cwd: state.cwd ?? (kind === "grok-build" ? grokCwd(file) : undefined),
+        model,
+        requested: kind === "codex" ? state.model : state.requested,
+        returned: row.returned,
+        responseId: row.responseId,
+        requestId: row.requestId,
+        input: row.usage.input,
+        output: row.usage.output,
+        cacheRead: row.usage.cacheRead,
+        cacheWrite: row.usage.cacheWrite,
+        reasoning: row.usage.reasoning,
+        costUsd: row.usage.costUsd,
+        calls: row.usage.requests,
+        accountRef: state.accountRef,
+        accountEmail: state.accountEmail,
+      });
       touched = true;
     }
   }
@@ -575,8 +674,8 @@ let scanning = false;
  * 扫一遍本机所有 CLI 会话文件，把新增的部分记进账里。
  * 同一时间只跑一个（启动时、定时都会叫它）。
  */
-export function scanLocalUsage(): { files: number; changed: number; skipped: boolean } {
-  if (scanning) return { files: 0, changed: 0, skipped: true };
+export function scanLocalUsage(): { files: number; changed: number; skipped: boolean; records: RequestRecord[] } {
+  if (scanning) return { files: 0, changed: 0, skipped: true, records: [] };
   scanning = true;
   try {
     const rollups = readRollups();
@@ -585,6 +684,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     const codex = codexAuthContext((rollups.codexProviders ??= {}));
     let changed = 0;
     let files = 0;
+    const out: ScanOutput = { records: [], rescanned: false };
     for (const { kind, dir } of roots()) {
       for (const file of walkJsonl(dir)) {
         alive.add(file);
@@ -594,16 +694,22 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
         // 大小和改动时间都没变就跳过（新文件记的是 0，不会误判成没变）。
         const stat = safeStat(file);
         if (stat && state.v === STATE_VERSION && stat.size === state.size && stat.mtimeMs === state.mtimeMs) continue;
-        if (scanFile(file, kind, state)) changed += 1;
+        if (scanFile(file, kind, state, out)) changed += 1;
       }
     }
     // CLI 自己清掉的老会话：账留着（那些 token 确实花过），只是不会再更新。
     for (const key of Object.keys(rollups.files)) {
       if (!alive.has(key) && !Object.keys(rollups.files[key].days).length) delete rollups.files[key];
     }
+    /*
+     * 先写流水再写账本：写流水后被杀进程，下次从旧偏移重读，重复的由整理去掉；
+     * 反过来的话偏移已经推进，这一段请求就永远补不回来了。
+     */
+    appendRequests(out.records);
+    if (out.rescanned) compactRequests();
     rollups.scannedAt = Date.now();
     writeRollups(rollups);
-    return { files, changed, skipped: false };
+    return { files, changed, skipped: false, records: out.records };
   } finally {
     scanning = false;
   }

@@ -15,7 +15,7 @@ for (const name of ['quota-history.json', 'quota-checked.json']) {
 const output = path.resolve(__dirname, '../artifacts/ui');
 fs.mkdirSync(output, { recursive: true });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-const timeout = setTimeout(() => { console.error('Preview timed out'); app.exit(1); }, 60000);
+const timeout = setTimeout(() => { console.error("Preview timed out"); app.exit(1); }, 120000);
 app.on('web-contents-created', (_, contents) => {
   contents.on('console-message', (_, level, message) => { if (level >= 2) console.error(message); });
   contents.on('did-finish-load', async () => {
@@ -35,7 +35,17 @@ app.on('web-contents-created', (_, contents) => {
       // Claude 的两个窗口都在用，预测和容量卡片都有数；容量折线图在页面下方，单独截一张。
       await capture('quota-light', "document.querySelector('[data-page=quota]').click(); document.querySelector('#account-tabs [data-account=claude]').click()");
       await capture('capacity-light', "document.querySelector('.capacity-panel')?.scrollIntoView({ block: 'center' })");
-      await capture('usage-light', "document.querySelector('[data-page=usage]').click()");
+      // 逐条请求里有账号邮箱：截图要进公开的 README，换成占位邮箱；滚到表格那里
+      // 表格是异步画的，只替换一次会被重画盖回来：挂个观察器，任何时候出现邮箱都换掉（正则不用反斜杠，免得在字符串里被吃掉）
+      await contents.executeJavaScript(`(() => {
+        // 只在真的变了时才写回：原样写回也会触发观察器，占位邮箱里也有 @，会无限循环
+        const mask = () => { for (const node of document.querySelectorAll('.account-line span, #request-account option, .account-requests .section-tag')) { const next = node.textContent.replace(/[^ @]+@[^ @·]+/g, 'you@example.com'); if (next !== node.textContent) node.textContent = next; } };
+        new MutationObserver(mask).observe(document.body, { subtree: true, childList: true, characterData: true });
+        mask();
+      })()`);
+      await capture('usage-light', "document.querySelector('[data-page=usage]').click(); setTimeout(() => document.querySelector('.usage-records').scrollIntoView({ block: 'start' }), 1400)");
+      const leaked = await contents.executeJavaScript("/[^ @]+@(?!example\\.com)[^ @]+\\.[a-z]+/i.test(document.body.innerText)");
+      if (leaked) throw new Error('截图里还有真实邮箱，停下');
       await capture('overview-dark', "document.querySelector('[data-page=overview]').click(); setThemeMode('dark')");
       await capture('settings-light', "setThemeMode('light'); openSettings().then(() => document.activeElement?.blur())");
       await contents.executeJavaScript("closeModal('settings')");

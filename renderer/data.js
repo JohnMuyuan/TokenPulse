@@ -44,8 +44,12 @@
       activeDays: daily.filter(row => row.requests > 0).length,
       unpriced: selected.filter(row => row.priced === false).reduce((n, row) => n + row.requests, 0) };
   }
-  function csv(rows) {
-    const columns = [['day','日期'],['source','工具'],['model','模型'],['requests','请求数'],['input','输入 tokens（含缓存）'],['output','输出 tokens'],['cacheRead','缓存读取'],['cacheWrite','缓存写入'],['reasoning','推理 tokens（输出子集）'],['tokens','总 tokens'],['costUsd','参考费用 USD'],['priced','有定价依据']];
+  /** columns 缺省是用量明细的列；请求记录传自己的列。 */
+  function csv(rows, columns = USAGE_COLUMNS) {
+    return encode(rows, columns);
+  }
+  const USAGE_COLUMNS = [['day','日期'],['source','工具'],['model','模型'],['requests','请求数'],['input','输入 tokens（含缓存）'],['output','输出 tokens'],['cacheRead','缓存读取'],['cacheWrite','缓存写入'],['reasoning','推理 tokens（输出子集）'],['tokens','总 tokens'],['costUsd','参考费用 USD'],['priced','有定价依据']];
+  function encode(rows, columns) {
     const cell = value => {
       let text = String(value ?? '');
       if (/^[\s]*[=+\-@]/.test(text)) text = "'" + text;

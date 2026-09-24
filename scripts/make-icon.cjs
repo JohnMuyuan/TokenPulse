@@ -4,7 +4,8 @@
  * 视觉含义：圆环 = 官方额度 / 重置周期；柱形 = token 用量；节点 = 当前进度。
  * 这比旧版的心电图折线更贴近产品，也能避免被误认为医疗软件。
  *
- * 输出：packaging/icon.png（512×512）和 tray.png（32×32）。
+ * 输出：packaging/icon.png（512×512）、tray.png（32×32，macOS 模板图）、
+ * tray-color.png / tray-color-16.png（Windows / Linux 托盘）。
  */
 const fs = require("fs");
 const path = require("path");
@@ -183,7 +184,48 @@ function drawTrayIcon(size) {
   return downsample(c, size);
 }
 
+/**
+ * Windows / Linux 托盘用的彩色图标：和应用图标一样的深绿底 + 浅色圆环和柱形。
+ * 以前是白色透明线稿，Windows 浅色任务栏上几乎看不见。托盘只有 16px（200% 缩放时 32px），
+ * 所以底块铺满、线条加粗，只画三根柱子。
+ */
+function drawColorTray(size) {
+  const n = size * SS;
+  const c = canvas(n);
+  const u = n / 32;
+  roundedRect(c, 0.5 * u, 0.5 * u, 31 * u, 31 * u, 8 * u, [34, 106, 84], 1, [16, 62, 52]);
+  const cx = 16 * u;
+  const cy = 16.3 * u;
+  const radius = 10.2 * u;
+  const start = -2.15;
+  const end = 0.72;
+  ring(c, cx, cy, radius, 3.4 * u, [120, 178, 155], 0.55);
+  ring(c, cx, cy, radius, 3.4 * u, [196, 240, 216], 1, start, end);
+  for (const [x, y, width, height] of [[10.6, 16.4, 3, 5.6], [14.6, 13.4, 3, 8.6], [18.6, 10.2, 3, 11.8]]) {
+    roundedRect(c, x * u, y * u, width * u, height * u, 1.2 * u, [236, 252, 243], 1);
+  }
+  return downsample(c, size);
+}
+
+/**
+ * 16px 单独画：圆环和三根柱子挤在 16 像素里会糊成一块（实测），这里只留底块和三根对齐整像素的柱子，
+ * 柱子之间留满 1 像素的缝。
+ */
+function drawSmallTray() {
+  const size = 16;
+  const n = size * SS;
+  const c = canvas(n);
+  const u = n / 16;
+  roundedRect(c, 0, 0, 16 * u, 16 * u, 4 * u, [34, 106, 84], 1, [16, 62, 52]);
+  for (const [x, y, height, color] of [[3, 9, 4, [150, 214, 186]], [7, 6, 7, [196, 240, 216]], [11, 3, 10, [236, 252, 243]]]) {
+    roundedRect(c, x * u, y * u, 2 * u, height * u, 0.8 * u, color, 1);
+  }
+  return downsample(c, size);
+}
+
 fs.mkdirSync(OUT, { recursive: true });
+fs.writeFileSync(path.join(OUT, "tray-color.png"), encodePng(32, 32, drawColorTray(32)));
+fs.writeFileSync(path.join(OUT, "tray-color-16.png"), encodePng(16, 16, drawSmallTray()));
 fs.writeFileSync(path.join(OUT, "icon.png"), encodePng(512, 512, drawAppIcon(512)));
 fs.writeFileSync(path.join(OUT, "tray.png"), encodePng(32, 32, drawTrayIcon(32)));
 console.log("TokenPulse icon.png (512) + tray.png (32) →", OUT);

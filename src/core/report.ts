@@ -1,6 +1,9 @@
 import { estimateCost, priceOf } from "./model-pricing";
 import { analyzeAccount, ACCOUNT_KINDS, type AccountKind, type AccountReport, type HourRow } from "./quota-monitor";
 import { readQuotaChecks, readQuotaHistory } from "./quota-history";
+import type { RequestRow } from "./request-log";
+import { accountLabels } from "./login-timeline";
+import { ccSwitchBuckets, ccSwitchEnabled, coveredDays, readCcSwitch, type CcSwitchStatus } from "./cc-switch";
 import { readRollups, emptyBucket, addUsage, type DayBuckets, type UsageBucket } from "./usage-scan";
 
 /**
@@ -36,6 +39,12 @@ export type Snapshot = {
   accounts: AccountReport[];
   /** 每家算进来 / 因为走中转被排除的会话数，界面上照实说。 */
   sessions: Record<AccountKind, { included: number; excluded: number }>;
+  /** 这一轮新扫到、最近 15 分钟内型号不一致或响应存疑的请求（发系统通知用）。 */
+  requestAlerts?: RequestRow[];
+  /** CC Switch 导入的状态（设置 → 数据）。 */
+  ccSwitch: CcSwitchStatus;
+  /** 最近 7 天型号不一致 / 响应存疑的次数（侧栏红点）。 */
+  requestFlags?: { flagged: number; mismatch: number; suspect: number };
 };
 
 function toTotals(bucket: UsageBucket): Totals {
@@ -84,6 +93,22 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   /* ---- 1. 全量：按天 / 来源 / 型号 ---- */
   const days: DayBuckets = {};
   for (const file of Object.values(rollups.files)) mergeDays(days, file.days);
+  // CC Switch 只补 TokenPulse 自己没有账的「天 × 工具」（CLI 已经清掉的老会话、OpenCode 这类不扫的工具）
+  const ccEnabled = ccSwitchEnabled();
+  const ccStore = ccEnabled ? readCcSwitch() : null;
+  const cc = ccSwitchBuckets(ccStore, coveredDays(days));
+  mergeDays(days, cc.days);
+  const ccSwitch: CcSwitchStatus = {
+    enabled: ccEnabled,
+    found: Boolean(ccStore?.found),
+    path: ccStore?.path ?? "",
+    syncedAt: ccStore?.syncedAt,
+    error: ccStore?.error,
+    importedDays: cc.imported,
+    skippedDays: cc.skipped,
+    sources: [...cc.sources].map(([source, requests]) => ({ source, requests })).sort((a, b) => b.requests - a.requests),
+    proxyRequests: ccStore?.requests.filter((request) => request.proxy && request.status >= 200 && request.status < 300).length ?? 0,
+  };
 
   const totals = {
     today: emptyBucket(),
@@ -162,6 +187,12 @@ export function buildSnapshot(now = Date.now()): Snapshot {
       const hour = Number(key);
       if (!Number.isFinite(hour)) continue;
       for (const [model, bucket] of Object.entries(models)) {
+        /*
+         * Claude Code 的归属看的是全局 settings.json，可别的程序（AllAi）会给单个进程另配环境变量，
+         * 让 Claude Code 去接 gpt / grok（本机实测 grok-4.6 186 次、gpt-5.6-sol 75 次）。
+         * 这些不占 Claude 订阅额度，算进来会把「整窗容量」估大。
+         */
+        if (account === "claude" && !/claude/i.test(model)) continue;
         rows[account].push({
           hour,
           model,
@@ -175,16 +206,20 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   }
 
   /* ---- 3. 额度监控 ---- */
+  const labels = accountLabels();
   // 没采到过额度的账号不显示：没有百分比，就谈不上监控。
   const accounts = ACCOUNT_KINDS.map((kind) =>
     analyzeAccount(kind, Array.isArray(history.accounts[kind]) ? history.accounts[kind] : [], rows[kind], now, checks[kind]),
-  ).filter((report) => report.sampleCount > 0);
+  )
+    .filter((report) => report.sampleCount > 0)
+    .map((report) => ({ ...report, accountLabel: report.accountId ? labels.get(report.accountId) : undefined }));
 
   return {
     now,
     scannedAt: rollups.scannedAt,
     usage: usage.sort((a, b) => b.day.localeCompare(a.day) || b.tokens - a.tokens),
     fileCount: Object.keys(rollups.files).length,
+    ccSwitch,
     totals: {
       today: toTotals(totals.today),
       week: toTotals(totals.week),
