@@ -25,8 +25,8 @@ import type { QuotaSample } from "./quota-history";
 export type { AccountKind, QuotaSample };
 export const ACCOUNT_KINDS: AccountKind[] = ["claude", "chatgpt", "grok"];
 
-/** 一小时一个型号一条。tokens = 全部输入（含缓存）+ 输出。 */
-export type HourRow = { hour: number; model: string; tokens: number; costUsd: number; requests: number };
+/** 一小时一个型号一条。tokens = 全部输入（含缓存）+ 输出。account 是官方账号 ID。 */
+export type HourRow = { hour: number; model: string; tokens: number; costUsd: number; requests: number; account?: string };
 
 export type WindowReport = {
   used: number;
@@ -102,10 +102,21 @@ export type AccountReport = {
   lastCheckedAt?: number;
   resetCredits?: number;
   plan?: string;
-  /** 这份额度是哪个账号的（TokenPulse 里「当前使用」的那个，= 最后一条采样的账号）。 */
+  /** 这份额度是哪个账号的（= 这组采样的账号）。 */
   accountId?: string;
   /** 这个账号的名字（邮箱），report.ts 从账号登记里补上。 */
   accountLabel?: string;
+  /** 用户在设置里给这个账号起的名字。 */
+  accountAlias?: string;
+  /** 界面上认这份报告用的键：有账号 id 用 id，没有（0.3 以前的采样）用家名。 */
+  key?: string;
+  /** 同一家同时有几个账号在显示。多于一个时界面要写出账号名，不然分不清。 */
+  siblings?: number;
+  /**
+   * 卡片、标签、托盘上用的短名字。有别名就用别名；否则邮箱只留 @ 前面。
+   * 短名字撞了（ada@one.com 和 ada@two.com 都会变成 ada，或者两个别名一样）就退回完整邮箱。
+   */
+  displayName?: string;
   week: WindowReport | null;
   five: WindowReport | null;
   /** 当前周窗口里的采样点，画曲线用。 */
@@ -398,6 +409,13 @@ export function analyzeAccount(
   const current = sorted.at(-1)?.account;
   const samples = current ? sorted.filter((sample) => !sample.account || sample.account === current) : sorted;
   const latest = samples.at(-1);
+  /*
+   * 0.3.2 以前的小时账没有账号维度。只要账本里已经出现了带账号的行，
+   * 未标注的行就不能再猜给当前账号，否则切换账号后会把另一账号的用量折进容量和 ETA。
+   * 全部都是旧格式时保留旧口径，等 0.3.3 的重扫迁移完成。
+   */
+  const hasAccountRows = rows.some((row) => row.account != null);
+  const scopedRows = current && hasAccountRows ? rows.filter((row) => row.account === current) : rows;
 
   let week: WindowReport | null = null;
   let trend: Point[] = [];
@@ -417,7 +435,7 @@ export function analyzeAccount(
         minSpanMs: 2 * HOUR_MS,
         minElapsedMs: 4 * HOUR_MS,
       },
-      rows,
+      scopedRows,
       now,
     );
   }
@@ -438,7 +456,7 @@ export function analyzeAccount(
         minSpanMs: 15 * 60_000,
         minElapsedMs: 30 * 60_000,
       },
-      rows,
+      scopedRows,
       now,
     );
   }
@@ -457,7 +475,7 @@ export function analyzeAccount(
   const hourly: AccountReport["hourly"] = [];
   // rows 是全部历史（画容量折线要用），按小时建个索引，别 24 格每格都把全部历史扫一遍。
   const byHour = new Map<number, { tokens: number; costUsd: number; requests: number }>();
-  for (const row of rows) {
+  for (const row of scopedRows) {
     if (row.hour < base - 23 * HOUR_MS || row.hour > base) continue;
     const hit = byHour.get(row.hour) ?? { tokens: 0, costUsd: 0, requests: 0 };
     hit.tokens += row.tokens;
@@ -477,7 +495,7 @@ export function analyzeAccount(
 
   const modelsFrom = week?.startAt ?? now - WEEK_MS;
   const byModel = new Map<string, AccountReport["models"][number]>();
-  for (const row of rows) {
+  for (const row of scopedRows) {
     if (row.hour + HOUR_MS <= modelsFrom || row.hour > now) continue;
     const hit = byModel.get(row.model) ?? { model: row.model, tokens: 0, costUsd: 0, requests: 0, firstHour: row.hour };
     hit.tokens += row.tokens;
@@ -509,6 +527,6 @@ export function analyzeAccount(
     hourly,
     models,
     health: healthOf(week, five, now),
-    capacityHistory: { week: capacityHistory(samples, rows, "week", now), five: capacityHistory(samples, rows, "five", now) },
+    capacityHistory: { week: capacityHistory(samples, scopedRows, "week", now), five: capacityHistory(samples, scopedRows, "five", now) },
   };
 }

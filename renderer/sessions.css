@@ -1,0 +1,182 @@
+/* ---------------- 会话管理（renderer/sessions.js） ---------------- */
+
+/*
+ * 这一页是工作台：左边列表、右边对话，各自滚动，整块正好占满标题栏和顶栏下面的空间。
+ * 大标题和页脚在这一页收起来（body[data-page=sessions]），不然对话区只剩半屏。
+ */
+body[data-page="sessions"] .page-heading,
+body[data-page="sessions"] main > footer { display: none; }
+body[data-page="sessions"] main { padding-top: 22px; padding-bottom: 22px; }
+body[data-page="sessions"] .workspace { overflow-y: hidden; }
+
+.sw {
+  display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: 16px;
+  height: calc(100vh - var(--titlebar-h) - 64px - 44px);
+  min-height: 460px;
+}
+.sw .panel { padding: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.sw .panel:hover { transform: none; }
+
+/* ---- 左：列表 ---- */
+.sw-side-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 18px 12px; }
+.sw-side-head h2 { font-size: 17px; }
+.sw-refresh { width: 34px; height: 34px; padding: 0; }
+.sw-refresh.is-busy .icon { animation: spin 1s linear infinite; }
+.sw-search { width: auto; margin: 0 16px 10px; }
+.sw-search input { height: 38px; }
+.sw-kinds { margin: 0 16px 8px; align-self: stretch; }
+.sw-kinds button { flex: 1 1 0; min-width: 0; display: inline-flex; justify-content: center; align-items: baseline; gap: 4px; padding: 0 4px; white-space: nowrap; overflow: hidden; }
+.sw-kinds small { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.sw-kinds button.on small { color: var(--muted); }
+.sw-project { margin: 0 16px 10px; height: 34px; font-size: 13px; }
+.sw-items { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 12px; border-top: 1px solid var(--line); }
+.sw-group { position: sticky; top: 0; z-index: 1; padding: 10px 10px 6px; background: var(--surface); font-size: 11.5px; font-weight: 650; letter-spacing: .04em; color: var(--faint); }
+.sw-item {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px; margin-bottom: 2px;
+  border: 1px solid transparent; border-radius: 12px; background: transparent; text-align: left; color: inherit; font: inherit;
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+.sw-item:hover { background: var(--surface-2); }
+.sw-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sw-item.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.sw-item-body { flex: 1; min-width: 0; }
+.sw-item-top { display: flex; align-items: baseline; gap: 8px; }
+.sw-item-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 600; }
+.sw-item-top time { flex: none; font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.sw-item-meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 12px; color: var(--muted); }
+.sw-item-project { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-item-meta > span:not(.sw-item-project) { flex: none; }
+.sw-live { padding: 0 6px; border-radius: 99px; background: var(--accent); color: #fff; font-size: 11px; }
+.sw-list-note { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 40px 16px; color: var(--muted); font-size: 13px; text-align: center; }
+
+/* Agent 标记 */
+.sw-mark { flex: none; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: var(--tile-neutral); color: var(--text-2); }
+.sw-mark .brand-svg { width: 17px; height: 17px; }
+.sw-mark.lg { width: 42px; height: 42px; border-radius: 12px; }
+.sw-mark.lg .brand-svg { width: 23px; height: 23px; }
+.sw-mark.claude, .sw-avatar.claude, .sw-chip-mark.claude { color: var(--claude); }
+.sw-mark.claude, .sw-avatar.claude { background: var(--claude-soft); }
+.sw-mark.openai, .sw-avatar.openai { color: var(--openai); background: color-mix(in srgb, var(--openai) 10%, var(--surface)); }
+.sw-mark.grok, .sw-avatar.grok { color: var(--grok); }
+
+/* ---- 右：对话 ---- */
+.sw-main { position: relative; }
+.sw-head { flex: none; padding: 18px 22px 14px; border-bottom: 1px solid var(--line); }
+.sw-head-top { display: flex; gap: 14px; min-width: 0; }
+.sw-head-text { flex: 1; min-width: 0; }
+/* 标题最多两行，永远不和按钮抢位置（按钮在下面单独一行） */
+.sw-head h2 { font-size: 18px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.sw-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sw-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 280px; height: 26px; padding: 0 9px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sw-chip .icon { flex: none; width: 13px; height: 13px; color: var(--muted); }
+.sw-chip-mark { display: inline-grid; place-items: center; }
+.sw-chip-mark .brand-svg { width: 13px; height: 13px; }
+.sw-chip.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11.5px; }
+.sw-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-left: 56px; }
+.sw-actions .btn { height: 34px; }
+.sw-actions .icon-only { width: 34px; padding: 0; }
+
+.sw-scroll { flex: 1; min-height: 0; overflow-y: auto; scroll-behavior: auto; }
+.sw-messages { max-width: 920px; margin: 0 auto; padding: 18px 22px 24px; display: flex; flex-direction: column; gap: 12px; }
+.sw-scroll::-webkit-scrollbar, .sw-items::-webkit-scrollbar { width: 10px; }
+.sw-scroll::-webkit-scrollbar-thumb, .sw-items::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 99px; background-clip: padding-box; background-color: color-mix(in srgb, var(--muted) 36%, transparent); }
+
+.sw-row { display: flex; gap: 10px; align-items: flex-start; }
+.sw-row.user { justify-content: flex-end; }
+.sw-avatar { flex: none; width: 28px; height: 28px; margin-top: 2px; display: grid; place-items: center; border-radius: 9px; background: var(--tile-neutral); }
+.sw-avatar .brand-svg { width: 16px; height: 16px; }
+.sw-bubble { position: relative; min-width: 0; max-width: min(760px, 88%); padding: 10px 14px 8px; border-radius: 14px; font-size: 14px; line-height: 1.7; }
+.sw-row.assistant .sw-bubble { background: var(--surface); border: 1px solid var(--line); border-top-left-radius: 4px; }
+.sw-row.user .sw-bubble { background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); border-top-right-radius: 4px; }
+.sw-row.pending .sw-bubble { border-style: dashed; }
+.sw-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sw-rich p { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sw-rich p:last-child { margin-bottom: 0; }
+.sw-rich .sw-h { font-weight: 650; }
+.sw-rich .sw-link { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 3px; cursor: help; }
+.sw-table-wrap { max-width: 100%; margin: 0 0 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.sw-table-wrap:last-child { margin-bottom: 0; }
+.sw-table { border-collapse: collapse; font-size: 13px; line-height: 1.55; }
+.sw-table th, .sw-table td { padding: 6px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.sw-table th { font-weight: 650; background: var(--surface-2); white-space: nowrap; }
+.sw-table tr:last-child td { border-bottom: 0; }
+.sw-input textarea { overflow-y: hidden; }
+.sw-rich code { padding: 1px 5px; border-radius: 5px; background: var(--surface-2); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+.sw-code { margin: 6px 0 10px; padding: 10px 12px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font: 12.5px/1.55 ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: pre; }
+.sw-code code { padding: 0; background: none; }
+.sw-bubble-foot { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 18px; margin-top: 2px; font-size: 11px; color: var(--faint); }
+.sw-copy { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); opacity: 0; transition: opacity .15s, background .15s; cursor: pointer; }
+.sw-copy .icon { width: 13px; height: 13px; }
+.sw-bubble:hover .sw-copy, .sw-copy:focus-visible { opacity: 1; }
+.sw-copy:hover { background: var(--surface-2); color: var(--text); }
+
+.sw-row.event { justify-content: center; }
+.sw-row.event span { padding: 3px 12px; border-radius: 99px; background: var(--surface-2); font-size: 12px; color: var(--muted); }
+.sw-divider { display: flex; align-items: center; gap: 12px; margin: 6px 0 2px; font-size: 11.5px; color: var(--faint); }
+.sw-divider::before, .sw-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* 工具调用：一段折成一行 */
+.sw-row.tools { padding-left: 38px; }
+.sw-tools-box { flex: 1; min-width: 0; max-width: 760px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); overflow: hidden; }
+.sw-tools-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.sw-tools-head:hover { color: var(--text); }
+.sw-tools-head > .icon:first-child { width: 14px; height: 14px; color: var(--muted); }
+.sw-tools-head span { font-weight: 600; }
+.sw-tools-head small { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.sw-caret, .sw-tool-caret { flex: none; width: 14px; height: 14px; color: var(--muted); transition: transform .18s var(--ease); }
+[aria-expanded="true"] > .sw-caret, [aria-expanded="true"] > .sw-tool-caret { transform: rotate(180deg); }
+.sw-tools { border-top: 1px solid var(--line); padding: 4px 0; }
+.sw-tool { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 12px; border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.sw-tool:hover { background: var(--surface); }
+.sw-tool b { flex: none; font-weight: 600; }
+.sw-tool.error b { color: var(--danger); }
+.sw-tool-sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.sw-tool-detail { padding: 0 12px 8px 34px; }
+.sw-tool-detail small { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+.sw-tool-detail .sw-code { max-height: 260px; margin: 3px 0 4px; background: var(--surface); }
+
+.sw-earlier-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.sw-earlier { height: 32px; font-size: 12.5px; }
+.sw-earlier-wrap small { font-size: 11.5px; color: var(--faint); }
+
+/* 正在回复 */
+.sw-typing { display: inline-flex; gap: 4px; padding: 6px 0; }
+.sw-typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: sw-blink 1.2s ease-in-out infinite; }
+.sw-typing i:nth-child(2) { animation-delay: .2s; }
+.sw-typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes sw-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+.sw-live-tools { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.sw-live-tools .icon { width: 13px; height: 13px; }
+.sw-reply-error { display: flex; align-items: flex-start; gap: 6px; margin-top: 6px; padding: 6px 10px; border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; }
+.sw-reply-error .icon { flex: none; width: 14px; height: 14px; margin-top: 3px; }
+.sw-spinner { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+
+/* 回复框：固定在对话区底部 */
+.sw-composer { flex: none; padding: 12px 22px 14px; border-top: 1px solid var(--line); background: var(--surface); }
+.sw-input { display: flex; align-items: flex-end; gap: 10px; max-width: 920px; margin: 0 auto; padding: 8px 8px 8px 14px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); transition: border-color .15s, box-shadow .15s; }
+.sw-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.sw-input textarea { flex: 1; min-height: 24px; max-height: 200px; padding: 6px 0; border: 0; outline: 0; resize: none; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.6; }
+.sw-input textarea:disabled { cursor: not-allowed; }
+.sw-send { flex: none; height: 36px; }
+.sw-composer-bar { display: flex; align-items: center; gap: 12px; max-width: 920px; margin: 8px auto 0; }
+.sw-mode button { padding: 0 12px; }
+.sw-composer-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+
+.sw-empty { flex: 1; display: grid; place-items: center; align-content: center; gap: 8px; padding: 32px; text-align: center; color: var(--muted); }
+.sw-empty-icon { width: 60px; height: 60px; display: grid; place-items: center; margin-bottom: 6px; border-radius: 18px; background: var(--accent-soft); color: var(--accent); }
+.sw-empty-icon .icon { width: 28px; height: 28px; }
+.sw-empty h2 { font-size: 18px; color: var(--text); }
+.sw-empty p { max-width: 420px; font-size: 13.5px; line-height: 1.7; }
+
+@media (max-width: 1100px) {
+  .sw { grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); gap: 12px; height: calc(100vh - var(--titlebar-h) - 64px - 44px); }
+  .sw-actions { padding-left: 0; }
+  /* 列表变窄后四个按钮放不下数字，数字收起来（悬停提示里还有） */
+  .sw-kinds small { display: none; }
+}
+@media (max-width: 860px) {
+  /* 太窄了就上下排：列表在上面矮一点 */
+  body[data-page="sessions"] .workspace { overflow-y: auto; }
+  .sw { grid-template-columns: 1fr; grid-template-rows: 300px minmax(560px, 1fr); height: auto; }
+  .sw-main { min-height: 560px; }
+}

@@ -86,31 +86,173 @@ function renderOfficialAccounts(statuses = []) {
     const add = status.installed
       ? el('button', { class: 'btn btn-accent', 'data-account-action': 'login', 'data-account-kind': status.kind }, [icon('plus'), '添加账号'])
       : el('span', { class: 'oauth-card-state', text: '未检测到官方 CLI' });
+    const sortable = status.accounts.length > 1;
     const rows = status.accounts.map(account => {
-      const state = account.needsLogin ? '需重新登录'
+      const email = account.email || account.label;
+      const name = account.alias || email;
+      const state = account.hidden ? '已隐藏'
+        : account.needsLogin ? '需重新登录'
         : !account.usable ? (account.autoRenew ? '等待自动续期' : '凭据已过期')
-        : account.active ? '当前使用' : account.inCli ? 'CLI 当前登录' : '已保存';
-      const action = !account.active && account.usable
-        ? el('button', { class: 'btn', 'data-account-action': 'activate', 'data-account-kind': status.kind, 'data-account-id': account.id }, ['使用'])
-        : null;
-      return el('div', { class: 'oauth-account' + (account.active ? ' active' : '') + (account.usable ? '' : ' expired') }, [
-        el('span', { class: 'oauth-account-name', text: account.email || account.label, title: account.email || account.label }),
-        account.autoRenew ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，不用重新登录' }) : null,
-        el('span', { class: 'oauth-card-state' + (account.active && account.usable ? ' ok' : !account.usable ? ' warn' : ''), text: state }),
-        action
+        : account.inCli ? 'CLI 当前登录' : '已保存';
+      const tool = (action, iconName, label, extra = {}) => el('button', {
+        type: 'button', class: 'btn icon-only oauth-tool' + (action === 'remove' ? ' danger' : ''), 'data-account-action': action, 'data-account-id': account.id, title: label, 'aria-label': `${label}：${name}`, ...extra
+      }, [icon(iconName)]);
+      const actions = account.hidden
+        ? [el('button', { type: 'button', class: 'btn oauth-restore', 'data-account-action': 'restore', 'data-account-id': account.id, title: '重新查询并显示这个账号的额度' }, [icon('restore'), '恢复'])]
+        : [
+          tool('rename', 'edit', '重命名'),
+          // CLI 还登录着的账号删不掉（下次读 CLI 又回来了），只能隐藏：提示里说清楚
+          tool('remove', 'trash', account.inCli ? '隐藏（CLI 还登录着这个账号）' : '删除', { 'data-in-cli': account.inCli ? '1' : '' })
+        ];
+      // 拖动的把手：鼠标按住拖；键盘聚焦后用上下方向键
+      const grip = sortable ? el('button', { type: 'button', class: 'oauth-grip', 'data-grip': account.id, title: '拖动调整顺序', 'aria-label': `调整顺序：${name}（按住拖动，或用上下方向键）` }, [icon('grip')])
+        // 只有一个账号不用排序，但占住把手的位置，和别家的名字对齐
+        : el('span', { class: 'oauth-grip placeholder', 'aria-hidden': 'true' });
+      return el('div', { class: 'oauth-account' + (account.usable ? '' : ' expired') + (account.hidden ? ' hidden-account' : '') + (sortable ? ' sortable' : ''), 'data-account-row': account.id }, [
+        grip,
+        el('span', { class: 'oauth-account-who' }, [
+          el('span', { class: 'oauth-account-name', text: name, title: name, translate: 'no', 'data-alias': account.alias || '', 'data-email': email }),
+          account.alias && email ? el('small', { class: 'oauth-account-email', text: email, title: email, translate: 'no' }) : null
+        ]),
+        account.autoRenew && !account.hidden ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，不用重新登录' }) : null,
+        el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: state }),
+        el('span', { class: 'oauth-actions' }, actions)
       ]);
     });
     return el('div', { class: 'oauth-card' }, [
       el('div', { class: 'oauth-card-head' }, [avatar(status.kind), el('span', { class: 'oauth-card-title', text: meta.name }), add]),
-      rows.length ? el('div', { class: 'oauth-account-list' }, rows) : el('p', { class: 'oauth-empty', text: status.installed ? '还没有登录的账号' : '安装官方 CLI 后即可添加账号' })
+      rows.length ? el('div', { class: 'oauth-account-list', 'data-kind': status.kind }, rows) : el('p', { class: 'oauth-empty', text: status.installed ? '还没有登录的账号' : '安装官方 CLI 后即可添加账号' })
     ]);
   }));
+}
+
+/* ---- 拖拽排序 ----
+ * 按住把手上下拖：被拖的那行跟着鼠标走，其余的行让出位置（transform 动画，不改 DOM）；松手时才真的改 DOM 顺序并保存。
+ * 用 pointer 事件自己做而不用 HTML5 拖放：原生拖放拖的是一张半透明截图，别的行也不会让位，手感差。
+ */
+let accountDrag = null;
+function rowsOf(list) { return [...list.querySelectorAll(':scope > .oauth-account')]; }
+async function saveAccountOrder(list, message = '已调整顺序') {
+  const ids = rowsOf(list).map(row => row.dataset.accountRow);
+  try {
+    renderOfficialAccounts(await api.reorderOfficialAccounts(list.dataset.kind, ids));
+    $('prefs-status').textContent = message;
+  } catch (error) {
+    $('prefs-status').textContent = cleanRemoteError(error, '顺序没保存上，请重试');
+    loadOfficialAccounts();
+  }
+}
+function cleanRemoteError(error, fallback) {
+  return String(error?.message || fallback).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') || fallback;
+}
+$('official-accounts').addEventListener('pointerdown', event => {
+  const grip = event.target.closest('[data-grip]');
+  if (!grip || event.button !== 0 || accountDrag) return;
+  const row = grip.closest('.oauth-account'), list = row.parentElement, rows = rowsOf(list);
+  event.preventDefault();
+  grip.setPointerCapture(event.pointerId);
+  grip.focus({ preventScroll: true });
+  const rects = rows.map(item => item.getBoundingClientRect());
+  const from = rows.indexOf(row);
+  accountDrag = { grip, row, list, rows, rects, from, to: from, startY: event.clientY, moved: false };
+  list.classList.add('sorting');
+});
+$('official-accounts').addEventListener('pointermove', event => {
+  const d = accountDrag; if (!d) return;
+  const origin = d.rects[d.from];
+  const minTop = d.rects[0].top;
+  const maxTop = d.rects.at(-1).top + d.rects.at(-1).height - origin.height;
+  // 只能在这一家的列表里上下拖，拖出头就停在两端。行高不统一（起了名字的行更高），不能按固定步长算落点。
+  const dy = Math.max(minTop - origin.top, Math.min(maxTop - origin.top, event.clientY - d.startY));
+  if (!d.moved && Math.abs(event.clientY - d.startY) < 3) return;
+  if (!d.moved) { d.moved = true; d.row.classList.add('dragging'); }
+  d.row.style.transform = `translateY(${dy}px)`;
+  const center = origin.top + origin.height / 2 + dy;
+  let to = 0;
+  for (let i = 0; i < d.rects.length; i++) {
+    if (i === d.from) continue;
+    if (center > d.rects[i].top + d.rects[i].height / 2) to += 1;
+  }
+  d.to = to;
+  const gap = d.rects.length > 1 ? d.rects[1].top - d.rects[0].bottom : 0;
+  const slot = origin.height + gap;
+  d.rows.forEach((item, i) => {
+    if (item === d.row) return;
+    const shift = d.from < d.to && i > d.from && i <= d.to ? -slot : d.from > d.to && i < d.from && i >= d.to ? slot : 0;
+    item.style.transform = shift ? `translateY(${shift}px)` : '';
+  });
+});
+function endAccountDrag(commit) {
+  const d = accountDrag; if (!d) return;
+  accountDrag = null;
+  d.list.classList.remove('sorting');
+  d.row.classList.remove('dragging');
+  // 先关掉过渡再清 transform、改 DOM 顺序：不然各行会从让位的位置再动画回去，闪一下
+  d.list.classList.add('settling');
+  for (const item of d.rows) item.style.transform = '';
+  const changed = commit && d.moved && d.to !== d.from;
+  if (changed) {
+    const others = d.rows.filter(item => item !== d.row);
+    others.splice(d.to, 0, d.row);
+    d.list.append(...others);
+  }
+  requestAnimationFrame(() => d.list.classList.remove('settling'));
+  if (changed) saveAccountOrder(d.list).then(() => $('official-accounts').querySelector(`[data-grip="${CSS.escape(d.row.dataset.accountRow)}"]`)?.focus({ preventScroll: true }));
+}
+$('official-accounts').addEventListener('pointerup', () => endAccountDrag(true));
+$('official-accounts').addEventListener('pointercancel', () => endAccountDrag(false));
+$('official-accounts').addEventListener('lostpointercapture', () => endAccountDrag(true));
+// 键盘：把手聚焦时上下方向键挪一位，Esc 取消正在进行的拖动
+$('official-accounts').addEventListener('keydown', event => {
+  if (event.key === 'Escape' && accountDrag) { event.preventDefault(); event.stopPropagation(); endAccountDrag(false); return; }
+  const grip = event.target.closest('[data-grip]');
+  if (!grip || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+  event.preventDefault();
+  const row = grip.closest('.oauth-account'), list = row.parentElement, rows = rowsOf(list);
+  const at = rows.indexOf(row), to = at + (event.key === 'ArrowUp' ? -1 : 1);
+  if (to < 0 || to >= rows.length) return;
+  if (to < at) rows[to].before(row); else rows[to].after(row);
+  grip.focus();
+  saveAccountOrder(list).then(() => $('official-accounts').querySelector(`[data-grip="${CSS.escape(row.dataset.accountRow)}"]`)?.focus());
+});
+
+/* ---- 重命名：名字原地变成输入框，回车 / 点别处保存，Esc 取消 ---- */
+function startRename(button) {
+  const row = button.closest('.oauth-account'), label = row.querySelector('.oauth-account-name');
+  if (row.querySelector('.oauth-rename')) return;
+  const id = button.dataset.accountId, email = label.dataset.email;
+  const input = el('input', { class: 'oauth-rename', type: 'text', maxlength: '40', value: label.dataset.alias || '', placeholder: email || '给这个账号起个名字', 'aria-label': '账号名字（留空就显示邮箱）', translate: 'no' });
+  label.replaceWith(input);
+  input.focus(); input.select();
+  $('prefs-status').textContent = '回车保存，Esc 取消；留空就显示邮箱。';
+  let done = false;
+  const finish = async save => {
+    if (done) return; done = true;
+    const value = input.value.trim();
+    if (!save || value === (label.dataset.alias || '')) { input.replaceWith(label); $('prefs-status').textContent = ''; return; }
+    input.disabled = true;
+    try {
+      renderOfficialAccounts(await api.manageOfficialAccount('rename', id, value));
+      $('prefs-status').textContent = value ? '已改名' : '已去掉名字，显示邮箱';
+      $('official-accounts').querySelector(`[data-account-row="${CSS.escape(id)}"] [data-account-action="rename"]`)?.focus();
+    } catch (error) {
+      input.replaceWith(label);
+      $('prefs-status').textContent = cleanRemoteError(error, '改名失败，请重试');
+    }
+  };
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    // 只取消改名，别把设置窗口也关了
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
 }
 async function loadOfficialAccounts() {
   $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '正在读取账号状态…' }));
   try { renderOfficialAccounts(await api.officialAccounts()); }
   catch { $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' })); }
 }
+
 
 /* ---------------- 格式化 ---------------- */
 
@@ -212,7 +354,15 @@ function moveIndicator() {
 
 /* ---------------- 状态 ---------------- */
 
-function showStatus(message, error = false) { $('app-status').textContent = message; $('app-status').hidden = false; $('app-status').setAttribute('role', error ? 'alert' : 'status'); }
+let statusTimer = 0;
+function showStatus(message, error = false) {
+  const status = $('app-status');
+  clearTimeout(statusTimer);
+  status.textContent = message;
+  status.hidden = false;
+  status.setAttribute('role', error ? 'alert' : 'status');
+  statusTimer = setTimeout(() => { status.hidden = true; }, error ? 6500 : 3600);
+}
 function empty(message) { return el('div', { class: 'empty', text: message }); }
 function track(pct, warning = false, label = '已用额度', identity = '') {
   // identity：双环卡片里进度条用和环一样的身份色（5 小时 / 周），预警改由文字颜色表达；快用完（≥90%）仍然变红。
@@ -279,9 +429,23 @@ function ring({ five, week, account } = {}) {
   const wrapper = el('div', { class: 'ring' + (both ? ' double' : ''), title: both ? '外环：5 小时额度　内环：周额度' : null }, [node]);
   return wrapper;
 }
-function quotaCard(kind) {
-  const account = current.accounts.find(a => a.kind === kind);
+/**
+ * 额度卡片 / 额度页标签的排法：每个有额度采样的账号一个，按「家 → 设置里的顺序」；
+ * 一个账号都没有的家也留一个位置，提示去登录。key 是账号 id（老采样没有 id 时用家名）。
+ */
+function quotaSlots() {
+  return Object.keys(META).flatMap(kind => {
+    const reports = current.accounts.filter(a => a.kind === kind);
+    return reports.length ? reports.map(account => ({ kind, key: account.key || kind, account })) : [{ kind, key: kind, account: null }];
+  });
+}
+/** 卡片和标签上的短名字。报表里已经处理过别名和重名（见 report.ts 的 displayNames）。 */
+function accountWho(account) {
+  return account?.displayName || '';
+}
+function quotaCard({ kind, key, account }) {
   const meta = META[kind];
+  const who = accountWho(account);
   const stale = account && isStale(account);
   // 首页优先展示剩余最少的有效窗口，让环中心和说明都对应当前压力更高的窗口。
   const windows = [account?.five, account?.week].filter(Boolean);
@@ -289,7 +453,11 @@ function quotaCard(kind) {
   const waiting = report && waitingReset(account, report);
   const head = el('div', { class: 'account-head' }, [
     avatar(kind),
-    el('div', { class: 'account-title' }, [el('span', { class: 'account-name', text: meta.name }), el('span', { class: 'plan', text: account?.plan || meta.source })]),
+    el('div', { class: 'account-title' }, [
+      el('span', { class: 'account-name', text: meta.name }),
+      who ? el('span', { class: 'plan who', title: account.accountLabel || '', translate: 'no' }, [who, account.plan ? el('small', { text: ' · ' + account.plan }) : null])
+        : el('span', { class: 'plan', text: account?.plan || meta.source })
+    ]),
     el('span', { class: 'badge ' + (!stale && !waiting ? account?.health.level || '' : ''), text: !account ? '暂无采样' : waiting ? '等待新采样' : stale ? '采样已过期' : HEALTH[account.health.level] })
   ]);
   const body = [head];
@@ -330,8 +498,8 @@ function quotaCard(kind) {
     body.push(el('div', { class: 'quota-hero' }, [ringNode, el('div', { class: 'quota-hero-text' }, [el('span', { class: 'quota-hero-label', text: '额度剩余' }), el('span', { class: 'quota-hero-value', text: '尚未取得官方额度' })])]));
     body.push(el('div', { class: 'quota-missing' }, [el('p', { text: '可能尚未登录、凭据过期或网络未连通。本机用量仍正常记录。' })]));
   }
-  const link = el('button', { class: 'text-btn', 'aria-label': `${meta.name} 额度详情` }, ['详情', icon('arrow')]);
-  link.addEventListener('click', () => { state.account = kind; navigate('quota'); });
+  const link = el('button', { class: 'text-btn', 'aria-label': `${who ? meta.name + ' ' + who : meta.name} 额度详情` }, ['详情', icon('arrow')]);
+  link.addEventListener('click', () => { state.account = key; navigate('quota'); });
   const forecast = !stale && !waiting && report?.used >= 100 ? '额度已用完，等待重置'
     : !stale && !waiting && report?.etaAt && report.runsOutBeforeReset ? `约 ${duration(report.etaAt - Date.now())} 后达到上限`
     : !stale && !waiting && report?.ratePerH === 0 ? '近期没有新增用量，暂不估计'
@@ -512,7 +680,7 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
 /* ---------------- 总览 ---------------- */
 
 function renderOverview() {
-  $('quota-cards').replaceChildren(...Object.keys(META).map(quotaCard));
+  $('quota-cards').replaceChildren(...quotaSlots().map((slot, i) => stagger(quotaCard(slot), i)));
   dailyChart(entering());
   const t = analysis.total;
   // 过去 24 小时按小时算节奏，其余按天
@@ -706,15 +874,65 @@ function trendChart(host, points, animate) {
   host.append(node);
   playChart(host, animate);
 }
+/** 额度页顶上的标签：一个账号一个。账号有变化（新登录、删除、调顺序）才重建，平时只切换选中。 */
+function drawAccountTabs(slots) {
+  const tabs = $('account-tabs');
+  const signature = slots.map(slot => `${slot.key}:${accountWho(slot.account)}`).join('|');
+  if (tabs.dataset.signature !== signature) {
+    tabs.dataset.signature = signature;
+    tabs.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...slots.map(slot => {
+      const who = accountWho(slot.account);
+      return el('button', { type: 'button', 'data-account': slot.key, 'data-kind': slot.kind, title: slot.account?.accountLabel || null }, [
+        el('span', { class: 'brand-glyph' }, [brandSvg(META[slot.kind].brand)]), META[slot.kind].name,
+        who ? el('small', { class: 'tab-who', text: who, translate: 'no' }) : null
+      ]);
+    }));
+  }
+  for (const button of tabs.querySelectorAll('button')) { button.classList.toggle('on', button.dataset.account === state.account); button.setAttribute('aria-pressed', button.dataset.account === state.account); }
+  syncSeg(tabs);
+  revealAccountTab();
+}
+/** 选中的账号如果在滚动区域外面，把它滚进可见范围。只用这一行的 scrollLeft，不带动整页。 */
+function revealAccountTab() {
+  const tabs = $('account-tabs');
+  const on = tabs.querySelector('button.on');
+  if (!on || tabs.clientWidth <= 0) { markAccountTabEdges(); return; }
+  const pad = 8;
+  const left = on.offsetLeft - pad;
+  const right = on.offsetLeft + on.offsetWidth + pad;
+  if (left < tabs.scrollLeft) tabs.scrollLeft = Math.max(0, left);
+  else if (right > tabs.scrollLeft + tabs.clientWidth) tabs.scrollLeft = right - tabs.clientWidth;
+  markAccountTabEdges();
+}
+/** 两端淡出，表示这一侧还有账号。提示只在「能不能滚」变化时写一次，避免和英文翻译来回改 title。 */
+function markAccountTabEdges() {
+  const tabs = $('account-tabs');
+  const max = tabs.scrollWidth - tabs.clientWidth;
+  const overflow = max > 2;
+  tabs.classList.toggle('overflow-left', overflow && tabs.scrollLeft > 2);
+  tabs.classList.toggle('overflow-right', overflow && max - tabs.scrollLeft > 2);
+  tabs.classList.toggle('can-pan', overflow);
+  const flag = overflow ? '1' : '';
+  if (tabs.dataset.scrollHint !== flag) {
+    tabs.dataset.scrollHint = flag;
+    tabs.title = overflow ? '按住拖动，查看更多账号' : '';
+  }
+}
 function renderQuota() {
   const host = $('quota-detail'); host.replaceChildren();
-  for (const button of $('account-tabs').querySelectorAll('button')) { button.classList.toggle('on', button.dataset.account === state.account); button.setAttribute('aria-pressed', button.dataset.account === state.account); }
-  syncSeg($('account-tabs'));
-  const account = current.accounts.find(a => a.kind === state.account), meta = META[state.account];
-  const sessions = current.sessions[state.account] || { included: 0, excluded: 0 };
+  const slots = quotaSlots();
+  // state.account 可能是账号 id，也可能是家名（首页「详情」、老的默认值）：对不上账号就取这一家的第一个
+  const slot = slots.find(item => item.key === state.account) || slots.find(item => item.kind === state.account) || slots[0];
+  state.account = slot.key;
+  drawAccountTabs(slots);
+  const { account, kind } = slot, meta = META[kind], who = accountWho(account);
+  const sessions = current.sessions[kind] || { included: 0, excluded: 0 };
   host.append(el('div', { class: 'quota-context' }, [
-    avatar(state.account),
-    el('div', {}, [el('h2', { text: meta.name + (account?.plan ? ' · ' + account.plan : '') }), el('p', { class: 'muted', text: `${number(sessions.included)} 个官方会话 · ${number(sessions.excluded)} 个中转 / API Key 会话未计入额度` })]),
+    avatar(kind),
+    el('div', {}, [
+      el('h2', {}, [meta.name + (account?.plan ? ' · ' + account.plan : ''), who ? el('span', { class: 'context-who', text: account.accountLabel || who, title: account.accountLabel || who, translate: 'no' }) : null]),
+      el('p', { class: 'muted', text: `${(account?.siblings || 1) > 1 ? `这一家共 ${number(sessions.included)} 个官方会话，用量已按账号分开` : `${number(sessions.included)} 个官方会话`} · ${number(sessions.excluded)} 个中转 / API Key 会话未计入额度` })
+    ]),
     el('div', { class: 'context-meta', text: account ? `${date(checkedAt(account))} 更新 · ${number(account.sampleCount)} 个采样点` : '尚无额度采样' })
   ]));
   if (!account) {
@@ -806,7 +1024,7 @@ function drawAccountRequests(panel, account, meta, data) {
     navigate('usage');
   });
   const heading = el('div', { class: 'panel-heading' }, [
-    el('div', {}, [el('h2', {}, ['这个账号的请求 ', el('span', { class: 'section-tag', text: label })]), el('p', { text: '本机 CLI 用这个账号发出的请求。额度按 TokenPulse 里「当前使用」的账号查询，请求按 CLI 当时登录的账号归属。' })]),
+    el('div', {}, [el('h2', {}, ['这个账号的请求 ', el('span', { class: 'section-tag', text: label })]), el('p', { text: '本机 CLI 用这个账号发出的请求，按 CLI 当时登录的账号归属。' })]),
     openAll
   ]);
   const body = el('div', { class: 'account-requests-body' });
@@ -927,8 +1145,10 @@ function projectAccountCell(row) {
  */
 const KIND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'chatgpt', 'Grok Build': 'grok' };
 function quotaShare(row) {
-  const report = current?.accounts?.find(item => item.kind === KIND_OF_SOURCE[row.source]);
-  if (!report || !row.account || (report.accountId && row.account.id !== report.accountId)) return null;
+  // 同一家可能有好几个账号在查额度：找这条请求所属账号的那份
+  const reports = current?.accounts?.filter(item => item.kind === KIND_OF_SOURCE[row.source]) || [];
+  const report = reports.find(item => item.accountId && item.accountId === row.account?.id) || (reports.length === 1 && !reports[0].accountId ? reports[0] : null);
+  if (!report || !row.account) return null;
   const share = name => {
     const point = report.capacityHistory?.[name]?.points?.find(p => row.at >= p.startAt && row.at < p.resetAt);
     return point?.capacityTokens ? { pct: row.tokens / point.capacityTokens * 100, confidence: point.confidence } : null;
@@ -1065,6 +1285,8 @@ function renderPage(snapshot) {
   if (state.page === 'overview') renderOverview();
   if (state.page === 'quota') renderQuota();
   if (state.page === 'usage') renderUsage();
+  // 会话页自己管数据；只在还没读过或列表放了一阵子时重读，不跟着每分钟的快照整页重画
+  if (state.page === 'sessions') window.PulseSessions?.show();
   if (requestsVisible()) loadRequests();
   renderRequestAlert(snapshot);
   syncSourceOptions(snapshot);
@@ -1095,22 +1317,24 @@ const overviewRange = { days: 30, from: '', to: '', follow: false };
 function navigate(page) {
   // 以前的「请求记录」页并进了用量明细（通知、额度详情的链接还会传 requests 过来）
   if (page === 'requests') { page = 'usage'; showUsageView('requests'); }
-  if (!['overview', 'quota', 'usage'].includes(page)) page = 'overview';
+  if (!['overview', 'quota', 'usage', 'sessions'].includes(page)) page = 'overview';
   const rangePage = state.rangePage || 'overview';
   if (page === 'usage' && state.page !== 'usage') {
     if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
     Object.assign(state, { days: 1, follow: false, tablePage: 0, reqPage: 0 });
   }
   if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
-  if (page !== 'quota') state.rangePage = page;
+  if (page === 'overview' || page === 'usage') state.rangePage = page;
   state.page = page;
-  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'] }[page];
+  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
-  for (const name of ['overview', 'quota', 'usage']) $('page-' + name).hidden = name !== page;
+  for (const name of ['overview', 'quota', 'usage', 'sessions']) $('page-' + name).hidden = name !== page;
+  // 会话页是占满屏幕的工作台：大标题、页脚在那一页收起来（sessions.css）
+  document.body.dataset.page = page;
   $('overview-analysis').hidden = page !== 'overview';
-  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota';
+  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions';
   $('tip').hidden = true;
   enter();
   if (current) render(current);
@@ -1635,10 +1859,47 @@ $('chart-metric').addEventListener('click', event => {
   if (analysis) dailyChart(true);
 });
 $('account-tabs').addEventListener('click', event => {
+  if (tabDragged) { tabDragged = false; event.preventDefault(); event.stopPropagation(); return; }
   const button = event.target.closest('[data-account]'); if (!button) return;
   state.account = button.dataset.account;
   if (current) { enter(); renderQuota(); }
 });
+// 账号多的时候这一行横着放不下。按住左右拖来看后面的，松手时如果真的拖动过，不要当成点选了某个账号。
+let tabPan = null;
+let tabDragged = false;
+function endTabPan(tabs, dragged) {
+  if (!tabPan) return;
+  tabPan = null;
+  tabs.classList.remove('panning');
+  tabDragged = dragged;
+}
+$('account-tabs').addEventListener('pointerdown', event => {
+  if (event.button !== 0) return;
+  const tabs = event.currentTarget;
+  if (tabs.scrollWidth - tabs.clientWidth <= 1) return;
+  tabPan = { id: event.pointerId, x: event.clientX, left: tabs.scrollLeft, dragged: false };
+  try { tabs.setPointerCapture(event.pointerId); } catch { /* 没有真实指针时（界面测试）捕获会失败，拖动仍然走这几个监听 */ }
+});
+$('account-tabs').addEventListener('pointermove', event => {
+  if (!tabPan || event.pointerId !== tabPan.id) return;
+  const dx = event.clientX - tabPan.x;
+  if (!tabPan.dragged && Math.abs(dx) < 5) return;
+  tabPan.dragged = true;
+  const tabs = event.currentTarget;
+  tabs.classList.add('panning');
+  const max = tabs.scrollWidth - tabs.clientWidth;
+  tabs.scrollLeft = Math.min(max, Math.max(0, tabPan.left - dx));
+  markAccountTabEdges();
+});
+$('account-tabs').addEventListener('pointerup', event => {
+  if (!tabPan || event.pointerId !== tabPan.id) return;
+  endTabPan(event.currentTarget, tabPan.dragged);
+});
+$('account-tabs').addEventListener('pointercancel', event => {
+  if (!tabPan || event.pointerId !== tabPan.id) return;
+  endTabPan(event.currentTarget, false);
+});
+$('account-tabs').addEventListener('scroll', markAccountTabEdges);
 $('model-search').addEventListener('input', event => { state.search = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
 $('record-sort').addEventListener('change', event => { state.sort = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
 $('prev-page').addEventListener('click', () => { state.tablePage--; renderRecords(); });
@@ -1675,30 +1936,57 @@ $('settings-open').addEventListener('click', () => openSettings());
 // 统计口径并进了设置的「数据」页。
 $('methodology-open').addEventListener('click', () => openSettings('data'));
 // 官方 OAuth 登录由 CLI 打开浏览器完成；界面只拿到成功后的账号列表，不接触 token。
+/** 删除要点两下：第一下按钮变成「确认删除」，几秒内再点才真的删。不弹系统对话框。 */
+let removeArmed = null;
+function armRemove(button) {
+  clearTimeout(removeArmed?.timer);
+  if (removeArmed?.button && removeArmed.button !== button) disarmRemove();
+  const hide = button.dataset.inCli === '1';
+  button.classList.add('armed');
+  button.replaceChildren(icon('trash'), hide ? '确认隐藏' : '确认删除');
+  removeArmed = { button, timer: setTimeout(disarmRemove, 4000) };
+  $('prefs-status').textContent = hide
+    ? 'CLI 还登录着这个账号，删不掉，只会隐藏：不查额度、不在首页和额度页显示，随时可以恢复。再点一次确认。'
+    : '删除后不再查询这个账号的额度，TokenPulse 保存的凭据也会一并删掉（已有的额度历史保留）。再点一次确认。';
+}
+function disarmRemove() {
+  if (!removeArmed) return;
+  clearTimeout(removeArmed.timer);
+  const { button } = removeArmed;
+  removeArmed = null;
+  if (button.isConnected) { button.classList.remove('armed'); button.replaceChildren(icon('trash')); }
+}
+const ACCOUNT_DONE = { remove: '已删除账号', hide: '已隐藏账号，可以随时恢复', restore: '已恢复账号，正在查询额度' };
 $('official-accounts').addEventListener('click', async event => {
   const button = event.target.closest('[data-account-action]');
-  if (!button) return;
+  if (!button || button.disabled) return;
   const { accountAction: action, accountKind: kind, accountId: id } = button.dataset;
+  if (action === 'rename') { disarmRemove(); startRename(button); return; }
+  if (action === 'remove' && removeArmed?.button !== button) { armRemove(button); return; }
+  const hiding = action === 'remove' && button.dataset.inCli === '1';
+  disarmRemove();
   const buttons = [...$('official-accounts').querySelectorAll('button')];
+  const disabledBefore = new Set(buttons.filter(item => item.disabled));
   buttons.forEach(item => { item.disabled = true; });
-  $('prefs-status').textContent = action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : '正在切换活动账号…';
+  $('prefs-status').textContent = action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : '正在保存…';
   try {
-    let statuses;
     if (action === 'login') {
       const result = await api.loginOfficialAccount(kind);
       if (!result?.ok) throw new Error(result?.error || 'OAuth 登录失败');
-      statuses = result.statuses;
+      renderOfficialAccounts(result.statuses);
+      // 主进程已经在后台刷新额度；这里等它的结果，好让提示和界面同步。
+      render(await api.refresh());
+      $('prefs-status').textContent = '登录成功，已添加账号并刷新额度';
     } else {
-      statuses = await api.activateOfficialAccount(kind, id);
+      // 删除、恢复：主进程会重新汇总并把新快照推过来，这里不用再等一轮额度查询
+      renderOfficialAccounts(await api.manageOfficialAccount(action, id));
+      $('prefs-status').textContent = ACCOUNT_DONE[hiding ? 'hide' : action];
     }
-    renderOfficialAccounts(statuses);
-    // 主进程已经在后台刷新额度；这里等它的结果，好让提示和界面同步。
-    render(await api.refresh());
-    $('prefs-status').textContent = action === 'login' ? '登录成功，已切换到新账号并刷新额度' : '已切换活动账号，额度已刷新';
   } catch (error) {
-    $('prefs-status').textContent = String(error?.message || '账号操作失败，请重试').replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+    $('prefs-status').textContent = cleanRemoteError(error, '账号操作失败，请重试');
   } finally {
-    $('official-accounts').querySelectorAll('button').forEach(item => { item.disabled = false; });
+    // 列表重画过的话这些按钮已经不在了；没重画（出错）就恢复原来的可用状态
+    for (const item of buttons) if (item.isConnected) item.disabled = disabledBefore.has(item);
   }
 });
 $('open-data').addEventListener('click', async () => { try { const error = await api.openDataDir(); if (error) $('prefs-status').textContent = '无法打开数据目录：' + error; } catch { $('prefs-status').textContent = '无法打开数据目录'; } });

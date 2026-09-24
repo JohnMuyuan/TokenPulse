@@ -4,6 +4,7 @@ import { queryRequests, recentAlerts } from "./request-log";
 import { scanLocalUsage } from "./usage-scan";
 import { ccSwitchEnabled, syncCcSwitch } from "./cc-switch";
 import { recordCliLogins } from "./login-timeline";
+import { getSession, listSessions } from "./sessions";
 
 function localDay(at: number) {
   const d = new Date(at);
@@ -11,7 +12,11 @@ function localDay(at: number) {
 }
 
 // 扫描、JSON 解析和汇总都含同步 CPU / 文件操作，不能占用 Electron 的窗口事件循环。
-if (workerData.query) {
+if (workerData.sessions === "list") {
+  parentPort!.postMessage(listSessions());
+} else if (workerData.sessions === "detail") {
+  parentPort!.postMessage(getSession(workerData.kind, workerData.id));
+} else if (workerData.query) {
   // 请求流水查询：按月读文件、现算核验，同样放在 worker 里
   parentPort!.postMessage(queryRequests(workerData.query));
 } else {
@@ -47,4 +52,12 @@ if (workerData.query) {
   });
   snapshot.requestFlags = { flagged: week.counts.mismatch + week.counts.suspect, mismatch: week.counts.mismatch, suspect: week.counts.suspect };
   parentPort!.postMessage(snapshot);
+  if (workerData.scan) {
+    try {
+      // 快照已经发出去了，顺手把会话索引更新一下：第一次打开会话页从 3~5 秒变成几十毫秒
+      listSessions();
+    } catch (error) {
+      console.error("[TokenPulse] 预读会话索引失败", error);
+    }
+  }
 }

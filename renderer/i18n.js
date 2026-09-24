@@ -21,10 +21,48 @@
   /* ---------------- 整句 ---------------- */
   const EN = {
     // 页面与导航
-    'TokenPulse · 用量与额度': 'TokenPulse · Usage & Quota', '工作空间': 'Workspace', '总览': 'Overview', '额度详情': 'Quota', '用量明细': 'Usage', '请求记录': 'Requests', '设置': 'Settings',
+    'TokenPulse · 用量与额度': 'TokenPulse · Usage & Quota', '工作空间': 'Workspace', '总览': 'Overview', '额度详情': 'Quota', '用量明细': 'Usage', '请求记录': 'Requests', '会话管理': 'Sessions', '设置': 'Settings',
     '主导航': 'Main navigation', 'TokenPulse 总览': 'TokenPulse overview', '本地数据 ·': 'Local data ·', '最小化': 'Minimize', '最大化': 'Maximize', '还原': 'Restore', '关闭': 'Close',
     '刷新数据': 'Refresh', '正在刷新…': 'Refreshing…', '正在读取本地数据': 'Reading local data', '正在读取本地用量…': 'Reading local usage…', '正在扫描本地会话…': 'Scanning local sessions…',
     '今天的用量与额度': "Today's usage and quota", '看看还剩多少额度，再安排接下来的工作。': 'See how much quota is left, then plan the rest of your work.',
+    // 多账号额度、账号管理
+    '重命名': 'Rename', '拖动调整顺序': 'Drag to reorder', '回车保存，Esc 取消；留空就显示邮箱。': 'Enter to save, Esc to cancel. Leave empty to show the email.',
+    '给这个账号起个名字': 'Name this account', '账号名字（留空就显示邮箱）': 'Account name (leave empty to show the email)', '已改名': 'Renamed', '已去掉名字，显示邮箱': 'Name removed. Showing the email.',
+    '改名失败，请重试': 'Rename failed. Please try again.', '顺序没保存上，请重试': "The order wasn't saved. Please try again.", '账号列表已经变了，请重新打开设置再排': 'The account list has changed. Reopen Settings and try again.', '名字无效': 'Invalid name',
+    '每家可以登记多个账号，所有账号的额度都会查询，在首页和额度页各占一张卡片；按住左边的把手拖动可以调整顺序，点铅笔可以给账号起名字。点「添加账号」会用你的默认浏览器打开官方授权页，已登录的浏览器账号可以直接确认。': "Each provider can have several accounts. Every account's quota is queried and gets its own card on Overview and Quota. Drag the handle on the left to reorder, or click the pencil to name an account. \"Add account\" opens the official sign-in page in your default browser, where an already signed-in browser account can simply confirm.",
+    '未命名账号': 'Unnamed account', '已隐藏': 'Hidden', '上移': 'Move up', '下移': 'Move down', '删除': 'Delete', '恢复': 'Restore',
+    '隐藏（CLI 还登录着这个账号）': 'Hide (the CLI is still signed in to this account)', '重新查询并显示这个账号的额度': "Query and show this account's quota again",
+    '确认隐藏': 'Confirm hide', '确认删除': 'Confirm delete', '正在保存…': 'Saving…',
+    'CLI 还登录着这个账号，删不掉，只会隐藏：不查额度、不在首页和额度页显示，随时可以恢复。再点一次确认。': "The CLI is still signed in to this account, so it can't be deleted, only hidden: no quota queries, not shown on Overview or Quota, and you can restore it any time. Click again to confirm.",
+    '删除后不再查询这个账号的额度，TokenPulse 保存的凭据也会一并删掉（已有的额度历史保留）。再点一次确认。': "This account's quota will no longer be queried, and the credentials TokenPulse saved for it are deleted too (existing quota history is kept). Click again to confirm.",
+    '已调整顺序': 'Order updated', '已删除账号': 'Account deleted', '已隐藏账号，可以随时恢复': 'Account hidden. You can restore it any time.', '已恢复账号，正在查询额度': 'Account restored. Querying quota…',
+    '按住拖动，查看更多账号': 'Drag to see more accounts',
+    '作者': 'Author',
+    '登录成功，已添加账号并刷新额度': 'Signed in. Account added and quota refreshed.',
+    '每家可以登记多个账号，所有账号的额度都会查询，在首页和额度页各占一张卡片；用箭头调整显示顺序。点「添加账号」会用你的默认浏览器打开官方授权页，已登录的浏览器账号可以直接确认。': 'Each provider can have several accounts. Every account\'s quota is queried and gets its own card on Overview and Quota; use the arrows to change the order. "Add account" opens the official sign-in page in your default browser, where an already signed-in browser account can simply confirm.',
+    '本机 CLI 用这个账号发出的请求，按 CLI 当时登录的账号归属。': 'Requests the local CLI sent with this account, attributed by the account the CLI was signed in to at the time.',
+    // 会话管理
+    '本机 Agent 的对话历史': 'Local Agent conversations', '查看、复制项目地址，或者直接接着回复。': 'Browse, copy the project path, or reply right here.',
+    '重新读取会话': 'Reload sessions', '搜索标题、项目或内容…': 'Search title, project or content…', '搜索会话': 'Search sessions', '按 Agent 筛选': 'Filter by Agent', '按项目筛选': 'Filter by project', '会话列表': 'Sessions',
+    '全部': 'All', '今天': 'Today', '昨天': 'Yesterday', '最近 7 天': 'Last 7 days', '最近 30 天': 'Last 30 days', '更早': 'Earlier', '回复中': 'Replying',
+    '正在读取本机会话…': 'Reading local sessions…', '还没有找到本机 Agent 的会话。': 'No local Agent sessions found yet.', '没有符合条件的会话。': 'No matching sessions.',
+    '选择一个会话': 'Select a session', '正在读取会话…': 'Loading sessions…', '正在读取对话…': 'Loading conversation…',
+    '左边是本机 Claude Code、Codex CLI 和 Grok Build 的对话历史。选中后可以查看完整对话、复制项目地址，或者直接回复。': 'On the left: conversation history from Claude Code, Codex CLI and Grok Build on this computer. Pick one to read the full conversation, copy its project path, or reply directly.',
+    '复制项目地址': 'Copy project path', '这个会话没有记录项目地址': 'This session has no recorded project path', '回复对话': 'Reply', '更多': 'More', '更多操作': 'More actions',
+    '在终端里继续': 'Continue in terminal', '打开 PowerShell，用 CLI 的交互界面接着这段会话': "Open PowerShell and continue this session in the CLI's own interface", '复制继续命令': 'Copy resume command', '复制会话 ID': 'Copy session ID',
+    '项目地址已复制': 'Project path copied', '继续命令已复制': 'Resume command copied', '会话 ID 已复制': 'Session ID copied', '复制': 'Copy', '已复制': 'Copied', '复制这条消息': 'Copy this message', '复制失败，请重试。': 'Copy failed. Please try again.',
+    '已在终端里打开这段会话。': 'Opened this session in a terminal.', '打不开终端，请确认对应的 CLI 已安装。': 'Could not open a terminal. Check that the CLI is installed.',
+    '会话读取失败，请重试。': 'Could not read sessions. Please try again.', '这个会话读取失败，请重试。': 'Could not read this session. Please try again.',
+    '参数': 'Input', '结果': 'Result', '结果（出错）': 'Result (error)', '工具': 'Tool', '用户': 'User', '条': 'items',
+    '上下文已压缩，从摘要继续': 'Context compacted, continuing from summary', '上下文已压缩': 'Context compacted', '已中断': 'Interrupted', '[图片]': '[image]',
+    '回复内容': 'Reply', '发送': 'Send', '停止': 'Stop', '回复权限': 'Reply permissions', '只读': 'Read-only', '可改文件': 'Can edit files',
+    '只让 Agent 看和回答，不改任何文件': 'The Agent can only read and answer; no files are changed',
+    '允许 Agent 修改这个项目里的文件；运行命令等其他操作仍会自动拒绝': 'Let the Agent edit files in this project; running commands and other actions are still refused',
+    '另一段会话正在回复，等它结束再发': 'Another session is replying; send after it finishes', '这个会话没有记录项目目录，没法在原目录里继续': 'This session has no recorded project folder, so it cannot continue there',
+    '回复没发出去，请重试。': 'The reply was not sent. Please try again.', '已回复，新的对话已写回会话记录。': 'Replied. The new turn was saved to the session.', '已停止': 'Stopped', '未知原因': 'unknown reason', '回复失败': 'Reply failed',
+    'Codex 返回了错误': 'Codex returned an error', '这段会话正在回复，等它结束或先停止': 'This session is already replying; wait or stop it first',
+    '会话参数无效': 'Invalid session', '找不到这个会话': 'Session not found', '回复内容是空的': 'The reply is empty', '回复内容太长': 'The reply is too long', '内容无效': 'Invalid content',
+    '这个会话的项目目录已经不在了，没法在原目录里继续': "This session's project folder no longer exists, so it cannot continue there",
     '把使用节奏，放在时间里看': 'Your usage pace, over time', '剩余额度、重置时间与达到上限的参考时间，集中在这里。': 'Remaining quota, reset times and when you may hit the limit — all in one place.',
     '每一笔用量，都有迹可循': 'Every token, accounted for', '按日期、工具与模型查看消耗，找到值得关注的变化。': 'Browse usage by date, tool and model to spot changes worth a look.',
     '每一次请求，都能核对': 'Every request, verifiable', '逐条查看本机的每一次 API 请求，核对上游返回的型号和你要的是不是同一个。': 'Inspect every API request on this computer and check whether the upstream returned the model you asked for.',
@@ -285,6 +323,9 @@
     P('(\\d+) 个型号还没有定价：(.+?)( 等)?。更新知识库后会自动重算。', m => `${m[1]} models have no price yet: ${m[2].split('、').map(v).join(', ')}${m[3] ? ', and more' : ''}. Costs are recalculated after the knowledge base updates.`),
     P('TokenPulse · 今日 (.+) tokens', m => `TokenPulse · today ${m[1]} tokens`),
     P('周 (\\d+)%', m => `Week ${m[1]}%`),
+    P('还有 (\\d+) 个', m => `${m[1]} more`),
+    P('(\\d+) 个额度窗口已过提醒线', m => `${m[1]} quota windows crossed the alert line`),
+    P('这一家共 ' + N + ' 个官方会话，用量已按账号分开', m => `${m[1]} official sessions for this provider; usage is split by account`),
     P('(.+) (5 小时|周)额度已用 (\\d+)%', m => `${m[1]} ${m[2] === '周' ? 'weekly' : '5-hour'} quota at ${m[3]}%`),
     P('(.+) 重置', m => `Resets ${m[1]}`),
     P('(\\d+) 次请求的返回型号和请求的不一致', m => `${m[1]} requests returned a different model than requested`),
@@ -302,6 +343,29 @@
     P('本周 (.+) 各账号', m => `${m[1]} accounts this week`),
     P('(.+) 账号', m => `${m[1]} account`),
     P('未计入 (\\d+) 个窗口：([^。]+)。', m => `${m[1]} windows left out: ${v(m[2])}.`),
+    // 账号名是用户的内容，不翻
+    P('调整顺序：(.+)（按住拖动，或用上下方向键）', m => `Reorder ${m[1]} (drag, or use the Up / Down arrow keys)`),
+    // 会话管理：项目名、工具名是用户的内容，不递归翻译
+    P('昨天 (\\d{1,2}:\\d{2})', m => `Yesterday ${m[1]}`),
+    P('全部项目（' + N + '）', m => `All projects (${m[1]})`),
+    P('(.+) · ' + N + ' 个会话', m => `${v(m[1])} · ${m[2]} sessions`),
+    P(N + ' 轮', m => `${m[1]} ${m[1] === '1' ? 'turn' : 'turns'}`),
+    P(N + ' 轮对话', m => `${m[1]} ${m[1] === '1' ? 'turn' : 'turns'}`),
+    P(N + ' 次工具调用', m => `${m[1]} tool ${m[1] === '1' ? 'call' : 'calls'}`),
+    P('调用了 ' + N + ' 次工具', m => `${m[1]} tool ${m[1] === '1' ? 'call' : 'calls'}`),
+    P('显示更早的 ' + N + ' 段', m => `Show ${m[1]} earlier`),
+    P('会话太长，最早的 ' + N + ' 条没有载入', m => `Session too long; the earliest ${m[1]} messages were not loaded`),
+    P('回复 (\\S+)…（Enter 发送，Shift \\+ Enter 换行）', m => `Reply to ${m[1]}… (Enter to send, Shift + Enter for a new line)`),
+    P('在 (.+) 里继续这段会话', m => `Continue this session in ${m[1]}`),
+    P('会用掉对应账号的订阅额度', () => "uses the account's subscription quota"),
+    P('(\\S+) 正在回复…', m => `${m[1]} is replying…`),
+    P('正在调用：(.+)', m => `Running: ${m[1]}`),
+    P('（共 ' + N + ' 次）', m => `(${m[1]} total)`),
+    P('回复失败：([\\s\\S]+)', m => `Reply failed: ${v(m[1])}`),
+    P('没找到 (.+)，请先安装官方 CLI', m => `${m[1]} not found. Install the official CLI first`),
+    P('启动 CLI 失败：([\\s\\S]+)', m => `Could not start the CLI: ${m[1]}`),
+    P('CLI 退出码 (-?\\d+)', m => `CLI exited with code ${m[1]}`),
+    P('命令 ([\\s\\S]+)', m => `Command ${m[1]}`),
     P('自定义', () => 'Custom'),
     // 「标题：值」（设置项的 aria-label 等），两边都翻；放最后，别抢了上面更具体的句子
     P('([^：。·\\n]{1,20})：([^。·\\n]+)', m => `${v(m[1])}: ${v(m[2])}`)
@@ -335,7 +399,12 @@
   }
 
   const ATTRS = ['title', 'placeholder', 'aria-label'];
+  // 标了 translate="no" 的是用户自己的内容（会话标题、对话正文、工具输出、项目名）：原样显示。
+  // 不跳过的话，「……做好后」会被「(.+?)后」吃成「in ……」，中文逗号也会被换成英文的。
+  const KEEP = '[translate="no"]';
+  const kept = node => Boolean((node.nodeType === 1 ? node : node.parentElement)?.closest?.(KEEP));
   function translateElement(node) {
+    if (kept(node)) return;
     for (const name of ATTRS) {
       const value = node.getAttribute?.(name);
       if (!value || !HAN.test(value)) continue;
@@ -345,7 +414,7 @@
   }
   /** 只在真的变了时才写回：原样写回也会触发 characterData，没翻完的句子会在观察器里无限循环。 */
   function translateText(node) {
-    if (!HAN.test(node.nodeValue)) return;
+    if (!HAN.test(node.nodeValue) || kept(node)) return;
     const next = translate(node.nodeValue);
     if (next !== node.nodeValue) node.nodeValue = next;
   }
@@ -357,10 +426,13 @@
     }
     if (rootNode.nodeType !== 1 && rootNode.nodeType !== 11) return;
     if (rootNode.nodeType === 1) {
-      if (rootNode.tagName === 'SCRIPT' || rootNode.tagName === 'STYLE') return;
+      if (rootNode.tagName === 'SCRIPT' || rootNode.tagName === 'STYLE' || kept(rootNode)) return;
       translateElement(rootNode);
     }
-    const walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    // 碰到 translate="no" 整棵子树跳过（长对话几千个文本节点，不必逐个判断）
+    const walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: node => (node.nodeType === 1 && node.getAttribute('translate') === 'no' ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+    });
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       if (node.nodeType === 3) translateText(node);
       else translateElement(node);

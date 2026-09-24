@@ -3,6 +3,8 @@ import { analyzeAccount, ACCOUNT_KINDS, type AccountKind, type AccountReport, ty
 import { readQuotaChecks, readQuotaHistory } from "./quota-history";
 import type { RequestRow } from "./request-log";
 import { accountLabels } from "./login-timeline";
+import { readOfficialAccountStore } from "./accounts";
+import type { QuotaSample } from "./quota-history";
 import { ccSwitchBuckets, ccSwitchEnabled, coveredDays, readCcSwitch, type CcSwitchStatus } from "./cc-switch";
 import { readRollups, emptyBucket, addUsage, type DayBuckets, type UsageBucket } from "./usage-scan";
 
@@ -84,6 +86,50 @@ const ACCOUNT_OF_KIND: Record<string, AccountKind> = {
   codex: "chatgpt",
   "grok-build": "grok",
 };
+
+/**
+ * 一家的额度采样按账号分组，按设置里的账号顺序排。
+ * - 设置里删掉 / 藏起来的账号不出现（采样历史还在）；
+ * - 没记账号的老采样（0.3 以前）只可能来自 CLI 当时登录的那一个：归给最早出现的那个账号；一个带账号的都没有就单独一组；
+ * - 账号库里没有、但历史里有的账号（账号库被删过）排在最后，照样显示。
+ */
+/**
+ * 卡片和托盘上的短名字。别名优先；没别名且这一家有多个账号时用邮箱 @ 前面那段。
+ * 短名字重复就改用完整邮箱，否则 ada@one.com 和 ada@two.com 在首页上是同一行字。
+ */
+function displayNames(rows: { alias?: string; email?: string; label?: string; multi: boolean }[]) {
+  const raw = rows.map((row) => {
+    if (row.alias) return row.alias;
+    if (!row.multi) return "";
+    const source = row.email || row.label || "";
+    return source.replace(/@.*$/, "").trim() || "未命名账号";
+  });
+  const counts = new Map<string, number>();
+  for (const name of raw) if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return raw.map((name, index) => {
+    if (!name || (counts.get(name) ?? 0) < 2) return name;
+    const full = rows[index].email || rows[index].label || "";
+    return full && full !== name ? full : name;
+  });
+}
+
+function samplesByAccount(samples: QuotaSample[], kind: AccountKind, store: ReturnType<typeof readOfficialAccountStore>) {
+  const skip = new Set([...(store.removed ?? []), ...store.accounts.filter((item) => item.hidden).map((item) => item.id)]);
+  const firstLabelled = samples.filter((sample) => sample.account).sort((a, b) => a.at - b.at)[0]?.account;
+  const groups = new Map<string, QuotaSample[]>();
+  for (const sample of samples) {
+    const id = sample.account || firstLabelled || "";
+    let list = groups.get(id);
+    if (!list) groups.set(id, (list = []));
+    list.push(sample);
+  }
+  const order = store.accounts.filter((item) => item.kind === kind).map((item) => item.id);
+  const rank = (id: string) => (order.includes(id) ? order.indexOf(id) : order.length);
+  return [...groups.entries()]
+    .filter(([id]) => !skip.has(id))
+    .sort((a, b) => rank(a[0]) - rank(b[0]))
+    .map(([id, list]) => ({ id: id || undefined, samples: list }));
+}
 
 export function buildSnapshot(now = Date.now()): Snapshot {
   const rollups = readRollups();
@@ -183,36 +229,67 @@ export function buildSnapshot(now = Date.now()): Snapshot {
       continue;
     }
     sessions[account].included += 1;
-    for (const [key, models] of Object.entries(file.hours ?? {})) {
-      const hour = Number(key);
-      if (!Number.isFinite(hour)) continue;
-      for (const [model, bucket] of Object.entries(models)) {
-        /*
-         * Claude Code 的归属看的是全局 settings.json，可别的程序（AllAi）会给单个进程另配环境变量，
-         * 让 Claude Code 去接 gpt / grok（本机实测 grok-4.6 186 次、gpt-5.6-sol 75 次）。
-         * 这些不占 Claude 订阅额度，算进来会把「整窗容量」估大。
-         */
-        if (account === "claude" && !/claude/i.test(model)) continue;
-        rows[account].push({
-          hour,
-          model,
-          // 口径同统计页：input 已含缓存读写
-          tokens: bucket.input + bucket.output,
-          costUsd: costOf(model, bucket),
-          requests: bucket.requests,
-        });
+    const addHours = (hours: Record<string, Record<string, UsageBucket>> | undefined, accountId?: string) => {
+      for (const [key, models] of Object.entries(hours ?? {})) {
+        const hour = Number(key);
+        if (!Number.isFinite(hour)) continue;
+        for (const [model, bucket] of Object.entries(models)) {
+          /*
+           * Claude Code 的归属看的是全局 settings.json，可别的程序（AllAi）会给单个进程另配环境变量，
+           * 让 Claude Code 去接 gpt / grok（本机实测 grok-4.6 186 次、gpt-5.6-sol 75 次）。
+           * 这些不占 Claude 订阅额度，算进来会把「整窗容量」估大。
+           */
+          if (account === "claude" && !/claude/i.test(model)) continue;
+          rows[account].push({
+            hour,
+            model,
+            // 口径同统计页：input 已含缓存读写
+            tokens: bucket.input + bucket.output,
+            costUsd: costOf(model, bucket),
+            requests: bucket.requests,
+            ...(accountId ? { account: accountId } : {}),
+          });
+        }
       }
+    };
+    // 0.3.3 以后重扫出的小时账按账号拆开；旧账本没有该字段，先保留未标注的兼容行。
+    if (file.accountHours && Object.keys(file.accountHours).length) {
+      for (const [accountId, hours] of Object.entries(file.accountHours)) addHours(hours, accountId || undefined);
+    } else {
+      addHours(file.hours);
     }
   }
 
   /* ---- 3. 额度监控 ---- */
   const labels = accountLabels();
+  const store = readOfficialAccountStore();
   // 没采到过额度的账号不显示：没有百分比，就谈不上监控。
-  const accounts = ACCOUNT_KINDS.map((kind) =>
-    analyzeAccount(kind, Array.isArray(history.accounts[kind]) ? history.accounts[kind] : [], rows[kind], now, checks[kind]),
-  )
-    .filter((report) => report.sampleCount > 0)
-    .map((report) => ({ ...report, accountLabel: report.accountId ? labels.get(report.accountId) : undefined }));
+  const accounts = ACCOUNT_KINDS.flatMap((kind) => {
+    const groups = samplesByAccount(Array.isArray(history.accounts[kind]) ? history.accounts[kind] : [], kind, store);
+    const reports = groups
+      .map(({ id, samples }) => {
+        const checked = id && checks.accounts?.[id] != null ? { at: checks.accounts[id], account: id } : checks[kind]?.account === id ? checks[kind] : undefined;
+        return analyzeAccount(kind, samples, rows[kind], now, checked);
+      })
+      .filter((report) => report.sampleCount > 0)
+      .map((report) => ({
+        ...report,
+        key: report.accountId ?? kind,
+        accountLabel: report.accountId ? labels.get(report.accountId) : undefined,
+        // 用户起过名字：只有一个账号也要写出来（名字就是为了认它）
+        accountAlias: report.accountId ? store.accounts.find((item) => item.id === report.accountId)?.alias : undefined,
+      }));
+    const names = displayNames(reports.map((report) => {
+      const stored = report.accountId ? store.accounts.find((item) => item.id === report.accountId) : undefined;
+      return {
+        alias: report.accountAlias,
+        email: (report.accountId && labels.emails?.get(report.accountId)) || stored?.email || "",
+        label: stored?.label || report.accountLabel,
+        multi: reports.length > 1,
+      };
+    }));
+    return reports.map((report, index) => ({ ...report, siblings: reports.length, displayName: names[index] || undefined }));
+  });
 
   return {
     now,

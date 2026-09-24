@@ -1,18 +1,21 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, Tray } from "electron";
+import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
 import { dataDir } from "../core/paths";
 import { fetchOfficialQuota } from "../core/quota";
 import type { Snapshot } from "../core/report";
-import { loadRequests, loadSnapshot } from "./snapshot";
+import { loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
+import { sessionCommand, type AgentKind } from "../core/sessions";
+import { cleanAgentEnv, openTerminal, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
 import type { RequestQuery } from "../core/request-log";
 import { readPrefs, writePrefs, type Prefs } from "./prefs";
 import { tr } from "./i18n";
 import { trayIcon, windowIcon } from "./icon";
 import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
-import { listOfficialOAuthStatus, loginOfficialOAuth } from "./oauth";
-import { setActiveOfficialAccount } from "../core/accounts";
+import { listOfficialOAuthStatus, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
+import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 
 /**
@@ -68,6 +71,8 @@ function createWindow() {
     },
   });
   win = next;
+  // Windows 有时会忽略 BrowserWindow options 里的 PNG 图标，显式设置 ICO 可避免任务栏回退到 Electron 图标。
+  if (process.platform === "win32") next.setIcon(windowIcon());
   next.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"));
   next.once("ready-to-show", () => {
     if (!process.argv.includes("--hidden") && !readPrefs().startMinimized && !relaunchHidden) next.show();
@@ -145,17 +150,52 @@ function initTray() {
   tray.on("double-click", revealWindow);
 }
 
-/** 托盘悬停时显示各账号当前的额度，不用开窗口就能看一眼。 */
+const KIND_NAMES: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
+
+/** 一家不止一个账号、或起过名字时带上短名，否则只写家名。短名在报表里算好。 */
+function accountTitle(account: Snapshot["accounts"][number]) {
+  const name = KIND_NAMES[account.kind] ?? account.kind;
+  return account.displayName ? `${name} · ${account.displayName}` : name;
+}
+
+/**
+ * 托盘悬停时显示各账号当前的额度，不用开窗口就能看一眼。
+ * Windows 的托盘提示最多 127 个字符，多出来的直接被切掉。先翻译再按这个上限收：
+ * 放得下的按原来的顺序留着，剩下的收成一行「还有 n 个」。
+ */
+const TRAY_TIP_MAX = process.platform === "win32" ? 127 : 1000;
+function clipTip(text: string, max: number) {
+  if (text.length <= max) return text;
+  return max < 2 ? "" : `${text.slice(0, max - 1)}…`;
+}
 function updateTrayTip(snapshot: Snapshot) {
   if (!tray) return;
-  const names: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
+  const head = tr(`TokenPulse · 今日 ${formatTokens(snapshot.totals.today.tokens)} tokens`);
   const lines = snapshot.accounts.map((account) => {
-    const week = account.week ? `周 ${Math.round(account.week.used)}%` : "";
+    const week = account.week ? tr(`周 ${Math.round(account.week.used)}%`) : "";
     const five = account.five ? `5h ${Math.round(account.five.used)}%` : "";
-    return `${names[account.kind] ?? account.kind}  ${[five, week].filter(Boolean).join("  ")}`.trim();
+    return [accountTitle(account), [five, week].filter(Boolean).join("  ")].filter(Boolean).join("  ");
   });
-  const head = `TokenPulse · 今日 ${formatTokens(snapshot.totals.today.tokens)} tokens`;
-  tray.setToolTip([head, ...lines].map(tr).join(String.fromCharCode(10)));
+  const kept: string[] = [];
+  let used = head.length;
+  for (let i = 0; i < lines.length; i++) {
+    const omitted = lines.length - i - 1;
+    const reserve = omitted > 0 ? 1 + tr(`还有 ${omitted} 个`).length : 0;
+    const extra = 1 + lines[i].length;
+    if (used + extra + reserve <= TRAY_TIP_MAX) {
+      kept.push(lines[i]);
+      used += extra;
+      continue;
+    }
+    if (!kept.length) {
+      const clipped = clipTip(lines[i], TRAY_TIP_MAX - used - 1 - reserve);
+      if (clipped) kept.push(clipped);
+    }
+    break;
+  }
+  const omitted = lines.length - kept.length;
+  const body = omitted > 0 ? [...kept, tr(`还有 ${omitted} 个`)] : kept;
+  tray.setToolTip([head, ...body].join(String.fromCharCode(10)));
 }
 
 function formatTokens(value: number) {
@@ -178,25 +218,37 @@ function formatTokens(value: number) {
 function maybeNotify(snapshot: Snapshot) {
   const limit = readPrefs().notifyAt;
   if (!limit || !Notification.isSupported()) return;
-  const names: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
+  const fresh: { title: string; body: string }[] = [];
   for (const account of snapshot.accounts) {
     for (const [label, report] of [
       ["5 小时", account.five],
       ["周", account.week],
     ] as const) {
       if (!report || report.used < limit) continue;
-      const key = `${account.kind}:${label}`;
+      const key = `${account.key ?? account.kind}:${label}`;
       const resetAt = report.resetAt ?? 0;
       const previous = notified.get(key);
       if (previous != null && Math.abs(resetAt - previous) < SAME_WINDOW_MS) continue;
       notified.set(key, resetAt);
-      new Notification({
-        title: tr(`${names[account.kind] ?? account.kind} ${label}额度已用 ${Math.round(report.used)}%`),
-        body: tr(report.resetAt ? `${new Date(report.resetAt).toLocaleString()} 重置` : "注意节奏"),
-        icon: windowIcon(),
-      }).show();
+      fresh.push({
+        title: `${accountTitle(account)} ${label}额度已用 ${Math.round(report.used)}%`,
+        body: report.resetAt ? `${new Date(report.resetAt).toLocaleString()} 重置` : "注意节奏",
+      });
     }
   }
+  if (!fresh.length) return;
+  // 一家好几个账号同时过线时，每个窗口各弹一条会叠成一串。同一次刷新里多条合成一条。
+  if (fresh.length === 1) {
+    new Notification({ title: tr(fresh[0].title), body: tr(fresh[0].body), icon: windowIcon() }).show();
+    return;
+  }
+  const shown = fresh.slice(0, 4);
+  const rest = fresh.length - shown.length;
+  new Notification({
+    title: tr(`${fresh.length} 个额度窗口已过提醒线`),
+    body: [...shown.map((item) => tr(item.title)), rest > 0 ? tr(`还有 ${rest} 个`) : ""].filter(Boolean).join(String.fromCharCode(10)),
+    icon: windowIcon(),
+  }).show();
 }
 
 /** 已经通知过的请求，免得同一条在下一轮扫描里又弹一次。 */
@@ -363,7 +415,46 @@ function isOfficialAccountKind(value: unknown): value is OfficialAccountKind {
   return OFFICIAL_KINDS.includes(value as OfficialAccountKind);
 }
 
+function isAgentKind(value: unknown): value is AgentKind {
+  return value === "claude" || value === "codex" || value === "grok";
+}
+
+/** 找到会话并确认参数：id 来自界面，只收三家之一、长度有限的字符串。 */
+async function sessionOf(kind: unknown, id: unknown) {
+  if (!isAgentKind(kind) || typeof id !== "string" || !id || id.length > 200) throw new Error("会话参数无效");
+  const session = await loadSessionDetail(kind, id);
+  if (!session) throw new Error("找不到这个会话");
+  return { kind, id, session };
+}
+
+/** 在 TokenPulse 里直接回复（见 session-reply.ts）。必须在原项目目录里跑：Agent 读写的是这个目录。 */
+async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unknown) {
+  const hit = await sessionOf(kind, id);
+  if (typeof prompt !== "string" || !prompt.trim()) throw new Error("回复内容是空的");
+  if (prompt.length > 100_000) throw new Error("回复内容太长");
+  const cwd = hit.session.cwd;
+  if (!cwd || !fsSync.existsSync(cwd)) throw new Error("这个会话的项目目录已经不在了，没法在原目录里继续");
+  const runId = startReply({ kind: hit.kind, id: hit.id, cwd, prompt, mode: (mode === "edit" ? "edit" : "readonly") as ReplyMode }, (event) => {
+    if (win && !win.isDestroyed()) win.webContents.send("session-reply", event);
+  });
+  return { runId };
+}
+
+/** 在终端里接着这段会话（交互模式，能看到 CLI 自己的界面）。 */
+async function openInTerminal(kind: unknown, id: unknown) {
+  const hit = await sessionOf(kind, id);
+  const session = hit.session;
+  const cwd = session.cwd && fsSync.existsSync(session.cwd) ? session.cwd : undefined;
+  openTerminal(hit.kind, hit.id, cwd);
+  return { ok: true, command: sessionCommand(hit.kind, hit.id) };
+}
+
 /* ---------------- 启动 ---------------- */
+
+// 从某个 Agent 的终端里启动（比如在 Claude Code 里跑的命令）会继承它的会话变量和 NO_COLOR，
+// TokenPulse 再起的 CLI 就不存对话记录、没有颜色。进程一开始就清掉，之后起的所有子进程都干净。
+const cleanEnv = cleanAgentEnv();
+for (const key of Object.keys(process.env)) if (!(key in cleanEnv)) delete process.env[key];
 
 // 只允许一个实例：两个进程同时往同一个账本里写会互相覆盖。
 if (!app.requestSingleInstanceLock()) {
@@ -372,7 +463,19 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", revealWindow);
 
   app.whenReady().then(() => {
-    if (process.platform === "win32") app.setAppUserModelId("com.tokenpulse.app");
+    /*
+     * 任务栏按这个 ID 分组，图标取「开始」菜单里带同一个 ID 的快捷方式的图标。Electron 为了发通知，
+     * 发现没有这样的快捷方式就自己建一个，指向当前的 exe。开发 / 测试时跑的是 node_modules 里的 electron.exe，
+     * 用同一个 ID 就会建出指向它的「Electron.lnk」，正式版的任务栏图标从此变成 Electron 的原子图标。
+     * 所以没打包时换一个 ID，和正式版互不影响。
+     */
+    if (process.platform === "win32") app.setAppUserModelId(app.isPackaged ? "com.tokenpulse.app" : "com.tokenpulse.app.dev");
+    // 0.3.3：Grok 账号改用用户 ID 当身份，旧数据搬一次（见 grok-migrate.ts）。必须在读账号、刷新之前。
+    try {
+      migrateLegacyGrokAccounts();
+    } catch (error) {
+      console.error("[TokenPulse] 迁移 Grok 账号失败", error);
+    }
     const prefs = readPrefs();
     // --hidden 只影响本次自启，不能永久改掉用户手动启动时的偏好。
     applyPrefs({ autoLaunch: prefs.autoLaunch });
@@ -395,11 +498,19 @@ if (!app.requestSingleInstanceLock()) {
       if (result.ok) backgroundRefresh(true);
       return result;
     });
-    ipcMain.handle("accounts:activate", async (_event, kind: unknown, id: unknown) => {
-      if (!isOfficialAccountKind(kind) || typeof id !== "string") throw new Error("官方账号参数无效");
-      setActiveOfficialAccount(kind, id);
-      backgroundRefresh(true);
-      return listOfficialOAuthStatus();
+    ipcMain.handle("accounts:manage", async (_event, action: unknown, id: unknown, alias: unknown) => {
+      if (!["remove", "restore", "rename"].includes(action as string) || typeof id !== "string" || id.length > 400) throw new Error("官方账号参数无效");
+      if (action === "rename" && (typeof alias !== "string" || alias.length > 200)) throw new Error("名字无效");
+      const statuses = await manageOfficialAccount(action as "remove" | "restore" | "rename", id, typeof alias === "string" ? alias : "");
+      // 名字、显示哪些账号都会变：重新汇总；删除 / 恢复还要重新查一轮额度
+      backgroundRefresh(action !== "rename");
+      return statuses;
+    });
+    ipcMain.handle("accounts:reorder", async (_event, kind: unknown, ids: unknown) => {
+      if (!isOfficialAccountKind(kind) || !Array.isArray(ids) || ids.length > 50 || !ids.every((id) => typeof id === "string" && id.length <= 400)) throw new Error("官方账号参数无效");
+      const statuses = await reorderOfficialAccountsOf(kind, ids as string[]);
+      backgroundRefresh(false);
+      return statuses;
     });
     ipcMain.handle("theme", (_event, theme: unknown) => {
       if (theme !== "light" && theme !== "dark") return;
@@ -422,6 +533,25 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
     ipcMain.handle("requests:query", (_event, query: unknown) => loadRequests(parseRequestQuery(query)));
+    ipcMain.handle("sessions:list", () => loadSessions());
+    ipcMain.handle("sessions:detail", (_event, kind: unknown, id: unknown) => {
+      if (!isAgentKind(kind) || typeof id !== "string") throw new Error("会话参数无效");
+      return loadSessionDetail(kind, id);
+    });
+    ipcMain.handle("sessions:copy-project", async (_event, kind: unknown, id: unknown) => {
+      const { session } = await sessionOf(kind, id);
+      if (!session.cwd) throw new Error("这个会话没有记录项目地址");
+      clipboard.writeText(session.cwd);
+      return { ok: true, cwd: session.cwd };
+    });
+    ipcMain.handle("sessions:copy-text", (_event, text: unknown) => {
+      if (typeof text !== "string" || text.length > 200_000) throw new Error("内容无效");
+      clipboard.writeText(text);
+      return true;
+    });
+    ipcMain.handle("sessions:reply", (_event, kind: unknown, id: unknown, prompt: unknown, mode: unknown) => replyInApp(kind, id, prompt, mode));
+    ipcMain.handle("sessions:reply-stop", (_event, runId: unknown) => typeof runId === "string" && stopReply(runId));
+    ipcMain.handle("sessions:terminal", (_event, kind: unknown, id: unknown) => openInTerminal(kind, id));
     ipcMain.handle("export-csv", async (_event, content: unknown, kind: unknown) => {
       if (typeof content !== "string" || Buffer.byteLength(content) > 10 * 1024 * 1024) {
         throw new Error("导出内容无效或过大");
@@ -461,5 +591,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("before-quit", () => {
     quitting = true;
+    // 还在跑的回复一起结束，别留下没人管的 CLI 进程
+    stopAllReplies();
   });
 }

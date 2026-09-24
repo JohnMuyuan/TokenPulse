@@ -312,6 +312,91 @@ app.on('web-contents-created', (_, contents) => {
       }
       window.setSize(1380, 920); await delay(150);
       console.log("PASS theme, title bar, AllAi-style range picker, unlimited ranges and 900px layout");
+      // 额度页账号行：多出来的标签收在这一行里，按住拖动左右看，不把窗口撑出横向滚动条
+      await evaluate("document.querySelector('[data-page=quota]').click()");
+      const tabScroll = await evaluate(`(() => {
+        const tabs = document.getElementById('account-tabs');
+        for (let i = 0; i < 14; i++) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.account = 'qa-tab-' + i;
+          button.textContent = '账号 QA ' + i + ' 很长的名字';
+          tabs.append(button);
+        }
+        markAccountTabEdges();
+        const before = tabs.scrollLeft;
+        const max = tabs.scrollWidth - tabs.clientWidth;
+        const down = new PointerEvent('pointerdown', { clientX: 320, button: 0, pointerId: 1, bubbles: true });
+        const move = new PointerEvent('pointermove', { clientX: 80, button: 0, pointerId: 1, bubbles: true });
+        const up = new PointerEvent('pointerup', { clientX: 80, button: 0, pointerId: 1, bubbles: true });
+        tabs.dispatchEvent(down);
+        tabs.dispatchEvent(move);
+        const after = tabs.scrollLeft;
+        tabs.dispatchEvent(up);
+        const pageFits = document.documentElement.scrollWidth <= window.innerWidth;
+        const grabbed = tabs.classList.contains('can-pan');
+        tabs.querySelectorAll('[data-account^="qa-tab-"]').forEach(button => button.remove());
+        tabs.scrollLeft = 0;
+        markAccountTabEdges();
+        return { before, after, max, pageFits, grabbed };
+      })()`);
+      assert.ok(tabScroll.max > 20, `account tabs should overflow, max=${tabScroll.max}`);
+      assert.ok(tabScroll.after > tabScroll.before, `drag should scroll the row, ${tabScroll.before} -> ${tabScroll.after}`);
+      assert.equal(tabScroll.grabbed, true);
+      assert.equal(tabScroll.pageFits, true, 'extra accounts must not widen the window');
+      await evaluate("document.getElementById('settings-open').click()");
+      await evaluate("document.querySelector('[data-settings-tab=about]').click()");
+      assert.equal(await evaluate("document.querySelector('.about-author').textContent"), '江木源 (JohnMuYuan)');
+      assert.equal(await evaluate("document.querySelector('a[href=\"mailto:Hi@muyno.com\"]').textContent.includes('Hi@muyno.com')"), true);
+      assert.equal(await evaluate("document.querySelector('a[href=\"https://johnmuyuan.com\"]').textContent.includes('JohnMuYuan.com')"), true);
+      await evaluate("document.getElementById('settings-close').click()");
+      console.log('PASS quota account row drags, about page shows the author');
+      // 会话管理：左边列表、右边对话；复制项目地址；回复走主进程的 sessions:reply。
+      // 这里把 sessions:reply 换成假的：不真的调 CLI（会花订阅额度、改会话文件），只验证界面的流式显示和结束后的状态。
+      await evaluate("document.querySelector('[data-page=sessions]').click()");
+      await until("document.querySelector('.sw-items') && !document.querySelector('.sw-items').textContent.includes('正在读取')");
+      assert.equal(await evaluate("document.getElementById('page-sessions').hidden"), false);
+      assert.equal(await evaluate("document.body.dataset.page"), 'sessions');
+      assert.equal(await evaluate("document.documentElement.scrollHeight <= window.innerHeight + 1"), true, '会话页是固定高度的双栏，整页不滚');
+      if (await evaluate("document.querySelectorAll('.sw-item').length > 0")) {
+        await until("document.querySelector('.sw-head') && document.querySelector('.sw-composer textarea')");
+        assert.equal(await evaluate("[...document.querySelectorAll('.sw-actions .btn')].some(b => b.textContent.includes('复制项目地址'))"), true);
+        assert.equal(await evaluate("[...document.querySelectorAll('.sw-actions .btn')].some(b => b.textContent.includes('回复对话'))"), true);
+        // 筛选：搜不到的词列表清空，清掉恢复
+        await evaluate("(() => { const s = document.querySelector('.sw-search input'); s.value = 'zz-no-such-session-qq'; s.dispatchEvent(new Event('input')); })()");
+        assert.equal(await evaluate("document.querySelectorAll('.sw-item').length"), 0);
+        await evaluate("(() => { const s = document.querySelector('.sw-search input'); s.value = ''; s.dispatchEvent(new Event('input')); })()");
+        // 挑一个项目目录还在的会话来回复
+        const target = await evaluate("(async () => { for (const item of await window.tokenpulse.sessions()) { if (item.cwd) return item.key; } return ''; })()");
+        if (target) {
+          await evaluate(`document.querySelector('.sw-item[data-key="${target}"]').click()`);
+          await until(`document.querySelector('.sw-item.active')?.dataset.key === ${JSON.stringify(target)} && !document.querySelector('.sw-main .sw-spinner')`);
+          // 不真的点复制：测试不该改掉用户的剪贴板
+          assert.equal(await evaluate("document.querySelector('.sw-actions .btn').disabled"), false);
+          let sent = null;
+          ipcMain.removeHandler('sessions:reply');
+          ipcMain.handle('sessions:reply', (event, kind, id, prompt, mode) => {
+            sent = { kind, id, prompt, mode };
+            const runId = 'ui-test-run';
+            setTimeout(() => event.sender.send('session-reply', { runId, type: 'delta', text: 'QA 回复' }), 50);
+            setTimeout(() => event.sender.send('session-reply', { runId, type: 'tool', text: 'Read' }), 80);
+            setTimeout(() => event.sender.send('session-reply', { runId, type: 'delta', text: '第二段' }), 400);
+            setTimeout(() => event.sender.send('session-reply', { runId, type: 'done', ok: true }), 700);
+            return { runId };
+          });
+          await evaluate("document.querySelector('.sw-mode [data-mode=edit]').click()");
+          await evaluate("(() => { const t = document.querySelector('.sw-composer textarea'); t.value = 'QA 提问'; t.dispatchEvent(new Event('input')); t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
+          await until("document.querySelector('.sw-row.pending .sw-rich')?.textContent.includes('QA 回复')");
+          assert.equal(await evaluate("document.querySelector('.sw-send').textContent.includes('停止')"), true, '回复中按钮变成停止');
+          assert.equal(await evaluate("document.querySelector('.sw-live-tools')?.textContent.includes('Read')"), true);
+          assert.equal(await evaluate("document.querySelector('.sw-composer textarea').value"), '');
+          await until("!document.querySelector('.sw-row.pending') && document.querySelector('.sw-send').textContent.includes('发送')");
+          assert.deepEqual({ ...sent, id: undefined, kind: undefined }, { kind: undefined, id: undefined, prompt: 'QA 提问', mode: 'edit' });
+          assert.equal(`${sent.kind}:${sent.id}`, target);
+          ipcMain.removeHandler('sessions:reply');
+        }
+      }
+      console.log('PASS session management list, filters, copy path and streamed in-app reply');
       if (process.env.TOKENPULSE_SCREENSHOT) {
         await delay(200);
         fs.writeFileSync(process.env.TOKENPULSE_SCREENSHOT, (await contents.capturePage()).toPNG());

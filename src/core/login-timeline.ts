@@ -69,13 +69,25 @@ export const KIND_OF_SOURCE: Record<string, OfficialAccountKind> = {
   "Grok Build": "grok",
 };
 
+/** 账号 id → 显示名；emails 是 id → 邮箱，按邮箱对账号时用（显示名可能是用户起的别名，不能拿来比邮箱）。 */
+export type AccountLabels = Map<string, string> & { emails?: Map<string, string> };
+
 /**
- * 给界面用的名字：优先用「设置 → 官方账号」里登记的名字，其次时间线里记的邮箱。
+ * 给界面用的名字：优先用「设置 → 官方账号」里起的别名，其次登记的邮箱 / 名字，再次时间线里记的邮箱。
  */
-export function accountLabels() {
-  const labels = new Map<string, string>();
-  for (const span of Object.values(readLoginTimeline().kinds).flat()) if (span?.id) labels.set(span.id, span.email || span.label || span.id);
-  for (const account of readOfficialAccountStore().accounts) labels.set(account.id, account.email || account.label || account.id);
+export function accountLabels(): AccountLabels {
+  const labels: AccountLabels = new Map<string, string>();
+  const emails = new Map<string, string>();
+  for (const span of Object.values(readLoginTimeline().kinds).flat()) {
+    if (!span?.id) continue;
+    labels.set(span.id, span.email || span.label || span.id);
+    if (span.email) emails.set(span.id, span.email);
+  }
+  for (const account of readOfficialAccountStore().accounts) {
+    labels.set(account.id, account.alias || account.email || account.label || account.id);
+    if (account.email) emails.set(account.id, account.email);
+  }
+  labels.emails = emails;
   return labels;
 }
 
@@ -88,7 +100,7 @@ export function resolveAccount(
   at: number,
   evidence: { ref?: string; email?: string },
   timeline: LoginTimeline,
-  labels: Map<string, string>,
+  labels: AccountLabels,
 ): RequestAccount | null {
   if (!kind) return null;
   if (evidence.ref) {
@@ -97,8 +109,9 @@ export function resolveAccount(
   }
   if (evidence.email) {
     const email = evidence.email.toLowerCase();
-    const known = [...labels].find(([id, label]) => id.startsWith(kind + ":") && label.toLowerCase() === email);
-    return { id: known?.[0] ?? `${kind}:email:${email}`, label: evidence.email, basis: "session" };
+    // 没有 emails（老调用、测试直接传 Map）时显示名就是邮箱
+    const known = [...(labels.emails ?? labels)].find(([id, value]) => id.startsWith(kind + ":") && value.toLowerCase() === email);
+    return { id: known?.[0] ?? `${kind}:email:${email}`, label: (known && labels.get(known[0])) || evidence.email, basis: "session" };
   }
   const spans = timeline.kinds[kind] ?? [];
   if (!spans.length) return null;
