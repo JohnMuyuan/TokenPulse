@@ -400,19 +400,34 @@ main { max-width: 1640px; margin: 0 auto; padding: 34px 40px 28px; }
 /* 一家多个账号时第二行写账号名：邮箱不转大写，套餐跟在后面 */
 .plan.who { text-transform: none; letter-spacing: 0; font-size: 12.5px; }
 .plan.who small { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
-/* 账号多过一行时收在剩余宽度里，按住左右拖动来看后面的账号。滚动条藏掉。 */
+/* 账号多过一行时收在剩余宽度里。点一下是切换，按住拖过一段才是排序。看后面的账号用下面那条滚动条，不要在标签上左右拖。 */
+.account-tabs-wrap { flex: 1 1 auto; min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 6px; }
 #account-tabs {
-  flex: 1 1 auto; min-width: 0; max-width: 100%;
+  min-width: 0; max-width: 100%;
   overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none; overscroll-behavior-x: contain;
 }
-#account-tabs.can-pan, #account-tabs.can-pan button { cursor: grab; }
-#account-tabs.panning, #account-tabs.panning button { cursor: grabbing; user-select: none; }
+#account-tabs.sorting { cursor: grabbing; user-select: none; }
+#account-tabs.sorting .seg-thumb { opacity: 0; }
+#account-tabs.sorting button { transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
+#account-tabs.settling button { transition: none; }
+#account-tabs button.dragging { z-index: 2; transition: box-shadow .18s ease; box-shadow: var(--shadow-md); }
 #account-tabs::-webkit-scrollbar { display: none; }
 #account-tabs.overflow-left { mask-image: linear-gradient(to right, transparent, #000 18px); }
 #account-tabs.overflow-right { mask-image: linear-gradient(to left, transparent, #000 18px); }
 #account-tabs.overflow-left.overflow-right { mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent); }
 #account-tabs button { flex: none; }
+.account-tabs-bar {
+  position: relative; height: 8px; margin: 0 6px;
+  border-radius: 99px; background: var(--line); cursor: pointer;
+}
+.account-tabs-bar[hidden] { display: none; }
+.account-tabs-thumb {
+  position: absolute; top: 0; left: 0; height: 100%; min-width: 36px;
+  border-radius: 99px; background: var(--faint); cursor: grab;
+}
+.account-tabs-bar.dragging .account-tabs-thumb { cursor: grabbing; background: var(--muted); }
+.account-tabs-bar:hover .account-tabs-thumb { background: var(--muted); }
 .tab-who { max-width: 120px; overflow: hidden; color: var(--faint); font-size: 11.5px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 #account-tabs button.on .tab-who { color: var(--muted); }
 .context-who { margin-left: 10px; color: var(--muted); font-size: 13px; font-weight: 500; }
@@ -1196,7 +1211,7 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
   .stamp { display: none; }
   .filter-right { width: 100%; justify-content: space-between; }
   .quota-toolbar { flex-direction: column; align-items: stretch; }
-  #account-tabs { width: 100%; }
+  .account-tabs-wrap { width: 100%; }
   .page-heading h1 { font-size: 26px; }
   footer { flex-direction: column; align-items: flex-start; gap: 4px; }
 }

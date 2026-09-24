@@ -911,11 +911,110 @@ function markAccountTabEdges() {
   const overflow = max > 2;
   tabs.classList.toggle('overflow-left', overflow && tabs.scrollLeft > 2);
   tabs.classList.toggle('overflow-right', overflow && max - tabs.scrollLeft > 2);
-  tabs.classList.toggle('can-pan', overflow);
-  const flag = overflow ? '1' : '';
-  if (tabs.dataset.scrollHint !== flag) {
-    tabs.dataset.scrollHint = flag;
-    tabs.title = overflow ? '按住拖动，查看更多账号' : '';
+  const real = [...tabs.querySelectorAll(':scope > button')].filter(button => button.dataset.account !== button.dataset.kind);
+  const canReorder = real.some(button => real.filter(item => item.dataset.kind === button.dataset.kind).length > 1);
+  const hint = canReorder ? 'reorder' : '';
+  if (tabs.dataset.scrollHint !== hint) {
+    tabs.dataset.scrollHint = hint;
+    tabs.title = canReorder ? '按住账号左右拖动，可以调整顺序' : '';
+  }
+  layoutAccountTabBar();
+}
+/** 账号行下面的滚动条。只在装不下时出现，拖滑块看后面的账号，不跟排序抢手势。 */
+function layoutAccountTabBar() {
+  const tabs = $('account-tabs');
+  const bar = $('account-tabs-bar');
+  const thumb = bar.firstElementChild;
+  const max = Math.max(0, tabs.scrollWidth - tabs.clientWidth);
+  bar.hidden = max <= 2;
+  if (bar.hidden) return;
+  const track = bar.clientWidth;
+  const width = Math.max(36, Math.min(track, Math.round(track * tabs.clientWidth / tabs.scrollWidth)));
+  const room = Math.max(1, track - width);
+  thumb.style.width = `${width}px`;
+  thumb.style.transform = `translateX(${Math.round(tabs.scrollLeft / max * room)}px)`;
+  bar.setAttribute('aria-valuenow', String(Math.round(tabs.scrollLeft / max * 100)));
+}
+const TAB_DRAG_SLOP = 10;
+/** 按下时只记起点。移动超过 TAB_DRAG_SLOP 才进入拖动，避免点击被当成拖拽。 */
+let tabGesture = null;
+/** 这次按下已经拖动过：紧跟着的 click 不要再切换账号。下一次按下会清掉，避免漏掉 click 时把下一次点选吃掉。 */
+let tabDragged = false;
+function accountTabButtons(kind) {
+  return [...$('account-tabs').querySelectorAll(':scope > button')].filter(button => button.dataset.kind === kind && button.dataset.account !== button.dataset.kind);
+}
+function beginTabReorder(gesture, event) {
+  const tabs = $('account-tabs');
+  const buttons = accountTabButtons(gesture.kind);
+  const from = buttons.indexOf(gesture.button);
+  if (from < 0) return;
+  gesture.mode = 'reorder';
+  gesture.buttons = buttons;
+  gesture.from = from;
+  gesture.to = from;
+  gesture.pointerStart = gesture.x;
+  gesture.scrollAtStart = tabs.scrollLeft;
+  gesture.originLeft = gesture.button.offsetLeft;
+  tabs.classList.add('sorting');
+  gesture.button.classList.add('dragging');
+  try { tabs.setPointerCapture(gesture.id); } catch { /* 合成事件没有真实指针 */ }
+}
+function moveTabReorder(gesture, event) {
+  const tabs = $('account-tabs');
+  const box = tabs.getBoundingClientRect();
+  const maxScroll = Math.max(0, tabs.scrollWidth - tabs.clientWidth);
+  if (event.clientX < box.left + 36) tabs.scrollLeft = Math.max(0, tabs.scrollLeft - 16);
+  else if (event.clientX > box.right - 36) tabs.scrollLeft = Math.min(maxScroll, tabs.scrollLeft + 16);
+  const dx = event.clientX - gesture.pointerStart + (tabs.scrollLeft - gesture.scrollAtStart);
+  gesture.button.style.transform = `translateX(${dx}px)`;
+  const center = gesture.originLeft + gesture.button.offsetWidth / 2 + dx;
+  let to = 0;
+  for (let i = 0; i < gesture.buttons.length; i++) {
+    if (i === gesture.from) continue;
+    const mid = gesture.buttons[i].offsetLeft + gesture.buttons[i].offsetWidth / 2;
+    if (center > mid) to += 1;
+  }
+  gesture.to = to;
+  const gap = gesture.buttons.length > 1 ? gesture.buttons[1].offsetLeft - (gesture.buttons[0].offsetLeft + gesture.buttons[0].offsetWidth) : 0;
+  const slot = gesture.button.offsetWidth + gap;
+  gesture.buttons.forEach((item, i) => {
+    if (item === gesture.button) return;
+    const shift = gesture.from < gesture.to && i > gesture.from && i <= gesture.to ? -slot : gesture.from > gesture.to && i < gesture.from && i >= gesture.to ? slot : 0;
+    item.style.transform = shift ? `translateX(${shift}px)` : '';
+  });
+}
+function finishTabReorder(gesture, commit) {
+  const tabs = $('account-tabs');
+  tabs.classList.remove('sorting');
+  gesture.button.classList.remove('dragging');
+  tabs.classList.add('settling');
+  for (const item of gesture.buttons) item.style.transform = '';
+  const changed = commit && gesture.to !== gesture.from;
+  let ordered = gesture.buttons;
+  if (changed) {
+    ordered = gesture.buttons.filter(item => item !== gesture.button);
+    ordered.splice(gesture.to, 0, gesture.button);
+    const next = gesture.buttons.at(-1).nextSibling;
+    for (const button of ordered) tabs.insertBefore(button, next);
+    syncSeg(tabs);
+    saveQuotaTabOrder(gesture.kind, ordered.map(item => item.dataset.account));
+  }
+  requestAnimationFrame(() => tabs.classList.remove('settling'));
+}
+/** 可见账号的新顺序嵌回完整列表：藏起来的账号不在这一行，仍留在原来的位置。 */
+async function saveQuotaTabOrder(kind, visibleIds) {
+  try {
+    const statuses = await api.officialAccounts();
+    const all = (statuses.find(item => item.kind === kind)?.accounts || []).map(item => item.id);
+    const visible = new Set(visibleIds);
+    const queue = visibleIds.filter(id => all.includes(id));
+    const merged = all.map(id => (visible.has(id) ? queue.shift() : id));
+    if (queue.length || merged.some(id => !id) || merged.join('|') === all.join('|')) return;
+    await api.reorderOfficialAccounts(kind, merged);
+    showStatus('已调整顺序');
+  } catch (error) {
+    showStatus(cleanRemoteError(error, '顺序没保存上，请重试'), true);
+    if (current) renderQuota();
   }
 }
 function renderQuota() {
@@ -1864,41 +1963,67 @@ $('account-tabs').addEventListener('click', event => {
   state.account = button.dataset.account;
   if (current) { enter(); renderQuota(); }
 });
-// 账号多的时候这一行横着放不下。按住左右拖来看后面的，松手时如果真的拖动过，不要当成点选了某个账号。
-let tabPan = null;
-let tabDragged = false;
-function endTabPan(tabs, dragged) {
-  if (!tabPan) return;
-  tabPan = null;
-  tabs.classList.remove('panning');
-  tabDragged = dragged;
-}
 $('account-tabs').addEventListener('pointerdown', event => {
-  if (event.button !== 0) return;
-  const tabs = event.currentTarget;
-  if (tabs.scrollWidth - tabs.clientWidth <= 1) return;
-  tabPan = { id: event.pointerId, x: event.clientX, left: tabs.scrollLeft, dragged: false };
-  try { tabs.setPointerCapture(event.pointerId); } catch { /* 没有真实指针时（界面测试）捕获会失败，拖动仍然走这几个监听 */ }
+  if (event.button !== 0 || tabGesture) return;
+  tabDragged = false;
+  const button = event.target.closest('#account-tabs > button');
+  if (!button) return;
+  const siblings = accountTabButtons(button.dataset.kind);
+  tabGesture = {
+    mode: 'pending', id: event.pointerId, x: event.clientX, y: event.clientY,
+    button, kind: button.dataset.kind, canReorder: siblings.length > 1 && siblings.includes(button),
+  };
 });
 $('account-tabs').addEventListener('pointermove', event => {
-  if (!tabPan || event.pointerId !== tabPan.id) return;
-  const dx = event.clientX - tabPan.x;
-  if (!tabPan.dragged && Math.abs(dx) < 5) return;
-  tabPan.dragged = true;
-  const tabs = event.currentTarget;
-  tabs.classList.add('panning');
+  const gesture = tabGesture;
+  if (!gesture || event.pointerId !== gesture.id) return;
+  const dx = event.clientX - gesture.x;
+  const dy = event.clientY - gesture.y;
+  if (gesture.mode === 'pending') {
+    if (!gesture.canReorder || Math.abs(dx) < TAB_DRAG_SLOP || Math.abs(dx) < Math.abs(dy)) return;
+    beginTabReorder(gesture, event);
+  }
+  if (gesture.mode === 'reorder') moveTabReorder(gesture, event);
+});
+function finishTabGesture(event, commit) {
+  const gesture = tabGesture;
+  if (!gesture || event.pointerId !== gesture.id) return;
+  tabGesture = null;
+  if (gesture.mode === 'reorder') { tabDragged = true; finishTabReorder(gesture, commit); }
+}
+let tabBarDrag = null;
+$('account-tabs-bar').addEventListener('pointerdown', event => {
+  if (event.button !== 0) return;
+  const bar = event.currentTarget;
+  const tabs = $('account-tabs');
+  const thumb = bar.firstElementChild;
   const max = tabs.scrollWidth - tabs.clientWidth;
-  tabs.scrollLeft = Math.min(max, Math.max(0, tabPan.left - dx));
-  markAccountTabEdges();
+  if (max <= 1) return;
+  const track = bar.getBoundingClientRect();
+  const room = Math.max(1, track.width - thumb.offsetWidth);
+  if (event.target !== thumb) {
+    const left = Math.min(room, Math.max(0, event.clientX - track.left - thumb.offsetWidth / 2));
+    tabs.scrollLeft = left / room * max;
+  }
+  tabBarDrag = { id: event.pointerId, x: event.clientX, scroll: tabs.scrollLeft, room, max };
+  bar.classList.add('dragging');
+  try { bar.setPointerCapture(event.pointerId); } catch { /* 合成事件没有真实指针 */ }
+  event.preventDefault();
 });
-$('account-tabs').addEventListener('pointerup', event => {
-  if (!tabPan || event.pointerId !== tabPan.id) return;
-  endTabPan(event.currentTarget, tabPan.dragged);
+$('account-tabs-bar').addEventListener('pointermove', event => {
+  if (!tabBarDrag || event.pointerId !== tabBarDrag.id) return;
+  const tabs = $('account-tabs');
+  tabs.scrollLeft = Math.min(tabBarDrag.max, Math.max(0, tabBarDrag.scroll + (event.clientX - tabBarDrag.x) / tabBarDrag.room * tabBarDrag.max));
 });
-$('account-tabs').addEventListener('pointercancel', event => {
-  if (!tabPan || event.pointerId !== tabPan.id) return;
-  endTabPan(event.currentTarget, false);
-});
+function endTabBarDrag(event) {
+  if (!tabBarDrag || event.pointerId !== tabBarDrag.id) return;
+  tabBarDrag = null;
+  $('account-tabs-bar').classList.remove('dragging');
+}
+$('account-tabs-bar').addEventListener('pointerup', endTabBarDrag);
+$('account-tabs-bar').addEventListener('pointercancel', endTabBarDrag);
+$('account-tabs').addEventListener('pointerup', event => finishTabGesture(event, true));
+$('account-tabs').addEventListener('pointercancel', event => finishTabGesture(event, false));
 $('account-tabs').addEventListener('scroll', markAccountTabEdges);
 $('model-search').addEventListener('input', event => { state.search = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
 $('record-sort').addEventListener('change', event => { state.sort = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
@@ -2004,7 +2129,7 @@ new ResizeObserver(() => {
   const next = $('daily-chart').clientWidth;
   if (next && Math.abs(next - width) > 2 && analysis && state.page === 'overview') { width = next; dailyChart(entering()); }
 }).observe($('daily-chart'));
-window.addEventListener('resize', () => { moveIndicator(); syncSegs(); closeOptionMenu(); });
+window.addEventListener('resize', () => { moveIndicator(); syncSegs(); layoutAccountTabBar(); closeOptionMenu(); });
 api.onSnapshot(render);
 api.onOpenPage?.(target => {
   if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
