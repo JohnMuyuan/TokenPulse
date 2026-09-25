@@ -93,6 +93,37 @@ function quotasOf(map: OfficialQuotaMap): Array<OfficialQuota & { kind: AccountK
   );
 }
 
+/** 完全删除一个 TokenPulse 账号的额度采样与查询检查记录。 */
+export function forgetQuotaAccount(accountId: string) {
+  if (!accountId) return;
+  const history = readQuotaHistory();
+  let historyChanged = false;
+  for (const kind of KINDS) {
+    const list = history.accounts[kind];
+    if (!list) continue;
+    const next = list.filter((sample) => sample.account !== accountId);
+    if (next.length !== list.length) {
+      historyChanged = true;
+      if (next.length) history.accounts[kind] = next;
+      else delete history.accounts[kind];
+    }
+  }
+  if (historyChanged) writeJson(historyFile(), history);
+
+  const checks = readQuotaChecks();
+  let checksChanged = false;
+  if (checks.accounts?.[accountId] != null) {
+    delete checks.accounts[accountId];
+    checksChanged = true;
+    if (!Object.keys(checks.accounts).length) delete checks.accounts;
+  }
+  for (const kind of KINDS) {
+    if (checks[kind]?.account !== accountId) continue;
+    delete checks[kind];
+    checksChanged = true;
+  }
+  if (checksChanged) writeJson(checksFile(), checks);
+}
 /** 记一轮采样。返回有没有真的写（采样历史）文件；查询成功时间每次都更新。 */
 export function recordQuotaSamples(map: OfficialQuotaMap, now = Date.now()) {
   const quotas = quotasOf(map);

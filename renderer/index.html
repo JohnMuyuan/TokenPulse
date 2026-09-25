@@ -320,7 +320,7 @@
       <section class="settings-panel" data-panel="accounts" role="tabpanel" hidden>
         <div class="setting-block">
           <div class="setting-title">官方账号</div>
-          <p class="setting-hint">每家可以登记多个账号，所有账号的额度都会查询，在首页和额度页各占一张卡片；按住左边的把手拖动可以调整顺序，点铅笔可以给账号起名字。点「添加账号」会用你的默认浏览器打开官方授权页，已登录的浏览器账号可以直接确认。</p>
+          <p class="setting-hint">每家可以登记多个账号，并聚合成一个账号池；列表显示额度、顺位和用完提醒。按住左边的把手拖动可以调整使用顺序，达到上限才提示切到下一个，TokenPulse 不会改写 CLI 登录。点铅笔可以给账号起名字，点「添加账号」可继续添加。</p>
           <div id="official-accounts" class="official-account-list"></div>
           <p class="account-security-note"><svg class="icon"><use href="#i-lock"/></svg>CLI 自己的登录只读取不复制，也不会被续期；在这里添加的账号，凭据（含续期用的 refresh token）保存在本机 official-accounts.json，仅用于查询额度，不会上传，并在过期前自动续期。</p>
         </div>

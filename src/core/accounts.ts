@@ -190,6 +190,16 @@ export function removeOfficialAccount(id: string, inCli: boolean) {
   return writeOfficialAccountStore(store);
 }
 
+/** 完全删除 TokenPulse 账号记录；不修改 CLI 文件，记入 removed 防止 CLI 轮询时重新登记。 */
+export function purgeOfficialAccount(id: string) {
+  const store = readOfficialAccountStore();
+  const target = store.accounts.find((item) => item.id === id);
+  if (!target) throw new Error("找不到这个官方账号");
+  store.accounts = store.accounts.filter((item) => item.id !== id);
+  store.removed = [...new Set([...(store.removed ?? []), id])];
+  if (store.active[target.kind] === id) delete store.active[target.kind];
+  return writeOfficialAccountStore(store);
+}
 export function restoreOfficialAccount(id: string) {
   const store = readOfficialAccountStore();
   const target = store.accounts.find((item) => item.id === id);
@@ -246,12 +256,8 @@ export function fresherCredential(cli: OfficialCredential | undefined, stored: O
 }
 
 /**
- * 额度查询该用哪个账号、哪份凭据。唯一的决策点，quota.ts 和设置页都走这里。
- *
- * - 没选过活动账号：用 CLI 当前登录的那个（和 0.2 行为一致）；
- * - 选了、而且 CLI 现在正登录着它：CLI 文件里的和 TokenPulse 存的，哪份新用哪份；
- * - 选了、但 CLI 已经换成别的账号：用 TokenPulse 保存的凭据，没有或已过期就如实报告，
- *   **不回退到 CLI 当前账号** —— 那样额度会悄悄变成另一个人的。
+ * 兼容旧版“活动账号”设置的解析函数。
+ * 当前额度池不使用它：额度按每个 TokenPulse 账号自己的凭据查询，CLI 当前 provider 不参与决策。
  */
 export function resolveActiveAccount(
   kind: OfficialAccountKind,

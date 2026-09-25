@@ -137,6 +137,12 @@ fs.appendFileSync(codexFile, JSON.stringify({ type: 'response_item', timestamp: 
 const again = sessions.listSessions().find(item => item.kind === 'codex');
 assert.strictEqual(again.turns, 2, '会话文件变了要重新解析');
 
+// Claude 普通会话没有官方删除命令：删主记录和同名 sidecar 目录，并立即从索引消失
+assert.strictEqual(sessions.deleteLocalSessionFiles('claude', 'claude-1'), true);
+assert(!fs.existsSync(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1.jsonl')));
+assert(!fs.existsSync(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1')));
+assert(!sessions.listSessions().some(item => item.key === 'claude:claude-1'));
+
 /* ---------------- 在 TokenPulse 里回复 ---------------- */
 const reply = require('../build/main/session-reply.js');
 const claudeArgs = reply.replyArgs('claude', 'abc', 'readonly');
@@ -151,6 +157,21 @@ const grokArgs = reply.replyArgs('grok', 'abc', 'readonly', 'C:\\tmp\\p.txt');
 assert(grokArgs.includes('dontAsk') && grokArgs.at(-1) === 'C:\\tmp\\p.txt' && grokArgs[grokArgs.indexOf('--resume') + 1] === 'abc');
 // 提示词绝不进命令行
 for (const args of [claudeArgs, codexArgs, grokArgs]) assert(!args.some(arg => arg.includes('提示词')));
+assert.deepStrictEqual(reply.deleteArgs('codex', 'abc'), ['delete', 'abc']);
+assert.deepStrictEqual(reply.deleteArgs('grok', 'abc'), ['sessions', 'delete', 'abc']);
+assert.strictEqual(reply.deleteArgs('claude', 'abc'), null);
+
+// Grok 配了自定义模型提供商时，TokenPulse 启动的回复要强制走该 API Key，而不是 ~/.grok/auth.json 的 OAuth
+const providerEnv = reply.grokProviderEnv(`[models]
+default = "grok-4.6"
+
+[model."grok-4.6"]
+base_url = "https://proxy.example/v1"
+api_key = "proxy-key"
+`, {});
+assert.deepStrictEqual(providerEnv, { GROK_MODELS_BASE_URL: 'https://proxy.example/v1', XAI_API_KEY: 'proxy-key' });
+assert.deepStrictEqual(reply.grokProviderEnv(`[models]
+default = "grok-4.6"`, {}), {});
 
 // 在终端里继续：进项目目录；PATH 上没有 CLI 时退到找到的 exe；单引号按 PowerShell 规则加倍
 const script = reply.terminalScript('grok', "a'b", "D:\\临时\\it's here", 'C:\\Users\\x\\.grok\\bin\\grok.exe');

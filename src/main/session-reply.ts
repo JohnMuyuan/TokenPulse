@@ -2,7 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import type { AgentKind } from "../core/sessions";
+import { deleteClaudeSession, type AgentKind } from "../core/sessions";
 
 /**
  * 在 TokenPulse 里直接回复一段会话：用对应 CLI 的无界面模式接着这个会话跑一轮，
@@ -159,6 +159,42 @@ export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFi
     "--resume", id, "--permission-mode", mode === "edit" ? "acceptEdits" : "dontAsk",
     "--prompt-file", promptFile ?? "",
   ];
+}
+/** 删除命令对着本机 CLI 的 --help 核过。Claude Code 没有普通对话删除子命令。 */
+export function deleteArgs(kind: AgentKind, id: string): string[] | null {
+  if (kind === "codex") return ["delete", id];
+  if (kind === "grok") return ["sessions", "delete", id];
+  return null;
+}
+
+/** 永久删除一段会话；正在回复的会话不允许删除。 */
+export async function deleteSession(kind: AgentKind, id: string) {
+  const key = `${kind}:${id}`;
+  if ([...runs.values()].some((run) => run.key === key)) throw new Error("这段会话正在回复，请先停止再删除");
+  const args = deleteArgs(kind, id);
+  if (!args) {
+    if (!deleteClaudeSession(id)) throw new Error("找不到 Claude Code 的会话记录文件");
+    return;
+  }
+  const cli = resolveCli(kind);
+  if (!cli) throw new Error(`没找到 ${kind === "codex" ? "Codex CLI" : "Grok Build"}，无法删除会话`);
+  const env: NodeJS.ProcessEnv = { ...cleanAgentEnv(), ...cli.env };
+  if (!cli.env?.ELECTRON_RUN_AS_NODE) delete env.ELECTRON_RUN_AS_NODE;
+  await new Promise<void>((resolve, reject) => {
+    let output = "";
+    let timedOut = false;
+    const child = spawn(cli.file, [...cli.prefix, ...args], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const collect = (chunk: Buffer | string) => { output = (output + chunk.toString()).slice(-2000); };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    child.on("error", (error) => reject(new Error(`启动 CLI 失败：${error.message}`)));
+    const timer = setTimeout(() => { timedOut = true; killTree(child); }, 30_000);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(timedOut ? "删除会话超时" : output.trim().split(/\r?\n/).slice(-3).join(" " ).slice(0, 400) || `CLI 退出码 ${code}`));
+    });
+  });
 }
 
 /**

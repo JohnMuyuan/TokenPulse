@@ -288,20 +288,42 @@
     ]);
   }
 
-  /** 「更多」菜单：复制继续命令、复制会话 ID、在终端里继续。借用设置里的选项菜单样式。 */
+  /** 「更多」菜单：终端、复制信息和永久删除。借用设置里的选项菜单样式。 */
   function openMore(anchor, d) {
     openOptionMenu(anchor, '更多操作', [
       { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
       { value: 'command', label: '复制继续命令', hint: d.resumeCommand },
-      { value: 'id', label: '复制会话 ID', hint: d.id }
+      { value: 'id', label: '复制会话 ID', hint: d.id },
+      { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true }
     ], null, async value => {
       if (value === 'command') copy(d.resumeCommand, '继续命令已复制');
       if (value === 'id') copy(d.id, '会话 ID 已复制');
+      if (value === 'delete') await deleteConversation(d);
       if (value === 'terminal') {
         try { await api.openSessionTerminal(d.kind, d.id); showStatus('已在终端里打开这段会话。'); }
         catch (error) { showStatus(cleanError(error, '打不开终端，请确认对应的 CLI 已安装。'), true); }
       }
     });
+  }
+
+  async function deleteConversation(d) {
+    const before = visibleItems();
+    const oldIndex = Math.max(0, before.findIndex(item => item.key === d.key));
+    try {
+      const result = await api.deleteSession(d.kind, d.id);
+      if (!result?.ok) return;
+      delete S.drafts[d.key];
+      S.items = await api.sessions();
+      S.loaded = true; S.listAt = Date.now();
+      S.key = ''; S.detail = null; S.detailLoading = false; S.visible = 160; S.openGroups.clear();
+      drawList(); drawMain();
+      const after = visibleItems();
+      const next = after[Math.min(oldIndex, after.length - 1)];
+      if (next) await select(next.key);
+      showStatus('已删除对话。');
+    } catch (error) {
+      showStatus(cleanError(error, '删除对话失败，请重试。'), true);
+    }
   }
 
   function cleanError(error, fallback) {

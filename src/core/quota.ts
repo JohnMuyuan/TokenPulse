@@ -3,18 +3,18 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { promisify } from "util";
-import { rememberOfficialAccount, renewStoredCredentials, resolveAccountCredential, visibleAccounts } from "./accounts";
+import { rememberOfficialAccount, renewStoredCredentials, visibleAccounts } from "./accounts";
 import { curlBin, curlJson } from "./curl";
-import { readCliAccounts, type OfficialAccountKind } from "./credentials";
+import { isExpired, readCliAccounts, type OfficialAccountKind } from "./credentials";
 import { recordQuotaSamples } from "./quota-history";
 
 /**
  * 问各家官方接口：这个账号的 5 小时 / 周额度用了多少。
  *
- * 全部用**本机 CLI 自己存的登录凭据**，不需要用户再登一次：
- * - Claude   `~/.claude/.credentials.json` 的 OAuth token
- * - ChatGPT  `~/.codex/auth.json` 的 access_token
- * - Grok     `~/.grok/auth.json` 的 key
+ * 每个账号使用它自己的凭据：
+ * - TokenPulse 登录的账号：使用 TokenPulse 账号库里保存、并由本软件续期的凭据；
+ * - 只从 CLI 发现的账号：使用对应 CLI 配置文件里的凭据。
+ * 额度查询不依赖 CLI 当前 provider，也不写回 CLI 配置。
  *
  * 为什么走 curl 而不是 fetch：这几个接口对 TLS 指纹和 HTTP/2 比较挑，
  * Node 的 fetch 经常被挡；curl 在 Windows 10+ 是系统自带的。
@@ -181,8 +181,9 @@ function parseGrokResets(buf: Buffer): number | undefined {
 type Target = { token: string; workspace?: string; accountId: string };
 
 /**
- * 这一家所有要查的账号。CLI 现在登录的先登记进账号库（和设置页一样），再按设置里的顺序取没隐藏的；
- * 凭据没有或已过期的这轮跳过（设置页会标出来），不拿别的账号的凭据顶替。
+ * TokenPulse 账号库里这一家的所有可查询账号，按设置顺序返回。
+ * TokenPulse 登录的账号优先使用自己保存的凭据；只有 CLI 读入、没有 stored credential 的账号才读 CLI 凭据。
+ * 这条路径不看 CLI 当前 provider，也不会改写 CLI 配置。
  */
 function targetsOf(kind: AccountKind, now = Date.now()): Target[] {
   const live = readCliAccounts(kind);
@@ -193,10 +194,11 @@ function targetsOf(kind: AccountKind, now = Date.now()): Target[] {
       // 数据目录只读：照样查，只是记不住名字
     }
   }
+  const liveById = new Map(live.map((account) => [`${account.kind}:${account.ref}`, account]));
   const out: Target[] = [];
   for (const account of visibleAccounts(kind)) {
-    const { credential, expired } = resolveAccountCredential(account, now, live);
-    if (!credential || expired) continue;
+    const credential = account.credential ?? liveById.get(account.id)?.credential;
+    if (!credential || isExpired(credential, now)) continue;
     out.push({ token: credential.token, workspace: credential.accountId, accountId: account.id });
   }
   return out;
@@ -342,7 +344,7 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
  */
 export async function fetchOfficialQuota(force = false): Promise<OfficialQuotaMap> {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.value;
-  // 先给快过期的 TokenPulse 账号续期，再查额度；续期失败不影响别的账号。
+  // TokenPulse 自己登录的账号需要由本软件负责续期，额度查询仍只使用各账号自己的凭据。
   await renewStoredCredentials().catch(() => 0);
   const value: OfficialQuotaMap = {};
   const query = { claude: claudeQuota, chatgpt: chatgptQuota, grok: grokQuota };

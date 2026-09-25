@@ -78,11 +78,26 @@ function miniLogo(source) {
   return el('span', { class: 'mini-logo', 'aria-hidden': true }, [brand ? brandSvg(brand) : letterMark(source)]);
 }
 
+function poolOf(kind) { return current?.pools?.find(pool => pool.kind === kind); }
+function poolAccountName(account) { return account?.displayName || account?.accountLabel || "未命名账号"; }
+function poolQuotaText(account) {
+  if (!account) return "";
+  if (!account.reporting) return "暂无额度数据";
+  if (account.exhausted) return "额度已用完 · 应切换";
+  const left = `剩余 ${account.limitingLeft.toFixed(1)}%`;
+  if (account.active) return account.forecastAt ? `当前顺位 · 约 ${duration(account.forecastAt - (current?.now || Date.now()))}后用完` : `当前顺位 · ${left}`;
+  if (account.next) return `下一个 · ${left}`;
+  return `排队 · ${left}`;
+}
 /** 设置页的官方账号列表。数据来自主进程，不含任何凭据。 */
 function renderOfficialAccounts(statuses = []) {
   const host = $('official-accounts');
   host.replaceChildren(...statuses.map(status => {
     const meta = OAUTH_META[status.kind] || { name: status.kind };
+    const pool = poolOf(status.kind);
+    const poolById = new Map((pool?.accounts || []).map(account => [account.accountId, account]));
+    const visibleCount = status.accounts.filter(account => !account.hidden).length;
+    const poolSummary = visibleCount > 1 ? el('span', { class: 'oauth-pool-summary', text: pool?.week.reporting ? `${visibleCount} 个账号 · 周池剩余 ${pool.week.remainingPoints.toFixed(1)}%` : `${visibleCount} 个账号 · 用完再换` }) : null;
     const add = status.installed
       ? el('button', { class: 'btn btn-accent', 'data-account-action': 'login', 'data-account-kind': status.kind }, [icon('plus'), '添加账号'])
       : el('span', { class: 'oauth-card-state', text: '未检测到官方 CLI' });
@@ -90,19 +105,23 @@ function renderOfficialAccounts(statuses = []) {
     const rows = status.accounts.map(account => {
       const email = account.email || account.label;
       const name = account.alias || email;
+      const pooled = poolById.get(account.id);
+      const quotaText = !account.hidden && pooled ? poolQuotaText(pooled) : "";
       const state = account.hidden ? '已隐藏'
         : account.needsLogin ? '需重新登录'
         : !account.usable ? (account.autoRenew ? '等待自动续期' : '凭据已过期')
-        : account.inCli ? 'CLI 当前登录' : '已保存';
+        : account.inCli ? 'CLI 当前登录' : '本软件已保存';
       const tool = (action, iconName, label, extra = {}) => el('button', {
-        type: 'button', class: 'btn icon-only oauth-tool' + (action === 'remove' ? ' danger' : ''), 'data-account-action': action, 'data-account-id': account.id, title: label, 'aria-label': `${label}：${name}`, ...extra
+        type: 'button', class: 'btn icon-only oauth-tool' + (action === 'remove' || action === 'purge' ? ' danger' : ''), 'data-account-action': action, 'data-account-kind': status.kind, 'data-account-id': account.id, title: label, 'aria-label': `${label}：${name}`, ...extra
       }, [icon(iconName)]);
       const actions = account.hidden
-        ? [el('button', { type: 'button', class: 'btn oauth-restore', 'data-account-action': 'restore', 'data-account-id': account.id, title: '重新查询并显示这个账号的额度' }, [icon('restore'), '恢复'])]
+        ? [el('button', { type: 'button', class: 'btn oauth-restore', 'data-account-action': 'restore', 'data-account-id': account.id, title: '重新查询并显示这个账号的额度' }, [icon('restore'), '恢复']), tool('reauthorize', 'refresh', '重新授权'), tool('purge', 'trash', '完全删除 TokenPulse 记录')]
         : [
           tool('rename', 'edit', '重命名'),
-          // CLI 还登录着的账号删不掉（下次读 CLI 又回来了），只能隐藏：提示里说清楚
-          tool('remove', 'trash', account.inCli ? '隐藏（CLI 还登录着这个账号）' : '删除', { 'data-in-cli': account.inCli ? '1' : '' })
+          tool('reauthorize', 'refresh', '重新授权'),
+          // 普通删除对 CLI 账号仍是隐藏；完全删除单独走 purge。
+          tool('remove', 'trash', account.inCli ? '隐藏（CLI 还登录着这个账号）' : '删除并保留额度历史', { 'data-in-cli': account.inCli ? '1' : '' }),
+          tool('purge', 'trash', '完全删除 TokenPulse 记录')
         ];
       // 拖动的把手：鼠标按住拖；键盘聚焦后用上下方向键
       const grip = sortable ? el('button', { type: 'button', class: 'oauth-grip', 'data-grip': account.id, title: '拖动调整顺序', 'aria-label': `调整顺序：${name}（按住拖动，或用上下方向键）` }, [icon('grip')])
@@ -112,7 +131,8 @@ function renderOfficialAccounts(statuses = []) {
         grip,
         el('span', { class: 'oauth-account-who' }, [
           el('span', { class: 'oauth-account-name', text: name, title: name, translate: 'no', 'data-alias': account.alias || '', 'data-email': email }),
-          account.alias && email ? el('small', { class: 'oauth-account-email', text: email, title: email, translate: 'no' }) : null
+          account.alias && email ? el('small', { class: 'oauth-account-email', text: email, title: email, translate: 'no' }) : null,
+          quotaText ? el('small', { class: 'oauth-account-quota' + (pooled.exhausted ? ' exhausted' : pooled.active ? ' active' : ''), text: quotaText }) : null
         ]),
         account.autoRenew && !account.hidden ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，不用重新登录' }) : null,
         el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: state }),
@@ -120,7 +140,7 @@ function renderOfficialAccounts(statuses = []) {
       ]);
     });
     return el('div', { class: 'oauth-card' }, [
-      el('div', { class: 'oauth-card-head' }, [avatar(status.kind), el('span', { class: 'oauth-card-title', text: meta.name }), add]),
+      el('div', { class: 'oauth-card-head' }, [avatar(status.kind), el('span', { class: 'oauth-card-title', text: meta.name }), poolSummary, add]),
       rows.length ? el('div', { class: 'oauth-account-list', 'data-kind': status.kind }, rows) : el('p', { class: 'oauth-empty', text: status.installed ? '还没有登录的账号' : '安装官方 CLI 后即可添加账号' })
     ]);
   }));
@@ -440,14 +460,94 @@ function quotaSlots() {
   });
 }
 /** 卡片和标签上的短名字。报表里已经处理过别名和重名（见 report.ts 的 displayNames）。 */
+function quotaPools() {
+  return Object.keys(META).map(kind => poolOf(kind) || { kind, accountCount: 0, exhaustedCount: 0, week: { reporting: 0, remainingPoints: 0 }, five: { reporting: 0, remainingPoints: 0 }, accounts: [] });
+}
+function poolReport(pool, account) {
+  return current?.accounts?.find(report => report.kind === pool.kind && ((account.accountId && report.accountId === account.accountId) || report.key === account.key));
+}
+function poolRing(pool, account) {
+  const report = poolReport(pool, account);
+  const windows = [report?.five, report?.week].filter(Boolean).filter(win => !waitingReset(report, win));
+  const remaining = windows.length ? Math.min(...windows.map(win => Math.max(0, 100 - win.used))) : null;
+  const node = ring(report ? { five: report.five, week: report.week, account: report } : {});
+  node.classList.add('pool-ring');
+  node.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining' + (remaining == null ? ' empty-number' : ''), text: remaining == null ? '—' : remaining.toFixed(1) }, remaining == null ? [] : [el('small', { text: '%' })])]));
+  return node;
+}function poolWindowText(account) {
+  const parts = [];
+  if (account.fiveUsed != null) parts.push(`5 小时剩 ${account.fiveLeft.toFixed(1)}%`);
+  if (account.weekUsed != null) parts.push(`周剩 ${account.weekLeft.toFixed(1)}%`);
+  return parts.join(" · ") || "暂无额度数据";
+}
+function poolRows(pool, detail = false) {
+  return pool.accounts.map((account, index) => {
+    const row = el('button', { type: 'button', class: `pool-account-row${account.exhausted ? ' exhausted' : account.active ? ' active' : account.next ? ' next' : ''}` }, [
+      poolRing(pool, account),
+      el('span', { class: 'pool-order', text: String(index + 1).padStart(2, '0') }),
+      el('span', { class: 'pool-account-copy' }, [el('b', { text: poolAccountName(account), translate: 'no' }), el('small', { text: poolWindowText(account) })]),
+      el('span', { class: 'pool-account-state', text: poolQuotaText(account) })
+    ]);
+    row.addEventListener('click', () => { state.account = account.key; navigate('quota'); });
+    if (detail && state.account === account.key) row.setAttribute('aria-current', 'true');
+    return row;
+  });
+}
+/**
+ * 号池队列：除了当前顺位以外的账号。小圆环不写数字（太挤），数字在右边。
+ * 只列接下来的 2 个：再多，这一家的卡片会比只有一个账号的卡片高出一截，别的卡片下半截一片空白。
+ */
+const QUEUE_ROWS = 2;
+function poolQueue(pool, leadKey) {
+  const others = pool.accounts.filter(item => item.key !== leadKey);
+  const ready = pool.accounts.filter(item => item.reporting && !item.exhausted).length;
+  const open = item => { state.account = item.key; navigate('quota'); };
+  const rows = others.slice(0, QUEUE_ROWS).map(item => {
+    const report = poolReport(pool, item);
+    const mini = ring(report ? { five: report.five, week: report.week, account: report } : {});
+    mini.classList.add('pool-mini-ring');
+    mini.removeAttribute('title');
+    const state = item.exhausted ? '已用完' : !item.reporting ? '暂无数据' : `剩 ${item.limitingLeft.toFixed(1)}%`;
+    const row = el('button', { type: 'button', class: 'pool-queue-row' + (item.exhausted ? ' exhausted' : item.next ? ' next' : ''), title: item.accountLabel || '' }, [
+      mini,
+      el('span', { class: 'pool-queue-name', text: poolAccountName(item), translate: 'no' }),
+      // 没有标签也占住这一格，右边的百分比才能上下对齐
+      item.next ? el('span', { class: 'pool-queue-tag', text: '下一个' }) : el('span', { 'aria-hidden': 'true' }),
+      el('span', { class: 'pool-queue-left', text: state })
+    ]);
+    row.addEventListener('click', () => open(item));
+    return row;
+  });
+  const more = others.length > QUEUE_ROWS ? el('button', { type: 'button', class: 'pool-queue-more' }, [`还有 ${number(others.length - QUEUE_ROWS)} 个账号`, icon('arrow')]) : null;
+  more?.addEventListener('click', () => { state.account = leadKey; navigate('quota'); });
+  return el('div', { class: 'pool-queue' }, [
+    el('div', { class: 'pool-queue-head' }, [el('span', { text: '号池 · 按顺序使用' }), el('small', { text: `${number(ready)} / ${number(pool.accountCount)} 个有余量` })]),
+    ...rows,
+    more
+  ]);
+}
+function poolPanel(pool) {
+  return el('article', { class: 'panel quota-pool-panel' }, [
+    el('div', { class: 'panel-heading' }, [el('div', {}, [el('h2', { text: `${META[pool.kind].name} 账号池` }), el('p', { class: 'muted', text: '按设置顺序依次使用；当前账号耗尽才提示切到下一个，不会改写 CLI 真实账号配置。' })]), el('span', { class: 'section-tag', text: `${pool.accountCount} 个账号` })]),
+    el('div', { class: 'pool-account-list detail' }, poolRows(pool, true))
+  ]);
+}
 function accountWho(account) {
   const name = account?.displayName || '';
   // 「未命名账号」是程序给的占位名，不是用户起的：放进 translate="no" 的元素之前先翻好
   return name === '未命名账号' && window.PulseI18n?.lang() === 'en' ? window.PulseI18n.t(name) : name;
 }
-function quotaCard({ kind, key, account }) {
+/**
+ * 首页额度卡片。一家一张：号池里当前顺位的账号用完整的双圆环 + 5 小时 / 周额度两条（和单账号时一模一样），
+ * 其余账号在下面排成一个紧凑的队列（小圆环 + 名字 + 剩余），只列接下来的几个，其余的去额度页看。
+ * 以前号池版每个账号一行同样大小的圆环，没有主次；单账号的卡片被 6 个账号那张撑得老高，中间一大片空白。
+ */
+function quotaCard({ kind, key, account }, pool = null) {
   const meta = META[kind];
-  const who = accountWho(account);
+  const multi = pool?.accountCount > 1;
+  const poolAccount = multi ? pool.accounts.find(item => item.key === key) : null;
+  const who = multi ? poolAccountName(poolAccount) : accountWho(account);
+  const allOut = multi && pool.exhaustedCount === pool.accountCount;
   const stale = account && isStale(account);
   // 首页优先展示剩余最少的有效窗口，让环中心和说明都对应当前压力更高的窗口。
   const windows = [account?.five, account?.week].filter(Boolean);
@@ -457,10 +557,11 @@ function quotaCard({ kind, key, account }) {
     avatar(kind),
     el('div', { class: 'account-title' }, [
       el('span', { class: 'account-name', text: meta.name }),
-      who ? el('span', { class: 'plan who', title: account.accountLabel || '', translate: 'no' }, [who, account.plan ? el('small', { text: ' · ' + account.plan }) : null])
+      who ? el('span', { class: 'plan who', title: account?.accountLabel || poolAccount?.accountLabel || '', translate: 'no' }, [who, account?.plan ? el('small', { text: ' · ' + account.plan }) : null])
         : el('span', { class: 'plan', text: account?.plan || meta.source })
     ]),
-    el('span', { class: 'badge ' + (!stale && !waiting ? account?.health.level || '' : ''), text: !account ? '暂无采样' : waiting ? '等待新采样' : stale ? '采样已过期' : HEALTH[account.health.level] })
+    allOut ? el('span', { class: 'badge critical', text: '全部用完' })
+      : el('span', { class: 'badge ' + (!stale && !waiting ? account?.health.level || '' : ''), text: !account ? '暂无采样' : waiting ? '等待新采样' : stale ? '采样已过期' : HEALTH[account.health.level] })
   ]);
   const body = [head];
   if (account && (account.five || account.week)) {
@@ -500,6 +601,7 @@ function quotaCard({ kind, key, account }) {
     body.push(el('div', { class: 'quota-hero' }, [ringNode, el('div', { class: 'quota-hero-text' }, [el('span', { class: 'quota-hero-label', text: '额度剩余' }), el('span', { class: 'quota-hero-value', text: '尚未取得官方额度' })])]));
     body.push(el('div', { class: 'quota-missing' }, [el('p', { text: '可能尚未登录、凭据过期或网络未连通。本机用量仍正常记录。' })]));
   }
+  if (multi) body.push(poolQueue(pool, key));
   const link = el('button', { class: 'text-btn', 'aria-label': `${who ? meta.name + ' ' + who : meta.name} 额度详情` }, ['详情', icon('arrow')]);
   link.addEventListener('click', () => { state.account = key; navigate('quota'); });
   const forecast = !stale && !waiting && report?.used >= 100 ? '额度已用完，等待重置'
@@ -682,7 +784,12 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
 /* ---------------- 总览 ---------------- */
 
 function renderOverview() {
-  $('quota-cards').replaceChildren(...quotaSlots().map((slot, i) => stagger(quotaCard(slot), i)));
+  $('quota-cards').replaceChildren(...quotaPools().map((pool, i) => {
+    // 号池里当前顺位的账号当主角；全部用完就拿第一个
+    const lead = pool.accounts.find(item => item.active) || pool.accounts[0];
+    const report = lead ? poolReport(pool, lead) : null;
+    return stagger(quotaCard({ kind: pool.kind, key: lead?.key || pool.kind, account: report || null }, pool), i);
+  }));
   dailyChart(entering());
   const t = analysis.total;
   // 过去 24 小时按小时算节奏，其余按天
@@ -1028,6 +1135,8 @@ function renderQuota() {
   drawAccountTabs(slots);
   const { account, kind } = slot, meta = META[kind], who = accountWho(account);
   const sessions = current.sessions[kind] || { included: 0, excluded: 0 };
+  const pool = poolOf(kind);
+  if (pool?.accountCount > 1) host.append(poolPanel(pool));
   host.append(el('div', { class: 'quota-context' }, [
     avatar(kind),
     el('div', {}, [
@@ -1477,7 +1586,7 @@ function openOptionMenu(trigger, label, options, value, pick) {
   menu.setAttribute('aria-label', label);
   menu.replaceChildren(el('div', { class: 'option-menu-label', text: label }), ...options.map(option => {
     const selected = option.value === value;
-    const item = el('button', { class: 'option-item', type: 'button', role: 'menuitemradio', 'aria-checked': selected, 'data-value': String(option.value), tabindex: -1 }, [
+    const item = el('button', { class: `option-item${option.danger ? ' danger' : ''}`, type: 'button', role: 'menuitemradio', 'aria-checked': selected, 'data-value': String(option.value), tabindex: -1 }, [
       el('span', { class: 'option-item-text' }, [el('b', { text: option.label }), option.hint ? el('small', { text: option.hint }) : null]),
       selected ? icon('check', 'icon option-check') : null
     ]);
@@ -2069,18 +2178,21 @@ $('settings-open').addEventListener('click', () => openSettings());
 // 统计口径并进了设置的「数据」页。
 $('methodology-open').addEventListener('click', () => openSettings('data'));
 // 官方 OAuth 登录由 CLI 打开浏览器完成；界面只拿到成功后的账号列表，不接触 token。
-/** 删除要点两下：第一下按钮变成「确认删除」，几秒内再点才真的删。不弹系统对话框。 */
+/** 删除 / 完全删除都要点两下：第一下按钮变成确认，不弹系统对话框。 */
 let removeArmed = null;
 function armRemove(button) {
   clearTimeout(removeArmed?.timer);
   if (removeArmed?.button && removeArmed.button !== button) disarmRemove();
+  const permanent = button.dataset.accountAction === 'purge';
   const hide = button.dataset.inCli === '1';
   button.classList.add('armed');
-  button.replaceChildren(icon('trash'), hide ? '确认隐藏' : '确认删除');
+  button.replaceChildren(icon('trash'), permanent ? '确认完全删除' : hide ? '确认隐藏' : '确认删除');
   removeArmed = { button, timer: setTimeout(disarmRemove, 4000) };
-  $('prefs-status').textContent = hide
-    ? 'CLI 还登录着这个账号，删不掉，只会隐藏：不查额度、不在首页和额度页显示，随时可以恢复。再点一次确认。'
-    : '删除后不再查询这个账号的额度，TokenPulse 保存的凭据也会一并删掉（已有的额度历史保留）。再点一次确认。';
+  $('prefs-status').textContent = permanent
+    ? '将删除 TokenPulse 账号、保存的凭据和该账号额度历史；不会修改 CLI 文件。再点一次确认。'
+    : hide
+      ? 'CLI 还登录着这个账号，普通删除只会隐藏；需要彻底移除 TokenPulse 记录请用「完全删除」。再点一次确认。'
+      : '删除后不再查询这个账号，TokenPulse 保存的凭据会删掉，但额度历史保留。再点一次确认。';
 }
 function disarmRemove() {
   if (!removeArmed) return;
@@ -2089,13 +2201,13 @@ function disarmRemove() {
   removeArmed = null;
   if (button.isConnected) { button.classList.remove('armed'); button.replaceChildren(icon('trash')); }
 }
-const ACCOUNT_DONE = { remove: '已删除账号', hide: '已隐藏账号，可以随时恢复', restore: '已恢复账号，正在查询额度' };
+const ACCOUNT_DONE = { remove: '已删除账号', purge: '已完全删除 TokenPulse 账号', hide: '已隐藏账号，可以随时恢复', restore: '已恢复账号，正在查询额度' };
 $('official-accounts').addEventListener('click', async event => {
   const button = event.target.closest('[data-account-action]');
   if (!button || button.disabled) return;
   const { accountAction: action, accountKind: kind, accountId: id } = button.dataset;
   if (action === 'rename') { disarmRemove(); startRename(button); return; }
-  if (action === 'remove' && removeArmed?.button !== button) { armRemove(button); return; }
+  if ((action === 'remove' || action === 'purge') && removeArmed?.button !== button) { armRemove(button); return; }
   const hiding = action === 'remove' && button.dataset.inCli === '1';
   disarmRemove();
   const buttons = [...$('official-accounts').querySelectorAll('button')];
@@ -2103,15 +2215,15 @@ $('official-accounts').addEventListener('click', async event => {
   buttons.forEach(item => { item.disabled = true; });
   $('prefs-status').textContent = action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : '正在保存…';
   try {
-    if (action === 'login') {
-      const result = await api.loginOfficialAccount(kind);
+    if (action === 'login' || action === 'reauthorize') {
+      const result = await api.loginOfficialAccount(kind, action === 'reauthorize' ? id : undefined);
       if (!result?.ok) throw new Error(result?.error || 'OAuth 登录失败');
       renderOfficialAccounts(result.statuses);
       // 主进程已经在后台刷新额度；这里等它的结果，好让提示和界面同步。
       render(await api.refresh());
-      $('prefs-status').textContent = '登录成功，已添加账号并刷新额度';
+      $('prefs-status').textContent = action === 'reauthorize' ? '重新授权成功，账号凭据已更新并刷新额度' : '登录成功，已添加账号并刷新额度';
     } else {
-      // 删除、恢复：主进程会重新汇总并把新快照推过来，这里不用再等一轮额度查询
+      // 删除、完全删除、恢复：主进程会重新汇总并把新快照推过来，这里不用再等一轮额度查询
       renderOfficialAccounts(await api.manageOfficialAccount(action, id));
       $('prefs-status').textContent = ACCOUNT_DONE[hiding ? 'hide' : action];
     }

@@ -8,6 +8,7 @@ import {
   readOfficialAccountStore,
   rememberOfficialAccount,
   removeOfficialAccount,
+  purgeOfficialAccount,
   renameOfficialAccount,
   renewStoredCredentials,
   reorderOfficialAccounts,
@@ -16,6 +17,7 @@ import {
 } from "../core/accounts";
 import { OFFICIAL_KINDS, cliDir, isExpired, readCliAccounts, type OfficialAccountKind } from "../core/credentials";
 import { dataDir } from "../core/paths";
+import { forgetQuotaAccount } from "../core/quota-history";
 import { cleanAgentEnv } from "./session-reply";
 
 /**
@@ -156,7 +158,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type LoginResult = { ok: true; statuses: OfficialOAuthStatus[] } | { ok: false; error: string };
 
-async function runLogin(kind: OfficialAccountKind): Promise<LoginResult> {
+async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<LoginResult> {
   const command = await resolveCli(kind);
   if (!command) return { ok: false, error: `没有找到 ${LABELS[kind]} CLI，请先安装官方命令行。` };
   // 放在数据目录下而不是系统 Temp：Codex 拒绝在 Temp 下建辅助程序，会打一串警告。
@@ -184,8 +186,12 @@ async function runLogin(kind: OfficialAccountKind): Promise<LoginResult> {
     while (Date.now() < Math.min(deadline, graceUntil)) {
       const current = signature(kind, tempHome);
       if (current && current !== before) {
-        // 登录进来的账号排在这一家的最后；以前删过 / 藏过的同一个账号会恢复
-        for (const account of readCliAccounts(kind, tempHome)) rememberOfficialAccount(account, true);
+        const accounts = readCliAccounts(kind, tempHome);
+        if (replaceId && !accounts.some((account) => accountIdOf(kind, account.ref) === replaceId)) {
+          return { ok: false, error: "重新授权登录的账号与目标账号不一致，原账号没有改变。" };
+        }
+        // 登录进来的账号排在这一家的最后；以前删过 / 藏过的同一个账号会恢复。
+        for (const account of accounts) rememberOfficialAccount(account, true);
         return { ok: true, statuses: await listOfficialOAuthStatus() };
       }
       if (exited && graceUntil === Infinity) graceUntil = Date.now() + 3_000;
@@ -203,12 +209,13 @@ async function runLogin(kind: OfficialAccountKind): Promise<LoginResult> {
 }
 
 /** 同一家同时只跑一个登录：连点两下会起两个 CLI 抢同一个回调端口。 */
-const inflight = new Map<OfficialAccountKind, Promise<LoginResult>>();
-export function loginOfficialOAuth(kind: OfficialAccountKind): Promise<LoginResult> {
-  let running = inflight.get(kind);
+const inflight = new Map<string, Promise<LoginResult>>();
+export function loginOfficialOAuth(kind: OfficialAccountKind, replaceId?: string): Promise<LoginResult> {
+  const key = `${kind}:${replaceId || ""}`;
+  let running = inflight.get(key);
   if (!running) {
-    running = runLogin(kind).finally(() => inflight.delete(kind));
-    inflight.set(kind, running);
+    running = runLogin(kind, replaceId).finally(() => inflight.delete(key));
+    inflight.set(key, running);
   }
   return running;
 }
@@ -247,16 +254,19 @@ export async function listOfficialOAuthStatus(now = Date.now()): Promise<Officia
 }
 
 /**
- * 设置里的账号管理：删除、恢复、改名。返回新的账号列表。
+ * 设置里的账号管理：删除、完全删除、恢复、改名。返回新的账号列表。
  * 删除时要知道 CLI 现在是不是还登录着它（那样只能藏起来），这个由这里现读，不信界面传来的。
  */
-export async function manageOfficialAccount(action: "remove" | "restore" | "rename", id: string, alias = "") {
+export async function manageOfficialAccount(action: "remove" | "purge" | "restore" | "rename", id: string, alias = "") {
   const store = readOfficialAccountStore();
   const target = store.accounts.find((item) => item.id === id);
   if (!target) throw new Error("找不到这个官方账号");
   if (action === "rename") renameOfficialAccount(id, alias);
   else if (action === "restore") restoreOfficialAccount(id);
-  else removeOfficialAccount(id, readCliAccounts(target.kind).some((item) => accountIdOf(target.kind, item.ref) === id));
+  else if (action === "purge") {
+    purgeOfficialAccount(id);
+    forgetQuotaAccount(id);
+  } else removeOfficialAccount(id, readCliAccounts(target.kind).some((item) => accountIdOf(target.kind, item.ref) === id));
   return listOfficialOAuthStatus();
 }
 
