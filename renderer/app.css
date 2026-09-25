@@ -1013,6 +1013,8 @@ body.modal-open { overflow: hidden; }
   padding: 9px 10px; border: 0; border-radius: 10px; background: none; text-align: left;
 }
 .option-item:hover, .option-item:focus-visible { background: var(--surface-2); outline: none; }
+.option-item.danger { color: var(--danger); }
+.option-item.danger:hover, .option-item.danger:focus-visible { background: var(--danger-soft); }
 .option-item-text { flex: 1; min-width: 0; }
 .option-item-text b { display: block; font-size: 14px; font-weight: 600; }
 .option-item-text small { display: block; margin-top: 1px; font-size: 12.5px; color: var(--muted); }
@@ -1166,6 +1168,59 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 
 /* 会话管理的样式在 sessions.css */
 
+/* ---------------- 账号池 ---------------- */
+/* ---- 首页号池队列（卡片下半截） ---- */
+.quota-card .quota-card-foot { margin-top: auto; }
+.pool-queue { display: grid; gap: 2px; margin: 4px 0 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.pool-queue-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.pool-queue-head small { color: var(--faint); font-size: 11.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.pool-queue-row {
+  display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto; gap: 10px; align-items: center;
+  width: 100%; min-height: 36px; padding: 3px 8px; margin: 0 -8px; box-sizing: content-box;
+  border: 0; border-radius: 9px; background: transparent; color: inherit; text-align: left; cursor: pointer;
+}
+.pool-queue-row:hover, .pool-queue-row:focus-visible { background: var(--surface-soft); outline: none; }
+.pool-queue-row.exhausted { opacity: .6; }
+.pool-queue-name { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.pool-queue-tag { padding: 1px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.pool-queue-left { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pool-queue-row.exhausted .pool-queue-left { color: var(--danger); }
+/* 限定在队列里：后面响应式里的 .ring 尺寸、双环的描边规则都比单个类名更具体，会把小圆环撑回大号 */
+.pool-queue .ring.pool-mini-ring { width: 28px; height: 28px; }
+.pool-queue .ring.pool-mini-ring .ring-track, .pool-queue .ring.pool-mini-ring .ring-value { stroke-width: 12; }
+.pool-queue .ring.pool-mini-ring.double .ring-track, .pool-queue .ring.pool-mini-ring.double .ring-value { stroke-width: 10; }
+.pool-queue-more { display: inline-flex; align-items: center; gap: 4px; justify-self: start; margin-top: 2px; padding: 4px 0; border: 0; background: none; color: var(--accent); font-size: 12.5px; font-weight: 650; cursor: pointer; }
+.pool-queue-more .icon { width: 13px; height: 13px; }
+.pool-account-list { display: grid; gap: 6px; margin: 0 0 16px; }
+.pool-account-row { display: grid; grid-template-columns: 58px 28px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; min-height: 72px; padding: 7px 10px; color: inherit; text-align: left; border: 1px solid transparent; border-radius: 10px; background: transparent; cursor: pointer; }
+.pool-account-row:hover, .pool-account-row:focus-visible { border-color: var(--line-strong); background: var(--surface-soft); outline: none; }
+.pool-account-row.active { border-color: color-mix(in srgb, var(--accent) 25%, var(--line)); background: var(--accent-soft); }
+.pool-account-row.next { background: color-mix(in srgb, var(--surface-soft) 80%, var(--accent-soft)); }
+.pool-account-row.exhausted { opacity: .66; }
+.pool-account-row[aria-current="true"] { box-shadow: inset 3px 0 0 var(--accent); }
+.pool-account-row .pool-ring { width: 56px; height: 56px; }
+.pool-account-row .pool-ring.double { width: 58px; height: 58px; }
+.pool-account-row .pool-ring .ring-track, .pool-account-row .pool-ring .ring-value { stroke-width: 7; }
+.pool-account-row .pool-ring.double .ring-track.ring-five, .pool-account-row .pool-ring.double .ring-value.ring-five { stroke-width: 6; }
+.pool-account-row .pool-ring.double .ring-track.ring-week, .pool-account-row .pool-ring.double .ring-value.ring-week { stroke-width: 5; }
+.pool-account-row .pool-ring .quota-remaining { font-size: 12px; }
+.pool-account-row .pool-ring.double .quota-remaining { font-size: 11px; }
+.pool-account-row .pool-ring .quota-remaining small { font-size: 8px; }
+.pool-order { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pool-account-copy { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.pool-account-copy b { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.pool-account-copy small { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.pool-account-state { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.pool-account-row.active .pool-account-state { color: var(--accent); font-weight: 650; }
+.pool-account-row.exhausted .pool-account-state { color: var(--danger); }
+.quota-pool-panel { margin-bottom: 18px; }
+.quota-pool-panel .panel-heading { align-items: flex-start; margin-bottom: 12px; }
+.quota-pool-panel .panel-heading p { margin-top: 4px; }
+.quota-pool-panel .pool-account-list { grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); margin: 0; }
+.oauth-pool-summary { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.oauth-account-quota { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.oauth-account-quota.active { color: var(--accent); font-weight: 600; }
+.oauth-account-quota.exhausted { color: var(--danger); }
 /* ---------------- 响应式 ---------------- */
 
 @media (min-width: 1600px) {

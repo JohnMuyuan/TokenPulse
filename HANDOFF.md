@@ -1,5 +1,61 @@
+## 2026-09-25：0.3.5 · 设置页重新授权与完全删除账号
+
+- 设置 → 官方账号的每个可见账号新增「重新授权」按钮。它复用隔离 OAuth 临时目录，不触碰用户真实 CLI 配置；重新授权时把目标账号 id 传入，OAuth 返回的账号身份必须与目标 id 一致，否则原账号不变并报错。
+- 新增「完全删除 TokenPulse 记录」按钮，仍采用点两下确认：删除 TokenPulse 账号记录、保存的凭据、该账号的额度采样和 quota check；写入 `removed`，防止 CLI 轮询时把同一个账号自动登记回来。完全删除不修改 CLI 文件，也不删除本机整体用量账。
+- 普通「删除」保留原语义：CLI 还登录着的账号只隐藏，非 CLI 账号删除记录但保留历史；需要彻底清理使用「完全删除」。
+- 后端入口：`src/main/oauth.ts` 的 `loginOfficialOAuth(kind, replaceId?)`、`manageOfficialAccount(..., "purge", ...)`；IPC 在 `src/main/index.ts` / `src/main/preload.ts` 同步支持 `replaceId` 和 `purge`。
+- 额度历史清理入口是 `src/core/quota-history.ts` 的 `forgetQuotaAccount()`；账号记录清理是 `src/core/accounts.ts` 的 `purgeOfficialAccount()`。
+- 设置界面按钮和二次确认在 `renderer/app.js`；英文词条在 `renderer/i18n.js`。
+- 回归：`npm run compile`、`node scripts/test-accounts.cjs`（58/58）、`node scripts/test-dashboard.cjs`、前端 JS 语法检查均通过。
+- 本轮只编译源码，没有重新生成 `dist/win-unpacked`；若要给用户测试，按要求单独重新编译免安装目录。
+## 2026-09-25：0.3.5 · 多账号额度池最终口径与首页圆环恢复
+
+### 最终产品口径（以本节为准）
+
+- TokenPulse 的账号额度展示只关心 **TokenPulse 账号库里的账号**，不把 CLI 当前 provider / CC Switch 当前模型切换当成 TokenPulse 账号的“当前状态”。
+- TokenPulse 登录的账号使用 `official-accounts.json` 里该账号自己的 `credential` 查询官方额度；只有单纯从 CLI 发现、没有 TokenPulse stored credential 的账号，才使用对应 CLI 凭据。
+- `src/core/quota.ts` 的 `targetsOf()` 按 TokenPulse 账号库和设置顺序查询，TokenPulse stored credential 优先；额度查询会续期 TokenPulse 自己保存的凭据，但不会写回 Claude / Codex / Grok CLI，也不会改 CC Switch 配置。
+- `accounts.ts` 里的 `resolveActiveAccount()` 是旧版“活动账号”兼容函数，当前额度池不调用它；不要把它当作新的额度查询入口。
+- `usage-scan.ts` 仍可读取 CLI 配置来判断本地会话属于官方还是中转，这是用量扫描的归属判断；它不再决定 TokenPulse 账号额度卡片是否显示或是否查询。
+
+### 号池与首页
+
+- `src/core/report.ts` 新增 `pools` 快照：同一产品账号按设置顺序聚合，记录每个账号的 5 小时 / 周额度、剩余百分比、耗尽状态、简单预测和顺位。
+- 号池是展示和顺序提示，不会自动切换 CLI 账号，也不会改写 CLI / CC Switch。
+- **首页卡片（0.3.5 改版，以这里为准）**：还是一家一张卡片，结构回到原来单账号时的样子 —— 号池里**当前顺位**的账号用完整的大双圆环（外环 5 小时、内环周额度，圆心是较低窗口的剩余）+ 下面 5 小时 / 周额度两条进度，页脚是它的预测。多账号时下面加一段**号池队列**（`poolQueue()`）：其余账号按顺序排，每行一个 28px 小圆环（不写数字）+ 名字 + 「下一个」标签 + 剩余百分比，只列接下来 2 个（`QUEUE_ROWS`），更多的给「还有 N 个账号」链接到额度页。队列标题右边是「5 / 6 个有余量」。
+  - 为什么这样改：上一版每个账号一行同样大小的圆环，没有主次；「周额度合计剩余 564%」把 6 个账号的百分比加起来，不是一个能读的数；单账号的卡片被 6 个账号那张撑高，中间一大片空白；名字被截断。
+  - 小圆环的尺寸 / 描边规则要写成 `.pool-queue .ring.pool-mini-ring …`：后面响应式里的 `.ring` 尺寸和双环描边规则比单个类名具体，会把小圆环撑回大号。
+  - 队列行没有「下一个」标签时也要放一个空 span 占格子，不然右边的百分比对不齐。
+  - 首页不再用 `poolCard()`（已删）；额度页的号池面板 `poolPanel()` / `poolRows()` 仍在用。
+- 设置页里非 CLI 当前账号显示为“本软件已保存”，表示它属于 TokenPulse 管理，不代表 CLI 当前登录。
+
+### 本轮涉及的主要文件
+
+- `src/core/quota.ts`：额度凭据来源和查询目标修正。
+- `src/core/accounts.ts`：补充旧活动账号函数的说明，避免误以为它仍控制额度查询。
+- `src/core/report.ts`：号池快照与每账号额度摘要。
+- `renderer/app.js`：号池卡片、账号状态和每账号圆环。
+- `renderer/app.css`：号池账号行圆环样式。
+- `renderer/i18n.js`：号池和本软件保存状态文案。
+
+### 验证与产物
+
+- 版本保持 `0.3.5`。
+- 已通过：`npm run compile`、`node scripts/test-dashboard.cjs`、`node scripts/test-accounts.cjs`、`node --check renderer/app.js`、`node --check renderer/i18n.js`。
+- 最新免安装目录已重新编译到：`dist/win-unpacked/`。
+- 可执行文件：`dist/win-unpacked/TokenPulse.exe`。
+- 使用的是 `electron-builder --win dir --publish never`，没有制作安装包，没有发布 GitHub。
+
+> 旧的 0.3.3 多账号历史说明里如果写着“用 `resolveAccountCredential` 在 CLI 和 TokenPulse 两份凭据里挑新的”，那是历史实现记录；继续开发时以本节的“TokenPulse stored credential 优先”口径为准。
 # TokenPulse 交接文档
 
+## 2026-09-24：0.3.5 · 会话管理删除对话
+
+- 会话详情的「更多操作」新增「删除对话」，主进程先弹不可撤销确认框；删除成功后刷新列表并选中相邻对话。正在回复的对话必须先停止。
+- **Codex CLI 0.156.1**：真实命令是 `codex delete <SESSION>`，没有 `--force` 参数。
+- **Grok Build 1.0.41**：真实命令是 `grok sessions delete <ID>`。
+- **Claude Code**：`claude --help` 没有普通对话删除子命令（`claude rm` 只删后台 agent session），所以 TokenPulse 安全删除索引定位到的 `~/.claude/projects/**/<id>.jsonl` 和同目录的 `<id>/` 附属目录。
+- 回归覆盖删除参数和 Claude transcript / sidecar / 索引清理。版本保持 0.3.5。
 ## 2026-09-24：0.3.4 · 检查修复
 
 - **请求流水里的重复行不会自己消失**：扫描「先写流水、再写账本」，写完流水没写完账本就被杀（强制关程序、重新打包时关掉）的话，下次从旧偏移重读会把那一段再追加一遍。这不算「重读」，以前不触发整理，重复行一直留着（本机实测：当天 749 行里 234 行重复，整个流水 8,481 行里 613 行重复）。查询本身按 key 去重，界面数字没错，但文件越长越大，任何不去重的读取都会多算。现在追加前留 `requests-pending` 标记、账本写完再删；开扫时它还在就这一轮扫完整理。老账本没有 `requestsCompacted` 标记的先整体整理一次（本机 235 ms）。

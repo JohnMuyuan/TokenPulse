@@ -529,12 +529,51 @@ export function listSessions(): SessionSummary[] {
   return [...byKey.values()].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
-function fileOf(kind: AgentKind, id: string) {
+function filesOf(kind: AgentKind, id: string) {
   const index = readJson<SessionIndex | null>(indexFile(), null);
-  const candidates = Object.entries(index?.files ?? {})
+  return Object.entries(index?.files ?? {})
     .filter(([, entry]) => entry.summary?.kind === kind && entry.summary.id === id)
-    .sort((a, b) => (b[1].summary?.updatedAt ?? 0) - (a[1].summary?.updatedAt ?? 0));
-  return candidates[0]?.[0];
+    .sort((a, b) => (b[1].summary?.updatedAt ?? 0) - (a[1].summary?.updatedAt ?? 0))
+    .map(([file]) => file);
+}
+
+function fileOf(kind: AgentKind, id: string) {
+  return filesOf(kind, id)[0];
+}
+
+/** Claude Code 没有普通对话删除命令：删主 transcript 和同名附属目录，并同步移出索引。 */
+export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
+  if (kind !== "claude" || !id || id.length > 200 || !/^[A-Za-z0-9._-]+$/.test(id)) return false;
+  let files = filesOf("claude", id);
+  if (!files.length) {
+    listSessions();
+    files = filesOf("claude", id);
+  }
+  const root = path.resolve(path.join(cliDir("claude"), "projects"));
+  const inside = (candidate: string) => {
+    const relative = path.relative(root, candidate);
+    return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
+  };
+  const removed: string[] = [];
+  for (const file of files) {
+    const transcript = path.resolve(file);
+    if (!inside(transcript) || path.basename(transcript) !== `${id}.jsonl`) continue;
+    fs.rmSync(transcript, { force: true });
+    const sidecar = path.resolve(path.dirname(transcript), id);
+    if (inside(sidecar)) fs.rmSync(sidecar, { recursive: true, force: true });
+    removed.push(file);
+  }
+  if (!removed.length) return false;
+  const index = readJson<SessionIndex | null>(indexFile(), null);
+  if (index?.version === INDEX_VERSION) {
+    for (const file of removed) delete index.files[file];
+    writeJson(indexFile(), index);
+  }
+  return true;
+}
+
+export function deleteClaudeSession(id: string) {
+  return deleteLocalSessionFiles("claude", id);
 }
 
 /** 详情：只读这一个会话文件。索引里没有（新会话）就先刷新一遍列表。 */

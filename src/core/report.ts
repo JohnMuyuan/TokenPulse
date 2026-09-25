@@ -22,6 +22,17 @@ const HOUR_MS = 3_600_000;
 
 export type Totals = UsageBucket & { tokens: number };
 export type UsageDetail = Totals & { day: string; source: string; model: string; priced: boolean };
+export type PoolWindow = { reporting: number; remainingPoints: number; projectedPoints?: number; earliestEtaAt?: number };
+export type AccountPool = {
+  kind: AccountKind; accountCount: number; exhaustedCount: number; activeKey?: string; nextKey?: string;
+  week: PoolWindow; five: PoolWindow;
+  accounts: {
+    key: string; accountId?: string; displayName?: string; accountLabel?: string; plan?: string;
+    health: AccountReport["health"]; weekUsed?: number; weekLeft: number; fiveUsed?: number; fiveLeft: number;
+    limitingLeft: number; forecastAt?: number; forecastWindow?: "week" | "five";
+    reporting: boolean; exhausted: boolean; active: boolean; next: boolean;
+  }[];
+};
 
 export type Snapshot = {
   now: number;
@@ -39,6 +50,9 @@ export type Snapshot = {
   models: { model: string; source: string; tokens: number; costUsd: number; requests: number }[];
   /** 官方账号的额度监控。没采到过额度的账号不在里面。 */
   accounts: AccountReport[];
+  /** Read-only same-product account pools in configured order. */
+  pools: AccountPool[];
+
   /** 每家算进来 / 因为走中转被排除的会话数，界面上照实说。 */
   sessions: Record<AccountKind, { included: number; excluded: number }>;
   /** 这一轮新扫到、最近 15 分钟内型号不一致或响应存疑的请求（发系统通知用）。 */
@@ -131,6 +145,57 @@ function samplesByAccount(samples: QuotaSample[], kind: AccountKind, store: Retu
     .map(([id, list]) => ({ id: id || undefined, samples: list }));
 }
 
+function accountPools(accounts: AccountReport[], store: ReturnType<typeof readOfficialAccountStore>): AccountPool[] {
+  const summarizeWindow = (reports: AccountReport[], pick: (report: AccountReport) => AccountReport["week"]): PoolWindow => {
+    const windows = reports.map(pick).filter((window): window is NonNullable<AccountReport["week"]> => Boolean(window));
+    const projected = windows.map((window) => window.projectedAtReset).filter((value): value is number => value != null);
+    const etas = windows.filter((window) => window.runsOutBeforeReset).map((window) => window.etaAt).filter((value): value is number => value != null);
+    return {
+      reporting: windows.length,
+      remainingPoints: windows.reduce((sum, window) => sum + Math.max(0, 100 - window.used), 0),
+      ...(projected.length ? { projectedPoints: projected.reduce((sum, value) => sum + value, 0) } : {}),
+      ...(etas.length ? { earliestEtaAt: Math.min(...etas) } : {}),
+    };
+  };
+
+  return ACCOUNT_KINDS.map((kind) => {
+    const reports = accounts.filter((account) => account.kind === kind);
+    const byId = new Map(reports.filter((account) => account.accountId).map((account) => [account.accountId!, account]));
+    const legacy = reports.find((account) => !account.accountId);
+    const removed = new Set(store.removed ?? []);
+    const stored = store.accounts.filter((account) => account.kind === kind && !account.hidden && !removed.has(account.id));
+    const used = new Set<AccountReport>();
+    const sources: { report?: AccountReport; id?: string; alias?: string; email?: string; label?: string }[] = stored.map((account, index) => {
+      const report = byId.get(account.id) ?? (index === 0 ? legacy : undefined);
+      if (report) used.add(report);
+      return { report, id: account.id, alias: account.alias, email: account.email, label: account.label };
+    });
+    for (const report of reports) if (!used.has(report)) sources.push({ report, id: report.accountId, alias: report.accountAlias, email: undefined, label: report.accountLabel });
+    const names = displayNames(sources.map((source) => ({ alias: source.alias, email: source.email, label: source.label, multi: sources.length > 1 })));
+    const rows: AccountPool["accounts"] = sources.map((source, index) => {
+      const account = source.report;
+      const windows = [
+        account?.five ? { name: "five" as const, value: account.five } : null,
+        account?.week ? { name: "week" as const, value: account.week } : null,
+      ].filter((item): item is { name: "five" | "week"; value: NonNullable<AccountReport["week"]> } => Boolean(item));
+      const forecast = windows.filter((item) => item.value.runsOutBeforeReset && item.value.etaAt != null).sort((a, b) => a.value.etaAt! - b.value.etaAt!)[0];
+      return {
+        key: account?.key ?? source.id ?? kind, accountId: account?.accountId ?? source.id, displayName: names[index] || account?.displayName, accountLabel: source.label ?? account?.accountLabel, plan: account?.plan,
+        health: account?.health ?? { level: "unknown", reason: "no-data" }, weekUsed: account?.week?.used, weekLeft: account?.week ? Math.max(0, 100 - account.week.used) : 0,
+        fiveUsed: account?.five?.used, fiveLeft: account?.five ? Math.max(0, 100 - account.five.used) : 0,
+        limitingLeft: windows.length ? Math.min(...windows.map((item) => Math.max(0, 100 - item.value.used))) : 0, forecastAt: forecast?.value.etaAt, forecastWindow: forecast?.name,
+        reporting: Boolean(windows.length), exhausted: windows.some((item) => item.value.used >= 100), active: false, next: false,
+      };
+    });
+    const activeIndex = rows.findIndex((account) => account.reporting && !account.exhausted);
+    const nextIndex = activeIndex < 0 ? -1 : rows.findIndex((account, index) => index > activeIndex && account.reporting && !account.exhausted);
+    if (activeIndex >= 0) rows[activeIndex].active = true;
+    if (nextIndex >= 0) rows[nextIndex].next = true;
+    return { kind, accountCount: rows.length, exhaustedCount: rows.filter((account) => account.exhausted).length,
+      activeKey: activeIndex >= 0 ? rows[activeIndex].key : undefined, nextKey: nextIndex >= 0 ? rows[nextIndex].key : undefined,
+      week: summarizeWindow(reports, (account) => account.week), five: summarizeWindow(reports, (account) => account.five), accounts: rows };
+  });
+}
 export function buildSnapshot(now = Date.now()): Snapshot {
   const rollups = readRollups();
   const history = readQuotaHistory();
@@ -309,6 +374,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
       .sort((a, b) => b.tokens - a.tokens),
     models: [...byModel.values()].sort((a, b) => b.costUsd - a.costUsd || b.tokens - a.tokens),
     accounts,
+    pools: accountPools(accounts, store),
     sessions,
   };
 }

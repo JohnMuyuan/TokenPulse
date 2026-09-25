@@ -203,6 +203,8 @@ const num = (value: unknown) => {
  * - Grok：`~/.grok/config.toml` 里有生效的 base_url 就不是官方。
  * Codex 不看这个 —— 它每个会话自己记了 model_provider。
  */
+
+
 function configOfficial(): Record<Kind, boolean | undefined> {
   const home = os.homedir();
   let claude = true;

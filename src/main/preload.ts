@@ -10,9 +10,9 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   readPrefs: () => ipcRenderer.invoke("prefs:read"),
   writePrefs: (patch: Record<string, unknown>) => ipcRenderer.invoke("prefs:write", patch),
   officialAccounts: () => ipcRenderer.invoke("accounts:list"),
-  loginOfficialAccount: (kind: string) => ipcRenderer.invoke("accounts:login", kind),
-  /** 账号管理：remove 删除（CLI 还登录着的只是藏起来），restore 恢复藏起来的，rename 改名（空字符串 = 去掉名字）。 */
-  manageOfficialAccount: (action: "remove" | "restore" | "rename", id: string, alias?: string) => ipcRenderer.invoke("accounts:manage", action, id, alias),
+  loginOfficialAccount: (kind: string, replaceId?: string) => ipcRenderer.invoke("accounts:login", kind, replaceId),
+  /** 账号管理：remove 隐藏 / 普通删除，purge 完全删除 TokenPulse 记录，restore 恢复，rename 改名。 */
+  manageOfficialAccount: (action: "remove" | "purge" | "restore" | "rename", id: string, alias?: string) => ipcRenderer.invoke("accounts:manage", action, id, alias),
   /** 拖拽排序：这一家账号的新顺序。 */
   reorderOfficialAccounts: (kind: string, ids: string[]) => ipcRenderer.invoke("accounts:reorder", kind, ids),
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("session-reply", listener);
   },
   openSessionTerminal: (kind: string, id: string) => ipcRenderer.invoke("sessions:terminal", kind, id),
+  deleteSession: (kind: string, id: string) => ipcRenderer.invoke("sessions:delete", kind, id),
   /** 模型知识库（型号单价和等价规则）：当前版本、上次检查；手动检查更新。 */
   knowledgeState: () => ipcRenderer.invoke("knowledge:state"),
   checkKnowledge: () => ipcRenderer.invoke("knowledge:check"),

@@ -72,6 +72,12 @@ test('quota reports: one per account, in settings order, hidden / removed skippe
   const claude = s.accounts.filter(r => r.kind === 'claude');
   assert.equal(claude.length, 1); assert.equal(claude[0].key, 'claude'); assert.equal(claude[0].siblings, 1);
   assert.equal(claude[0].displayName ?? '', '');
+  const pool = s.pools.find(p => p.kind === 'grok');
+  assert.equal(pool.accountCount, 2);
+  assert.equal(pool.week.reporting, 2);
+  assert.equal(pool.week.remainingPoints, 148);
+  assert.deepEqual(pool.accounts.map(a => a.key), ['grok:b', 'grok:a']);
+  assert(pool.accounts.every(a => typeof a.weekLeft === 'number'));
   // 短名字撞车：ada@one 和 ada@two 不能都显示成 ada；起了别名的用别名；不撞的仍用 @ 前面
   fs.writeFileSync(path.join(dir, 'official-accounts.json'), JSON.stringify({ version: 2, active: {}, accounts: [
     account('b', { email: 'ada@one.com' }),

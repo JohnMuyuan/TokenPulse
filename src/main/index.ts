@@ -7,7 +7,7 @@ import { fetchOfficialQuota } from "../core/quota";
 import type { Snapshot } from "../core/report";
 import { loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
-import { cleanAgentEnv, openTerminal, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
+import { cleanAgentEnv, deleteSession as deleteAgentSession, openTerminal, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
 import type { RequestQuery } from "../core/request-log";
 import { readPrefs, writePrefs, type Prefs } from "./prefs";
@@ -448,6 +448,29 @@ async function openInTerminal(kind: unknown, id: unknown) {
   openTerminal(hit.kind, hit.id, cwd);
   return { ok: true, command: sessionCommand(hit.kind, hit.id) };
 }
+/** 永久删除一段对话：先由主进程弹确认框，再调用各家 CLI（Claude 走本地文件回退）。 */
+async function deleteConversation(kind: unknown, id: unknown) {
+  const hit = await sessionOf(kind, id);
+  const method = hit.kind === "claude"
+    ? "Claude Code 没有普通对话删除命令；TokenPulse 会删除本机的会话记录文件和同名附属目录。此操作无法撤销。"
+    : hit.kind === "codex"
+      ? "将调用 codex delete <会话 ID> 永久删除这段对话。此操作无法撤销。"
+      : "将调用 grok sessions delete <会话 ID> 永久删除这段对话。此操作无法撤销。";
+  const options = {
+    type: "warning" as const,
+    title: tr("删除对话"),
+    message: tr("永久删除这段对话？"),
+    detail: `${hit.session.title}\n\n${tr(method)}`,
+    buttons: [tr("取消"), tr("删除")],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  const result = win && !win.isDestroyed() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  if (result.response !== 1) return { ok: false, cancelled: true };
+  await deleteAgentSession(hit.kind, hit.id);
+  return { ok: true, cancelled: false };
+}
 
 /* ---------------- 启动 ---------------- */
 
@@ -492,16 +515,17 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("prefs:read", () => readPrefs());
     ipcMain.handle("prefs:write", (_event, patch: Partial<Prefs>) => applyPrefs(patch));
     ipcMain.handle("accounts:list", () => listOfficialOAuthStatus());
-    ipcMain.handle("accounts:login", async (_event, kind: unknown) => {
+    ipcMain.handle("accounts:login", async (_event, kind: unknown, replaceId: unknown) => {
       if (!isOfficialAccountKind(kind)) throw new Error("官方账号类型无效");
-      const result = await loginOfficialOAuth(kind);
+      if (replaceId !== undefined && (typeof replaceId !== "string" || replaceId.length > 400)) throw new Error("官方账号参数无效");
+      const result = await loginOfficialOAuth(kind, typeof replaceId === "string" ? replaceId : undefined);
       if (result.ok) backgroundRefresh(true);
       return result;
     });
     ipcMain.handle("accounts:manage", async (_event, action: unknown, id: unknown, alias: unknown) => {
-      if (!["remove", "restore", "rename"].includes(action as string) || typeof id !== "string" || id.length > 400) throw new Error("官方账号参数无效");
+      if (!["remove", "purge", "restore", "rename"].includes(action as string) || typeof id !== "string" || id.length > 400) throw new Error("官方账号参数无效");
       if (action === "rename" && (typeof alias !== "string" || alias.length > 200)) throw new Error("名字无效");
-      const statuses = await manageOfficialAccount(action as "remove" | "restore" | "rename", id, typeof alias === "string" ? alias : "");
+      const statuses = await manageOfficialAccount(action as "remove" | "purge" | "restore" | "rename", id, typeof alias === "string" ? alias : "");
       // 名字、显示哪些账号都会变：重新汇总；删除 / 恢复还要重新查一轮额度
       backgroundRefresh(action !== "rename");
       return statuses;
@@ -552,6 +576,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("sessions:reply", (_event, kind: unknown, id: unknown, prompt: unknown, mode: unknown) => replyInApp(kind, id, prompt, mode));
     ipcMain.handle("sessions:reply-stop", (_event, runId: unknown) => typeof runId === "string" && stopReply(runId));
     ipcMain.handle("sessions:terminal", (_event, kind: unknown, id: unknown) => openInTerminal(kind, id));
+    ipcMain.handle("sessions:delete", (_event, kind: unknown, id: unknown) => deleteConversation(kind, id));
     ipcMain.handle("export-csv", async (_event, content: unknown, kind: unknown) => {
       if (typeof content !== "string" || Buffer.byteLength(content) > 10 * 1024 * 1024) {
         throw new Error("导出内容无效或过大");

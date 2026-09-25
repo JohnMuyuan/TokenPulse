@@ -22,6 +22,7 @@ for (const key of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME"]) delete proce
 const build = (file) => require(path.join(__dirname, "..", "build", ...file.split("/")));
 const creds = build("core/credentials.js");
 const accounts = build("core/accounts.js");
+const quotaHistory = build("core/quota-history.js");
 const { isolatedEnv } = build("main/oauth.js");
 
 const results = [];
@@ -266,6 +267,17 @@ try {
     check("CLI 正登录着的账号用 CLI 文件里的凭据", resolved.credential.token === "live-g2" && resolved.inCli && !resolved.expired);
     const g3 = accounts.readOfficialAccountStore().accounts.find((item) => item.id === "grok:g3");
     check("CLI 没登录的账号用 TokenPulse 存的凭据", accounts.resolveAccountCredential(g3, NOW, []).credential.token === "new");
+accounts.rememberOfficialAccount({ kind: "grok", ref: "purge", email: "purge@example.com", label: "purge", credential: { token: "purge-token" } }, true, NOW);
+    write(path.join(process.env.TOKENPULSE_DATA_DIR, "quota-history.json"), { version: 1, accounts: { grok: [{ at: NOW, week: 10, account: "grok:purge" }] } });
+    write(path.join(process.env.TOKENPULSE_DATA_DIR, "quota-checked.json"), { accounts: { "grok:purge": NOW }, grok: { at: NOW, account: "grok:purge" } });
+    accounts.purgeOfficialAccount("grok:purge");
+    quotaHistory.forgetQuotaAccount("grok:purge");
+    const purgedHistory = quotaHistory.readQuotaHistory();
+    const purgedChecks = quotaHistory.readQuotaChecks();
+    check("完全删除：账号记录和凭据移除，并防止 CLI 轮询重新登记", !accounts.readOfficialAccountStore().accounts.some((item) => item.id === "grok:purge") && (accounts.readOfficialAccountStore().removed || []).includes("grok:purge"));
+    check("完全删除：额度采样和查询检查记录清除", !purgedHistory.accounts.grok?.some((sample) => sample.account === "grok:purge") && !purgedChecks.accounts?.["grok:purge"] && purgedChecks.grok?.account !== "grok:purge");
+    accounts.rememberOfficialAccount({ kind: "grok", ref: "purge", email: "purge@example.com", label: "purge", credential: { token: "cli-purge" } }, false, NOW);
+    check("完全删除后只读 CLI 不会自动回来", !accounts.readOfficialAccountStore().accounts.some((item) => item.id === "grok:purge"));
     accounts.writeOfficialAccountStore({ version: 2, accounts: [], active: {} });
   }
 
