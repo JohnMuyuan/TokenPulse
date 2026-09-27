@@ -1281,3 +1281,56 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* 0.3.7：原生 details/checkbox 保留键盘操作；长模型名、路径不撑破布局。 */
+.detail-filters { padding: 14px 18px; margin-bottom: 18px; position: relative; z-index: 5; }
+.detail-filter-main { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.detail-filter-main summary { cursor: pointer; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+#detail-search { flex: 1; min-width: 240px; }
+#detail-search .search-field { width: 100%; }
+.model-picker { position: relative; }
+.model-options { position: absolute; top: 100%; left: 0; width: min(420px, 70vw); padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: 0 10px 30px #0002; }
+#model-options { max-height: 290px; overflow: auto; }
+#model-options label[hidden] { display: none; }
+.model-options .search-field { margin: 10px 0; width: 100%; }
+#model-options label { display: flex; align-items: center; gap: 9px; padding: 7px 0; overflow-wrap: anywhere; }
+#model-options input { flex: 0 0 auto; }
+.more-filters { max-width: 100%; }
+#detail-more { flex-wrap: wrap; padding-top: 12px; max-width: 100%; }
+#request-project { max-width: 290px; }
+.detail-filter-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.detail-filter-chips .btn { max-width: 100%; overflow-wrap: anywhere; white-space: normal; text-align: left; }
+.detail-filter-note, .model-options p { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+
+/* 0.3.7 筛选交互：原生 details 保留键盘语义，离场结束后才隐藏内容。 */
+.detail-filter-main summary { list-style: none; display: flex; align-items: center; gap: 9px; transition: background 160ms ease, border-color 160ms ease, transform 125ms var(--ease); }
+.detail-filter-main summary::-webkit-details-marker { display: none; }
+.detail-filter-main summary::after { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform 160ms var(--ease); }
+.detail-filter-main details[open] > summary::after { transform: rotate(225deg); }
+.detail-filter-main summary:active { transform: scale(.97); }
+.detail-filter-main summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.model-picker::details-content { transition: content-visibility 180ms allow-discrete; }
+.model-picker .model-options { transform-origin: top left; opacity: 0; transform: scale(.97); transition: opacity 180ms var(--ease), transform 180ms var(--ease); }
+.model-picker[open] .model-options { opacity: 1; transform: none; }
+@starting-style { .model-picker[open] .model-options { opacity: 0; transform: scale(.97); } }
+.more-filters { interpolate-size: allow-keywords; }
+.more-filters::details-content { height: 0; overflow: clip; opacity: 0; transition: height 200ms var(--ease), opacity 160ms var(--ease), content-visibility 200ms allow-discrete; }
+.more-filters[open]::details-content { height: auto; opacity: 1; }
+#model-options label { border-radius: 6px; transition: background 125ms ease, color 125ms ease; }
+#model-options label:has(input:checked) { background: var(--accent-soft); }
+@media (hover: hover) and (pointer: fine) {
+  .detail-filter-main summary:hover, #model-options label:hover { background: var(--surface-2); }
+}
+#detail-filters[data-keyboard] *, #detail-filters[data-keyboard] ::after, #detail-filters[data-keyboard] details::details-content { transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .detail-filter-main summary, .detail-filter-main summary::after, .model-picker .model-options, .detail-filter-main details::details-content, #model-options label { transition: none !important; }
+  .detail-filter-main summary:active, .model-picker .model-options { transform: none; }
+}
+
+/* 额度查询被出口 IP 白名单拦下来了（首页卡片 / 额度页） */
+.quota-blocked { display: flex; align-items: center; gap: 8px; width: 100%; margin: 14px 0 0; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); border-radius: 10px; background: var(--danger-soft); color: var(--danger); font: inherit; font-size: 12.5px; font-weight: 600; text-align: left; cursor: pointer; }
+.quota-blocked:hover, .quota-blocked:focus-visible { border-color: var(--danger); outline: none; }
+.quota-blocked .icon { flex: none; width: 15px; height: 15px; }
+.quota-blocked > span:first-of-type { flex: 1; min-width: 0; }
+.quota-blocked-link { flex: none; font-weight: 650; opacity: .85; }
+.quota-blocked.wide { margin: 0 0 16px; padding: 12px 16px; font-size: 13px; }

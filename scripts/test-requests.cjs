@@ -131,6 +131,41 @@ try {
   check("分页", paged.rows.length === 3 && paged.pages === 3 && paged.page === 1);
   check("费用：Grok 用自报的，Claude 按单价估", grokRows[0].costUsd === 0.001 && byId[official(10)].costUsd > 0);
 
+  /* ---------------- 0.3.7：精确筛选与汇总同口径 ---------------- */
+  const baseline = all().rows;
+  const cases = [
+    [{ models: ['claude-opus-5'] }, r => r.model === 'claude-opus-5'],
+    [{ models: ['claude-opus-5', 'claude-sonnet-5'] }, r => ['claude-opus-5', 'claude-sonnet-5'].includes(r.model)],
+    [{ models: ['claude-opus'] }, () => false],
+    [{ project: 'D:\\work\\demo' }, r => r.cwd === 'D:\\work\\demo'],
+    [{ project: '__missing__' }, r => !r.cwd],
+    [{ channel: 'official' }, r => r.official === true],
+    [{ channel: 'api' }, r => r.official === false],
+    [{ channel: 'unknown' }, r => r.official === undefined],
+    [{ status: 'mismatch' }, r => r.status === 'mismatch'],
+    [{ account: 'none', channel: 'unknown' }, r => !r.account && r.official === undefined],
+    [{ models: ['claude-opus-5'], search: 'demo', status: 'match' }, r => r.model === 'claude-opus-5' && (r.cwd || '').includes('demo') && r.status === 'match'],
+    [{ models: ['missing-model'] }, () => false],
+  ];
+  for (const [filter, matches] of cases) {
+    const result = all({ ...filter, aggregate: true, filteredAggregate: true });
+    const expected = baseline.filter(matches);
+    assert.deepEqual(result.rows.map(r => r.key).sort(), expected.map(r => r.key).sort());
+    const sum = (rows, field) => rows.reduce((n, r) => n + r[field], 0);
+    for (const field of ['tokens', 'input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'costUsd']) {
+      assert.ok(Math.abs(sum(result.aggregate.rows, field) - sum(expected, field)) < 1e-8, field + JSON.stringify(filter));
+    }
+    assert.equal(sum(result.aggregate.rows, 'requests'), sum(expected, 'calls'));
+    assert.equal(sum(result.aggregate.hours, 'tokens'), sum(expected, 'tokens'));
+    const paged = all({ ...filter, all: false, pageSize: 1, aggregate: true, filteredAggregate: true });
+    assert.equal(paged.total, expected.length);
+    assert.deepEqual(paged.aggregate, result.aggregate);
+    assert.deepEqual(result.facets.models, [...new Set(baseline.map(r => r.model))].sort());
+    check('筛选、分页、导出与汇总一致 ' + JSON.stringify(filter), true);
+  }
+  const legacy = all({ search: 'not-a-real-model', aggregate: true });
+  assert.ok(legacy.aggregate.rows.length > 0, '总览旧汇总口径仍不受关键词影响');
+
   /* ---------------- 增量、重读、去重 ---------------- */
   const again = scanLocalUsage();
   check("文件没变，第二轮不重复追加", again.records.length === 0 && all().rows.length === page.rows.length);

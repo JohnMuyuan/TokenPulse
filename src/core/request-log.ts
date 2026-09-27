@@ -139,6 +139,8 @@ export function compactRequests() {
 
 /* ---------------- 查询（在 worker 里跑） ---------------- */
 
+export type HourAggregate = { hour: number; tokens: number; costUsd: number; requests: number; sources: Record<string, { tokens: number; costUsd: number; requests: number }> };
+
 export type RequestQuery = {
   /** 本地日期 YYYY-MM-DD，含两端。 */
   from: string;
@@ -162,6 +164,11 @@ export type RequestQuery = {
    * 「一天」跨了两个自然日，按天记的账切不出精确的 24 小时，这时统计卡片、图表都从逐条流水汇总。
    */
   aggregate?: boolean;
+  /** 明细页汇总跟随全部筛选；旧额度/总览调用保持原口径。 */
+  filteredAggregate?: boolean;
+  models?: string[];
+  project?: string;
+  channel?: "all" | "official" | "api" | "unknown";
 };
 
 export type RequestRow = {
@@ -196,6 +203,7 @@ export type RequestRow = {
 };
 
 export type RequestPage = {
+  facets: { models: string[]; projects: string[] };
   total: number;
   page: number;
   pages: number;
@@ -210,7 +218,8 @@ export type RequestPage = {
   /** aggregate 为 true 时才有。rows 的形状和快照里的 usage 一样，界面上可以直接复用同一套统计。 */
   aggregate?: {
     rows: { day: string; source: string; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; tokens: number; costUsd: number; requests: number; priced: boolean }[];
-    hours: { hour: number; tokens: number; costUsd: number; requests: number }[];
+    /** 每个整点小时；sources 是这一小时里各工具各占多少（用量明细的分工具趋势图用）。 */
+    hours: HourAggregate[];
   };
   /** 当前时间 / 工具 / 搜索条件下各账号的请求（不受账号和核验筛选影响）。id 为 "none" 的是没对上账号的。 */
   accounts: { id: string; label: string; source: string; requests: number; tokens: number; costUsd: number; lastAt: number; inferred: number }[];
@@ -352,7 +361,33 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const accountCtx = accountContext();
   const byAccount = new Map<string, RequestPage["accounts"][number]>();
   const groups = new Map<string, NonNullable<RequestPage["aggregate"]>["rows"][number]>();
-  const hours = new Map<number, { hour: number; tokens: number; costUsd: number; requests: number }>();
+  const hours = new Map<number, HourAggregate>();
+  const aggregateRow = (row: RequestRow, day: string, at: number) => {
+    const groupKey = `${day}\u0000${row.source}\u0000${row.model}`;
+    const group = groups.get(groupKey) ?? { day, source: row.source, model: row.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, tokens: 0, costUsd: 0, requests: 0, priced: true };
+    group.input += row.input;
+    group.output += row.output;
+    group.cacheRead += row.cacheRead;
+    group.cacheWrite += row.cacheWrite;
+    group.reasoning += row.reasoning;
+    group.tokens += row.tokens;
+    group.costUsd += row.costUsd;
+    // 和统计页一个口径：请求数算模型调用次数（Grok 一轮会调好几次）
+    group.requests += row.calls;
+    group.priced &&= row.priced;
+    groups.set(groupKey, group);
+    const hourAt = Math.floor(row.at / 3_600_000) * 3_600_000;
+    const hour = hours.get(hourAt) ?? { hour: hourAt, tokens: 0, costUsd: 0, requests: 0, sources: {} };
+    hour.tokens += row.tokens;
+    hour.costUsd += row.costUsd;
+    hour.requests += row.calls;
+    const bySource = (hour.sources[row.source] ??= { tokens: 0, costUsd: 0, requests: 0 });
+    bySource.tokens += row.tokens;
+    bySource.costUsd += row.costUsd;
+    bySource.requests += row.calls;
+    hours.set(hourAt, hour);
+  };
+  const facets = { models: new Set<string>(), projects: new Set<string>() };
   const q = query.search.trim().toLowerCase();
   const seen = new Set<string>();
   const counts: RequestPage["counts"] = { all: 0, match: 0, mismatch: 0, suspect: 0, unverified: 0 };
@@ -382,27 +417,14 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.source !== "all" && sourceOf(raw) !== query.source) continue;
       const record = raw.kind === "cc-switch" ? raw : cc.matchProxy(raw);
       const row = toRow(record, official.get(record.file), accountCtx);
-      if (query.aggregate) {
-        const groupKey = `${day}\u0000${row.source}\u0000${row.model}`;
-        const group = groups.get(groupKey) ?? { day, source: row.source, model: row.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, tokens: 0, costUsd: 0, requests: 0, priced: true };
-        group.input += row.input;
-        group.output += row.output;
-        group.cacheRead += row.cacheRead;
-        group.cacheWrite += row.cacheWrite;
-        group.reasoning += row.reasoning;
-        group.tokens += row.tokens;
-        group.costUsd += row.costUsd;
-        // 和统计页一个口径：请求数算模型调用次数（Grok 一轮会调好几次）
-        group.requests += row.calls;
-        group.priced &&= row.priced;
-        groups.set(groupKey, group);
-        const hourAt = Math.floor(row.at / 3_600_000) * 3_600_000;
-        const hour = hours.get(hourAt) ?? { hour: hourAt, tokens: 0, costUsd: 0, requests: 0 };
-        hour.tokens += row.tokens;
-        hour.costUsd += row.costUsd;
-        hour.requests += row.calls;
-        hours.set(hourAt, hour);
-      }
+      facets.models.add(row.model);
+      facets.projects.add(row.cwd || "");
+      if (query.aggregate && !query.filteredAggregate) aggregateRow(row, day, raw.at);
+      if (query.models?.length && !query.models.includes(row.model)) continue;
+      if (query.project && (query.project === "__missing__" ? Boolean(row.cwd) : row.cwd !== query.project)) continue;
+      if (query.channel === "official" && row.official !== true) continue;
+      if (query.channel === "api" && row.official !== false) continue;
+      if (query.channel === "unknown" && row.official !== undefined) continue;
       if (q) {
         const haystack = [row.model, row.requested, row.returned, row.source, row.cwd, row.session, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
           .filter(Boolean)
@@ -424,6 +446,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       tokens += row.tokens;
       costUsd += row.costUsd;
       if (query.status !== "all" && row.status !== query.status) continue;
+      if (query.aggregate && query.filteredAggregate) aggregateRow(row, day, raw.at);
       matched.push(row);
     }
   }
@@ -435,6 +458,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const pages = Math.max(1, Math.ceil(matched.length / pageSize));
   const page = Math.min(Math.max(0, query.page || 0), pages - 1);
   return {
+    facets: { models: [...facets.models].sort(), projects: [...facets.projects].sort() },
     total: matched.length,
     page,
     pages,

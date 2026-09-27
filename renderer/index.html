@@ -3,16 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; font-src 'self';">
   <title>TokenPulse · 用量与额度</title>
   <link rel="stylesheet" href="app.css">
   <link rel="stylesheet" href="sessions.css">
+<link rel="stylesheet" href="egress.css">
+<link rel="stylesheet" href="usage-insights.css">
 </head>
 <body>
 
 <!-- 线性图标：统一 24px 网格、1.8 描边，用 <use href="#i-…"> 引用 -->
 <svg class="sprite" aria-hidden="true" focusable="false">
-  <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/></symbol>
+<symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></symbol>
   <symbol id="i-quota" viewBox="0 0 24 24"><path d="M3.5 18.5a9.5 9.5 0 1 1 17 0"/><path d="M12 14.5l4.2-4.7"/><circle cx="12" cy="15" r="1.4"/></symbol>
   <symbol id="i-usage" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M9 9.5V20"/></symbol>
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
@@ -84,6 +87,7 @@
     <button class="nav-item active" data-page="overview" title="总览"><svg class="icon"><use href="#i-overview"/></svg><span class="nav-label">总览</span></button>
     <button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button>
     <button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button>
+    <button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button>
     <button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button>
   </nav>
 
@@ -155,6 +159,22 @@
       </div>
     </div>
 
+    <section id="detail-filters" class="panel detail-filters" aria-label="用量筛选" hidden>
+      <div class="detail-filter-main">
+        <details id="model-picker" class="model-picker"><summary>筛选模型</summary>
+          <div class="model-options"><p>按统计型号筛选，可多选</p><label class="search-field"><span class="sr-only">搜索候选模型</span><input id="model-option-search" type="search" placeholder="搜索候选模型…" autocomplete="off"></label><div id="model-options"></div><p id="model-options-empty" hidden>没有匹配的候选模型</p></div>
+        </details>
+        <div id="detail-search"></div>
+        <details class="more-filters"><summary>更多筛选</summary><div id="detail-more" class="toolbar-group">
+          <label class="sort-field">项目<select id="request-project"><option value="">全部项目</option></select></label>
+          <label class="sort-field">渠道<select id="request-channel"><option value="all">全部渠道</option><option value="official">官方订阅</option><option value="api">API Key / 中转站</option><option value="unknown">归属未知</option></select></label>
+        </div></details>
+        <button id="retry-detail-query" class="btn" type="button" hidden>重试查询</button>
+        <button id="clear-detail-filters" class="btn" type="button">清空筛选</button>
+      </div>
+      <div id="detail-filter-chips" class="detail-filter-chips" aria-live="polite"></div>
+      <p id="detail-filter-note" class="detail-filter-note">统计、明细和导出使用相同筛选；请求条数与模型调用次数分别统计。</p>
+    </section>
     <section id="usage-summary">
       <div id="tiles" class="stats-grid">
         <div class="skeleton-stat"></div><div class="skeleton-stat"></div><div class="skeleton-stat"></div><div class="skeleton-stat"></div>
@@ -208,6 +228,8 @@
         <div class="panel-heading"><h2>Token 构成</h2><span class="muted">输入含缓存读写，推理为输出子集</span></div>
         <div id="token-breakdown" class="breakdown-grid"></div>
       </article>
+      <!-- 用量分析：分工具趋势、工具 / 模型完整排行、使用时段分布（renderer/usage-insights.js） -->
+      <div id="usage-insights" class="usage-insights"></div>
       <article class="panel records-panel usage-records">
         <div class="panel-heading">
           <div>
@@ -286,6 +308,7 @@
       </article>
     </section>
 
+    <section id="page-egress" class="page" hidden></section>
     <section id="page-sessions" class="page" hidden></section>
 
     <footer>
@@ -393,5 +416,7 @@
 <script src="data.js"></script>
 <script src="app.js"></script>
 <script src="sessions.js"></script>
+<script src="egress.js"></script>
+<script src="usage-insights.js"></script>
 </body>
 </html>

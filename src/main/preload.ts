@@ -5,6 +5,17 @@ import { contextBridge, ipcRenderer } from "electron";
  * 界面碰不到文件系统，也就不用担心图表库之类的东西乱来。
  */
 contextBridge.exposeInMainWorld("tokenpulse", {
+  egressState: () => ipcRenderer.invoke("egress:state"),
+  saveEgress: (config: unknown) => ipcRenderer.invoke("egress:save", config),
+  checkEgress: () => ipcRenderer.invoke("egress:check"),
+  clearEgressHistory: () => ipcRenderer.invoke("egress:clear"),
+  /** 出口 IP 的归属 / 风险重新查一次（同一个 IP 一分钟一次）。 */
+  refreshEgressIntel: (ip: string) => ipcRenderer.invoke("egress:intel", ip),
+  onEgressState: (handler: (state: unknown) => void) => {
+    const listener = (_event: unknown, state: unknown) => handler(state);
+    ipcRenderer.on("egress-state", listener);
+    return () => ipcRenderer.off("egress-state", listener);
+  },
   snapshot: () => ipcRenderer.invoke("snapshot"),
   refresh: () => ipcRenderer.invoke("refresh"),
   readPrefs: () => ipcRenderer.invoke("prefs:read"),

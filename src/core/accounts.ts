@@ -289,12 +289,17 @@ let renewing: Promise<number> | null = null;
  * - 每成功一个就立刻写盘：新的 refresh token 只有这一份，进程这时候被杀就再也续不上；
  * - 写之前重读账号库，只改这一个账号：续期要走网络，这期间用户可能刚添加 / 切换了账号。
  */
-export function renewStoredCredentials(now = Date.now(), refresh: typeof refreshCredential = refreshCredential): Promise<number> {
+export function renewStoredCredentials(
+  now = Date.now(),
+  refresh: typeof refreshCredential = refreshCredential,
+  /** 只续这几家。额度查询前出口 IP 不在允许列表里的那家，续期（也是向官方发请求）一起跳过。 */
+  kinds?: OfficialAccountKind[],
+): Promise<number> {
   if (!renewing) {
     renewing = (async () => {
       let renewed = 0;
       const due = readOfficialAccountStore().accounts.filter(
-        (item) => item.credential?.refreshToken && !item.renewFailed && item.credential.expiresAt != null && item.credential.expiresAt - now < RENEW_BEFORE_MS,
+        (item) => (!kinds || kinds.includes(item.kind)) && item.credential?.refreshToken && !item.renewFailed && item.credential.expiresAt != null && item.credential.expiresAt - now < RENEW_BEFORE_MS,
       );
       for (const account of due) {
         const result: RefreshResult = await refresh(account.kind, account.credential!, now);

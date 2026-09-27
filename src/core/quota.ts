@@ -342,14 +342,24 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
  * 问一轮三家的额度。`force` 跳过缓存。
  * 真的问过接口才记历史（走缓存的不算）—— 额度监控的速度/预测全靠那份历史。
  */
-export async function fetchOfficialQuota(force = false): Promise<OfficialQuotaMap> {
+/**
+ * 向官方发请求之前的放行检查（出口监控里设了 IP 白名单的那家，出口 IP 不在白名单里就不查，见 egress-monitor.ts 的 gateQuota）。
+ * 返回 false 的那家这一轮不续期、不查额度。
+ */
+export type QuotaGate = (kind: AccountKind) => Promise<boolean>;
+
+export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promise<OfficialQuotaMap> {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.value;
+  const kinds: AccountKind[] = ["claude", "chatgpt", "grok"];
+  // 检查本身出错也按「不放行」处理：宁可这一轮没有额度，也不从没确认过的出口去问官方
+  const passed = gate ? await Promise.all(kinds.map((kind) => gate(kind).catch(() => false))) : kinds.map(() => true);
+  const allowed = kinds.filter((_, i) => passed[i]);
   // TokenPulse 自己登录的账号需要由本软件负责续期，额度查询仍只使用各账号自己的凭据。
-  await renewStoredCredentials().catch(() => 0);
+  await renewStoredCredentials(Date.now(), undefined, allowed).catch(() => 0);
   const value: OfficialQuotaMap = {};
   const query = { claude: claudeQuota, chatgpt: chatgptQuota, grok: grokQuota };
   // 所有账号一起查；结果按「家 → 设置里的顺序」排好，第一个也放进 value[家] 给按家取的地方用
-  const jobs = (["claude", "chatgpt", "grok"] as AccountKind[]).flatMap((kind) =>
+  const jobs = allowed.flatMap((kind) =>
     targetsOf(kind).map((target) =>
       query[kind](target).then(
         (quota) => (quota ? { ...quota, kind } : undefined),

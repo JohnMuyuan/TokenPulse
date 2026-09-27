@@ -17,7 +17,7 @@ const OAUTH_META = {
 };
 const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
-const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', usageView: 'requests' };
+const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', models: [], project: '', channel: 'all', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
 const INNER_RING = 2 * Math.PI * 34;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -542,6 +542,15 @@ function accountWho(account) {
  * 其余账号在下面排成一个紧凑的队列（小圆环 + 名字 + 剩余），只列接下来的几个，其余的去额度页看。
  * 以前号池版每个账号一行同样大小的圆环，没有主次；单账号的卡片被 6 个账号那张撑得老高，中间一大片空白。
  */
+/** 这一家的额度查询被出口 IP 白名单拦下来了：写明原因，点一下去出口监控。 */
+function blockNote(kind, wide = false) {
+  const block = quotaBlocks[kind];
+  if (!block) return null;
+  const text = block.reason === 'probe_failed' ? '额度查询已暂停：无法确认出口 IP' : `额度查询已暂停：出口 IP ${block.ip} 不在允许列表`;
+  const node = el('button', { type: 'button', class: 'quota-blocked' + (wide ? ' wide' : ''), title: `${date(block.at)} · ${block.host}` }, [icon('alert'), el('span', { text }), el('span', { class: 'quota-blocked-link', text: '出口监控' }), icon('arrow')]);
+  node.addEventListener('click', () => navigate('egress'));
+  return node;
+}
 function quotaCard({ kind, key, account }, pool = null) {
   const meta = META[kind];
   const multi = pool?.accountCount > 1;
@@ -564,6 +573,8 @@ function quotaCard({ kind, key, account }, pool = null) {
       : el('span', { class: 'badge ' + (!stale && !waiting ? account?.health.level || '' : ''), text: !account ? '暂无采样' : waiting ? '等待新采样' : stale ? '采样已过期' : HEALTH[account.health.level] })
   ]);
   const body = [head];
+  const blocked = blockNote(kind);
+  if (blocked) body.push(blocked);
   if (account && (account.five || account.week)) {
     const remainingValues = windows.filter(win => !waitingReset(account, win)).map(win => Math.max(0, 100 - win.used));
     const remainingPct = remainingValues.length ? Math.min(...remainingValues) : null;
@@ -638,7 +649,45 @@ function updateRange() {
   $('range-button-label').textContent = state.days === 'custom'
     ? `自定义 · ${state.from.slice(5).replace('-', '/')} → ${state.follow ? '今天' : state.to.slice(5).replace('-', '/')}`
     : PRESET_LABELS[state.days];
-  analysis = state.days === '24h' ? windowAnalysis() : D.analyze(current.usage || [], state.from, state.to, state.source);
+  analysis = state.page === 'usage' && hasDetailFilters() ? detailAnalysis() : state.days === '24h' ? windowAnalysis() : D.analyze(current.usage || [], state.from, state.to, state.source);
+  // 「今天」只有一天，按天画只有一根柱子：改成按小时（合计仍用按天的账，柱子来自逐条流水）
+  if (state.days === 1 && !analysis.hourly) {
+    const hours = todayHourly();
+    if (hours) analysis.hourly = hours;
+  }
+}
+
+/** 从 first 开始的 count 个整点小时，没用的小时补 0，图表才连续。 */
+function fillHours(hours, first, count) {
+  const byHour = new Map((hours || []).map(row => [row.hour, row]));
+  return Array.from({ length: Math.max(0, count) }, (_, i) => byHour.get(first + i * 3600000) || { hour: first + i * 3600000, tokens: 0, costUsd: 0, requests: 0, sources: {} });
+}
+/** 今天零点（本地时间）。 */
+function startOfToday(now) { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime(); }
+
+/*
+ * 「今天」的小时柱子：从逐条流水里按小时汇总（按天记的账切不出小时）。按「快照时间 + 工具」缓存；
+ * 新快照（每分钟一次）的结果还没回来时，先用同一天、同一工具上一份结果顶着，别让图表每分钟变回一根柱子再变回来。
+ */
+const todayCache = new Map();
+let lastToday = null;
+function todayHourly() {
+  const now = current.now, day = D.dayKey(now), start = startOfToday(now);
+  const key = `${now}|${state.source}`;
+  if (!todayCache.has(key)) {
+    todayCache.set(key, null);
+    api.requests({ source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true, from: day, to: day, since: start, until: now })
+      .then(page => {
+        todayCache.set(key, page.aggregate.hours);
+        lastToday = { day, source: state.source, hours: page.aggregate.hours };
+        while (todayCache.size > 6) todayCache.delete(todayCache.keys().next().value);
+        if (state.days === 1 && current) render(current);
+      })
+      .catch(() => { todayCache.delete(key); });
+  }
+  const hours = todayCache.get(key) ?? (lastToday?.day === day && lastToday.source === state.source ? lastToday.hours : null);
+  // 零点到现在这一小时（含）
+  return hours ? fillHours(hours, start, Math.floor((now - start) / 3600000) + 1) : null;
 }
 
 /*
@@ -670,6 +719,8 @@ function windowAnalysis() {
   const firstHour = Math.floor(current.now / 3600000) * 3600000 - 23 * 3600000;
   result.hourly = Array.from({ length: 24 }, (_, i) => byHour.get(firstHour + i * 3600000) || { hour: firstHour + i * 3600000, tokens: 0, costUsd: 0, requests: 0 });
   result.loading = !data;
+  // 分布图（一天中的时段 / 星期）要用的逐小时数据
+  result.hours = data?.cur.hours || null;
   return result;
 }
 function delta(now, previous) {
@@ -678,12 +729,16 @@ function delta(now, previous) {
   return [el('span', { class: 'delta ' + (pct >= 0 ? 'up' : 'down'), text: `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%` }), '较上一时段'];
 }
 function renderStats() {
+  if (state.page === 'usage' && (analysis.loading || analysis.error)) {
+    $('tiles').replaceChildren(...['总 Tokens', '参考费用', '模型调用次数', '缓存读取占比'].map(label => el('article', { class: 'stat' }, [el('div', { class: 'stat-label', text: label }), el('div', { class: 'stat-value', text: '—' }), el('div', { class: 'stat-sub', text: analysis.error ? '筛选统计读取失败，请重试。' : '正在读取请求记录…' })])));
+    return;
+  }
   const t = analysis.total, p = analysis.previous;
   const cache = t.input ? t.cacheRead / t.input * 100 : null;
   const stats = [
     ['tokens', '总 Tokens', t.tokens, amount, delta(t.tokens, p.tokens), '输入 + 输出'],
     ['cost', '参考费用', t.costUsd, money, analysis.unpriced ? [`${number(analysis.unpriced)} 次请求未定价`] : delta(t.costUsd, p.costUsd), 'USD'],
-    ['requests', '请求次数', t.requests, amount, delta(t.requests, p.requests), '次'],
+    ['requests', state.page === 'usage' ? '模型调用次数' : '请求次数', t.requests, amount, delta(t.requests, p.requests), '次'],
     ['cache', '缓存读取占比', cache, percent, [`${tokens(t.cacheRead)} 缓存读取 / ${tokens(t.input)} 输入`], '输入口径']
   ];
   $('tiles').replaceChildren(...stats.map(([name, label, value, format, sub, unit]) => {
@@ -737,7 +792,7 @@ function groupDaily(daily) {
 }
 function dailyChart(animate) {
   if (analysis.hourly) {
-    $('chart-caption').textContent = '按小时 · 过去 24 小时';
+    $('chart-caption').textContent = state.days === 1 ? '按小时 · 今天' : '按小时 · 过去 24 小时';
     chart($('daily-chart'), analysis.hourly, state.metric, true, animate);
     return;
   }
@@ -807,7 +862,7 @@ function renderOverview() {
     ['峰值用量', peak?.tokens ? amount(peak.tokens) : '—']
   ];
   $('rhythm').replaceChildren(...rhythms.map(([label, value], i) => stagger(el('div', { class: 'rhythm-row' }, [el('span', { text: label }), el('b', { text: value })]), i)),
-    el('p', { class: 'rhythm-note', text: hourly ? '过去 24 小时，按小时统计，对比再往前的 24 小时。' : '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。' }));
+    el('p', { class: 'rhythm-note', text: hourly ? (state.days === 1 ? '今天从零点到现在，按小时统计；平均值按已经过去的小时算，对比昨天全天。' : '过去 24 小时，按小时统计，对比再往前的 24 小时。') : '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。' }));
   const sources = [...analysis.sources].sort((a, b) => b.tokens - a.tokens);
   $('sources').replaceChildren(...(sources.length ? sources.map((row, i) => {
     const share = t.tokens ? row.tokens / t.tokens * 100 : 0;
@@ -1154,6 +1209,8 @@ function renderQuota() {
   if (!account) {
     host.append(el('article', { class: 'panel empty large' }, [el('h3', { text: '暂时还没有这个账号的额度数据' }), el('p', { text: `确认 ${meta.source} 已登录官方账号，然后点击「刷新数据」。` }), el('p', { text: '凭据过期或网络错误也可能导致采样失败；这不会影响本机用量统计。' })])); return;
   }
+  const blocked = blockNote(kind, true);
+  if (blocked) host.append(blocked);
   if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `最后一次成功查询是 ${date(checkedAt(account), true)}，已超过 15 分钟（可能是网络不通或凭据过期）。以下是历史记录，当前剩余额度需刷新确认。`]));
   host.append(el('div', { class: 'quota-window-grid' }, [windowPanel('5 小时窗口', account.five, account), windowPanel('周额度窗口', account.week, account)]));
   const capacity = capacityPanel(account);
@@ -1174,20 +1231,19 @@ function renderQuota() {
 /* ---------------- 用量明细 ---------------- */
 
 function renderRecords() {
-  const q = state.search.trim().toLowerCase();
-  // 过去 24 小时的「按日汇总」：行来自逐条流水（最多两天：昨天那几个小时 + 今天）
-  filteredRecords = analysis.selected.filter(row => !q || `${row.model} ${row.source}`.toLowerCase().includes(q)).sort((a, b) => state.sort === 'day' ? b.day.localeCompare(a.day) || b.tokens - a.tokens : b[state.sort] - a[state.sort] || b.day.localeCompare(a.day));
+  // 搜索统一在流水查询中执行，排序不修改汇总原始数组。
+  filteredRecords = [...analysis.selected].sort((a, b) => state.sort === 'day' ? b.day.localeCompare(a.day) || b.tokens - a.tokens : b[state.sort] - a[state.sort] || b.day.localeCompare(a.day));
   const pageSize = 15, pages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
   state.tablePage = Math.min(state.tablePage, pages - 1);
   const visible = filteredRecords.slice(state.tablePage * pageSize, (state.tablePage + 1) * pageSize);
   $('record-count').textContent = `${number(filteredRecords.length)} 条`;
-  $('export-csv').disabled = !filteredRecords.length;
+  $('export-csv').disabled = Boolean(analysis.loading || analysis.error) || !filteredRecords.length;
   $('records').replaceChildren(...visible.map((row, i) => stagger(el('tr', {}, [
     el('td', {}, [row.day, el('small', {}, [miniLogo(row.source), row.source])]), el('td', { class: 'model-cell', text: row.model, title: row.model }),
     ...['requests', 'input', 'output', 'cacheRead', 'tokens'].map(key => el('td', { class: 'n' + (key === 'tokens' ? ' token-strong' : ''), title: number(row[key]) }, qty(row[key]))),
     el('td', { class: 'n', text: row.priced === false ? '未定价' : money(row.costUsd) })
   ]), i)));
-  if (!visible.length) $('records').append(el('tr', {}, [el('td', { colspan: 8, class: 'empty', text: '没有匹配的记录，试试其他时间、工具或关键词。' })]));
+  if (!visible.length) $('records').append(el('tr', {}, [el('td', { colspan: 8, class: 'empty', text: analysis.error ? '筛选统计读取失败，请重试。' : analysis.loading ? '正在读取请求记录…' : '没有匹配的记录，试试其他时间、工具或关键词。' })]));
   $('pagination-label').textContent = `第 ${state.tablePage + 1} / ${pages} 页 · 共 ${number(filteredRecords.length)} 条匹配明细`;
   $('prev-page').disabled = state.tablePage === 0; $('next-page').disabled = state.tablePage >= pages - 1;
 }
@@ -1195,11 +1251,14 @@ function renderUsage() {
   const t = analysis.total;
   $('token-breakdown').replaceChildren(...[['输入 Tokens', 'input', '含缓存读取与写入'], ['输出 Tokens', 'output', '含推理 Tokens'], ['缓存读取', 'cacheRead', '输入的一部分'], ['缓存写入', 'cacheWrite', '输入的一部分'], ['推理 Tokens', 'reasoning', '输出的一部分']].map(([label, key, note]) => {
     const value = el('span', { class: 'num' });
-    countTo(value, 'breakdown:' + key, t[key], amount);
-    const approx = cnApprox(t[key]);
+    if (analysis.loading || analysis.error) value.textContent = '—';
+    else countTo(value, 'breakdown:' + key, t[key], amount);
+    const approx = analysis.loading || analysis.error ? '' : cnApprox(t[key]);
     return el('div', { class: 'breakdown-item' }, [el('small', { text: label }), el('strong', { title: number(t[key]) }, [value, approx ? el('small', { class: 'cn-approx', text: approx }) : null]), el('span', { text: note })]);
   }));
+  window.PulseInsights?.render(analysis, entering());
   renderRecords();
+  revealDetailResults();
 }
 
 /* ---------------- 额度详情：这个账号的请求 ---------------- */
@@ -1293,32 +1352,83 @@ function drawAccountRequests(panel, account, meta, data) {
 
 const VERIFY_TONE = { match: 'good', mismatch: 'critical', suspect: 'warning', unverified: 'neutral' };
 const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话']];
-let requestPage = null, requestSeq = 0, requestKey = '';
+let requestPage = null, requestSeq = 0, requestKey = '', requestError = false;
 const openRequests = new Set();
 function projectOf(cwd) { return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd : '—'; }
 function clock(at) {
   const d = new Date(at), pad = n => String(n).padStart(2, '0');
   return { day: `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`, full: d.toLocaleString(dateLocale(), { hour12: false }) };
 }
+function hasDetailFilters() { return state.models.length || state.project || state.channel !== 'all' || state.reqAccount || state.reqStatus !== 'all' || state.reqSearch.trim(); }
+const detailCache = new Map();
+function detailAnalysis() {
+  const query = requestQuery({ page: 0, pageSize: 1, sort: 'time', aggregate: true, filteredAggregate: true });
+  const key = JSON.stringify(query) + '|' + current.now + '|' + current.scannedAt;
+  if (!detailCache.has(key)) {
+    detailCache.set(key, null);
+    const previous = { ...query };
+    if (state.days === '24h') {
+      previous.since = state.since - 86400000; previous.until = state.since - 1;
+      previous.from = D.dayKey(previous.since); previous.to = D.dayKey(previous.until);
+    } else {
+      const days = D.dayCount(state.from, state.to);
+      previous.from = D.shift(state.from, -days); previous.to = D.shift(state.from, -1);
+    }
+    Promise.all([api.requests(query), api.requests(previous)]).then(([cur, prev]) => {
+      detailCache.set(key, { cur: cur.aggregate, prev: prev.aggregate });
+      while (detailCache.size > 8) detailCache.delete(detailCache.keys().next().value);
+      if (current && state.page === 'usage' && JSON.stringify(requestQuery({ page: 0, pageSize: 1, sort: 'time', aggregate: true, filteredAggregate: true })) === JSON.stringify(query)) render(current);
+    }).catch(() => {
+      // 保留失败状态，避免定时重绘反复查询；用户重试或改变条件后再读取。
+      detailCache.set(key, { error: true });
+      if (current && state.page === 'usage' && JSON.stringify(requestQuery({ page: 0, pageSize: 1, sort: 'time', aggregate: true, filteredAggregate: true })) === JSON.stringify(query)) {
+        render(current);
+        showStatus('筛选统计读取失败，请重试。', true);
+      }
+    });
+  }
+  const data = detailCache.get(key);
+  const result = D.analyze(data?.cur?.rows || [], state.from, state.to, state.source);
+  result.previous = D.sum(data?.prev?.rows || []);
+  result.hours = data?.cur?.hours || null;
+  if (data?.cur?.hours && (state.days === 1 || state.days === '24h')) {
+    const first = state.days === 1 ? startOfToday(current.now) : Math.floor(current.now / 3600000) * 3600000 - 23 * 3600000;
+    result.hourly = fillHours(data.cur.hours, first, state.days === 1 ? Math.floor((current.now - first) / 3600000) + 1 : 24);
+  }
+  result.loading = !data;
+  result.error = Boolean(data?.error);
+  return result;
+}
 function requestQuery(extra = {}) {
-  return { from: state.from, to: state.to, since: state.since, source: state.source, status: state.reqStatus, search: state.reqSearch.trim(), sort: state.reqSort, page: state.reqPage, pageSize: 20, account: state.reqAccount || undefined, ...extra };
+  return { from: state.from, to: state.to, since: state.since, source: state.source, status: state.reqStatus, search: state.reqSearch.trim(), sort: state.reqSort, page: state.reqPage, pageSize: 20, account: state.reqAccount || undefined, models: state.models, project: state.project || undefined, channel: state.channel, ...extra };
 }
 /** 流水在主进程的 worker 里查；同样的条件、账本也没更新时直接用上一次的结果重画。 */
 async function loadRequests() {
   const query = requestQuery();
   const key = JSON.stringify(query) + '|' + (current?.scannedAt || '');
-  if (key === requestKey && requestPage) { drawRequests(); return; }
+  // 相同条件正在读取或已经失败时，不因统计回调重绘再开一个 worker。
+  if (key === requestKey) { if (requestPage) { drawRequests(); revealDetailResults(); } return; }
   requestKey = key;
+  requestError = false;
+  requestPage = null;
+  $('export-requests').disabled = true;
   const seq = ++requestSeq;
   if (!requestPage) $('request-rows').replaceChildren(el('tr', {}, [el('td', { colspan: 9, class: 'empty', text: '正在读取请求记录…' })]));
   try {
     const page = await api.requests(query);
     if (seq !== requestSeq) return;
-    requestPage = page; state.reqPage = page.page;
+    requestPage = page; state.reqPage = page.page; syncDetailOptions(page); syncAccountOptions(page);
     // 查询是异步回来的，不在 render() 的滚动锁里；定时刷新时整表重画，同样要锁
     keepScroll(drawRequests);
+    revealDetailResults();
+    $('retry-detail-query').hidden = !analysis?.error;
   } catch {
-    if (seq === requestSeq) { requestKey = ''; showStatus('请求记录读取失败，请重试。', true); }
+    if (seq === requestSeq) {
+      requestError = true;
+      $('request-rows').replaceChildren(el('tr', {}, [el('td', { colspan: 9, class: 'empty', text: '请求记录读取失败，请重试。' })]));
+      $('retry-detail-query').hidden = false;
+      showStatus('请求记录读取失败，请重试。', true);
+    }
   }
 }
 /** 核验结论的筛选标签。和上面的用量卡片放一起时四张大卡太重复，改成一排小标签。 */
@@ -1465,9 +1575,11 @@ function renderRequestAlert(snapshot) {
   $('nav-request-alert').title = n ? `最近 7 天有 ${n} 次请求型号不一致或响应存疑` : '';
 }
 function requeryRequests(resetPage = true) {
+  detailResultsPending = detailPointerMotion && !reducedMotion.matches;
   if (resetPage) state.reqPage = 0;
   openRequests.clear();
-  if (current && requestsVisible()) loadRequests();
+  state.tablePage = 0;
+  if (current && state.page === 'usage') render(current);
 }
 
 /* ---------------- 渲染与导航 ---------------- */
@@ -1498,12 +1610,18 @@ function keepScroll(rebuild) {
 function renderPage(snapshot) {
   if ($('app-status').getAttribute('role') !== 'alert') $('app-status').hidden = true;
   updateRange(); renderStats();
+  $('detail-filters').hidden = state.page !== 'usage';
+  if (state.page === 'usage') {
+    renderDetailChips();
+    $('retry-detail-query').hidden = !analysis.error && !requestError;
+  }
   if (state.page === 'overview') renderOverview();
   if (state.page === 'quota') renderQuota();
   if (state.page === 'usage') renderUsage();
   // 会话页自己管数据；只在还没读过或列表放了一阵子时重读，不跟着每分钟的快照整页重画
   if (state.page === 'sessions') window.PulseSessions?.show();
-  if (requestsVisible()) loadRequests();
+  if (state.page === 'egress') window.PulseEgress?.show();
+  if (state.page === 'usage') loadRequests();
   renderRequestAlert(snapshot);
   syncSourceOptions(snapshot);
   $('today-label').textContent = new Date().toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
@@ -1533,7 +1651,7 @@ const overviewRange = { days: 30, from: '', to: '', follow: false };
 function navigate(page) {
   // 以前的「请求记录」页并进了用量明细（通知、额度详情的链接还会传 requests 过来）
   if (page === 'requests') { page = 'usage'; showUsageView('requests'); }
-  if (!['overview', 'quota', 'usage', 'sessions'].includes(page)) page = 'overview';
+  if (!['overview', 'quota', 'usage', 'egress', 'sessions'].includes(page)) page = 'overview';
   const rangePage = state.rangePage || 'overview';
   if (page === 'usage' && state.page !== 'usage') {
     if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
@@ -1542,15 +1660,15 @@ function navigate(page) {
   if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
   if (page === 'overview' || page === 'usage') state.rangePage = page;
   state.page = page;
-  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'] }[page];
+  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
-  for (const name of ['overview', 'quota', 'usage', 'sessions']) $('page-' + name).hidden = name !== page;
+  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions']) $('page-' + name).hidden = name !== page;
   // 会话页是占满屏幕的工作台：大标题、页脚在那一页收起来（sessions.css）
   document.body.dataset.page = page;
   $('overview-analysis').hidden = page !== 'overview';
-  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions';
+  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress';
   $('tip').hidden = true;
   enter();
   if (current) render(current);
@@ -2021,8 +2139,127 @@ $('verify-tiles').addEventListener('click', event => {
 $('request-status').addEventListener('change', event => { state.reqStatus = event.target.value; requeryRequests(); });
 $('usage-view').addEventListener('click', event => {
   const button = event.target.closest('[data-view]'); if (!button || button.dataset.view === state.usageView) return;
+  detailResultsPending = detailPointerMotion && !reducedMotion.matches;
   showUsageView(button.dataset.view);
   if (current) render(current);
+});
+// 两种视图共用筛选，不让账号/核验在切到按日汇总后变成隐藏条件。
+$('detail-search').append($('request-search').closest('label'));
+$('detail-more').append($('request-account').closest('label'), $('request-status').closest('label'));
+$('retry-detail-query').addEventListener('click', () => {
+  for (const [key, value] of detailCache) if (value?.error) detailCache.delete(key);
+  requestError = false; requestKey = '';
+  $('app-status').hidden = true;
+  requeryRequests();
+});
+function filterModelOptions() {
+  const q = $('model-option-search').value.trim().toLowerCase();
+  const labels = [...$('model-options').querySelectorAll('label')];
+  for (const label of labels) label.hidden = !label.querySelector('input').value.toLowerCase().includes(q);
+  $('model-options-empty').hidden = !labels.length || labels.some(label => !label.hidden);
+}
+$('model-option-search').addEventListener('input', filterModelOptions);
+$('request-project').addEventListener('change', e => { state.project = e.target.value; requeryRequests(); });
+$('request-channel').addEventListener('change', e => { state.channel = e.target.value; requeryRequests(); });
+$('model-options').addEventListener('change', e => {
+  if (!e.target.matches('input[type=checkbox]')) return;
+  state.models = [...$('model-options').querySelectorAll('input:checked')].map(input => input.value);
+  requeryRequests();
+});
+function syncDetailOptions(page) {
+  const models = [...new Set([...(page.facets?.models || []), ...state.models])].sort();
+  const host = $('model-options'), key = JSON.stringify(models);
+  if (host.dataset.options !== key) {
+    host.dataset.options = key;
+    host.replaceChildren(...models.map(model => el('label', {}, [el('input', { type: 'checkbox', value: model }), el('span', { text: model, title: model })])));
+    if (!models.length) host.append(el('span', { text: '当前范围没有模型记录' }));
+  }
+  for (const input of host.querySelectorAll('input')) input.checked = state.models.includes(input.value);
+  filterModelOptions();
+  const projects = [...new Set([...(page.facets?.projects || []).map(p => p || '__missing__'), ...(state.project ? [state.project] : [])])].sort();
+  const select = $('request-project'), projectKey = JSON.stringify(projects);
+  if (select.dataset.options !== projectKey) {
+    select.dataset.options = projectKey;
+    select.replaceChildren(el('option', { value: '', text: '全部项目' }), ...projects.map(p => el('option', { value: p, text: p === '__missing__' ? '项目未知' : p, title: p })));
+  }
+  select.value = state.project;
+}
+// 筛选动画只响应用户操作；复用标签节点，快照刷新不重播、不丢焦点。
+let detailPointerMotion = true, detailResultsPending = false;
+const detailAnimations = new Map();
+function stopDetailMotion() {
+  for (const animation of detailAnimations.values()) animation.finish();
+  detailAnimations.clear();
+}
+document.addEventListener('pointerdown', () => { detailPointerMotion = true; $('detail-filters').removeAttribute('data-keyboard'); }, true);
+document.addEventListener('keydown', () => { detailPointerMotion = false; detailResultsPending = false; $('detail-filters').setAttribute('data-keyboard', ''); stopDetailMotion(); }, true);
+reducedMotion.addEventListener('change', event => { if (event.matches) { detailResultsPending = false; stopDetailMotion(); } });
+function detailMotion(node, from, to, duration = 160) {
+  const previous = detailAnimations.get(node);
+  // 快速反向操作从当前画面续接，而非每次从头闪现。
+  if (previous) { const style = getComputedStyle(node); from = { opacity: style.opacity, transform: style.transform }; previous.cancel(); }
+  if (reducedMotion.matches || !detailPointerMotion) return null;
+  const animation = node.animate([from, to], { duration, easing: getComputedStyle(document.documentElement).getPropertyValue('--ease').trim() });
+  detailAnimations.set(node, animation);
+  animation.finished.then(() => { if (detailAnimations.get(node) === animation) detailAnimations.delete(node); }, () => { if (detailAnimations.get(node) === animation) detailAnimations.delete(node); });
+  return animation;
+}
+function moveDetailChips(before) {
+  for (const [node, rect] of before) {
+    if (!node.isConnected || node.dataset.leaving) continue;
+    const next = node.getBoundingClientRect(), x = rect.left - next.left, y = rect.top - next.top;
+    if (Math.abs(x) > 1 || Math.abs(y) > 1) detailMotion(node, { transform: 'translate(' + x + 'px,' + y + 'px)' }, { transform: 'none' });
+  }
+}
+function revealDetailResults() {
+  if (!detailResultsPending || state.page !== 'usage' || analysis.loading || analysis.error || !requestPage) return;
+  if (requestKey !== JSON.stringify(requestQuery()) + '|' + (current?.scannedAt || '')) return;
+  detailResultsPending = false;
+  detailMotion($(state.usageView === 'daily' ? 'view-daily' : 'view-requests'), { opacity: .65 }, { opacity: 1 });
+}
+function renderDetailChips() {
+  const host = $('detail-filter-chips'), chips = [];
+  const existing = new Map([...host.children].map(node => [node.dataset.key, node]));
+  function chip(key, text, remove) {
+    let button = existing.get(key);
+    if (!button) button = el('button', { class: 'btn', type: 'button', title: '移除此筛选' });
+    if (button.dataset.leaving) { delete button.dataset.leaving; button.disabled = false; detailMotion(button, { opacity: 0, transform: 'scale(.97)' }, { opacity: 1, transform: 'none' }); }
+    button.dataset.key = key;
+    const label = (window.PulseI18n?.lang() === 'en' ? window.PulseI18n.t(text) : text) + ' ×';
+    if (button.textContent !== label) button.textContent = label;
+    button.onclick = () => { remove(); requeryRequests(); };
+    chips.push(button);
+  }
+  for (const model of state.models) chip('model:' + model, model, () => { state.models = state.models.filter(m => m !== model); });
+  if (state.project) chip('project', state.project === '__missing__' ? '项目未知' : state.project, () => { state.project = ''; $('request-project').value = ''; });
+  if (state.channel !== 'all') chip('channel', { official: '官方订阅', api: 'API Key / 中转站', unknown: '归属未知' }[state.channel], () => { state.channel = 'all'; $('request-channel').value = 'all'; });
+  if (state.reqAccount) chip('account', $('request-account').selectedOptions[0]?.textContent || state.reqAccount, () => { state.reqAccount = ''; $('request-account').value = ''; });
+  if (state.reqStatus !== 'all') chip('status', $('request-status').selectedOptions[0]?.textContent || state.reqStatus, () => { state.reqStatus = 'all'; $('request-status').value = 'all'; });
+  if (state.reqSearch.trim()) chip('search', state.reqSearch.trim(), () => { state.reqSearch = ''; $('request-search').value = ''; });
+  for (const node of chips) if (!node.isConnected) {
+    host.append(node);
+    detailMotion(node, { opacity: 0, transform: 'scale(.97)' }, { opacity: 1, transform: 'none' });
+  }
+  for (const node of existing.values()) if (!chips.includes(node) && !node.dataset.leaving) {
+    node.dataset.leaving = 'true'; node.disabled = true;
+    if (node === document.activeElement) $('model-picker').querySelector('summary').focus();
+    const animation = detailMotion(node, { opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.97)' }, 125);
+    const remove = () => {
+      if (!node.dataset.leaving) return;
+      const before = new Map([...host.children].filter(n => n !== node && !n.dataset.leaving).map(n => [n, n.getBoundingClientRect()]));
+      node.remove(); moveDetailChips(before);
+    };
+    if (animation) animation.finished.then(remove, () => {}); else remove();
+  }
+  $('clear-detail-filters').disabled = !hasDetailFilters();
+  $('export-csv').disabled = Boolean(analysis?.loading) || !filteredRecords.length;
+}
+$('clear-detail-filters').addEventListener('click', () => {
+  Object.assign(state, { models: [], project: '', channel: 'all', reqAccount: '', reqStatus: 'all', reqSearch: '' });
+  $('request-project').value = $('request-account').value = $('request-search').value = $('model-option-search').value = '';
+  filterModelOptions();
+  $('request-channel').value = $('request-status').value = 'all';
+  requeryRequests();
 });
 $('request-account').addEventListener('change', event => { state.reqAccount = event.target.value; requeryRequests(); });
 $('request-sort').addEventListener('change', event => { state.reqSort = event.target.value; requeryRequests(); });
@@ -2148,7 +2385,7 @@ $('account-tabs').addEventListener('lostpointercapture', event => finishTabGestu
 // 按下后还没开始拖（没捕获指针）就在别处松手：这一行收不到 pointerup，在窗口上收尾
 window.addEventListener('pointerup', event => { if (tabGesture?.mode === 'pending' && event.pointerId === tabGesture.id) tabGesture = null; });
 $('account-tabs').addEventListener('scroll', markAccountTabEdges);
-$('model-search').addEventListener('input', event => { state.search = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
+$('model-search').closest('label').hidden = true;
 $('record-sort').addEventListener('change', event => { state.sort = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
 $('prev-page').addEventListener('click', () => { state.tablePage--; renderRecords(); });
 $('next-page').addEventListener('click', () => { state.tablePage++; renderRecords(); });
@@ -2257,6 +2494,19 @@ new ResizeObserver(() => {
 }).observe($('daily-chart'));
 window.addEventListener('resize', () => { moveIndicator(); syncSegs(); layoutAccountTabBar(); closeOptionMenu(); });
 api.onSnapshot(render);
+/*
+ * 额度查询被出口 IP 白名单拦下来的那几家（egress-monitor.ts 的 gateQuota）。出口监控每 5 秒推一次状态，
+ * 只有拦截情况真的变了才重画，免得首页每 5 秒闪一下。
+ */
+let quotaBlocks = {};
+function syncQuotaBlocks(egress) {
+  const next = egress?.quotaBlocks || {};
+  if (JSON.stringify(next) === JSON.stringify(quotaBlocks)) return;
+  quotaBlocks = next;
+  if (current && (state.page === 'overview' || state.page === 'quota')) render(current);
+}
+api.onEgressState?.(syncQuotaBlocks);
+api.egressState?.().then(syncQuotaBlocks).catch(() => {});
 api.onOpenPage?.(target => {
   if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
   navigate(target?.page || 'overview');

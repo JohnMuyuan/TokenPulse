@@ -1,0 +1,154 @@
+/* 出口监控页。颜色全部用 app.css 的变量，深浅色跟着主题走。 */
+
+/* 国旗：Windows 自带的表情字体不画国旗（只显示「US」两个字母），用随包的 Twemoji 国旗字体。
+   unicode-range 限定在区域指示符上，其余字符照常用界面字体。字体许可见 fonts/LICENSE-TwemojiCountryFlags.md */
+@font-face {
+  font-family: "Twemoji Country Flags";
+  src: url("fonts/TwemojiCountryFlags.woff2") format("woff2");
+  unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E0063, U+E0065, U+E0067, U+E006C, U+E006E, U+E0073-E0074, U+E0077, U+E007F;
+  font-display: swap;
+}
+
+/* ---- 顶部状态条 ---- */
+.egress-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 18px 22px; }
+.egress-status { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.egress-status-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.egress-status-text strong { font-size: 16px; font-weight: 650; }
+.egress-status-text .muted { font-size: 12.5px; }
+/* 状态灯：监控中是绿色呼吸，异常红色，暂停灰色 */
+.egress-pulse { position: relative; flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--faint); }
+.egress-pulse.live { background: var(--accent); }
+.egress-pulse.bad { background: var(--danger); }
+.egress-pulse.live::after, .egress-pulse.bad::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid currentColor; opacity: 0; animation: egress-ping 2.4s var(--ease) infinite; }
+.egress-pulse.live::after { color: var(--accent); }
+.egress-pulse.bad::after { color: var(--danger); }
+@keyframes egress-ping { 0% { transform: scale(.6); opacity: .55; } 80%, 100% { transform: scale(1.5); opacity: 0; } }
+.egress-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.egress-actions .btn .icon { width: 15px; height: 15px; }
+.egress-switch { display: inline-flex; align-items: center; gap: 7px; padding: 0 4px; color: var(--text-2); font-size: 13px; cursor: pointer; user-select: none; }
+.egress-switch input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.egress-explanation { margin: 14px 2px 0; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
+
+/* ---- 三家卡片 ---- */
+.egress-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 18px; align-items: start; }
+.egress-card { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 20px 22px 16px; }
+.egress-card-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.egress-card-head .account-avatar { flex: none; width: 38px; height: 38px; border-radius: 12px; }
+.egress-card-head .account-avatar .brand-svg { width: 21px; height: 21px; }
+.egress-card-title { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.egress-card-title h2 { margin: 0; font-size: 16px; }
+.egress-host { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.egress-card-head .badge { flex: none; }
+
+/* 出口本身：大国旗 + IP */
+.egress-hero { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 14px 16px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line); }
+.egress-flag { flex: none; display: grid; place-items: center; width: 52px; height: 40px; font-family: "Twemoji Country Flags", "Segoe UI Emoji", sans-serif; font-size: 38px; line-height: 1; }
+.egress-flag.empty { font-size: 26px; filter: grayscale(1); opacity: .45; }
+.egress-ip-box { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.egress-ip-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.egress-ip { margin: 0; overflow: hidden; font: 650 21px/1.3 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.egress-icon-btn { display: grid; flex: none; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
+.egress-icon-btn:hover, .egress-icon-btn:focus-visible { background: var(--surface); color: var(--text); outline: none; box-shadow: 0 0 0 1px var(--line-strong); }
+.egress-icon-btn .icon { width: 14px; height: 14px; }
+.egress-place { margin: 0; overflow: hidden; color: var(--text-2); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.egress-place.error { color: var(--warn); white-space: normal; }
+
+/* 标签：ASN、线路类型、风险、官方地区 */
+.egress-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.egress-chips:empty { display: none; }
+.egress-chip { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: 99px; background: var(--tile-neutral); color: var(--text-2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.egress-chip.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-weight: 600; }
+.egress-chip.good { background: var(--accent-soft); color: var(--accent); }
+.egress-chip.warn { background: var(--warn-soft); color: var(--warn); }
+.egress-chip.bad { background: var(--danger-soft); color: var(--danger); }
+.egress-chip.info { background: color-mix(in srgb, var(--ring-week) 14%, transparent); color: var(--ring-week); }
+
+/* 告警原因 */
+.egress-reason { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12.5px; line-height: 1.55; }
+.egress-reason.confirmed { background: var(--danger-soft); color: var(--danger); }
+.egress-reason .icon { flex: none; width: 15px; height: 15px; margin-top: 1px; }
+
+/* 归属 */
+.egress-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 14px; margin: 0; font-size: 12.5px; }
+.egress-facts dt { color: var(--muted); white-space: nowrap; }
+.egress-facts dd { margin: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+
+/* IP 数据库 */
+.egress-intel { padding-top: 12px; border-top: 1px solid var(--line); }
+.egress-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.egress-section-head h3 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .02em; }
+.egress-refresh { font-size: 12px; }
+.egress-sources { display: grid; gap: 2px; margin-top: 8px; }
+.egress-source { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; min-height: 30px; }
+.egress-source.failed { opacity: .6; }
+.egress-source-name { overflow: hidden; color: var(--text-2); font-size: 12.5px; font-weight: 600; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+a.egress-source-name:hover, a.egress-source-name:focus-visible { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; outline: none; }
+.egress-source-value { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; }
+.egress-source-value .egress-chip { height: 21px; padding: 0 8px; font-size: 11.5px; }
+.egress-source-note { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.egress-meter { position: relative; flex: 0 1 90px; height: 6px; min-width: 50px; overflow: hidden; border-radius: 99px; background: var(--tile-neutral); }
+.egress-meter i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent); transition: width .5s var(--ease); }
+.egress-meter.medium i { background: var(--warn); }
+.egress-meter.high i { background: var(--danger); }
+.egress-risk { min-width: 22px; font-variant-numeric: tabular-nums; }
+.egress-risk.low, .egress-risk-label.low { color: var(--accent); }
+.egress-risk.medium, .egress-risk-label.medium { color: var(--warn); }
+.egress-risk.high, .egress-risk-label.high { color: var(--danger); }
+.egress-risk-label { font-size: 11.5px; font-weight: 600; }
+.egress-sources-note { margin: 6px 0 0; font-size: 11.5px; }
+.egress-loading::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 7px; vertical-align: -1px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+
+/* 设置（折叠） */
+.egress-settings { border-top: 1px solid var(--line); padding-top: 10px; interpolate-size: allow-keywords; }
+.egress-settings > summary { display: flex; align-items: center; gap: 7px; padding: 4px 0; color: var(--text-2); font-size: 13px; font-weight: 600; list-style: none; cursor: pointer; }
+.egress-settings > summary::-webkit-details-marker { display: none; }
+.egress-settings > summary .icon { width: 14px; height: 14px; transform: rotate(-90deg); transition: transform .2s var(--ease); }
+.egress-settings[open] > summary .icon { transform: none; }
+.egress-settings-state { margin-left: auto; font-size: 12px; font-weight: 500; }
+.egress-settings::details-content { height: 0; overflow: clip; opacity: 0; transition: height 220ms var(--ease), opacity 160ms var(--ease), content-visibility 220ms allow-discrete; }
+.egress-settings[open]::details-content { height: auto; opacity: 1; }
+.egress-settings-body { padding: 6px 0 4px; }
+.egress-field { display: flex; flex-direction: column; gap: 7px; margin: 12px 0 0; color: var(--text-2); font-size: 12.5px; }
+.egress-field input:not([type=checkbox]), .egress-field select, .egress-field textarea { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px; transition: border-color 160ms ease, box-shadow 160ms ease; }
+.egress-field textarea { min-height: 76px; resize: vertical; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+.egress-field :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.egress-field [data-action="allow-current"] { align-self: flex-start; height: 30px; padding: 0 11px; font-size: 12.5px; }
+.egress-field [data-action="allow-current"] .icon { width: 13px; height: 13px; }
+.egress-hint { margin: 6px 0 0; font-size: 11.5px; }
+.egress-policy { margin: 12px 0 4px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.egress-rules { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); interpolate-size: allow-keywords; }
+.egress-rules summary { color: var(--text-2); font-size: 12.5px; cursor: pointer; }
+.egress-rules::details-content { height: 0; overflow: clip; opacity: 0; transition: height 200ms var(--ease), opacity 160ms var(--ease), content-visibility 200ms allow-discrete; }
+.egress-rules[open]::details-content { height: auto; opacity: 1; }
+.egress-rules pre { max-height: 180px; overflow: auto; font-size: 11px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.egress-stamp { margin: 0; color: var(--faint); font-size: 11.5px; }
+
+/* 保存 */
+.egress-savebar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 18px 0; }
+#egress-message { margin: 0; color: var(--muted); font-size: 13px; }
+#egress-message.error { color: var(--danger); }
+
+/* 变化与告警：时间线 */
+.egress-history { padding: 20px 22px; }
+.egress-history h2 { margin: 0; font-size: 16px; }
+.egress-history .egress-section-head p { margin: 4px 0 0; font-size: 12.5px; }
+#egress-events { margin: 12px 0 0; padding: 0; list-style: none; }
+.egress-event { display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.egress-event:last-child { border-bottom: 0; }
+.egress-event-dot { flex: none; width: 9px; height: 9px; margin-top: 5px; border-radius: 50%; background: var(--ring-week); }
+.egress-event.warning .egress-event-dot { background: var(--danger); }
+.egress-event.recovery .egress-event-dot { background: var(--accent); }
+.egress-event-main { flex: 1; min-width: 0; }
+.egress-event-title { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.egress-event time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.egress-event p { margin: 5px 0 0; font-family: "Twemoji Country Flags", var(--font); overflow-wrap: anywhere; }
+.egress-empty { padding: 8px 0; font-size: 13px; }
+
+@media (max-width: 1180px) { .egress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 860px) { .egress-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) {
+  .egress-pulse::after { animation: none !important; }
+  .egress-settings::details-content, .egress-rules::details-content, .egress-meter i, .egress-field input, .egress-field select, .egress-field textarea { transition: none !important; }
+}
+
+body[data-page="egress"] #refresh, body[data-page="egress"] #stamp, body[data-page="egress"] #main > footer { display: none; }

@@ -4,7 +4,21 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { app, ipcMain, nativeImage, dialog, BrowserWindow } = require('electron');
+let failRequestQueries = false;
+const registerHandler = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, handler) => registerHandler(channel, channel === 'requests:query' ? (event, query) => {
+  if (failRequestQueries) throw new Error('Simulated request query failure');
+  return handler(event, query);
+} : handler);
 const appRoot = process.env.TOKENPULSE_TEST_APP || path.resolve(__dirname, '..');
+let egressNow = Date.now(), egressIp = '203.0.113.10', egressRegion = 'US';
+const egressNotifications = [], egressLookups = [];
+const egressModule = require(path.join(appRoot, 'build/main/egress-monitor.js'));
+const RealExitMonitor = egressModule.ExitMonitor;
+egressModule.ExitMonitor = class extends RealExitMonitor {
+  // IP 数据库查询也换成假的：测试不能把地址发给真实的第三方服务
+  constructor(options) { super({ ...options, now: () => egressNow, notify: event => egressNotifications.push(event), probe: async (provider, host) => ({ provider, host, ip: egressIp, region: egressRegion, checkedAt: egressNow, latencyMs: 20 }), lookup: async ip => { egressLookups.push(ip); return { ip, fetchedAt: egressNow, countryCode: egressRegion, city: 'Testville', asn: 'AS64500', asName: 'TEST-NET', isp: 'Example ISP', type: 'hosting', sources: [{ id: 'proxycheck', name: 'proxycheck.io', url: 'https://proxycheck.io/threats/' + ip, ok: true, risk: 66, flags: { vpn: true, proxy: false } }, { id: 'ipapicom', name: 'ip-api.com', url: '', ok: true, flags: { hosting: true, proxy: false, mobile: false } }] }; } }); }
+};
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-ui-'));
 process.env.TOKENPULSE_DATA_DIR = path.join(temp, 'data');
 app.setPath('userData', path.join(temp, 'electron'));
@@ -25,6 +39,7 @@ const requestMonth = (() => { const d = new Date(fixtureNow); return `${d.getFul
 fs.mkdirSync(path.join(dataPath, 'requests'), { recursive: true });
 const qaRequest = (id, minutesAgo, extra) => ({ id, at: fixtureNow - minutesAgo * 60000, kind: 'claude-code', file: 'ui-test-claude', cwd: 'D:\\qa\\tp-ui-fixture', input: 1200, output: 80, cacheRead: 900, cacheWrite: 10, reasoning: 0, costUsd: 0, calls: 1, ...extra });
 fs.writeFileSync(path.join(dataPath, 'requests', `${requestMonth}.jsonl`), [
+  ...Object.entries(modelRows).map(([model, usage], i) => qaRequest('qa-model-' + i, 1, { ...usage, model, requested: model, kind: 'codex', file: 'ui-test-fixture', cwd: 'D:\\qa\\model-fixture' })),
   qaRequest('qa-1', 3, { model: 'claude-QA-sonnet', requested: 'claude-QA-opus[1m]', returned: 'claude-QA-sonnet', responseId: 'msg_01' + 'A'.repeat(22), requestId: 'req_011C' + 'B'.repeat(20) }),
   qaRequest('qa-2', 2, { model: 'claude-QA-opus', requested: 'claude-QA-opus[1m]', returned: 'claude-QA-opus', responseId: 'msg_01' + 'C'.repeat(22), requestId: 'req_011C' + 'D'.repeat(20) }),
   qaRequest('qa-3', 1, { kind: 'codex', file: 'ui-test-codex', model: 'gpt-QA', requested: 'gpt-QA', responseId: 'resp_' + 'e'.repeat(50) })
@@ -47,7 +62,7 @@ const watchdog = setTimeout(() => { console.error('FAIL UI timed out'); app.exit
 app.on('web-contents-created', (_, contents) => {
   contents.on('did-finish-load', async () => {
     try {
-      const evaluate = code => contents.executeJavaScript(code);
+      const evaluate = async code => { try { return await contents.executeJavaScript(code); } catch (error) { throw new Error(code + '\n' + error.message); } };
       const until = async (code) => {
         const deadline = Date.now() + 10000;
         while (!(await evaluate(code))) {
@@ -179,7 +194,8 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("document.querySelector('#usage-view [data-view=daily]').click()");
       assert.equal(await evaluate("document.getElementById('view-daily').hidden"), false);
       assert.equal(await evaluate("document.getElementById('view-requests').hidden"), true);
-      await evaluate("document.getElementById('model-search').value='QA-model'; document.getElementById('model-search').dispatchEvent(new Event('input'))");
+      await evaluate("document.getElementById('request-search').value='QA-model'; document.getElementById('request-search').dispatchEvent(new Event('input'))");
+      await until("!analysis.loading && filteredRecords.length === 22");
       assert.equal(await evaluate("document.querySelectorAll('#records tr').length"), 15);
       assert.match(await evaluate("document.getElementById('record-count').textContent"), /22/);
       await evaluate("document.getElementById('next-page').click()");
@@ -192,9 +208,10 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(exported.charCodeAt(0), 0xfeff); assert.equal(exported.trim().split('\r\n').length, 23);
       assert.ok(exported.includes('QA-model-00') && exported.includes('QA-model-21'));
       await evaluate("document.getElementById('source-filter').value='Claude Code'; document.getElementById('source-filter').dispatchEvent(new Event('change'))");
+      await until("!analysis.loading");
       assert.match(await evaluate("document.getElementById('records').textContent"), /没有匹配/);
       assert.equal(await evaluate("document.getElementById('export-csv').disabled"), true);
-      await evaluate("document.getElementById('source-filter').value='all'; document.getElementById('source-filter').dispatchEvent(new Event('change')); document.getElementById('model-search').value=''; document.getElementById('model-search').dispatchEvent(new Event('input')); document.querySelector('[data-page=overview]').click()");
+      await evaluate("document.getElementById('source-filter').value='all'; document.getElementById('source-filter').dispatchEvent(new Event('change')); document.getElementById('request-search').value=''; document.getElementById('request-search').dispatchEvent(new Event('input')); document.querySelector('[data-page=overview]').click()");
       console.log('PASS search, sorting, pagination, source filtering and complete CSV export');
       // 请求记录：逐条列出、核验结论、展开详情、按结论筛选、导出。只看 QA 的三条。
       // 以前的「请求记录」入口（通知、额度详情的链接）会跳到用量明细的逐条请求视图
@@ -235,6 +252,120 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("document.querySelector('[data-verify=mismatch]').click(); document.getElementById('request-search').value=''; document.getElementById('request-search').dispatchEvent(new Event('input')); document.querySelector('[data-page=overview]').click()");
       assert.equal(await evaluate("document.getElementById('usage-summary').hidden"), false);
       console.log('PASS request log lists every request, flags model mismatches, expands details and exports');
+      // 0.3.7：通过实际 DOM 控件查询，验证 IPC、worker 与统计都使用相同条件。
+      await evaluate("navigate('usage'); document.getElementById('clear-detail-filters').click(); document.getElementById('request-search').value='tp-ui-fixture'; document.getElementById('request-search').dispatchEvent(new Event('input'))");
+      await until("!analysis.loading && analysis.total.tokens === 3840 && requestPage?.total === 3");
+      await until("[...document.querySelectorAll('#model-options input')].some(i => i.value === 'claude-QA-opus')");
+      await evaluate("document.getElementById('model-picker').open=true; document.querySelector('#model-options input[value=claude-QA-opus]').click()");
+      await until("!analysis.loading && analysis.total.tokens === 1280 && requestPage?.total === 1");
+      assert.equal(await evaluate("requestPage.rows[0].model"), 'claude-QA-opus', '按统计型号精确查，不混入请求型号相同的 sonnet');
+      await evaluate("document.getElementById('model-option-search').value='SONNET'; document.getElementById('model-option-search').dispatchEvent(new Event('input'))");
+      assert.equal(await evaluate("document.querySelector('#model-options input[value=claude-QA-opus]').closest('label').hidden"), true);
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('#model-options input[value=claude-QA-opus]').closest('label')).display"), 'none');
+      assert.equal(await evaluate("document.querySelector('#model-options input[value=claude-QA-opus]').checked"), true, '搜索候选项不会取消已选模型');
+      await evaluate("document.querySelector('#model-options input[value=claude-QA-sonnet]').click()");
+      await until("!analysis.loading && analysis.total.tokens === 2560 && requestPage?.total === 2");
+      await evaluate("document.querySelector('#usage-view [data-view=daily]').click()");
+      await until("!analysis.loading && filteredRecords.length === 2");
+      assert.equal(await evaluate("filteredRecords.reduce((n,r)=>n+r.tokens,0)"), 2560);
+      await evaluate("document.getElementById('export-csv').click()");
+      await until("!document.getElementById('export-csv').disabled");
+      const filteredCsv = fs.readFileSync(exportPath, 'utf8');
+      assert.equal(filteredCsv.trim().split('\r\n').length, 3);
+      assert.ok(filteredCsv.includes('claude-QA-opus') && filteredCsv.includes('claude-QA-sonnet'));
+      await evaluate("document.querySelector('.more-filters').open=true; document.getElementById('request-project').value='D:\\\\qa\\\\tp-ui-fixture'; document.getElementById('request-project').dispatchEvent(new Event('change'))");
+      await until("!analysis.loading && analysis.total.tokens === 2560");
+      await evaluate("document.getElementById('request-channel').value='unknown'; document.getElementById('request-channel').dispatchEvent(new Event('change'))");
+      await until("!analysis.loading && requestPage?.rows.every(r => r.official === undefined)");
+      assert.equal(await evaluate("analysis.total.tokens"), 2560);
+      await evaluate("document.getElementById('request-channel').value='official'; document.getElementById('request-channel').dispatchEvent(new Event('change'))");
+      await until("!analysis.loading && requestPage?.total === 0");
+      assert.equal(await evaluate("analysis.total.tokens"), 0);
+      assert.equal(await evaluate("document.getElementById('export-csv').disabled"), true);
+      // 清除渠道筛选标签；其余筛选仍保留。
+      await evaluate("[...document.querySelectorAll('#detail-filter-chips button')].find(b=>b.textContent.includes('官方订阅')).click()");
+      await until("!analysis.loading && analysis.total.tokens === 2560");
+      assert.equal(await evaluate("state.models.length"), 2);
+      if (!process.env.TOKENPULSE_TEST_APP) {
+        await evaluate("document.documentElement.dataset.theme='light'; document.getElementById('model-picker').open=true");
+        await delay(150);
+        assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-options')).display !== 'none'"), true);
+        await evaluate("document.documentElement.dataset.theme='dark'");
+        assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-options')).backgroundColor"), 'rgb(22, 25, 31)');
+        assert.equal(await evaluate("document.querySelector('.model-options').getBoundingClientRect().width <= innerWidth"), true);
+      }
+      await evaluate("document.documentElement.dataset.theme='light'; document.getElementById('model-picker').open=false; document.querySelector('.more-filters').open=false; document.getElementById('clear-detail-filters').click(); navigate('overview')");
+      assert.equal(await evaluate("Boolean(hasDetailFilters())"), false);
+      assert.equal(await evaluate("document.getElementById('detail-filters').hidden"), true);
+      console.log('PASS v0.3.7 model multi-select, exact attribution, linked totals, daily export, project, channel, empty results and themes');
+
+      await evaluate("document.getElementById('model-option-search').value='no-such-candidate'; document.getElementById('model-option-search').dispatchEvent(new Event('input'))");
+      assert.equal(await evaluate("document.getElementById('model-options-empty').hidden"), false);
+      await evaluate("document.getElementById('model-option-search').value=''; document.getElementById('model-option-search').dispatchEvent(new Event('input'))");
+      // 动效只读 DOM/CSS/WAAPI；不生成截图。真实媒体查询通过 CDP 验证。
+      await evaluate("document.dispatchEvent(new PointerEvent('pointerdown')); navigate('usage'); document.getElementById('model-picker').open=false");
+      await delay(220);
+      assert.equal(await evaluate("CSS.supports('interpolate-size', 'allow-keywords')"), true);
+      await evaluate("document.querySelector('#model-picker summary').click()");
+      await delay(30);
+      assert.equal(await evaluate("document.querySelector('.model-options').getAnimations().length > 0"), true, '模型菜单应有真实过渡');
+      await until("getComputedStyle(document.querySelector('.model-options')).opacity === '1'");
+      await evaluate("document.querySelector('#model-picker summary').click(); document.querySelector('#model-picker summary').click()");
+      await until("getComputedStyle(document.querySelector('.model-options')).opacity === '1'");
+      assert.equal(await evaluate("document.getElementById('model-picker').open"), true);
+      await evaluate("document.querySelector('#model-picker summary').click()");
+      await delay(220);
+      assert.equal(await evaluate("getComputedStyle(document.getElementById('model-picker'), '::details-content').contentVisibility"), 'hidden');
+      await evaluate("document.querySelector('.more-filters summary').click()");
+      await delay(220);
+      assert.equal(await evaluate("parseFloat(getComputedStyle(document.querySelector('.more-filters'), '::details-content').height) > 0"), true);
+      await evaluate("document.querySelector('.more-filters summary').click()");
+      await delay(220);
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.more-filters'), '::details-content').height"), '0px');
+      await until("[...document.querySelectorAll('#model-options input')].some(i => i.value === 'claude-QA-opus')");
+      await evaluate("document.querySelector('#model-options input[value=claude-QA-opus]').click()");
+      await until("!analysis.loading && requestPage?.total === 1");
+      await delay(220);
+      await evaluate("window.motionChip = [...document.querySelectorAll('#detail-filter-chips button')].find(n => n.dataset.key === 'model:claude-QA-opus'); motionChip.focus(); render(current)");
+      assert.equal(await evaluate("motionChip === document.activeElement && motionChip.isConnected"), true, '刷新保留标签节点与焦点');
+      assert.equal(await evaluate("detailAnimations.size"), 0, '后台重绘不重播筛选动画');
+      await evaluate("document.querySelector('#model-options input[value=claude-QA-opus]').click(); document.querySelector('#model-options input[value=claude-QA-opus]').click()");
+      await until("!analysis.loading && requestPage?.total === 1");
+      await delay(220);
+      assert.equal(await evaluate("motionChip.isConnected && !motionChip.disabled && !motionChip.dataset.leaving"), true, '离场中重新选择必须保留标签');
+      await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key:'Tab'})); document.querySelector('#model-picker summary').click()");
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-options')).transitionDuration"), '0s');
+      assert.equal(await evaluate("detailAnimations.size"), 0);
+      contents.debugger.attach('1.3');
+      try {
+        await contents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+        await until("reducedMotion.matches");
+        await evaluate("document.dispatchEvent(new PointerEvent('pointerdown')); document.querySelector('#model-options input[value=claude-QA-opus]').click()");
+        assert.equal(await evaluate("detailAnimations.size"), 0);
+        assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-options')).transitionDuration"), '0s');
+      } finally {
+        await contents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [] });
+        contents.debugger.detach();
+      }
+      await evaluate("delete window.motionChip; document.getElementById('model-picker').open=false; document.getElementById('clear-detail-filters').click(); navigate('overview')");
+      console.log('PASS filter motion, native details exit, rapid reversal, stable focus, quiet refresh, keyboard and reduced motion');
+
+      // 查询故障不能伪装成零用量；保留筛选，恢复后点击重试。
+      failRequestQueries = true;
+      await evaluate("navigate('usage'); state.reqSearch='req_011CBBBB'; document.getElementById('request-search').value='req_011CBBBB'; requeryRequests()");
+      await until("analysis.error && requestError && !document.getElementById('retry-detail-query').hidden");
+      assert.equal(await evaluate("[...document.querySelectorAll('#tiles .stat-value')].every(n => n.textContent === '—')"), true);
+      assert.equal(await evaluate("document.getElementById('export-csv').disabled && document.getElementById('export-requests').disabled"), true);
+      assert.match(await evaluate("document.getElementById('request-rows').textContent"), /读取失败/);
+      failRequestQueries = false;
+      await evaluate("document.getElementById('retry-detail-query').click()");
+      await until("!analysis.loading && !analysis.error && !requestError && requestPage?.total === 1");
+      assert.equal(await evaluate("analysis.total.tokens"), 1280);
+      assert.equal(await evaluate("document.getElementById('retry-detail-query').hidden"), true);
+      assert.equal(await evaluate("state.reqSearch"), 'req_011CBBBB');
+      await evaluate("document.getElementById('clear-detail-filters').click(); navigate('overview')");
+      console.log('PASS query failure is explicit, exports are disabled and retry preserves filters');
+
       // 时间范围：总览默认 30 天；用量明细每次打开都是「今天」；回到总览还是原来的范围
       await evaluate("document.querySelector('[data-page=overview]').click()");
       assert.equal(await evaluate("String(state.days)"), '30');
@@ -257,6 +388,31 @@ app.on('web-contents-created', (_, contents) => {
       assert.match(await evaluate("document.querySelector('#tiles .stat .num').textContent"), /^[\d.]+[KMB]?$/);
       await evaluate("setNumberMode('exact'); document.getElementById('range-button').click(); document.querySelector('#range-presets [data-days=\"30\"]').click()");
       console.log('PASS usage opens on today, 24-hour range, exact numbers with Chinese approximations');
+
+      // 总览选「今天」：用量趋势按小时（零点到现在这一小时）
+      await evaluate("applyRange(1)");
+      await until("state.days === 1 && Array.isArray(analysis.hourly)");
+      assert.equal(await evaluate("analysis.hourly.length"), await evaluate("new Date(current.now).getHours() + 1"), 'one bar per hour from midnight to now');
+      assert.match(await evaluate("document.getElementById('chart-caption').textContent"), /按小时 · 今天/);
+      // 用量明细的用量分析：分工具趋势、完整的工具 / 模型排行、时段分布，都跟着范围走
+      await evaluate("navigate('usage'); applyRange(30)");
+      await until("document.querySelector('#usage-insights .insight-trend svg') && document.querySelectorAll('#usage-insights .insight-models tbody tr').length > 0 && document.querySelector('#usage-insights .insight-hod svg')");
+      const insights = await evaluate(`(() => {
+        const models = new Set(analysis.selected.map(r => r.source + '|' + r.model)), sources = new Set(analysis.selected.map(r => r.source));
+        return { rows: document.querySelectorAll('#usage-insights .insight-models tbody tr').length, models: models.size, tools: document.querySelectorAll('#usage-insights .insight-rank-row').length, sources: sources.size,
+          segs: document.querySelectorAll('#usage-insights .insight-seg').length, heat: document.querySelectorAll('#usage-insights .insight-heat-cell').length,
+          inlineStyle: [...document.querySelectorAll('#usage-insights [style]')].some(n => n.getAttribute('style').includes('var(') && n.tagName === 'rect' && n.getAttribute('fill')) };
+      })()`);
+      assert.equal(insights.rows, insights.models, '模型排行列出全部型号，不截断');
+      assert.ok(insights.models > 5, `fixture has more models than the overview's top 5 (${insights.models})`);
+      assert.equal(insights.tools, insights.sources);
+      assert.ok(insights.segs > 0 && insights.heat === 7 * 24, JSON.stringify(insights));
+      await evaluate("document.querySelector('#usage-insights [data-insight-sort=costUsd]').click()");
+      await until("document.querySelector('#usage-insights [data-insight-sort=costUsd]').classList.contains('on')");
+      const costs = await evaluate("[...document.querySelectorAll('#usage-insights .insight-models tbody tr')].map(tr => Number(tr.children[7].textContent.replace(/[$,<]/g, '')) || 0)");
+      assert.deepEqual(costs, [...costs].sort((a, b) => b - a), 'sorting by cost');
+      await evaluate("navigate('overview')");
+      console.log('PASS today is hourly; usage analysis shows the full tool / model rankings, stacked trend and time-of-day distribution');
       // 外观移进了设置 → 通用：日间 / 夜间 / 跟随系统。
       await evaluate("document.getElementById('settings-open').click()");
       await until("!document.getElementById('settings').hidden");
@@ -436,10 +592,60 @@ app.on('web-contents-created', (_, contents) => {
         }
       }
       console.log('PASS session management list, filters, copy path and streamed in-app reply');
-      if (process.env.TOKENPULSE_SCREENSHOT) {
-        await delay(200);
-        fs.writeFileSync(process.env.TOKENPULSE_SCREENSHOT, (await contents.capturePage()).toPNG());
-      }
+      egressNow = Date.now();
+      await evaluate("navigate('egress')");
+      await until("document.querySelectorAll('#page-egress .egress-card').length === 3");
+      assert.equal(await evaluate("document.getElementById('usage-summary').hidden && document.getElementById('usage-filters').hidden"), true);
+      assert.equal(await evaluate("document.getElementById('egress-toggle').getAttribute('aria-checked')"), 'false');
+      assert.equal(await evaluate("document.getElementById('page-egress').scrollWidth <= document.getElementById('page-egress').clientWidth + 1"), true, '监控页不能横向溢出');
+      assert.equal(await evaluate("getComputedStyle(document.getElementById('refresh')).display"), 'none', '额度刷新按钮不出现在出口检测页');
+      await evaluate("document.getElementById('egress-check').click()");
+      await until("!document.getElementById('egress-check').disabled && [...document.querySelectorAll('.egress-ip')].every(n => n.textContent === '203.0.113.10')");
+      // IP 数据库：三家同一个出口只查一次；归属、类型、风险、国旗都画出来
+      await until("document.querySelectorAll('.egress-source').length === 6");
+      assert.deepEqual(egressLookups, ['203.0.113.10'], '同一个出口 IP 只查一次数据库');
+      const intelUi = await evaluate(`(() => { const card = document.querySelector('.egress-card[data-provider=chatgpt]'); return { chips: [...card.querySelectorAll('.egress-chips .egress-chip')].map(n => n.textContent), flag: card.querySelector('.egress-flag').textContent, facts: card.querySelector('.egress-facts').textContent, meter: card.querySelector('.egress-meter')?.getAttribute('aria-valuenow'), link: card.querySelector('a.egress-source-name')?.href }; })()`);
+      assert.ok(intelUi.chips.includes('AS64500') && intelUi.chips.includes('机房 Hosting') && intelUi.chips.includes('风险 66'), JSON.stringify(intelUi.chips));
+      assert.equal(intelUi.flag, '\u{1F1FA}\u{1F1F8}', '美国的国旗（区域指示符 U + S）');
+      assert.ok(intelUi.facts.includes('Example ISP') && intelUi.meter === '66' && intelUi.link.startsWith('https://proxycheck.io/'), JSON.stringify(intelUi));
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.egress-flag')).fontFamily.includes('Twemoji Country Flags')"), true, 'Windows 上国旗要靠随包的字体');
+      await evaluate("document.querySelectorAll('[data-action=allow-current]').forEach(b => b.click()); document.getElementById('egress-regions-grok').value='US'; document.getElementById('egress-regions-grok').dispatchEvent(new Event('input'))");
+      egressNow += 5000;
+      await evaluate("document.getElementById('egress-check').click()");
+      await until("!document.getElementById('egress-check').disabled");
+      assert.equal(await evaluate("document.getElementById('egress-ips-chatgpt').value"), '203.0.113.10', '后台采样不能覆盖未保存输入');
+      await evaluate("document.getElementById('egress-save').click()");
+      await until("window.tokenpulse.egressState().then(s => s.config.providers.grok.allowedRegions[0] === 'US')");
+      await evaluate("document.getElementById('egress-toggle').click()");
+      await until("document.getElementById('egress-toggle').getAttribute('aria-checked') === 'true' && !document.getElementById('egress-check').disabled");
+      egressIp = '203.0.113.20'; egressRegion = 'HK'; egressNow += 5000;
+      await evaluate("document.getElementById('egress-check').click()");
+      await until("window.tokenpulse.egressState().then(s => !s.checking && s.providers.every(p => p.row?.ip === '203.0.113.20'))");
+      assert.equal(egressNotifications.length, 0, '第一次风险不弹系统通知');
+      egressNow += 5000;
+      await evaluate("document.getElementById('egress-check').click()");
+      await until("document.querySelectorAll('#egress-events .warning').length === 3");
+      assert.equal(egressNotifications.length, 3);
+      assert.equal(await evaluate("document.getElementById('nav-egress-alert').textContent"), '3');
+      // 出口换了才查新 IP；同一个 IP 探测了好几轮也不重复查
+      assert.deepEqual(egressLookups, ['203.0.113.10', '203.0.113.20'], JSON.stringify(egressLookups));
+      assert.equal(await evaluate("document.querySelector('.egress-card[data-provider=grok] .egress-flag').textContent"), '\u{1F1ED}\u{1F1F0}', '换到香港后国旗跟着换');
+      egressNow += 5000;
+      await evaluate("document.getElementById('egress-check').click()");
+      await until("!document.getElementById('egress-check').disabled");
+      assert.equal(egressNotifications.length, 3, '持续相同风险不能重复通知');
+      await evaluate("document.getElementById('egress-ips-chatgpt').value='not-an-ip'; document.getElementById('egress-ips-chatgpt').dispatchEvent(new Event('input')); document.getElementById('egress-save').click()");
+      await until("document.getElementById('egress-message').getAttribute('role') === 'alert'");
+      assert.equal(await evaluate("window.tokenpulse.egressState().then(s => s.config.providers.chatgpt.allowedIps[0])"), '203.0.113.10');
+      await evaluate("document.getElementById('egress-toggle').click()");
+      await until("document.getElementById('egress-toggle').getAttribute('aria-checked') === 'false'");
+      assert.equal(await evaluate("document.getElementById('egress-ips-chatgpt').value"), 'not-an-ip', '暂停保留草稿且不被无效草稿阻止');
+      await evaluate("document.querySelector('.egress-history button').click()");
+      await until("document.querySelectorAll('#egress-events .egress-event').length === 0");
+      await evaluate("navigate('overview')");
+      console.log('PASS exit monitor navigation, three providers, drafts, allowlists, alerts, deduplication, validation and safe pause');
+
+      // UI 回归仅使用 DOM、布局与计算样式断言，不生成或读取截图。
       ipcMain.removeHandler('refresh');
       ipcMain.handle('refresh', () => { throw new Error('Simulated scan failure'); });
       await evaluate("document.getElementById('refresh').click()");

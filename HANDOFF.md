@@ -1,3 +1,181 @@
+# 接手指南 · 当前工作区（2026-09-27）
+
+> **先读本节，再按需看下方历史。** 当前版本统一为 **0.3.7**。下方按时间保留迭代记录，其中旧的产物位置、待办、截图要求只代表当时状态；当前协作约束和交付状态以本节为准。
+
+## 1. 用户约定与工作区保护
+
+- 项目目录：`D:\CodePorject\Tools\TokenPulse`。Windows / PowerShell，Electron + TypeScript + 原生 HTML/CSS/JS。
+- **不得查看图片、截图或图片预览**：用户明确说明这会导致客户端报错。使用源码、日志、DOM、计算样式、尺寸断言和自动化测试验证；视觉验收交给用户。现有 UI 测试已移除截图生成。
+- 保持 **0.3.7**，后续是否升级版本由用户决定。保留现有界面风格、轻量动效、键盘交互和减少动态效果支持。
+- **当前改动尚未提交**，包括前一位 AI 中断留下的改动和本轮续作。先运行 `git status --short`；不要用 reset/checkout/clean 丢弃工作区。
+- 出口监控的若干文件仍是 **untracked 源码**，并非可删除的临时文件。只看 `git diff` 不会包含它们，提交/复制时要覆盖下方文件表。
+- `.tmp-037-light.png`、`.tmp-037-dark.png`、`.tmp-grok-home-test/` 是此前就存在的内容，本轮未查看/清理。不要把图片当作接手检查步骤。
+- 不输出或复制真实 token、refresh token；不要改写 CLI 登录文件、用户代理配置，或擅自终止其正在运行的程序。测试使用隔离数据目录和假凭证。
+
+## 2. 已完成的 0.3.7 功能
+
+### 用量明细
+
+- 统计型号精确多选、模型候选搜索、项目、渠道、账号、核验状态及关键词组合筛选。
+- 逐条请求与按日汇总共享条件；筛选后的统计、分页和全部匹配记录导出保持一致。模型调用次数与请求行数分别处理。
+- 加载/失败有独立状态和保留条件重试入口，避免失败显示成零用量。
+- 模型菜单开合、更多筛选折叠、标签增删/位置衔接、结果更新已有动效；标签复用 DOM 以保留焦点，自动刷新不会反复重播，支持快速反向、键盘即时响应及 reduced-motion。
+
+### 出口监控
+
+- 新增侧边栏页面；三家并发，每 5 秒尝试一轮，网络超时 4 秒，不重叠。首次默认暂停；用户保存白名单后开启。托盘运行时继续，退出时停止并中止探测。
+- 访问选定官方域名的 `/cdn-cgi/trace`，核对 HTTP 状态、trace 主机名和 IP 格式，读取出口 IP 与地区；候选主机为固定允许列表。
+- 默认：ChatGPT → `chatgpt.com`，Claude → `api.anthropic.com`，Grok → `cli-chat-proxy.grok.com`。可切换该供应商的其他已验证候选域名。
+- 允许多个 IPv4/IPv6，支持自定义地区代码列表。连续两次同一风险才告警、同一风险去重、连续两次恢复再通知。
+- 保留最近 50 条变化/告警；失败与地区未知明确展示，并标注上次有效结果。未知地区不能误报为恢复正常。
+- 后台更新不覆盖表单草稿；即使草稿里有无效 IP，也可以立即暂停。分流规则可查看/复制，不自动写入代理。
+
+### 额度查询前检查出口 IP · 今天按小时 · 用量分析（0.3.7，本轮）
+
+- **额度查询前的出口 IP 检查**：`quota.ts` 的 `fetchOfficialQuota(force, gate)` 先问 `gate(家)`，不放行的那家这一轮**不续期、不查额度**；gate 抛错也按不放行。`main/index.ts` 传的是 `exitMonitor.gateQuota`：
+  - 这一家没设 IP 白名单 → 放行（没有规则可比）；设了 → 用 10 秒内的探测结果，没有就现探一次，出口 IP 在白名单里才放行；**探测失败也不放行**（确认不了出口就别拿账号问官方）。监控开没开都检查。
+  - 被拦时记一条告警（出口监控的「变化与告警」）、按「系统通知」设置弹通知；同一种情况（原因 + IP）只弹一次；放行后记一条恢复。`snapshot().quotaBlocks` 给界面，首页额度卡片和额度页顶部显示「额度查询已暂停：出口 IP x 不在允许列表」，点一下去出口监控。app.js 只在拦截情况变了时重画（出口监控每 5 秒推一次状态）。
+  - `renewStoredCredentials(now, refresh, kinds)` 多了按家过滤。设置页打开时的续期（oauth.ts）没有接 gate。
+- **总览「今天」按小时**：`todayHourly()` 从逐条流水按小时汇总零点到现在（按天的账切不出小时），合计仍用按天的账。按快照时间缓存；新结果回来前用同一天上一份顶着，免得每分钟变回一根柱子。用量明细带筛选时，今天 / 一天也从筛选后的流水出小时。
+- **用量明细 · 用量分析**（新文件 `renderer/usage-insights.js` / `usage-insights.css`，插在 Token 构成和明细表之间）：分工具的堆叠趋势（今天 / 一天按小时，两个月内按天，两年内按周，再长按月；Tokens / 费用 / 请求切换；悬停看每个工具的数量和占比）、完整的工具排行、**完整的模型排行（不截断，可按 Tokens / 费用 / 请求排序）**、使用时段分布（一天 24 个钟点 + 星期 × 时段热力图）。数据和上面的统计卡片同一份（`analysis.selected`）；时段分布只能从逐条流水按小时算，有筛选时用 `analysis.hours`，没有时按范围单独查一次，并说明逐条流水的起算日期。请求流水的按小时汇总（`HourAggregate`）多了每小时各工具的分量 `sources`。
+  - 注意：页面 CSP 不允许 style 属性，颜色 / 宽度用 CSSOM 设（`paint()`）；SVG 的 fill 属性认不了 `var()`。`data-insight-sort` 在 dataset 里叫 `insightSort`（这个坑踩过）。
+- 测试：`test-egress` 加了放行检查（没白名单放行、IP 不对拦截且只告警一次、探测失败拦截、恢复、复用 10 秒内的探测、`fetchOfficialQuota` 只问 gate 不抛错；这个测试用空的家目录，不会读到本机真实登录）；`test-ui` 加了今天按小时、用量分析完整排行 / 堆叠趋势 / 热力图 / 按费用排序。
+
+### 出口监控 · 界面改版与 IP 数据库（0.3.7，本轮）
+
+用户觉得原来的出口监控页「太丑」，而且缺 IP 在各数据库的评分、ASN、ISP / 机房类型和国旗。本轮：
+
+- **IP 数据库查询**（`src/core/ip-intel.ts`）：出口 IP 变了时，查 proxycheck.io（风险分 0–100、VPN / 代理、连接类型）、ip-api.com（机房 / 代理 / 移动标记、ISP、ASN，免费版只有 http）、ipinfo.io（ASN、组织、反向域名、anycast）、ipapi.is（公司、ASN；带 Key 才有的机房 / 滥用评分字段出现了就用）。都不用 Key。**Scamalytics、AbuseIPDB 网页有 Cloudflare 人机验证，IPQualityScore 必须付费 Key，都没接**（2026-09-27 实测）。
+  - 线路类型：proxycheck 的类型优先，其次 ipapi.is 的公司类型，最后 ip-api 的「是不是机房」。ip-api 只说「不是机房」就当家宽是很弱的判断 —— 别家标了 VPN / 代理 / 机房时写「类型未知」（实测一个 NetLab 出口：proxycheck 风险 66、VPN，ip-api 说不是机房）。
+  - 缓存 `~/.tokenpulse/ip-intel.json`：查全（≥2 家成功）12 小时，查不全 15 分钟后重试，最多 40 条。proxycheck 不带 Key 每天约 100 次，**绝不能跟着每 5 秒的探测一起查**。
+  - `ExitMonitor.lookupNew()`：每轮探测完，对新出现 / 过期的出口 IP 在后台查，不阻塞探测；三家同一个 IP 只查一次。`refreshIntel(ip)`（IPC `egress:intel`）是界面上的「重新查询」，同一 IP 一分钟一次，只接受当前检测到的出口 IP。
+  - 设置里新开关 `ipIntel`（「查询 IP 数据库」，默认开；0.3.7 早先存的配置没有这一项，读成开）。关掉后不自动查，手动「重新查询」仍可查一次。**这些查询会把出口 IP 发给上面几家**，开关的悬停提示写明了。
+- **界面**（`renderer/egress.js` / `egress.css` 重写）：顶部状态条（状态灯 + 监控中 / 已暂停 / N 家异常 + 上次检测时间，开关和按钮在右）；每家一张卡片：品牌图标 + 检测域名 · 延迟 + 状态；出口块（大国旗 + IP + 复制按钮 + 国家 · 省 · 城市）；标签行（ASN、线路类型、各库最高风险分、官方地区支持情况、数据库国家和 trace 不一致时提示）；归属（运营商 / 组织 / ASN 名称 / 反查域名）；「IP 数据库」逐家一行（风险条 + 分数 + 档位，或 VPN / 代理 / 机房 / 移动 / Anycast 标记，库名链到它自己的查询页）；白名单、检测域名、地区、官方说明、分流规则都收进底部折叠的「白名单与检测设置」。变化与告警改成带颜色圆点的时间线。原有元素 id（egress-toggle / check / notifications / host-* / ips-* / regions-* / save / message / events、data-action=allow-current）都保留。
+- **国旗**：Windows 的表情字体不画国旗（只显示两个字母），随包带 `renderer/fonts/TwemojiCountryFlags.woff2`（country-flag-emoji-polyfill 0.1.10，代码 MIT，国旗图案 Twemoji CC-BY 4.0，许可原文在同目录 `LICENSE-TwemojiCountryFlags.md`）。`@font-face` 用 unicode-range 只管区域指示符。CSP 加了 `font-src 'self'`。
+- 外链：`setWindowOpenHandler` 只放行 http(s)，别的协议不交给系统打开。
+- 测试：`test-egress` 加了 5 项（数据库合并、弱判断不盖过 VPN 标记、一家失败 / 额度用完不影响其他、缓存有效期、监控只查一次 / 开关 / 手动限频），全部用假响应不联网；`test-ui` 的假监控也注入了假查询，断言同一 IP 只查一次、换 IP 才查、标签 / 国旗 / 风险条 / 外链都画出来、国旗字体生效。
+
+## 3. 文件导航
+
+| 文件 | 职责 |
+| --- | --- |
+| `src/core/egress.ts`（新增） | 配置与 IP 校验、固定检测主机、trace 解析、地区规则、告警状态机 |
+| `src/main/egress-monitor.ts`（新增） | 每五秒调度、并发合并、取消与旧响应作废、持久化、通知/状态回调 |
+| `knowledge/egress-domains.json`（新增） | 候选主机及用户给出的 OpenAI/Claude 分流参考；Grok 最小规则集合 |
+| `knowledge/egress-regions.json`（新增） | 官方地区代码、来源、核实日期、适用产品与子地区限制 |
+| `renderer/egress.js`、`renderer/egress.css`（新增） | 出口监控页、草稿、白名单、历史及样式 |
+| `scripts/test-egress.cjs`（新增） | 隔离核心/调度回归，已纳入 npm test |
+| `src/core/ip-intel.ts`（新增） | 出口 IP 的归属 / 类型 / 风险：四家公开 IP 数据库并发查询、合并、缓存 |
+| `renderer/fonts/`（新增） | Twemoji 国旗字体与许可 |
+| `renderer/usage-insights.js`、`usage-insights.css`（新增） | 用量明细的用量分析：分工具趋势、完整工具 / 模型排行、时段分布 |
+| `src/main/index.ts`、`src/main/preload.ts` | 监控启动/退出、桌面通知及 IPC：egress:state/save/check/clear、egress-state 推送 |
+| `renderer/index.html`、`renderer/app.js`、`renderer/app.css`、`renderer/i18n.js` | 导航、明细筛选/动效、中英词条；app.js 使用 PulseEgress.show 接入页面 |
+| `src/core/request-log.ts` | 明细精确筛选与 filteredAggregate；保留旧额度/总览 aggregate 语义 |
+| `scripts/test-ui.cjs`、`scripts/test-requests.cjs` | DOM/交互、动效、IPC 和查询回归；监控测试注入假出口与通知 |
+
+## 4. 重要边界和已知限制
+
+- **出口检测只证明所选域名经 TokenPulse 当前 curl/环境代理路径的出口**，不等于其他 CLI、浏览器或整份分流规则的出口，也不验证账号授权、额度或服务一定可用。
+- OpenAI / Claude 分流参考包含共享域名，例如 sentry、stripe；不要擅自将整份参考自动绑定某个代理节点。Grok 的 `grok.com`、`x.ai` 后缀集合是最小集合，不是完整官方分流清单。
+- 地区清单于 **2026-09-27** 核实：ChatGPT 208、OpenAI API 188、Claude 185 个代码；ChatGPT 与 API 规则分开。Claude API / Claude.ai 的官方名单已对比一致。
+- **Grok 的完整官方支持地区清单尚未核实**，页面保留未核实提示，用户可设自定义允许地区；不要套用另一家的清单。
+- 当前地区清单随包维护，**没有在线自动刷新机制**；超过 90 天按未核实处理。来源 URL 存在 JSON 中。含子地区限制的国家不能只凭两位国家代码就判支持。
+- 真实 IP 与地区的识别取自目标站点 trace；trace 若受阻、非预期响应或网络失败，显示无法确认，不回退到通用公网 IP 网站。
+- 用户后来确认此前额度查询故障由代理出口地区引起，已结束那次排查，账号凭证选择/续期逻辑未改。若未来专门排查账号页与额度页状态一致性，可核对 `accounts.ts: resolveAccountCredential` 与 `quota.ts: targetsOf`；这不是本次已完成修复项。
+- 数值范围筛选、按项目/会话分组仍属于后续候选需求，未实现。当前应等待用户下一项具体要求，而不是自动扩大范围。
+
+## 5. 数据、验证与重跑方法
+
+运行时数据在 `~/.tokenpulse/`，测试可通过 `TOKENPULSE_DATA_DIR` 隔离：
+- `egress-settings.json`：开关、通知偏好、三家主机与 IP/地区白名单。
+- `egress-history.json`：最多 50 条出口变化/告警；稳定采样不每五秒写盘。
+- `ip-intel.json`：出口 IP 的数据库查询结果缓存（最多 40 条，12 小时 / 查不全 15 分钟）。
+- 账号与其他历史文件沿用现有实现，监控不读取账号凭证。
+
+已完成验证（本次交接仅整理文档，没有重新运行整套测试）：
+- `npm test` 通过，包含出口监控 **11/11** 检查。
+- `npm run test:ui` 通过；仅 DOM / CSS / WAAPI / CDP 媒体查询验证，不查看图片。
+- 打包 ASAR 的隔离 UI 回归通过，包括三家卡片、草稿、白名单、两次异常告警、去重、配置校验、安全暂停、历史清除。
+- 正式 `probeExit` 对三家默认主机各实测一次成功。当时地区均为 US；这是那一次探测结果，不代表今后出口。日志未输出真实 IP。
+- 日志：`.tmp-037-tests.log`、`.tmp-037-egress-ui.log`、`.tmp-037-egress-packaged-ui.log`、`.tmp-037-egress-build.log`。日志中的 Simulated request query failure / Simulated scan failure 和故意输入无效 IP 的错误属于预期故障测试，判断结论要看 PASS/退出码。
+
+PowerShell 常用命令：
+
+~~~powershell
+Set-Location 'D:\CodePorject\Tools\TokenPulse'
+npm run compile
+node scripts/test-egress.cjs
+npm test
+npm run test:ui
+git diff --check
+
+# 目录版打包；先确认目标目录中的程序未运行。
+& .\node_modules\.bin\electron-builder.cmd --win --dir --publish never
+
+# 对打包的 ASAR 使用同一套隔离 UI 测试。
+$old = $env:TOKENPULSE_TEST_APP
+try {
+  $env:TOKENPULSE_TEST_APP = Join-Path (Get-Location) 'dist\win-unpacked\resources\app.asar'
+  & .\node_modules\.bin\electron.cmd scripts/test-ui.cjs
+} finally {
+  $env:TOKENPULSE_TEST_APP = $old
+}
+~~~
+
+注意：Windows 上用 `@electron/asar.extractFile` 核对嵌套路径时，先用 `path.join` 或 `path.sep` 规范化路径；直接传多层正斜杠曾导致“文件缺失”的误判。包内实际文件齐全。
+
+## 6. 当前产物和用户验收
+
+- **最新完整目录版**：`D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe`，Windows ProductVersion 已核对为 **0.3.7.0**，含筛选、动效、出口监控。
+- `dist/0.3.7-motion/win-unpacked/` 是之前单独的动效阶段产物，**不含后来新增的出口监控**，不要把它当最新版。
+- 本轮仅生成目录版，没有生成新的 Setup / Portable 单文件包，没有安装、发布或 Git 提交。dist 下已有的旧安装包不代表当前源码。
+- 用户先从**托盘退出**旧程序，再运行最新目录版；仅关闭窗口可能仍在托盘运行，单实例锁会让新启动回到旧程序。
+- 首次使用：出口监控 → 立即检测 → 为各家填允许的 IP 或加入当前 IP → 可选填地区白名单 → 保存并开启。Grok 尤其建议显式填写用户允许的地区。
+- 用户曾认可筛选功能；出口监控的功能与视觉体验仍等其实际反馈。不要将自动化验证等同于用户已验收全部界面。
+
+---
+
+# 历史迭代记录
+
+## 2026-09-27：0.3.7 · 出口监控
+
+- 最新产物：dist/win-unpacked/TokenPulse.exe，版本仍为 0.3.7，包含此前筛选/动效与本轮出口监控。ASAR 模块、IPC、规则文件核验及打包代码的隔离 DOM 回归通过。未发布、未安装、未关闭用户的已安装版本；首次体验需先从托盘退出旧进程。
+
+- 新增侧边栏「出口监控」。主进程每 5 秒尝试一轮（三家并发、每次 4 秒超时、不重叠）；关闭窗口收进托盘后继续，退出软件时停止并中止探测。首次默认暂停，用户保存 IP / 地区白名单后主动开启。
+- 请求所选官方域名的 /cdn-cgi/trace，校验 HTTP 200、h 与目标域名一致、合法 IP，读取 ip / loc。默认 chatgpt.com、api.anthropic.com、cli-chat-proxy.grok.com；支持在每家固定的官方候选域名中切换。不用第三方 IP 站点冒充目标出口，不请求模型/额度，不携带账号凭证，不更改代理。
+- 检测沿用 curl 与环境代理，只代表所选域名在 TokenPulse 进程内的路径，不保证其他程序、其他域名或全部分流规则同出口。用户提供的 OpenAI / Claude 规则完整保存在 knowledge/egress-domains.json；Grok 为 grok.com / x.ai 的最小后缀集合，页面明确不是完整列表。
+- 每家允许多个 IPv4/IPv6，规范化去重；可额外设允许地区（US、JP 等）。连续两次风险才通知，同一风险不刷屏；两次恢复后通知解除。检测失败、地区未知/规则过期单独显示，不能伪装成正常或不支持。
+- 官方地区数据：OpenAI ChatGPT 208 个代码、API 188 个代码，分别取 7947663 / 5347006 官方文章；Claude API 与 Claude.ai 清单核对一致，共 185 个代码。核实日期 2026-09-27、90 天后自动降为未核实；乌克兰等含子地区限制的条目不会按国家代码直接判正常。JSON 保留来源地址与适用范围。
+- Grok 未核实到完整官方支持国家清单，保留未核实状态，支持用户自定义允许地区，不能套用 OpenAI/Claude 清单。此项是明确限制。
+- 配置位于 ~/.tokenpulse/egress-settings.json；变化与告警位于 egress-history.json，仅保留 50 条，不写每轮采样。后台更新不覆盖表单草稿；无效草稿也不阻止暂停。
+- 涉及 src/core/egress.ts、src/main/egress-monitor.ts、主进程/IPC、renderer/egress.js/css、导航及中英词条。scripts/test-egress.cjs 已加入 npm test，UI 回归注入假出口/通知，不访问实际网络。
+- 验证：核心 11/11、npm test、源码纯 DOM UI 回归通过。正式 probeExit 对三家默认域名各探测一次成功（IP 未输出，地区均 US）。没有查看图片或生成截图。
+- 上轮额度排查由用户取消并确认是出口地区问题，本轮撤回当时仅新增的失败回归测试，未修改账号凭证选择或续期逻辑。
+
+## 2026-09-27：0.3.7 · 筛选交互动效
+
+- 产物：dist/0.3.7-motion/win-unpacked/TokenPulse.exe，版本仍为 0.3.7。原 dist/win-unpacked 正在运行，本轮未覆盖或终止；体验动效需先从托盘退出旧进程，再运行此独立目录版。
+- 验证：npm test、源码 UI 回归、动效目录版 ASAR 的隔离 UI 回归均通过。打包版第一次碰到主线程延迟 1096ms 的性能断言失败，保持原阈值重跑后通过，未放宽测试。
+
+- 复用现有 --ease 曲线，不增加依赖。模型下拉 180ms 缩放淡入/淡出，更多筛选 200ms 高度展开/收起，箭头和按压反馈同步。
+- 保留原生 details/summary 键盘语义；使用 ::details-content 与 content-visibility 离散过渡保证收起也有动画。
+- 筛选标签按稳定 key 复用 DOM：新增轻量入场、移除 125ms 离场、剩余标签位置平滑衔接；离场中重新选择可中断，刷新保留节点与焦点。
+- 筛选或切换明细视图后的结果仅做轻淡入；自动快照/定时刷新不触发结果动画。键盘操作即时响应，系统减少动态效果时关闭新增动效并结束进行中的动画。
+- 纯 DOM/CSS/WAAPI 与 CDP 媒体查询测试已通过：实际开合过渡、收起隐藏、快速反向、标签复用与焦点、安静刷新、键盘与 reduced-motion。未生成或查看截图。
+
+## 2026-09-27：0.3.7 · 用量明细筛选续接
+
+- 本轮接手工作区内中断的 0.3.7 改动，保留现有实现，不升级版本。
+- 用量明细共享筛选栏：统计型号精确多选、关键词、完整项目路径、官方订阅 / API Key 中转 / 归属未知、账号和型号核验；逐条与按日视图切换保留条件，支持标签移除和清空。
+- 模型候选列表新增大小写不敏感搜索；只影响候选项显示，不改变查询或取消已选模型；无候选结果单独提示。
+- 明细筛选统计通过 filteredAggregate 从流水汇总，与筛选明细及导出一致；总览/额度旧 aggregate 口径保留。请求条数与模型调用次数区分，Grok 一轮多次调用不混算。
+- 汇总加载/失败不再显示成零用量，失败提供显式重试；重试保留筛选。查询进行中或失败时同条件重绘不重复启动明细 worker。
+- UI 回归使用 DOM、计算样式、尺寸与交互断言；移除 test-ui.cjs 内截图生成。新增候选搜索保留选择、查询故障和恢复测试。
+- **当前协作约束（优先于文末旧说明）**：用户明确要求不得查看图片、截图或图片预览，避免客户端报错。视觉效果由用户验收；后续继续使用源码、DOM 与文本测试验证。
+- 验证：npm test、源码 npm run test:ui、针对 dist/win-unpacked/resources/app.asar 的隔离 DOM 回归全部通过；故障测试中的 Simulated request query failure / Simulated scan failure 是主动注入的预期错误。git diff --check 通过。
+- 已生成本地目录版 dist/win-unpacked/TokenPulse.exe，ASAR 内版本核对为 0.3.7，并包含候选搜索和重试功能。未生成新的 Setup/Portable 单文件包，未发布或安装；用户正在运行的已安装版未关闭。
+- 当前仍以统计型号筛选；请求型号/返回型号可通过关键词匹配。数值范围筛选和按项目/会话分组尚未实现，作为后续独立需求。
+
 ## 2026-09-26：0.3.6 · 重置卡（官方送的 / 用户自己用的重置）
 
 - **问题**：额度容量趋势按「重置时间」把采样分成窗口，窗口固定。一个周期里用了一次重置卡：

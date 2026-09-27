@@ -1,3 +1,5 @@
+import { ExitMonitor } from "./egress-monitor";
+import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, Tray } from "electron";
 import fsSync from "fs";
 import fs from "fs/promises";
@@ -38,6 +40,15 @@ let win: BrowserWindow | null = null;
 let relaunchHidden = false;
 let tray: Tray | null = null;
 let quitting = false;
+const exitMonitor = new ExitMonitor({
+  publish: snapshot => { if (win && !win.isDestroyed()) win.webContents.send("egress-state", snapshot); },
+  notify: event => {
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({ title: tr("出口监控") + " · " + DOMAINS[event.provider].name, body: tr(event.message) + (event.ip ? " · " + event.ip : "") + (event.region ? " · " + event.region : ""), icon: windowIcon() });
+    notification.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "egress" }); });
+    notification.show();
+  },
+});
 /** 「账号:窗口」→ 已经提醒过的那个窗口的重置时间。同一个窗口只提醒一次。 */
 const notified = new Map<string, number>();
 /** 两次重置时间差不到这么多，就当是同一个窗口（接口返回的时间有抖动，见 maybeNotify）。 */
@@ -79,7 +90,8 @@ function createWindow() {
   });
   // 外链走系统浏览器，别在应用里开一个没有地址栏的窗口。
   next.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    // 只放行网页链接：别让页面里的内容拿 file: / 自定义协议去启动本机程序
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: "deny" };
   });
   next.on("close", (event) => {
@@ -301,6 +313,10 @@ function parseRequestQuery(value: unknown): RequestQuery {
     account: typeof input.account === "string" && input.account ? input.account.slice(0, 300) : undefined,
     since: Number.isFinite(input.since) ? Number(input.since) : undefined,
     aggregate: input.aggregate === true,
+    filteredAggregate: input.filteredAggregate === true,
+    models: Array.isArray(input.models) ? [...new Set(input.models.filter((v): v is string => typeof v === "string" && v.length <= 300))].slice(0, 200) : undefined,
+    project: typeof input.project === "string" ? input.project.slice(0, 4096) : undefined,
+    channel: ["official", "api", "unknown"].includes(String(input.channel)) ? input.channel as RequestQuery["channel"] : "all",
     until: Number.isFinite(input.until) ? Number(input.until) : undefined,
   };
 }
@@ -346,7 +362,8 @@ async function runRefresh(withQuota: boolean): Promise<Snapshot> {
   notifyRequests(snapshot);
   if (withQuota) {
     try {
-      await fetchOfficialQuota(true);
+      // 设了出口 IP 白名单的那家，出口不对就不去问官方（见 egress-monitor.ts 的 gateQuota）
+      await fetchOfficialQuota(true, (kind) => exitMonitor.gateQuota(kind));
       snapshot = publishSnapshot(await loadSnapshot(false));
     } catch (error) {
       console.error("[TokenPulse] 额度接口失败", error);
@@ -510,6 +527,12 @@ if (!app.requestSingleInstanceLock()) {
     // 知识库更新了（新型号的单价）：重算一遍，界面上的费用跟着变
     scheduleKnowledgeChecks(() => backgroundRefresh(false));
 
+    ipcMain.handle("egress:state", () => exitMonitor.snapshot());
+    ipcMain.handle("egress:save", (_event, value: unknown) => exitMonitor.save(value));
+    ipcMain.handle("egress:check", () => exitMonitor.check(true));
+    ipcMain.handle("egress:clear", () => exitMonitor.clearHistory());
+    ipcMain.handle("egress:intel", (_event, ip: unknown) => exitMonitor.refreshIntel(ip));
+    exitMonitor.start();
     ipcMain.handle("snapshot", () => getInitialSnapshot());
     ipcMain.handle("refresh", async () => refresh(true));
     ipcMain.handle("prefs:read", () => readPrefs());
@@ -617,6 +640,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", () => {
     quitting = true;
     // 还在跑的回复一起结束，别留下没人管的 CLI 进程
+    exitMonitor.stop();
     stopAllReplies();
   });
 }
