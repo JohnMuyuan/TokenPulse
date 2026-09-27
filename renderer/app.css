@@ -718,6 +718,9 @@ td.n { font-variant-numeric: tabular-nums; }
   font-size: 14px; font-weight: 550;
 }
 .prediction-line .icon { width: 18px; height: 18px; }
+/* 当前窗口是重置卡之后开始的 */
+.reset-card-note { display: flex; align-items: center; gap: 7px; margin: -4px 0 14px; color: var(--muted); font-size: 12.5px; }
+.reset-card-note .icon { width: 14px; height: 14px; color: var(--accent); }
 .prediction-line.caution { background: var(--warn-soft); color: var(--warn); }
 /* 额度详情的指标小卡片：按「Token 与费用 / 预测 / 速度与时间」分组，每张卡一个数。 */
 .window-panel { container-type: inline-size; }

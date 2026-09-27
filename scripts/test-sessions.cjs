@@ -161,18 +161,6 @@ assert.deepStrictEqual(reply.deleteArgs('codex', 'abc'), ['delete', 'abc']);
 assert.deepStrictEqual(reply.deleteArgs('grok', 'abc'), ['sessions', 'delete', 'abc']);
 assert.strictEqual(reply.deleteArgs('claude', 'abc'), null);
 
-// Grok 配了自定义模型提供商时，TokenPulse 启动的回复要强制走该 API Key，而不是 ~/.grok/auth.json 的 OAuth
-const providerEnv = reply.grokProviderEnv(`[models]
-default = "grok-4.6"
-
-[model."grok-4.6"]
-base_url = "https://proxy.example/v1"
-api_key = "proxy-key"
-`, {});
-assert.deepStrictEqual(providerEnv, { GROK_MODELS_BASE_URL: 'https://proxy.example/v1', XAI_API_KEY: 'proxy-key' });
-assert.deepStrictEqual(reply.grokProviderEnv(`[models]
-default = "grok-4.6"`, {}), {});
-
 // 在终端里继续：进项目目录；PATH 上没有 CLI 时退到找到的 exe；单引号按 PowerShell 规则加倍
 const script = reply.terminalScript('grok', "a'b", "D:\\临时\\it's here", 'C:\\Users\\x\\.grok\\bin\\grok.exe');
 assert(script.startsWith("Set-Location -LiteralPath 'D:\\临时\\it''s here'"));

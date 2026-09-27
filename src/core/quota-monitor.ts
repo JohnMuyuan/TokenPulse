@@ -9,6 +9,8 @@
  * - **窗口起点**：周窗口优先用接口直接给的 weekStart（Grok 有），否则 weekReset - 7 天；
  *   5 小时窗口 = fiveReset - 5 小时。
  * - **窗口里百分比掉下来之前的样本不算**：到点重置、或者用了一次手动重置，前面的点就不属于这个窗口了。
+ * - **重置卡按重置那一刻切窗口**（windowSegments）：Codex 的重置卡会把重置日期顺延（等于提前开新窗口），
+ *   Claude / Grok 的重置日期不变（同一个窗口里前后两段）。当前窗口的起点、本机用量、容量、平均速度都从重置那一刻算。
  * - **耗尽预测以最近趋势为主**：从最近 24 小时（5 小时窗口取最近 1 小时）的多个采样跨度
  *   计算加权中位数，降低单次采样抖动和突然跳点的影响。窗口平均速度只在近期采样跨度还不够时兜底。
  *   这样长时间空闲不会继续沿用旧平均值，刚恢复使用也不会等整窗平均慢慢追上。
@@ -31,6 +33,8 @@ export type HourRow = { hour: number; model: string; tokens: number; costUsd: nu
 export type WindowReport = {
   used: number;
   startAt?: number;
+  /** 这个窗口是重置卡之后开始的（startAt 就是重置那一刻）。界面上说明「从重置卡之后算」。 */
+  startedByReset?: "moved" | "kept";
   resetAt?: number;
   elapsedH?: number;
   leftH?: number;
@@ -79,6 +83,11 @@ export type CapacityPoint = {
   confidence: Confidence;
   /** 当前还没结束的窗口。 */
   current: boolean;
+  /** 这一段实际结束的时间（被重置卡提前结束时早于 resetAt）。 */
+  endAt: number;
+  /** 被重置卡提前结束 / 从重置卡之后开始（见 RESET_STYLE）。 */
+  endedByReset?: "moved" | "kept";
+  startedByReset?: "moved" | "kept";
 };
 
 export type CapacityHistory = {
@@ -211,21 +220,45 @@ export function confidenceOf(pct: number): Confidence {
 export const MIN_CAPACITY_PCT = 2;
 
 /**
- * 把采样历史按窗口分组，每个窗口折算一次「整窗能用多少」。
- *
- * - 同一个窗口的采样按重置时间归组（容忍 10 分钟抖动：Claude 每次返回的重置时间都差几百毫秒）；
- * - 窗口里百分比掉下来过（手动重置）的，前后用量混在一起说不清，不计入；
- * - 已用不到 2%，或者本机在这个窗口里没有用量（用在了别的设备上）：没法估，不计入，只计数；
- * - 0% 的窗口是没用过，直接忽略。
+ * 各家「重置卡」（用户自己用的、或者官方时不时送的一次重置）的表现不一样：
+ * - **ChatGPT / Codex：重置日期跟着变** —— 用了之后已用归零，重置日期改成「现在 + 一个周期」，等于提前开了一个新窗口。
+ *   本机实测：09-26 17:03 周额度已用 93%、09-29 重置；下一次采样 09-27 03:32 已用 0%、重置日期变成 10-04 03:32。
+ * - **Claude / Grok：重置日期不变** —— 已用归零（或掉一大截），重置日期还是原来那个，同一个窗口里前后两段。
+ * 两种都要按「重置那一刻」把窗口切开：以前 Claude / Grok 的窗口里一出现回落就整窗不计入（少算一个点，
+ * 当前窗口的容量也没了）；Codex 的旧窗口还带着原来的重置日期，被当成第二个「进行中」的窗口。
  */
-export function capacityHistory(
-  samples: QuotaSample[],
-  rows: HourRow[],
-  kind: "week" | "five",
-  now: number,
-): CapacityHistory {
+export const RESET_STYLE: Record<AccountKind, "moves" | "keeps"> = { chatgpt: "moves", claude: "keeps", grok: "keeps" };
+
+/** 一段连续的额度窗口：到点重置之间，或者被重置卡切开的一段。 */
+export type WindowSegment = {
+  startAt: number;
+  /** 这一段实际结束的时间：到点重置就是 resetAt，被重置卡提前结束就是重置那一刻（上一次采样之后）。 */
+  endAt: number;
+  /** 官方给的重置时间。 */
+  resetAt: number;
+  points: Point[];
+  /** 这一段被重置卡提前结束了（moved：Codex 式，重置日期顺延；kept：Claude / Grok 式，重置日期不变）。 */
+  endedByReset?: "moved" | "kept";
+  /** 这一段是重置卡之后开始的。 */
+  startedByReset?: "moved" | "kept";
+};
+
+/**
+ * 把一家的采样切成窗口段。
+ *
+ * 1. 按重置时间分组（容忍 10 分钟抖动：Claude 每次返回的重置时间都差几百毫秒）；采样时已经过了重置点的丢掉。
+ * 2. 同一组里百分比掉下来（> 0.5，Grok 的浮点会有 65.99 → 65.98 这种抖动）：重置卡，重置日期没变 ——
+ *    在最后一次回落前的采样处切开，后一段从那一刻开始算。
+ * 3. 下一组的起点早于这一组的重置时间：这一组被提前结束了（Codex 的重置卡会这样）——
+ *    结束时间改成下一组起点，但不早于这一组最后一次采样。
+ * 4. 任何一段都不会从上一段最后一次采样之前开始：重置一定发生在那之后，前面的用量不属于新的一段。
+ *
+ * `style` 只决定标成哪一种重置（界面上的说明不同）；两种切法都照做 —— 数据里真出现了就说明窗口确实断过，
+ * 不切的话前后的用量会混在一起。
+ */
+export function windowSegments(samples: QuotaSample[], kind: "week" | "five", style: "moves" | "keeps" = "keeps"): WindowSegment[] {
   const length = kind === "week" ? WEEK_MS : FIVE_HOUR_MS;
-  const groups: { resetAt: number; startAt: number; list: { at: number; pct: number }[] }[] = [];
+  const groups: { resetAt: number; startAt: number; list: Point[] }[] = [];
   for (const sample of samples) {
     const pct = kind === "week" ? sample.week : sample.five;
     const resetAt = time(kind === "week" ? sample.weekReset : sample.fiveReset);
@@ -240,24 +273,74 @@ export function capacityHistory(
     const startAt = (kind === "week" ? time(sample.weekStart) : undefined) ?? resetAt - length;
     groups.push({ resetAt, startAt, list: [{ at: sample.at, pct }] });
   }
+  const segments: WindowSegment[] = [];
+  for (const group of groups) {
+    const previous = segments.at(-1);
+    let startAt = group.startAt;
+    let startedByReset: WindowSegment["startedByReset"];
+    if (previous) {
+      const lastAt = previous.points.at(-1)!.at;
+      // 上一组的重置时间还没到，这一组就开始了：上一组被提前结束
+      if (startAt < previous.endAt - 10 * 60_000) {
+        previous.endAt = Math.max(lastAt, startAt);
+        if (style === "moves") {
+          previous.endedByReset = "moved";
+          startedByReset = "moved";
+        }
+      }
+      startAt = Math.max(startAt, lastAt);
+    }
+    // 同一组里的回落：重置日期没变的重置卡
+    let part: Point[] = [];
+    let partStart = startAt;
+    let partStarted = startedByReset;
+    group.list.forEach((point, i) => {
+      if (i > 0 && point.pct < group.list[i - 1].pct - 0.5) {
+        const cut = group.list[i - 1].at;
+        segments.push({ startAt: partStart, endAt: cut, resetAt: group.resetAt, points: part, endedByReset: "kept", ...(partStarted ? { startedByReset: partStarted } : {}) });
+        part = [];
+        partStart = cut;
+        partStarted = "kept";
+      }
+      part.push(point);
+    });
+    segments.push({ startAt: partStart, endAt: group.resetAt, resetAt: group.resetAt, points: part, ...(partStarted ? { startedByReset: partStarted } : {}) });
+  }
+  return segments;
+}
+
+/**
+ * 每个窗口段折算一次「整窗能用多少」（窗口段见 windowSegments：到点重置之间，或者被重置卡切开的一段）。
+ *
+ * - 用过重置卡的窗口按重置那一刻切成前后两段，各算各的：以前整窗不计入，一用重置卡这一周期就少一个点；
+ * - 已用不到 2%，或者本机在这一段里没有用量（用在了别的设备上）：没法估，不计入，只计数；
+ * - 0% 的是没用过，直接忽略。
+ */
+export function capacityHistory(
+  samples: QuotaSample[],
+  rows: HourRow[],
+  kind: "week" | "five",
+  now: number,
+  style: "moves" | "keeps" = "keeps",
+): CapacityHistory {
+  const segments = windowSegments(samples, kind, style);
   const points: CapacityPoint[] = [];
   const skipped = { tooLow: 0, noLocal: 0 };
-  for (const group of groups) {
-    const dropped = group.list.some((point, i) => i > 0 && point.pct < group.list[i - 1].pct - 0.5);
-    if (dropped) continue;
-    const final = group.list.at(-1)!;
+  segments.forEach((segment, index) => {
+    const final = segment.points.at(-1)!;
     /*
      * 0% 的不算「用得太少」：窗口根本没开始用。ChatGPT 的 5 小时窗口没用时，接口每次都把重置时间
      * 往后挪（= 现在 + 5 小时），会凑出几十个「窗口」，计进跳过数只会误导人。
      */
-    if (final.pct <= 0) continue;
-    if (final.pct < MIN_CAPACITY_PCT) { skipped.tooLow += 1; continue; }
-    const used = sumRows(rows, group.startAt, final.at, now);
-    if (used.tokens <= 0) { skipped.noLocal += 1; continue; }
+    if (final.pct <= 0) return;
+    if (final.pct < MIN_CAPACITY_PCT) { skipped.tooLow += 1; return; }
+    const used = sumRows(rows, segment.startAt, final.at, now);
+    if (used.tokens <= 0) { skipped.noLocal += 1; return; }
     const scale = 100 / final.pct;
     points.push({
-      startAt: group.startAt,
-      resetAt: group.resetAt,
+      startAt: segment.startAt,
+      resetAt: segment.resetAt,
+      endAt: segment.endAt,
       at: final.at,
       pct: final.pct,
       tokens: used.tokens,
@@ -265,9 +348,12 @@ export function capacityHistory(
       capacityTokens: used.tokens * scale,
       capacityCostUsd: used.costUsd * scale,
       confidence: confidenceOf(final.pct),
-      current: group.resetAt > now,
+      // 只有最后一段、而且还没到重置时间的才是进行中（Codex 被提前结束的旧窗口，重置日期还在将来，但已经结束了）
+      current: index === segments.length - 1 && segment.endAt > now,
+      ...(segment.endedByReset ? { endedByReset: segment.endedByReset } : {}),
+      ...(segment.startedByReset ? { startedByReset: segment.startedByReset } : {}),
     });
-  }
+  });
   return { points, skipped };
 }
 
@@ -284,6 +370,12 @@ function activeShareOf(rows: HourRow[], startAt: number | undefined, now: number
   return Math.min(1, hours.size / elapsedH);
 }
 
+/** 当前窗口对应的最后一段（重置时间对得上才算，对不上就按接口给的起点）。 */
+function currentSegment(segments: WindowSegment[], resetAt: number | undefined) {
+  const last = segments.at(-1);
+  return last && resetAt != null && Math.abs(last.resetAt - resetAt) < 10 * 60_000 ? last : undefined;
+}
+
 /** 采样之后已经过了重置点：换到新窗口、从 0 算。 */
 function rollWindow(current: number, startAt: number | undefined, resetAt: number | undefined, length: number, now: number) {
   if (resetAt == null || resetAt > now) return { current, startAt, resetAt, stale: false };
@@ -298,6 +390,7 @@ export function analyzeWindow(
     startAt?: number;
     resetAt?: number;
     points: Point[];
+    startedByReset?: "moved" | "kept";
     lookbackMs: number;
     minSpanMs: number;
     /** 窗口至少走过这么久，才拿平均速度去预测（太早算出来全是噪声）。 */
@@ -358,6 +451,7 @@ export function analyzeWindow(
   return {
     used: current,
     startAt,
+    ...(input.startedByReset ? { startedByReset: input.startedByReset } : {}),
     resetAt,
     elapsedH,
     leftH,
@@ -414,6 +508,7 @@ export function analyzeAccount(
    * 未标注的行就不能再猜给当前账号，否则切换账号后会把另一账号的用量折进容量和 ETA。
    * 全部都是旧格式时保留旧口径，等 0.3.3 的重扫迁移完成。
    */
+  const style = RESET_STYLE[kind] ?? "keeps";
   const hasAccountRows = rows.some((row) => row.account != null);
   const scopedRows = current && hasAccountRows ? rows.filter((row) => row.account === current) : rows;
 
@@ -421,7 +516,10 @@ export function analyzeAccount(
   let trend: Point[] = [];
   if (latest?.week != null) {
     const resetAt = time(latest.weekReset);
-    const startAt = time(latest.weekStart) ?? (resetAt != null ? resetAt - WEEK_MS : undefined);
+    const nominal = time(latest.weekStart) ?? (resetAt != null ? resetAt - WEEK_MS : undefined);
+    // 用过重置卡的话，当前窗口从重置那一刻算：之前的用量和百分比不属于它
+    const segment = currentSegment(windowSegments(samples, "week", style), resetAt);
+    const startAt = segment?.startAt ?? nominal;
     const rolled = rollWindow(latest.week, startAt, resetAt, WEEK_MS, now);
     trend = rolled.stale ? [] : pointsOf(samples, (sample) => sample.week, rolled.startAt);
     week = analyzeWindow(
@@ -430,6 +528,7 @@ export function analyzeAccount(
         startAt: rolled.startAt,
         resetAt: rolled.resetAt,
         points: trend,
+        startedByReset: rolled.stale ? undefined : segment?.startedByReset,
         // 最近一天的节奏比最近 6 小时稳，够盖住一个作息周期
         lookbackMs: 24 * HOUR_MS,
         minSpanMs: 2 * HOUR_MS,
@@ -443,7 +542,8 @@ export function analyzeAccount(
   let five: WindowReport | null = null;
   if (latest?.five != null) {
     const resetAt = time(latest.fiveReset);
-    const startAt = resetAt != null ? resetAt - FIVE_HOUR_MS : undefined;
+    const segment = currentSegment(windowSegments(samples, "five", style), resetAt);
+    const startAt = segment?.startAt ?? (resetAt != null ? resetAt - FIVE_HOUR_MS : undefined);
     const rolled = rollWindow(latest.five, startAt, resetAt, FIVE_HOUR_MS, now);
     const points = rolled.stale ? [] : pointsOf(samples, (sample) => sample.five, rolled.startAt);
     five = analyzeWindow(
@@ -452,6 +552,7 @@ export function analyzeAccount(
         startAt: rolled.startAt,
         resetAt: rolled.resetAt,
         points,
+        startedByReset: rolled.stale ? undefined : segment?.startedByReset,
         lookbackMs: HOUR_MS,
         minSpanMs: 15 * 60_000,
         minElapsedMs: 30 * 60_000,
@@ -527,6 +628,6 @@ export function analyzeAccount(
     hourly,
     models,
     health: healthOf(week, five, now),
-    capacityHistory: { week: capacityHistory(samples, scopedRows, "week", now), five: capacityHistory(samples, scopedRows, "five", now) },
+    capacityHistory: { week: capacityHistory(samples, scopedRows, "week", now, style), five: capacityHistory(samples, scopedRows, "five", now, style) },
   };
 }

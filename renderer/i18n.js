@@ -26,6 +26,7 @@
     '刷新数据': 'Refresh', '正在刷新…': 'Refreshing…', '正在读取本地数据': 'Reading local data', '正在读取本地用量…': 'Reading local usage…', '正在扫描本地会话…': 'Scanning local sessions…',
     '今天的用量与额度': "Today's usage and quota", '看看还剩多少额度，再安排接下来的工作。': 'See how much quota is left, then plan the rest of your work.',
     // 多账号额度、账号管理
+    '用过重置卡，重置日期已顺延': 'Reset card used; reset date moved later', '用过重置卡，重置日期不变': 'Reset card used; reset date unchanged',
     '号池 · 按顺序使用': 'Pool · used in order', '下一个': 'Next',
     '重命名': 'Rename', '拖动调整顺序': 'Drag to reorder', '回车保存，Esc 取消；留空就显示邮箱。': 'Enter to save, Esc to cancel. Leave empty to show the email.',
     '给这个账号起个名字': 'Name this account', '账号名字（留空就显示邮箱）': 'Account name (leave empty to show the email)', '已改名': 'Renamed', '已去掉名字，显示邮箱': 'Name removed. Showing the email.',
@@ -370,6 +371,10 @@
     P('本周 (.+) 各账号', m => `${m[1]} accounts this week`),
     P('(.+) 账号', m => `${m[1]} account`),
     P('未计入 (\\d+) 个窗口：([^。]+)。', m => `${m[1]} windows left out: ${v(m[2])}.`),
+    // 重置卡（见 quota-monitor.ts 的 RESET_STYLE）
+    P('从重置卡之后开始（(.+)）', m => `Started after a reset card (${v(m[1])})`),
+    P('用了重置卡，提前结束（(.+)）', m => `Ended early by a reset card (${v(m[1])})`),
+    P('(用过重置卡，重置日期(?:已顺延|不变)) · 从 (.+) 起算', m => `${v(m[1])} · counted from ${m[2]}`),
     // 账号名是用户的内容，不翻
     P('(\\d+) / (\\d+) 个有余量', m => `${m[1]} / ${m[2]} with quota left`),
     P('还有 ' + N + ' 个账号', m => `${m[1]} more ${m[1] === '1' ? 'account' : 'accounts'}`),

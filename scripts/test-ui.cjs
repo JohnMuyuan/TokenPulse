@@ -87,7 +87,9 @@ app.on('web-contents-created', (_, contents) => {
       // 账号列表在设置窗口打开后才异步加载（要探测 CLI），先等它出来。
       await until("document.querySelectorAll('#official-accounts .oauth-card').length === 3");
       assert.match(await evaluate("document.getElementById('official-accounts').textContent"), /添加账号|未检测到官方 CLI/);
-      assert.doesNotMatch(await evaluate("document.getElementById('official-accounts').innerHTML"), /token|access_token|refresh/i);
+      // 账号列表里不能出现凭据：字段名或 JWT 形状的值。不能只搜「token / refresh」这两个词 ——
+      // 「完全删除 TokenPulse 记录」和重新授权按钮的 #i-refresh 图标本来就含这两个词，会误报
+      assert.doesNotMatch(await evaluate("document.getElementById('official-accounts').innerHTML"), /access_?token|refresh_?token|id_?token|accessToken|refreshToken|\beyJ[\w-]{10,}/i);
       await evaluate("document.querySelector('[data-settings-tab=about]').click()");
       assert.ok((await evaluate("document.querySelector('.about-name').textContent")).includes('v' + require(path.join(appRoot, 'package.json')).version));
       // 软件更新区：开发环境不检查更新，要说明原因、不显示开关

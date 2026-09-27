@@ -858,6 +858,8 @@ function windowPanel(label, report, account) {
   panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { text: report.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' })]));
   const caution = report.runsOutBeforeReset || unknown;
   panel.append(el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(report, account)]));
+  // 这个窗口是重置卡之后开始的：本窗口用量、容量、平均速度都从重置那一刻算
+  if (report.startedByReset && !pending) panel.append(el('p', { class: 'reset-card-note' }, [icon('refresh'), `${RESET_CARD[report.startedByReset]} · 从 ${date(report.startAt)} 起算`]));
 
   const capacity = report.capacity;
   const waitText = '等待有效采样';
@@ -890,6 +892,8 @@ function windowPanel(label, report, account) {
   panel.append(el('p', { class: 'quota-footnote', text: 'Token 和费用按「本机已用 ÷ 已用百分比」倒推，只统计这台电脑；在别的设备上也用这个账号时会偏低，也不是官方公布的上限。' }));
   return panel;
 }
+/** 重置卡的两种表现（见 quota-monitor.ts 的 RESET_STYLE）。 */
+const RESET_CARD = { moved: '用过重置卡，重置日期已顺延', kept: '用过重置卡，重置日期不变' };
 /** 历史窗口的「整窗容量」折线：看官方给的总额度有没有变。 */
 function capacityChart(host, history, windowName, metric, animate) {
   host.replaceChildren();
@@ -916,7 +920,9 @@ function capacityChart(host, history, windowName, metric, animate) {
   if (points.length > 1) node.append(svg('path', { class: 'trend-line cap-line', d: points.map((p, i) => `${i ? 'L' : 'M'}${x(p).toFixed(1)},${y(value(p)).toFixed(1)}`).join(' '), pathLength: 1, 'stroke-dasharray': 1 }));
   const dayLabel = at => new Date(at).toLocaleDateString(dateLocale(), { month: '2-digit', day: '2-digit' });
   points.forEach((p, i) => {
-    const text = `${date(p.startAt)} → ${date(p.resetAt)}${p.current ? '（进行中）' : ''}\n最后一次采样已用 ${percent(p.pct)}\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
+    // 被重置卡提前结束的段，结束时间是重置那一刻，不是原来的重置日期
+    const resetNote = [p.startedByReset && `从重置卡之后开始（${RESET_CARD[p.startedByReset]}）`, p.endedByReset && `用了重置卡，提前结束（${RESET_CARD[p.endedByReset]}）`].filter(Boolean).join('\n');
+    const text = `${date(p.startAt)} → ${date(p.endAt ?? p.resetAt)}${p.current ? '（进行中）' : ''}${resetNote ? '\n' + resetNote : ''}\n最后一次采样已用 ${percent(p.pct)}\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
     const dot = svg('circle', { class: `cap-dot ${p.confidence === 'low' ? 'low' : 'solid'}${p.current ? ' current' : ''}`, cx: x(p), cy: y(value(p)), r: p.current ? 6 : 4.5, tabindex: 0, 'aria-label': text });
     dot.style.animationDelay = `${Math.round(600 + i * 60)}ms`;
     dot.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
@@ -1360,7 +1366,7 @@ function quotaShare(row) {
   const report = reports.find(item => item.accountId && item.accountId === row.account?.id) || (reports.length === 1 && !reports[0].accountId ? reports[0] : null);
   if (!report || !row.account) return null;
   const share = name => {
-    const point = report.capacityHistory?.[name]?.points?.find(p => row.at >= p.startAt && row.at < p.resetAt);
+    const point = report.capacityHistory?.[name]?.points?.find(p => row.at >= p.startAt && row.at < (p.endAt ?? p.resetAt));
     return point?.capacityTokens ? { pct: row.tokens / point.capacityTokens * 100, confidence: point.confidence } : null;
   };
   const week = share('week'), five = share('five');

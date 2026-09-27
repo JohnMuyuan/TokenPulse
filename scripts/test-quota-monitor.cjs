@@ -19,7 +19,7 @@ const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
 // tsc 已经把 core/ 编成 CommonJS 了，直接 require 编译产物，不用再 bundle 一次。
-const { analyzeAccount, capacityHistory, sumRows, HOUR_MS, WEEK_MS } = require(path.join(ROOT, "build", "core", "quota-monitor.js"));
+const { analyzeAccount, capacityHistory, windowSegments, sumRows, HOUR_MS, WEEK_MS } = require(path.join(ROOT, "build", "core", "quota-monitor.js"));
 
 // 采样器直接写文件，得给它一个一次性的数据目录，别碰用户真实的 ~/.tokenpulse。
 const data = fs.mkdtempSync(path.join(os.tmpdir(), "tokenpulse-quota-history-"));
@@ -284,7 +284,7 @@ try {
       { at: at(r2, 1 * HOUR_MS), five: 1, fiveReset: iso(r2) },
       // 窗口 3：用到 4%，但本机没有用量（用在了别的设备上）
       { at: at(r3, 1 * HOUR_MS), five: 4, fiveReset: iso(r3) },
-      // 窗口 4：中途手动重置过（百分比掉下来），前后用量说不清
+      // 窗口 4：中途用过重置卡（百分比掉下来、重置时间不变）：按重置那一刻切成前后两段
       { at: at(r4, 3 * HOUR_MS), five: 30, fiveReset: iso(r4) },
       { at: at(r4, 1 * HOUR_MS), five: 5, fiveReset: iso(r4) },
       // 没用过的窗口（0%，ChatGPT 每次把重置时间往后挪）：直接忽略，不计进跳过数
@@ -296,15 +296,73 @@ try {
     const rows = [];
     for (let hour = r1 - 5 * HOUR_MS; hour < NOW; hour += HOUR_MS) if (hour < r3 - 5 * HOUR_MS || hour >= r3) rows.push({ hour, model: "m", tokens: 1_000_000, costUsd: 1, requests: 1 });
     const history = capacityHistory(samples, rows, "five", NOW);
-    const [w1, w5] = history.points;
-    check("历史容量：每个可估的窗口一个点，按重置时间归组（容忍抖动）", history.points.length === 2, JSON.stringify(history.points.map((p) => p.pct)));
+    const [w1, w4a, w4b, w5] = history.points;
+    check("历史容量：每个可估的窗口（段）一个点，按重置时间归组（容忍抖动）", history.points.length === 4, JSON.stringify(history.points.map((p) => p.pct)));
     // 窗口 1 从 r1-5h 到最后一次采样 r1-1h：400 万 token，已用 40% → 整窗 1000 万
     check("容量 = 窗口开始到最后一次采样的本机用量 ÷ 那次的已用百分比", near(w1.capacityTokens, 10_000_000, 10_000) && near(w1.capacityCostUsd, 10, 0.01) && w1.confidence === "high", JSON.stringify(w1));
     check("已用不到 2% / 本机没有用量的窗口不计入，只计数；0% 的窗口直接忽略", history.skipped.tooLow === 1 && history.skipped.noLocal === 1, JSON.stringify(history.skipped));
-    check("中途手动重置过的窗口不计入（前后用量说不清）", !history.points.some((p) => p.resetAt === r4));
+    // 重置前：r4-5h 到 r4-3h 用了 200 万、30% → 整窗约 667 万；重置后：从最后一次回落前的采样（r4-3h）起算，200 万、5% → 4000 万
+    check("用过重置卡的窗口切成两段，各算各的（以前整窗不计入）",
+      w4a?.resetAt === r4 && w4a.endAt === r4 - 3 * HOUR_MS && w4a.endedByReset === "kept" && near(w4a.capacityTokens, 2_000_000 / 0.3, 10)
+        && w4b?.startAt === r4 - 3 * HOUR_MS && w4b.startedByReset === "kept" && near(w4b.tokens, 2_000_000, 10) && !w4a.current && !w4b.current,
+      JSON.stringify({ w4a, w4b }));
     check("进行中的窗口标出来，已用 2–5% 标为可信度低", w5.current && w5.confidence === "low" && !w1.current, JSON.stringify({ current: w5.current, confidence: w5.confidence }));
     const report = analyzeAccount("chatgpt", samples, rows, NOW);
-    check("账号报告里带上周 / 5 小时两条历史", report.capacityHistory.five.points.length === 2 && Array.isArray(report.capacityHistory.week.points));
+    check("账号报告里带上周 / 5 小时两条历史", report.capacityHistory.five.points.length === 4 && Array.isArray(report.capacityHistory.week.points));
+  }
+
+  // ---- 10e. 重置卡：Claude / Grok 式（重置日期不变）----
+  {
+    // 周窗口 NOW-96h 开始、NOW+72h 重置。用到 60% 时（NOW-10h）用了一张重置卡，之后又用到 20%
+    const reset = RESET, start = reset - WEEK_MS;
+    const samples = [
+      { at: NOW - 30 * HOUR_MS, week: 40, weekReset: iso(reset) },
+      { at: NOW - 10 * HOUR_MS, week: 60, weekReset: iso(reset + 300) },
+      { at: NOW - 9 * HOUR_MS, week: 0, weekReset: iso(reset) },
+      { at: NOW - 4 * HOUR_MS, week: 10, weekReset: iso(reset) },
+      { at: NOW, week: 20, weekReset: iso(reset) },
+    ];
+    // 每小时 100 万 token、$1
+    const rows = [];
+    for (let hour = start; hour < NOW; hour += HOUR_MS) rows.push({ hour, model: "m", tokens: 1_000_000, costUsd: 1, requests: 1 });
+    const history = capacityHistory(samples, rows, "week", NOW, "keeps");
+    const [before, after] = history.points;
+    check("Claude / Grok：重置卡前后各一个点，一个都不少", history.points.length === 2, JSON.stringify(history.points.map((p) => p.pct)));
+    check("重置前那段：到最后一次回落前的采样为止，容量按 60% 折算", before.endAt === NOW - 10 * HOUR_MS && before.endedByReset === "kept" && !before.current && near(before.capacityTokens, (86 * 1_000_000) / 0.6, 10), JSON.stringify(before));
+    check("重置后那段：从重置那一刻起算，只算之后的用量，是进行中的窗口", after.startAt === NOW - 10 * HOUR_MS && after.startedByReset === "kept" && after.current && near(after.tokens, 10_000_000, 10) && near(after.capacityTokens, 50_000_000, 10), JSON.stringify(after));
+    const report = analyzeAccount("claude", samples, rows, NOW);
+    const w = report.week;
+    check("当前窗口从重置那一刻算：本机已用、容量都不含重置前的用量", w.startAt === NOW - 10 * HOUR_MS && near(w.usedTokens, 10_000_000, 10) && near(w.capacity.tokens, 50_000_000, 10), JSON.stringify({ startAt: w.startAt, used: w.usedTokens, capacity: w.capacity }));
+    check("平均速度按重置后过去的时间算（20% / 10 小时），不按整窗", near(w.averagePerH, 2, 1e-9), String(w.averagePerH));
+    check("趋势线只有重置之后的点", report.trend.map((p) => p.pct).join(",") === "0,10,20", JSON.stringify(report.trend.map((p) => p.pct)));
+    check("当前窗口标出「重置卡之后开始」，重置时间不变", w.startedByReset === "kept" && w.resetAt === reset);
+  }
+
+  // ---- 10f. 重置卡：Codex 式（重置日期顺延）----
+  {
+    // 本机实测形状：用到 93%、原定 NOW+60h 重置；NOW-10h 用了重置卡，已用归零、重置日期变成「那一刻 + 7 天」
+    const oldReset = NOW + 60 * HOUR_MS, oldStart = oldReset - WEEK_MS;
+    const cardAt = NOW - 10 * HOUR_MS;
+    const newReset = cardAt + 30 * 60_000 + WEEK_MS; // 重置后第一次采样在半小时后，接口给的新重置时间 = 重置那一刻 + 7 天
+    const samples = [
+      { at: NOW - 40 * HOUR_MS, week: 70, weekReset: iso(oldReset) },
+      { at: NOW - 11 * HOUR_MS, week: 93, weekReset: iso(oldReset) },
+      { at: cardAt + 30 * 60_000, week: 0, weekReset: iso(newReset) },
+      { at: NOW - 5 * HOUR_MS, week: 5, weekReset: iso(newReset) },
+      { at: NOW, week: 12, weekReset: iso(newReset) },
+    ];
+    const rows = [];
+    for (let hour = oldStart; hour < NOW; hour += HOUR_MS) rows.push({ hour, model: "m", tokens: 1_000_000, costUsd: 1, requests: 1 });
+    const segments = windowSegments(samples, "week", "moves");
+    check("Codex：旧窗口在重置那一刻结束，不再挂着原来的重置日期", segments.length === 2 && segments[0].resetAt === oldReset && segments[0].endAt === newReset - WEEK_MS && segments[0].endedByReset === "moved" && segments[1].startedByReset === "moved", JSON.stringify(segments.map((x) => ({ endAt: x.endAt, endedByReset: x.endedByReset }))));
+    const history = capacityHistory(samples, rows, "week", NOW, "moves");
+    check("只有新窗口是「进行中」（旧窗口的重置日期虽然还在将来，但已经结束了）", history.points.length === 2 && !history.points[0].current && history.points[1].current, JSON.stringify(history.points.map((p) => p.current)));
+    check("旧窗口的用量只算到它结束为止", near(history.points[0].tokens, sumRows(rows, oldStart, NOW - 11 * HOUR_MS, NOW).tokens, 10));
+    const report = analyzeAccount("chatgpt", samples, rows, NOW);
+    check("当前窗口从重置那一刻开始，重置日期是新的", report.week.startAt === newReset - WEEK_MS && report.week.resetAt === newReset && report.week.startedByReset === "moved", JSON.stringify({ startAt: report.week.startAt, resetAt: report.week.resetAt }));
+    // 同样的形状放到 Claude 身上：数据确实断了，照样切开，只是不标成 Codex 式
+    const claude = windowSegments(samples, "week", "keeps");
+    check("风格只影响说明：别家出现同样的形状也按重置切开，但不标成「日期顺延」", claude[0].endAt === newReset - WEEK_MS && !claude[0].endedByReset);
   }
 
   // ---- 11. 采样器 ----
