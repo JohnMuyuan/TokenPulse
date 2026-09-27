@@ -124,7 +124,11 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 <td><img src="artifacts/ui/capacity-light.png" alt="额度容量趋势"><p align="center"><sub>额度容量趋势：历史窗口的总额度走势</sub></p></td>
 </tr>
 <tr>
-<td><img src="artifacts/ui/usage-light.png" alt="用量明细"><p align="center"><sub>用量明细：逐条请求、账号、额度占用与型号核验</sub></p></td>
+<td><img src="artifacts/ui/usage-light.png" alt="用量趋势"><p align="center"><sub>用量明细：按工具分色的用量趋势与工具排行</sub></p></td>
+<td><img src="artifacts/ui/insights-light.png" alt="使用时段分布"><p align="center"><sub>使用时段分布与完整的型号排行</sub></p></td>
+</tr>
+<tr>
+<td><img src="artifacts/ui/egress-light.png" alt="出口监控"><p align="center"><sub>出口监控：国旗、ASN、线路类型与 IP 数据库评分（示意数据）</sub></p></td>
 <td><img src="artifacts/ui/settings-light.png" alt="设置"><p align="center"><sub>设置：外观、官方账号、提醒、数据与自动更新</sub></p></td>
 </tr>
 <tr>
@@ -257,7 +261,7 @@ renderer/            界面：原生 JS、无构建步骤，图表为手写内�
 scripts/             测试、截图与图标生成
 ```
 
-`scripts/capture-ui.cjs` 用真实本机数据生成截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`），读写都在隔离的临时目录里进行；只复制一份额度采样历史进去画预测和趋势图，不会改动现有账本，也不带任何账号凭据。
+`scripts/capture-ui.cjs` 用真实本机数据生成截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`），读写都在隔离的临时目录里进行；只复制一份额度采样历史进去画预测和趋势图，不会改动现有账本，也不带任何账号凭据。截图里的邮箱和账号名会被替换成占位文字，出口监控页用的是文档保留网段的示意 IP，不会发出真实查询。
 
 </details>
 
