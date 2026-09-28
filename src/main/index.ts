@@ -7,7 +7,8 @@ import path from "path";
 import { dataDir } from "../core/paths";
 import { fetchOfficialQuota } from "../core/quota";
 import type { Snapshot } from "../core/report";
-import { loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
+import { parseModelStudyQuery } from "../core/model-study";
+import { loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
 import { cleanAgentEnv, deleteSession as deleteAgentSession, openTerminal, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
@@ -579,6 +580,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("knowledge:state", () => knowledgeState());
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
+    ipcMain.handle("models:study", (_event, value: unknown) => loadModelStudy(parseModelStudyQuery(value)));
     ipcMain.handle("requests:query", (_event, query: unknown) => loadRequests(parseRequestQuery(query)));
     ipcMain.handle("sessions:list", () => loadSessions());
     ipcMain.handle("sessions:detail", (_event, kind: unknown, id: unknown) => {

@@ -1,3 +1,4 @@
+import type { ModelStudies, ModelStudyQuery } from "../core/model-study";
 import path from "path";
 import { Worker } from "worker_threads";
 import type { Snapshot } from "../core/report";
@@ -37,4 +38,9 @@ export function loadSessions(): Promise<SessionSummary[]> {
 
 export function loadSessionDetail(kind: string, id: string): Promise<SessionDetail | null> {
   return runWorker<SessionDetail | null>({ sessions: "detail", kind, id });
+}
+
+/** 模型容量校准和周期时间轴在 worker 计算，不占用窗口事件循环。 */
+export function loadModelStudy(query: ModelStudyQuery): Promise<ModelStudies> {
+  return runWorker<ModelStudies>({ modelStudy: query });
 }

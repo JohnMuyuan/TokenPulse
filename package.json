@@ -1,6 +1,6 @@
 {
   "name": "tokenpulse",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
@@ -10,8 +10,8 @@
     "start": "npm run compile && electron .",
     "dev": "npm run compile && electron . --dev",
     "icons": "node scripts/make-icon.cjs",
-    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs && node scripts/test-sessions.cjs && node scripts/test-egress.cjs",
-    "test:ui": "npm run compile && electron scripts/test-ui.cjs",
+    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs && node scripts/test-sessions.cjs && node scripts/test-egress.cjs && node scripts/test-model-study.cjs && node scripts/test-model-scan.cjs",
+    "test:ui": "npm run compile && electron scripts/test-ui.cjs && electron scripts/test-model-study-ui.cjs",
     "dist:portable": "npm run icons && npm run compile && electron-builder --win portable --publish never",
     "dist": "npm run icons && npm run compile && electron-builder --publish never",
     "test:update": "npm run compile && electron scripts/test-updater.cjs"

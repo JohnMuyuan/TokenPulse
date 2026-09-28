@@ -30,6 +30,10 @@ export type RequestRecord = {
   cwd?: string;
   /** 统计用的型号（= 返回型号，Codex 没有就用请求型号）。 */
   model: string;
+  /** 日志明确记录的思考等级；缺失时保持未知，不使用当前设置回填历史。 */
+  effort?: string;
+  /** 等级来源只保存元数据字段路径，不保存正文。 */
+  effortSource?: string;
   /** 客户端请求的型号。 */
   requested?: string;
   /** 上游返回的型号。Codex 不记。 */
@@ -172,6 +176,8 @@ export type RequestQuery = {
 };
 
 export type RequestRow = {
+  effort?: string;
+  effortSource?: string;
   key: string;
   at: number;
   source: string;
@@ -260,6 +266,8 @@ function toRow(record: RequestRecord, official: boolean | undefined, accounts: A
     at: record.at,
     source: sourceOf(record),
     model: record.model,
+    effort: record.effort,
+    effortSource: record.effortSource,
     requested: record.requested ?? record.proxy?.requested,
     returned: record.returned ?? record.proxy?.returned,
     cwd: record.cwd,
@@ -426,7 +434,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.channel === "api" && row.official !== false) continue;
       if (query.channel === "unknown" && row.official !== undefined) continue;
       if (q) {
-        const haystack = [row.model, row.requested, row.returned, row.source, row.cwd, row.session, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
+        const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.cwd, row.session, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();

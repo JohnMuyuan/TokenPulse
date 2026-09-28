@@ -1195,6 +1195,7 @@ function renderQuota() {
   state.account = slot.key;
   drawAccountTabs(slots);
   const { account, kind } = slot, meta = META[kind], who = accountWho(account);
+  window.PulseModelStudy?.quota(current, account);
   const sessions = current.sessions[kind] || { included: 0, excluded: 0 };
   const pool = poolOf(kind);
   if (pool?.accountCount > 1) host.append(poolPanel(pool));
@@ -1257,6 +1258,7 @@ function renderUsage() {
     return el('div', { class: 'breakdown-item' }, [el('small', { text: label }), el('strong', { title: number(t[key]) }, [value, approx ? el('small', { class: 'cn-approx', text: approx }) : null]), el('span', { text: note })]);
   }));
   window.PulseInsights?.render(analysis, entering());
+  window.PulseModelStudy?.timeline(current, state.reqAccount);
   renderRecords();
   revealDetailResults();
 }
@@ -1351,7 +1353,7 @@ function drawAccountRequests(panel, account, meta, data) {
 /* ---------------- 请求记录与型号核验 ---------------- */
 
 const VERIFY_TONE = { match: 'good', mismatch: 'critical', suspect: 'warning', unverified: 'neutral' };
-const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话']];
+const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话']];
 let requestPage = null, requestSeq = 0, requestKey = '', requestError = false;
 const openRequests = new Set();
 function projectOf(cwd) { return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd : '—'; }

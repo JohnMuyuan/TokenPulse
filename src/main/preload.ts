@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
   exportCsv: (content: string, kind?: "requests") => ipcRenderer.invoke("export-csv", content, kind),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */
+  modelStudy: (query: unknown) => ipcRenderer.invoke("models:study", query),
   requests: (query: Record<string, unknown>) => ipcRenderer.invoke("requests:query", query),
   /** 会话管理：列表、详情（只读本机 CLI 的会话文件）。 */
   sessions: () => ipcRenderer.invoke("sessions:list"),

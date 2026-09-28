@@ -46,6 +46,7 @@ const assistant = (min, model, id, requestId, extra = {}) => ({
   cwd: "D:\\work\\demo",
   sessionId: "s1",
   message: { id, model, usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 100, cache_creation_input_tokens: 5, service_tier: "standard" } },
+  effort: "medium",
   ...extra,
 });
 const all = (extra = {}) => queryRequests({ from: "2026-01-01", to: "2026-12-31", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 50, all: true, ...extra });
@@ -100,7 +101,7 @@ try {
   const codexFile = path.join(process.env.HOME, ".codex", "sessions", "2026", "09", "20", "rollout-2026-09-20T10-00-00-abc.jsonl");
   write(codexFile, [
     { timestamp: at(0), type: "session_meta", payload: { model_provider: "openai", cwd: "D:\\work\\codex" } },
-    { timestamp: at(1), type: "turn_context", payload: { model: "gpt-6-astra" } },
+    { timestamp: at(1), type: "turn_context", payload: { model: "gpt-6-astra", effort: "high" } },
     { timestamp: at(2), type: "token_usage_record", payload: { response_id: "resp_" + "c".repeat(50), usage: { input_tokens: 100, output_tokens: 10, cached_input_tokens: 40 } } },
   ]);
 
@@ -119,6 +120,8 @@ try {
   check("Grok：请求 grok-4.6、返回 grok-4.5-fast → 型号不一致", grokRows[1]?.status === "mismatch");
   check("Grok 的工作目录从目录名解出来", grokRows[0]?.cwd === "D:\\work\\grok", grokRows[0]?.cwd);
   const codexRow = page.rows.find((row) => row.source === "Codex CLI");
+  check("Codex 思考等级来自当轮 turn_context", codexRow?.effort === "high" && codexRow.effortSource === "turn_context.effort");
+  check("Claude 思考等级来自每响应的结构化字段", page.rows.filter(row => row.source === "Claude Code").every(row => row.effort === "medium"));
   check("Codex：请求型号来自 turn_context、工作目录来自 session_meta", codexRow?.requested === "gpt-6-astra" && codexRow?.cwd === "D:\\work\\codex" && codexRow.status === "unverified");
   check("核验计数", page.counts.mismatch === 2 && page.counts.suspect === 1, JSON.stringify(page.counts));
 

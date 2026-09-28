@@ -1,3 +1,5 @@
+import { recordedEffort } from "./model-effort";
+import { normalizeModel } from "./request-verify";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -58,10 +60,16 @@ type FileState = {
   mtimeMs: number;
   /** 已经读到哪个字节。下次从这里接着读。 */
   offset: number;
+  /** 结构升级分批重读的旧偏移边界；每批都整理重复流水，直到补采覆盖旧范围。 */
+  replayUntil?: number;
+  /** 6→7 只补请求元数据；旧偏移之前的用量已计入总账，重读时不再加一次。 */
+  metadataOnlyUntil?: number;
   /** 这个文件自己贡献的账。文件被重写时整份丢掉重算。 */
   days: DayBuckets;
   /** Codex 的型号写在前面的 turn_context / thread_settings_applied 里，跨批次要记住。 */
   model?: string;
+  effort?: string;
+  effortSource?: string;
   /**
    * 上一条 Claude 用量行的 requestId。
    *
@@ -134,8 +142,9 @@ export type UsageRollups = {
  * 4：开始记每一次请求的流水（requests/*.jsonl），重扫一遍把历史请求补进去。
  * 5：流水里记下 Claude 会话自带的账号（accountRef / accountEmail），重扫补上。
  * 6：官方小时账按账号拆分，修复多个账号的额度容量互相污染。
+ * 7：流水补采明确记录的思考等级；旧会话文件还在的会自动重扫，已删除的保持未知。
  */
-const STATE_VERSION = 6;
+const STATE_VERSION = 7;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -541,24 +550,27 @@ function scanFile(
   } catch {
     return false;
   }
-  const reset = () => {
-    if (state.offset > 0) out.rescanned = true;
+  const reset = (metadataOnly = false) => {
+    if (state.offset > 0) { out.rescanned = true; state.replayUntil = Math.min(stat.size, Math.max(state.replayUntil || 0, state.offset)); }
+    if (metadataOnly) state.metadataOnlyUntil = state.offset; else delete state.metadataOnlyUntil;
     state.offset = 0;
-    state.days = {};
-    state.hours = {};
-    state.accountHours = {};
+    if (!metadataOnly) { state.days = {}; state.hours = {}; state.accountHours = {}; }
     state.model = undefined;
+    state.effort = undefined;
+    state.effortSource = undefined;
     state.lastId = undefined;
     state.requested = undefined;
     state.accountRef = undefined;
     state.accountEmail = undefined;
   };
   if (state.v !== STATE_VERSION) {
+    const metadataOnly = state.v === 6 && state.offset > 0 && stat.size >= state.offset;
     state.v = STATE_VERSION;
-    reset();
+    reset(metadataOnly);
   }
   // 变小了 = 被重写/截断过，之前记的账对不上了：整份清掉重读。
   if (stat.size < state.offset) reset();
+  if (state.replayUntil && state.offset < state.replayUntil) out.rescanned = true;
   if (stat.size === state.offset) {
     state.size = stat.size;
     state.mtimeMs = stat.mtimeMs;
@@ -585,7 +597,10 @@ function scanFile(
   const consumed = Buffer.byteLength(text.slice(0, lastBreak + 1), "utf8");
   const source = SOURCES[kind];
   let touched = false;
+  let lineEnd = state.offset;
   for (const line of text.slice(0, lastBreak).split(String.fromCharCode(10))) {
+    lineEnd += Buffer.byteLength(line, "utf8") + 1;
+    const metadataOnly = state.metadataOnlyUntil != null && lineEnd <= state.metadataOnlyUntil;
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
     let obj: Record<string, unknown>;
@@ -636,6 +651,26 @@ function scanFile(
         if (model) state.model = model;
       }
     }
+    const context = obj.payload as Record<string, unknown> | undefined;
+    // turn_context 是当轮上下文；没给等级就未知，不能沿用上一轮的值。
+    if (kind === "codex" && obj.type === "turn_context") {
+      const found = recordedEffort(context);
+      state.effort = found?.effort; state.effortSource = found ? "turn_context." + found.source : undefined;
+    } else if (kind === "codex" && context?.type === "thread_settings_applied") {
+      const found = recordedEffort(context.thread_settings);
+      if (found) { state.effort = found.effort; state.effortSource = "thread_settings." + found.source; }
+    } else if (kind === "claude-code" && obj.type === "user") {
+      const metadata = obj.thinkingMetadata;
+      const found = recordedEffort(metadata);
+      // 仅识别真实元数据；用户正文里的 /effort、工具参数都不作为证据。
+      if (metadata != null) { state.effort = found?.effort; state.effortSource = found ? "thinkingMetadata." + found.source : undefined; }
+    } else if (kind === "grok-build") {
+      const update = (obj.params as Record<string, unknown> | undefined)?.update as Record<string, unknown> | undefined;
+      if (update?.sessionUpdate === "user_message_chunk") {
+        const found = recordedEffort(update._meta);
+        state.effort = found?.effort; state.effortSource = found ? "update._meta." + found.source : undefined;
+      }
+    }
     const one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : null;
     const rows = kind === "grok-build" ? grokRows(obj) : one ? [one] : [];
     for (const row of rows) {
@@ -647,23 +682,27 @@ function scanFile(
         if (row.id && row.id === state.lastId) continue;
         state.lastId = row.id;
       }
-      addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
-      const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
-      addUsage((byModel[model] ??= emptyBucket()), row.usage);
-      if (state.official === true) {
-        const account = resolveAccount(
-          KIND_OF_SOURCE[source],
-          row.at,
-          { ref: state.accountRef, email: state.accountEmail },
-          accountContext.timeline,
-          accountContext.labels,
-        );
-        const accountKey = account?.id ?? "";
-        const byAccount = ((state.accountHours ??= {})[accountKey] ??= {});
-        const byAccountHour = (byAccount[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
-        addUsage((byAccountHour[model] ??= emptyBucket()), row.usage);
+      if (!metadataOnly) {
+        addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
+        const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
+        addUsage((byModel[model] ??= emptyBucket()), row.usage);
+        if (state.official === true) {
+          const account = resolveAccount(
+            KIND_OF_SOURCE[source],
+            row.at,
+            { ref: state.accountRef, email: state.accountEmail },
+            accountContext.timeline,
+            accountContext.labels,
+          );
+          const accountKey = account?.id ?? "";
+          const byAccount = ((state.accountHours ??= {})[accountKey] ??= {});
+          const byAccountHour = (byAccount[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
+          addUsage((byAccountHour[model] ??= emptyBucket()), row.usage);
+        }
       }
       if (row.cwd) state.cwd = row.cwd;
+      const effortMatchesModel = kind !== "grok-build" || Boolean(state.requested && normalizeModel(model) === normalizeModel(state.requested));
+      const responseEffort = kind === "claude-code" ? recordedEffort(obj) : undefined;
       out.records.push({
         // 没有 ID 的（极少）用时间 + 型号 + token 凑一个，重读时还是同一个键
         id: row.id || `${row.at}:${model}:${row.usage.input}:${row.usage.output}`,
@@ -672,6 +711,8 @@ function scanFile(
         file,
         cwd: state.cwd ?? (kind === "grok-build" ? grokCwd(file) : undefined),
         model,
+        effort: kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined,
+        effortSource: kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined,
         requested: kind === "codex" ? state.model : state.requested,
         returned: row.returned,
         responseId: row.responseId,
@@ -690,6 +731,8 @@ function scanFile(
     }
   }
   state.offset += consumed;
+  if (state.metadataOnlyUntil != null && state.offset >= state.metadataOnlyUntil) delete state.metadataOnlyUntil;
+  if (state.replayUntil != null && state.offset >= state.replayUntil) delete state.replayUntil;
   state.size = stat.size;
   state.mtimeMs = stat.mtimeMs;
   return touched;
@@ -737,7 +780,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
         const needsAccountHours =
           state.official === true &&
           (!state.accountHours || (Object.keys(state.accountHours).length === 0 && Object.keys(state.hours ?? {}).length > 0));
-        if (stat && state.v === STATE_VERSION && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours) continue;
+        if (stat && state.v === STATE_VERSION && state.offset >= stat.size && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours) continue;
         // 缺按账号的小时账：得从头重读这个文件才补得出来。只把它交给 scanFile 的话，偏移没变它直接返回，永远补不上
         if (needsAccountHours) state.v = 0;
         if (scanFile(file, kind, state, out, accountContext)) changed += 1;

@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="app.css">
   <link rel="stylesheet" href="sessions.css">
 <link rel="stylesheet" href="egress.css">
+<link rel="stylesheet" href="model-study.css">
 <link rel="stylesheet" href="usage-insights.css">
 </head>
 <body>
@@ -221,6 +222,7 @@
         <span class="muted"><svg class="icon"><use href="#i-info"/></svg>官方窗口独立于用量筛选</span>
       </div>
       <div id="quota-detail"></div>
+      <section id="quota-model-study" class="panel model-study" aria-label="模型容量排行"></section>
     </section>
 
     <section id="page-usage" class="page" hidden>
@@ -230,6 +232,7 @@
       </article>
       <!-- 用量分析：分工具趋势、工具 / 模型完整排行、使用时段分布（renderer/usage-insights.js） -->
       <div id="usage-insights" class="usage-insights"></div>
+      <section id="usage-model-study" class="panel model-study" aria-label="模型与思考等级时间轴"></section>
       <article class="panel records-panel usage-records">
         <div class="panel-heading">
           <div>
@@ -414,6 +417,7 @@
 <script src="i18n.js"></script>
 <script src="brand.js"></script>
 <script src="data.js"></script>
+<script src="model-study.js"></script>
 <script src="app.js"></script>
 <script src="sessions.js"></script>
 <script src="egress.js"></script>

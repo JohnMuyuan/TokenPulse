@@ -1,0 +1,86 @@
+{
+  "checkedAt": "2026-09-28",
+  "claude": {
+    "source": "https://platform.claude.com/docs/en/build-with-claude/effort",
+    "modelsSource": "https://platform.claude.com/docs/en/about-claude/models/overview",
+    "models": [
+      "claude-fable-5-1",
+      "claude-opus-5-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5-20251001"
+    ],
+    "rules": [
+      {
+        "match": "^claude-(?:fable-(?:5-1|5)|mythos-(?:5-1|5)|opus-(?:5-5|5|4-8|4-7)|sonnet-5)(?:$|\\[|-\\d{8}$)",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      {
+        "match": "^claude-(?:mythos-preview|opus-4-6|sonnet-4-6)(?:$|\\[|-\\d{8}$)",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ]
+      },
+      {
+        "match": "^claude-opus-4-5(?:$|\\[|-\\d{8}$)",
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "match": "^claude-haiku-4-5(?:$|\\[|-\\d{8}$)",
+        "efforts": [
+          "not_supported"
+        ]
+      }
+    ]
+  },
+  "grok": {
+    "source": "https://docs.x.ai/docs/guides/reasoning",
+    "models": [
+      "grok-4.7",
+      "grok-4.6",
+      "grok-4.5",
+      "grok-4.20-multi-agent"
+    ],
+    "rules": [
+      {
+        "match": "^grok-4\\.(?:7|6)$",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      {
+        "match": "^grok-4\\.5$",
+        "efforts": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "match": "^grok-4\\.20-multi-agent$",
+        "efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "semantics": "agent_count"
+      }
+    ]
+  }
+}

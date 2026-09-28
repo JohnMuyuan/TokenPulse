@@ -1,3 +1,4 @@
+import { queryModelStudy } from "./model-study";
 import { parentPort, workerData } from "worker_threads";
 import { buildSnapshot } from "./report";
 import { queryRequests, recentAlerts } from "./request-log";
@@ -12,7 +13,9 @@ function localDay(at: number) {
 }
 
 // 扫描、JSON 解析和汇总都含同步 CPU / 文件操作，不能占用 Electron 的窗口事件循环。
-if (workerData.sessions === "list") {
+if (workerData.modelStudy) {
+  parentPort!.postMessage(queryModelStudy(workerData.modelStudy));
+} else if (workerData.sessions === "list") {
   parentPort!.postMessage(listSessions());
 } else if (workerData.sessions === "detail") {
   parentPort!.postMessage(getSession(workerData.kind, workerData.id));
