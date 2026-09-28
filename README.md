@@ -307,16 +307,6 @@ node_modules/app-builder-bin/win/x64/app-builder.exe download-artifact --name wi
 
 </details>
 
-## 🗺 路线图
-
-- [ ] 扩充 `usage-scan.ts` 单元测试（目前覆盖 Codex 型号识别）
-- [ ] 在真实账号上验证 Grok 额度链路
-- [ ] 托盘菜单增加「暂停记录」
-- [ ] 按项目 / 目录维度统计用量
-- [ ] 额度重置时提醒「新窗口开始」
-- [ ] 自动更新
-- [ ] macOS / Linux 支持
-
 <div align="center">
 <br>
 <sub>Made with ☕ for people who live in the terminal.</sub>
