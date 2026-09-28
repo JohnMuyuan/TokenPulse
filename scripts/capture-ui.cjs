@@ -6,6 +6,7 @@
 // - 出口监控用示意数据（文档专用的 IP 段 203.0.113.0/24、198.51.100.0/24 和示例 ASN），不暴露真实出口 IP、运营商和城市；
 //   README 里标明是示意数据。
 // - 会话管理（对话标题、项目）和设置里的账号页（邮箱）不截。
+// - 账号库复制时去掉 credential，截图期间不向官方查额度（fetchOfficialQuota 换成空实现），额度数字来自采样历史。
 const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -16,9 +17,16 @@ app.setPath('userData', path.join(temp, 'electron'));
 // 额度预测和历史折线图要靠采样历史，复制一份本机的过来（只复制采样，不带任何账号凭据）。
 const realData = path.join(os.homedir(), '.tokenpulse');
 fs.mkdirSync(process.env.TOKENPULSE_DATA_DIR, { recursive: true });
-for (const name of ['quota-history.json', 'quota-checked.json']) {
+for (const name of ['quota-history.json', 'quota-checked.json', 'cli-logins.json']) {
   if (fs.existsSync(path.join(realData, name))) fs.copyFileSync(path.join(realData, name), path.join(process.env.TOKENPULSE_DATA_DIR, name));
 }
+// 模型 × 思考等级要知道每条请求是哪个账号的：账号列表复制一份，但去掉 credential（令牌），截图时也不去官方查额度。
+try {
+  const store = JSON.parse(fs.readFileSync(path.join(realData, 'official-accounts.json'), 'utf8'));
+  for (const account of store.accounts || []) delete account.credential;
+  fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'official-accounts.json'), JSON.stringify(store));
+} catch { /* 没有账号库就只截用量 */ }
+require('../build/core/quota.js').fetchOfficialQuota = async () => ({});
 
 /* ---- 要遮住的名字：账号库和登录时间线里出现过的邮箱、邮箱前缀、名字、别名 ---- */
 const readJson = file => { try { return JSON.parse(fs.readFileSync(path.join(realData, file), 'utf8')); } catch { return null; } };
@@ -90,6 +98,7 @@ app.on('web-contents-created', (_, contents) => {
         };
         new MutationObserver(records => { for (const r of records) mask(r.target.nodeType === 3 ? r.target.parentNode || document.body : r.target); }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'aria-label'] });
         mask(document.body);
+        window.__remask = () => mask(document.body);
         // 只报位置（元素的 class / 属性名），不报名字本身
         window.__leakWhere = () => { const hits = []; const names = pairs.map(p => p[0]);
           for (const n of document.querySelectorAll('*')) { for (const a of n.getAttributeNames()) { const v = n.getAttribute(a); if (names.some(x => v.includes(x)) || (v.match(email) || []).some(m => m !== 'you@example.com')) hits.push(a + '@' + n.tagName + '.' + n.className); }
@@ -101,7 +110,9 @@ app.on('web-contents-created', (_, contents) => {
         window.__leak = () => { const text = document.body.innerText + ' ' + [...document.querySelectorAll('[title],[aria-label]')].map(n => (n.getAttribute('title') || '') + ' ' + (n.getAttribute('aria-label') || '')).join(' ');
           return pairs.map(p => p[0]).filter(name => text.includes(name)).length + (text.match(email) || []).filter(m => m !== 'you@example.com').length; };
       })()`);
-      const summary = await js(`window.tokenpulse.refresh().then(s => ({ files: s.fileCount, accounts: s.accounts.length }))`);
+      // 大日志分批扫描，一轮扫不完：隔一会儿多刷几轮（连着不停地刷会把进程内存撑爆）
+      let summary;
+      for (let i = 0; i < 5; i++) { await pause(2500); summary = await js(`window.tokenpulse.refresh().then(s => ({ files: s.fileCount, accounts: s.accounts.length }))`); }
       console.log('Real data:', JSON.stringify(summary), '· names masked:', replacements.length);
       const capture = async (name, script, wait = 1800) => {
         if (script) await js(script);
@@ -109,6 +120,7 @@ app.on('web-contents-created', (_, contents) => {
         await js('window.scrollTo(0, 0)');
         contents.invalidate(); await pause(150);
         // 刚重画的内容要等遮名字的观察器跑一轮：隔一会儿再查几次，还在才算泄露
+        await js('window.__remask()');
         let leaks = await js('window.__leak()');
         for (let i = 0; leaks && i < 4; i++) { await pause(400); leaks = await js('window.__leak()'); }
         if (leaks) throw new Error(`截图 ${name} 里还有 ${leaks} 处真实账号名 / 邮箱，停下：${JSON.stringify(await js('window.__leakWhere()'))}`);
@@ -121,10 +133,17 @@ app.on('web-contents-created', (_, contents) => {
       // Claude 的两个窗口都在用，预测和容量卡片都有数；容量折线图在页面下方，单独截一张
       await capture('quota-light', "document.querySelector('[data-page=quota]').click(); document.querySelector('#account-tabs [data-kind=claude]')?.click(); document.querySelector('.workspace').scrollTop = 0");
       await capture('capacity-light', scrollTo('.capacity-panel'));
+      // 0.3.8：换一种模型，整窗能用多少（ChatGPT 的模型和等级最多）
+      await capture('models-light', `document.querySelector('#account-tabs [data-kind=chatgpt]')?.click(); setTimeout(() => { ${scrollTo('#quota-model-study')} }, 2500)`, 6000);
       // 用量明细：用量分析（分工具趋势）和时段分布 / 排行，30 天
       await js("navigate('usage'); applyRange(30)");
       await capture('usage-light', scrollTo('#usage-insights'), 4000);
       await capture('insights-light', scrollTo('.insight-grid'), 1200);
+      // 0.3.8：模型与思考等级时间线（ChatGPT 本周用了好几个模型）
+      // 当前 5 小时周期刚开始、还没有请求时，往前翻到最近一个有请求的周期
+      await capture('timeline-light', `[...document.querySelectorAll('#usage-model-study .ms-account')].find(b => b.textContent.includes('ChatGPT'))?.click();
+        setTimeout(() => { if (!document.querySelector('#usage-model-study .ms-cycle.five .ms-run')) document.querySelector('#usage-model-study .ms-cycle.five .ms-step')?.click(); }, 2500);
+        setTimeout(() => { ${scrollTo('#usage-model-study')} }, 5000)`, 8000);
       // 出口监控（示意数据）：开启监控、给 ChatGPT / Claude 设好白名单
       await js(`(async () => { navigate('egress'); const s = await window.tokenpulse.egressState(); const c = s.config;
         c.enabled = true; c.providers.chatgpt.allowedIps = ['203.0.113.24']; c.providers.claude.allowedIps = ['203.0.113.24']; await window.tokenpulse.saveEgress(c); })()`);

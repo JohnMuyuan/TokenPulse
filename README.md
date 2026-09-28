@@ -132,6 +132,10 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 <td><img src="artifacts/ui/capacity-light.png" alt="额度容量趋势"><p align="center"><sub>额度容量趋势：历史窗口的总额度走势</sub></p></td>
 </tr>
 <tr>
+<td><img src="artifacts/ui/models-light.png" alt="换一种模型，整窗能用多少"><p align="center"><sub>换一种模型，整窗能用多少：全部模型 × 思考等级的容量排行</sub></p></td>
+<td><img src="artifacts/ui/timeline-light.png" alt="模型与思考等级时间线"><p align="center"><sub>模型与思考等级时间线：5 小时 / 周周期里用了哪些组合</sub></p></td>
+</tr>
+<tr>
 <td><img src="artifacts/ui/usage-light.png" alt="用量趋势"><p align="center"><sub>用量明细：按工具分色的用量趋势与工具排行</sub></p></td>
 <td><img src="artifacts/ui/insights-light.png" alt="使用时段分布"><p align="center"><sub>使用时段分布与完整的型号排行</sub></p></td>
 </tr>
@@ -149,7 +153,7 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 
 到 [**Releases**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) 下载最新版本：
 
-> **当前版本：v0.3.7** — 新增「出口监控」（出口 IP、国旗、ASN、线路类型、IP 数据库风险分，查额度前核对出口 IP）；用量明细加入型号多选和项目 / 渠道 / 账号筛选，以及按工具的用量趋势、完整的工具 / 型号排行和使用时段分布；总览「今天」按小时显示。
+> **当前版本：v0.3.8** — 新增「换一种模型，整窗能用多少」：5 小时和周窗口一起列出全部模型 × 思考等级，按整窗 API 等价预算换算 Tokens、调用次数和本周期剩余；用量明细新增「模型与思考等级时间线」，叠加官方额度曲线；开始采集思考等级。
 
 | 文件 | 说明 |
 |------|------|
@@ -269,7 +273,7 @@ renderer/            界面：原生 JS、无构建步骤，图表为手写内�
 scripts/             测试、截图与图标生成
 ```
 
-`scripts/capture-ui.cjs` 用真实本机数据生成截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`），读写都在隔离的临时目录里进行；只复制一份额度采样历史进去画预测和趋势图，不会改动现有账本，也不带任何账号凭据。截图里的邮箱和账号名会被替换成占位文字，出口监控页用的是文档保留网段的示意 IP，不会发出真实查询。
+`scripts/capture-ui.cjs` 用真实本机数据生成截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`），读写都在隔离的临时目录里进行；只复制额度采样历史、登录时间线和去掉凭据的账号列表进去，不会改动现有账本，也不带任何账号凭据，截图期间不向官方查额度。截图里的邮箱和账号名会被替换成占位文字，出口监控页用的是文档保留网段的示意 IP，不会发出真实查询。
 
 </details>
 
