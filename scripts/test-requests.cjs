@@ -186,6 +186,66 @@ try {
   check("只通知最近 15 分钟内不一致 / 存疑的", alerts.length === 3 && alerts.every((row) => row.status !== "match"), alerts.map((a) => a.status).join(","));
   check("几个月前补进来的历史不通知", recentAlerts(scan.records, base + 90 * 86_400_000).length === 0);
 
+  /* ---------------- 按项目汇总（0.3.9 用量明细「按项目」） ---------------- */
+  {
+    const { appendRequests } = require(path.join(build, "request-log.js"));
+    const day = new Date(2026, 10, 3, 9, 0).getTime();
+    const rec = (id, extra) => ({ id, at: day + Number(id.slice(1)) * 60_000, input: 1000, output: 100, cacheRead: 500, cacheWrite: 0, reasoning: 20, costUsd: 0, calls: 1, ...extra });
+    appendRequests([
+      rec("p1", { kind: "claude-code", file: path.join(root, "A.jsonl"), cwd: "D:\\Work\\Alpha", model: "claude-opus-5-5", effort: "high" }),
+      rec("p2", { kind: "claude-code", file: path.join(root, "A.jsonl"), cwd: "d:/work/alpha/", model: "claude-opus-5-5", effort: "high" }),
+      rec("p3", { kind: "codex", file: path.join(root, "rollout-2026-11-03T00-00-00-b.jsonl"), cwd: "D:\\Work\\Alpha", model: "gpt-6-astra", compaction: true, input: 200000, cacheRead: 150000 }),
+      rec("p4", { kind: "grok-build", file: path.join(root, "s1", "updates.jsonl"), cwd: "D:\\Work\\Beta", model: "grok-4.7-build", effort: "low", calls: 3 }),
+      rec("p5", { kind: "codex", file: path.join(root, "rollout-2026-11-03T00-00-00-c.jsonl"), model: "gpt-6-astra", effort: "medium" }),
+    ]);
+    const page = queryRequests({ from: "2026-11-03", to: "2026-11-03", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1, projects: true });
+    const alpha = page.projects?.find((p) => p.key === "d:\\work\\alpha");
+    check("按项目：大小写 / 斜杠 / 末尾斜杠不同的同一目录归成一个项目，没目录的单独一组", page.projects?.length === 3 && page.projects.some((p) => p.cwd === "" && p.records === 1), JSON.stringify(page.projects?.map((p) => [p.key, p.records])));
+    check("按项目：Token 最多的排第一，对话数按会话文件去重", page.projects[0] === alpha && alpha.sessions === 2 && alpha.records === 3, JSON.stringify(alpha && { sessions: alpha.sessions, records: alpha.records }));
+    check(
+      "按项目：Agent 分布、模型 × 思考等级组合、未记录等级、压缩上下文估算",
+      alpha.agents.map((a) => `${a.source}:${a.sessions}`).join(",") === "Codex CLI:1,Claude Code:1" &&
+        alpha.combos.some((c) => c.model === "claude-opus-5-5" && c.effort === "high" && c.records === 2 && c.tokens === 2200) &&
+        alpha.combos.some((c) => c.model === "gpt-6-astra" && c.effort === "unknown") &&
+        alpha.compaction.count === 1 && alpha.compaction.tokens === 200100,
+      JSON.stringify({ agents: alpha.agents, combos: alpha.combos, compaction: alpha.compaction }),
+    );
+    const beta = page.projects.find((p) => p.key === "d:\\work\\beta");
+    check("按项目：调用次数按模型调用算（Grok 一轮多次）", beta.requests === 3 && beta.records === 1, JSON.stringify(beta));
+    const filtered = queryRequests({ from: "2026-11-03", to: "2026-11-03", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 50, project: "D:/WORK/Alpha" });
+    check("项目筛选用同一套归并：换个写法也能筛出这个项目的全部请求", filtered.total === 3, String(filtered.total));
+    const compactRow = filtered.rows.find((r) => r.compaction);
+    check("压缩上下文估算行：核验为无法核验并说明原因", compactRow?.status === "unverified" && /压缩上下文/.test(compactRow.reasons.join("")), JSON.stringify(compactRow && { status: compactRow.status, reasons: compactRow.reasons }));
+    const withoutFlag = queryRequests({ from: "2026-11-03", to: "2026-11-03", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1 });
+    check("不要 projects 时不附带项目汇总", withoutFlag.projects === undefined);
+
+    // 周额度：官方周额度 10% → 13% 这一段里本机两个项目都有请求，涨幅按用量分给它们（没定价的型号按 Token）；
+    // 没有后续采样的请求不折算。
+    const q0 = new Date(2026, 10, 4, 9, 0).getTime();
+    const gammaFile = path.join(root, "gamma.jsonl"), deltaFile = path.join(root, "delta.jsonl");
+    const rollupFile = path.join(process.env.TOKENPULSE_DATA_DIR, "usage-rollups.json");
+    const rollups = JSON.parse(fs.readFileSync(rollupFile, "utf8"));
+    for (const file of [gammaFile, deltaFile]) rollups.files[file] = { size: 0, mtimeMs: 0, offset: 0, days: {}, kind: "codex", official: true };
+    fs.writeFileSync(rollupFile, JSON.stringify(rollups));
+    const weekReset = new Date(q0 + 5 * 86_400_000).toISOString();
+    fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, "quota-history.json"), JSON.stringify({ version: 1, accounts: { chatgpt: [
+      { at: q0, week: 10, weekReset, account: "chatgpt:qa" },
+      { at: q0 + 10 * 60_000, week: 13, weekReset, account: "chatgpt:qa" },
+    ] } }));
+    const qrec = (id, file, cwd, input, minute) => ({ id, at: q0 + minute * 60_000, kind: "codex", file, cwd, model: "qa-unpriced-model", accountRef: "qa", input, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, calls: 1 });
+    appendRequests([qrec("q1", gammaFile, "D:\\Work\\Gamma", 3000, 3), qrec("q2", deltaFile, "D:\\Work\\Delta", 1000, 6), qrec("q3", gammaFile, "D:\\Work\\Gamma", 5000, 40)]);
+    const quotaPage = queryRequests({ from: "2026-11-04", to: "2026-11-04", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1, projects: true });
+    const gamma = quotaPage.projects.find((p) => p.key === "d:\\work\\gamma"), delta = quotaPage.projects.find((p) => p.key === "d:\\work\\delta");
+    check(
+      "按项目周额度：同期涨幅按用量分摊，没有后续采样的不折算",
+      Math.abs(gamma.quota.week - 2.25) < 1e-9 && Math.abs(delta.quota.week - 0.75) < 1e-9 && gamma.quota.officialTokens === 8000 && gamma.quota.attributedTokens === 3000,
+      JSON.stringify({ gamma: gamma.quota, delta: delta.quota }),
+    );
+    // 只看 Gamma：分母仍是同期全部官方请求，筛选不会把涨幅全算到剩下的项目上
+    const onlyGamma = queryRequests({ from: "2026-11-04", to: "2026-11-04", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1, projects: true, project: "D:\\Work\\Gamma" });
+    check("按项目周额度：筛选后分母不变", onlyGamma.projects.length === 1 && Math.abs(onlyGamma.projects[0].quota.week - 2.25) < 1e-9, JSON.stringify(onlyGamma.projects.map((p) => p.quota)));
+  }
+
   /* ---------------- 额度归属 ---------------- */
   const { buildSnapshot } = require(path.join(build, "report.js"));
   const claude = buildSnapshot(now);

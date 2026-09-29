@@ -135,15 +135,17 @@ app.on('web-contents-created', (_, contents) => {
       await capture('capacity-light', scrollTo('.capacity-panel'));
       // 0.3.8：换一种模型，整窗能用多少（ChatGPT 的模型和等级最多）
       await capture('models-light', `document.querySelector('#account-tabs [data-kind=chatgpt]')?.click(); setTimeout(() => { ${scrollTo('#quota-model-study')} }, 2500)`, 6000);
+      // 0.3.8 起：模型与思考等级时间线（0.3.9 移到额度详情，跟随账号标签；ChatGPT 本周用了好几个模型）
+      // 当前 5 小时周期刚开始、还没有请求时，往前翻到最近一个有请求的周期
+      await capture('timeline-light', `setTimeout(() => { if (!document.querySelector('#quota-model-timeline .ms-cycle.five .ms-run')) document.querySelector('#quota-model-timeline .ms-cycle.five .ms-step')?.click(); }, 500);
+        setTimeout(() => { ${scrollTo('#quota-model-timeline')} }, 3000)`, 6000);
       // 用量明细：用量分析（分工具趋势）和时段分布 / 排行，30 天
       await js("navigate('usage'); applyRange(30)");
       await capture('usage-light', scrollTo('#usage-insights'), 4000);
       await capture('insights-light', scrollTo('.insight-grid'), 1200);
-      // 0.3.8：模型与思考等级时间线（ChatGPT 本周用了好几个模型）
-      // 当前 5 小时周期刚开始、还没有请求时，往前翻到最近一个有请求的周期
-      await capture('timeline-light', `[...document.querySelectorAll('#usage-model-study .ms-account')].find(b => b.textContent.includes('ChatGPT'))?.click();
-        setTimeout(() => { if (!document.querySelector('#usage-model-study .ms-cycle.five .ms-run')) document.querySelector('#usage-model-study .ms-cycle.five .ms-step')?.click(); }, 2500);
-        setTimeout(() => { ${scrollTo('#usage-model-study')} }, 5000)`, 8000);
+      // 0.3.9：按项目
+      await capture('projects-light', `document.querySelector('#usage-view [data-view=projects]').click(); setTimeout(() => { document.querySelector('#view-projects .pj-card .pj-head')?.click(); ${scrollTo('.usage-records')} }, 2500)`, 5000);
+      await js("document.querySelector('#usage-view [data-view=requests]').click()");
       // 出口监控（示意数据）：开启监控、给 ChatGPT / Claude 设好白名单
       await js(`(async () => { navigate('egress'); const s = await window.tokenpulse.egressState(); const c = s.config;
         c.enabled = true; c.providers.chatgpt.allowedIps = ['203.0.113.24']; c.providers.claude.allowedIps = ['203.0.113.24']; await window.tokenpulse.saveEgress(c); })()`);

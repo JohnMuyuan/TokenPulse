@@ -21,6 +21,8 @@ egressModule.ExitMonitor = class extends RealExitMonitor {
 };
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-ui-'));
 process.env.TOKENPULSE_DATA_DIR = path.join(temp, 'data');
+process.env.AGENT_SWITCH_HOME = process.env.HOME = process.env.USERPROFILE = path.join(temp, 'home');
+for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'GROK_HOME']) delete process.env[key];
 app.setPath('userData', path.join(temp, 'electron'));
 // Synthetic rows are confined to the test data directory, never to the real ledger.
 const fixtureNow = Date.now(), hour = 3600000;
@@ -583,6 +585,7 @@ app.on('web-contents-created', (_, contents) => {
           await evaluate("(() => { const t = document.querySelector('.sw-composer textarea'); t.value = 'QA 提问'; t.dispatchEvent(new Event('input')); t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
           await until("document.querySelector('.sw-row.pending .sw-rich')?.textContent.includes('QA 回复')");
           assert.equal(await evaluate("document.querySelector('.sw-send').textContent.includes('停止')"), true, '回复中按钮变成停止');
+          await until("document.querySelector('.sw-live-tools')?.textContent.includes('Read')");
           assert.equal(await evaluate("document.querySelector('.sw-live-tools')?.textContent.includes('Read')"), true);
           assert.equal(await evaluate("document.querySelector('.sw-composer textarea').value"), '');
           await until("!document.querySelector('.sw-row.pending') && document.querySelector('.sw-send').textContent.includes('发送')");
@@ -657,7 +660,7 @@ app.on('web-contents-created', (_, contents) => {
       clearInterval(heartbeat); clearTimeout(watchdog);
       app.exit(0);
     } catch (error) {
-      console.error('FAIL', error.message);
+      console.error('FAIL', error.stack || error.message);
       app.exit(1);
     }
   });

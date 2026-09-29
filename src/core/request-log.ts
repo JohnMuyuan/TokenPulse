@@ -5,6 +5,9 @@ import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
 import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-switch";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, type LoginTimeline, type RequestAccount } from "./login-timeline";
+import { quotaAttribution } from "./quota-attribution";
+import { readQuotaHistory } from "./quota-history";
+import { windowSegments } from "./quota-monitor";
 
 /**
  * 每一次请求的流水：`~/.tokenpulse/requests/<年-月>.jsonl`，一行一次。
@@ -56,6 +59,8 @@ export type RequestRecord = {
   /** 会话里直接记下的账号（Claude Code 部分会话有）。 */
   accountRef?: string;
   accountEmail?: string;
+  /** 压缩上下文那一次调用：CLI 没写 usage，按压缩前的上下文和摘要长度估的（见 usage-scan.ts）。 */
+  compaction?: boolean;
   /** 查询时附上的：同一次请求在 CC Switch 代理里的记录（见 matchProxy）。不落盘。 */
   proxy?: { requested?: string; returned: string };
 };
@@ -173,7 +178,91 @@ export type RequestQuery = {
   models?: string[];
   project?: string;
   channel?: "all" | "official" | "api" | "unknown";
+  /** 顺便按项目文件夹汇总（跟随全部筛选），给用量明细的「按项目」视图用。 */
+  projects?: boolean;
 };
+
+/** 一个项目里某个「型号 × 思考等级 × 工具」组合的用量。effort 没记录的为 "unknown"。 */
+export type ProjectCombo = { model: string; effort: string; source: string; tokens: number; input: number; output: number; cacheRead: number; requests: number; records: number; costUsd: number; priced: boolean };
+
+export type ProjectAggregate = {
+  /** 归并用的键（Windows 路径不分大小写、去掉末尾斜杠）；没记录工作目录的是空串。 */
+  key: string;
+  cwd: string;
+  tokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  costUsd: number;
+  priced: boolean;
+  /** 模型调用次数（Grok 一轮算好几次）。 */
+  requests: number;
+  /** 流水条数。 */
+  records: number;
+  /** 多少个 Agent 对话（会话文件）碰过这个项目。 */
+  sessions: number;
+  firstAt: number;
+  lastAt: number;
+  agents: { source: string; sessions: number; tokens: number; requests: number }[];
+  combos: ProjectCombo[];
+  /** 其中压缩上下文的估算（见 usage-scan.ts）。 */
+  compaction: { count: number; tokens: number };
+  /**
+   * 周额度占用（官方百分点，跨几周累加）：官方周额度采样里「涨了、同期本机有请求」的区间，
+   * 涨幅按区间内各项目的 API 等价费用分摊（见 projectQuota）。同期若在聊天或别的设备上用，会偏高；
+   * 同期本机没有请求的涨幅（unmatched / uncertain）不分给任何项目。
+   */
+  quota: { week: number; officialTokens: number; attributedTokens: number };
+};
+
+type OfficialPart = { account: string; at: number; tokens: number; costUsd: number };
+
+/** 按官方周额度采样把涨幅分给各项目，见 ProjectAggregate.quota。accountRows 是同一账号全部官方请求（不受筛选影响），分摊的分母用它。 */
+function projectQuota(parts: Map<string, OfficialPart[]>, accountRows: Map<string, RequestRow[]>, now: number) {
+  const history = readQuotaHistory();
+  const intervalsOf = new Map<string, { from: number; to: number; points: number; cost: number; tokens: number }[]>();
+  for (const [account, rows] of accountRows) {
+    const kind = account.split(":")[0];
+    const samples = (history.accounts[kind] ?? []).filter((sample) => sample.account === account).sort((a, b) => a.at - b.at);
+    if (!samples.length) continue;
+    const sorted = rows.slice().sort((a, b) => a.at - b.at);
+    const upper = (at: number) => { let low = 0, high = sorted.length; while (low < high) { const mid = (low + high) >>> 1; if (sorted[mid].at <= at) low = mid + 1; else high = mid; } return low; };
+    const segments = windowSegments(samples, "week", kind === "chatgpt" ? "moves" : "keeps");
+    intervalsOf.set(account, quotaAttribution(segments, sorted, now)
+      .filter((interval) => interval.kind === "local_present" && interval.points > 0)
+      .map((interval) => {
+        const inside = sorted.slice(upper(interval.from), upper(interval.to));
+        return { from: interval.from, to: interval.to, points: interval.points, cost: inside.reduce((n, r) => n + r.costUsd, 0), tokens: inside.reduce((n, r) => n + r.tokens, 0) };
+      })
+      .sort((a, b) => a.from - b.from));
+  }
+  const out = new Map<string, ProjectAggregate["quota"]>();
+  for (const [key, list] of parts) {
+    const quota = { week: 0, officialTokens: 0, attributedTokens: 0 };
+    for (const part of list) {
+      quota.officialTokens += part.tokens;
+      const intervals = intervalsOf.get(part.account);
+      if (!intervals?.length) continue;
+      // 区间按起点排好、互不重叠：二分找起点 < at 的最后一个，再看 at 落不落在 (from, to]
+      let low = 0, high = intervals.length;
+      while (low < high) { const mid = (low + high) >>> 1; if (intervals[mid].from < part.at) low = mid + 1; else high = mid; }
+      const interval = intervals[low - 1];
+      if (!interval || part.at > interval.to) continue;
+      const share = interval.cost > 0 ? part.costUsd / interval.cost : interval.tokens > 0 ? part.tokens / interval.tokens : 0;
+      quota.week += interval.points * share;
+      quota.attributedTokens += part.tokens;
+    }
+    out.set(key, quota);
+  }
+  return out;
+}
+
+export function projectKey(cwd?: string) {
+  const trimmed = (cwd || "").trim().replace(/[\\/]+$/, "");
+  return /^[a-z]:|\\/i.test(trimmed) ? trimmed.replace(/\//g, "\\").toLowerCase() : trimmed;
+}
 
 export type RequestRow = {
   effort?: string;
@@ -206,6 +295,8 @@ export type RequestRow = {
   statusLabel: string;
   reasons: string[];
   channel: string;
+  /** 压缩上下文的估算行。 */
+  compaction?: boolean;
 };
 
 export type RequestPage = {
@@ -229,6 +320,8 @@ export type RequestPage = {
   };
   /** 当前时间 / 工具 / 搜索条件下各账号的请求（不受账号和核验筛选影响）。id 为 "none" 的是没对上账号的。 */
   accounts: { id: string; label: string; source: string; requests: number; tokens: number; costUsd: number; lastAt: number; inferred: number }[];
+  /** projects 为 true 时才有，按 Token 从多到少。 */
+  projects?: ProjectAggregate[];
 };
 
 function sessionOf(record: RequestRecord) {
@@ -244,13 +337,17 @@ function accountContext(): AccountContext {
   return { timeline: readLoginTimeline(), labels: accountLabels() };
 }
 
+const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，按压缩前的上下文大小和摘要长度估算";
+
 function toRow(record: RequestRecord, official: boolean | undefined, accounts: AccountContext = accountContext()): RequestRow {
   // 走中转 / API Key 的不是官方账号发的；CC Switch 导入的走它代理的也一样
   const account =
     official === false || (record.kind === "cc-switch" && record.viaProxy)
       ? null
       : resolveAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail }, accounts.timeline, accounts.labels);
-  const verdict = verifyRequest({
+  const verdict: { status: VerifyStatus; reasons: string[]; channel: string } = record.compaction
+    ? { status: "unverified", reasons: [COMPACTION_REASON], channel: "压缩上下文（估算）" }
+    : verifyRequest({
     kind: record.kind,
     requested: record.requested,
     returned: record.returned,
@@ -286,6 +383,7 @@ function toRow(record: RequestRecord, official: boolean | undefined, accounts: A
     statusLabel: STATUS_LABELS[verdict.status],
     reasons: verdict.reasons,
     channel: verdict.channel,
+    ...(record.compaction ? { compaction: true } : {}),
   };
 }
 
@@ -395,6 +493,57 @@ export function queryRequests(query: RequestQuery): RequestPage {
     bySource.requests += row.calls;
     hours.set(hourAt, hour);
   };
+  const projects = new Map<string, Omit<ProjectAggregate, "quota"> & { sessionSet: Set<string>; agentMap: Map<string, { source: string; sessionSet: Set<string>; tokens: number; requests: number }>; comboMap: Map<string, ProjectCombo> }>();
+  const officialParts = new Map<string, OfficialPart[]>();
+  const accountRows = new Map<string, RequestRow[]>();
+  const projectRow = (row: RequestRow) => {
+    const key = projectKey(row.cwd);
+    let project = projects.get(key);
+    if (!project) {
+      project = { key, cwd: (row.cwd || "").trim().replace(/[\\/]+$/, "") || "", tokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, priced: true, requests: 0, records: 0, sessions: 0, firstAt: row.at, lastAt: row.at, agents: [], combos: [], compaction: { count: 0, tokens: 0 }, sessionSet: new Set(), agentMap: new Map(), comboMap: new Map() };
+      projects.set(key, project);
+    }
+    project.tokens += row.tokens;
+    project.input += row.input;
+    project.output += row.output;
+    project.cacheRead += row.cacheRead;
+    project.cacheWrite += row.cacheWrite;
+    project.reasoning += row.reasoning;
+    project.costUsd += row.costUsd;
+    project.priced &&= row.priced;
+    project.requests += row.calls;
+    project.records += 1;
+    project.firstAt = Math.min(project.firstAt, row.at);
+    project.lastAt = Math.max(project.lastAt, row.at);
+    const session = `${row.source}\u0000${row.session}`;
+    project.sessionSet.add(session);
+    const agent = project.agentMap.get(row.source) ?? { source: row.source, sessionSet: new Set<string>(), tokens: 0, requests: 0 };
+    agent.sessionSet.add(session);
+    agent.tokens += row.tokens;
+    agent.requests += row.calls;
+    project.agentMap.set(row.source, agent);
+    const effort = row.effort || "unknown";
+    const comboKey = `${row.model}\u0000${effort}\u0000${row.source}`;
+    const combo = project.comboMap.get(comboKey) ?? { model: row.model, effort, source: row.source, tokens: 0, input: 0, output: 0, cacheRead: 0, requests: 0, records: 0, costUsd: 0, priced: true };
+    combo.tokens += row.tokens;
+    combo.input += row.input;
+    combo.output += row.output;
+    combo.cacheRead += row.cacheRead;
+    combo.requests += row.calls;
+    combo.records += 1;
+    combo.costUsd += row.costUsd;
+    combo.priced &&= row.priced;
+    project.comboMap.set(comboKey, combo);
+    if (row.compaction) {
+      project.compaction.count += 1;
+      project.compaction.tokens += row.tokens;
+    }
+    if (row.official === true && row.account) {
+      const list = officialParts.get(key) ?? [];
+      list.push({ account: row.account.id, at: row.at, tokens: row.tokens, costUsd: row.costUsd });
+      officialParts.set(key, list);
+    }
+  };
   const facets = { models: new Set<string>(), projects: new Set<string>() };
   const q = query.search.trim().toLowerCase();
   const seen = new Set<string>();
@@ -427,9 +576,15 @@ export function queryRequests(query: RequestQuery): RequestPage {
       const row = toRow(record, official.get(record.file), accountCtx);
       facets.models.add(row.model);
       facets.projects.add(row.cwd || "");
+      // 分摊周额度涨幅的分母：同一账号同期的全部官方请求，不受下面的模型 / 项目 / 搜索筛选影响
+      if (query.projects && row.official === true && row.account) {
+        const list = accountRows.get(row.account.id) ?? [];
+        list.push(row);
+        accountRows.set(row.account.id, list);
+      }
       if (query.aggregate && !query.filteredAggregate) aggregateRow(row, day, raw.at);
       if (query.models?.length && !query.models.includes(row.model)) continue;
-      if (query.project && (query.project === "__missing__" ? Boolean(row.cwd) : row.cwd !== query.project)) continue;
+      if (query.project && (query.project === "__missing__" ? Boolean(row.cwd) : projectKey(row.cwd) !== projectKey(query.project))) continue;
       if (query.channel === "official" && row.official !== true) continue;
       if (query.channel === "api" && row.official !== false) continue;
       if (query.channel === "unknown" && row.official !== undefined) continue;
@@ -455,6 +610,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       costUsd += row.costUsd;
       if (query.status !== "all" && row.status !== query.status) continue;
       if (query.aggregate && query.filteredAggregate) aggregateRow(row, day, raw.at);
+      if (query.projects) projectRow(row);
       matched.push(row);
     }
   }
@@ -462,6 +618,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   matched.sort((a, b) =>
     query.sort === "tokens" ? b.tokens - a.tokens || b.at - a.at : query.sort === "cost" ? b.costUsd - a.costUsd || b.at - a.at : b.at - a.at,
   );
+  const projectQuotas = query.projects ? projectQuota(officialParts, accountRows, Date.now()) : null;
   const pageSize = Math.max(1, query.pageSize || 20);
   const pages = Math.max(1, Math.ceil(matched.length / pageSize));
   const page = Math.min(Math.max(0, query.page || 0), pages - 1);
@@ -477,6 +634,19 @@ export function queryRequests(query: RequestQuery): RequestPage {
     firstAt,
     accounts: [...byAccount.values()].sort((a, b) => b.requests - a.requests),
     ...(query.aggregate ? { aggregate: { rows: [...groups.values()], hours: [...hours.values()].sort((a, b) => a.hour - b.hour) } } : {}),
+    ...(query.projects
+      ? {
+          projects: [...projects.values()]
+            .map(({ sessionSet, agentMap, comboMap, ...project }) => ({
+              ...project,
+              sessions: sessionSet.size,
+              agents: [...agentMap.values()].map(({ sessionSet: set, ...agent }) => ({ ...agent, sessions: set.size })).sort((a, b) => b.tokens - a.tokens),
+              combos: [...comboMap.values()].sort((a, b) => b.tokens - a.tokens),
+              quota: projectQuotas?.get(project.key) ?? { week: 0, officialTokens: 0, attributedTokens: 0 },
+            }))
+            .sort((a, b) => b.tokens - a.tokens || b.lastAt - a.lastAt),
+        }
+      : {}),
   };
 }
 

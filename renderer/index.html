@@ -10,6 +10,8 @@
 <link rel="stylesheet" href="egress.css">
 <link rel="stylesheet" href="model-study.css">
 <link rel="stylesheet" href="usage-insights.css">
+<link rel="stylesheet" href="usage-projects.css">
+<link rel="stylesheet" href="agent-switch.css">
 </head>
 <body>
 
@@ -32,6 +34,7 @@
   <symbol id="i-trace" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/><path d="m7.9 10.7 1.8 1.8 3.4-3.6"/></symbol>
   <symbol id="i-requests" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14 2.5-7h4"/></symbol>
   <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M5 5.5h14A2.5 2.5 0 0 1 21.5 8v8a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3v-3H5A2.5 2.5 0 0 1 2.5 16V8A2.5 2.5 0 0 1 5 5.5Z"/><path d="M7 10h10M7 14h6"/></symbol>
+  <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6.5" cy="7" r="2.2"/><circle cx="17.5" cy="17" r="2.2"/><path d="M8.7 7H15a3.5 3.5 0 0 1 0 7H9"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></symbol>
   <symbol id="i-reply" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 0-7.5-7.5H4v7.5h5.5L6 15l4.5 4.5v-4.2H12.5A7.5 7.5 0 0 0 20 11.5Z"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18" cy="12" r="1.3"/></symbol>
@@ -90,6 +93,7 @@
     <button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button>
     <button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button>
     <button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button>
+    <button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button>
   </nav>
 
   <div class="sidebar-bottom">
@@ -223,6 +227,7 @@
       </div>
       <div id="quota-detail"></div>
       <section id="quota-model-study" class="panel model-study" aria-label="模型容量排行"></section>
+      <section id="quota-model-timeline" class="panel model-study" aria-label="模型与思考等级时间轴"></section>
     </section>
 
     <section id="page-usage" class="page" hidden>
@@ -232,18 +237,17 @@
       </article>
       <!-- 用量分析：分工具趋势、工具 / 模型完整排行、使用时段分布（renderer/usage-insights.js） -->
       <div id="usage-insights" class="usage-insights"></div>
-      <section id="usage-model-study" class="panel model-study" aria-label="模型与思考等级时间轴"></section>
       <article class="panel records-panel usage-records">
         <div class="panel-heading">
           <div>
-            <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span></h2>
+            <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span><span id="project-count" class="section-tag" hidden></span></h2>
             <p id="detail-caption">每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情</p>
           </div>
           <div class="panel-actions">
             <button id="verify-help" class="btn" aria-expanded="false" aria-controls="verify-method"><svg class="icon"><use href="#i-info"/></svg>说明</button>
             <button id="export-requests" class="btn"><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
             <button id="export-csv" class="btn" hidden><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
-            <div id="usage-view" class="seg compact" role="tablist" aria-label="明细视图"><span class="seg-thumb" aria-hidden="true"></span><button data-view="requests" class="on" aria-pressed="true">逐条请求</button><button data-view="daily" aria-pressed="false">按日汇总</button></div>
+            <div id="usage-view" class="seg compact" role="tablist" aria-label="明细视图"><span class="seg-thumb" aria-hidden="true"></span><button data-view="requests" class="on" aria-pressed="true">逐条请求</button><button data-view="daily" aria-pressed="false">按日汇总</button><button data-view="projects" aria-pressed="false">按项目</button></div>
           </div>
         </div>
 
@@ -285,6 +289,8 @@
           </div>
         </div>
 
+        <div id="view-projects" hidden></div>
+
         <div id="view-daily" hidden>
           <div class="table-toolbar">
             <label class="search-field"><svg class="icon"><use href="#i-search"/></svg><span class="sr-only">搜索</span><input id="model-search" type="search" placeholder="搜索模型或工具名称…" autocomplete="off"></label>
@@ -313,6 +319,7 @@
 
     <section id="page-egress" class="page" hidden></section>
     <section id="page-sessions" class="page" hidden></section>
+    <section id="page-providers" class="page" hidden></section>
 
     <footer>
       <span id="data-summary">本地数据读取中</span>
@@ -422,5 +429,7 @@
 <script src="sessions.js"></script>
 <script src="egress.js"></script>
 <script src="usage-insights.js"></script>
+<script src="usage-projects.js"></script>
+<script src="agent-switch.js"></script>
 </body>
 </html>

@@ -20,7 +20,7 @@
   const STRENGTH = { none: .4, minimal: .45, low: .55, medium: .72, high: .88, xhigh: 1, max: 1, ultra: 1 };
   const HUES = ['#4f7fd9', '#d9774f', '#10a37f', '#8b5cf6', '#c9832f', '#e05a8a', '#0ea5a4', '#65a30d', '#7c8796'];
   const WINDOWS = [['five', '5 小时'], ['week', '周']];
-  const SORTS = [['capacity', '容量'], ['calls', '请求次数'], ['recent', '常用'], ['name', '名称']];
+  const SORTS = [['capacity', '参考量'], ['calls', '请求次数'], ['recent', '常用'], ['name', '名称']];
   const WEEKDAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const HOUR = 3600000, DAY = 86400000;
 
@@ -86,7 +86,7 @@
       reset() { view.seq++; view.key = ''; view.identity = ''; view.data = null; view.failed = false; host.removeAttribute('aria-busy'); },
     };
   }
-  const stampOf = (snapshot, report) => `${snapshot?.scannedAt ?? ''}|${report?.lastSampleAt ?? ''}|${report?.lastCheckedAt ?? ''}`;
+  const stampOf = (snapshot, report) => `${snapshot?.scannedAt ?? ''}|${report?.lastSampleAt ?? ''}|${report?.lastCheckedAt ?? ''}|${Math.floor(Date.now() / 30000)}`;
   function skeleton(rows) { return el('div', { class: 'ms-skeleton', 'aria-hidden': 'true' }, Array.from({ length: rows }, () => el('i'))); }
   function failure(message) {
     return el('div', { class: 'ms-error', role: 'alert' }, [el('span', { text: message }), el('button', { type: 'button', class: 'btn', 'data-action': 'retry-study', text: '重试' })]);
@@ -100,6 +100,7 @@
     Q.host ??= $('quota-model-study');
     if (!Q.host) return;
     Q.loader ??= loader(Q.host, mode => drawQuota(mode));
+    if (Q.report?.accountId !== report?.accountId) { Q.scopeConfirmed = false; Q.calibrationMinutes = 60; Q.calibrationOpen = false; Q.calibrationMessage = ""; }
     Q.snapshot = snapshot; Q.report = report;
     if (!report?.accountId) { Q.loader.reset(); drawQuota('none'); return; }
     Q.loader.load(report.accountId, { kind: report.kind, accountId: report.accountId }, stampOf(snapshot, report));
@@ -141,19 +142,18 @@
     const merged = shown.reduce((n, r) => n + r.efforts.length, 0);
     host.replaceChildren(...[
       quotaHeading(),
+      calibrationPanel(data),
       el('div', { class: 'ms-budgets' }, WINDOWS.map(([w, label]) => budgetTile(w, label, data[w]))),
       highlights(merge(rows), data),
-      noBudget ? el('p', { class: 'ms-note' }, [data.kind === 'grok'
-        ? '本机还没有这个 Grok 账号可用的采样区间，暂时换算不出 Tokens；下面按价格表比较相对耐用程度。价格表对 Grok 各型号用同一档家族价，所以倍数相同。'
-        : '本机还没有这个账号足够的采样区间，暂时换算不出 Tokens；下面按价格表比较相对耐用程度（以最常用的组合为 1×）。']) : null,
+      noBudget ? el('p', { class: 'ms-note', text: '未取得可用的本机专用校准样本，暂停绝对 Token / 美元容量推算。下面的倍数仅比较 API 参考单价，不是官方额度倍数。' }) : null,
       el('div', { class: 'ms-toolbar' }, [
         el('div', { class: 'ms-chips', role: 'group', 'aria-label': '按思考等级筛选' }, [['all', '全部等级'], ...levels.map(l => [l, levelName(l)])].map(([id, label]) =>
           el('button', { type: 'button', class: 'ms-chip' + (Q.level === id ? ' on' : ''), 'data-level': id, 'aria-pressed': String(Q.level === id), translate: id === 'all' ? null : 'no' }, [label, el('small', { text: String(id === 'all' ? rows.length : rows.filter(r => r.effort === id).length) })]))),
-        el('div', { class: 'ms-legend' }, [el('span', {}, [el('i', { class: 'ms-key full' }), '整窗容量']), el('span', {}, [el('i', { class: 'ms-key left' }), '本周期还剩'])])
+        el('div', { class: 'ms-legend' }, [el('span', {}, [el('i', { class: 'ms-key full' }), noBudget ? 'API 价格参考' : '校准条件下整窗']), el('span', {}, [el('i', { class: 'ms-key left' }), '按官方剩余比例估算'])])
       ]),
       el('div', { class: 'ms-rank-head', 'aria-hidden': 'true' }, [el('span'), el('span', { text: '模型 · 思考等级' }), el('span', { text: '5 小时整窗' }), el('span', { text: '周整窗' })]),
       list,
-      el('p', { class: 'ms-note' }, [`共 ${number(merged)} 个组合，全部列出${merged > shown.length ? `；同一模型里换算结果相同的等级合成一行（等级只改变每次调用用多少 Token，不改单价）` : ''}。`, unknown?.recentCalls ? `另有 ${number(unknown.recentCalls)} 次调用没记录思考等级，不参与换算。` : '']),
+      el('p', { class: 'ms-note' }, [`共 ${number(merged)} 个组合，全部列出${merged > shown.length ? `；同一模型里换算结果相同的等级合成一行（缺少等级专属数据时共享价格参考，不代表官方扣额相同）` : ''}。`, unknown?.recentCalls ? `另有 ${number(unknown.recentCalls)} 次调用没记录思考等级，不参与换算。` : '']),
       methodNote()
     ].filter(Boolean));
     host.querySelector('.ms-chips').addEventListener('click', e => { const b = e.target.closest('[data-level]'); if (b && b.dataset.level !== Q.level) { Q.level = b.dataset.level; drawQuota('resort'); } });
@@ -189,6 +189,68 @@
     return rows.sort((a, b) => { const x = metric(a), y = metric(b); return x == null ? (y == null ? byName(a, b) : 1) : y == null ? -1 : y - x || byName(a, b); });
   }
 
+
+  function attributionNote(study) {
+    const a = study.attribution;
+    if (!a) return null;
+    const text = '官方百分比是账号总池，本机 Token 只覆盖已记录的 Code 用量。';
+    const detail = a.unmatchedPoints > 0 || a.uncertainPoints > 0
+      ? '已观测的额度增长中：' + a.unmatchedPoints.toFixed(2) + ' 个百分点未匹配本机日志，' + a.uncertainPoints.toFixed(2) + ' 个百分点无法归因。可能是聊天、其他设备或统计延迟，不是精确聊天消耗。'
+      : '即使同一时段有 Code 请求，也无法自动排除同时聊天或其他设备消耗。';
+    return el('div', { class: 'ms-attribution-note', role: 'note' }, [el('b', { text }), el('p', { text: detail })]);
+  }
+  function calibrationPanel(data) {
+    const status = data.calibration || { sessions: [], active: null }, active = status.active;
+    const blocked = new Set([...(data.five.attribution?.blockedSessionIds || []), ...(data.week.attribution?.blockedSessionIds || [])]);
+    const panel = el('details', { class: 'ms-calibration', open: Q.calibrationOpen ? '' : null });
+    panel.addEventListener('toggle', () => { Q.calibrationOpen = panel.open; });
+    panel.append(el('summary', { text: active ? '本机校准进行中 · ' + date(active.endAt) + ' 自动结束' : '共享额度保护 · 可选：短时本机 Code 校准' }));
+    panel.append(el('p', { text: '默认不把聊天等全端消耗分摊给 Code。若需要绝对容量参考，可确认所选时长内仅使用此账号的本机 Code；前 10 分钟缓冲，之后按正常工作采样，不额外发模型请求。' }));
+    panel.append(el('p', { class: 'ms-note', text: '软件无法检测所有同时发生的聊天。期间用了聊天或其他设备，请作废本段；不要确认过去 30 天的混用历史。校准结果也只是当时使用结构的参考。' }));
+    const actions = el('div', { class: 'ms-calibration-actions' });
+    const notice = el('p', { class: 'ms-note', role: 'status', text: Q.calibrationMessage || '' });
+    async function change(action, sessionId, confirmedLocalOnly) {
+      if (Q.calibrationBusy) return;
+      const accountId = data.accountId;
+      Q.calibrationBusy = true;
+      panel.querySelectorAll('button,input,select').forEach(n => { n.disabled = true; });
+      try {
+        await api.modelCalibration({ kind: data.kind, accountId, action, sessionId, confirmedLocalOnly, durationMinutes: Q.calibrationMinutes || 60 });
+        cache.clear();
+        if (Q.report?.accountId === accountId) { Q.scopeConfirmed = false; Q.calibrationMessage = '校准记录已更新。'; Q.loader.reset(); quotaUpdate(Q.snapshot, Q.report); }
+        T.loader?.reset();
+      } catch (error) { notice.textContent = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''); notice.setAttribute('role', 'alert'); }
+      finally {
+        Q.calibrationBusy = false;
+        panel.querySelectorAll('button,input').forEach(n => { n.disabled = false; });
+        const start = panel.querySelector('[data-calibration-action=start]'), check = panel.querySelector('[data-calibration-confirm]');
+        if (start) start.disabled = !check?.checked;
+      }
+    }
+    if (active) {
+      actions.append(el('span', { class: 'ms-badge warn', text: blocked.has(active.id) ? '本段有未匹配增长，暂不用于校准' : '用户确认时段 · 等待足够采样' }));
+      const finish = el('button', { type: 'button', class: 'btn', 'data-calibration-action': 'finish', text: '结束本段' }); finish.addEventListener('click', () => change('finish', active.id)); actions.append(finish);
+    } else {
+      const check = el('input', { type: 'checkbox', 'data-calibration-confirm': '' }); check.checked = Boolean(Q.scopeConfirmed);
+      const start = el('button', { type: 'button', class: 'btn', 'data-calibration-action': 'start', text: '开始 ' + (Q.calibrationMinutes || 60) + ' 分钟校准', disabled: Q.scopeConfirmed ? null : '' });
+      const duration = el('select', { 'aria-label': '校准时长', 'data-calibration-duration': '' }, [60,120,240].map(n => el('option', { value: String(n), text: (n / 60) + ' 小时' })));
+      duration.value = String(Q.calibrationMinutes || 60);
+      duration.addEventListener('change', () => { Q.calibrationMinutes = Number(duration.value); Q.scopeConfirmed = false; check.checked = false; start.disabled = true; start.textContent = '开始 ' + duration.value + ' 分钟校准'; });
+      actions.append(duration);
+      check.addEventListener('change', () => { Q.scopeConfirmed = check.checked; start.disabled = !check.checked; });
+      start.addEventListener('click', () => change('start', undefined, check.checked));
+      actions.append(el('label', {}, [check, '我确认本段只使用所选账号的本机 Code']), start);
+    }
+    panel.append(actions, notice);
+    const list = el('div', { class: 'ms-calibration-history' });
+    for (const session of status.sessions) {
+      const row = el('div', {}, [el('span', { text: date(session.startAt) + ' → ' + date(session.stoppedAt || session.endAt) + ' · ' + (session.discardedAt ? '已作废' : blocked.has(session.id) ? '有未匹配增长，暂不采用' : session.id === active?.id ? '进行中' : '已结束') })]);
+      if (!session.discardedAt) { const discard = el('button', { type: 'button', class: 'btn', 'data-calibration-action': 'discard', text: '作废本段' }); discard.addEventListener('click', () => change('discard', session.id)); row.append(discard); }
+      list.append(row);
+    }
+    panel.append(list); return panel;
+  }
+
   function budgetTile(w, label, study) {
     const b = study.budget, sel = study.selected;
     const used = sel?.active && !study.quotaStale ? sel.used : null;
@@ -196,12 +258,13 @@
     const confidence = { medium: ['样本较充分', 'good'], low: ['初步参考', 'warn'], insufficient: ['样本不足', 'muted'] }[b.confidence];
     return el('div', { class: `ms-budget ${w}` }, [
       el('div', { class: 'ms-budget-top' }, [el('i', { class: 'ms-dot' }), el('b', { text: `${label}整窗` }), el('span', { class: `ms-badge ${confidence[1]}`, text: confidence[0] })]),
-      el('strong', { class: 'ms-budget-value' }, b.costUsd != null ? [money(b.costUsd), el('small', { text: 'API 等价' })] : [el('span', { class: 'muted', text: '暂时换算不出' })]),
+      el('strong', { class: 'ms-budget-value' }, b.costUsd != null ? [money(b.costUsd), el('small', { text: '本机专用样本 · API 等价参考' })] : [el('span', { text: used == null ? '—' : `${used.toFixed(1)}%` }), el('small', { text: '官方账号总池已用' })]),
       meter,
       el('p', {}, used != null
-        ? [`本周期已用 ${used.toFixed(0)}%`, b.costUsd != null ? ` · 还剩约 ${money(b.costUsd * (100 - used) / 100)}` : '']
+        ? [`本周期已用 ${used.toFixed(0)}%`, ` · 官方剩余 ${Math.max(0, 100 - used).toFixed(1)}%`]
         : [study.quotaStale ? '额度采样超过 30 分钟，暂不估算剩余' : '当前没有进行中的周期']),
-      el('small', { text: b.intervals ? `${number(b.intervals)} 个采样区间 · 累计 ${number(Math.round(b.points))} 个百分点 · ${number(b.cycles)} 个周期` : '最近 30 天没有可用的采样区间' })
+      el('small', { text: b.intervals ? `${number(b.intervals)} 个采样区间 · 累计 ${number(Math.round(b.points))} 个百分点 · ${number(b.cycles)} 个周期` : '尚无足够的已确认本机校准区间' }),
+      attributionNote(study)
     ]);
   }
 
@@ -216,8 +279,8 @@
     const calls = r => r.five.callsPerWindow ?? r.week.callsPerWindow;
     const cards = [];
     const most = pick(rows, cap), busy = pick(rows, calls), usual = pick(rows, r => r.five.recentTokens || null);
-    if (most) { const [w, label] = win(most); cards.push(['durable', '最耐用', most, tokens(most[w].capacityTokens), `Tokens / ${label}整窗`]); }
-    if (busy) { const [w, label] = win(busy); cards.push(['calls', '调用次数最多', busy, `≈ ${number(busy[w].callsPerWindow)}`, `次调用 / ${label}整窗`]); }
+    if (most) { const [w, label] = win(most); cards.push(['durable', '参考容量最高', most, tokens(most[w].capacityTokens), `Tokens / ${label}整窗`]); }
+    if (busy) { const [w, label] = win(busy); cards.push(['calls', '估计调用次数最多', busy, `≈ ${number(busy[w].callsPerWindow)}`, `次调用 / ${label}整窗`]); }
     if (usual) {
       const [w, label] = win(usual), left = usual[w].remainingTokens;
       cards.push(['usual', '你最常用', usual, left != null ? tokens(left) : tokens(usual[w].capacityTokens ?? 0), left != null ? `Tokens · ${label}周期还剩` : `Tokens / ${label}整窗`]);
@@ -238,7 +301,7 @@
       if (c.remainingTokens != null) meter.append(paint(el('i', { class: 'left' }), { width: `${Math.max(0, c.remainingTokens / (max[w] || 1) * 100).toFixed(2)}%` }));
       cell.append(meter);
     } else if (c.relative != null) {
-      cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: `×${c.relative.toFixed(2)}` }), el('small', { text: '相对容量' })]),
+      cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: `×${c.relative.toFixed(2)}` }), el('small', { text: 'API 价格参考比' })]),
         el('div', { class: 'ms-meter' }, [paint(el('i', { class: 'full relative' }), { width: `${Math.max(1.5, c.relative / (max.relative || 1) * 100).toFixed(2)}%` })]));
     } else {
       cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { class: 'muted', text: '—' }), el('small', { text: '价格表里没有这个型号' })]), el('div', { class: 'ms-meter' }));
@@ -248,7 +311,7 @@
 
   function rankRow(row, i, max, data) {
     const c5 = row.five, cw = row.week;
-    const basis = cw.capacityBasis === 'measured' || c5.capacityBasis === 'measured' ? ['实测', 'measured'] : c5.priceBasis === 'price' ? ['价格表', 'price'] : c5.priceBasis ? ['换算', 'cost'] : null;
+    const basis = cw.capacityBasis === 'measured' || c5.capacityBasis === 'measured' ? ['样本外推', 'measured'] : c5.priceBasis === 'price' ? ['价格表', 'price'] : c5.priceBasis ? ['按价模拟', 'cost'] : null;
     const meta = [
       c5.costPerMTokens != null ? `${money(c5.costPerMTokens)} / 百万 Tokens` : null,
       c5.tokensPerCall ? `单次调用约 ${tokens(c5.tokensPerCall)}` : null,
@@ -274,13 +337,14 @@
   function detail(row, data) {
     const zh = window.PulseI18n?.lang() !== 'en';
     const lines = [`${row.model} · ${row.efforts.map(e => levelName(e) + (zh && LEVEL[e] && STRENGTH[e] ? `（${LEVEL[e]}）` : '')).join(' / ')}`];
-    if (row.efforts.length > 1) lines.push('这几个等级换算结果相同：单价一样，区别在每次调用用多少 Token');
+    if (row.efforts.length > 1) lines.push('这几个等级共享价格参考；缺少专属数据，不代表官方扣额相同');
     for (const [w, label] of WINDOWS) {
       const c = row[w], b = data[w].budget;
       if (c.capacityTokens != null) lines.push(`${label}整窗：约 ${number(c.capacityTokens)} Tokens${c.capacityCostUsd != null ? `（${money(c.capacityCostUsd)} API 等价）` : ''}${c.callsPerWindow ? ` · 约 ${number(c.callsPerWindow)} 次调用` : ''}${c.remainingTokens != null ? ` · 本周期还剩约 ${tokens(c.remainingTokens)}` : ''}`);
-      else if (c.relative != null) lines.push(`${label}整窗：${b.costUsd == null ? '样本不足，' : ''}相对容量 ×${c.relative.toFixed(2)}`);
+      else if (c.relative != null) lines.push(`${label}整窗：${b.costUsd == null ? '样本不足，' : ''}API 价格参考比 ×${c.relative.toFixed(2)}`);
       if (c.estimatedTokens != null) lines.push(`${label}实测：${c.intervals} 个纯区间、${c.quotaPoints.toFixed(0)} 个百分点，约 ${tokens(c.estimatedTokens)}（${c.confidence === 'medium' ? '样本较充分' : '初步参考'}）`);
     }
+    if (row.five.capacityBasis === 'cost' || row.week.capacityBasis === 'cost') lines.push('按价模拟：假设扣额与 API 费用成比例，未被官方确认，不是实测额度。');
     const c = row.five;
     const basis = { combo: '这个组合自己最近 30 天的实际费用', model: '同模型其他等级的实际费用', price: '价格表 × 本账号的用量结构' }[c.priceBasis];
     if (basis) lines.push(`单价：${money(c.costPerMTokens)} / 百万 Tokens，来自${basis}`);
@@ -296,10 +360,10 @@
     node.addEventListener('toggle', () => { Q.methodOpen = node.open; });
     node.append(el('summary', { text: '怎么换算的' }),
       el('ul', {}, [
-        el('li', { text: '整窗预算：同账号最近 30 天的采样区间里，本机官方请求的 API 等价费用 ÷ 官方已用百分点 × 100。混用模型的区间也能用，因为费用可以相加。' }),
-        el('li', { text: '每个组合：整窗预算 ÷ 它的每 Token 参考单价。单价优先用这个组合自己的实际费用（带着它自己的缓存比例），用得少就用同模型其他等级的，没用过就用价格表。' }),
-        el('li', { text: '标「实测」的组合：有足够多整段只用它的采样区间，直接按实测折算。实测与换算相差不大，说明官方额度大体按 API 等价费用消耗。' }),
-        el('li', { text: '思考等级不改单价，改的是每次调用用多少 Token：等级越高，同样的额度能调用的次数越少。「≈ 次调用」按这个组合最近 30 天的平均算。' }),
+        el('li', { text: '官方额度属于账号总池，可包含聊天、Code 和其他设备。0.3.9 仅使用用户前向确认的本机专用时段；前 10 分钟缓冲，有明显未匹配增长的校准段暂不采用。' }),
+        el('li', { text: '优先使用已确认的同模型/等级样本。没有合格专属样本时的「按价模拟」假设扣额与 API 参考费用成比例，此假设未被官方确认，不能当作真实额度或保证。' }),
+        el('li', { text: '标「样本外推」的组合：有足够多整段只用它的采样区间，直接按实测折算。即使数值接近，也不能证明官方按 API 单价扣额度。' }),
+        el('li', { text: '思考等级、上下文和缓存会改变请求构成；API 单价不代表官方扣额权重，不保证较高等级一定能调用更少次数。「≈ 次调用」按这个组合最近 30 天的平均算。' }),
         el('li', { text: '其他设备的用量、长时间没有采样、跨重置卡、套餐变化都会让结果偏离；API 等价费用不是订阅余额。目录里的模型不保证这个账号都能用。' })
       ]));
     return node;
@@ -318,19 +382,20 @@
   }
   function syncSegs(host) { for (const group of host.querySelectorAll('.seg')) syncSeg(group); }
 
-  /* ================= 用量明细：模型与思考等级时间线 ================= */
+  /* ================= 额度详情：模型与思考等级时间线（0.3.9 从用量明细移过来，跟随上方选中的账号） ================= */
 
   const T = { host: null, loader: null, snapshot: null, accountId: '', cycles: { five: '', week: '' }, focus: '', width: 0 };
 
   function timelineAccounts(snapshot) { return (snapshot?.accounts || []).filter(a => a.accountId && (a.five || a.week)); }
   function timelineUpdate(snapshot, preferred) {
-    T.host ??= $('usage-model-study');
+    T.host ??= $('quota-model-timeline');
     if (!T.host) return;
     T.loader ??= loader(T.host, mode => drawTimeline(mode));
     if (!T.observer) { T.observer = new ResizeObserver(() => { const w = T.host.clientWidth; if (Math.abs(w - T.width) > 24 && T.loader.view.data) { T.width = w; drawTimeline('update'); } }); T.observer.observe(T.host); }
     T.snapshot = snapshot;
     const accounts = timelineAccounts(snapshot);
-    if (!accounts.some(a => a.accountId === T.accountId)) { T.accountId = accounts.find(a => a.accountId === preferred)?.accountId || accounts[0]?.accountId || ''; T.cycles = { five: '', week: '' }; }
+    const next = accounts.find(a => a.accountId === preferred)?.accountId || '';
+    if (next !== T.accountId) { T.accountId = next; T.cycles = { five: '', week: '' }; T.focus = ''; }
     const report = accounts.find(a => a.accountId === T.accountId);
     if (!report) { T.loader.reset(); drawTimeline('none'); return; }
     T.loader.load(`${T.accountId}|${T.cycles.five}|${T.cycles.week}`, { kind: report.kind, accountId: report.accountId, cycles: { ...(T.cycles.five ? { five: T.cycles.five } : {}), ...(T.cycles.week ? { week: T.cycles.week } : {}) } }, stampOf(snapshot, report));
@@ -338,22 +403,19 @@
   function reloadTimeline() { timelineUpdate(T.snapshot, T.accountId); }
 
   function timelineHeading() {
-    const accounts = timelineAccounts(T.snapshot);
-    const picker = el('div', { class: 'ms-accounts', role: 'group', 'aria-label': '官方账号' }, accounts.map(a =>
-      el('button', { type: 'button', class: 'ms-account' + (a.accountId === T.accountId ? ' on' : ''), 'data-account': a.accountId, 'aria-pressed': String(a.accountId === T.accountId), title: a.accountLabel || null }, [
-        el('span', { class: 'brand-glyph' }, [brandSvg(META[a.kind].brand)]), META[a.kind].name,
-        (a.siblings || 1) > 1 || accounts.filter(x => x.kind === a.kind).length > 1 ? el('small', { text: a.displayName || a.accountAlias || '', translate: 'no' }) : null
-      ])));
-    picker.addEventListener('click', e => { const b = e.target.closest('[data-account]'); if (b && b.dataset.account !== T.accountId) { T.accountId = b.dataset.account; T.cycles = { five: '', week: '' }; T.focus = ''; reloadTimeline(); } });
-    return [el('div', { class: 'panel-heading ms-head' }, [el('div', {}, [
-      el('h2', {}, ['模型与思考等级 · 时间线', el('span', { class: 'section-tag', text: '按官方周期' })]),
-      el('p', { text: '每个模型 × 思考等级一条轨道，连续使用的时间段连成一段；上方曲线是官方额度已用百分比。不受上面日期和筛选的影响。' })
-    ])]), picker];
+    const report = timelineAccounts(T.snapshot).find(a => a.accountId === T.accountId);
+    return [el('div', { class: 'panel-heading ms-head' }, [el('div', { class: 'ms-title' }, [
+      report ? avatar(report.kind, 'ms-brand') : null,
+      el('div', {}, [
+        el('h2', {}, ['模型与思考等级 · 时间线', el('span', { class: 'section-tag', text: '按官方周期' })]),
+        el('p', { text: '每个模型 × 思考等级一条轨道，连续使用的时间段连成一段；上方曲线是全账号官方额度已用百分比（可能含聊天及其他设备）。跟随上方选中的账号，不受用量明细的日期和筛选影响。' })
+      ])
+    ])])];
   }
 
   function drawTimeline(mode) {
     const host = T.host, data = T.loader.view.data;
-    if (mode === 'none') { host.replaceChildren(...timelineHeading(), empty('还没有带账号标识的官方额度周期。')); return; }
+    if (mode === 'none') { host.replaceChildren(...timelineHeading(), empty('这个账号还没有带账号标识的官方额度周期。')); return; }
     if (mode === 'loading') { host.replaceChildren(...timelineHeading(), skeleton(4)); return; }
     if (mode === 'error' || !data) {
       host.replaceChildren(...timelineHeading(), failure('时间线读取失败，没有显示旧数据。'));
@@ -400,6 +462,7 @@
           older, el('span', { class: 'ms-cycle-pos', text: sel ? `${index + 1} / ${study.cycles.length}` : '—' }), newer
         ])
       ]),
+      attributionNote(study),
       chart,
       combos.length ? comboList(combos, study.totals.tokens, colors, study.query.kind) : null,
       study.totals.unknownEffort ? el('p', { class: 'ms-note', text: `其中 ${number(study.totals.unknownEffort)} 条请求没记录思考等级（旧日志或客户端没写），单独放在「未记录等级」轨道。` }) : null
@@ -452,13 +515,19 @@
       node.append(label);
     }
 
+    for (const interval of study.attribution?.intervals || []) {
+      if (interval.kind === 'local_present') continue;
+      const band = svg('rect', { x: x(interval.from), y: bandTop, width: Math.max(2, x(interval.to) - x(interval.from)), height: bandH, class: 'ms-unmatched-band', tabindex: 0, role: 'img', 'aria-label': '未匹配本机日志的额度增长' });
+      tipOn(band, date(interval.from) + ' → ' + date(interval.to) + '\n官方增加 ' + interval.points.toFixed(2) + ' 个百分点\n未匹配本机日志或存在采样缺口；可能来自聊天、其他设备或统计延迟。没有从官方总已用中扣除。');
+      node.append(band);
+    }
     // 上方：官方额度已用百分比（阶梯线，采样之间保持上一个值）
     const y = pct => bandTop + bandH - Math.min(100, Math.max(0, pct)) / 100 * bandH;
     for (const g of [0, 50, 100]) {
       node.append(svg('line', { class: 'ms-grid faint', x1: left, x2: right, y1: y(g), y2: y(g) }));
       const t = svg('text', { class: 'axis', x: left - 8, y: y(g) + 4, 'text-anchor': 'end' }); t.textContent = `${g}%`; node.append(t);
     }
-    const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = '官方额度已用'; node.append(bandLabel);
+    const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = '官方总池已用'; node.append(bandLabel);
     const track = study.track.filter(p => p.at >= start && p.at <= end);
     if (track.length) {
       let d = `M${x(start).toFixed(1)},${y(0).toFixed(1)}`;

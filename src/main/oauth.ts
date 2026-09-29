@@ -1,3 +1,4 @@
+import { forgetCalibrations } from "../core/quota-calibration";
 import { execFile, spawn, type ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -266,6 +267,7 @@ export async function manageOfficialAccount(action: "remove" | "purge" | "restor
   else if (action === "purge") {
     purgeOfficialAccount(id);
     forgetQuotaAccount(id);
+    forgetCalibrations(id);
   } else removeOfficialAccount(id, readCliAccounts(target.kind).some((item) => accountIdOf(target.kind, item.ref) === id));
   return listOfficialOAuthStatus();
 }

@@ -62,6 +62,8 @@ export type WindowReport = {
   usedCostUsd: number;
   /** 整个窗口（100%）大约折合多少。 */
   capacity?: { tokens: number; costUsd: number; confidence: Confidence };
+  /** 账号池百分比无法直接分配给本机日志；原始消耗保持不变。 */
+  capacityReason?: "unattributed";
 };
 
 export type Confidence = "low" | "medium" | "high";
@@ -91,6 +93,7 @@ export type CapacityPoint = {
 };
 
 export type CapacityHistory = {
+  unavailableReason?: "unattributed";
   points: CapacityPoint[];
   /** 没法估、不计入折线的窗口数：已用不到 2%，或者本机在这个窗口里没有用量（可能用在别的设备上）。 */
   skipped: { tooLow: number; noLocal: number };
@@ -100,6 +103,7 @@ export type HealthLevel = "good" | "warning" | "serious" | "critical" | "unknown
 export type HealthReason = "no-data" | "exhausted" | "runs-out-soon" | "runs-out" | "tight" | "five-hour-high" | "ok";
 
 export type AccountReport = {
+  quotaScope?: "account_total";
   kind: AccountKind;
   sampleCount: number;
   firstSampleAt?: number;
@@ -322,7 +326,10 @@ export function capacityHistory(
   kind: "week" | "five",
   now: number,
   style: "moves" | "keeps" = "keeps",
+  completeLocalOnly = false,
 ): CapacityHistory {
+  // 只有完整覆盖的模拟/数据集才允许此比值；生产账号报告不得假设完整来源。
+  if (!completeLocalOnly) return { points: [], skipped: { tooLow: 0, noLocal: 0 }, unavailableReason: "unattributed" };
   const segments = windowSegments(samples, kind, style);
   const points: CapacityPoint[] = [];
   const skipped = { tooLow: 0, noLocal: 0 };
@@ -387,6 +394,8 @@ function rollWindow(current: number, startAt: number | undefined, resetAt: numbe
 export function analyzeWindow(
   input: {
     current: number;
+    /** 内部完整数据集前提；普通账号池无法自动确认，默认不折算。 */
+    completeLocalOnly?: boolean;
     startAt?: number;
     resetAt?: number;
     points: Point[];
@@ -439,7 +448,7 @@ export function analyzeWindow(
 
   const used = startAt != null ? sumRows(rows, startAt, now, now) : { tokens: 0, costUsd: 0 };
   let capacity: WindowReport["capacity"];
-  if (startAt != null && current >= 2 && used.tokens > 0) {
+  if (input.completeLocalOnly === true && startAt != null && current >= 2 && used.tokens > 0) {
     const scale = 100 / current;
     capacity = {
       tokens: used.tokens * scale,
@@ -467,6 +476,7 @@ export function analyzeWindow(
     runsOutBeforeReset,
     usedTokens: used.tokens,
     usedCostUsd: used.costUsd,
+    ...(input.completeLocalOnly === true ? {} : { capacityReason: "unattributed" as const }),
     capacity,
   };
 }
@@ -609,8 +619,13 @@ export function analyzeAccount(
     .filter((item) => item.tokens > 0 || item.costUsd > 0)
     .sort((a, b) => b.costUsd - a.costUsd || b.tokens - a.tokens);
 
+  // 日/小时 Code 用量不是整个账号的用量，不能反推整窗总容量。
+  // 有来源声明的短时校准由 model-study 单独处理，不把它回填成历史真实容量。
+  for (const window of [week, five]) if (window) { delete window.capacity; window.capacityReason = "unattributed"; }
+  const protectedHistory = (): CapacityHistory => ({ points: [], skipped: { tooLow: 0, noLocal: 0 }, unavailableReason: "unattributed" });
   return {
     kind,
+    quotaScope: "account_total",
     sampleCount: samples.length,
     firstSampleAt: samples[0]?.at,
     lastSampleAt: latest?.at,
@@ -628,6 +643,6 @@ export function analyzeAccount(
     hourly,
     models,
     health: healthOf(week, five, now),
-    capacityHistory: { week: capacityHistory(samples, scopedRows, "week", now, style), five: capacityHistory(samples, scopedRows, "five", now, style) },
+    capacityHistory: { week: protectedHistory(), five: protectedHistory() },
   };
 }

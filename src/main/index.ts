@@ -7,6 +7,7 @@ import path from "path";
 import { dataDir } from "../core/paths";
 import { fetchOfficialQuota } from "../core/quota";
 import type { Snapshot } from "../core/report";
+import { updateCalibration } from "../core/quota-calibration";
 import { parseModelStudyQuery } from "../core/model-study";
 import { loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
@@ -20,6 +21,8 @@ import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, in
 import { listOfficialOAuthStatus, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
+import { activateProvider, agentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 /**
  * TokenPulse 的主进程。
@@ -131,6 +134,8 @@ function buildTrayMenu() {
   return Menu.buildFromTemplate([
     { label: tr("打开 TokenPulse"), click: revealWindow },
     { type: "separator" },
+    ...agentTrayItems(),
+    { type: "separator" },
     {
       label: tr("立即刷新"),
       click: () => {
@@ -153,6 +158,49 @@ function buildTrayMenu() {
       },
     },
   ]);
+}
+
+function agentTrayItems() {
+  try {
+    const view = agentView();
+    return AGENT_APPS.map((app) => {
+      const rows = view.providers.filter((item) => item.app === app && !item.locked);
+      const current = rows.find((item) => item.active);
+      return {
+        label: current ? `${AGENT_LABEL[app]} · ${current.name}` : AGENT_LABEL[app],
+        submenu: rows.length
+          ? rows.map((item) => ({
+              label: item.active ? `${item.name}  ✓` : item.name,
+              click: () => {
+                void activateProvider(item.id).then((result) => {
+                  publishAgent();
+                  if (win && !win.isDestroyed()) win.webContents.send("agent-switch", { ...agentView(), notice: result.message });
+                }).catch((error: unknown) => {
+                  dialog.showErrorBox(AGENT_LABEL[app], error instanceof Error ? error.message : "切换失败");
+                });
+              },
+            }))
+          : [{ label: tr("还没有供应商"), enabled: false }],
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function publishAgent() {
+  tray?.setContextMenu(buildTrayMenu());
+  if (win && !win.isDestroyed()) win.webContents.send("agent-switch", agentView());
+}
+
+async function agentCall<T>(work: () => T | Promise<T>) {
+  try {
+    const result = await work();
+    publishAgent();
+    return { ok: true as const, result, state: agentView() };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "操作失败" };
+  }
 }
 
 function initTray() {
@@ -319,6 +367,7 @@ function parseRequestQuery(value: unknown): RequestQuery {
     project: typeof input.project === "string" ? input.project.slice(0, 4096) : undefined,
     channel: ["official", "api", "unknown"].includes(String(input.channel)) ? input.channel as RequestQuery["channel"] : "all",
     until: Number.isFinite(input.until) ? Number(input.until) : undefined,
+    projects: input.projects === true,
   };
 }
 
@@ -580,6 +629,35 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("knowledge:state", () => knowledgeState());
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
+    ipcMain.handle("agent:state", () => agentView());
+    ipcMain.handle("agent:save", (_event, input: unknown) => agentCall(() => saveProvider(input)));
+    ipcMain.handle("agent:delete", (_event, id: unknown) => agentCall(() => deleteProvider(String(id || ""))));
+    ipcMain.handle("agent:activate", (_event, id: unknown) => agentCall(() => activateProvider(String(id || ""))));
+    ipcMain.handle("agent:proxy", (_event, app: unknown, on: unknown) => agentCall(() => {
+      if (!isAgentApp(app)) throw new Error("不认识这个工具");
+      return setAppProxy(app, on === true);
+    }));
+    ipcMain.handle("agent:port", (_event, port: unknown) => agentCall(() => setProxyPort(Number(port))));
+    ipcMain.handle("agent:failover", (_event, id: unknown, on: unknown) => agentCall(() => setFailover(String(id || ""), on === true)));
+    ipcMain.handle("agent:reorder", (_event, app: unknown, ids: unknown) => agentCall(() => {
+      if (!isAgentApp(app) || !Array.isArray(ids)) throw new Error("排序参数不正确");
+      return reorderProviders(app, ids.map(String));
+    }));
+    ipcMain.handle("agent:import-cc", () => agentCall(() => importCcProviders()));
+    ipcMain.handle("agent:import-live", (_event, app: unknown) => agentCall(() => {
+      if (!isAgentApp(app)) throw new Error("不认识这个工具");
+      return importCurrent(app);
+    }));
+    ipcMain.handle("agent:models", (_event, input: unknown) => agentCall(() => listProviderModels(input)));
+    ipcMain.handle("agent:probe", async (_event, id: unknown) => {
+      try {
+        return { ok: true, result: await probeProvider(String(id || "")) };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : "检测失败" };
+      }
+    });
+    void resumeAgentProxy().then(() => publishAgent()).catch((error) => console.error("[TokenPulse] 本地路由没有恢复", error));
+    ipcMain.handle("models:calibration", (_event, value: unknown) => updateCalibration(value));
     ipcMain.handle("models:study", (_event, value: unknown) => loadModelStudy(parseModelStudyQuery(value)));
     ipcMain.handle("requests:query", (_event, query: unknown) => loadRequests(parseRequestQuery(query)));
     ipcMain.handle("sessions:list", () => loadSessions());
@@ -639,10 +717,18 @@ if (!app.requestSingleInstanceLock()) {
     if (quitting || !readPrefs().closeToTray) app.quit();
   });
 
-  app.on("before-quit", () => {
-    quitting = true;
-    // 还在跑的回复一起结束，别留下没人管的 CLI 进程
-    exitMonitor.stop();
-    stopAllReplies();
+  let agentQuitReady = false, agentQuitPending = false;
+  app.on('before-quit', event => {
+    if (agentQuitReady) { quitting = true; exitMonitor.stop(); stopAllReplies(); return; }
+    event.preventDefault();
+    if (agentQuitPending) return;
+    agentQuitPending = true;
+    const failed = (error: unknown) => {
+      agentQuitPending = false; quitting = false;
+      console.error('[TokenPulse] 配置恢复失败，取消退出', error);
+      dialog.showErrorBox('暂不能安全退出', error instanceof Error ? error.message : '请先解决配置恢复问题，再退出 TokenPulse。');
+    };
+    try { releaseAgentSwitch(); } catch (error) { failed(error); return; }
+    void waitAgentProxyClosed().then(() => { agentQuitReady = true; app.quit(); }).catch(failed);
   });
 }

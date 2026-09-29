@@ -1,0 +1,121 @@
+/* 用量明细页的「按项目」视图（renderer/usage-projects.js）。颜色全用 app.css 的变量，深浅色跟着走。 */
+
+#view-projects { padding: 0 24px 22px; }
+#view-projects[aria-busy] .pj-list { opacity: .72; transition: opacity .2s; }
+
+/* 顶部四格汇总 */
+.pj-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.pj-stat { display: flex; gap: 12px; align-items: flex-start; min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
+.pj-stat-icon { display: inline-grid; flex: none; place-items: center; width: 32px; height: 32px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }
+.pj-stat-icon .icon { width: 17px; height: 17px; }
+.pj-stat > div { display: grid; gap: 2px; min-width: 0; }
+.pj-stat small { color: var(--muted); font-size: 12px; font-weight: 600; }
+.pj-stat b { color: var(--text); font-family: var(--font-display); font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.pj-stat span { overflow: hidden; color: var(--faint); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.pj-stale { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-radius: var(--radius-sm); color: var(--warn); background: var(--warn-soft); font-size: 12.5px; }
+
+.pj-toolbar { padding: 0 0 14px; }
+.pj-sort-label { color: var(--muted); font-size: 13px; }
+
+/* 项目卡片 */
+.pj-list { display: grid; gap: 10px; }
+.pj-card { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); transition: border-color .2s, box-shadow .25s var(--ease); }
+.pj-card:hover { border-color: var(--line-strong); }
+.pj-card.open { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); box-shadow: var(--shadow-md); }
+.pj-head { display: grid; grid-template-columns: 22px 36px minmax(0, 1fr) auto minmax(150px, auto) 18px; gap: 12px; align-items: center; width: 100%; padding: 14px 16px 10px; border: 0; border-radius: 14px 14px 0 0; color: inherit; background: none; font: inherit; text-align: left; }
+.pj-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.pj-rank { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }
+.pj-folder { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; color: var(--accent-strong); background: var(--accent-soft); }
+.pj-folder.missing { color: var(--muted); background: var(--tile-neutral); }
+.pj-folder .icon { width: 18px; height: 18px; }
+.pj-title { display: grid; gap: 2px; min-width: 0; }
+.pj-title b { overflow: hidden; font-size: 14.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.pj-title small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; direction: ltr; }
+.pj-agents { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.pj-agent { display: inline-flex; align-items: center; gap: 2px; padding: 3px 8px 3px 7px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font-size: 12px; }
+.pj-agent .mini-logo { margin-right: 3px; }
+.pj-agent b { font-weight: 650; font-variant-numeric: tabular-nums; }
+.pj-num { display: grid; gap: 2px; justify-items: end; min-width: 0; }
+.pj-num strong { font-family: var(--font-display); font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pj-num strong small { color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.pj-quota { color: var(--ring-week); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pj-quota.muted { color: var(--faint); font-weight: 500; }
+.pj-chevron { width: 16px; height: 16px; color: var(--faint); transition: transform .3s var(--ease); }
+.pj-card.open .pj-chevron { transform: rotate(180deg); color: var(--accent); }
+
+/* 构成条：每段一个「模型 × 思考等级」，宽度按 Token，深浅按思考等级 */
+.pj-mix { display: flex; gap: 2px; height: 8px; margin: 0 16px 0 86px; overflow: hidden; border-radius: 99px; background: var(--tile-neutral); }
+.pj-mix i { flex: 1 1 0; min-width: 2px; transform-origin: left center; }
+.pj-mix i.rest { background: var(--line-strong); }
+.pj-mix i:first-child { border-radius: 99px 0 0 99px; }
+.pj-mix i:last-child { border-radius: 0 99px 99px 0; }
+.pj-mix i:only-child { border-radius: 99px; }
+.pj-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 16px 12px 86px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pj-compact { padding: 0 7px; border-radius: 99px; color: var(--warn); background: var(--warn-soft); font-weight: 600; }
+
+/* 展开详情 */
+.pj-detail { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, 1fr); gap: 20px; padding: 14px 16px 18px; border-top: 1px solid var(--line); }
+.pj-detail h3 { margin: 0 0 10px; color: var(--text-2); font-size: 12.5px; font-weight: 650; letter-spacing: .02em; }
+.pj-combos table { min-width: 620px; }
+.pj-combos td, .pj-combos th { padding-top: 8px; padding-bottom: 8px; white-space: nowrap; }
+.pj-model { display: inline-flex; align-items: center; gap: 8px; max-width: 240px; }
+.pj-model b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; }
+.pj-dot { flex: none; width: 9px; height: 9px; border-radius: 3px; }
+.pj-level { display: inline-block; padding: 1px 8px; border-radius: 99px; color: var(--text-2); background: var(--tile-neutral); font-size: 12px; font-weight: 600; }
+.pj-level.unknown { color: var(--faint); font-weight: 500; }
+.pj-tool { display: inline-flex; align-items: center; color: var(--text-2); font-size: 12.5px; }
+.pj-share { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 120px; }
+.pj-share span:last-child { min-width: 46px; font-variant-numeric: tabular-nums; }
+.pj-side { display: grid; align-content: start; gap: 4px; }
+.pj-side h3 + * { margin-bottom: 10px; }
+.pj-agent-list { display: grid; gap: 6px; }
+.pj-agent-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) 110px; gap: 10px; align-items: center; }
+.pj-agent-row .account-avatar { width: 30px; height: 30px; border-radius: 9px; }
+.pj-agent-row .account-avatar .brand-svg { width: 16px; height: 16px; }
+.pj-agent-row > div { display: grid; min-width: 0; }
+.pj-agent-row b { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.pj-agent-row small { color: var(--muted); font-size: 11.5px; }
+.pj-agent-share { display: grid; gap: 4px; justify-items: end; font-variant-numeric: tabular-nums; }
+.pj-agent-share .insight-bar { width: 100%; }
+.pj-breakdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pj-breakdown div { display: grid; gap: 1px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.pj-breakdown small { color: var(--muted); font-size: 11.5px; }
+.pj-breakdown b { font-variant-numeric: tabular-nums; }
+.pj-range { display: flex; align-items: flex-start; gap: 7px; margin: 2px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.pj-range .icon { flex: none; width: 14px; height: 14px; margin-top: 2px; }
+.pj-drill { justify-self: start; margin-top: 8px; gap: 6px; }
+.pj-drill .icon { width: 14px; height: 14px; }
+
+.pj-more { display: flex; justify-content: center; margin-top: 12px; }
+.pj-more:empty { display: none; }
+.pj-note { margin: 14px 2px 0; color: var(--faint); font-size: 12px; line-height: 1.6; }
+.pj-error { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.pj-skeleton { display: grid; gap: 10px; }
+.pj-skeleton i { height: 74px; border-radius: 14px; background: linear-gradient(90deg, var(--tile-neutral), var(--surface-2), var(--tile-neutral)); background-size: 200% 100%; animation: pj-shimmer 1.4s linear infinite; }
+
+/* 动效：只挂在 .chart-enter（切视图、换排序）和刚展开的卡片上 */
+.chart-enter .pj-card { animation: pj-rise .45s var(--ease) both; animation-delay: calc(var(--i, 0) * 35ms); }
+.chart-enter .pj-mix i { animation: pj-grow .7s var(--ease) both; animation-delay: calc(var(--i, 0) * 35ms + 120ms); }
+.pj-card.opening .pj-detail { animation: pj-rise .35s var(--ease) both; }
+@keyframes pj-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes pj-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes pj-shimmer { to { background-position: -200% 0; } }
+
+@media (max-width: 1100px) {
+  .pj-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pj-detail { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  #view-projects { padding: 0 16px 18px; }
+  .pj-head { grid-template-columns: 36px minmax(0, 1fr) auto 18px; }
+  .pj-rank { display: none; }
+  .pj-agents { grid-column: 2 / 4; grid-row: 2; justify-content: flex-start; }
+  .pj-mix { margin-left: 16px; }
+  .pj-meta { padding-left: 16px; }
+  .pj-toolbar { flex-wrap: wrap; }
+  .pj-toolbar .search-field { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chart-enter .pj-card, .chart-enter .pj-mix i, .pj-card.opening .pj-detail, .pj-skeleton i { animation: none; }
+  .pj-chevron, .pj-card { transition: none; }
+}

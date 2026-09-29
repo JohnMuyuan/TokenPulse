@@ -19,7 +19,9 @@ const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
 // tsc 已经把 core/ 编成 CommonJS 了，直接 require 编译产物，不用再 bundle 一次。
-const { analyzeAccount, capacityHistory, windowSegments, sumRows, HOUR_MS, WEEK_MS } = require(path.join(ROOT, "build", "core", "quota-monitor.js"));
+const { analyzeAccount, capacityHistory: rawCapacityHistory, windowSegments, sumRows, HOUR_MS, WEEK_MS } = require(path.join(ROOT, "build", "core", "quota-monitor.js"));
+// 下列历史数学夹具完整给出了所有消费，显式声明其前提；真实账号报告默认禁止此倒推。
+const capacityHistory = (samples, rows, kind, now, style) => rawCapacityHistory(samples, rows, kind, now, style, true);
 
 // 采样器直接写文件，得给它一个一次性的数据目录，别碰用户真实的 ~/.tokenpulse。
 const data = fs.mkdtempSync(path.join(os.tmpdir(), "tokenpulse-quota-history-"));
@@ -73,8 +75,8 @@ try {
     check("重置前会用完时显示压力较高", report.health.reason === "runs-out", JSON.stringify(report.health));
     // 96 小时 × 100 万 = 9600 万 token，已用 50% → 整周 1.92 亿；花费同理 $96 → $192
     check(
-      "折算整周额度 = 窗口用量 ÷ 已用百分比",
-      near(w.capacity.tokens, 192_000_000) && near(w.capacity.costUsd, 192) && w.capacity.confidence === "high",
+      "共享来源未确认时不再倒推整周 Token / 金额",
+      w.capacity === undefined && w.capacityReason === "unattributed",
       JSON.stringify(w.capacity),
     );
     check("24 小时都有用量时 activeShare 是 1", near(w.activeShare, 1), String(w.activeShare));
@@ -232,8 +234,8 @@ try {
     ];
     const report = analyzeAccount("claude", samples, rows, NOW);
     check(
-      "账号 A 的额度容量只按账号 A 的本机用量折算",
-      report.week.usedTokens === 100 && near(report.week.capacity.tokens, 500),
+      "账号 A 保留本机用量，但不将其倒推为全账号容量",
+      report.week.usedTokens === 100 && report.week.capacity === undefined,
       JSON.stringify({ usedTokens: report.week.usedTokens, capacity: report.week.capacity }),
     );
   }
@@ -308,7 +310,7 @@ try {
       JSON.stringify({ w4a, w4b }));
     check("进行中的窗口标出来，已用 2–5% 标为可信度低", w5.current && w5.confidence === "low" && !w1.current, JSON.stringify({ current: w5.current, confidence: w5.confidence }));
     const report = analyzeAccount("chatgpt", samples, rows, NOW);
-    check("账号报告里带上周 / 5 小时两条历史", report.capacityHistory.five.points.length === 4 && Array.isArray(report.capacityHistory.week.points));
+    check("账号报告不发布未经归因的周 / 5 小时容量历史", report.capacityHistory.five.points.length === 0 && report.capacityHistory.week.unavailableReason === "unattributed");
   }
 
   // ---- 10e. 重置卡：Claude / Grok 式（重置日期不变）----
@@ -332,7 +334,7 @@ try {
     check("重置后那段：从重置那一刻起算，只算之后的用量，是进行中的窗口", after.startAt === NOW - 10 * HOUR_MS && after.startedByReset === "kept" && after.current && near(after.tokens, 10_000_000, 10) && near(after.capacityTokens, 50_000_000, 10), JSON.stringify(after));
     const report = analyzeAccount("claude", samples, rows, NOW);
     const w = report.week;
-    check("当前窗口从重置那一刻算：本机已用、容量都不含重置前的用量", w.startAt === NOW - 10 * HOUR_MS && near(w.usedTokens, 10_000_000, 10) && near(w.capacity.tokens, 50_000_000, 10), JSON.stringify({ startAt: w.startAt, used: w.usedTokens, capacity: w.capacity }));
+    check("重置后本机用量仍正确，旧容量倒推保持禁用", w.startAt === NOW - 10 * HOUR_MS && near(w.usedTokens, 10_000_000, 10) && w.capacity === undefined && w.capacityReason === "unattributed", JSON.stringify({ startAt: w.startAt, used: w.usedTokens, capacity: w.capacity }));
     check("平均速度按重置后过去的时间算（20% / 10 小时），不按整窗", near(w.averagePerH, 2, 1e-9), String(w.averagePerH));
     check("趋势线只有重置之后的点", report.trend.map((p) => p.pct).join(",") === "0,10,20", JSON.stringify(report.trend.map((p) => p.pct)));
     check("当前窗口标出「重置卡之后开始」，重置时间不变", w.startedByReset === "kept" && w.resetAt === reset);

@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
   exportCsv: (content: string, kind?: "requests") => ipcRenderer.invoke("export-csv", content, kind),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */
+  modelCalibration: (query: unknown) => ipcRenderer.invoke("models:calibration", query),
   modelStudy: (query: unknown) => ipcRenderer.invoke("models:study", query),
   requests: (query: Record<string, unknown>) => ipcRenderer.invoke("requests:query", query),
   /** 会话管理：列表、详情（只读本机 CLI 的会话文件）。 */
@@ -73,6 +74,24 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   checkKnowledge: () => ipcRenderer.invoke("knowledge:check"),
   /** 立刻从 CC Switch 的库同步一次，返回新快照。 */
   syncCcSwitch: () => ipcRenderer.invoke("ccswitch:sync"),
+  /** 供应商切换和本地路由。列表里的密钥已打码。 */
+  agentState: () => ipcRenderer.invoke("agent:state"),
+  agentSave: (input: unknown) => ipcRenderer.invoke("agent:save", input),
+  agentDelete: (id: string) => ipcRenderer.invoke("agent:delete", id),
+  agentActivate: (id: string) => ipcRenderer.invoke("agent:activate", id),
+  agentProxy: (app: string, on: boolean) => ipcRenderer.invoke("agent:proxy", app, on),
+  agentPort: (port: number) => ipcRenderer.invoke("agent:port", port),
+  agentFailover: (id: string, on: boolean) => ipcRenderer.invoke("agent:failover", id, on),
+  agentReorder: (app: string, ids: string[]) => ipcRenderer.invoke("agent:reorder", app, ids),
+  agentImportCc: () => ipcRenderer.invoke("agent:import-cc"),
+  agentImportLive: (app: string) => ipcRenderer.invoke("agent:import-live", app),
+  agentProbe: (id: string) => ipcRenderer.invoke("agent:probe", id),
+  agentModels: (input: unknown) => ipcRenderer.invoke("agent:models", input),
+  onAgentSwitch: (handler: (state: unknown) => void) => {
+    const listener = (_event: unknown, state: unknown) => handler(state);
+    ipcRenderer.on("agent-switch", listener);
+    return () => ipcRenderer.off("agent-switch", listener);
+  },
   /** 主进程让界面跳到某一页（点了型号不一致的通知）。 */
   onOpenPage: (handler: (target: { page: string; status?: string }) => void) => {
     const listener = (_event: unknown, target: { page: string; status?: string }) => handler(target);

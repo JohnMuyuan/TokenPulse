@@ -344,7 +344,7 @@ function countTo(node, key, value, format) {
   const start = performance.now(), origin = Number.isFinite(from) ? from : 0, span = 750;
   const step = now => {
     if (!node.isConnected) return;
-    const t = Math.min(1, (now - start) / span), eased = 1 - Math.pow(1 - t, 3);
+    const t = Math.max(0, Math.min(1, (now - start) / span)), eased = 1 - Math.pow(1 - t, 3);
     node.textContent = format(t >= 1 ? value : origin + (value - origin) * eased);
     if (t < 1) requestAnimationFrame(step);
   };
@@ -921,7 +921,7 @@ function windowPanel(label, report, account) {
   panel.append(metricGroup('Token 与费用', 'tokens', [
     metric('本窗口已用（本机）', amount(report.usedTokens), { unit: 'Tokens', approx: cnApprox(report.usedTokens), sub: money(report.usedCostUsd) }),
     unknown ? metric('剩余可用（估算）', '—', { sub: waitText }) : tokenMetric('剩余可用（估算）', byCapacity(report, 100 - report.used), { tone: 'accent' }),
-    unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : '已用不到 2%，暂无法折算' })
+    unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : report.capacityReason === 'unattributed' ? '账号池含其他端，不能按本机日志倒推容量' : '已用不到 2%，暂无法折算' })
       : tokenMetric('整窗容量折算', byCapacity(report, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } })
   ]));
 
@@ -1004,14 +1004,15 @@ function capacityPanel(account) {
     ...[['tokens', 'Tokens'], ['costUsd', '费用']].map(([id, label]) => el('button', { 'data-cap-metric': id, class: state.capMetric === id ? 'on' : null, text: label }))]);
   const draw = animate => {
     const history = account.capacityHistory?.[state.capWindow];
+    if (history?.unavailableReason === 'unattributed') { host.replaceChildren(el('div', { class: 'empty', text: '官方额度是全账号总池，不能从本机 Code 日志倒推历史总容量。真实额度趋势保持展示；绝对参考请使用下方本机专用校准。' })); note.textContent = ''; return; }
     const median = capacityChart(host, history, state.capWindow, state.capMetric, animate);
     const { tooLow = 0, noLocal = 0 } = history?.skipped || {};
     const skipped = [tooLow && `${tooLow} 个已用不到 2%`, noLocal && `${noLocal} 个本机没有用量（可能用在别的设备上）`].filter(Boolean);
     note.textContent = `${median ? `已结束且较可信的窗口中位数约 ${median}（虚线）。` : ''}${skipped.length ? `未计入 ${tooLow + noLocal} 个窗口：${skipped.join('，')}。` : ''}实心点可信，空心点已用不到 5%、偏差较大。按本机用量倒推，多设备使用时会偏低。`;
   };
-  const panel = el('article', { class: 'panel capacity-panel' }, [
+  const panel = el('article', { class: 'panel capacity-panel' + (account.quotaScope === 'account_total' ? ' protected' : '') }, [
     el('div', { class: 'panel-heading' }, [
-      el('div', {}, [el('h2', { text: '额度容量趋势' }), el('p', { text: '每个历史窗口折算出的「整窗能用多少」，看官方给的总额度有没有变化' })]),
+      el('div', {}, [el('h2', { text: account.quotaScope === 'account_total' ? '历史容量来源保护' : '额度容量趋势' }), el('p', { text: account.quotaScope === 'account_total' ? '官方总池变化与本机 Code 用量不能直接对应' : '每个历史窗口折算出的「整窗能用多少」，看官方给的总额度有没有变化' })]),
       el('div', { class: 'capacity-controls' }, [windowSeg, metricSeg])
     ]),
     host, note
@@ -1196,6 +1197,7 @@ function renderQuota() {
   drawAccountTabs(slots);
   const { account, kind } = slot, meta = META[kind], who = accountWho(account);
   window.PulseModelStudy?.quota(current, account);
+  window.PulseModelStudy?.timeline(current, account?.accountId || '');
   const sessions = current.sessions[kind] || { included: 0, excluded: 0 };
   const pool = poolOf(kind);
   if (pool?.accountCount > 1) host.append(poolPanel(pool));
@@ -1207,6 +1209,7 @@ function renderQuota() {
     ]),
     el('div', { class: 'context-meta', text: account ? `${date(checkedAt(account))} 更新 · ${number(account.sampleCount)} 个采样点` : '尚无额度采样' })
   ]));
+  if (account?.quotaScope === 'account_total') host.append(el('p', { class: 'ms-attribution-note', role: 'note', text: '官方已用、剩余和速度预测属于整个账号额度池，可能包含聊天与其他设备；本机 Token / 费用只统计已记录的 Code 请求。不会把两者直接相除当成账号总容量。' }));
   if (!account) {
     host.append(el('article', { class: 'panel empty large' }, [el('h3', { text: '暂时还没有这个账号的额度数据' }), el('p', { text: `确认 ${meta.source} 已登录官方账号，然后点击「刷新数据」。` }), el('p', { text: '凭据过期或网络错误也可能导致采样失败；这不会影响本机用量统计。' })])); return;
   }
@@ -1258,7 +1261,7 @@ function renderUsage() {
     return el('div', { class: 'breakdown-item' }, [el('small', { text: label }), el('strong', { title: number(t[key]) }, [value, approx ? el('small', { class: 'cn-approx', text: approx }) : null]), el('span', { text: note })]);
   }));
   window.PulseInsights?.render(analysis, entering());
-  window.PulseModelStudy?.timeline(current, state.reqAccount);
+  window.PulseProjects?.render();
   renderRecords();
   revealDetailResults();
 }
@@ -1487,7 +1490,7 @@ function quotaShare(row) {
 function sharePct(value) { return value < 0.01 ? '<0.01%' : value < 1 ? value.toFixed(2) + '%' : value.toFixed(1) + '%'; }
 function quotaCell(row) {
   const share = quotaShare(row);
-  if (!share) return el('td', { class: 'n muted quota-share', text: '—', title: '走中转 / 没对上账号，或者这个窗口还折算不出整窗容量' });
+  if (!share) return el('td', { class: 'n muted quota-share', text: '—', title: '当前没有可信的单次官方扣额，不按全账号涨幅倒推本机请求占比' });
   const lines = [share.five ? `5 小时 ${sharePct(share.five.pct)}` : null, share.week ? `周 ${sharePct(share.week.pct)}` : null].filter(Boolean);
   const low = [share.five, share.week].some(item => item && item.confidence === 'low');
   return el('td', { class: 'n quota-share' + (low ? ' low' : ''), title: `≈ 这次请求的 Token ÷ 窗口整窗容量（按本机用量倒推的估算）${low ? '\n窗口已用不到 5%，偏差较大' : ''}` },
@@ -1623,6 +1626,7 @@ function renderPage(snapshot) {
   // 会话页自己管数据；只在还没读过或列表放了一阵子时重读，不跟着每分钟的快照整页重画
   if (state.page === 'sessions') window.PulseSessions?.show();
   if (state.page === 'egress') window.PulseEgress?.show();
+  if (state.page === 'providers') window.PulseProviders?.show();
   if (state.page === 'usage') loadRequests();
   renderRequestAlert(snapshot);
   syncSourceOptions(snapshot);
@@ -1633,16 +1637,19 @@ function renderPage(snapshot) {
 }
 /** 逐条请求在用量明细页里，是它的默认视图。 */
 function requestsVisible() { return state.page === 'usage' && state.usageView === 'requests'; }
+const USAGE_VIEWS = {
+  requests: '每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情',
+  daily: '按日期、工具、模型聚合；费用为参考估算',
+  projects: '按项目文件夹汇总：多少个 Agent 对话、多少 Token 和额度，由哪些模型和思考等级组成。点开看构成'
+};
 function showUsageView(view) {
-  state.usageView = view === 'daily' ? 'daily' : 'requests';
-  const requests = state.usageView === 'requests';
-  $('view-requests').hidden = !requests; $('view-daily').hidden = requests;
-  $('request-count').hidden = !requests; $('record-count').hidden = requests;
-  // 标题栏上的按钮跟着视图换：说明和逐条导出只属于逐条请求
-  $('verify-help').hidden = $('export-requests').hidden = !requests; $('export-csv').hidden = requests;
-  $('detail-caption').textContent = requests
-    ? '每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情'
-    : '按日期、工具、模型聚合；费用为参考估算';
+  state.usageView = USAGE_VIEWS[view] ? view : 'requests';
+  const requests = state.usageView === 'requests', daily = state.usageView === 'daily', projects = state.usageView === 'projects';
+  $('view-requests').hidden = !requests; $('view-daily').hidden = !daily; $('view-projects').hidden = !projects;
+  $('request-count').hidden = !requests; $('record-count').hidden = !daily; $('project-count').hidden = !projects;
+  // 标题栏上的按钮跟着视图换：说明和逐条导出只属于逐条请求，按日导出只属于按日汇总
+  $('verify-help').hidden = $('export-requests').hidden = !requests; $('export-csv').hidden = !daily;
+  $('detail-caption').textContent = USAGE_VIEWS[state.usageView];
   for (const button of $('usage-view').querySelectorAll('[data-view]')) { const on = button.dataset.view === state.usageView; button.classList.toggle('on', on); button.setAttribute('aria-pressed', String(on)); }
   syncSeg($('usage-view'));
 }
@@ -1653,7 +1660,7 @@ const overviewRange = { days: 30, from: '', to: '', follow: false };
 function navigate(page) {
   // 以前的「请求记录」页并进了用量明细（通知、额度详情的链接还会传 requests 过来）
   if (page === 'requests') { page = 'usage'; showUsageView('requests'); }
-  if (!['overview', 'quota', 'usage', 'egress', 'sessions'].includes(page)) page = 'overview';
+  if (!['overview', 'quota', 'usage', 'egress', 'sessions', 'providers'].includes(page)) page = 'overview';
   const rangePage = state.rangePage || 'overview';
   if (page === 'usage' && state.page !== 'usage') {
     if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
@@ -1662,15 +1669,15 @@ function navigate(page) {
   if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
   if (page === 'overview' || page === 'usage') state.rangePage = page;
   state.page = page;
-  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'] }[page];
+  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
-  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions']) $('page-' + name).hidden = name !== page;
+  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions', 'providers']) $('page-' + name).hidden = name !== page;
   // 会话页是占满屏幕的工作台：大标题、页脚在那一页收起来（sessions.css）
   document.body.dataset.page = page;
   $('overview-analysis').hidden = page !== 'overview';
-  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress';
+  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress' || page === 'providers';
   $('tip').hidden = true;
   enter();
   if (current) render(current);
@@ -2217,7 +2224,7 @@ function revealDetailResults() {
   if (!detailResultsPending || state.page !== 'usage' || analysis.loading || analysis.error || !requestPage) return;
   if (requestKey !== JSON.stringify(requestQuery()) + '|' + (current?.scannedAt || '')) return;
   detailResultsPending = false;
-  detailMotion($(state.usageView === 'daily' ? 'view-daily' : 'view-requests'), { opacity: .65 }, { opacity: 1 });
+  detailMotion($('view-' + state.usageView), { opacity: .65 }, { opacity: 1 });
 }
 function renderDetailChips() {
   const host = $('detail-filter-chips'), chips = [];

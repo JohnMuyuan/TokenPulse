@@ -1,13 +1,14 @@
 {
   "schema": 1,
-  "version": "2026.09.24.1",
-  "updatedAt": "2026-09-24T09:00:00+08:00",
+  "version": "2026.09.28.1",
+  "updatedAt": "2026-09-28T12:00:00+08:00",
   "notes": "TokenPulse 模型知识库：型号单价（美元 / 每百万 token）和型号等价规则。匹配从上往下，第一条命中生效，具体的排在笼统的前面。改完把 version 和 updatedAt 往后调，推到 main 分支，已安装的 TokenPulse 在「设置 → 关于 → 模型知识库」里就能更新。",
   "prices": [
     { "match": "(^|[-_:/])free$|^big-pickle$", "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "note": "免费模型（-free 后缀、OpenCode 的 big-pickle）：排在最前面，免得先被厂商的规则认走" },
 
+    { "match": "claude-3-5-haiku", "input": 0.8, "output": 4, "cacheRead": 0.08, "cacheWrite": 1, "note": "Claude Haiku 3.5" },
     { "match": "claude.*haiku", "input": 1, "output": 5, "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Claude Haiku" },
-    { "match": "claude.*opus.*4[.-]?[01]?$", "input": 15, "output": 75, "cacheRead": 1.5, "cacheWrite": 18.75, "note": "Claude Opus 4 / 4.1" },
+    { "match": "claude-3-opus|claude.*opus-4(?:[.-][01])?(?:-\\d{8})?$", "input": 15, "output": 75, "cacheRead": 1.5, "cacheWrite": 18.75, "note": "Claude Opus 3 / 4 / 4.1（带不带日期后缀都认，比如 claude-opus-4-1-20250805）" },
     { "match": "claude.*opus", "input": 5, "output": 25, "cacheRead": 0.5, "cacheWrite": 6.25, "note": "Claude Opus 4.5 及之后" },
     { "match": "claude.*(sonnet|fable)", "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75, "note": "Claude Sonnet" },
     { "match": "claude", "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75, "note": "Claude（按 Sonnet 估）" },
