@@ -46,8 +46,14 @@ const first = build({ manual, current: null, litellm, openrouter, today: day });
 assert.equal(first.changed, true);
 assert.equal(first.knowledge.version, '2026.09.30');
 const ids = first.knowledge.prices.filter(r => r.auto).map(r => r.auto).sort();
-assert.deepEqual(ids, ['claude-opus-8-20260101', 'claude-opus-9', 'gpt-9-pro', 'grok-9'].sort());
-assert.deepEqual(first.report.disputed.map(d => d.id), ['gpt-9-disputed'], '两边对不上的先不用');
+assert.deepEqual(ids, ['claude-opus-8-20260101', 'claude-opus-9', 'gpt-9-disputed', 'gpt-9-pro', 'grok-9'].sort());
+assert.deepEqual(first.report.disputed.map(d => d.id), ['gpt-9-disputed'], '两边对不上的列在报告里');
+// 0.3.13：对不上的按 LiteLLM 用，记下 OpenRouter 的价格；从兜底换成逐个型号价格的记下 changedAt / previous
+const argued = first.knowledge.prices.find(r => r.auto === 'gpt-9-disputed');
+assert.deepEqual(argued.dispute, { openrouter: { input: 2, output: 10 } });
+assert.equal(argued.changedAt, undefined, '没有兜底的新型号不算「单价更新」');
+const opus9 = first.knowledge.prices.find(r => r.auto === 'claude-opus-9');
+assert.equal(opus9.changedAt, '2026-09-30'); assert.deepEqual(opus9.previous, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, '原来走兜底的价格');
 assert.deepEqual(first.report.skipped.map(s => s.id), ['gpt-9-zero']);
 assert.equal(first.report.review, false);
 const pro = first.knowledge.prices.find(r => r.auto === 'gpt-9-pro');
@@ -72,7 +78,9 @@ assert.equal(price('claude-opus-8'), '5/25', '没有的走兜底');
 assert.equal(price('claude-opus-99'), '5/25', '不会误匹配更长的型号');
 assert.equal(price('grok-9'), '2/6');
 assert.equal(price('grok-9-mini'), '3/15');
-assert.equal(price('gpt-9-disputed'), null, '有争议的先不用（这里没有兜底）');
+assert.equal(price('gpt-9-disputed'), '4/20', '有争议的按 LiteLLM 的价格');
+assert.deepEqual(parsed.prices.find(r => r.auto === 'gpt-9-disputed').dispute, argued.dispute, '软件能收下 dispute');
+assert.deepEqual(parsed.prices.find(r => r.auto === 'claude-opus-9').previous, opus9.previous, '软件能收下 previous');
 assert.equal(price('some-free'), '0/0');
 
 // ---- 没变化：不改版本 ----
@@ -87,6 +95,25 @@ assert.equal(small.changed, true);
 assert.equal(small.knowledge.version, '2026.09.30.1');
 assert.equal(small.report.review, false);
 assert.equal(small.report.changed[0].id, 'claude-opus-9');
+const opusSmall = small.knowledge.prices.find(r => r.auto === 'claude-opus-9');
+assert.deepEqual(opusSmall.previous, { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 }, '调价记下调价前的价格');
+// 价格没变的下一版：changedAt / previous 原样带着
+const carried = build({ manual, current: small.knowledge, litellm: cheaper, openrouter, today: '2026-10-05T00:00:00.000Z' });
+assert.equal(carried.changed, false); assert.equal(carried.knowledge.prices.find(r => r.auto === 'claude-opus-9').changedAt, '2026-09-30');
+
+// ---- 0.3.13：手动标签 / 到期 ----
+{
+  const withLabels = { ...manual, pinned: [...manual.pinned, { match: '^gpt-9-pro$', input: 15, output: 90, cacheRead: 1.5, cacheWrite: 0, note: '限时优惠', promo: true, until: '2026-09-29' }],
+    labels: [{ model: 'gpt-9-disputed', promo: true, note: '官方优惠价' }, { model: 'grok-9', promo: true, until: '2026-09-01' }] };
+  const lab = build({ manual: withLabels, current: null, litellm, openrouter, today: day });
+  assert.deepEqual(lab.knowledge.labels, [{ model: 'gpt-9-disputed', promo: true, note: '官方优惠价' }], '到期的标签去掉');
+  assert.ok(!lab.knowledge.prices.some(r => r.note === '限时优惠'), '到期的 pinned 规则去掉');
+  assert.deepEqual(validate(lab.knowledge), []);
+  assert.deepEqual(parseKnowledge(JSON.parse(JSON.stringify(lab.knowledge))).labels, lab.knowledge.labels, '软件能收下标签');
+  const live = build({ manual: withLabels, current: null, litellm, openrouter, today: '2026-09-29T08:00:00.000Z' });
+  assert.equal(live.knowledge.prices[1].note, '限时优惠', '没到期的 pinned 照常在最前');
+  assert.ok(validate({ ...lab.knowledge, labels: [{ model: 'x', until: '下周' }] }).length > 0, '标签日期格式不对要报错');
+}
 
 // ---- 大幅调价：要人确认 ----
 const huge = build({ manual, current: first.knowledge, litellm: { ...litellm, 'claude-opus-9': entry('anthropic', 40, 200) }, openrouter, today: '2026-10-02T00:00:00.000Z' });
@@ -191,4 +218,4 @@ assert.deepEqual(repo.prices.slice(0, repoManual.pinned.length), repoManual.pinn
 assert.deepEqual(repo.prices.slice(-repoManual.fallback.length), repoManual.fallback);
 assert.deepEqual(repo.capabilities, repoManual.capabilities);
 assert.ok(Object.keys(parseKnowledge(repo).effortUsage.models).length >= 5, '仓库里的知识库带着思考等级消耗');
-console.log('PASS knowledge auto-update: selection, per-million prices, missing cache read not free, zero price skipped, prefixes / dated snapshots, fallback-equal skipped, disputes held back, small change auto, big change needs review, removed models kept, bulk additions need review, same-day versions, unchanged keeps version, app parser accepts all rules, capabilities shipped online, CLI + GITHUB_OUTPUT, Epoch zip / effort usage / disputes / stale / review, repo file consistent with manual.json');
+console.log('PASS knowledge auto-update: selection, per-million prices, missing cache read not free, zero price skipped, prefixes / dated snapshots, fallback-equal skipped, disputes priced by LiteLLM with dispute/changedAt/previous, labels + until expiry, small change auto, big change needs review, removed models kept, bulk additions need review, same-day versions, unchanged keeps version, app parser accepts all rules, capabilities shipped online, CLI + GITHUB_OUTPUT, Epoch zip / effort usage / disputes / stale / review, repo file consistent with manual.json');

@@ -17,7 +17,10 @@
  * 用 OpenRouter 的价格交叉核对。只在兜底规则给出的价格不一样时才加一条，文件保持精简。
  *
  * 安全规则：
- * - 和 OpenRouter 的价格差超过 25% 的型号先不用（保留原来的价格 / 兜底），列在报告里，等两边对上或在 manual.json 里手动钉住；
+ * - 和 OpenRouter 的价格差超过 25%：0.3.13 起**按 LiteLLM 的用**（优惠价这类 LiteLLM 更准），规则上记下 dispute（两边的价格），
+ *   软件在型号旁标「标价不同」，用户知道估值为什么和别处不一样；
+ * - 每次单价变化（包括从家族兜底换成逐个型号的价格）记下 changedAt 和 previous，软件在一段时间内标「单价刚更新」；
+ * - manual.labels：手动给型号打标签（promo 优惠价、until 到期日、note），到期自动去掉；manual.pinned 的规则也可以带 until，到期不再生效；
  * - 已有的自动规则单价变化超过 50%，或一次新增超过 60 条：report.review = true，工作流开 PR 让人确认，而不是直接推 main；
  * 永远不自动删除规则（来源里消失的型号保留原价）；收费型号给出 0 价的不收；缓存读价缺失时按输入价算（不当成免费）。
  */
@@ -189,7 +192,11 @@ function build({ manual, current, litellm, openrouter, epoch, today }) {
   const source = fromLiteLLM(litellm);
   const cross = openrouter ? fromOpenRouter(openrouter) : new Map();
   const previous = new Map((current?.prices || []).filter(r => r.auto).map(r => [r.auto, r]));
-  const fallbackRules = [...manual.pinned, ...manual.fallback];
+  const day = today.slice(0, 10);
+  // 到期的手动规则不再生效（软件里也会按日期跳过，这里是为了文件干净）
+  const live = r => !r.until || r.until >= day;
+  const pinned = (manual.pinned || []).filter(live);
+  const fallbackRules = [...pinned, ...manual.fallback];
   const report = { added: [], changed: [], kept: [], disputed: [], skipped: [], review: false, reasons: [], effort: { models: 0, changed: [], disputed: [], stale: false } };
   const auto = new Map();
 
@@ -199,22 +206,28 @@ function build({ manual, current, litellm, openrouter, epoch, today }) {
     const old = previous.get(id);
     const other = cross.get(norm(id));
     if (other && (relative(other.input, row.input) > DISPUTE || relative(other.output, row.output) > DISPUTE)) {
-      // 两个来源对不上：先不用，保留原来的（没有就走兜底）
+      // 两个来源对不上：按 LiteLLM 的用，记下 OpenRouter 的价格给界面标「标价不同」
       report.disputed.push({ id, litellm: { input: row.input, output: row.output }, openrouter: other });
-      if (old) auto.set(id, old);
-      continue;
+      rule.dispute = { openrouter: { input: other.input, output: other.output } };
     }
+    const fallback = firstMatch(fallbackRules, id);
     if (old) {
       if (!samePrice(old, rule)) {
         const big = ['input', 'output'].some(k => relative(old[k], rule[k]) > BIG_CHANGE);
         report.changed.push({ id, from: pick(old), to: pick(rule), big });
+        rule.changedAt = day; rule.previous = pick(old);
+      } else if (old.changedAt) { rule.changedAt = old.changedAt; rule.previous = old.previous; }
+      else if (fallback && !samePrice(fallback, rule)) {
+        // 0.3.11 从家族兜底换成逐个型号价格时没记日期：补上（按那一版知识库的日期）
+        rule.changedAt = String(current?.updatedAt || day).slice(0, 10); rule.previous = pick(fallback);
       }
       auto.set(id, rule);
       continue;
     }
     // 兜底规则算出来一样就不用单独加一条
-    if (samePrice(firstMatch(fallbackRules, id), rule)) continue;
-    report.added.push({ id, to: pick(rule), fallback: pick(firstMatch(fallbackRules, id)) });
+    if (samePrice(fallback, rule)) continue;
+    report.added.push({ id, to: pick(rule), fallback: pick(fallback) });
+    if (fallback) { rule.changedAt = day; rule.previous = pick(fallback); }
     auto.set(id, rule);
   }
   // 来源里没了的：原样保留，不自动删
@@ -242,8 +255,9 @@ function build({ manual, current, litellm, openrouter, epoch, today }) {
 
   // 更具体（更长）的 id 排前面；锚定了整串，顺序只影响可读性
   const autoRules = [...auto.values()].sort((a, b) => b.auto.length - a.auto.length || a.auto.localeCompare(b.auto));
-  const body = { prices: [...manual.pinned, ...autoRules, ...manual.fallback], aliases: manual.aliases, capabilities: manual.capabilities, ...(effortUsage ? { effortUsage } : {}) };
-  const unchanged = current && JSON.stringify({ prices: current.prices, aliases: current.aliases, capabilities: current.capabilities, ...(current.effortUsage ? { effortUsage: current.effortUsage } : {}) }) === JSON.stringify(body);
+  const labels = (manual.labels || []).filter(live);
+  const body = { prices: [...pinned, ...autoRules, ...manual.fallback], aliases: manual.aliases, capabilities: manual.capabilities, ...(effortUsage ? { effortUsage } : {}), ...(labels.length ? { labels } : {}) };
+  const unchanged = current && JSON.stringify({ prices: current.prices, aliases: current.aliases, capabilities: current.capabilities, ...(current.effortUsage ? { effortUsage: current.effortUsage } : {}), ...(current.labels?.length ? { labels: current.labels } : {}) }) === JSON.stringify(body);
   let version = current?.version || '';
   if (!unchanged) {
     const day = today.slice(0, 10).replace(/-/g, '.');
@@ -278,6 +292,7 @@ function validate(k) {
     for (const f of ['input', 'output', 'cacheRead', 'cacheWrite']) if (!(typeof r[f] === 'number' && Number.isFinite(r[f]) && r[f] >= 0)) errors.push(`${r.match} 的 ${f} 不对`);
   }
   for (const a of k.aliases || []) { try { new RegExp(a.match, 'i'); } catch { errors.push('别名正则编译不过'); } }
+  for (const l of k.labels || []) if (typeof l.model !== 'string' || !l.model || l.model.length > MAX_ID || (l.until && !/^\d{4}-\d{2}-\d{2}$/.test(l.until))) errors.push('标签不对：' + JSON.stringify(l));
   for (const [id, m] of Object.entries(k.effortUsage?.models || {})) {
     if (id.length > MAX_ID || !m?.perTask || Object.values(m.perTask).some(v => !(Number.isFinite(v) && v > 0))) errors.push('思考等级消耗数据不对：' + id);
   }
@@ -290,7 +305,7 @@ function markdown({ knowledge, report, changed }) {
   if (report.review) lines.push(`> ⚠️ 需要人工确认：${report.reasons.join('；')}`, '');
   if (report.added.length) lines.push(`### 新增 ${report.added.length} 个型号`, '', '| 型号 | 新单价（输入 / 输出，每百万 token） | 原来按兜底 |', '|---|---|---|', ...report.added.map(a => `| \`${a.id}\` | ${money(a.to)} | ${money(a.fallback)} |`), '');
   if (report.changed.length) lines.push('### 调价', '', '| 型号 | 原来 | 现在 |', '|---|---|---|', ...report.changed.map(c => `| \`${c.id}\`${c.big ? ' ⚠️' : ''} | ${money(c.from)} | ${money(c.to)} |`), '');
-  if (report.disputed.length) lines.push('### 和 OpenRouter 对不上（先不用，保留原价格）', '', ...report.disputed.map(d => `- \`${d.id}\`：LiteLLM $${d.litellm.input} / $${d.litellm.output}，OpenRouter $${d.openrouter.input} / $${d.openrouter.output}`), '');
+  if (report.disputed.length) lines.push('### 和 OpenRouter 对不上（按 LiteLLM 的价格用，软件里标「标价不同」）', '', ...report.disputed.map(d => `- \`${d.id}\`：LiteLLM $${d.litellm.input} / $${d.litellm.output}，OpenRouter $${d.openrouter.input} / $${d.openrouter.output}`), '');
   if (report.kept.length) lines.push(`### 来源里没有了、按原价保留：${report.kept.map(id => '`' + id + '`').join('、')}`, '');
   if (report.skipped.length) lines.push(`### 跳过：${report.skipped.map(s => '`' + s.id + '`（' + s.why + '）').join('、')}`, '');
   const ef = report.effort;

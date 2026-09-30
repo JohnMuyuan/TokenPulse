@@ -30,7 +30,7 @@ try {
   /* ---------------- 模型知识库 ---------------- */
   const bundled = knowledge.loadKnowledge();
   check("内置知识库能读到并通过校验", bundled.source === "bundled" && bundled.knowledge.prices.length > 10, bundled.knowledge.version);
-  check("单价从知识库来：Claude Opus / GPT-5.6 / 免费模型", pricing.priceOf("claude-opus-5")?.input === 5 && pricing.priceOf("gpt-5.6-sol")?.output === 30 && pricing.priceOf("nemotron-3-ultra-free")?.input === 0);
+  check("单价从知识库来：Claude Opus / GPT-5.6 / 免费模型", pricing.priceOf("claude-opus-5")?.input === 5 && pricing.priceOf("gpt-5.6-sol")?.output === 20 /* 0.3.13：标价不同时按 LiteLLM（官方优惠价） */ && pricing.priceOf("nemotron-3-ultra-free")?.input === 0);
   check("认不出的型号不编价格", pricing.priceOf("totally-new-model") === null);
   // 日志里的型号常带日期：以前 claude-opus-4-1-20250805 落到 Opus 4.5 的价，只算了三分之一
   {
@@ -63,6 +63,27 @@ try {
   const newer = knowledge.acceptKnowledge(cleaned);
   check("更新的版本存下来、立刻生效", newer.updated && newer.info.source === "downloaded" && pricing.priceOf("brand-new-model")?.input === 7 && fs.existsSync(knowledge.downloadedKnowledgeFile()));
   check("新的等价规则也生效", verify.normalizeModel("gpt-7-preview") === "gpt-7");
+  // 0.3.13：单价说明（优惠价 / 标价不同 / 单价刚更新）、到期的手动规则和标签自动失效
+  {
+    const day = knowledge.localDay(), past = knowledge.localDay(Date.now() - 3 * 86400000), future = knowledge.localDay(Date.now() + 3 * 86400000);
+    knowledge.acceptKnowledge({
+      schema: 1, version: "2026.12.02", updatedAt: day,
+      prices: [
+        { match: "^promo-old$", input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0, note: "过期优惠", until: past, promo: true },
+        { match: "^promo-live$", input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0, note: "优惠中", until: future, promo: true },
+        { match: "^promo-(old|live)$", input: 3, output: 6, cacheRead: 0.3, cacheWrite: 0, note: "原价" },
+        { match: "^argued-model$", input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5, note: "", auto: "argued-model", dispute: { openrouter: { input: 2, output: 10 } }, changedAt: day, previous: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 } },
+      ],
+      aliases: [],
+      labels: [{ model: "argued-model", promo: true, note: "官方优惠" }, { model: "old-label", promo: true, until: past }],
+    });
+    check("到期的手动规则不再生效，回到下一条", pricing.priceOf("promo-old")?.input === 3 && pricing.priceOf("promo-live")?.input === 1);
+    const notes = knowledge.priceNotes("argued-model-20261201", pricing.priceOf("argued-model"));
+    check("单价说明：优惠价 + 标价不同 + 刚更新（去掉日期后缀也认）", notes?.promo?.note === "官方优惠" && notes.dispute?.openrouter.output === 10 && notes.changed?.previous.input === 5 && notes.price?.input === 4, JSON.stringify(notes));
+    check("规则上的 promo / until 也算优惠价", knowledge.priceNotes("promo-live", pricing.priceOf("promo-live"))?.promo?.until === future);
+    check("过期的标签不显示、没说明的型号返回 null", knowledge.priceNotes("old-label", null) === null && knowledge.priceNotes("promo-old", pricing.priceOf("promo-old")) === null);
+    check("格式不对的日期丢掉", knowledge.parseKnowledge({ schema: 1, version: "2026.12.03", prices: [{ match: "x", input: 1, output: 1, cacheRead: 0, cacheWrite: 0, until: "明天", changedAt: "昨天", previous: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }], aliases: [] }).prices[0].until === undefined);
+  }
   fs.rmSync(knowledge.downloadedKnowledgeFile());
   knowledge.resetKnowledgeCache();
   check("删掉下载的就回到内置", knowledge.loadKnowledge().source === "bundled" && pricing.priceOf("brand-new-model") === null);

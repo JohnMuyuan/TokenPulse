@@ -1,6 +1,45 @@
-# 当前接手入口 · 0.3.12（2026-09-30）
+# 当前接手入口 · 0.3.13（2026-09-30）
 
-## v0.3.12：自己添加模型 + 按思考等级估算 token 消耗 · 已完成，已提交、打包、发布（Claude）
+## v0.3.13：单价标签 + 时间线「用了多久」和剪辑工具 · 已完成并打包，**未提交、未发布**（Claude）
+
+- 用户要求（0.3.13；**没说要发布，发布前先问**）：
+  1. 标价来源对不上时，在型号旁标「标价不同」，**优先用 LiteLLM 的价**；单价刚变时标「单价刚更新」；官方优惠价标「优惠价」，带 until 的到期后自动切回。
+  2. 「模型与思考等级 · 时间线」每条轨道显示周期内用了多久、占周期多少。
+  3. 时间线左键拖动 = 平移，按住右键拖 = 原来左键的拖选；检测到的「本机以外」由用户像剪视频一样自己切（分割 / 删除 / 标注），软件不替用户切。
+  4. 「按本机区间折算…会让容量略偏小」那段说明不要常驻，改成圆圈感叹号。
+- **已完成（代码和单项测试都通过，未提交）**：
+  - 知识库：`scripts/update-knowledge.cjs` 对不上的价格按 LiteLLM 用，并记 `dispute.openrouter`；单价变化时记 `changedAt` / `previous`（从兜底换成逐个型号价格的也补上）；`manual.labels`（promo / until / note）以及 pinned 的 until 到期后剔除。`knowledge/manual.json` 给 gpt-5.6-sol 加了优惠价标签。`knowledge/models.json` 重新生成为 2026.09.30.2（gpt-5.6-sol 是 4/20，带 dispute；opus-5-5、gpt-6-astra 带 changedAt）。
+  - `src/core/knowledge.ts`：PriceRule 加了 dispute / changedAt / previous / until / promo 字段，新增 labels、`localDay`、`priceNotes()`；`priceRules()` 会跳过已到期的规则。`model-study.ts` 的容量结果带上 `priceNotes`。
+  - `src/core/quota-offmachine.ts`：updateMark 新增 split / ignore / restore 三种操作；model 为空的标注表示「待标注分段」，ignored 表示「已删除」（不算本机以外，也不进折算）；`mergeOff(intervals, rows)` 会把中间没有本机请求、间隔 6 小时以内的区间合成一段。
+  - `renderer/model-study.js/.css`：
+    - 单价标签 `priceTags` 和悬停说明 `priceNoteLines`；
+    - `activeTime`：相邻请求间隔不超过 5 分钟的连成一段，分别写进轨道等级文字、图例 `.ms-combo-time` 和周期统计「本机用了…（占周期 x%）」；
+    - 操作提示 `.ms-tl-hint`；左键平移（放大后才有效，监听挂在 window 上，窗口在后台时松手补上最后一步）；右键拖选；时间线上屏蔽右键菜单；
+    - 点色块选中后出现剪辑工具条 `.ms-off-tools`：标注 / 分割（在时间线上点一下，或填时间后点「在这里分割」）/ 删除 / 清除标注 / 恢复 / 完成，Esc 关闭；
+    - 待标注分段是虚线橙色，已删除是灰色并加删除线；
+    - `attributionNote` 改成整窗标题旁的 `infoTip`（`.ms-attribution-tip`）。
+  - i18n：新词条和格式都已补上。
+  - 测试：`test-knowledge-update.cjs`（dispute / changedAt / labels / until）、`test-features.cjs` 44/44（priceNotes、到期规则）、`test-shared-quota.cjs`（split / ignore / restore、mergeOff）、`test-model-study-ui.cjs`（用了多久、右键拖选、左键平移、剪辑工具、感叹号）**单独跑都通过**。
+  - 收尾：package.json 和 package-lock 都改成了 0.3.13；intro NOTES 加了 0.3.13 的三条（附英文）；README 加了 0.3.13 一节。图例里的「用了多久」原来单独换行，已改成 `.ms-combo` 多一列 92px；汇总里「待标注」的分段改用虚线。
+- **追加（同属 0.3.13，用户问「5 小时周期里那块黄色是什么」后要求的）**：
+  - 用户问的那块是「说不清来源」的竖条（quota-attribution 的 uncertain：前后 5 分钟内本机有请求、采样有缺口，或刚发生）。它的颜色原来是琥珀色，容易和「本机以外」的橙色搞混，现在改成灰色（`.ms-unmatched-band` 改为 var(--muted)）。
+  - 周期标题旁新增圆圈问号 `.ms-tl-help`：新 SVG 符号 `#i-help`，`infoTip` 增加第 4 个参数 iconName。里面有 9 条带色样的图例（折线、灰竖条、橙竖条、检测到 / 分割 / 已标注 / 已删除、请求色块、现在线），外加鼠标操作说明。原来常驻的 `.ms-tl-hint` 操作提示已删掉，内容收进问号。
+  - 新手引导：时间线那一步改了文案（加上用了多久和左右键说明）；新增一步「看不懂颜色？点问号」，高亮 `.ms-tl-help`；本机以外那一步改了文案（剪辑）。0.3.13 NOTES 的第二条也提到问号。i18n 都已补上。
+  - 测试：test-model-study-ui 加了问号和图例的断言，test-intro-ui 的步骤编号往后顺延一步（12 → 问号，13 → 本机以外，14 / 16 → usage）。
+  - 截图检查：看过夜间模式下的图例浮层；「已删除」的色样原来几乎看不见，改成灰色虚线框加一道删除线。
+  - 追加后的验证：`npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS。已重新 `npm run dist`（06:53），产物还是 `dist\TokenPulse-0.3.13-*`，asar 里 8 个相关文件和源码一致。没有留下 electron 进程，Setup、Portable 和 app.asar 都没被占用。
+  - Git：仍然没提交、没发布，等用户确认。
+- **验证（追加之前的那一轮）**：
+  - `npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS。
+  - 截图检查用的是 scratchpad 里的 shotui.cjs（测试脚本的复制版，只在 4 个地方截图），看过剪辑工具条、分割、删除、整窗标题旁的感叹号，都正常。
+  - 真实知识库里 `priceNotes`：gpt-5.6-sol 同时有优惠价、标价不同、刚更新三种；opus-5-5、gpt-6-astra、sonnet-5 是刚更新。
+  - `npm run dist` 退出 0，产物是 `dist\TokenPulse-0.3.13-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`。asar 里 8 个相关文件和源码一致（package.json 被 electron-builder 改写，不同是正常的）。对打包产物跑 test-model-study-ui，4 个 PASS。
+  - 收尾检查：没有留下自己启动的 electron 或 node；两个 exe 和 app.asar 都能独占打开（没有被占用）。用户正在用的已安装版 TokenPulse（0.3.12）没有碰。
+- **没做**：没提交、没打标签、没发布（用户没说要发布，按约定先问）；没在本机实际安装。
+- 已知限制：「用了多久」按 1 分钟一格、间隔 5 分钟以内连成一段来估算；待标注的分段在汇总里显示的百分点按曲线差值算，分割点落在两次采样之间时，前一段可能是 +0.0%。
+
+
+## v0.3.12（历史）：自己添加模型 + 按思考等级估算 token 消耗 · 已完成，已提交、打包、发布（Claude）
 
 - 用户要求（0.3.12，做完直接发布 GitHub）：①「换一种模型，整窗能用多少」可以自己添加模型；②把不同思考等级的 token 消耗放进知识库，让估算更准；**有本机实测数据时优先用本机实测**。
 - 数据源调研结论：Artificial Analysis 的免费版不允许再分发，不能用；Aider 排行榜停在 2025-10；**选用 Epoch AI 的基准数据（CC BY 4.0，benchmark_data.zip，每天更新）**：DeepSWE（mini-swe-agent，平均输出 token）为主，CursorBench（每个任务的 token）核对并补位。

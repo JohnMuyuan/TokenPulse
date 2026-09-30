@@ -152,7 +152,7 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .chart-enter .ms-quota-dot { animation: pop-in .35s var(--spring) both 1.1s; }
 
 .ms-combos { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); gap: 4px 18px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-.ms-combo { display: grid; grid-template-columns: 10px minmax(150px, 1.3fr) minmax(60px, 1fr) 124px; gap: 10px; align-items: center; padding: 7px 8px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background .18s, opacity .2s; }
+.ms-combo { display: grid; grid-template-columns: 10px minmax(150px, 1.3fr) minmax(60px, 1fr) 124px 92px; gap: 10px; align-items: center; padding: 7px 8px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background .18s, opacity .2s; }
 .ms-combo:hover, .ms-combo.focused { background: var(--surface-2); }
 .ms-focusing .ms-combo:not(.focused) { opacity: .45; }
 .ms-swatch { width: 10px; height: 10px; border-radius: 3px; }
@@ -188,7 +188,7 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .ms-calibration-history { max-height: 170px; overflow: auto; }.ms-calibration-history > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; font-size: 12px; flex-wrap: wrap; }
 .ms-calibration::details-content { height: 0; opacity: 0; overflow: clip; transition: height 200ms var(--ease), opacity 160ms var(--ease), content-visibility 200ms allow-discrete; }
 .ms-calibration[open]::details-content { height: auto; opacity: 1; }
-.ms-unmatched-band { fill: var(--amber, #b98232); opacity: .17; }.ms-unmatched-band:focus { opacity: .35; outline: 1px solid var(--text); }
+.ms-unmatched-band { fill: var(--muted); opacity: .16; }.ms-unmatched-band:focus { opacity: .35; outline: 1px solid var(--text); }
 @media (prefers-reduced-motion: reduce) { .ms-calibration::details-content { transition: none !important; } }
 
 .capacity-panel.protected .capacity-controls { display: none; }
@@ -291,3 +291,46 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .ms-add-pill small { color: var(--muted); }
 .ms-add-foot { display: flex; justify-content: flex-end; }
 @media (max-width: 760px) { .ms-add-body { grid-template-columns: 1fr; } }
+
+/* ---------------- 单价说明（0.3.13） ---------------- */
+.ms-price-tag { padding: 1px 7px; border-radius: 99px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.ms-price-tag.promo { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.ms-price-tag.dispute { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+.ms-price-tag.changed { background: color-mix(in srgb, var(--ring-week, #6d6ae8) 14%, transparent); color: var(--ring-week, #6d6ae8); }
+
+/* ---------------- 时间线（0.3.13）：用了多久、平移 / 右键拖选、剪辑工具 ---------------- */
+.ms-combo-time { display: grid; justify-items: end; gap: 1px; min-width: 84px; font-variant-numeric: tabular-nums; }
+.ms-combo-time b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.ms-combo-time small { color: var(--muted); font-size: 11px; }
+.ms-tl-svg.pannable { cursor: grab; }
+.ms-tl-svg.pannable:active { cursor: grabbing; }
+.ms-tl-svg.splitting { cursor: col-resize; }
+.ms-split-line { stroke: var(--warn); stroke-width: 1.6; stroke-dasharray: 4 3; pointer-events: none; }
+.ms-off.pending { fill: color-mix(in srgb, var(--warn) 18%, transparent); stroke: var(--warn); stroke-width: 1.2; stroke-dasharray: 2 2; }
+.ms-off.ignored { fill: var(--tile-neutral); stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 3 3; opacity: .7; }
+.ms-off.picked { stroke: var(--text); stroke-width: 2; stroke-dasharray: none; }
+.ms-off-text.ignored { fill: var(--muted); font-weight: 500; text-decoration: line-through; }
+.ms-off-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-sm); }
+.ms-off-tools-info { display: grid; gap: 1px; margin-right: auto; }
+.ms-off-tools-info b { font-size: 12.5px; color: var(--text); font-variant-numeric: tabular-nums; }
+.ms-off-tools-info span { color: var(--muted); font-size: 11.5px; }
+.ms-off-tools .btn { min-height: 30px; padding: 4px 12px; font-size: 12.5px; }
+.ms-off-tools-hint { color: var(--muted); font-size: 12px; }
+.ms-split-time { min-height: 30px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
+.ms-budget-top .info-tip { margin-left: auto; }
+
+/* ---------------- 时间线图例（0.3.13） ---------------- */
+.ms-tl-help { margin-left: 2px; }
+.ms-tl-help .info-tip-btn:hover, .ms-tl-help:hover .info-tip-btn, .ms-tl-help .info-tip-btn:focus-visible { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.info-tip-pop.open:has(.ms-help-row) { max-width: min(460px, calc(100vw - 24px)); gap: 5px; }
+.ms-help-row { display: grid; grid-template-columns: 26px 1fr; gap: 8px; align-items: start; }
+.ms-sw { display: block; width: 26px; height: 12px; margin-top: 5px; border-radius: 3px; box-sizing: border-box; }
+.ms-sw.curve { height: 2px; margin-top: 10px; border-radius: 2px; background: var(--accent); }
+.ms-sw.uncertain { width: 10px; height: 16px; margin: 3px 8px 0; border-radius: 1px; background: var(--muted); opacity: .3; }
+.ms-sw.offband { width: 10px; height: 16px; margin: 3px 8px 0; border-radius: 1px; background: var(--warn); opacity: .35; }
+.ms-sw.detected { border: 1.2px dashed var(--warn); background: color-mix(in srgb, var(--warn) 22%, transparent); }
+.ms-sw.pending { border: 1.2px dotted var(--warn); background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.ms-sw.marked { border: 1px solid var(--warn); background: color-mix(in srgb, var(--warn) 70%, var(--surface)); }
+.ms-sw.ignored { border: 1px dashed var(--muted); background: linear-gradient(transparent calc(50% - .75px), var(--muted) calc(50% - .75px) calc(50% + .75px), transparent calc(50% + .75px)), var(--tile-neutral); }
+.ms-sw.run { height: 10px; margin-top: 6px; background: #5b7fd6; border-radius: 4px; }
+.ms-sw.now { width: 0; height: 16px; margin: 3px 12px 0; border-left: 1.4px dashed var(--accent); border-radius: 0; }

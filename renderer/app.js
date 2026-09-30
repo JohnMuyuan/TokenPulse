@@ -55,13 +55,13 @@ function icon(name, cls = 'icon') {
   return node;
 }
 /**
- * 带圆圈感叹号的说明：平时只占一个小图标，鼠标悬停或键盘聚焦时弹出说明。
+ * 带圆圈感叹号（或问号，iconName = 'help'）的说明：平时只占一个小图标，鼠标悬停或键盘聚焦时弹出说明。
  * 浮层打开时挂到 body 上、用 fixed 定位（卡片的 overflow / 后面面板的层级都挡不住它），关上再放回图标旁边。
  * content 可以带按钮：鼠标从图标移到浮层上不会关。
  */
-function infoTip(content, label = '说明', cls = '') {
+function infoTip(content, label = '说明', cls = '', iconName = 'notice') {
   const pop = el('span', { class: 'info-tip-pop', role: 'tooltip' }, content);
-  const button = el('button', { type: 'button', class: 'info-tip-btn', 'aria-label': label }, [icon('notice')]);
+  const button = el('button', { type: 'button', class: 'info-tip-btn', 'aria-label': label }, [icon(iconName)]);
   const tip = el('span', { class: ('info-tip ' + cls).trim() }, [button, pop]);
   let timer = 0, watch = null;
   const place = () => {

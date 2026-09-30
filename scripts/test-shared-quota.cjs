@@ -28,7 +28,7 @@ console.log('PASS shared-pool baseline: official usage preserved; clean local in
 }
 
 // 本机以外的消耗：额度涨了、同期（前后 5 分钟）本机没有请求 → 自动识别，不进折算
-const { cleanCapacity, updateMark, readMarks, forgetMarks } = require('../build/core/quota-offmachine');
+const { cleanCapacity, updateMark, readMarks, forgetMarks, mergeOff } = require('../build/core/quota-offmachine');
 const deltas=[0,2,4,6,6,6,6,6,26,46,66,66];
 const history=deltas.map((week,i)=>({...samples[0],at:now-(11-i)*5*minute,week,five:week}));
 const local=rows.map((r,i)=>({...r,at:now-(51-i*5)*minute}));
@@ -51,6 +51,17 @@ const local=rows.map((r,i)=>({...r,at:now-(51-i*5)*minute}));
   // 标注盖住有本机请求的区间：可能混用，这个区间不进折算
   const mixed=analyzeModelStudy(q,history,local,catalog,now,[],false,[{...mark,id:'m2',from:now-50*minute,to:now-46*minute}]);
   assert.equal(mixed.excluded.offMachine,1);assert.equal(mixed.budget.points,4);
+  // 0.3.13：删除（ignored）的一段不算本机以外，也不进折算；待标注的分段（model 为空）照样盖住、不进折算
+  const ignored=analyzeModelStudy(q,history,local,catalog,now,[],false,[{...mark,id:'m3',model:'',effort:'unknown',ignored:true}]);
+  assert.equal(ignored.offMachine.points,0);assert.equal(ignored.offMachine.detected.length,0);assert.ok(Math.abs(ignored.budget.costUsd-.5)<1e-9,'删掉的不进分母');
+  assert.equal(cleanCapacity('claude',history,local,[{...mark,ignored:true}],'week',now).current.offPoints,0);
+  const pieces=analyzeModelStudy(q,history,local,catalog,now,[],false,[{...mark,id:'p1',model:'',effort:'unknown',to:now-12*minute},{...mark,id:'p2',model:'',effort:'unknown',from:now-12*minute}]);
+  assert.equal(pieces.offMachine.detected.length,0);assert.equal(pieces.offMachine.marks.length,2);assert.equal(pieces.offMachine.markedPoints,marked.offMachine.markedPoints,'切成两段不改变总量');
+  // 合并：中间没有本机请求的，相隔 6 小时以内都算一段（用户自己切）；中间有本机请求就分开；不给 rows 按以前的 30 分钟
+  const h=60*minute, iv=[{from:0,to:5*minute,points:1},{from:3*h,to:3*h+5*minute,points:2},{from:10*h,to:10*h+5*minute,points:3}];
+  assert.deepEqual(mergeOff(iv,[]).map(x=>[x.from,x.to,x.points]),[[0,3*h+5*minute,3],[10*h,10*h+5*minute,3]]);
+  assert.equal(mergeOff(iv,[{at:h}]).length,3,'中间有本机请求就不合并');
+  assert.equal(mergeOff(iv).length,3);
   // 额度详情的容量（report.ts 用的同一套）：本机以外的 40 个点不进分母
   const capacity=cleanCapacity('claude',history,local,[],'week',now);
   assert.equal(capacity.current.tokens,50000);assert.equal(capacity.current.offPoints,40);
@@ -103,6 +114,21 @@ try {
  assert.throws(()=>updateMark({kind:'claude',accountId:'claude:other',action:'delete',id:marks[0].id},now));
  updateMark({kind:'claude',accountId:id,from:now-5*minute,to:now,model:'claude-opus-5'},now);
  assert.equal(updateMark({kind:'claude',accountId:id,action:'delete',id:marks[0].id},now).length,1);
+ // 0.3.13 剪辑：分割检测到的一段 → 两条待标注；分割一条标注 → 后一段复制模型；删除 / 恢复；越界报错
+ forgetMarks(id);
+ assert.throws(()=>updateMark({kind:'claude',accountId:id,action:'split',from:now-60*minute,to:now-30*minute,at:now-20*minute},now),/中间/);
+ marks=updateMark({kind:'claude',accountId:id,action:'split',from:now-60*minute,to:now-30*minute,at:now-45*minute},now);
+ assert.deepEqual(marks.map(m=>[m.from,m.to,m.model,m.effort,!!m.ignored]),[[now-60*minute,now-45*minute,'','unknown',false],[now-45*minute,now-30*minute,'','unknown',false]]);
+ marks=updateMark({kind:'claude',accountId:id,id:marks[0].id,from:marks[0].from,to:marks[0].to,model:'claude-opus-5',effort:'high',source:'chat'},now);
+ const labeled=marks.find(m=>m.model);
+ marks=updateMark({kind:'claude',accountId:id,action:'split',id:labeled.id,at:now-50*minute},now);
+ assert.equal(marks.length,3);assert.deepEqual(marks.filter(m=>m.model).map(m=>[m.from,m.to,m.effort]),[[now-60*minute,now-50*minute,'high'],[now-50*minute,now-45*minute,'high']],'分割标注：两段都带模型和等级');
+ assert.throws(()=>updateMark({kind:'claude',accountId:id,action:'split',id:labeled.id,at:now-40*minute},now),/中间/);
+ marks=updateMark({kind:'claude',accountId:id,action:'ignore',id:marks[2].id},now);assert.equal(marks[2].ignored,true);
+ marks=updateMark({kind:'claude',accountId:id,action:'restore',id:marks[2].id},now);assert.equal(marks[2].ignored,undefined);
+ marks=updateMark({kind:'claude',accountId:id,action:'ignore',from:now-25*minute,to:now-20*minute},now);assert.equal(marks.at(-1).ignored,true);assert.equal(marks.at(-1).model,'');
+ assert.throws(()=>updateMark({kind:'claude',accountId:'claude:other',action:'ignore',id:marks[0].id},now),/找不到/);
+ assert.throws(()=>updateMark({kind:'claude',accountId:id,action:'restore',id:'nope'},now),/找不到/);
  forgetMarks(id);assert.equal(readMarks().length,0);
- console.log('PASS calibration store (kept for old records) and off-machine marks: create, edit, validate, delete, purge');
+ console.log('PASS calibration store (kept for old records) and off-machine marks: create, edit, validate, delete, purge; 0.3.13 split / ignore / restore, ignored excluded from off-machine and capacity, pending pieces, merge across quiet gaps');
 } finally { if(oldDir===undefined)delete process.env.TOKENPULSE_DATA_DIR;else process.env.TOKENPULSE_DATA_DIR=oldDir;assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(root).startsWith('tokenpulse-calibration-'));fs.rmSync(root,{recursive:true,force:true}); }

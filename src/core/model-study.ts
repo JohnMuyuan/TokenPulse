@@ -6,7 +6,8 @@ import { windowSegments, type WindowSegment } from "./quota-monitor";
 import { queryRequests, type RequestRow } from "./request-log";
 import { modelCatalog, comboKey, readStudyModels, type CatalogEntry } from "./model-catalog";
 import { estimateCost } from "./model-pricing";
-import { benchmarkEffortRatio } from "./knowledge";
+import { benchmarkEffortRatio, priceNotes, type PriceNotes } from "./knowledge";
+import { priceOf } from "./model-pricing";
 import { readOfficialAccountStore } from "./accounts";
 import type { AccountKind } from "./quota";
 
@@ -31,6 +32,8 @@ export type ModelCapacity = CatalogEntry & {
   /** 每百万 Token 的参考费用，以及它从哪来：组合自己的实际费用 / 同模型其他等级 / 价格表。 */
   costPerMTokens: number | null; priceBasis: "combo" | "model" | "price" | "effort" | null;
   /** 0.3.12：思考等级换算。effortRatio 是从 effortAnchor 档换到这一档的输出倍数；basis：own 本机实测 / benchmark 基准同型号 / family 家族平均。 */
+  /** 0.3.13：这个型号单价的说明（优惠价 / 标价不同 / 单价刚更新）。 */
+  priceNotes: PriceNotes | null;
   effortRatio: number | null; effortBasis: "own" | "benchmark" | "family" | null; effortSource: string | null; effortAnchor: string | null; tokensPerCallBasis: "own" | "scaled" | null;
   /** 最近 30 天平均每次模型调用多少 Token（思考等级主要影响这个）。 */
   tokensPerCall: number | null;
@@ -231,6 +234,7 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     return { ...entry, key,
       tokens: sum(actual, r => r.tokens), inputTokens: sum(actual, r => r.input), outputTokens: sum(actual, r => r.output), cacheReadTokens: sum(actual, r => r.cacheRead), calls: sum(actual, r => r.calls), costUsd: actual.every(r => r.priced) ? sum(actual, r => r.costUsd) : null,
       recentTokens, recentCalls, costPerMTokens: unit == null ? null : unit * 1e6, priceBasis, tokensPerCall, tokensPerCallBasis,
+      priceNotes: priceNotes(entry.model, priceOf(entry.model) as never),
       effortRatio: effortInfo.basis ? effortInfo.ratio : null, effortBasis: effortInfo.basis, effortSource: effortInfo.source, effortAnchor: effortInfo.basis ? base?.anchor ?? null : null,
       calibrationCacheShare: stat?.input ? stat.cacheRead / stat.input : null, intervals: stat?.intervals ?? 0, quotaPoints: stat?.points ?? 0, cycleCount: stat?.cycles.size ?? 0,
       estimatedTokens, estimatedCostUsd, observedMinTokens: enough ? Math.min(...stat!.rates) : null, observedMaxTokens: enough ? Math.max(...stat!.rates) : null, confidence, lastAt: stat?.lastAt,
@@ -250,7 +254,8 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
   const offMachine = {
     points: offClean?.offPoints ?? 0,
     markedPoints: offClean?.markedPoints ?? 0,
-    detected: mergeOff(offClean?.offIntervals ?? []).filter(seg => !overlapsMark(cycleMarks, seg.from, seg.to)),
+    // 用户切过 / 标过 / 删过的部分不再算「检测到」：只把没被任何标注盖住的区间合并成段
+    detected: mergeOff((offClean?.offIntervals ?? []).filter(i => !cycleMarks.some(m => m.from < i.to && m.to > i.from)), rows),
     marks: cycleMarks.map(m => {
       const points = Math.max(0, pctAt(Math.min(m.to, selected!.endAt)) - pctAt(Math.max(m.from, selected!.startAt)));
       const capacity = capacities.find(c => c.key === comboKey(m.model, m.effort)) ?? capacities.find(c => c.model === m.model && c.capacityTokens != null);

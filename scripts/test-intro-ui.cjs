@@ -82,8 +82,9 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
       [3, 'overview', '#quota-cards', /官方额度/], [4, 'overview', '#overview-analysis .analysis-grid', /用量趋势/],
       [7, 'quota', '#quota-detail .quota-window-grid', /5 小时与周窗口/], [8, 'quota', '#quota-detail .capacity-panel', /额度容量趋势/],
       [9, 'quota', '#quota-model-study .ms-budgets', /换一种模型/], [10, 'quota', '#quota-model-study .ms-highlights', /一眼看结论/],
-      [11, 'quota', '#quota-model-timeline .ms-cycle.week .ms-tl', /时间线/], [12, 'quota', '#quota-model-timeline .ms-cycle.week .ms-off-summary', /本机以外/],
-      [13, 'usage', '#page-usage .breakdown-panel', /Token 构成/], [15, 'usage', '#page-usage .usage-records', /按项目/],
+      [11, 'quota', '#quota-model-timeline .ms-cycle.week .ms-tl', /时间线/], [12, 'quota', '#quota-model-timeline .ms-cycle.week .ms-tl-help', /看不懂颜色？点问号/],
+      [13, 'quota', '#quota-model-timeline .ms-cycle.week .ms-off-summary', /本机以外/],
+      [14, 'usage', '#page-usage .breakdown-panel', /Token 构成/], [16, 'usage', '#page-usage .usage-records', /按项目/],
     ];
     for (const [n, page, sel, heading] of checks) {
       await go(n);
@@ -96,7 +97,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.ok(await evaluate("document.querySelectorAll('#quota-detail .capacity-chart svg circle, #quota-detail .capacity-chart svg path').length > 0"), '容量趋势有图');
     assert.ok(await evaluate("document.querySelectorAll('#quota-model-study .ms-row').length >= 5"), '模型换算列出多个组合');
     assert.ok(await evaluate("document.querySelector('#quota-model-timeline .ms-cycle.week .ms-off.detected') && document.querySelector('#quota-model-timeline .ms-cycle.week .ms-off.marked')"), '时间线上待标注、已标注都有');
-    await go(15);
+    await go(16);
     assert.equal(await evaluate('state.usageView'), 'projects');
     assert.ok(await evaluate("document.querySelectorAll('#view-projects .pj-card').length >= 3"), '按项目列出演示项目 ' + await evaluate("state.days + '|' + document.querySelectorAll('#view-projects .pj-card').length + '|' + document.querySelector('#view-projects').textContent.slice(0, 300)"));
     await go(4);

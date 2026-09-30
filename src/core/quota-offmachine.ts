@@ -18,7 +18,10 @@ import type { QuotaSample } from "./quota-history";
  */
 
 export type OffMachineSource = "chat" | "device" | "other";
-export type OffMachineMark = { id: string; kind: AccountKind; accountId: string; from: number; to: number; model: string; effort: string; source: OffMachineSource; note: string; updatedAt: number };
+/**
+ * model 为空 = 用户分割出来、还没标注的一段（0.3.13）；ignored = 用户「删除」的一段：不算本机以外，不进汇总，可以恢复。
+ */
+export type OffMachineMark = { id: string; kind: AccountKind; accountId: string; from: number; to: number; model: string; effort: string; source: OffMachineSource; note: string; updatedAt: number; ignored?: boolean };
 type Store = { version: 1; marks: OffMachineMark[] };
 
 /** 只有这一家的模型才吃这一家的订阅额度（经 CC Switch 把 Claude Code 指到别家模型的请求不算）。 */
@@ -33,22 +36,64 @@ const file = () => dataFile("quota-offmachine.json");
 function valid(m: OffMachineMark) {
   return Boolean(m && typeof m.id === "string" && m.id.length <= 100 && ["claude", "chatgpt", "grok"].includes(m.kind) && typeof m.accountId === "string" && m.accountId.startsWith(m.kind + ":")
     && Number.isFinite(m.from) && Number.isFinite(m.to) && m.to > m.from && m.to - m.from <= 8 * 86400000 && typeof m.model === "string" && m.model.length <= 120 && EFFORTS.has(m.effort)
-    && ["chat", "device", "other"].includes(m.source) && typeof m.note === "string" && m.note.length <= 300);
+    && ["chat", "device", "other"].includes(m.source) && typeof m.note === "string" && m.note.length <= 300 && (m.ignored === undefined || typeof m.ignored === "boolean"));
 }
 export function readMarks(kind?: AccountKind, accountId?: string): OffMachineMark[] {
   const stored = readJson<Store | null>(file(), null);
   const marks = stored?.version === 1 && Array.isArray(stored.marks) ? stored.marks.filter(valid) : [];
   return marks.filter((m) => (!kind || m.kind === kind) && (!accountId || m.accountId === accountId)).sort((a, b) => a.from - b.from);
 }
-/** 新建 / 修改 / 删除一条标注，返回这个账号的全部标注。 */
+/**
+ * 新建 / 修改 / 删除一条标注，返回这个账号的全部标注。
+ * 0.3.13 起还有像剪视频一样的操作（本机以外的时段由用户自己切，软件不替用户切）：
+ * - split：在 at 处把一段切成两段。给了 id 就切那条标注（后一段复制它的模型 / 等级 / 来源）；
+ *   没给 id 就是切检测到的一段（from → to），切出两条「待标注」（model 为空）；
+ * - ignore：删除这一段（给 id 就把那条标成 ignored，没给 id 就新建一条 ignored 盖住 from → to）；
+ * - restore：恢复删除的一段（去掉 ignored）。
+ */
 export function updateMark(value: unknown, now = Date.now()) {
-  const q = (value && typeof value === "object" ? value : {}) as Partial<OffMachineMark> & { action?: string };
+  const q = (value && typeof value === "object" ? value : {}) as Partial<OffMachineMark> & { action?: string; at?: number };
   if (!q.kind || !["claude", "chatgpt", "grok"].includes(q.kind) || typeof q.accountId !== "string" || !q.accountId.startsWith(q.kind + ":") || q.accountId.length > 300) throw new Error("标注参数无效。");
   const all = readMarks();
+  const save = () => { writeJson(file(), { version: 1, marks: all.slice(-2000) }); return readMarks(q.kind, q.accountId); };
+  const own = () => { const i = all.findIndex((m) => m.id === q.id && m.accountId === q.accountId); if (i < 0) throw new Error("找不到这条标注。"); return i; };
+  const range = (from: number, to: number) => {
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) throw new Error("结束时间要晚于开始时间。");
+    if (to - from > 8 * 86400000) throw new Error("一段标注最长 8 天。");
+    if (from > now + 60000) throw new Error("不能标注还没发生的时间。");
+  };
+  const pending = (from: number, to: number, extra: Partial<OffMachineMark> = {}): OffMachineMark => ({ id: randomUUID(), kind: q.kind!, accountId: q.accountId!, from, to, model: "", effort: "unknown", source: "other", note: "", updatedAt: now, ...extra });
   if (q.action === "delete") {
-    if (!all.some((m) => m.id === q.id && m.accountId === q.accountId)) throw new Error("找不到这条标注。");
+    own();
     writeJson(file(), { version: 1, marks: all.filter((m) => m.id !== q.id) });
     return readMarks(q.kind, q.accountId);
+  }
+  if (q.action === "split") {
+    const at = Number(q.at);
+    if (q.id) {
+      const i = own(), m = all[i];
+      if (!(at > m.from && at < m.to)) throw new Error("分割点要在这一段中间。");
+      all.push({ ...m, id: randomUUID(), from: at, updatedAt: now });
+      all[i] = { ...m, to: at, updatedAt: now };
+      return save();
+    }
+    const from = Number(q.from), to = Number(q.to);
+    range(from, to);
+    if (!(at > from && at < to)) throw new Error("分割点要在这一段中间。");
+    all.push(pending(from, at), pending(at, to));
+    return save();
+  }
+  if (q.action === "ignore") {
+    if (q.id) { const i = own(); all[i] = { ...all[i], ignored: true, updatedAt: now }; return save(); }
+    const from = Number(q.from), to = Number(q.to);
+    range(from, to);
+    all.push(pending(from, to, { ignored: true }));
+    return save();
+  }
+  if (q.action === "restore") {
+    const i = own(); const { ignored: _drop, ...rest } = all[i];
+    all[i] = { ...rest, updatedAt: now };
+    return save();
   }
   const from = Number(q.from), to = Number(q.to);
   const mark: OffMachineMark = {
@@ -71,8 +116,13 @@ export function forgetMarks(accountId: string) {
   const all = readMarks();
   if (all.some((m) => m.accountId === accountId)) writeJson(file(), { version: 1, marks: all.filter((m) => m.accountId !== accountId) });
 }
+/** 标注过（含待标注的分段）的时段：不进容量折算。删除（ignored）的不算。 */
 export function overlapsMark(marks: OffMachineMark[], from: number, to: number) {
-  return marks.some((m) => m.from < to && m.to > from);
+  return marks.some((m) => !m.ignored && m.from < to && m.to > from);
+}
+/** 用户删除（ignored）的时段：不算本机以外。 */
+export function overlapsIgnored(marks: OffMachineMark[], from: number, to: number) {
+  return marks.some((m) => m.ignored && m.from < to && m.to > from);
 }
 
 export type OffInterval = { from: number; to: number; points: number };
@@ -101,7 +151,7 @@ export function cleanSegment(segment: WindowSegment, rows: RequestRow[], marks: 
     if (!part.length) {
       // 前后 5 分钟也没有本机请求才算本机以外（统计延迟、采样刚好卡在请求边上的不算）；还没过 5 分钟的最新区间先不下结论
       const near = rows.slice(upper(from - LAG_MS), upper(Math.min(to + LAG_MS, now))).length;
-      if (!near && to + LAG_MS <= now) { out.offPoints += delta; out.offIntervals.push({ from, to, points: delta }); }
+      if (!near && to + LAG_MS <= now && !overlapsIgnored(marks, from, to)) { out.offPoints += delta; out.offIntervals.push({ from, to, points: delta }); }
       continue;
     }
     if (part.some((r) => r.account?.basis === "inferred")) continue;
@@ -113,12 +163,18 @@ export function cleanSegment(segment: WindowSegment, rows: RequestRow[], marks: 
   return out;
 }
 
-/** 相邻的本机以外区间（间隔不超过 30 分钟）合成一段，时间线上一段一个色块。 */
-export function mergeOff(intervals: OffInterval[]) {
+/**
+ * 本机以外的区间合成一段，时间线上一段一个色块。0.3.13 起软件不替用户切：只要中间**没有本机请求**，
+ * 相隔 6 小时以内的都算同一段（用户在时间线上自己分割）；没给 rows 时按以前的 30 分钟。
+ */
+const MERGE_MAX_MS = 6 * 3600000;
+export function mergeOff(intervals: OffInterval[], rows?: RequestRow[]) {
   const merged: OffInterval[] = [];
+  const quietBetween = (a: number, b: number) => !rows || !rows.some((r) => r.at > a && r.at < b);
   for (const item of [...intervals].sort((a, b) => a.from - b.from)) {
     const last = merged.at(-1);
-    if (last && item.from - last.to <= GAP_MS) { last.to = Math.max(last.to, item.to); last.points += item.points; }
+    const gap = item.from - last?.to!;
+    if (last && (gap <= GAP_MS || (rows && gap <= MERGE_MAX_MS && quietBetween(last.to, item.from)))) { last.to = Math.max(last.to, item.to); last.points += item.points; }
     else merged.push({ ...item });
   }
   return merged;

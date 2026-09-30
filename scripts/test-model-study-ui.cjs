@@ -58,7 +58,17 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   await until(`document.querySelectorAll('${U} .ms-cycle.five .ms-run').length > 0 && !document.querySelector('${U}').hasAttribute('aria-busy')`);
   assert.match(await text(`${U} .ms-cycle.five .ms-cycle-stats`), /4\.0K Tokens · 4 次调用/);
   assert.equal(await count(`${U} .ms-cycle.five .ms-lane`), 2, '未记录等级单独一条轨道');
-  assert.ok(await evaluate(`[...document.querySelectorAll('${U} .ms-cycle.five .ms-lane-level')].some(n => n.textContent === '未记录等级')`));
+  assert.ok(await evaluate(`[...document.querySelectorAll('${U} .ms-cycle.five .ms-lane-level')].some(n => /^未记录等级 · \\d+ 分钟 · [\\d.]+%$/.test(n.textContent))`), '轨道写明用了多久、占周期多少');
+  // 0.3.13：图例和周期统计也写用了多久
+  assert.ok(await evaluate(`[...document.querySelectorAll('${U} .ms-cycle.five .ms-combo-time')].every(n => /分钟/.test(n.textContent) && /占周期 [\\d.]+%/.test(n.textContent))`));
+  assert.match(await text(`${U} .ms-cycle.five .ms-cycle-stats`), /本机用了 .+（占周期 [\d.]+%）/);
+  // 图例收进周期标题旁的圆圈问号：平时隐藏，写全每种颜色 / 竖条 / 色块和鼠标操作
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-tl-hint')`), null, '操作提示不常驻');
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-cycle-title .ms-tl-help use').getAttribute('href')`), '#i-help', '用圆圈问号');
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('${U} .ms-cycle.five .ms-tl-help .info-tip-pop')).display`), 'none');
+  const legend = await text(`${U} .ms-cycle.five .ms-tl-help .info-tip-pop`);
+  for (const word of ['绿色折线', '灰色竖条：说不清来源', '前后 5 分钟内本机有请求', '橙色竖条：本机以外', '虚线橙块', '虚线细框', '实心橙块', '删除线', '颜色越深思考等级越高', '现在', '左键拖动左右平移', '按住右键拖选一段']) assert.ok(legend.includes(word), '图例写明：' + word);
+  assert.equal(await evaluate(`document.querySelectorAll('${U} .ms-cycle.five .ms-tl-help .ms-sw').length`), 9, '每条都有色样');
   assert.ok(await count(`${U} .ms-cycle.week .ms-quota-line`) === 1, '周期上方画官方额度曲线');
   await evaluate(`document.querySelector('${U} .ms-combo').click()`);
   assert.ok(await evaluate(`document.querySelector('${U}').classList.contains('ms-focusing')`));
@@ -117,10 +127,17 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   assert.match(await text(`${U} .ms-cycle.five .ms-off-head .info-tip-pop`), /不计入容量折算/);
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('${U} .ms-cycle.five .ms-off-head .info-tip-pop')).display`), 'none');
   assert.equal(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off-summary').classList.contains('empty')`), false);
-  assert.match(await text(`${Q} .ms-budget.five .ms-budget-value`), /\$0\.67按本机区间折算/);
-  // 点虚线块：打开标注，选等级、写备注；填表的时候定时刷新不能把表单冲掉
+  // 0.3.13：折算口径说明不常驻，收进整窗标题旁的感叹号
+  assert.match(await text(`${Q} .ms-budget.five .ms-budget-value`), /^\$0\.67按本机区间折算 · API 等价参考$/, '只剩一行短标注');
+  assert.equal(await evaluate(`document.querySelector('#page-quota .ms-attribution-note')`), null);
+  assert.match(await text(`${Q} .ms-budget.five .ms-budget-top .ms-attribution-tip .info-tip-pop`), /本机以外 \+3\.0%，不计入折算/);
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('${Q} .ms-budget.five .ms-attribution-tip .info-tip-pop')).display`), 'none');
+  // 点虚线块：先选中（出剪辑工具），点「标注」打开标注，选等级、写备注；填表的时候定时刷新不能把表单冲掉
   await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.detected').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
-  await until(`document.querySelector('${U} .ms-cycle.five .ms-mark-editor')`);
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-off-tools') && document.querySelector('${U} .ms-cycle.five .ms-off.detected.picked')`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${U} .ms-off-tools button')].map(b => b.dataset.tool)`), ['label', 'split', 'ignore', 'done']);
+  await evaluate(`document.querySelector('${U} .ms-off-tools [data-tool=label]').click()`);
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-mark-editor') && !document.querySelector('${U} .ms-off-tools')`);
   assert.equal(await evaluate(`document.querySelector('${U} .ms-mark-editor select[aria-label="用了什么模型"]').value`), 'gpt-qa', '默认填这个周期里用得最多的模型');
   await evaluate(`(() => { const f = document.querySelector('${U} .ms-mark-editor'); const e = f.querySelector('select[aria-label="思考等级"]'); e.value = 'high'; e.dispatchEvent(new Event('change')); const n = f.querySelector('input[aria-label="备注"]'); n.value = '网页上聊天'; n.dispatchEvent(new Event('input')); })()`);
   const info = await text(`${U} .ms-mark-info`);
@@ -141,20 +158,70 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   assert.match(await label(), /^显示 /);
   await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="回到整个周期"]').click()`);
   assert.equal(await label(), '整个周期');
-  await evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'), b = svg.getBoundingClientRect(); const y = b.top + 40; const fire = (type, x) => svg.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 7, button: 0 })); fire('pointerdown', b.left + b.width * .55); fire('pointermove', b.left + b.width * .7); fire('pointermove', b.left + b.width * .85); fire('pointerup', b.left + b.width * .85); })()`);
+  // 左键拖动在没放大时什么都不做（不出选择工具条）
+  const dragWith = (button, a, b2) => evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'), b = svg.getBoundingClientRect(); const y = b.top + 40; const fire = (t, type, x) => t.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 7, button: ${button} })); fire(svg, 'pointerdown', b.left + b.width * ${a}); fire(window, 'pointermove', b.left + b.width * ((${a} + ${b2}) / 2)); fire(svg, 'pointermove', b.left + b.width * ((${a} + ${b2}) / 2)); fire(window, 'pointermove', b.left + b.width * ${b2}); fire(svg, 'pointermove', b.left + b.width * ${b2}); fire(window, 'pointerup', b.left + b.width * ${b2}); fire(svg, 'pointerup', b.left + b.width * ${b2}); })()`);
+  await dragWith(0, .55, .85); await delay(100);
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-select-actions')`), null, '左键不再拖选');
+  assert.ok(await evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'); const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true }); svg.dispatchEvent(e); return e.defaultPrevented; })()`), '时间线上不弹右键菜单');
+  // 右键拖选一段
+  await dragWith(2, .55, .85);
   await until(`document.querySelector('${U} .ms-cycle.five .ms-select-actions')`);
   assert.ok(await evaluate(`[...document.querySelectorAll('${U} .ms-select-actions button')].some(b => b.textContent === '标注为本机以外的使用')`));
   await evaluate(`[...document.querySelectorAll('${U} .ms-select-actions button')].find(b => b.textContent === '放大到这段').click()`);
   assert.match(await label(), /^显示 /, '拖选后放大到这段');
+  // 放大后左键拖动：左右平移（往右拖 = 看更早的时间）
+  assert.ok(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-tl svg').classList.contains('pannable')`));
+  const before = await label();
+  await dragWith(0, .6, .75); await delay(200);
+  assert.notEqual(await label(), before, '左键拖动平移：' + before);
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-select-actions')`), null);
   await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="回到整个周期"]').click()`);
   await evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'), b = svg.getBoundingClientRect(); svg.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100, clientX: b.left + b.width * .7, clientY: b.top + 40 })); })()`);
   assert.match(await label(), /^显示 /, 'Ctrl + 滚轮放大');
   await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="回到整个周期"]').click()`);
   // 修改 → 删除标注：又变回待标注
   await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.marked').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await until(`document.querySelector('${U} .ms-off-tools [data-tool=unlabel]')`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${U} .ms-off-tools button')].map(b => b.dataset.tool)`), ['label', 'split', 'ignore', 'unlabel', 'done']);
+  await evaluate(`document.querySelector('${U} .ms-off-tools [data-tool=label]').click()`);
   await until(`[...document.querySelectorAll('${U} .ms-mark-editor button')].some(b => b.textContent === '删除标注')`);
   await evaluate(`[...document.querySelectorAll('${U} .ms-mark-editor button')].find(b => b.textContent === '删除标注').click()`);
   await until(`document.querySelector('${U} .ms-cycle.five .ms-off.detected') && !document.querySelector('${U} .ms-mark-editor')`);
+  // 0.3.13 剪辑：选中检测到的一段 → 分割（填时间）→ 两段待标注
+  const offNow = () => evaluate("window.tokenpulse.modelStudy({kind:'chatgpt',accountId:'chatgpt:qa-study'}).then(s=>s.five.offMachine)");
+  const seg = (await offNow()).detected[0];
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.detected').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await until(`document.querySelector('${U} .ms-off-tools [data-tool=split]')`);
+  await evaluate(`document.querySelector('${U} .ms-off-tools [data-tool=split]').click()`);
+  await until(`document.querySelector('${U} .ms-off-tools .ms-split-time') && document.querySelector('${U} .ms-cycle.five .ms-tl svg.splitting')`);
+  const at = Math.floor((seg.from + seg.to) / 2 / 60000) * 60000;
+  await evaluate(`(() => { const d = new Date(${at}), p = n => String(n).padStart(2, '0'); const i = document.querySelector('${U} .ms-off-tools .ms-split-time'); i.value = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()); document.querySelector('${U} .ms-off-tools [data-tool=split-confirm]').click(); })()`);
+  await until(`document.querySelectorAll('${U} .ms-cycle.five .ms-off.pending').length === 2 && !document.querySelector('${U} .ms-cycle.five .ms-off.detected')`);
+  let off2 = await offNow();
+  assert.deepEqual(off2.marks.map(m => [m.from, m.to, m.model]), [[seg.from, at, ''], [at, seg.to, '']], '分割成两段待标注');
+  assert.match(await text(`${U} .ms-cycle.five .ms-off-summary`), /2 段待标注/);
+  // 删除第一段 → 变成「已删除」，不进汇总；再恢复
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.pending').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await until(`document.querySelector('${U} .ms-off-tools [data-tool=ignore]')`);
+  await evaluate(`document.querySelector('${U} .ms-off-tools [data-tool=ignore]').click()`);
+  await until(`document.querySelectorAll('${U} .ms-cycle.five .ms-off.ignored').length === 1`);
+  off2 = await offNow();
+  assert.equal(off2.marks.filter(m => m.ignored).length, 1);
+  assert.match(await text(`${U} .ms-cycle.five .ms-off-summary`), /1 段待标注/);
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.ignored').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await until(`document.querySelector('${U} .ms-off-tools [data-tool=restore]')`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${U} .ms-off-tools button')].map(b => b.dataset.tool)`), ['restore', 'done']);
+  await evaluate(`document.querySelector('${U} .ms-off-tools [data-tool=restore]').click()`);
+  await until(`!document.querySelector('${U} .ms-cycle.five .ms-off.ignored') && document.querySelectorAll('${U} .ms-cycle.five .ms-off.pending').length === 2`);
+  // 删掉两条分段（清掉，回到检测到的一整段）
+  for (const m of (await offNow()).marks) await evaluate(`window.tokenpulse.modelOffMachine({ kind: 'chatgpt', accountId: 'chatgpt:qa-study', action: 'delete', id: '${m.id}' })`);
+  await evaluate('window.tokenpulse.refresh()');
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-off.detected') && !document.querySelector('${U} .ms-cycle.five .ms-off.pending')`);
+  // Esc / 完成 关掉工具条
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.detected').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await until(`document.querySelector('${U} .ms-off-tools')`);
+  await evaluate(`document.querySelector('${U} .ms-off-tools [data-tool=done]').click()`);
+  await until(`!document.querySelector('${U} .ms-off-tools')`);
   // Esc 关掉编辑区
   await evaluate(`document.querySelector('${U} .ms-off-add').click()`);
   await until(`document.querySelector('${U} .ms-mark-editor')`);
@@ -162,15 +229,16 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   await until(`!document.querySelector('${U} .ms-mark-editor')`);
   // 夜间模式：新加的文字也不能是默认黑色
   await evaluate("setThemeMode('dark')"); await delay(150);
-  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${U} .ms-tl text, ${U} .ms-off-summary *')].filter(n => (n.tagName === 'text' ? getComputedStyle(n).fill : getComputedStyle(n).color) === 'rgb(0, 0, 0)').map(n => n.className?.baseVal ?? n.className)`), []);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${U} .ms-tl text, ${U} .ms-off-summary *, ${U} .ms-combo-time *')].filter(n => (n.tagName === 'text' ? getComputedStyle(n).fill : getComputedStyle(n).color) === 'rgb(0, 0, 0)').map(n => n.className?.baseVal ?? n.className)`), []);
   await evaluate("setThemeMode('light')"); await delay(300);
-  console.log('PASS 0.3.9 off-machine timeline: detection, summary, clean budget, mark editor with token equivalent, refresh keeps draft, save/delete, zoom buttons, drag-select, ctrl+wheel, Esc, dark mode');
+  console.log('PASS 0.3.9 off-machine timeline: detection, summary, clean budget, mark editor with token equivalent, refresh keeps draft, save/delete, zoom buttons, drag-select, ctrl+wheel, Esc, dark mode; 0.3.13 durations, right-drag select, left-drag pan, off tools split/delete/restore, attribution tip');
   // 0.3.9：设置 → 账号里的「只在本机用 Code」开关
   assert.ok(await evaluate("document.querySelector('#quota-detail .quota-context h2 .quota-scope-tip') !== null"), '默认在标题旁放共享额度说明的感叹号');
   assert.equal(await evaluate("document.querySelector('#quota-detail .ms-attribution-note')"), null, '共享额度说明不再常驻');
   // 说明平时隐藏，聚焦感叹号才显示；浮层里的「在设置里打开」按钮可以点到
   assert.equal(await evaluate("getComputedStyle(document.querySelector('#quota-detail .quota-scope-tip .info-tip-pop')).display"), 'none');
   // 隐藏的测试窗口里 focus() 不触发 focus 事件，这里用悬停打开（键盘聚焦走同一个 open）
+  await evaluate("document.querySelector('#quota-detail .quota-scope-tip').scrollIntoView({ block: 'start' })"); await delay(100);
   await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseenter'))");
   // 打开时浮层挂在 body 上、fixed 定位：不会被卡片裁掉，也不会被后面的面板盖住
   await until("document.querySelector('body > .info-tip-pop.open')");

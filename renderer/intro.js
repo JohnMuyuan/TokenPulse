@@ -14,6 +14,11 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.13': [
+      ['cost', '单价旁边写明为什么会变', '型号旁会标「优惠价」「标价不同」「单价刚更新」，悬停能看到前后单价和来源：两个价格表对不上时按 LiteLLM 算（优惠价更准）；官方优惠有结束日期的，到期自动换回原价。'],
+      ['clock', '时间线：每个模型用了多久', '「模型与思考等级 · 时间线」的每条轨道和图例都写明这个周期里用了多久、占整个周期的多少。周期标题旁新增圆圈问号，写着每种颜色、竖条是什么意思。'],
+      ['trace', '像剪视频一样整理「本机以外」', '左键拖动平移，按住右键拖选一段；点「本机以外」色块可以分割、删除（不算本机以外）、恢复或标注，软件不再替你切段。'],
+    ],
     '0.3.12': [
       ['plus', '自己添加模型到换算表', '「换一种模型，整窗能用多少」右上角的「添加模型」：从模型知识库里挑（比如 Claude Sonnet 5.5、GPT-6.1 Sol），选要列出的思考等级；没用过也能估算整窗大约能用多少。'],
       ['trend', '按思考等级估算 token 消耗', '等级越高推理越多、能调用的次数越少。没用过的等级按你最常用那一档的实际用量推算：优先用你自己的实测，其次参考 Epoch AI 的编程 Agent 基准数据（DeepSWE / CursorBench），标「等级参考」；数据每天随知识库自动更新。'],
@@ -60,8 +65,9 @@
     { page: 'quota', target: '#quota-detail .capacity-panel', title: '额度容量趋势', text: '把每个历史窗口折算成「整窗大约能用多少」（Tokens 或 API 等价费用），连成折线。官方悄悄调了额度，这里能看出来。' },
     { page: 'quota', target: '#quota-model-study .ms-budgets', title: '换一种模型，整窗能用多少', text: '先按本机的真实用量折算出整窗预算，再换算到每个模型 × 思考等级：换成 Sonnet 能多用几倍、开 xhigh 要少用多少，一目了然。' },
     { page: 'quota', target: '#quota-model-study .ms-highlights', title: '一眼看结论，再看完整排行', text: '最耐用、调用最多、你最常用的组合放在最前面；下面是全部模型 × 思考等级的完整排行，可以换排序、按等级筛选。' },
-    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl', title: '模型与思考等级 · 时间线', text: '每个模型 × 思考等级一条轨道，上面叠着官方额度的已用曲线：哪段时间用了什么、额度涨得多快都能对上。拖选一段可以放大，Ctrl + 滚轮缩放。' },
-    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-off-summary', title: '本机以外的消耗', text: '额度涨了、同期本机却没有 Code 请求的时段（网页聊天、其他设备）会自动识别，不计入容量折算。虚线是待标注，实心是已标注，点一下就能补上用了什么模型和等级。' },
+    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl', title: '模型与思考等级 · 时间线', text: '每个模型 × 思考等级一条轨道，写着这个周期里用了多久、占多少；上面叠着官方额度的已用曲线：哪段时间用了什么、额度涨得多快都能对上。左键拖动平移，按住右键拖选一段放大或标注，Ctrl + 滚轮缩放。' },
+    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl-help', title: '看不懂颜色？点问号', text: '周期标题旁的圆圈问号里，写着每种颜色和色块的意思：灰色竖条是「说不清来源」（前后 5 分钟内本机有请求、采样有缺口或刚发生），橙色竖条是「本机以外」，都不计入容量折算。' },
+    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-off-summary', title: '本机以外的消耗', text: '额度涨了、同期本机却没有 Code 请求的时段（网页聊天、其他设备）会自动识别，不计入容量折算。点色块可以像剪视频一样分割、删除，或者补上用了什么模型和等级。' },
     { page: 'usage', before: () => usageView('requests'), target: '#page-usage .breakdown-panel', title: 'Token 构成与用量分析', text: '输入、输出、缓存读写、推理各占多少；往下是分工具的趋势、模型排行和使用时段分布。' },
     { page: 'usage', before: () => usageView('requests'), target: '#page-usage .usage-records', title: '每一次请求', text: '逐条看每次请求用了多少 Token、占了多少额度、是哪个账号发的；型号对不上、响应可疑会直接标出来。也可以按日汇总、导出 CSV。' },
     { page: 'usage', before: () => usageView('projects'), target: '#page-usage .usage-records', wait: '#view-projects .pj-card', title: '按项目看用量', text: '每个项目文件夹被几个 Agent 对话改过、用了多少 Token 和额度，由哪些模型 × 思考等级组成。' },

@@ -205,7 +205,8 @@
     const detail = off && off.points + off.markedPoints > 0
       ? '额度涨了、同期本机没有 Code 请求的时段算作聊天或其他设备，已从折算里排除；可以在下方时间线里标注用了什么模型。'
       : '只用「额度上涨、同期本机有 Code 请求」的区间折算；同一时刻也在聊天的话分不出来，会让容量略偏小。';
-    return el('div', { class: 'ms-attribution-note', role: 'note' }, [el('b', { text }), el('p', { text: detail })]);
+    // 0.3.13：说明不常驻，收进标题旁的圆圈感叹号（悬停 / 聚焦显示）
+    return infoTip([el('span', {}, [el('b', { text })]), el('span', { text: detail })], '折算口径说明', 'ms-attribution-tip');
   }
   function budgetTile(w, label, study) {
     const b = study.budget, sel = study.selected;
@@ -213,14 +214,13 @@
     const meter = el('div', { class: 'ms-budget-meter' }, [paint(el('i'), { width: `${Math.min(100, used ?? 0)}%` })]);
     const confidence = { medium: ['样本较充分', 'good'], low: ['初步参考', 'warn'], insufficient: ['样本不足', 'muted'] }[b.confidence];
     return el('div', { class: `ms-budget ${w}` }, [
-      el('div', { class: 'ms-budget-top' }, [el('i', { class: 'ms-dot' }), el('b', { text: `${label}整窗` }), el('span', { class: `ms-badge ${confidence[1]}`, text: confidence[0] })]),
+      el('div', { class: 'ms-budget-top' }, [el('i', { class: 'ms-dot' }), el('b', { text: `${label}整窗` }), el('span', { class: `ms-badge ${confidence[1]}`, text: confidence[0] }), attributionNote(study)]),
       el('strong', { class: 'ms-budget-value' }, b.costUsd != null ? [money(b.costUsd), el('small', { text: '按本机区间折算 · API 等价参考' })] : [el('span', { text: used == null ? '—' : `${used.toFixed(1)}%` }), el('small', { text: '官方账号总池已用' })]),
       meter,
       el('p', {}, used != null
         ? [`本周期已用 ${used.toFixed(0)}%`, ` · 官方剩余 ${Math.max(0, 100 - used).toFixed(1)}%`]
         : [study.quotaStale ? '额度采样超过 30 分钟，暂不估算剩余' : '当前没有进行中的周期']),
       el('small', { text: b.intervals ? `${number(b.intervals)} 个采样区间 · 累计 ${number(Math.round(b.points))} 个百分点 · ${number(b.cycles)} 个周期` : '还没有「额度上涨、同期本机有请求」的区间' }),
-      attributionNote(study)
     ]);
   }
 
@@ -280,6 +280,7 @@
         el('div', { class: 'ms-name-text' }, [
           el('div', { class: 'ms-name-top' }, [el('b', { text: row.model, title: row.model, translate: 'no' }), ...row.efforts.map(levelBadge), basis ? el('span', { class: `ms-basis ${basis[1]}`, text: basis[0] }) : null,
             c5.effortBasis ? el('span', { class: 'ms-basis effort ' + (c5.effortBasis === 'own' ? 'own' : 'ref'), text: c5.effortBasis === 'own' ? '等级实测' : '等级参考' }) : null,
+            ...priceTags(c5.priceNotes),
             row.origins.includes('user') ? el('span', { class: 'ms-user-tag', text: '你添加的' }) : null,
             row.origins.includes('user') ? removeButton(row) : null]),
           el('small', { text: meta.join(' · ') })
@@ -307,6 +308,7 @@
     const c = row.five;
     const basis = { combo: '这个组合自己最近 30 天的实际费用', model: '同模型其他等级的实际费用', price: '价格表 × 本账号的用量结构', effort: '价格表 × 本账号的用量结构，输出部分按思考等级倍数换算' }[c.priceBasis];
     if (basis) lines.push(`单价：${money(c.costPerMTokens)} / 百万 Tokens，来自${basis}`);
+    lines.push(...priceNoteLines(c.priceNotes));
     if (c.effortBasis) {
       const ratio = `${levelName(c.effortAnchor)} → ${levelName(row.effort)} 输出约 ×${c.effortRatio.toFixed(2)}`;
       lines.push(c.effortBasis === 'own' ? `思考等级：按你自己的用量实测，${ratio}` : c.effortBasis === 'benchmark' ? `思考等级：参考 Epoch AI 基准（${c.effortSource}）同型号，${ratio}` : `思考等级：参考 Epoch AI 基准的同家族平均，${ratio}`);
@@ -333,6 +335,38 @@
         el('li', { text: '其他设备的用量、长时间没有采样、跨重置卡、套餐变化都会让结果偏离；API 等价费用不是订阅余额。目录里的模型、以及你自己添加的模型，不保证这个账号都能用。' })
       ]));
     return node;
+  }
+
+  /* ---------------- 单价说明（0.3.13）：优惠价 / 标价不同 / 单价刚更新 ---------------- */
+
+  const RECENT_DAYS = 14;
+  const usd = n => '$' + (Math.round(n * 1000) / 1000);
+  const recentChange = notes => {
+    if (!notes?.changed) return false;
+    const at = new Date(notes.changed.at + 'T00:00:00').getTime();
+    return Number.isFinite(at) && Date.now() - at < RECENT_DAYS * DAY;
+  };
+  function priceTags(notes) {
+    if (!notes) return [];
+    return [
+      notes.promo ? el('span', { class: 'ms-price-tag promo', text: '优惠价' }) : null,
+      notes.dispute ? el('span', { class: 'ms-price-tag dispute', text: '标价不同' }) : null,
+      recentChange(notes) ? el('span', { class: 'ms-price-tag changed', text: '单价刚更新' }) : null,
+    ].filter(Boolean);
+  }
+  function priceNoteLines(notes) {
+    if (!notes) return [];
+    const p = notes.price, out = [];
+    if (notes.promo) {
+      out.push(`优惠价${notes.promo.until ? `（到 ${notes.promo.until}）` : '（结束时间未公布）'}：优惠结束后单价会变，美元估值会跟着变。`);
+      if (notes.promo.note) out.push(notes.promo.note);
+    }
+    if (notes.dispute && p) out.push(`标价不同：LiteLLM ${usd(p.input)} / ${usd(p.output)}，OpenRouter ${usd(notes.dispute.openrouter.input)} / ${usd(notes.dispute.openrouter.output)}（每百万 token，输入 / 输出）；按 LiteLLM 算。`);
+    if (recentChange(notes) && p) {
+      const q = notes.changed.previous, d = new Date(notes.changed.at + 'T00:00:00');
+      out.push(`单价 ${d.getMonth() + 1}/${d.getDate()} 更新：${usd(q.input)} / ${usd(q.output)}（缓存读 ${usd(q.cacheRead)}）→ ${usd(p.input)} / ${usd(p.output)}（缓存读 ${usd(p.cacheRead)}）。这之前的美元估值按旧单价算，所以前后差别会比较大；Tokens 不受影响。`);
+    }
+    return out;
   }
 
   /* ---------------- 自己添加模型（0.3.12） ---------------- */
@@ -563,6 +597,26 @@
     setZoom(w, study, c - (c - view.from) * factor, c - (c - view.from) * factor + span);
   }
 
+  /** 时间线图例（0.3.13）：每种颜色、色块、竖条是什么，鼠标怎么用。放在周期标题旁的圆圈问号里。 */
+  const LEGEND = [
+    ['curve', '绿色折线：官方总池已用百分比（整个账号的，网页聊天、其他设备也算在里面）。'],
+    ['uncertain', '灰色竖条：说不清来源的上涨。前后 5 分钟内本机有请求（多半是官方统计晚到）、采样隔得太久有缺口，或者刚发生还不到 5 分钟。不算本机以外，也不计入容量折算。'],
+    ['offband', '橙色竖条：本机以外的上涨。额度涨了，前后 5 分钟本机都没有 Code 请求（网页聊天、其他设备）。不计入容量折算。'],
+    ['detected', '「本机以外」轨道 · 虚线橙块：检测到的一段，待标注。'],
+    ['pending', '虚线细框：你分割出来的一段，待标注。'],
+    ['marked', '实心橙块：已标注用了什么模型和等级。'],
+    ['ignored', '灰色、带删除线：你删除的一段，不算本机以外，点一下可以恢复。'],
+    ['run', '模型轨道上的色块：本机的请求，颜色越深思考等级越高。轨道名下面写着「等级 · 用了多久 · 占周期多少」。'],
+    ['now', '绿色竖虚线：现在。']
+  ];
+  function timelineHelp() {
+    return infoTip([
+      el('b', { text: '时间线怎么看' }),
+      ...LEGEND.map(([kind, text]) => el('span', { class: 'ms-help-row' }, [el('i', { class: `ms-sw ${kind}`, 'aria-hidden': 'true' }), el('span', { text })])),
+      el('b', { text: '鼠标' }),
+      el('span', { text: '左键拖动左右平移（放大后）· 按住右键拖选一段（放大 / 标注）· Ctrl + 滚轮缩放 · 点色块、竖条看详情；点「本机以外」色块可以分割、删除、标注。' }),
+    ], '时间线怎么看', 'ms-tl-help', 'help');
+  }
   function cycleCard(w, label, study, colors, data) {
     const sel = study.selected, index = sel ? study.cycles.findIndex(c => c.id === sel.id) : -1;
     const combos = summarize(study);
@@ -588,17 +642,19 @@
         el('div', { class: 'ms-cycle-title' }, [el('i', { class: 'ms-dot' }), el('b', { text: `${label}周期` }),
           sel ? el('span', { class: 'ms-range', text: `${date(sel.startAt)} → ${date(sel.endAt)}` }) : null,
           status ? el('span', { class: `ms-badge ${status[1]}`, text: status[0] }) : null,
-          sel?.resetCard ? el('span', { class: 'ms-badge warn', text: '重置卡分段' }) : null]),
+          sel?.resetCard ? el('span', { class: 'ms-badge warn', text: '重置卡分段' }) : null,
+          sel ? timelineHelp() : null]),
         el('div', { class: 'ms-cycle-nav' }, [
-          el('span', { class: 'ms-cycle-stats', text: sel ? `${number(combos.length)} 个组合 · ${tokens(study.totals.tokens)} Tokens · ${number(study.totals.calls)} 次调用` : '' }),
+          el('span', { class: 'ms-cycle-stats', text: sel ? `${number(combos.length)} 个组合 · ${tokens(study.totals.tokens)} Tokens · ${number(study.totals.calls)} 次调用 · 本机用了 ${durationText(activeTime(study.timeline))}（占周期 ${shareText(activeTime(study.timeline), sel.endAt - sel.startAt)}）` : '' }),
           older, el('span', { class: 'ms-cycle-pos', text: sel ? `${index + 1} / ${study.cycles.length}` : '—' }), newer
         ])
       ]),
       zoom,
       chart,
+      T.pick?.w === w && sel ? offTools(w, study) : null,
       sel ? offMachineSummary(w, study, combos) : null,
       T.edit?.w === w && sel ? markEditor(w, study, data) : null,
-      combos.length ? comboList(combos, study.totals.tokens, colors, study.query.kind) : null,
+      combos.length ? comboList(combos, study.totals.tokens, colors, study.query.kind, sel ? sel.endAt - sel.startAt : 0) : null,
       study.totals.unknownEffort ? el('p', { class: 'ms-note', text: `其中 ${number(study.totals.unknownEffort)} 条请求没记录思考等级（旧日志或客户端没写），单独放在「未记录等级」轨道。` }) : null
     ]);
     const redraw = animate => {
@@ -623,8 +679,31 @@
       c.tokens += b.tokens; c.calls += b.calls; c.count += b.count; if (b.costUsd == null) c.priced = false; else c.costUsd += b.costUsd; c.bins.push(b);
       map.set(b.key, c);
     }
+    for (const c of map.values()) c.activeMs = activeTime(c.bins);
     return [...map.values()].sort((a, b) => (a.effort === 'unknown') - (b.effort === 'unknown') || b.tokens - a.tokens);
   }
+  /*
+   * 用了多久（0.3.13）：有请求的分钟格，间隔不超过 5 分钟的连成一段（中间在等模型、看输出也算在用），各段长度相加。
+   * 占周期 = 用了多久 ÷ 整个周期的长度。
+   */
+  const ACTIVE_GAP = 5 * 60000;
+  function activeTime(bins) {
+    let total = 0, from = null, to = null;
+    for (const b of [...bins].sort((x, y) => x.startAt - y.startAt)) {
+      if (to != null && b.startAt - to <= ACTIVE_GAP) to = Math.max(to, b.endAt);
+      else { if (to != null) total += to - from; from = b.startAt; to = b.endAt; }
+    }
+    return to != null ? total + (to - from) : 0;
+  }
+  function durationText(ms) {
+    const m = Math.round(ms / 60000);
+    if (m < 60) return `${m} 分钟`;
+    const h = Math.floor(m / 60), rest = m % 60;
+    if (h < 24) return rest ? `${h} 小时 ${rest} 分` : `${h} 小时`;
+    const d = Math.floor(h / 24), hh = h % 24;
+    return hh ? `${d} 天 ${hh} 小时` : `${d} 天`;
+  }
+  const shareText = (ms, span) => { const p = span > 0 ? ms / span * 100 : 0; return `${p < 10 ? p.toFixed(1) : p.toFixed(0)}%`; };
   /** 相邻的时间格连成一段：间隔按当前显示的范围定（整周看时 45 分钟以内算连续，放大后按比例缩小）。 */
   function runsOf(combo, binMs, span) {
     const gap = Math.max(binMs, Math.min(45 * 60000, span / 150)), runs = [];
@@ -717,20 +796,25 @@
       const block = (item, marked) => {
         if (!inView(item.from, item.to)) return;
         const bx = x(item.from), bw = Math.max(8, x(item.to) - bx);
-        const rect = svg('rect', { class: 'ms-off ' + (marked ? 'marked' : 'detected'), x: bx, y: cy - 9, width: bw, height: 18, rx: 4, tabindex: 0, role: 'button', 'data-off': marked ? item.id : `${item.from}-${item.to}` });
-        const text = marked
+        const state = !marked ? 'detected' : item.ignored ? 'ignored' : item.model ? 'marked' : 'pending';
+        const picked = T.pick?.w === w && pickKey(T.pick.item) === pickKey(item);
+        const rect = svg('rect', { class: `ms-off ${state}${picked ? ' picked' : ''}`, x: bx, y: cy - 9, width: bw, height: 18, rx: 4, tabindex: 0, role: 'button', 'data-off': marked ? item.id : `${item.from}-${item.to}` });
+        const text = state === 'ignored' ? `${date(item.from)} – ${hm(item.to)}\n已删除：不算本机以外的使用\n点一下可以恢复`
+          : state === 'pending' ? `${date(item.from)} – ${hm(item.to)}\n官方增加 ${item.points.toFixed(1)} 个百分点（你分割出来的一段）\n点一下标注、继续分割或删除`
+          : marked
           ? `${date(item.from)} – ${hm(item.to)}\n${item.model} · ${levelName(item.effort)}（${SOURCES.find(s => s[0] === item.source)?.[1] || ''}）\n官方增加 ${item.points.toFixed(1)} 个百分点${item.equivalentTokens != null ? `\n≈ ${tokens(item.equivalentTokens)} Tokens` : ''}\n点一下修改`
           : `${date(item.from)} – ${hm(item.to)}\n官方增加 ${item.points.toFixed(1)} 个百分点，同期本机没有 Code 请求\n点一下标注用了什么模型`;
         rect.setAttribute('aria-label', text.replaceAll('\n', '，'));
         tipOn(rect, text);
-        const open = () => openEditor(w, study, marked ? item : { from: item.from, to: item.to });
-        rect.addEventListener('click', e => { e.stopPropagation(); open(); });
+        const open = () => pickOff(w, marked ? item : { from: item.from, to: item.to, points: item.points });
+        rect.addEventListener('click', e => { e.stopPropagation(); if (host._dragged || T.split) return; open(); });
         rect.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
         lane.append(rect);
         if (bw > 70) {
           const t = svg('text', { class: 'ms-off-text' + (marked ? ' marked' : ''), x: bx + 6, y: cy + 4 });
-          t.textContent = marked ? `${item.model} · ${levelName(item.effort)}` : `待标注 +${item.points.toFixed(1)}%`;
-          if (marked) t.setAttribute('translate', 'no');
+          t.textContent = state === 'marked' ? `${item.model} · ${levelName(item.effort)}` : state === 'ignored' ? '已删除' : `待标注 +${item.points.toFixed(1)}%`;
+          if (state === 'marked') t.setAttribute('translate', 'no');
+          if (state === 'ignored') t.classList.add('ignored');
           lane.append(t);
         }
       };
@@ -754,7 +838,7 @@
       for (const [k, val] of Object.entries({ x: 4, y: cy - 9, width: 18, height: 18, class: 'brand-svg ms-lane-logo' })) logo.setAttribute(k, val);
       const name = svg('text', { class: 'ms-lane-name', x: 30, y: cy - 2 }); name.textContent = combo.model.length > 22 ? combo.model.slice(0, 21) + '…' : combo.model;
       name.setAttribute('translate', 'no');
-      const level = svg('text', { class: 'ms-lane-level', x: 30, y: cy + 12 }); level.textContent = levelName(combo.effort);
+      const level = svg('text', { class: 'ms-lane-level', x: 30, y: cy + 12 }); level.textContent = `${levelName(combo.effort)} · ${durationText(combo.activeMs)} · ${shareText(combo.activeMs, sel.endAt - sel.startAt)}`;
       lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width, height: laneH - 4, rx: 6 }), logo, name, level, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }));
       const title = svg('title'); title.textContent = combo.model; name.append(title);
       for (const run of runsOf(combo, study.binMs, span)) {
@@ -783,16 +867,54 @@
     hit.addEventListener('pointerleave', hideTip);
     node.insertBefore(hit, node.querySelector('.ms-lane'));
 
-    // 拖动选一段：放大 / 标注。移动不到 5 像素当作点击（不影响点轨道聚焦、点色块标注）
+    /*
+     * 鼠标（0.3.13）：左键拖动 = 左右平移（放大后才有意义）；按住右键拖 = 选一段（放大 / 标注）；
+     * 分割模式下左键点一下 = 在那里分割选中的那段。移动不到 5 像素当作点击（点轨道聚焦、点色块选中照旧）。
+     */
     const selection = svg('rect', { class: 'ms-select', x: 0, y: bandTop, width: 0, height: h - 22 - bandTop, hidden: '' });
     node.append(selection);
+    node.classList.toggle('pannable', Boolean(T.zoom[w]));
+    node.addEventListener('contextmenu', e => e.preventDefault());
+    const splitting = T.split && T.pick?.w === w ? T.pick.item : null;
+    if (splitting) {
+      node.classList.add('splitting');
+      const guide = svg('line', { class: 'ms-split-line', x1: 0, x2: 0, y1: laneTop, y2: h - 22, hidden: '' });
+      node.append(guide);
+      const clampSplit = t => Math.min(splitting.to - 60000, Math.max(splitting.from + 60000, t));
+      node.addEventListener('pointermove', e => { const t = clampSplit(toTime(e.clientX)); guide.removeAttribute('hidden'); guide.setAttribute('x1', String(x(t))); guide.setAttribute('x2', String(x(t))); tipAt(`在 ${date(t)} 分割`, e.clientX, e.clientY); });
+      node.addEventListener('pointerleave', () => { guide.setAttribute('hidden', ''); hideTip(); });
+      node.addEventListener('pointerdown', e => { if (e.button !== 0) return; e.preventDefault(); hideTip(); splitOff(w, study, clampSplit(toTime(e.clientX))); });
+    }
     let drag = null;
     node.addEventListener('pointerdown', e => {
-      if (e.button !== 0) return;
+      if (splitting) return;
       const box = node.getBoundingClientRect(), px = (e.clientX - box.left) * (width / box.width);
       if (px < left || px > right) return;
-      drag = { x0: px, t0: toTime(e.clientX), id: e.pointerId, moved: false };
       host.querySelector('.ms-select-actions')?.remove();
+      if (e.button === 0) {
+        // 左键：平移。重画会换掉整个 svg，所以在 window 上跟着鼠标
+        if (!T.zoom[w]) return;
+        const pan = { x0: e.clientX, view: viewOf(w, study), scale: span / (right - left) * (width / box.width), moved: false, frame: 0 };
+        const move = ev => {
+          const dx = ev.clientX - pan.x0;
+          if (!pan.moved && Math.abs(dx) < 5) return;
+          if (!pan.moved) { pan.moved = true; host._dragging = true; hideTip(); }
+          pan.dx = dx;
+          pan.frame ||= requestAnimationFrame(apply);
+        };
+        // 一帧最多重画一次；松手时把还没画的最后一步补上（窗口在后台时 requestAnimationFrame 不跑）
+        const apply = () => { pan.frame = 0; setZoom(w, study, pan.view.from - pan.dx * pan.scale, pan.view.to - pan.dx * pan.scale); };
+        const up = () => {
+          window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+          if (pan.frame) { cancelAnimationFrame(pan.frame); apply(); }
+          host._dragging = false;
+          if (pan.moved) { host._dragged = true; setTimeout(() => { host._dragged = false; }, 0); }
+        };
+        window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+        return;
+      }
+      if (e.button !== 2) return;
+      drag = { x0: px, t0: toTime(e.clientX), id: e.pointerId, moved: false };
     });
     node.addEventListener('pointermove', e => {
       if (!drag || e.pointerId !== drag.id) return;
@@ -852,7 +974,7 @@
     const head = el('div', { class: 'ms-off-head' }, [
       el('i', { class: 'ms-off-key', 'aria-hidden': 'true' }),
       el('p', {}, total > 0
-        ? [el('b', { text: `本机以外 +${total.toFixed(1)}%` }), off.detected.length ? el('span', { class: 'ms-off-pending', text: `${off.detected.length} 段待标注` }) : null]
+        ? [el('b', { text: `本机以外 +${total.toFixed(1)}%` }), pendingCount(off) ? el('span', { class: 'ms-off-pending', text: `${pendingCount(off)} 段待标注` }) : null]
         : [el('span', { class: 'ms-off-none', text: '本机以外 · 未检测到' })]),
       infoTip(el('span', { text: total > 0
         ? '这些时段额度涨了、但同期本机没有 Code 请求（或你标注过在别处使用），不计入容量折算。点下面的时段可以标注用了什么模型。'
@@ -861,20 +983,74 @@
     ]);
     box.classList.toggle('empty', total <= 0 && !off.marks.length);
     box.append(head);
-    const items = [...off.detected.map(d => ({ ...d, marked: false })), ...off.marks.map(m => ({ ...m, marked: true }))].sort((a, b) => a.from - b.from);
+    const items = [...off.detected.map(d => ({ ...d, marked: false })), ...off.marks.filter(m => !m.ignored).map(m => ({ ...m, marked: true }))].sort((a, b) => a.from - b.from);
     if (items.length) {
       box.append(el('div', { class: 'ms-off-items' }, items.map(item => {
-        const b = el('button', { type: 'button', class: 'ms-off-item' + (item.marked ? ' marked' : '') }, [
+        const b = el('button', { type: 'button', class: 'ms-off-item' + (item.marked && item.model ? ' marked' : '') }, [
           el('span', { class: 'ms-off-time', text: `${date(item.from)} – ${sameDay(item.from, item.to) ? hm(item.to) : date(item.to)}` }),
-          el('b', { text: item.marked ? `${item.model} · ${levelName(item.effort)}` : '待标注', translate: item.marked ? 'no' : null }),
+          el('b', { text: item.marked && item.model ? `${item.model} · ${levelName(item.effort)}` : '待标注', translate: item.marked && item.model ? 'no' : null }),
           el('small', { text: `+${item.points.toFixed(1)}%${item.marked && item.equivalentTokens != null ? ` ≈ ${tokens(item.equivalentTokens)} Tokens` : ''}` }),
         ]);
-        b.addEventListener('click', () => { setZoomAround(w, study, item.from, item.to); openEditor(w, study, item.marked ? item : { from: item.from, to: item.to }); });
+        b.addEventListener('click', () => { setZoomAround(w, study, item.from, item.to); pickOff(w, item.marked ? item : { from: item.from, to: item.to, points: item.points }); });
         return b;
       })));
     }
     return box;
   }
+  /* ---------------- 本机以外：像剪视频一样自己切（0.3.13） ---------------- */
+
+  const pendingCount = off => off.detected.length + off.marks.filter(m => !m.ignored && !m.model).length;
+  const pickKey = item => item.id || `${item.from}-${item.to}`;
+  function pickOff(w, item) {
+    T.pick = { w, item }; T.split = false; T.edit = null;
+    drawTimeline('refresh');
+  }
+  function clearPick() { T.pick = null; T.split = false; drawTimeline(T.stale ? 'update' : 'refresh'); }
+  async function offCall(study, payload, done) {
+    try {
+      await api.modelOffMachine({ kind: study.query.kind, accountId: study.query.accountId, ...payload });
+      cache.clear(); Q.loader?.reset(); T.loader.reset();
+      T.pick = null; T.split = false; T.edit = null;
+      showStatus(done);
+      reloadTimeline(); if (Q.report) quotaUpdate(Q.snapshot, Q.report);
+    } catch (error) {
+      showStatus(String(error?.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''), true);
+    }
+  }
+  function splitOff(w, study, at) {
+    const item = T.pick?.item; if (!item) return;
+    offCall(study, { action: 'split', id: item.id || undefined, from: item.from, to: item.to, at }, `已在 ${hm(at)} 分割成两段`);
+  }
+  function offTools(w, study) {
+    const item = T.pick.item, marked = Boolean(item.id), ignored = Boolean(item.ignored);
+    const state = !marked ? '检测到的一段（待标注）' : ignored ? '已删除的一段' : item.model ? `${item.model} · ${levelName(item.effort)}` : '分割出来的一段（待标注）';
+    const bar = el('div', { class: 'ms-off-tools', role: 'toolbar', 'aria-label': '本机以外：编辑这一段' }, [
+      el('div', { class: 'ms-off-tools-info' }, [el('b', { text: `${date(item.from)} – ${sameDay(item.from, item.to) ? hm(item.to) : date(item.to)}` }), el('span', { text: state, translate: item.model ? 'no' : null })]),
+    ]);
+    const tool = (text, action, fn, cls = 'btn') => { const b = el('button', { type: 'button', class: cls, 'data-tool': action, text }); b.addEventListener('click', fn); bar.append(b); return b; };
+    if (T.split) {
+      const mid = item.from + (item.to - item.from) / 2;
+      const input = el('input', { type: 'datetime-local', value: toInput(mid), 'aria-label': '分割时间', class: 'ms-split-time' });
+      bar.append(el('span', { class: 'ms-off-tools-hint', text: '在时间线上点一下分割，或者填时间：' }), input);
+      tool('在这里分割', 'split-confirm', () => {
+        const at = fromInput(input.value);
+        if (!(at > item.from && at < item.to)) { showStatus('分割点要在这一段中间。', true); return; }
+        splitOff(w, study, at);
+      }, 'btn btn-accent');
+      tool('取消分割', 'split-cancel', () => { T.split = false; drawTimeline('refresh'); });
+    } else if (ignored) {
+      tool('恢复', 'restore', () => offCall(study, { action: 'restore', id: item.id }, '已恢复这一段'), 'btn btn-accent');
+    } else {
+      tool(item.model ? '修改标注' : '标注', 'label', () => { T.pick = null; openEditor(w, study, marked ? item : { from: item.from, to: item.to }); }, 'btn btn-accent');
+      tool('分割', 'split', () => { T.split = true; drawTimeline('refresh'); });
+      tool('删除', 'ignore', () => offCall(study, marked ? { action: 'ignore', id: item.id } : { action: 'ignore', from: item.from, to: item.to }, '已删除这一段（不算本机以外）；可以在时间线上点它恢复'));
+      if (marked && item.model) tool('清除标注', 'unlabel', () => offCall(study, { action: 'delete', id: item.id }, '标注已清除'));
+    }
+    tool('完成', 'done', clearPick);
+    bar.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); if (T.split) { T.split = false; drawTimeline('refresh'); } else clearPick(); } });
+    return bar;
+  }
+
   /** 打开编辑时顺便放大到那一段（两边各留一点，看得见前后的本机请求）。 */
   function setZoomAround(w, study, from, to) {
     const pad = Math.max(10 * 60000, (to - from) * .6);
@@ -974,13 +1150,14 @@
     return form;
   }
 
-  function comboList(combos, total, colors, kind) {
+  function comboList(combos, total, colors, kind, span) {
     const list = el('div', { class: 'ms-combos' }, combos.map(c => {
       const item = el('button', { type: 'button', class: 'ms-combo', 'data-key': c.key, 'aria-pressed': 'false' }, [
         paint(el('i', { class: 'ms-swatch' }), { background: colorFor(c, colors), opacity: alphaFor(c.effort) }),
         el('span', { class: 'ms-combo-name' }, [miniLogo(META[kind].source), el('b', { text: c.model, translate: 'no', title: c.model }), levelBadge(c.effort)]),
         el('span', { class: 'ms-combo-bar' }, [paint(el('i'), { width: `${Math.max(1, total ? c.tokens / total * 100 : 0).toFixed(2)}%`, background: colorFor(c, colors) })]),
-        el('span', { class: 'ms-combo-num' }, [el('b', { text: tokens(c.tokens) }), el('small', { text: `${total ? (c.tokens / total * 100).toFixed(1) : '0'}% · ${number(c.calls)} 次${c.priced ? ` · ${money(c.costUsd)}` : ''}` })])
+        el('span', { class: 'ms-combo-num' }, [el('b', { text: tokens(c.tokens) }), el('small', { text: `${total ? (c.tokens / total * 100).toFixed(1) : '0'}% · ${number(c.calls)} 次${c.priced ? ` · ${money(c.costUsd)}` : ''}` })]),
+        el('span', { class: 'ms-combo-time', title: '有请求的时间，相隔 5 分钟以内的连成一段' }, [el('b', { text: durationText(c.activeMs) }), el('small', { text: `占周期 ${shareText(c.activeMs, span)}` })])
       ]);
       item.addEventListener('click', () => { T.focus = T.focus === c.key ? '' : c.key; applyFocus(); });
       return item;
