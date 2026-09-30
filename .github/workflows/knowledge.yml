@@ -1,0 +1,60 @@
+# 模型知识库自动更新（0.3.11）：每天从公开价格表同步 knowledge/models.json。
+# 小改动直接推到 main（已安装的 TokenPulse 每天会拉取）；大改动（单价变化超过 50%、一次新增超过 60 条）开 PR 等人确认。
+# 和 OpenRouter 价格对不上的型号先不用，列在报告里。规则见 scripts/update-knowledge.cjs，手动部分在 knowledge/manual.json。
+name: Knowledge auto-update
+
+on:
+  schedule:
+    - cron: "23 1 * * *" # 每天 UTC 01:23（北京时间 09:23）
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [knowledge/manual.json] # 改了手动部分，马上重新生成
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: knowledge-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Generate knowledge
+        id: gen
+        run: node scripts/update-knowledge.cjs --write --report "$RUNNER_TEMP/report.md"
+
+      - name: Commit to main (small changes)
+        if: steps.gen.outputs.changed == 'true' && steps.gen.outputs.review != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add knowledge/models.json
+          git commit -m "知识库：自动更新到 ${{ steps.gen.outputs.version }}"
+          git push origin HEAD:main
+
+      - name: Open PR (needs review)
+        if: steps.gen.outputs.changed == 'true' && steps.gen.outputs.review == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="knowledge/auto-${{ steps.gen.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add knowledge/models.json
+          git commit -m "知识库：自动更新到 ${{ steps.gen.outputs.version }}（需要确认）"
+          git push --force origin "$branch"
+          if gh pr view "$branch" --json state --jq .state 2>/dev/null | grep -q OPEN; then
+            gh pr edit "$branch" --body-file "$RUNNER_TEMP/report.md"
+          else
+            gh pr create --base main --head "$branch" --title "知识库自动更新 ${{ steps.gen.outputs.version }}（需要确认）" --body-file "$RUNNER_TEMP/report.md"
+          fi

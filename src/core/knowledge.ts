@@ -17,7 +17,11 @@ import { dataFile, readJson, writeJson } from "./paths";
 
 export type PriceRule = { match: string; input: number; output: number; cacheRead: number; cacheWrite: number; note: string };
 export type AliasRule = { match: string; replace: string; note: string };
-export type Knowledge = { schema: 1; version: string; updatedAt: string; prices: PriceRule[]; aliases: AliasRule[] };
+/** 思考等级规则（0.3.11 起随知识库在线下发）：每家列出型号，以及「哪些型号支持哪些等级」。 */
+export type CapabilityRule = { match: string; efforts: string[]; semantics?: string };
+export type CapabilityDoc = { source?: string; modelsSource?: string; models: string[]; rules: CapabilityRule[] };
+export type Capabilities = { checkedAt: string } & Partial<Record<"claude" | "chatgpt" | "grok", CapabilityDoc>>;
+export type Knowledge = { schema: 1; version: string; updatedAt: string; prices: PriceRule[]; aliases: AliasRule[]; capabilities?: Capabilities };
 export type KnowledgeSource = "bundled" | "downloaded";
 
 export const KNOWLEDGE_URL = "https://raw.githubusercontent.com/JohnMuyuan/TokenPulse/main/knowledge/models.json";
@@ -69,7 +73,31 @@ export function parseKnowledge(value: unknown): Knowledge | null {
     aliases.push({ match, replace: text(rule.replace, 50), note: text(rule.note) });
   }
   if (!prices.length) return null;
-  return { schema: 1, version: input.version, updatedAt: text(input.updatedAt, 40), prices, aliases };
+  const capabilities = parseCapabilities(input.capabilities);
+  return { schema: 1, version: input.version, updatedAt: text(input.updatedAt, 40), prices, aliases, ...(capabilities ? { capabilities } : {}) };
+}
+
+const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "adaptive", "auto", "not_supported"]);
+/** 思考等级规则同样是下载来的：只收认识的家和等级名，正则要编得过。 */
+function parseCapabilities(value: unknown): Capabilities | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as Record<string, unknown>;
+  const out: Capabilities = { checkedAt: text(input.checkedAt, 40) };
+  for (const kind of ["claude", "chatgpt", "grok"] as const) {
+    const doc = input[kind] as Record<string, unknown> | undefined;
+    if (!doc || typeof doc !== "object") continue;
+    const models = (Array.isArray(doc.models) ? doc.models : []).filter((m): m is string => typeof m === "string" && m.length > 0 && m.length <= 120).slice(0, 200);
+    const rules: CapabilityRule[] = [];
+    for (const raw of Array.isArray(doc.rules) ? doc.rules.slice(0, 100) : []) {
+      const rule = raw as Record<string, unknown>;
+      const match = pattern(rule?.match);
+      const efforts = (Array.isArray(rule?.efforts) ? rule.efforts : []).filter((e): e is string => typeof e === "string" && EFFORTS.has(e));
+      if (!match || !compiles(match) || !efforts.length) continue;
+      rules.push({ match, efforts, ...(typeof rule.semantics === "string" ? { semantics: text(rule.semantics) } : {}) });
+    }
+    out[kind] = { source: text(doc.source, 300), modelsSource: text(doc.modelsSource, 300), models, rules };
+  }
+  return out;
 }
 
 /** 版本号比较：2026.09.24 < 2026.09.24.1 < 2026.10.01。 */

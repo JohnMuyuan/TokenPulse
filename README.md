@@ -23,6 +23,10 @@
 
 ---
 
+## 0.3.11 · 模型单价全自动更新
+
+模型知识库不再需要手动维护：GitHub Actions（`.github/workflows/knowledge.yml`）每天运行 `scripts/update-knowledge.cjs`，从 [LiteLLM](https://github.com/BerriAI/litellm) 的公开价格表同步 Claude、GPT / o 系列 / Codex、Grok 的逐个型号单价，并用 OpenRouter 交叉核对。小改动直接更新，单价变化超过 50% 或一次新增太多会开 PR 等人确认；两边价格对不上的型号先不用；从不自动删除规则。已安装的 TokenPulse 每天自动下载。
+
 ## 0.3.10 · 工具配置被改走时提醒
 
 TokenPulse 切换过的 Claude Code、Claude 桌面端、Codex、Grok CLI，如果配置又被改走了（别的工具改了地址，或者 Grok 继续旧会话时换回那个会话记住的模型），TokenPulse 会在右上角说明是哪个工具、现在连的是谁、可能的原因，并给出「切回」按钮（同样先看对比再确认）；窗口在托盘里时发系统通知。同一次改动只提醒一次。CLI 自己改其他设置（权限、主题、在同一家里用 /model 换模型）不算。
@@ -154,7 +158,7 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 <td valign="top">
 
 ### 📚 模型知识库 · 🌐 English
-单价和型号等价规则放在 `knowledge/models.json`，新型号出来后在「设置 → 关于」里更新一下就能认出来、算出费用，不用等新版本。界面支持简体中文和 English，托盘菜单和通知一起切换。
+单价、型号等价规则和思考等级规则放在 `knowledge/models.json`，**每天由 GitHub Actions 自动从公开价格表同步**（LiteLLM，用 OpenRouter 交叉核对），TokenPulse 每天自动下载，新型号不用等新版本就能认出来、算出费用。手动维护的部分在 `knowledge/manual.json`。界面支持简体中文和 English，托盘菜单和通知一起切换。
 
 </td>
 </tr>
@@ -274,7 +278,7 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 | `quota-history.json` | 官方额度采样历史（永久保留） | 速度和预测要重新积累，**官方不提供历史，删了就找不回来** |
 | `cc-switch.json` | 从 CC Switch 库里读出来的副本（只读它的库，不改） | 下次扫描重新读 |
 | `cli-logins.json` | 各 CLI 登录过哪些账号、从什么时候开始（只有账号 id 和邮箱，不含凭据），用来把请求对到账号上 | 以后的请求照常对；之前的按最早的账号推断 |
-| `knowledge.json` | 从 GitHub 下载的新版模型知识库（单价、型号等价规则） | 回到安装包内置的那份 |
+| `knowledge.json` | 从 GitHub 下载的新版模型知识库（单价、型号等价规则、思考等级规则） | 回到安装包内置的那份 |
 | `requests/<年-月>.jsonl` | 每一次请求的元数据（时间、型号、token、响应 ID、工作目录，不含正文） | 会话文件还在的部分下次扫描补回；CLI 已经清掉的会话就找不回来了 |
 | `official-accounts.json` | 登记过的官方账号、活动选择，以及在 TokenPulse 里添加的账号的凭据（含 refresh token） | 回到使用各 CLI 当前登录的账号；在 TokenPulse 里添加的账号需要重新添加 |
 | `prefs.json` | 开机自启、关窗收进托盘、提醒阈值 | 恢复默认设置 |
@@ -312,7 +316,7 @@ src/core/            纯逻辑，不依赖 Electron，可以单独 require 测�
   request-log.ts     每一次请求的流水（按月追加、去重、查询）
   request-verify.ts  型号核验规则（纯函数）
   cc-switch.ts       只读导入 CC Switch 的用量（node:sqlite）
-  knowledge.ts       模型知识库：单价和型号等价规则（knowledge/models.json，可在线更新）
+  knowledge.ts       模型知识库：单价、型号等价规则、思考等级规则（knowledge/models.json，每天在线更新）
   report-worker.ts   在后台线程执行扫描与汇总
 src/main/            Electron 主进程：托盘、定时器、IPC、通知
 renderer/            界面：原生 JS、无构建步骤，图表为手写内联 SVG

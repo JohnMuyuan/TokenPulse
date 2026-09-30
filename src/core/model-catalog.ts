@@ -6,7 +6,9 @@ import type { AccountKind } from "./quota";
 import type { RequestRow } from "./request-log";
 export type CatalogEntry = { model: string; effort: string; origins: string[]; source?: string; checkedAt?: string; semantics?: string };
 export const comboKey = (model: string, effort?: string) => `${model}\u0000${effort || "unknown"}`;
-const capabilities = JSON.parse(fs.readFileSync(path.join(__dirname, "../../knowledge/model-capabilities.json"), "utf8")) as { checkedAt: string; [key: string]: any };
+import { loadKnowledge } from "./knowledge";
+/** 思考等级规则：0.3.11 起放在模型知识库里（每天在线更新），不再单独打包一份。 */
+const capabilities = () => loadKnowledge().knowledge.capabilities;
 /** 目录可见性不等于目标账号可用权限；仅返回模型元数据，绝不返回缓存中的身份字段。 */
 export function modelCatalog(kind: AccountKind, observed: RequestRow[], home = os.homedir()): CatalogEntry[] {
   const entries = new Map<string, CatalogEntry>();
@@ -27,12 +29,12 @@ export function modelCatalog(kind: AccountKind, observed: RequestRow[], home = o
       }
     } catch { /* 没有可读取的目录时仅列实际记录，不猜可用型号 */ }
   }
-  const doc = capabilities[kind];
+  const doc = capabilities()?.[kind as "claude" | "chatgpt" | "grok"];
   if (doc) {
     const models = new Set<string>([...doc.models, ...observed.map(r => r.model)]);
     for (const model of models) {
       const rule = doc.rules.find((r: any) => new RegExp(r.match, "i").test(model));
-      for (const effort of rule?.efforts ?? []) add(model, effort, "docs", { source: doc.source, checkedAt: capabilities.checkedAt, semantics: rule.semantics });
+      for (const effort of rule?.efforts ?? []) add(model, effort, "docs", { source: doc.source, checkedAt: capabilities()?.checkedAt, semantics: rule?.semantics });
     }
   }
   for (const row of observed) add(row.model, row.effort || "unknown", "observed");

@@ -1,4 +1,28 @@
-# 当前接手入口 · 0.3.10（2026-09-30）
+# 当前接手入口 · 0.3.11（2026-09-30）
+
+## v0.3.11：模型知识库全自动更新（Claude，2026-09-30）
+
+- 用户觉得手动维护知识库太麻烦，要求全自动，版本定为 **0.3.11**，并交给 Claude 负责。
+- **结构**：
+  - `knowledge/manual.json` 是手动维护的部分：pinned 放一定生效的特例，排在最前（目前是免费模型那一条）；fallback 放按家族估的兜底，排在最后（原来的 21 条）；另外还有 aliases 和 capabilities（思考等级规则，从已删除的 model-capabilities.json 搬过来）。
+  - `knowledge/models.json` 改为**自动生成，不要手改**。内容依次是 pinned、逐个型号的自动规则、fallback，另外带上 aliases 和 capabilities。自动规则带 `auto: <型号 id>` 字段（老版本软件解析时会丢掉这个未知字段，不影响使用）。
+- **生成器** `scripts/update-knowledge.cjs`（零依赖；导出 build / validate / markdown，便于测试）：
+  - 数据来源：LiteLLM 公开价格表，只取 anthropic / openai / xai 三家，挑 claude、gpt-、o\d、codex、grok、chatgpt 这些家族，跳过 embedding、audio、realtime 等；接受 `xai/` 前缀。
+  - 单价换算成美元 / 百万 token。缓存读价缺失时按输入价算，不当成免费；缓存写价缺失时记 0，表示按输入价算。收费型号给出 0 价的不收。
+  - 同价的日期快照去掉，不同价的快照单独一条。兜底规则算出同价的型号不加。
+  - 正则 patternOf 能认 xxx/ 前缀、Bedrock 的 us.anthropic.、日期、@日期、-v1:0、[1m]；按 id 长度降序排列。
+  - **安全规则**：和 OpenRouter 的价格差超过 25% 的型号先不用（保留原价或兜底）并写进报告；已有规则的单价变化超过 50%，或一次新增超过 60 条时，report.review=true，改为开 PR；从不自动删除规则。
+  - 版本号取当天日期，同一天再次更新时追加 .N，内容没变就不改版本。validate 和软件的 parseKnowledge 使用同样的约束。
+  - 输出：Markdown 报告（`--report`），以及写给 GITHUB_OUTPUT 的 changed / review / version。
+- **工作流** `.github/workflows/knowledge.yml`：
+  - 触发：每天 UTC 01:23、workflow_dispatch、manual.json 被推到 main 时。
+  - 小改动由 github-actions[bot] 直接提交到 main；需要确认时推到 knowledge/auto-<版本> 分支并开 PR（已经有 PR 时更新它的说明）。
+  - 为此把仓库设置「Allow GitHub Actions to create and approve pull requests」改成了开（通过 gh api PUT actions/permissions/workflow，can_approve_pull_request_reviews=true；默认 token 仍然只读，写权限由 workflow 里的 permissions 声明）。main 分支没有保护规则。
+- **首次生成**（Claude 人工审过，直接随 0.3.11 提交）：LiteLLM 的 4437 项里选出 153 个型号，新增 100 条自动规则，现在共 122 条。例如 claude-opus-5-5 $4/$20（原来按兜底算 $5/$25）、claude-sonnet-5 $2/$10、gpt-5 / gpt-4.1 / gpt-5.x-codex 等原来认不出的型号、gpt-5.6-terra / luna、grok-4.6 / 4.7 $2/$6（原来按兜底 $3/$15）。gpt-5.6-sol 两个来源对不上（LiteLLM $4/$20，OpenRouter $2/$10），先保留兜底的 $5/$30。
+- **软件端**：`knowledge.ts` 的 Knowledge 增加可选的 capabilities，由 parseCapabilities 校验：只认 claude / chatgpt / grok 三家和已知的等级名，正则要能编译，有长度和数量上限。`model-catalog.ts` 改为从 loadKnowledge 读取思考等级规则，下载到的新版本立刻生效。「设置 → 关于 → 模型知识库」的说明文字已更新。
+- **需要留意**：manual 里的 `grok.*(code|build)` 兜底是 $0.2/$1.5，而 LiteLLM 上 grok-build-latest 是 $2/$6、grok-build-0.1 是 $1/$2。实际的 grok-build 型号名不在自动规则里时仍走这条兜底，如果用户觉得 Grok Build 的费用偏低，可以改 manual.json。
+- **测试**：新增 `scripts/test-knowledge-update.cjs`（npm test），覆盖上述所有规则、命令行、GITHUB_OUTPUT，并检查仓库里的 models.json 与 manual.json 一致。`test-features.cjs` 里 claude-opus-5-5 的期望值从 5 改成 4（公开价）。`test-intro-ui` 的版本分隔断言改为根据 NOTES 推算。结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 29 个 PASS**。对打包产物跑了 test-model-study-ui（用到思考等级规则），通过。
+- **产物**：`dist\TokenPulse-0.3.11-Setup.exe`、`.blockmap`、`TokenPulse-0.3.11-Portable.exe`、`latest.yml`（0.3.11）。asar 里有 knowledge/models.json 和 manual.json，与源码一致。Git 提交、标签、Release，以及 Actions 首次运行的结果见本条末尾。
 
 ## v0.3.10：工具配置被改走时提醒 + Grok 号池修复 · 已提交、打标签、发布 GitHub Release（2026-09-30，Claude）
 

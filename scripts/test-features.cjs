@@ -34,7 +34,7 @@ try {
   check("认不出的型号不编价格", pricing.priceOf("totally-new-model") === null);
   // 日志里的型号常带日期：以前 claude-opus-4-1-20250805 落到 Opus 4.5 的价，只算了三分之一
   {
-    const want = { "claude-opus-4-1-20250805": 15, "claude-opus-4-20250514": 15, "claude-opus-4-1": 15, "claude-3-opus-20240229": 15, "claude-opus-4-5-20251101": 5, "claude-opus-4-6": 5, "claude-opus-5-5": 5, "claude-3-5-haiku-20241022": 0.8, "claude-haiku-4-5-20251001": 1 };
+    const want = { "claude-opus-4-1-20250805": 15, "claude-opus-4-20250514": 15, "claude-opus-4-1": 15, "claude-3-opus-20240229": 15, "claude-opus-4-5-20251101": 5, "claude-opus-4-6": 5, "claude-opus-5-5": 4 /* 0.3.11 起按公开价格表（LiteLLM）：$4，不再用 Opus 家族兜底的 $5 */, "claude-3-5-haiku-20241022": 0.8, "claude-haiku-4-5-20251001": 1 };
     const wrong = Object.entries(want).filter(([model, input]) => pricing.priceOf(model)?.input !== input).map(([model]) => `${model}=${pricing.priceOf(model)?.input}`);
     check("Claude 各代单价：带日期后缀的也认对", !wrong.length, wrong.join(" "));
   }

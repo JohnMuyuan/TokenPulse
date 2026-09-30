@@ -132,7 +132,9 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.match(await text('#whatsnew-title'), new RegExp('v' + version.replace(/\./g, '\\.')));
     assert.ok(await evaluate("document.querySelectorAll('#whatsnew .whatsnew-list li').length >= 4"));
     // 跨版本升级（0.3.8 → 当前）：没看过的每个版本都列出来，较早的版本有分隔标题
-    assert.deepEqual(await evaluate("[...document.querySelectorAll('#whatsnew .whatsnew-version')].map(n => n.textContent)"), ['v0.3.9']);
+    const older = await evaluate(`Object.keys(PulseIntro.notes).filter(v => v !== ${JSON.stringify(version)}).sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(v => 'v' + v)`);
+    assert.ok(older.includes('v0.3.9'));
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('#whatsnew .whatsnew-version')].map(n => n.textContent)"), older, '较早版本按新到旧排，各有一个分隔标题');
     assert.ok(await evaluate("document.activeElement?.textContent === '知道了'"), '默认焦点在「知道了」');
     // 夜间模式：标题和条目文字不能是默认黑色
     await evaluate("setThemeMode('dark')"); await delay(150);
