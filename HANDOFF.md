@@ -16,7 +16,8 @@
   - 截图检查：之前截图脚本挂住，原因是 scratchpad 里 capture.cjs 的**引号写错**，Electron 弹出「A JavaScript error occurred in the main process」的阻塞对话框，用户在屏幕上也看到了。这是临时脚本的问题，不是软件本身的问题。修好后先 `node --check` 再启动。截图发现两处问题并已修复：添加对话框的详情区多出一个「null」文字（可选元素为空时被当成文字渲染），以及等级芯片的顺序不对（改成 low→max）。「自定义」候选移到了列表最后。
   - **`npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS**（新增 0.3.12 添加模型的 UI 用例）。
   - `npm run dist` 退出 0，产物是 `dist\TokenPulse-0.3.12-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`（0.3.12）。asar 里 10 个相关文件与源码一致，对打包产物跑了 test-model-study-ui，4 个 PASS。
-  - Git 提交、标签和 Release 的情况见下一条。
+  - **Git / 发布**：提交 `e5ef098 TokenPulse v0.3.12：自己添加模型、按思考等级估算 token 消耗`（推送前 fetch 过，远端没有新提交），标签 `v0.3.12`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.12 已发布，不是草稿，4 个附件大小一致。releases/latest 是 v0.3.12，线上 latest.yml 的 sha512 与 Setup.exe 一致。发布说明注明了 Epoch AI（CC BY 4.0）的署名，没有会话链接。没有在本机实际装一遍。
+  - 手动触发的 knowledge.yml（run 36716491303）运行成功：在 GitHub 上实时拉取了 Epoch 数据，得到 14 个型号，和已提交的一致（没有变化）。
 - 已知限制：CursorBench 的 token 口径没有写明，所以只用来核对和补位；claude-opus-5-5 只有 max / xhigh 两档的数据，其他档按家族平均估算。
 
 ## v0.3.11：模型知识库全自动更新（Claude，2026-09-30）
