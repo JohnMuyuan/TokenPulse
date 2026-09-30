@@ -1,4 +1,19 @@
-# 当前接手入口 · 0.3.9（2026-09-29）
+# 当前接手入口 · 0.3.9 已发布（2026-09-30）
+
+## v0.3.9 已提交、打标签并发布 GitHub Release（2026-09-30，Claude）
+
+- 用户确认没有问题，要求编译安装包并发布。**0.3.9 已正式发布**，下方各条目里「未提交 / 未发布」的说法都是当时的状态，已经过时。
+- **Git**：
+  - 先在 `backup/0.3.9-wip` 上提交收尾改动（`e020a12`，已推送），然后 squash 到 main，作为一个版本提交。
+  - 推送时发现远端 main 多了一条用户在 GitHub 网页上的提交 `0d45075 Delete roadmap items from README.md`，就 rebase 到它上面，保留了删掉路线图的改动。
+  - README 里 0.3.9 各节去掉「（开发版）」，修正了过时的描述（右侧抽屉 → 左侧步骤菜单；三家 → 四个工具），补上「配置保护」「Codex 1M 上下文」「新手引导与版本说明」。
+  - 最终提交为 **`00f785c TokenPulse v0.3.9：本机以外消耗识别、新手引导、供应商配置保护`**，已推送到 origin/main。标签 **`v0.3.9`**（annotated）指向 00f785c。标签第一次推送时指向的是 rebase 之前的提交，已经在创建 Release 之前用 `git push -f origin v0.3.9` 改正。
+  - 提交信息和 Release 说明里都没有会话链接。
+  - 没有提交的只有 `.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（dist-next 是过时的目录版，可以删除）。
+- **安装包**：`npm run dist` 退出 0。产物在 `dist\`：`TokenPulse-0.3.9-Setup.exe`（112,246,965 字节）、`TokenPulse-0.3.9-Setup.exe.blockmap`、`TokenPulse-0.3.9-Portable.exe`（111,989,742 字节）、`latest.yml`（version 0.3.9，sha512 与 Setup.exe 一致）。`win-unpacked` 里有 app-update.yml，asar 与源码逐字节一致。打包后用 TOKENPULSE_TEST_APP 跑了 test-intro-ui（3 个 PASS）和 test-agent-guard-ui（通过）。打包之前刚跑过 `npm test` 和 `npm run test:ui`（全部通过，共 28 个 PASS）；之后只改了 README。
+- **Release**：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.9 。标题「TokenPulse v0.3.9」，不是草稿，也不是预发布。4 个附件（latest.yml、Setup、blockmap、Portable）大小与本地一致。`releases/latest` 已经是 v0.3.9，`releases/latest/download/latest.yml` 返回 0.3.9，所以 0.3.8 及更早的安装版能查到更新。
+- **没有做的**：没有在本机实际安装 0.3.9、走一遍自动更新；README 截图仍是 v0.3.8 的（以前是单独提交截图更新，这次用户没有要求）。
+- 当前 Git 在 `main` 分支。`backup/0.3.9-wip` 分支保留在远端，可以不管。
 
 ## 截图检查后的界面修复（含一个改坏用户配置格式的 bug）· 已完成，免安装目录版在 dist（2026-09-30 01:44，Claude）
 
