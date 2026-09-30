@@ -106,6 +106,13 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   agentBackups: () => ipcRenderer.invoke("agent:backups"),
   agentRestore: (kind: "history" | "original", id: string) => ipcRenderer.invoke("agent:restore", kind, id),
   agentReadOnly: (on: boolean) => ipcRenderer.invoke("agent:readonly", on),
+  /** 工具配置被改走了（0.3.10）：现在的情况，和之后新出现的。 */
+  agentDriftNow: () => ipcRenderer.invoke("agent:drift"),
+  onAgentDrift: (handler: (drifts: unknown) => void) => {
+    const listener = (_event: unknown, drifts: unknown) => handler(drifts);
+    ipcRenderer.on("agent-drift", listener);
+    return () => ipcRenderer.off("agent-drift", listener);
+  },
   /** 托盘里点了切换：交给供应商页走确认流程。 */
   onAgentActivateRequest: (handler: (id: string) => void) => {
     const listener = (_event: unknown, id: string) => handler(id);

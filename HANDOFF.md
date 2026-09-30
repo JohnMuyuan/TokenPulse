@@ -1,4 +1,41 @@
-# 当前接手入口 · 0.3.9 已发布（2026-09-30）
+# 当前接手入口 · 0.3.10（2026-09-30）
+
+## v0.3.10：工具配置被改走时提醒 + Grok 号池修复 · 已提交、打标签、发布 GitHub Release（2026-09-30，Claude）
+
+- 用户要求：根据下方「Grok 号池一用就切回」的排查结论修好这个问题，其他 CLI 也要有好的提醒；版本 **0.3.10**，编译并发布到 GitHub。
+- **漂移检测**（`src/core/agent-switch.ts` 的 `agentDrift()`，只读）：
+  - 范围：TokenPulse 切换过（store.owned 有记录）的工具。
+  - 路由模式：`proxy.apps[app]` 为 true、有恢复快照，但 `!proxyIsOurs(app)`。
+  - 直连模式：`matchLive(store, app)` 不等于 `store.direct[app]`。目标是官方时，要看实时配置里有没有第三方地址；桌面端看 _meta.appliedId。
+  - 只比较「连的是谁」（地址、密钥、模型），CLI 自己改权限、主题、/model 不算（有测试）。
+  - 返回 `{ app, mode, expectedId, expectedName, liveName, key }`。key 是相关文件内容的指纹，同一次改动只提醒一次。Grok 的 liveName 取 `[models].default` 的名字。
+- **切回时重新接上路由**：`enableProxy(app, id, explicit)`。用户明确操作时（activateProvider、setAppProxy(on)），路由被改走也会重新 applyProxy，接管前的恢复快照不变；启动时的 resumeAgentProxy 仍然会抛「工具连接已在外部修改」，不覆盖外部修改。
+- **Grok**：路由表写入 `name = "TokenPulse · <供应商名>"`（清理的键里也加了 name）。切换成功的提示后面追加 resumeHint：旧会话会沿用它记住的模型，请新开会话，或输入 `/model tokenpulse_route`。
+- **主进程**（`index.ts`）：
+  - `checkDrift()` 每 5 秒执行一次；`driftSeen` 按工具记住已经提醒过的指纹，恢复正常后清掉。
+  - 窗口开着时发送 `agent-drift` 事件；窗口在托盘或最小化时弹系统通知，点击后打开供应商页。
+  - IPC `agent:drift` 用于界面加载时查询当前情况；preload 提供 `agentDriftNow` / `onAgentDrift`。
+- **界面**（`agent-switch.js` 的 showDrift）：右上角 warning 弹窗（`.tp-toast.pv-drift`，key 为 drift-<app>），内容是「X 现在没在用「A」，连的是「B」。<各工具的原因说明>」，按钮有「知道了」和「切回「A」」。切回走 run → agentActivate → 对比确认。
+- **更新说明**：intro.js 的 NOTES 加了 0.3.10。跨版本升级时（since = 上次看过的版本）会把所有没看过的版本都列出来，新的在前，较早的版本前面有 `.whatsnew-version` 分隔。弹窗改成标题和按钮固定、只有列表滚动：截图发现原来聚焦按钮时整张卡会滚到底，把标题和 0.3.10 的条目滚出视野。
+- i18n 已补齐，包括几个带变量的模板。README 加了 0.3.10 一节（含 Grok 号池的用法）。版本号在 package.json 和 package-lock.json（两处）都改成了 0.3.10。
+- **测试**：
+  - 新增 `scripts/test-agent-drift.cjs`（npm test）：Grok 继续旧会话造成的改走（直连和路由两种）、指纹稳定、切回时重新接上路由、关闭路由后恢复、Grok 路由表的 name、Claude 改地址会报而改无关设置不报。
+  - 新增 `scripts/test-agent-drift-ui.cjs`（test:ui，窗口保持显示，所以不会发出真实的系统通知）：外部改动后弹窗；提示里没有密钥；点「知道了」后不重复提醒；再改一次会再提醒；「切回」经过对比确认后恢复；切换后没有误报。
+  - test-intro-ui 加了跨版本分隔的断言。
+  - 结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 29 个 PASS**。对打包后的 asar 跑了 test-agent-drift-ui 和 test-intro-ui，都通过。
+- 截图检查（用户允许 Claude 看截图）：漂移弹窗和跨版本更新说明，修复后重新截图确认过。
+- **产物**：`dist\TokenPulse-0.3.10-Setup.exe`、`.blockmap`、`TokenPulse-0.3.10-Portable.exe`、`dist\latest.yml`（version 0.3.10）。win-unpacked 的 asar 与源码一致。Git 提交、标签和 Release 的情况见本条末尾。
+
+## 排查：Grok 号池一用就切回原来的配置 · 结论：Grok 恢复旧会话时把 models.default 改了回去，没有改代码（2026-09-30，Claude）
+
+- 用户现象：Grok CLI 切到号池「所有号」后，一使用就变回之前的配置。
+- **证据**（只读，没有打印密钥）：
+  - TokenPulse 的修改记录：02:56 和 02:58 两次「切换到『所有号』」，都把 `~/.grok/config.toml` 的 `[models].default` 从 "grok-4.6" 改成了 "tokenpulse_route"。两次之间被改回 "grok-4.6"，但修改记录里没有这一次，说明不是 TokenPulse 改的。
+  - `~/.grok/logs/unified.jsonl`：02:57:33 Grok 启动时 current_model_id = tokenpulse_route（说明切换已经生效）。02:57:39 恢复的旧会话 sid 01a0f1bf… 里出现 "model changed → grok-4.6"。02:59 Grok 自我更新到 1.0.44 后重开同一个会话，又切回旧模型。Grok 恢复会话时会用这个会话记住的模型，并把它写回 `[models].default`（配置里的 default_reasoning_effort 也是 Grok 写的）。
+  - 用户配置里自定义的 `[model."grok-4.6"]` 其实是旧中转（ai.yp.mk，实际请求 grok-4.7），和官方 grok-4.6 同名，所以很难看出来是切回了中转。
+  - 默认值被改掉之后，proxyIsOurs 判断为 false。restoreProxy 按设计把它当作「外部修改」处理，把 proxy.apps.grok 设成 false，也不覆盖文件。现在 17621 端口没有监听，号池也就没用上。
+- **用法**：在 TokenPulse 里重新启用「所有号」（会打开本地路由），然后在 Grok 里新开会话（/new），或者在旧会话里输入 `/model tokenpulse_route`。Grok 会把这个选择记下来，之后不会再切回去。
+- 可以做的改进（待用户决定，还没做）：①Grok 路由表写上 `name = "TokenPulse · <供应商名>"`，让 /model 列表里一眼能认出来；②路由开着时发现 Grok 自己改回了默认模型，就弹提示并提供一键切回；③切换 Grok 成功的提示里说明「旧会话会沿用它记住的模型」。
 
 ## 排查：自动更新到 0.3.9 后没有弹更新说明 · 结论：不是 bug，没有改代码（2026-09-30，Claude）
 

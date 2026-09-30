@@ -1220,6 +1220,27 @@
     return [head('配置保护', '防止改坏工具配置：只读保护、改动前确认、每次改动都有备份。'), guard, rules, el('div', { class: 'pv-backups' }, list)];
   }
 
+  /*
+   * 工具的配置被改走了（0.3.10，main/index.ts 的 checkDrift）：右上角弹窗说清楚是谁、可能的原因，一键切回。
+   * 切回走和「启用」一样的流程（先看对比再确认）；本地路由被改走时也能直接重新接上。
+   */
+  const DRIFT_HINT = {
+    grok: '常见原因：在 Grok 里继续了旧会话，Grok 会换回那个会话记住的模型并写回配置。切回后请新开会话，或在会话里输入 /model tokenpulse_route。',
+    claude: '可能是 CC Switch 等工具或手动改了 Claude Code 的 settings.json。',
+    codex: '可能是 CC Switch 等工具或手动改了 Codex 的 config.toml。',
+    desktop: '可能是在 Claude 桌面端里换了配置。',
+  };
+  function showDrift(d) {
+    if (!d?.app || typeof toast !== 'function') return;
+    const tool = appOf(d.app)?.name || d.app;
+    toast(`${tool} 现在没在用「${d.expectedName}」，连的是「${d.liveName}」。${DRIFT_HINT[d.app] || ''}`, { kind: 'warning', key: 'drift-' + d.app, cls: 'pv-drift', actions: [
+      { label: '知道了' },
+      { label: `切回「${d.expectedName}」`, primary: true, onClick: () => run(() => api.agentActivate(d.expectedId), r => (r.result?.message || '已切回') + (r.result?.restart ? ' 请重新打开对应工具，让新配置生效。' : ''), `正在切回「${d.expectedName}」…`) },
+    ] });
+  }
+  api.onAgentDrift?.(list => { for (const d of [].concat(list || [])) showDrift(d); });
+  api.agentDriftNow?.().then(list => { for (const d of list || []) showDrift(d); }).catch(() => {});
+
   // 托盘里点了切换：到供应商页走同样的确认流程
   api.onAgentActivateRequest?.(async id => {
     window.navigate?.('providers');

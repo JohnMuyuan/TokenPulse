@@ -23,7 +23,7 @@ import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, in
 import { listOfficialOAuthStatus, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
-import { activateProvider, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
 import { randomUUID } from "crypto";
@@ -242,6 +242,28 @@ async function agentConfirm(token: unknown) {
   confirms.delete(token as string);
   configExpect(item.signature);
   try { return await agentCall(item.work, item.reason); } finally { configExpect(null); }
+}
+
+/*
+ * 配置被改走的提醒（0.3.10）：每 5 秒看一眼 TokenPulse 切换过的工具，配置不再指向设好的供应商 / 本地路由时提醒一次。
+ * 同一次改动只提醒一次（按配置内容的指纹）；恢复正常后清掉记录，下次再被改走会再提醒。
+ * 窗口开着：界面右上角弹窗（带「切回」按钮）；窗口在托盘里：系统通知，点开进供应商页。
+ */
+const driftSeen = new Map<string, string>();
+function checkDrift() {
+  let drifts: ReturnType<typeof agentDrift>;
+  try { drifts = agentDrift(); } catch { return; }
+  for (const app of [...driftSeen.keys()]) if (!drifts.some((d) => d.app === app)) driftSeen.delete(app);
+  const fresh = drifts.filter((d) => driftSeen.get(d.app) !== d.key);
+  if (!fresh.length) return;
+  for (const d of fresh) driftSeen.set(d.app, d.key);
+  win?.webContents.send("agent-drift", fresh);
+  const away = !win || win.isDestroyed() || !win.isVisible() || win.isMinimized();
+  if (away && Notification.isSupported()) for (const d of fresh) {
+    const note = new Notification({ title: `${AGENT_LABEL[d.app]} · ${tr("没在用 TokenPulse 设好的供应商")}`, body: `${tr("现在连的是")}「${d.liveName}」${tr("，不是")}「${d.expectedName}」${tr("。点这里打开 TokenPulse 切回。")}`, icon: windowIcon() });
+    note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "providers" }); win?.webContents.send("agent-drift", [d]); });
+    note.show();
+  }
 }
 
 /** 配置备份列表：历史每一次修改（前后对比），和接管前的原件（和现在的文件对比）。都打码。 */
@@ -722,6 +744,8 @@ if (!app.requestSingleInstanceLock()) {
       if ((kind !== "history" && kind !== "original") || typeof id !== "string" || id.length > 100) return { ok: false, error: "备份参数无效" };
       return agentWrite(kind === "original" ? "恢复到 TokenPulse 接管前" : "还原配置备份", () => restoreConfigBackup(kind, id), true);
     });
+    ipcMain.handle("agent:drift", () => { try { return agentDrift(); } catch { return []; } });
+    setInterval(checkDrift, 5000);
     ipcMain.handle("agent:readonly", (_event, on: unknown) => { applyPrefs({ agentReadOnly: on === true }); publishAgent(); return agentView(); });
     ipcMain.handle("agent:models", (_event, input: unknown) => agentCall(() => listProviderModels(input)));
     ipcMain.handle("agent:probe", async (_event, id: unknown) => {

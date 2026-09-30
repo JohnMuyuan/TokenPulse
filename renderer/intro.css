@@ -1,15 +1,19 @@
 /* ---------------- 新版本有什么（intro.js） ---------------- */
 
-.whatsnew-card { width: min(540px, 100%); padding: 22px 24px 20px; }
+/* 标题和按钮固定，只让列表滚动（跨版本升级时条目多） */
+.whatsnew-card { display: flex; flex-direction: column; width: min(540px, 100%); max-height: min(86vh, 860px); overflow: hidden; padding: 22px 24px 20px; }
+.whatsnew-head, .whatsnew-foot { flex: none; }
 .whatsnew-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .whatsnew-head h2 { margin-top: 8px; font: 650 20px/1.35 var(--font-display); letter-spacing: -.01em; }
-.whatsnew-list { display: grid; gap: 4px; margin: 16px 0 18px; padding: 0; list-style: none; }
+.whatsnew-list { display: grid; align-content: start; gap: 4px; min-height: 0; margin: 16px -6px 18px 0; padding: 0 6px 0 0; overflow-y: auto; list-style: none; }
 .whatsnew-list li { display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; padding: 9px 10px; border-radius: 12px; animation: fade-up .4s var(--ease) both; animation-delay: calc(var(--i, 0) * 45ms + 80ms); transition: background .2s; }
 .whatsnew-list li:hover { background: var(--surface-2); }
 .whatsnew-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
 .whatsnew-icon .icon { width: 18px; height: 18px; }
 .whatsnew-list b { display: block; color: var(--text); font-size: 13.5px; font-weight: 620; }
 .whatsnew-list p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+.whatsnew-list li.whatsnew-version { display: block; margin-top: 8px; padding: 6px 10px 2px; border-top: 1px solid var(--line); border-radius: 0; color: var(--muted); font-size: 12px; font-weight: 600; animation: none; }
+.whatsnew-list li.whatsnew-version:hover { background: none; }
 .whatsnew-foot { display: flex; justify-content: flex-end; gap: 10px; }
 
 /* ---------------- 新手引导 ---------------- */

@@ -14,6 +14,10 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.10': [
+      ['alert', '工具配置被改走时提醒你', 'TokenPulse 切换过的 Claude Code、Claude 桌面端、Codex、Grok CLI，如果配置被别的工具或 CLI 自己改走了（例如 Grok 继续旧会话时换回旧模型），右上角会说明是谁、可能的原因，一键切回；窗口在托盘里时发系统通知。'],
+      ['route', 'Grok 号池 / 本地路由更好用', 'Grok 的 /model 列表里，TokenPulse 的路由显示为「TokenPulse · 供应商名」；路由被改走后，点「启用」或「切回」就能重新接上，不用先关掉路由。'],
+    ],
     '0.3.9': [
       ['trace', '识别「本机以外」的额度消耗', '额度涨了、同期本机没有 Code 请求的时段（网页聊天、其他设备）会自动识别出来，不计入容量折算。'],
       ['clock', '时间线可以放大、可以标注', '「模型与思考等级 · 时间线」支持拖选放大、Ctrl + 滚轮缩放；本机以外的时段可以补上用了什么模型和思考等级。'],
@@ -90,9 +94,11 @@
 
   /* ---------------- 新版本有什么 ---------------- */
 
-  function showNotes(v = version, { fromSettings = false } = {}) {
-    const items = NOTES[v];
-    if (!items || notesOpen || tour) return false;
+  /** since：上次看过的版本。从 0.3.8 直接升到 0.3.10 时，0.3.10 和 0.3.9 的新内容都列出来（新的在前）；不给 since 就只列 v 这一版。 */
+  function showNotes(v = version, { fromSettings = false, since } = {}) {
+    const versions = Object.keys(NOTES).filter(x => compare(x, v) <= 0 && (since === undefined ? x === v : compare(x, since) > 0)).sort((a, b) => compare(b, a));
+    if (!versions.length || notesOpen || tour) return false;
+    const items = versions.flatMap((x, n) => [...(n ? [['', 'v' + x, '']] : []), ...NOTES[x]]);
     const last = document.activeElement;
     const close = el('button', { type: 'button', class: 'icon-circle', 'aria-label': '关闭' }, [icon('close')]);
     const ok = el('button', { type: 'button', class: 'btn btn-accent', text: '知道了' });
@@ -106,6 +112,8 @@
         close,
       ]),
       el('ul', { class: 'whatsnew-list' }, items.map(([name, title, text], i) => {
+        // 较早版本前面的分隔行
+        if (!name) return el('li', { class: 'whatsnew-version', translate: 'no', text: title });
         const li = el('li', {}, [el('span', { class: 'whatsnew-icon' }, [icon(name)]), el('div', {}, [el('b', { text: title }), el('p', { text })])]);
         li.style.setProperty('--i', i);
         return li;
@@ -136,7 +144,7 @@
     notesOpen = { modal, done };
     lockPage(true);
     document.body.append(modal);
-    ok.focus();
+    ok.focus({ preventScroll: true });
     return true;
   }
 
@@ -312,7 +320,7 @@
     await whenReady();
     if (prefs.onboarding === 'pending') { startGuide(); return; }
     if (!prefs.seenVersion || compare(version, prefs.seenVersion) > 0) {
-      if (!showNotes(version)) save({ seenVersion: version });
+      if (!showNotes(version, { since: prefs.seenVersion || '' })) save({ seenVersion: version });
     }
   }
 

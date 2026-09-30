@@ -538,23 +538,25 @@ export async function activateProvider(id: string) {
     if (provider.official && store.proxy.apps[app]) throw new Error('请先关闭本地路由，再切回官方登录');
     const cross = !!provider.endpoint && (!!provider.pool || provider.endpoint.upstream !== NATIVE_UPSTREAM[app] || (app === 'desktop' && provider.desktopMode === 'map'));
     if (cross || store.proxy.apps[app]) {
-      await enableProxy(app, id);
-      return { message: '已启用 ' + provider.name + (provider.pool ? '（号池，经本地路由轮流转发）' : '（本地路由）'), restart: app !== 'claude' };
+      await enableProxy(app, id, true);
+      return { message: '已启用 ' + provider.name + (provider.pool ? '（号池，经本地路由轮流转发）' : '（本地路由）') + resumeHint(app), restart: app !== 'claude' };
     }
     configTransaction(() => {
       const current = load(); current.direct[app] = id; current.route[app] = id;
       save(current); applyDirect(must(current, id));
     });
-    return { message: AGENT_LABEL[app] + ' 已切换到 ' + provider.name, restart: app !== 'claude' };
+    return { message: AGENT_LABEL[app] + ' 已切换到 ' + provider.name + resumeHint(app), restart: app !== 'claude' };
   });
 }
-async function enableProxy(app: AgentApp, selected?: string) {
+async function enableProxy(app: AgentApp, selected?: string, explicit = false) {
   const initial = load();
   const id = selected || [initial.route[app], initial.direct[app]].find(id => { const p = byId(initial, id); return p?.endpoint && !p.official && !p.locked; })
     || initial.providers.find(p => p.app === app && p.endpoint && !p.official && !p.locked && !p.pool)?.id;
   const provider = id ? must(initial, id) : null;
   if (!provider?.endpoint || provider.official || provider.locked) throw new Error('先添加带地址和密钥的供应商');
-  if (initial.proxy.apps[app] && initial.restore[app] && !proxyIsOurs(app)) throw new Error('工具连接已在外部修改，请先关闭此路由再明确启用');
+  // 路由开着、工具配置却被改走了（例如 Grok 继续旧会话时换回了旧模型）：用户明确点「启用」/「切回」时重新接上，
+  // 接管前的恢复快照保持不变；启动时的自动恢复不这样做，免得覆盖用户在外面的修改。
+  if (initial.proxy.apps[app] && initial.restore[app] && !proxyIsOurs(app) && !explicit) throw new Error('工具连接已在外部修改，请先关闭此路由再明确启用');
   await ensureProxy();
   try {
     configTransaction(() => {
@@ -569,7 +571,7 @@ async function enableProxy(app: AgentApp, selected?: string) {
 }
 export async function setAppProxy(app: AgentApp, on: boolean) {
   return asyncMutation(async () => {
-    if (on) { await enableProxy(app); return; }
+    if (on) { await enableProxy(app, undefined, true); return; }
     configAllowRestore(() => configTransaction(() => {
       const store = load(); restoreProxy(store, app); store.proxy.apps[app] = false; save(store);
     }));
@@ -638,6 +640,55 @@ export function restoreConfigBackup(kind: 'history' | 'original', id: string) {
     configNotice = '已还原。TokenPulse 会把还原后的配置当作外部修改，不会自动覆盖；需要切换时请明确点击启用。';
     return targets.length;
   }));
+}
+
+/*
+ * 配置被改走的检测（0.3.10）。
+ * TokenPulse 切换过的工具，配置又不再指向 TokenPulse 设好的供应商 / 本地路由时报告出来，由界面提醒用户、给「切回」按钮。
+ * 常见原因：Grok 继续旧会话时换回那个会话记住的模型并写回 [models].default；CC Switch 等工具改了配置；用户手动改。
+ * 只读，不写任何文件；只比较「现在连的是谁」（地址 / 密钥 / 模型），工具自己改其他设置（权限、主题）不算。
+ */
+export type AgentDrift = { app: AgentApp; mode: 'route' | 'direct'; expectedId: string; expectedName: string; liveName: string; key: string };
+export function agentBusy() { return mutationPending; }
+export function agentDrift(): AgentDrift[] {
+  if (mutationPending || !fs.existsSync(storeFile())) return [];
+  const store = load();
+  const out: AgentDrift[] = [];
+  for (const app of AGENT_APPS) {
+    try {
+      const routed = !!store.proxy.apps[app];
+      const expectedId = routed ? store.route[app] || '' : store.direct[app] || '';
+      const expected = byId(store, expectedId);
+      if (!expected || !store.owned[app]) continue; // TokenPulse 没在这个工具上切换过
+      let drifted = false;
+      if (routed) drifted = !!store.restore[app] && !proxyIsOurs(app);
+      else if (app === 'desktop') {
+        const applied = readObject(path.join(desktopDir(), 'configLibrary', '_meta.json')).appliedId === DESKTOP_PROFILE_ID;
+        drifted = expected.official ? false : !applied;
+      } else if (expected.official) drifted = !!endpointFromLive(app)?.baseUrl && !liveMarker(app)?.managed;
+      else drifted = matchLive(store, app) !== expected.id;
+      if (!drifted) continue;
+      const liveId = matchLive(store, app);
+      const live = endpointFromLive(app);
+      const liveName = byId(store, liveId)?.name
+        || (app === 'grok' ? grokDefaultName() : '')
+        || (live?.baseUrl ? `${live.model || '未知模型'}（${hostOf(live.baseUrl)}）` : live?.model || '工具自己的配置');
+      const key = app + ':' + (routed ? 'route' : 'direct') + ':' + expected.id + ':' + crypto.createHash('sha1').update(filesForApp(app).map((file) => configRead(file) ?? '').join('\u0000')).digest('hex').slice(0, 16);
+      out.push({ app, mode: routed ? 'route' : 'direct', expectedId: expected.id, expectedName: expected.name, liveName, key });
+    } catch { /* 读不了的配置不报 */ }
+  }
+  return out;
+}
+function hostOf(url: string) { try { return new URL(url).host; } catch { return url; } }
+function grokDefaultName() {
+  const blocks = parseToml(readText(grokFile()));
+  const models = blocks.find((block) => block.header && headerName(block.header) === 'models');
+  const value = models ? readKey(models.lines, 'default') : null;
+  return value || '';
+}
+/** 切换成功时顺带说明各工具的坑：Grok 继续旧会话会换回旧模型。 */
+function resumeHint(app: AgentApp) {
+  return app === 'grok' ? '。提示：Grok 继续旧会话时会换回那个会话记住的模型，请新开会话，或在会话里输入 /model ' + GROK_TABLE : '';
 }
 
 export async function importCcProviders() { return syncMutation(() => importCcProvidersImpl()); }
@@ -943,13 +994,13 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
 function writeGrok(provider: Provider, baseUrl: string, apiKey: string, _proxy: boolean) {
   const file = grokFile();
   const blocks = parseToml(readText(file));
-  for (const key of ['model', 'base_url', 'api_key', 'api_backend', 'context_window']) setTableKey(blocks, 'model.' + GROK_TABLE, key, null);
+  for (const key of ['name', 'model', 'base_url', 'api_key', 'api_backend', 'context_window']) setTableKey(blocks, 'model.' + GROK_TABLE, key, null);
   if (provider.official || !baseUrl) {
     const models = blocks.find((block) => block.header && headerName(block.header) === "models");
     if (models && readKey(models.lines, "default") === GROK_TABLE) upsertKey(models.lines, "default", null);
   } else {
     setTableKey(blocks, "models", "default", quote(GROK_TABLE));
-    for (const [key, value] of Object.entries({ model: provider.endpoint?.model || 'grok', base_url: baseUrl, api_key: apiKey, api_backend: 'responses', ...(provider.contextWindow ? { context_window: provider.contextWindow } : {}) })) {
+    for (const [key, value] of Object.entries({ name: 'TokenPulse · ' + provider.name, model: provider.endpoint?.model || 'grok', base_url: baseUrl, api_key: apiKey, api_backend: 'responses', ...(provider.contextWindow ? { context_window: provider.contextWindow } : {}) })) {
       setTableKey(blocks, 'model.' + GROK_TABLE, key, quote(value));
     }
   }
