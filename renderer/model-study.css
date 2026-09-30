@@ -334,3 +334,66 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .ms-sw.ignored { border: 1px dashed var(--muted); background: linear-gradient(transparent calc(50% - .75px), var(--muted) calc(50% - .75px) calc(50% + .75px), transparent calc(50% + .75px)), var(--tile-neutral); }
 .ms-sw.run { height: 10px; margin-top: 6px; background: #5b7fd6; border-radius: 4px; }
 .ms-sw.now { width: 0; height: 16px; margin: 3px 12px 0; border-left: 1.4px dashed var(--accent); border-radius: 0; }
+
+/* ---------------- 换算表：调用次数、点开的详情（0.3.14） ---------------- */
+.ms-cap-sub { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ms-row { cursor: pointer; }
+.ms-row-toggle { position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 18px; height: 18px; color: var(--faint); transform: translateY(-50%); transition: transform .2s var(--ease), color .2s; pointer-events: none; }
+.ms-row-toggle .icon { width: 14px; height: 14px; }
+.ms-row:hover .ms-row-toggle { color: var(--muted); }
+.ms-row.open { background: var(--surface-2); border-bottom-color: transparent; border-radius: 10px 10px 0 0; }
+.ms-row.open .ms-row-toggle { color: var(--accent); transform: translateY(-50%) rotate(180deg); }
+.ms-row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.ms-detail { display: grid; gap: 14px; margin: 0 0 8px; padding: 6px 16px 16px 50px; border-bottom: 1px solid var(--line); border-radius: 0 0 10px 10px; background: var(--surface-2); cursor: auto; }
+.ms-detail-wins { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ms-dw { display: grid; gap: 6px; align-content: start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.ms-dw-head { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.ms-dw-head b { color: var(--text-2); font-weight: 600; }
+.ms-dw.five .ms-dot { background: var(--ring-five, var(--accent)); }
+.ms-dw.week .ms-dot { background: var(--ring-week, #6d6ae8); }
+.ms-dw-value { display: flex; align-items: baseline; gap: 6px; }
+.ms-dw-value strong { font: 700 22px/1.1 var(--font-display); color: var(--text); font-variant-numeric: tabular-nums; }
+.ms-dw-value small { color: var(--muted); font-size: 12px; }
+.ms-dw-usd { display: flex; align-items: baseline; gap: 6px; }
+.ms-dw-usd b { color: var(--accent-strong); font-size: 15px; font-variant-numeric: tabular-nums; }
+.ms-dw-usd small { color: var(--muted); font-size: 11.5px; }
+.ms-dw-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.ms-dw-stats span { padding: 2px 8px; border-radius: 99px; background: var(--tile-neutral); color: var(--text-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.ms-dw-measured { margin: 0; color: var(--muted); font-size: 11.5px; }
+.ms-facts { display: grid; gap: 0; margin: 0; }
+.ms-fact { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 12px; padding: 8px 0; border-top: 1px dashed var(--line); }
+.ms-fact:first-child { border-top: 0; }
+.ms-fact dt { color: var(--muted); font-size: 12px; }
+.ms-fact dd { display: grid; gap: 3px; margin: 0; color: var(--text); font-size: 12.5px; line-height: 1.6; }
+.ms-fact dd > span:first-child:not(.ms-fact-tags) { font-weight: 600; font-variant-numeric: tabular-nums; }
+.ms-fact dd small { color: var(--muted); font-size: 11.5px; }
+.ms-fact-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.ms-fact-list { display: grid; gap: 4px; margin: 0; padding-left: 16px; color: var(--text-2); font-size: 12px; }
+.ms-source-chip { padding: 1px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--text-2); font-size: 11.5px; }
+.ms-cautions { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.ms-cautions p { display: flex; gap: 8px; margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.ms-cautions .icon { flex: none; width: 15px; height: 15px; margin-top: 2px; color: var(--warn); }
+@media (max-width: 980px) { .ms-detail { padding-left: 16px; } .ms-detail-wins { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .ms-row-toggle { transition: none; } }
+
+/* ---------------- 单价明细（0.3.14） ---------------- */
+.ms-price-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 2px 0 4px; }
+.ms-price-cell { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.ms-price-cell small { color: var(--muted); font-size: 11.5px; }
+.ms-price-cell b { color: var(--text); font: 700 15px/1.2 var(--font-display); font-variant-numeric: tabular-nums; }
+.ms-price-cell i { color: var(--muted); font-size: 11px; font-style: normal; }
+.ms-price-source { overflow-wrap: anywhere; }
+.ms-price-total { font-size: 14px; font-weight: 700 !important; }
+.ms-price-warn { color: var(--warn) !important; }
+.ms-mix-bar { display: flex; height: 8px; margin: 4px 0 2px; overflow: hidden; border-radius: 99px; background: var(--tile-neutral); }
+.ms-mix-bar i { display: block; height: 100%; }
+.ms-mix-fresh { background: #6d8ff0; }
+.ms-mix-cacheRead { background: #3fb68b; }
+.ms-mix-cacheWrite { background: #d9a441; }
+.ms-mix-output { background: #c46ad8; }
+.ms-mix-rows { display: grid; gap: 2px; }
+.ms-mix-row { display: grid; grid-template-columns: 10px minmax(110px, 1fr) 64px minmax(120px, auto); gap: 8px; align-items: center; color: var(--text-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ms-mix-dot { width: 8px; height: 8px; border-radius: 2px; }
+.ms-mix-share { text-align: right; }
+.ms-mix-calc { color: var(--muted); }
+@media (max-width: 980px) { .ms-price-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

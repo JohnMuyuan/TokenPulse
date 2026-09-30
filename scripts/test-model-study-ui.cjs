@@ -42,6 +42,33 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   assert.match(await text(`${Q} .ms-row[data-effort=high] .ms-cap.week b`), /^×/, '周窗口不能拿五小时的预算');
   assert.equal(await text(`${Q} .ms-budget.five .ms-budget-value`), '$0.50按本机区间折算 · API 等价参考');
   assert.equal(await count(`${Q} .ms-row`), 2, '未记录等级不进排行');
+  // 0.3.14：格子下面写调用次数；悬停不再弹文字，点一下展开详情
+  assert.equal(await evaluate(`document.querySelector('${Q} .ms-cap-usd')`), null, '整窗等价费用对每个模型都一样，格子里不重复');
+  assert.match(await text(`${Q} .ms-row[data-effort=high] .ms-cap.five .ms-cap-sub`), /≈ [\d,]+ 次调用/);
+  assert.equal(await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high]').getAttribute('aria-expanded')`), 'false');
+  await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high]').dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); document.querySelector('${Q} .ms-row[data-effort=high]').dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 300, clientY: 300 }))`);
+  await delay(150);
+  assert.equal(await evaluate(`(() => { const t = document.getElementById('tip'); return !t.hidden && /目录来源|单价/.test(t.textContent); })()`), false, '悬停不再甩出一堆文字');
+  await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high]').click()`);
+  await until(`document.querySelector('${Q} .ms-row[data-effort=high] + .ms-detail')`);
+  assert.equal(await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high]').getAttribute('aria-expanded')`), 'true');
+  const panel = await text(`${Q} .ms-row[data-effort=high] + .ms-detail`);
+  for (const word of ['5 小时整窗', '周整窗', '50.0K', '$0.50', 'API 等价', '单价', '目录来源']) assert.ok(panel.includes(word), '详情里有：' + word + ' | ' + panel);
+  assert.equal(await count(`${Q} .ms-detail .ms-dw`), 2, '两个整窗各一张小卡片');
+  // 0.3.14：单价拆开写。gpt-qa 不在价格表里：写明没有标价；综合单价按这些请求的 Token 结构列出每一项占多少
+  assert.match(panel, /标价价格表里没有这个型号/);
+  assert.match(panel, /综合单价\$10\.00 \/ 百万 Tokens= 这些请求的实际费用合计 ÷ Tokens 合计/);
+  assert.ok(await count(`${Q} .ms-detail .ms-mix-row`) >= 2, '列出 Token 结构');
+  assert.equal(await count(`${Q} .ms-detail .ms-mix-calc`), 0, '没有标价就不编每一项的价格');
+  // 数据刷新重画后保持展开；再点收起；键盘回车也能展开
+  await evaluate('window.tokenpulse.refresh()'); await delay(700);
+  assert.ok(await evaluate(`Boolean(document.querySelector('${Q} .ms-row[data-effort=high].open + .ms-detail'))`), '刷新后仍展开');
+  await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high]').click()`);
+  await until(`!document.querySelector('${Q} .ms-detail')`);
+  await evaluate(`document.querySelector('${Q} .ms-row[data-effort=low]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`);
+  await until(`document.querySelector('${Q} .ms-row[data-effort=low] + .ms-detail')`);
+  await evaluate(`document.querySelector('${Q} .ms-row[data-effort=low]').click()`);
+  await until(`!document.querySelector('${Q} .ms-detail')`);
   assert.equal(await count(`${Q} .ms-row[data-effort=unknown]`), 0);
   await evaluate(`document.querySelector('${Q} .seg button[data-value=name]').click()`);
   assert.equal(await evaluate(`document.querySelector('${Q} .ms-row').dataset.effort`), 'low');
@@ -174,6 +201,20 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   const before = await label();
   await dragWith(0, .6, .75); await delay(200);
   assert.notEqual(await label(), before, '左键拖动平移：' + before);
+  // 0.3.14：放大后曲线下的面积从底边升起（以前连回线的起点，被斜着切掉一大块）；色块和曲线裁在绘图区里，不再挤在边上
+  const curve = () => evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'); const area = svg.querySelector('.ms-quota-area'), line = svg.querySelector('.ms-quota-line'); const base = svg.querySelector('.ms-grid.faint').getAttribute('y1'); return { area: area?.getAttribute('d') || '', base: Number(base), len: line ? line.getTotalLength() : 0, dash: line?.getAttribute('stroke-dasharray'), clip: Boolean(svg.querySelector('clipPath rect')) && !!line?.closest('[clip-path]') && [...svg.querySelectorAll('.ms-run')].every(r => r.closest('[clip-path]')) }; })()`);
+  const baseOf = c => { const m = c.area.match(/^M(-?[\d.]+),(-?[\d.]+) V(-?[\d.]+)/); return m && Math.abs(Number(m[2]) - c.base) < .6 && /V-?[\d.]+ Z$/.test(c.area); };
+  let c1 = await curve();
+  assert.ok(c1.base > 0 && baseOf(c1), '面积从 0% 底边开始、回到底边：' + JSON.stringify(c1));
+  assert.ok(c1.clip, '曲线、色块都在 clipPath 里');
+  assert.equal(c1.dash, null, '不在描线动画里时没有 stroke-dasharray（放大后线不会被切掉）');
+  // 放大到极限（5 分钟），再左右拖：线一直在，面积一直贴着底边
+  for (let i = 0; i < 8; i++) await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="放大"]').click()`);
+  for (const [a, b] of [[.5, .8], [.8, .3], [.3, .9]]) {
+    await dragWith(0, a, b); await delay(120);
+    c1 = await curve();
+    assert.ok(c1.len > 50 && baseOf(c1), '极限放大平移后线还在：' + JSON.stringify(c1));
+  }
   assert.equal(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-select-actions')`), null);
   await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="回到整个周期"]').click()`);
   await evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'), b = svg.getBoundingClientRect(); svg.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100, clientX: b.left + b.width * .7, clientY: b.top + 40 })); })()`);
@@ -300,10 +341,21 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   await until("!document.querySelector('#ms-add')");
   // 表格里出现，带「你添加的」和思考等级依据
   await until("document.querySelector('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"]')");
-  const added = await evaluate("[...document.querySelectorAll('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"]')].map(r => ({ effort: r.dataset.effort, user: !!r.querySelector('.ms-user-tag'), tag: r.querySelector('.ms-basis.effort')?.textContent || '', label: r.getAttribute('aria-label') }))");
+  const added = await evaluate("(() => [...document.querySelectorAll('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"]')].map(r => { r.click(); const d = r.nextElementSibling; const out = { effort: r.dataset.effort, user: !!r.querySelector('.ms-user-tag'), tag: r.querySelector('.ms-basis.effort')?.textContent || '', label: d?.classList.contains('ms-detail') ? d.textContent : '' }; r.click(); return out; }))()");
   assert.ok(added.length >= 1 && added.every(r => r.user), '你添加的');
-  assert.ok(added.some(r => r.tag === '等级参考' && /Epoch AI/.test(r.label)), '没用过的等级标「等级参考」，悬停写明 Epoch AI：' + JSON.stringify(added));
+  assert.ok(added.some(r => r.tag === '等级参考' && /Epoch AI/.test(r.label)), '没用过的等级标「等级参考」，展开的详情写明 Epoch AI：' + JSON.stringify(added));
   assert.ok(added.every(r => /你添加的：没验证/.test(r.label)));
+  // 0.3.14：价格表里有的型号——行上写输入 / 输出标价和综合单价；详情里标价四项、来源（LiteLLM 的哪个型号、知识库版本）、每一项占比 × 标价
+  assert.match(await text('#quota-model-study .ms-row[data-model="gpt-6.1-sol"] .ms-name-text small'), /^输入 \$2\.00 · 输出 \$10\.00 \/ 百万 · 综合 \$[\d.]+ \/ 百万 Tokens/);
+  for (const r of added) {
+    assert.match(r.label, /标价输入\$2\.00缓存读（命中）\$0\.10缓存写\$2\.50输出\$10\.00/, '标价四项：' + r.label);
+    assert.match(r.label, /来源：LiteLLM 公开价格表的「gpt-6\.1-sol」（每天自动同步，并和 OpenRouter 交叉核对）· 模型知识库 \d{4}\.\d{2}\.\d{2}/);
+    assert.match(r.label, /综合单价\$[\d.]+ \/ 百万 Tokens= 每一项占的比例 × 它的标价，加起来/);
+    assert.match(r.label, /缓存读（命中）[\d.]+%× \$0\.10 = /);
+  }
+  // 英文：新加的单价明细都能翻出来（行上的小字、详情里每一段）
+  const untranslated = await evaluate(`(() => { const row = document.querySelector('#quota-model-study .ms-row[data-model="gpt-6.1-sol"]'); row.click(); const texts = [row.querySelector('.ms-name-text small').textContent]; const w = document.createTreeWalker(row.nextElementSibling, NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) if (n.nodeValue.trim()) texts.push(n.nodeValue.trim()); row.click(); return texts.map(t => [t, PulseI18n.t(t)]).filter(([, e]) => /[\u4e00-\u9fff]/.test(e)); })()`);
+  assert.deepEqual(untranslated, [], '单价明细的英文翻译');
   // 行上的 × 移除
   await evaluate("document.querySelector('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"] .ms-user-remove').click()");
   await until("!document.querySelector('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"]')");

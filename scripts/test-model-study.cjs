@@ -24,5 +24,19 @@ check('Other providers routed through the CLI never count toward this quota',()=
 check('Unused cycles are hidden; without any budget a relative ranking remains',()=>{const s=[{...samples[0],at:now-8*3600000,five:0,fiveReset:new Date(now-7*3600000).toISOString()},...samples];let d=analyzeModelStudy(query,s,records,catalog,now);assert.equal(d.cycles.length,1);assert.equal(d.cycles[0].active,true);d=analyzeModelStudy(query,samples,[],catalog,now);assert.equal(d.budget.costUsd,null);assert.ok(d.capacities.every(c=>c.capacityTokens===null));});
 check('Exact metadata beats defaults; text and reasoning-token counts are not effort',()=>{assert.equal(recordedEffort({effort:'medium',perTurnEffort:'high'}).effort,'high');assert.equal(recordedEffort({effort:'ultra'}).effort,'ultra');assert.equal(recordedEffort({content:'/effort high',reasoning_output_tokens:10000}),undefined);assert.throws(()=>parseModelStudyQuery({kind:'chatgpt',accountId:'claude:qa',window:'five'}));});
 check('Catalog respects visible local models and model-specific supported levels',()=>{const dir=path.join(process.env.HOME,'.codex');fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'models_cache.json'),JSON.stringify({fetched_at:'2026-09-28',models:[{slug:'gpt-visible',visibility:'list',supported_reasoning_levels:[{effort:'low'},{effort:'high'}]},{slug:'gpt-hidden',visibility:'hide',supported_reasoning_levels:[{effort:'high'}]}]}));let c=modelCatalog('chatgpt',[],process.env.HOME);assert.deepEqual(c.map(r=>r.effort).sort(),['high','low']);assert.ok(c.every(r=>r.model==='gpt-visible'));c=modelCatalog('claude',[],process.env.HOME);assert.ok(c.some(r=>r.model==='claude-opus-5-5'&&r.effort==='xhigh'));assert.ok(!c.some(r=>r.model.includes('haiku')&&r.effort==='high'));});
+check('0.3.14 price detail: list price with source rule, token mix explains the blended price',()=>{
+  // gpt-qa 不在价格表里：没有标价，单价取同模型实际费用，结构来自这些请求
+  let d=analyzeModelStudy(query,samples,records,catalog,now);const qa=d.capacities.find(c=>c.effort==='high');
+  assert.equal(qa.listPrice,null);assert.equal(qa.priceMix.basis,qa.priceBasis,'结构和单价来自同一批请求');assert.equal(qa.priceMix.requests,3);
+  assert.deepEqual([qa.priceMix.fresh,qa.priceMix.cacheRead,qa.priceMix.cacheWrite,qa.priceMix.output],[1200,1200,0,600],'输入 800 里 400 是缓存读：未命中缓存的输入 400×3');
+  assert.ok(d.priceSource&&/^\d{4}\.\d{2}\.\d{2}/.test(d.priceSource.version)&&['bundled','downloaded'].includes(d.priceSource.source),'带知识库版本');
+  // 价格表里有的型号（gpt-6.1-sol，没用过）：标价四项 + 来自 LiteLLM 的自动规则；综合单价 = 结构比例 × 标价
+  const cat=[...catalog,{model:'gpt-6.1-sol',effort:'high',origins:['user']}];
+  d=analyzeModelStudy(query,samples,records,cat,now);const sol=d.capacities.find(c=>c.model==='gpt-6.1-sol');
+  assert.equal(sol.listPrice.auto,'gpt-6.1-sol');for(const k of ['input','output','cacheRead','cacheWrite'])assert.equal(typeof sol.listPrice[k],'number');
+  const m=sol.priceMix,lp=sol.listPrice,total=m.fresh+m.cacheRead+m.cacheWrite+m.output;
+  const again=(m.fresh*lp.input+m.cacheRead*lp.cacheRead+m.cacheWrite*(lp.cacheWrite||lp.input)+m.output*lp.output)/total;
+  assert.ok(Math.abs(again-sol.costPerMTokens)<1e-9,'综合单价能用比例 × 标价重算出来：'+again+' vs '+sol.costPerMTokens);
+});
 console.log(`${checks}/${checks} model study checks passed`);
 }finally{assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(root).startsWith('tokenpulse-model-study-'));fs.rmSync(root,{recursive:true,force:true});}

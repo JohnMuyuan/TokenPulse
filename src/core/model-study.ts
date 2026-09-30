@@ -6,7 +6,7 @@ import { windowSegments, type WindowSegment } from "./quota-monitor";
 import { queryRequests, type RequestRow } from "./request-log";
 import { modelCatalog, comboKey, readStudyModels, type CatalogEntry } from "./model-catalog";
 import { estimateCost } from "./model-pricing";
-import { benchmarkEffortRatio, priceNotes, type PriceNotes } from "./knowledge";
+import { benchmarkEffortRatio, loadKnowledge, priceNotes, type PriceNotes, type PriceRule } from "./knowledge";
 import { priceOf } from "./model-pricing";
 import { readOfficialAccountStore } from "./accounts";
 import type { AccountKind } from "./quota";
@@ -34,6 +34,16 @@ export type ModelCapacity = CatalogEntry & {
   /** 0.3.12：思考等级换算。effortRatio 是从 effortAnchor 档换到这一档的输出倍数；basis：own 本机实测 / benchmark 基准同型号 / family 家族平均。 */
   /** 0.3.13：这个型号单价的说明（优惠价 / 标价不同 / 单价刚更新）。 */
   priceNotes: PriceNotes | null;
+  /**
+   * 0.3.14：标价（每百万 Token 的输入 / 输出 / 缓存读 / 缓存写，cacheWrite 为 0 表示按输入价收）和它从哪条规则来；
+   * auto = 自动同步的型号 id（LiteLLM，和 OpenRouter 交叉核对）；没有 auto 的是手动维护的规则（note 写着是哪条）。
+   */
+  listPrice: { input: number; output: number; cacheRead: number; cacheWrite: number; auto: string | null; note: string; match: string } | null;
+  /**
+   * 0.3.14：综合单价用的 Token 结构（未命中缓存的输入 / 缓存读 / 缓存写 / 输出，各多少 Token）。
+   * basis：combo 这个组合自己的请求 / model 同模型的请求 / account 本账号全部请求 / default 没有用量时的默认结构 / effort 起点那一档按等级倍数换算输出后的结构。
+   */
+  priceMix: { fresh: number; cacheRead: number; cacheWrite: number; output: number; basis: "combo" | "model" | "account" | "default" | "effort"; requests: number } | null;
   effortRatio: number | null; effortBasis: "own" | "benchmark" | "family" | null; effortSource: string | null; effortAnchor: string | null; tokensPerCallBasis: "own" | "scaled" | null;
   /** 最近 30 天平均每次模型调用多少 Token（思考等级主要影响这个）。 */
   tokensPerCall: number | null;
@@ -190,25 +200,35 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     const at = pool.filter(r => r.effort === anchor);
     return { anchor, mix: { input: sum(at, r => r.input), output: sum(at, r => r.output), cacheRead: sum(at, r => r.cacheRead), cacheWrite: sum(at, r => r.cacheWrite || 0) }, calls: sum(at, r => r.calls), sameModel: same.length > 0 };
   };
-  const unitCost = (model: string, key: string, effort: string): [number | null, ModelCapacity["priceBasis"], EffortRatio, ReturnType<typeof baseFor>] => {
+  // 综合单价用的 Token 结构：输入里含缓存读 / 缓存写，拆成「未命中缓存的输入」单独列
+  type Mix = { input: number; output: number; cacheRead: number; cacheWrite: number };
+  const mixOf = (list: RequestRow[]): Mix => ({ input: sum(list, r => r.input), output: sum(list, r => r.output), cacheRead: sum(list, r => r.cacheRead), cacheWrite: sum(list, r => r.cacheWrite || 0) });
+  const shape = (m: Mix, basis: NonNullable<ModelCapacity["priceMix"]>["basis"], requests: number): ModelCapacity["priceMix"] =>
+    m.input + m.output > 0 ? { fresh: Math.max(0, m.input - m.cacheRead - m.cacheWrite), cacheRead: m.cacheRead, cacheWrite: m.cacheWrite, output: m.output, basis, requests } : null;
+  const unitCost = (model: string, key: string, effort: string): [number | null, ModelCapacity["priceBasis"], EffortRatio, ReturnType<typeof baseFor>, ModelCapacity["priceMix"]] => {
     const base = baseFor(model), none: EffortRatio = { ratio: 1, basis: null, source: null };
     const combo = pricedRows.filter(r => comboKey(r.model, r.effort) === key);
     const own = combo.length >= MIN_COMBO_ROWS ? perToken(combo) : null;
-    if (own) return [own, "combo", none, base];
+    if (own) return [own, "combo", none, base, shape(mixOf(combo), "combo", combo.length)];
     const er = effortRatio(model, base.anchor, effort);
+    const modelRows = pricedRows.filter(r => r.model === model);
     if (er.ratio === 1) {
-      const sameModel = perToken(pricedRows.filter(r => r.model === model));
-      if (sameModel) return [sameModel, "model", er, base];
+      const sameModel = perToken(modelRows);
+      if (sameModel) return [sameModel, "model", er, base, shape(mixOf(modelRows), "model", modelRows.length)];
       const listed = mixTokens > 0 ? estimateCost(model, mix) / mixTokens : 0;
-      return [listed > 0 ? listed : null, listed > 0 ? "price" : null, er, base];
+      return [listed > 0 ? listed : null, listed > 0 ? "price" : null, er, base, listed > 0 ? shape(mix, mix === DEFAULT_MIX ? "default" : "account", mix === DEFAULT_MIX ? 0 : rows.length) : null];
     }
     const scaled = { ...base.mix, output: base.mix.output * er.ratio };
     const scaledTokens = scaled.input + scaled.output;
     const listed = scaledTokens > 0 ? estimateCost(model, scaled) / scaledTokens : 0;
-    if (listed > 0) return [listed, "effort", er, base];
+    if (listed > 0) return [listed, "effort", er, base, shape(scaled, base.mix === DEFAULT_MIX ? "default" : "effort", 0)];
     // 价格表里没有这个型号（中转自定义名等）：拆不开输入 / 输出单价，单价沿用同模型的实际费用；等级倍数只用来推算单次调用
-    const sameModel = perToken(pricedRows.filter(r => r.model === model));
-    return [sameModel, sameModel ? "model" : null, er, base];
+    const sameModel = perToken(modelRows);
+    return [sameModel, sameModel ? "model" : null, er, base, sameModel ? shape(mixOf(modelRows), "model", modelRows.length) : null];
+  };
+  const listPriceOf = (model: string): ModelCapacity["listPrice"] => {
+    const rule = priceOf(model) as PriceRule | null;
+    return rule ? { input: rule.input, output: rule.output, cacheRead: rule.cacheRead, cacheWrite: rule.cacheWrite, auto: rule.auto ?? null, note: rule.note || "", match: rule.match } : null;
   };
 
   const entries = new Map(catalog.filter(c => FAMILY[q.kind].test(c.model)).map(c => [comboKey(c.model, c.effort), c]));
@@ -221,7 +241,7 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     const estimatedTokens = enough ? stat!.tokens / stat!.points * 100 : null;
     const estimatedCostUsd = enough && stat!.priced ? stat!.cost / stat!.points * 100 : null;
     // 未知等级没法说「全用这一档」；不换算，只在时间轴和用量里出现。
-    const [unit, priceBasis, effortInfo, base] = entry.effort === "unknown" ? [null, null, { ratio: 1, basis: null, source: null } as EffortRatio, null] : unitCost(entry.model, key, entry.effort);
+    const [unit, priceBasis, effortInfo, base, priceMix] = entry.effort === "unknown" ? [null, null, { ratio: 1, basis: null, source: null } as EffortRatio, null, null] : unitCost(entry.model, key, entry.effort);
     const derivedTokens = budget.costUsd != null && unit ? budget.costUsd / unit : null;
     // 有合格的同组合样本就优先用它；不能让混合 API 价格假设盖过真实百分点样本。
     const measured = estimatedTokens != null;
@@ -234,7 +254,7 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     return { ...entry, key,
       tokens: sum(actual, r => r.tokens), inputTokens: sum(actual, r => r.input), outputTokens: sum(actual, r => r.output), cacheReadTokens: sum(actual, r => r.cacheRead), calls: sum(actual, r => r.calls), costUsd: actual.every(r => r.priced) ? sum(actual, r => r.costUsd) : null,
       recentTokens, recentCalls, costPerMTokens: unit == null ? null : unit * 1e6, priceBasis, tokensPerCall, tokensPerCallBasis,
-      priceNotes: priceNotes(entry.model, priceOf(entry.model) as never),
+      priceNotes: priceNotes(entry.model, priceOf(entry.model) as never), listPrice: listPriceOf(entry.model), priceMix,
       effortRatio: effortInfo.basis ? effortInfo.ratio : null, effortBasis: effortInfo.basis, effortSource: effortInfo.source, effortAnchor: effortInfo.basis ? base?.anchor ?? null : null,
       calibrationCacheShare: stat?.input ? stat.cacheRead / stat.input : null, intervals: stat?.intervals ?? 0, quotaPoints: stat?.points ?? 0, cycleCount: stat?.cycles.size ?? 0,
       estimatedTokens, estimatedCostUsd, observedMinTokens: enough ? Math.min(...stat!.rates) : null, observedMaxTokens: enough ? Math.max(...stat!.rates) : null, confidence, lastAt: stat?.lastAt,
@@ -272,7 +292,10 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     const bin = bins.get(k) ?? { key, model: r.model, effort: r.effort || "unknown", startAt: start, endAt: Math.min(start + binMs, selected!.endAt), firstAt: r.at, lastAt: r.at, count: 0, calls: 0, tokens: 0, costUsd: 0 };
     bin.firstAt = Math.min(bin.firstAt, r.at); bin.lastAt = Math.max(bin.lastAt, r.at); bin.count++; bin.calls += r.calls; bin.tokens += r.tokens; bin.costUsd = bin.costUsd != null && r.priced ? bin.costUsd + r.costUsd : null; bins.set(k, bin);
   }
-  return { query: q, now, localOnly, trainingSince: since, trainingDays: TRAINING_DAYS, cycles, selected, quotaStale, partialCycle: Boolean(selected && selected.startAt < since), attribution, budget, capacities, timeline: [...bins.values()].sort((a, b) => a.startAt - b.startAt), binMs, excluded, offMachine,
+  const kb = loadKnowledge();
+  return { query: q, now, localOnly, trainingSince: since,
+    /** 0.3.14：单价来自哪一版模型知识库（内置 / 在线更新）。 */
+    priceSource: { version: kb.knowledge.version, updatedAt: kb.knowledge.updatedAt, source: kb.source }, trainingDays: TRAINING_DAYS, cycles, selected, quotaStale, partialCycle: Boolean(selected && selected.startAt < since), attribution, budget, capacities, timeline: [...bins.values()].sort((a, b) => a.startAt - b.startAt), binMs, excluded, offMachine,
     /** 所选周期的额度采样（画在时间轴上方）。 */
     track: (selectedSegment?.points ?? []).map(p => ({ at: p.at, pct: p.pct })),
     totals: { tokens: sum(observed, r => r.tokens), calls: sum(observed, r => r.calls), records: observed.length, unknownEffort: observed.filter(unknownEffort).length },

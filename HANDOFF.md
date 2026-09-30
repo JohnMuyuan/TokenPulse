@@ -1,6 +1,37 @@
-# 当前接手入口 · 0.3.13（2026-09-30）
+# 当前接手入口 · 0.3.14（2026-09-30，测试版已编译）
 
-## v0.3.13：单价标签 + 时间线「用了多久」和剪辑工具 + 时间线图例 · 已完成，已提交、打包、发布（Claude）
+## v0.3.14：时间线曲线修复 + 换算表点开看详情 · 测试版已编译，**未提交、未打安装包、未发布**（Claude）
+
+- 用户要求（0.3.14；**只编译测试版，不打安装包，不发布 GitHub**）：
+  1. 时间线放大后，曲线下的绿色面积变少；放大到最细再左右拖动会抽动，或者看不到线。
+  2. 「换一种模型」只显示 Tokens 和调用次数，没有等价的钱。
+  3. 悬停那一行会甩出一大段文字，要改成点击那一行，在下面展开美化过的详情。
+- **已完成（未提交）**：
+  - `renderer/model-study.js` 的 drawLanes：
+    - 面积路径改成从底边升起、沿阶梯走、再落回底边。原来的面积是连回线的起点闭合，放大后起点高了，就被斜着切掉一块。
+    - 新增 `xs()`（不夹在视图边上，最多伸出一屏）和 `clipPath`（`ms-clip-<w>`）：曲线、竖条、本机以外色块、请求色块都放进 `g.ms-plot[clip-path]`，平移时不再挤在边上。
+    - 曲线的 `pathLength` / `stroke-dasharray` 只在描线动画时加，动画结束或 2 秒后去掉。
+  - 换算表：
+    - capCell 下面加 `.ms-cap-sub`（≈ 调用次数 · 本周期还剩）。一度在 Tokens 旁加过 `.ms-cap-usd`（等价的 API 费用），**用户看过后要求删掉**：整窗的等价费用 = 整窗预算，对每个模型都一样，所以不在格子里重复；展开的详情卡片里仍写「API 等价」。
+    - 行不再用 tipOn 悬停弹文字。点击或回车、空格展开 `detailPanel()`：两张整窗卡片 `.ms-dw`、一组「项目 / 内容」`dl.ms-facts`（单价及来源和标签、单价说明、思考等级、单次调用、最近 30 天、目录来源）、注意事项 `.ms-cautions`。展开状态记在 `Q.open`，数据刷新后保持展开；行右侧有箭头。旧的 `detail()` 文本函数删掉了。
+  - i18n：新词条已补。修了单反斜杠的问题：JS 字符串里写 '\d' 会变成字母 d，导致「N 段待标注」「你添加的（N）」和 0.3.13 单价说明等 10 条格式翻不出英文，现在都改成双反斜杠。新加的宽格式放在最后那条「标题：值」之前。
+  - 版本号 0.3.14（package.json、package-lock）；intro NOTES 0.3.14 两条；README 0.3.14 一节。
+  - 测试：`test-model-study-ui.cjs` 加了「格子里没有 .ms-cap-usd」、悬停不弹文字、点开 / 收起 / 回车展开、刷新后保持展开，还有面积贴底、clipPath、无 dasharray、极限放大后平移线还在；单独跑通过。截图看过亮色和夜间的详情面板；箭头方向已修正。
+- **验证**：`npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS。
+- **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物是 `dist\win-unpacked\TokenPulse.exe`（0.3.14）。asar 里 5 个相关文件和源码一致；对 app.asar 跑 test-model-study-ui，4 个 PASS。没有打 Setup / Portable（dist 里的安装包还是 0.3.13 的）。
+- 收尾检查：没有留下 electron 进程，也没有 dist 下的 TokenPulse；win-unpacked 的 exe 和 app.asar 都没被占用。
+- **追加：单价写清楚（用户：只写一个「$0.48 / 百万 Tokens」还不给来源，不够严谨）**：
+  - `model-study.ts`：ModelCapacity 新增 `listPrice`（输入 / 输出 / 缓存读 / 缓存写、auto、note、match，来自 priceOf 命中的规则）和 `priceMix`（fresh / cacheRead / cacheWrite / output 的 Token 数、basis、requests：综合单价用的是哪批请求的结构）；study 结果新增 `priceSource`（知识库 version / updatedAt / bundled 还是 downloaded）。unitCost 多返回一项结构。
+  - 渲染：行上的小字改成「输入 $x · 输出 $y / 百万 · 综合 $z / 百万 Tokens」。详情里有「标价」四格和来源（LiteLLM 的哪个型号，或手动规则的 note，以及知识库版本），还有「综合单价」：一条比例条，每项写「占比 × 标价 = 贡献」，并说明比例来自哪些请求。实际费用和按标价重算的结果差超过 2% 时，会写出原因。价格表里没有的型号只列结构，不编价格。
+  - i18n：新词条和格式都已补。修了 0.3.13 的两句单价说明：句子里有中文分号「；」，翻译时会先按它拆开，导致翻不出英文，现在改成逗号。UI 测试新增英文覆盖检查：行上的小字和详情里的每一段，经过 PulseI18n.t 都不能再留中文。
+  - 测试：test-model-study 新增一条（15/15）：没有标价时的结构；有标价时，比例 × 标价能重算出综合单价。test-model-study-ui 断言了四项标价、来源、比例行和英文。截图看过夜间模式：$0.88 + $0.044 + $1.22 ≈ $2.15，和综合单价对得上。
+  - 单价追加之后：`npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS。测试版已重新编译（`electron-builder --win dir` 退出 0），asar 里 5 个相关文件和源码一致，对 app.asar 跑 test-model-study-ui，4 个 PASS。没有遗留进程，也没有文件被占用。
+- **删掉等价费用之后**：test-model-study-ui 和 test-intro-ui 都通过。测试版已重新编译（`electron-builder --win dir` 退出 0），asar 里 4 个相关文件和源码一致，不含 ms-cap-usd。没有遗留进程，也没有文件被占用。intro、README、i18n 都已改成不提等价费用。
+- **没做**：没提交、没打安装包、没发布（按用户要求）。等用户试用后再决定。
+- 已知限制：截图用的测试数据只涨到 9%，面积贴底边是用断言验证的（面积路径第一个点在 0% 线上），没有高占用的截图。
+
+
+## v0.3.13（历史）：单价标签 + 时间线「用了多久」和剪辑工具 + 时间线图例 · 已完成，已提交、打包、发布（Claude）
 
 - 用户要求（0.3.13；**没说要发布，发布前先问**）：
   1. 标价来源对不上时，在型号旁标「标价不同」，**优先用 LiteLLM 的价**；单价刚变时标「单价刚更新」；官方优惠价标「优惠价」，带 until 的到期后自动切回。

@@ -94,7 +94,7 @@
 
   /* ================= 额度详情：换一种模型，整窗能用多少 ================= */
 
-  const Q = { host: null, loader: null, report: null, snapshot: null, sort: 'capacity', level: 'all', animate: false };
+  const Q = { host: null, loader: null, report: null, snapshot: null, sort: 'capacity', level: 'all', animate: false, open: new Set() };
 
   function quotaUpdate(snapshot, report) {
     Q.host ??= $('quota-model-study');
@@ -142,7 +142,7 @@
     const shown = sortRows(merge(rows.filter(r => Q.level === 'all' || r.effort === Q.level)));
     const list = el('div', { class: 'ms-rank', role: 'list' });
     const max = { five: Math.max(0, ...shown.map(r => r.five.capacityTokens || 0)), week: Math.max(0, ...shown.map(r => r.week.capacityTokens || 0)), relative: Math.max(0, ...shown.map(r => r.five.relative || 0)) };
-    shown.forEach((row, i) => list.append(rankRow(row, i, max, data)));
+    shown.forEach((row, i) => { const node = rankRow(row, i, max, data); list.append(node); if (Q.open.has(row.key)) { node.classList.add('open'); node.setAttribute('aria-expanded', 'true'); list.append(detailPanel(row, data)); } });
     if (!shown.length) list.append(empty('没有符合条件的模型组合。'));
     const unknown = data.five.capacities.find(c => c.effort === 'unknown');
     const noBudget = !data.five.budget.costUsd && !data.week.budget.costUsd;
@@ -252,10 +252,13 @@
   function capCell(c, w, max, study) {
     const cell = el('div', { class: `ms-cap ${w}` });
     if (c.capacityTokens != null) {
-      cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: tokens(c.capacityTokens) }), el('small', { text: c.callsPerWindow ? `≈ ${number(c.callsPerWindow)} 次调用` : money(c.capacityCostUsd) })]));
+      // 整窗的等价 API 费用对每个模型都一样（就是上面的整窗预算），不在格子里重复；下面一行写调用次数和还剩多少
+      cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: tokens(c.capacityTokens) })]));
       const meter = el('div', { class: 'ms-meter' }, [paint(el('i', { class: 'full' }), { width: `${Math.max(1.5, c.capacityTokens / (max[w] || 1) * 100).toFixed(2)}%` })]);
       if (c.remainingTokens != null) meter.append(paint(el('i', { class: 'left' }), { width: `${Math.max(0, c.remainingTokens / (max[w] || 1) * 100).toFixed(2)}%` }));
       cell.append(meter);
+      const sub = [c.callsPerWindow ? `≈ ${number(c.callsPerWindow)} 次调用` : null, c.remainingTokens != null ? `本周期还剩 ${tokens(c.remainingTokens)}` : null].filter(Boolean);
+      if (sub.length) cell.append(el('small', { class: 'ms-cap-sub', text: sub.join(' · ') }));
     } else if (c.relative != null) {
       cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: `×${c.relative.toFixed(2)}` }), el('small', { text: 'API 价格参考比' })]),
         el('div', { class: 'ms-meter' }, [paint(el('i', { class: 'full relative' }), { width: `${Math.max(1.5, c.relative / (max.relative || 1) * 100).toFixed(2)}%` })]));
@@ -268,8 +271,10 @@
   function rankRow(row, i, max, data) {
     const c5 = row.five, cw = row.week;
     const basis = cw.capacityBasis === 'measured' || c5.capacityBasis === 'measured' ? ['样本外推', 'measured'] : c5.priceBasis === 'price' ? ['价格表', 'price'] : c5.priceBasis ? ['按价模拟', 'cost'] : null;
+    const lp = c5.listPrice;
     const meta = [
-      c5.costPerMTokens != null ? `${money(c5.costPerMTokens)} / 百万 Tokens` : null,
+      lp ? `输入 ${price$(lp.input)} · 输出 ${price$(lp.output)} / 百万` : null,
+      c5.costPerMTokens != null ? `综合 ${price$(c5.costPerMTokens)} / 百万 Tokens` : null,
       c5.tokensPerCall ? `单次调用${c5.tokensPerCallBasis === 'scaled' ? '≈' : '约'} ${tokens(c5.tokensPerCall)}` : null,
       c5.recentTokens ? `30 天用了 ${tokens(c5.recentTokens)}` : '30 天没用过'
     ].filter(Boolean);
@@ -290,35 +295,74 @@
       capCell(cw, 'week', max, data.week)
     ]);
     paint(node, { '--i': Math.min(i, 24) });
-    node.setAttribute('aria-label', detail(row, data).replaceAll('\n', '，'));
-    return tipOn(node, detail(row, data));
+    // 0.3.14：悬停不再弹一大段文字；点一下（或回车 / 空格）在这一行下面展开详情
+    node.setAttribute('role', 'button');
+    node.setAttribute('aria-expanded', 'false');
+    node.setAttribute('aria-label', `${row.model} · ${row.efforts.map(levelName).join(' / ')}，点一下看详情`);
+    node.append(el('span', { class: 'ms-row-toggle', 'aria-hidden': 'true' }, [icon('chevron')]));
+    const toggle = () => {
+      const open = !Q.open.has(row.key);
+      if (open) Q.open.add(row.key); else Q.open.delete(row.key);
+      node.classList.toggle('open', open); node.setAttribute('aria-expanded', String(open));
+      const next = node.nextElementSibling;
+      if (next?.classList.contains('ms-detail')) next.remove();
+      if (open) {
+        const panel = detailPanel(row, data);
+        node.after(panel);
+        if (!reducedMotion.matches) panel.animate([{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'ease-out' });
+      }
+    };
+    node.addEventListener('click', e => { if (!e.target.closest('button, a')) toggle(); });
+    node.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === node) { e.preventDefault(); toggle(); } });
+    return node;
   }
 
-  function detail(row, data) {
-    const zh = window.PulseI18n?.lang() !== 'en';
-    const lines = [`${row.model} · ${row.efforts.map(e => levelName(e) + (zh && LEVEL[e] && STRENGTH[e] ? `（${LEVEL[e]}）` : '')).join(' / ')}`];
-    if (row.efforts.length > 1) lines.push('这几个等级共享价格参考；缺少专属数据，不代表官方扣额相同');
-    for (const [w, label] of WINDOWS) {
-      const c = row[w], b = data[w].budget;
-      if (c.capacityTokens != null) lines.push(`${label}整窗：约 ${number(c.capacityTokens)} Tokens${c.capacityCostUsd != null ? `（${money(c.capacityCostUsd)} API 等价）` : ''}${c.callsPerWindow ? ` · 约 ${number(c.callsPerWindow)} 次调用` : ''}${c.remainingTokens != null ? ` · 本周期还剩约 ${tokens(c.remainingTokens)}` : ''}`);
-      else if (c.relative != null) lines.push(`${label}整窗：${b.costUsd == null ? '样本不足，' : ''}API 价格参考比 ×${c.relative.toFixed(2)}`);
-      if (c.estimatedTokens != null) lines.push(`${label}实测：${c.intervals} 个纯区间、${c.quotaPoints.toFixed(0)} 个百分点，约 ${tokens(c.estimatedTokens)}（${c.confidence === 'medium' ? '样本较充分' : '初步参考'}）`);
-    }
-    if (row.five.capacityBasis === 'cost' || row.week.capacityBasis === 'cost') lines.push('按价模拟：假设扣额与 API 费用成比例，未被官方确认，不是实测额度。');
+  /**
+   * 展开的详情（0.3.14）：以前悬停弹出的那一大段文字，分成两个整窗的小卡片 + 几行「项目 / 内容」+ 注意事项。
+   */
+  function detailPanel(row, data) {
     const c = row.five;
+    const winCard = ([w, label]) => {
+      const x = row[w], b = data[w].budget;
+      const body = [];
+      if (x.capacityTokens != null) {
+        body.push(el('div', { class: 'ms-dw-value' }, [el('strong', { text: tokens(x.capacityTokens) }), el('small', { text: 'Tokens' })]));
+        if (x.capacityCostUsd != null) body.push(el('div', { class: 'ms-dw-usd' }, [el('b', { text: money(x.capacityCostUsd) }), el('small', { text: 'API 等价' })]));
+        const stats = [x.callsPerWindow ? `约 ${number(x.callsPerWindow)} 次调用` : null, x.remainingTokens != null ? `本周期还剩约 ${tokens(x.remainingTokens)}` : null].filter(Boolean);
+        if (stats.length) body.push(el('div', { class: 'ms-dw-stats' }, stats.map(t => el('span', { text: t }))));
+      } else if (x.relative != null) {
+        body.push(el('div', { class: 'ms-dw-value' }, [el('strong', { text: `×${x.relative.toFixed(2)}` }), el('small', { text: 'API 价格参考比' })]));
+        if (b.costUsd == null) body.push(el('div', { class: 'ms-dw-stats' }, [el('span', { text: '样本不足，暂不折算绝对容量' })]));
+      } else body.push(el('div', { class: 'ms-dw-value' }, [el('strong', { class: 'muted', text: '—' }), el('small', { text: '价格表里没有这个型号' })]));
+      if (x.estimatedTokens != null) body.push(el('p', { class: 'ms-dw-measured', text: `实测：${x.intervals} 个纯区间、${x.quotaPoints.toFixed(0)} 个百分点，约 ${tokens(x.estimatedTokens)}（${x.confidence === 'medium' ? '样本较充分' : '初步参考'}）` }));
+      return el('div', { class: `ms-dw ${w}` }, [el('div', { class: 'ms-dw-head' }, [el('i', { class: 'ms-dot' }), el('b', { text: `${label}整窗` })]), ...body]);
+    };
+    const facts = [];
+    const fact = (label, value, sub, extra) => facts.push(el('div', { class: 'ms-fact' }, [el('dt', { text: label }), el('dd', {}, [value ? el('span', { text: value }) : null, extra || null, sub ? el('small', { text: sub }) : null])]));
     const basis = { combo: '这个组合自己最近 30 天的实际费用', model: '同模型其他等级的实际费用', price: '价格表 × 本账号的用量结构', effort: '价格表 × 本账号的用量结构，输出部分按思考等级倍数换算' }[c.priceBasis];
-    if (basis) lines.push(`单价：${money(c.costPerMTokens)} / 百万 Tokens，来自${basis}`);
-    lines.push(...priceNoteLines(c.priceNotes));
+    const priceBlock = priceDetail(c, data.five.priceSource, basis);
+    if (priceBlock) facts.push(...priceBlock);
+    const notes = priceNoteLines(c.priceNotes);
+    if (notes.length) fact('单价说明', '', '', el('ul', { class: 'ms-fact-list' }, notes.map(t => el('li', { text: t }))));
     if (c.effortBasis) {
       const ratio = `${levelName(c.effortAnchor)} → ${levelName(row.effort)} 输出约 ×${c.effortRatio.toFixed(2)}`;
-      lines.push(c.effortBasis === 'own' ? `思考等级：按你自己的用量实测，${ratio}` : c.effortBasis === 'benchmark' ? `思考等级：参考 Epoch AI 基准（${c.effortSource}）同型号，${ratio}` : `思考等级：参考 Epoch AI 基准的同家族平均，${ratio}`);
+      fact('思考等级', ratio, c.effortBasis === 'own' ? '按你自己的用量实测' : c.effortBasis === 'benchmark' ? `参考 Epoch AI 基准（${c.effortSource}）同型号` : '参考 Epoch AI 基准的同家族平均');
     }
-    if (c.tokensPerCall && c.tokensPerCallBasis !== 'scaled') lines.push(`最近 30 天：${number(c.recentCalls)} 次调用，平均每次 ${tokens(c.tokensPerCall)} Tokens`);
-    else if (c.tokensPerCall) lines.push(`没用过这个组合：单次调用按 ${levelName(c.effortAnchor || '')} 档的实际大小推算，约 ${tokens(c.tokensPerCall)} Tokens`);
-    if (row.origins.includes('user')) lines.push('你添加的：没验证这个账号能不能用，只按单价和思考等级消耗估算');
-    if (row.semantics === 'agent_count') lines.push('这个模型的等级控制协作智能体数量');
-    lines.push(`目录来源：${row.origins.map(o => ({ cache: '本机模型目录', docs: '官方文档', observed: '日志里出现过', user: '你添加的' })[o] || o).join('、')}`);
-    return lines.join('\n');
+    if (c.tokensPerCall && c.tokensPerCallBasis !== 'scaled') fact('单次调用', `平均每次 ${tokens(c.tokensPerCall)} Tokens`, `最近 30 天 ${number(c.recentCalls)} 次调用`);
+    else if (c.tokensPerCall) fact('单次调用', `约 ${tokens(c.tokensPerCall)} Tokens`, `没用过这个组合：按 ${levelName(c.effortAnchor || '')} 档的实际大小推算`);
+    if (c.recentTokens) fact('最近 30 天', `用了 ${tokens(c.recentTokens)} Tokens`);
+    fact('目录来源', '', '', el('span', { class: 'ms-fact-tags' }, row.origins.map(o => el('span', { class: 'ms-source-chip', text: ({ cache: '本机模型目录', docs: '官方文档', observed: '日志里出现过', user: '你添加的' })[o] || o }))));
+    const cautions = [
+      row.efforts.length > 1 ? '这几个等级共享价格参考；缺少专属数据，不代表官方扣额相同。' : null,
+      row.five.capacityBasis === 'cost' || row.week.capacityBasis === 'cost' ? '按价模拟：假设扣额与 API 费用成比例，未被官方确认，不是实测额度。' : null,
+      row.origins.includes('user') ? '你添加的：没验证这个账号能不能用，只按单价和思考等级消耗估算。' : null,
+      row.semantics === 'agent_count' ? '这个模型的等级控制协作智能体数量。' : null,
+    ].filter(Boolean);
+    return el('div', { class: 'ms-detail', role: 'region', 'aria-label': `${row.model} 详情`, 'data-key': row.key }, [
+      el('div', { class: 'ms-detail-wins' }, WINDOWS.map(winCard)),
+      el('dl', { class: 'ms-facts' }, facts),
+      cautions.length ? el('div', { class: 'ms-cautions' }, cautions.map(t => el('p', {}, [icon('notice'), el('span', { text: t })]))) : null,
+    ]);
   }
 
   function methodNote() {
@@ -335,6 +379,68 @@
         el('li', { text: '其他设备的用量、长时间没有采样、跨重置卡、套餐变化都会让结果偏离；API 等价费用不是订阅余额。目录里的模型、以及你自己添加的模型，不保证这个账号都能用。' })
       ]));
     return node;
+  }
+
+  /* ---------------- 单价明细（0.3.14）：标价四项、来源、综合单价怎么算的 ---------------- */
+
+  /** 每百万 Token 的价格：够大写两位小数，很小的保留到有效数字（$0.075）。 */
+  const price$ = n => n == null ? '—' : '$' + (n >= 1 || n === 0 ? n.toFixed(2) : n >= 0.1 ? n.toFixed(2) : Number(n.toPrecision(2)).toString());
+  const PARTS = [['fresh', '输入（未命中缓存）', 'input'], ['cacheRead', '缓存读（命中）', 'cacheRead'], ['cacheWrite', '缓存写', 'cacheWrite'], ['output', '输出（含推理）', 'output']];
+  function priceSourceText(lp, source) {
+    const kb = source ? `模型知识库 ${source.version}（${source.source === 'downloaded' ? '已在线更新' : '随软件内置'}${source.updatedAt ? `，${String(source.updatedAt).slice(0, 10)} 生成` : ''}）` : '模型知识库';
+    if (!lp) return '';
+    if (lp.auto) return `LiteLLM 公开价格表的「${lp.auto}」（每天自动同步，并和 OpenRouter 交叉核对）· ${kb}`;
+    return `手动维护的规则「${lp.note || lp.match}」（knowledge/manual.json：没有逐个型号的价格时按型号家族估算）· ${kb}`;
+  }
+  function priceDetail(c, source, basis) {
+    const lp = c.listPrice, out = [];
+    const fact = (label, children) => el('div', { class: 'ms-fact' }, [el('dt', { text: label }), el('dd', {}, children.filter(Boolean))]);
+    if (lp) {
+      const cell = (label, value, hint) => el('div', { class: 'ms-price-cell' }, [el('small', { text: label }), el('b', { text: value }), hint ? el('i', { text: hint }) : null]);
+      out.push(fact('标价', [
+        el('div', { class: 'ms-price-grid', role: 'list' }, [
+          cell('输入', price$(lp.input)),
+          cell('缓存读（命中）', price$(lp.cacheRead)),
+          cell('缓存写', lp.cacheWrite > 0 ? price$(lp.cacheWrite) : price$(lp.input), lp.cacheWrite > 0 ? null : '没有单独价，按输入价'),
+          cell('输出', price$(lp.output)),
+        ]),
+        el('small', { text: '单位：美元 / 每百万 Tokens。推理（思考）Token 按输出价计。' }),
+        el('small', { class: 'ms-price-source', text: `来源：${priceSourceText(lp, source)}` }),
+        priceTags(c.priceNotes).length ? el('span', { class: 'ms-fact-tags' }, priceTags(c.priceNotes)) : null,
+      ]));
+    } else {
+      out.push(fact('标价', [el('span', { text: '价格表里没有这个型号' }), el('small', { text: '拆不出输入 / 输出单价；综合单价只能取本机日志里这个型号的实际费用。' })]));
+    }
+    if (c.costPerMTokens == null) return out;
+    const m = c.priceMix, rows = [];
+    if (m) {
+      const total = m.fresh + m.cacheRead + m.cacheWrite + m.output;
+      // 没有标价（价格表里没有这个型号）：只列 Token 结构，不编每一项的价格
+      const unit = lp ? { fresh: lp.input, cacheRead: lp.cacheRead, cacheWrite: lp.cacheWrite > 0 ? lp.cacheWrite : lp.input, output: lp.output } : null;
+      let recomputed = 0;
+      const bar = el('div', { class: 'ms-mix-bar', 'aria-hidden': 'true' });
+      for (const [k, label] of PARTS) {
+        if (!m[k]) continue;
+        const share = m[k] / total, part = unit ? share * unit[k] : 0;
+        recomputed += part;
+        bar.append(paint(el('i', { class: `ms-mix-${k}` }), { width: `${Math.max(.6, share * 100).toFixed(2)}%` }));
+        rows.push(el('div', { class: 'ms-mix-row' }, [el('i', { class: `ms-mix-dot ms-mix-${k}` }), el('span', { text: label }), el('span', { class: 'ms-mix-share', text: `${(share * 100).toFixed(share < .001 ? 2 : 1)}%` }), unit ? el('span', { class: 'ms-mix-calc', text: `× ${price$(unit[k])} = ${price$(part)}` }) : el('span')]));
+      }
+      const from = { combo: `这个组合最近 30 天 ${number(m.requests)} 条请求的 Token 结构`, model: `同模型最近 30 天 ${number(m.requests)} 条请求的 Token 结构`, account: `本账号最近 30 天 ${number(m.requests)} 条请求的 Token 结构`, default: '本机还没有用量，用默认结构（大量缓存读、少量输出）', effort: `从 ${levelName(c.effortAnchor || '')} 档的实际 Token 结构出发，输出部分 ×${(c.effortRatio ?? 1).toFixed(2)}` }[m.basis];
+      const actual = c.priceBasis === 'combo' || c.priceBasis === 'model';
+      const differs = unit && actual && Math.abs(recomputed * 1 - c.costPerMTokens) / c.costPerMTokens > .02;
+      out.push(fact('综合单价', [
+        el('span', { class: 'ms-price-total', text: `${price$(c.costPerMTokens)} / 百万 Tokens` }),
+        el('small', { text: actual ? '= 这些请求的实际费用合计 ÷ Tokens 合计' : '= 每一项占的比例 × 它的标价，加起来' }),
+        bar,
+        el('div', { class: 'ms-mix-rows' }, rows),
+        el('small', { text: `比例来自${from}。` }),
+        differs ? el('small', { class: 'ms-price-warn', text: `按上面的标价重算是 ${price$(recomputed)}，和实际费用不一样：日志里有些请求带了客户端自报的费用，或者期间单价变过。` }) : null,
+      ]));
+    } else {
+      out.push(fact('综合单价', [el('span', { class: 'ms-price-total', text: `${price$(c.costPerMTokens)} / 百万 Tokens` }), basis ? el('small', { text: `来自${basis}` }) : null]));
+    }
+    return out;
   }
 
   /* ---------------- 单价说明（0.3.13）：优惠价 / 标价不同 / 单价刚更新 ---------------- */
@@ -361,10 +467,10 @@
       out.push(`优惠价${notes.promo.until ? `（到 ${notes.promo.until}）` : '（结束时间未公布）'}：优惠结束后单价会变，美元估值会跟着变。`);
       if (notes.promo.note) out.push(notes.promo.note);
     }
-    if (notes.dispute && p) out.push(`标价不同：LiteLLM ${usd(p.input)} / ${usd(p.output)}，OpenRouter ${usd(notes.dispute.openrouter.input)} / ${usd(notes.dispute.openrouter.output)}（每百万 token，输入 / 输出）；按 LiteLLM 算。`);
+    if (notes.dispute && p) out.push(`标价不同：LiteLLM ${usd(p.input)} / ${usd(p.output)}，OpenRouter ${usd(notes.dispute.openrouter.input)} / ${usd(notes.dispute.openrouter.output)}（每百万 token，输入 / 输出），按 LiteLLM 算。`);
     if (recentChange(notes) && p) {
       const q = notes.changed.previous, d = new Date(notes.changed.at + 'T00:00:00');
-      out.push(`单价 ${d.getMonth() + 1}/${d.getDate()} 更新：${usd(q.input)} / ${usd(q.output)}（缓存读 ${usd(q.cacheRead)}）→ ${usd(p.input)} / ${usd(p.output)}（缓存读 ${usd(p.cacheRead)}）。这之前的美元估值按旧单价算，所以前后差别会比较大；Tokens 不受影响。`);
+      out.push(`单价 ${d.getMonth() + 1}/${d.getDate()} 更新：${usd(q.input)} / ${usd(q.output)}（缓存读 ${usd(q.cacheRead)}）→ ${usd(p.input)} / ${usd(p.output)}（缓存读 ${usd(p.cacheRead)}）。这之前的美元估值按旧单价算，所以前后差别会比较大，Tokens 不受影响。`);
     }
     return out;
   }
@@ -748,8 +854,18 @@
     const bandTop = 10, bandH = 58, laneTop = bandTop + bandH + 26, laneH = 34, lanes = Math.max(1, combos.length) + (hasOff ? 1 : 0);
     const h = laneTop + lanes * laneH + 26;
     const x = at => left + (Math.min(end, Math.max(start, at)) - start) / span * (right - left);
+    /*
+     * 0.3.14：色块、竖条、曲线用 xs（不夹在视图边上，最多伸出一屏），再用 clipPath 裁掉绘图区外面的部分。
+     * 以前用 x 夹在两边：平移时边上的色块被挤扁再弹开，看起来一抽一抽的。
+     */
+    const xs = at => left + (Math.min(end + span, Math.max(start - span, at)) - start) / span * (right - left);
     const inView = (a, b) => b > start && a < end;
     const node = svg('svg', { viewBox: `0 0 ${width} ${h}`, width, height: h, role: 'group', 'aria-label': '模型与思考等级时间线', class: 'ms-tl-svg' });
+    const clipId = `ms-clip-${w}`;
+    const defs = svg('defs'), clip = svg('clipPath', { id: clipId });
+    clip.append(svg('rect', { x: left, y: 0, width: right - left, height: h }));
+    defs.append(clip); node.append(defs);
+    const plot = () => svg('g', { class: 'ms-plot', 'clip-path': `url(#${clipId})` });
     const toTime = clientX => { const box = node.getBoundingClientRect(); return start + ((clientX - box.left) * (width / box.width) - left) / (right - left) * span; };
 
     const { step, ticks } = ticksFor(start, end, right - left);
@@ -761,12 +877,13 @@
       node.append(label);
     }
 
-    // 上方：采样区间里说不清的（缺口、刚发生还没下结论）淡色；本机以外的（可点）橙色
+    // 上方：采样区间里说不清的（缺口、刚发生还没下结论）灰色；本机以外的（可点）橙色
+    const bands = plot(); node.append(bands);
     for (const interval of study.attribution?.intervals || []) {
       if (interval.kind === 'local_present' || !inView(interval.from, interval.to)) continue;
-      const band = svg('rect', { x: x(interval.from), y: bandTop, width: Math.max(2, x(interval.to) - x(interval.from)), height: bandH, class: 'ms-unmatched-band' + (interval.kind === 'unmatched' ? ' off' : ''), tabindex: 0, role: 'img', 'aria-label': interval.kind === 'unmatched' ? '本机以外的额度增长' : '说不清来源的额度增长' });
+      const band = svg('rect', { x: xs(interval.from), y: bandTop, width: Math.max(2, xs(interval.to) - xs(interval.from)), height: bandH, class: 'ms-unmatched-band' + (interval.kind === 'unmatched' ? ' off' : ''), tabindex: 0, role: 'img', 'aria-label': interval.kind === 'unmatched' ? '本机以外的额度增长' : '说不清来源的额度增长' });
       tipOn(band, date(interval.from) + ' → ' + date(interval.to) + '\n官方增加 ' + interval.points.toFixed(2) + ' 个百分点\n' + (interval.kind === 'unmatched' ? '同期本机没有 Code 请求：算作本机以外的使用（聊天、其他设备），不计入容量折算。点下方「本机以外」轨道可以标注用了什么模型。' : '采样缺口或刚发生、还不能判断来源，不计入容量折算。'));
-      node.append(band);
+      bands.append(band);
     }
     const y = pct => bandTop + bandH - Math.min(100, Math.max(0, pct)) / 100 * bandH;
     for (const g of [0, 50, 100]) {
@@ -774,15 +891,26 @@
       const t = svg('text', { class: 'axis', x: left - 8, y: y(g) + 4, 'text-anchor': 'end' }); t.textContent = `${g}%`; node.append(t);
     }
     const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = '官方总池已用'; node.append(bandLabel);
-    const track = study.track.filter(p => p.at <= end);
+    // 官方已用的阶梯线：只取视图前后各一屏内的采样；从视图左边（或第一次采样）开始画
+    const track = study.track.filter(p => p.at <= end + span);
     if (track.length) {
-      const before = [...track].reverse().find(p => p.at <= start);
-      let d = `M${x(start).toFixed(1)},${y(before ? before.pct : 0).toFixed(1)}`;
-      for (const p of track) if (p.at > start) d += ` H${x(p.at).toFixed(1)} V${y(p.pct).toFixed(1)}`;
-      const tail = Math.min(end, sel.active ? study.now : track.at(-1).at);
-      d += ` H${x(tail).toFixed(1)}`;
-      node.append(svg('path', { class: 'ms-quota-area', d: `${d} V${y(0)} Z` }), svg('path', { class: 'ms-quota-line', d, pathLength: 1, 'stroke-dasharray': 1 }));
-      if (tail >= start) node.append(svg('circle', { class: 'ms-quota-dot', cx: x(tail), cy: y(pctAt(study, tail)), r: 3.5 }));
+      const before = [...track].reverse().find(p => p.at <= start - span);
+      const head = Math.max(start - span, track[0].at), tail = sel.active ? study.now : track.at(-1).at;
+      if (tail > head) {
+        const y0 = y(0).toFixed(1), x0 = xs(head).toFixed(1);
+        let body = '';
+        for (const p of track) if (p.at > head) body += ` H${xs(p.at).toFixed(1)} V${y(p.pct).toFixed(1)}`;
+        body += ` H${xs(tail).toFixed(1)}`;
+        const startY = y(before ? before.pct : track[0].pct).toFixed(1);
+        // 面积从底边升起、沿着阶梯走、再落回底边（以前是连回线的起点，放大后起点高了，面积就被斜着切掉一大块）
+        const curve = plot();
+        const line = svg('path', { class: 'ms-quota-line', d: `M${x0},${startY}${body}` });
+        // 描线动画只在第一次出现时用；动画结束就去掉虚线参数（留着的话放大到很细时线会被切掉）
+        if (animate) { line.setAttribute('pathLength', '1'); line.setAttribute('stroke-dasharray', '1'); const plain = () => { line.removeAttribute('pathLength'); line.removeAttribute('stroke-dasharray'); }; line.addEventListener('animationend', plain, { once: true }); setTimeout(plain, 2000); }
+        curve.append(svg('path', { class: 'ms-quota-area', d: `M${x0},${y0} V${startY}${body} V${y0} Z` }), line);
+        if (tail >= start && tail <= end) curve.append(svg('circle', { class: 'ms-quota-dot', cx: xs(tail), cy: y(pctAt(study, tail)), r: 3.5 }));
+        node.append(curve);
+      }
     }
 
     // 「本机以外」轨道：检测到的（虚线，待标注）和用户标注的（实心，写着模型）
@@ -792,10 +920,11 @@
       const lane = svg('g', { class: 'ms-lane ms-off-lane' });
       const name = svg('text', { class: 'ms-lane-name', x: 4, y: cy - 2 }); name.textContent = '本机以外';
       const sub = svg('text', { class: 'ms-lane-level', x: 4, y: cy + 12 }); sub.textContent = '聊天 / 其他设备';
-      lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width, height: laneH - 4, rx: 6 }), name, sub, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }));
+      const blocks = plot();
+      lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width, height: laneH - 4, rx: 6 }), name, sub, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }), blocks);
       const block = (item, marked) => {
         if (!inView(item.from, item.to)) return;
-        const bx = x(item.from), bw = Math.max(8, x(item.to) - bx);
+        const bx = xs(item.from), bw = Math.max(8, xs(item.to) - bx);
         const state = !marked ? 'detected' : item.ignored ? 'ignored' : item.model ? 'marked' : 'pending';
         const picked = T.pick?.w === w && pickKey(T.pick.item) === pickKey(item);
         const rect = svg('rect', { class: `ms-off ${state}${picked ? ' picked' : ''}`, x: bx, y: cy - 9, width: bw, height: 18, rx: 4, tabindex: 0, role: 'button', 'data-off': marked ? item.id : `${item.from}-${item.to}` });
@@ -809,13 +938,13 @@
         const open = () => pickOff(w, marked ? item : { from: item.from, to: item.to, points: item.points });
         rect.addEventListener('click', e => { e.stopPropagation(); if (host._dragged || T.split) return; open(); });
         rect.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
-        lane.append(rect);
+        blocks.append(rect);
         if (bw > 70) {
           const t = svg('text', { class: 'ms-off-text' + (marked ? ' marked' : ''), x: bx + 6, y: cy + 4 });
           t.textContent = state === 'marked' ? `${item.model} · ${levelName(item.effort)}` : state === 'ignored' ? '已删除' : `待标注 +${item.points.toFixed(1)}%`;
           if (state === 'marked') t.setAttribute('translate', 'no');
           if (state === 'ignored') t.classList.add('ignored');
-          lane.append(t);
+          blocks.append(t);
         }
       };
       off.detected.forEach(item => block(item, false));
@@ -841,14 +970,15 @@
       const level = svg('text', { class: 'ms-lane-level', x: 30, y: cy + 12 }); level.textContent = `${levelName(combo.effort)} · ${durationText(combo.activeMs)} · ${shareText(combo.activeMs, sel.endAt - sel.startAt)}`;
       lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width, height: laneH - 4, rx: 6 }), logo, name, level, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }));
       const title = svg('title'); title.textContent = combo.model; name.append(title);
+      const runs = plot(); lane.append(runs);
       for (const run of runsOf(combo, study.binMs, span)) {
         if (!inView(run.startAt, run.endAt)) continue;
-        const rx = x(run.startAt), rw = Math.max(5, x(run.endAt) - rx);
+        const rx = xs(run.startAt), rw = Math.max(5, xs(run.endAt) - rx);
         const rect = svg('rect', { class: 'ms-run', x: rx, y: cy - 7, width: rw, height: 14, rx: Math.min(4, rw / 2), tabindex: 0 });
         paint(rect, { fill: color, fillOpacity: alphaFor(combo.effort) });
         const text = `${combo.model} · ${levelName(combo.effort)}\n${date(run.firstAt)} – ${hm(run.lastAt)}\n${number(run.count)} 条请求 · ${number(run.calls)} 次调用 · ${tokens(run.tokens)} Tokens${run.costUsd != null ? ` · ${money(run.costUsd)}` : ''}`;
         rect.setAttribute('aria-label', text.replaceAll('\n', '，'));
-        lane.append(tipOn(rect, text));
+        runs.append(tipOn(rect, text));
       }
       lane.addEventListener('click', () => { if (!host._dragged) { T.focus = T.focus === combo.key ? '' : combo.key; applyFocus(); } });
       node.append(lane);
