@@ -9,52 +9,67 @@ const catalog=[{model:'claude-sonnet-5',effort:'high',origins:['observed']}];
 const result=analyzeModelStudy(q,samples,rows,catalog,now);
 assert.equal(result.selected.used,66,'官方账号总额度必须保持真实值');
 assert.equal(result.totals.tokens,3000,'本机 Code Token 不因聊天消耗而改变');
-assert.equal(result.budget.costUsd,null,'未确认使用来源时，聊天和 Code 同期消费不能被强行换成整窗美元预算');
-assert.equal(result.capacities[0].capacityTokens,null,'不得把全账号百分点分配给仅可见的 Code 请求');
+// 0.3.9：同期有本机请求的区间直接折算（同一时刻也在聊天分不出来，只会让容量略偏小），不再要求校准
+assert.ok(Math.abs(result.budget.costUsd-0.03/66*100)<1e-9,'每个区间都有本机请求：按本机费用 ÷ 涨幅折算');
 const report=analyzeAccount('claude',samples,[{hour:now-3600000,account:id,model:'claude-sonnet-5',tokens:3000,costUsd:.03,requests:3}],now);
-assert.equal(report.week.used,66);assert.equal(report.week.capacity,undefined,'旧容量入口也必须停止未经归因的整窗倒推');
+assert.equal(report.week.used,66);assert.equal(report.week.capacity,undefined,'按小时账的旧倒推入口仍然关闭（共享账号的容量由 report.ts 用干净区间补上）');
 assert.equal(capacityHistory(samples,[], 'week',now).unavailableReason,'unattributed');
-assert.equal(analyzeWindow({current:66,startAt:now-3600000,resetAt:now+3600000,points:[],lookbackMs:3600000,minSpanMs:1,minElapsedMs:1},[{hour:now-3600000,model:'claude-sonnet-5',tokens:3000,costUsd:.03,requests:3}],now).capacity,undefined);
-console.log('PASS shared-pool counterexample: official usage preserved; unverified absolute capacity withheld');
-
-const { calibrationContains, updateCalibration, readCalibrations, calibrationStatus, forgetCalibrations } = require('../build/core/quota-calibration');
-// 同期聊天无法靠“区间内出现 Code 请求”识别，默认必须仍然拒绝绝对换算。
-assert.equal(result.attribution.unmatchedPoints,0);
-assert.equal(result.attribution.simultaneousUsageUnknown,true);
-for (const kind of ['grok','chatgpt']) {
- const aid=kind+':shared-test',model=kind==='grok'?'grok-4.6':'gpt-5.5';
- const copy=analyzeModelStudy({...q,kind,accountId:aid},samples.map(s=>({...s,account:aid})),rows.map(r=>({...r,model,account:{...r.account,id:aid}})),[{model,effort:'high',origins:['observed']}],now);
- assert.equal(copy.selected.used,66);assert.equal(copy.totals.tokens,3000);assert.equal(copy.budget.costUsd,null);
+console.log('PASS shared-pool baseline: official usage preserved; clean local intervals converted without calibration');
+// 0.3.9：用户在设置里声明「只在本机用 Code，不聊天」的账号，按以前的方式直接折算
+{
+  const local=analyzeAccount('claude',samples,[{hour:now-3600000,account:id,model:'claude-sonnet-5',tokens:3000,costUsd:.03,requests:3}],now,undefined,true);
+  assert.equal(local.quotaScope,'local_only');
+  assert.ok(Math.abs(local.week.capacity.tokens-3000/0.66)<1,'只在本机用 Code：本机用量 ÷ 已用百分比');
+  assert.equal(local.week.capacityReason,undefined);
+  assert.equal(local.capacityHistory.week.unavailableReason,undefined,'历史容量恢复显示');
+  const study=analyzeModelStudy(q,samples,rows,catalog,now,[],true);
+  assert.ok(study.budget.costUsd>0&&study.localOnly===true);
+  console.log('PASS local-only accounts: capacity, history and model budget computed directly');
 }
+
+// 本机以外的消耗：额度涨了、同期（前后 5 分钟）本机没有请求 → 自动识别，不进折算
+const { cleanCapacity, updateMark, readMarks, forgetMarks } = require('../build/core/quota-offmachine');
 const deltas=[0,2,4,6,6,6,6,6,26,46,66,66];
 const history=deltas.map((week,i)=>({...samples[0],at:now-(11-i)*5*minute,week,five:week}));
 const local=rows.map((r,i)=>({...r,at:now-(51-i*5)*minute}));
-const clean={id:'clean',kind:'claude',accountId:id,startAt:now-95*minute,endAt:now-35*minute,confirmedLocalOnly:true};
-const protectedReference=analyzeModelStudy(q,history,local,catalog,now,[clean]);
-assert.equal(protectedReference.selected.used,66);
-assert.equal(protectedReference.totals.tokens,3000);
-assert.ok(Math.abs(protectedReference.budget.costUsd-.5)<1e-9,'后来的聊天不污染以前的本机校准参考');
-assert.ok(Math.abs(protectedReference.capacities[0].capacityTokens-50000)<1e-8);
-assert.ok(Math.abs(protectedReference.capacities[0].remainingTokens-17000)<1e-8,'剩余预测仍使用真实 34% 余量，不能扣掉聊天后虚增');
-assert.ok(protectedReference.attribution.unmatchedPoints>=20);
-const badScope={...clean,id:'mixed-session',startAt:now-65*minute,endAt:now-5*minute};
-const quarantined=analyzeModelStudy(q,history,local,catalog,now,[badScope]);
-assert.equal(quarantined.budget.costUsd,null,'校准段发现未匹配增长，整段暂停采用，不能只挑好看的区间');
-assert.ok(quarantined.attribution.blockedSessionIds.includes('mixed-session'));
-assert.equal(quarantined.selected.used,66);
-assert.equal(quarantined.capacities[0].costUsd,.03,'保留本机真实费用参考');
-const duplicated=analyzeModelStudy(q,history,local,catalog,now,[clean,{...clean,id:'duplicate'}]);assert.equal(duplicated.budget.points,6,'确认范围重叠不得重复计量');
-const sparse=history.filter((_,i)=>i===0||i>=9);
-const unresolved=analyzeModelStudy(q,sparse,local,catalog,now);assert.ok(unresolved.attribution.uncertainPoints>0);assert.equal(unresolved.budget.costUsd,null);
-// API 价格不同不代表官方扣额权重相同：同组合观测不能被混合价格预算覆盖。
-const perModelSamples=Array.from({length:7},(_,i)=>({...samples[0],at:now-(6-i)*5*minute,week:i*2,five:i*2}));
-const perModelRows=Array.from({length:6},(_,i)=>({...rows[0],key:'m'+i,at:now-(6-i)*5*minute+minute,model:i<3?'claude-sonnet-5':'claude-opus-5-5',costUsd:i<3?.01:.02}));
-const priority=analyzeModelStudy(q,perModelSamples,perModelRows,[...catalog,{model:'claude-opus-5-5',effort:'high',origins:['observed']}],now,[{...badScope,id:'per-model',startAt:now-55*minute,endAt:now+5*minute}]);
-for(const c of priority.capacities){assert.equal(c.capacityTokens,50000);assert.equal(c.capacityBasis,'measured');}
-const twoCycles=[{at:now-45*minute,five:0,fiveReset:new Date(now-30*minute).toISOString()},{at:now-35*minute,five:8,fiveReset:new Date(now-30*minute).toISOString()},{at:now-25*minute,five:0,fiveReset:new Date(now+270*minute).toISOString()},{at:now-15*minute,five:8,fiveReset:new Date(now+270*minute).toISOString()}].map(s=>({...s,account:id}));
-const tooFew=analyzeModelStudy({...q,window:'five'},twoCycles,[{...rows[0],at:now-40*minute},{...rows[1],at:now-20*minute}],catalog,now,[{...badScope,id:'small-sample'}]);
-assert.equal(tooFew.budget.intervals,2);assert.equal(tooFew.budget.cycles,2);assert.equal(tooFew.budget.points,16);assert.equal(tooFew.budget.confidence,'insufficient');assert.equal(tooFew.budget.costUsd,null,'高百分点/多周期不能绕过最低样本数');
-console.log('PASS shared-pool safeguards across providers, quiet gaps, concurrent-use ambiguity, reference isolation, quarantine and official remaining quota');
+{
+  const study=analyzeModelStudy(q,history,local,catalog,now);
+  assert.equal(study.selected.used,66,'官方已用保持真实值');
+  assert.ok(Math.abs(study.budget.costUsd-.5)<1e-9,'只用本机区间：0.03 美元 ÷ 6 个点');
+  assert.ok(Math.abs(study.capacities[0].capacityTokens-50000)<1e-8);
+  assert.ok(Math.abs(study.capacities[0].remainingTokens-17000)<1e-8,'剩余预测用真实 34% 余量');
+  assert.equal(study.offMachine.points,40,'后面两段本机没有请求的涨幅算作本机以外');
+  assert.equal(study.offMachine.detected.length,1,'相邻的本机以外区间合成一段');
+  // 紧挨着本机请求（5 分钟内）的涨幅说不清，不当成本机以外
+  assert.ok(study.offMachine.detected[0].from>=now-15*minute);
+  // 标注：这段在网页上用 Sonnet high → 不再显示成待标注，按容量表换算成等价 Token
+  const mark={id:'m1',kind:'claude',accountId:id,from:now-20*minute,to:now-5*minute,model:'claude-sonnet-5',effort:'high',source:'chat',note:'',updatedAt:now};
+  const marked=analyzeModelStudy(q,history,local,catalog,now,[],false,[mark]);
+  assert.equal(marked.offMachine.detected.length,0);
+  assert.equal(marked.offMachine.marks[0].points,60);
+  assert.equal(marked.offMachine.marks[0].equivalentTokens,30000,'60 个点 × 整窗 50000 Tokens');
+  // 标注盖住有本机请求的区间：可能混用，这个区间不进折算
+  const mixed=analyzeModelStudy(q,history,local,catalog,now,[],false,[{...mark,id:'m2',from:now-50*minute,to:now-46*minute}]);
+  assert.equal(mixed.excluded.offMachine,1);assert.equal(mixed.budget.points,4);
+  // 额度详情的容量（report.ts 用的同一套）：本机以外的 40 个点不进分母
+  const capacity=cleanCapacity('claude',history,local,[],'week',now);
+  assert.equal(capacity.current.tokens,50000);assert.equal(capacity.current.offPoints,40);
+  assert.equal(capacity.history.points[0].cleanPoints,6);assert.equal(capacity.history.basis,'clean');
+  // 区间有缺口（采样隔了半小时以上）说不清，不折算
+  const sparse=history.filter((_,i)=>i===0||i>=9);
+  const unresolved=analyzeModelStudy(q,sparse,local,catalog,now);assert.equal(unresolved.budget.costUsd,null);
+  // 两个周期各一个区间：样本数不够，不能绕过最低样本要求
+  const twoCycles=[{at:now-45*minute,five:0,fiveReset:new Date(now-30*minute).toISOString()},{at:now-35*minute,five:8,fiveReset:new Date(now-30*minute).toISOString()},{at:now-25*minute,five:0,fiveReset:new Date(now+270*minute).toISOString()},{at:now-15*minute,five:8,fiveReset:new Date(now+270*minute).toISOString()}].map(s=>({...s,account:id}));
+  const tooFew=analyzeModelStudy({...q,window:'five'},twoCycles,[{...rows[0],at:now-40*minute},{...rows[1],at:now-20*minute}],catalog,now);
+  assert.equal(tooFew.budget.intervals,2);assert.equal(tooFew.budget.confidence,'insufficient');assert.equal(tooFew.budget.costUsd,null);
+  for (const kind of ['grok','chatgpt']) {
+    const aid=kind+':shared-test',model=kind==='grok'?'grok-4.6':'gpt-5.5';
+    const copy=analyzeModelStudy({...q,kind,accountId:aid},history.map(s=>({...s,account:aid})),local.map(r=>({...r,model,account:{...r.account,id:aid}})),[{model,effort:'high',origins:['observed']}],now);
+    assert.equal(copy.selected.used,66);assert.equal(copy.offMachine.points,40);assert.ok(Math.abs(copy.budget.costUsd-.5)<1e-9);
+  }
+  console.log('PASS off-machine usage: detection, merge, lag guard, marks with token equivalents, mixed-mark exclusion, clean capacity, gaps and minimum samples across providers');
+}
+const { calibrationContains, updateCalibration, readCalibrations, calibrationStatus, forgetCalibrations } = require('../build/core/quota-calibration');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'tokenpulse-calibration-'));
 assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));
@@ -77,5 +92,17 @@ try {
  assert.throws(()=>updateCalibration({kind:'claude',accountId:id,action:'start',confirmedLocalOnly:true,durationMinutes:9999},now+92*minute));
  const long=updateCalibration({kind:'claude',accountId:id,action:'start',confirmedLocalOnly:true,durationMinutes:240},now+92*minute);assert.equal(long.active.endAt-long.active.startAt,240*minute);
  forgetCalibrations(id);assert.equal(readCalibrations().length,0,'完全删除账号同时清理校准记录');
- console.log('PASS forward-only explicit consent, warmup, account isolation, expiry, finish, revoke and purge');
+ // 本机以外的标注：新建 / 修改 / 删除 / 校验 / 完全删除账号时一起清掉
+ assert.throws(()=>updateMark({kind:'claude',accountId:id,from:now,to:now-minute,model:'m'},now),/晚于/);
+ assert.throws(()=>updateMark({kind:'claude',accountId:id,from:now-minute,to:now,model:''},now),/模型/);
+ assert.throws(()=>updateMark({kind:'claude',accountId:id,from:now+86400000,to:now+86400000+minute,model:'m'},now),/还没发生/);
+ let marks=updateMark({kind:'claude',accountId:id,from:now-30*minute,to:now-10*minute,model:'claude-opus-5',effort:'high',source:'chat',note:'网页'},now);
+ assert.equal(marks.length,1);assert.equal(marks[0].effort,'high');
+ marks=updateMark({kind:'claude',accountId:id,id:marks[0].id,from:now-40*minute,to:now-10*minute,model:'claude-opus-5',effort:'bogus'},now);
+ assert.equal(marks.length,1);assert.equal(marks[0].from,now-40*minute);assert.equal(marks[0].effort,'unknown','不认识的等级按不确定存');
+ assert.throws(()=>updateMark({kind:'claude',accountId:'claude:other',action:'delete',id:marks[0].id},now));
+ updateMark({kind:'claude',accountId:id,from:now-5*minute,to:now,model:'claude-opus-5'},now);
+ assert.equal(updateMark({kind:'claude',accountId:id,action:'delete',id:marks[0].id},now).length,1);
+ forgetMarks(id);assert.equal(readMarks().length,0);
+ console.log('PASS calibration store (kept for old records) and off-machine marks: create, edit, validate, delete, purge');
 } finally { if(oldDir===undefined)delete process.env.TOKENPULSE_DATA_DIR;else process.env.TOKENPULSE_DATA_DIR=oldDir;assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(root).startsWith('tokenpulse-calibration-'));fs.rmSync(root,{recursive:true,force:true}); }

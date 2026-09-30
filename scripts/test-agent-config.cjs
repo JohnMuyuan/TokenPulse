@@ -30,6 +30,18 @@ function crashSwitch(id, mode, destination) {
   assert.equal(child.status, 86, child.stderr || 'Crash injection not reached');
 }
 const cases = [
+  ['CC Switch metadata and proxy overrides persist and expose through view', async () => {
+    const id = sw.saveProvider(input('MetaQA', { app: 'claude', websiteUrl: 'https://meta.example', category: 'partner', apiKeyField: 'ANTHROPIC_API_KEY', requestHeaders: { 'x-cc-switch': '1' }, requestBody: { temperature: 0.2 }, envOverrides: { CLAUDE_CODE_DISABLE_THINKING: '1' }, dailyLimitUsd: 3.5, monthlyLimitUsd: 50, promptCacheRouting: 'enabled' }));
+    const row = sw.agentView().providers.find(p => p.id === id);
+    assert.equal(row.category, 'partner'); assert.equal(row.websiteUrl, 'https://meta.example'); assert.equal(row.requestHeaders['x-cc-switch'], '1'); assert.equal(row.requestBody.temperature, 0.2); assert.equal(row.envOverrides.CLAUDE_CODE_DISABLE_THINKING, '1'); assert.equal(row.promptCacheRouting, 'enabled');
+  }],
+
+  ['Saving more than 24 models rejects without truncating the provider', async () => {
+    const slots = Array.from({length:25}, (_,i) => ({role:'catalog', model:'model-'+i}));
+    const original = sw.agentView();
+    assert.throws(() => sw.saveProvider(input('TooMany', {app:'codex',upstream:'openai-responses',slots})), /24/);
+    assert.equal(sw.agentView().providers.length, original.providers.length);
+  }],
   ['Quoted dotted table names stay distinct from provider hierarchy', async () => {
     const text = 'model_provider = "foo.bar"\nmodel = "old"\n[model_providers."foo.bar"]\nbase_url = "https://original.example"\nexperimental_bearer_token = "fixture-dot"\nwire_api = "responses"\n["model_providers.tokenpulse_route"]\nkeep = "unrelated"\n';
     write(codex(), text); const imported = sw.importCurrent('codex');

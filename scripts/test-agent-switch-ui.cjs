@@ -15,7 +15,7 @@ for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'GROK_HOME']) delete proce
 fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
 fs.mkdirSync(path.join(root, 'data'), { recursive: true });
 fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { keep: true }, env: { DISABLE_TELEMETRY: '1' } }));
-fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false }));
+fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' }));
 app.setPath('userData', path.join(root, 'electron'));
 app.commandLine.appendSwitch('lang', 'zh-CN');
 const watchdog = setTimeout(() => { console.error('FAIL agent switch UI timed out'); app.exit(1); }, 40000);
@@ -31,6 +31,8 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     }
   };
   try {
+    // 0.3.9 起改工具配置前会弹对比确认；这个测试不是测确认框，自动点「确认写入」（确认框在 test-agent-guard-ui.cjs 里单独测）
+    await evaluate("setInterval(() => document.querySelector('#pv-confirm .btn-accent')?.click(), 40)");
     const P = '#page-providers';
     const settings = () => JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'));
     const nav = id => evaluate(`document.querySelector('${P} .pv-nav [data-section=${id}]').click()`);
@@ -38,7 +40,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until("document.querySelector('[data-page=providers]')");
     await evaluate("navigate('providers')");
     // 概览：二级菜单 + 三家工具卡，没有 Gemini
-    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 8 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
+    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 9 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
     assert.equal(await evaluate(`document.querySelector('${P}').innerText.includes('Gemini')`), false, '页面上不能再有 Gemini');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'overview');
     await nav('desktop');
@@ -54,11 +56,11 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await evaluate("document.querySelector('#page-providers .pv-editor').requestSubmit()");
     assert.equal(await evaluate("document.querySelector('#page-providers .pv-nav-item.on').dataset.section"), 'edit-connect', '隐藏的必填模型不应阻止跳到缺失连接字段');
     await evaluate("document.querySelector('#page-providers [data-section=edit-back]').click()");
-    assert.equal(await evaluate("!!document.querySelector('#page-providers .pv-unsaved')"), true, '离开编辑不能静默丢失修改');
-    await evaluate("[...document.querySelectorAll('#page-providers .pv-unsaved button')].find(b => b.textContent === '继续编辑').click()");
+    assert.equal(await evaluate("!!document.querySelector('.tp-toast.pv-unsaved')"), true, '离开编辑不能静默丢失修改');
+    await evaluate("[...document.querySelectorAll('.tp-toast.pv-unsaved button')].find(b => b.textContent === '继续编辑').click()");
     assert.equal(await evaluate("document.querySelector('#page-providers input[name=name]').value"), 'QA Grok');
     await evaluate("document.querySelector('#page-providers [data-section=edit-back]').click()");
-    await evaluate("[...document.querySelectorAll('#page-providers .pv-unsaved button')].find(b => b.textContent === '放弃修改').click()");
+    await evaluate("[...document.querySelectorAll('.tp-toast.pv-unsaved button')].find(b => b.textContent === '放弃修改').click()");
     await nav('overview');
     // Local models fixture: no external account, no image or screenshot APIs.
     const modelsServer = http.createServer((_req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'qa-model-a' }, { id: 'qa-model-b' }] })); });
@@ -80,16 +82,40 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
           assert.deepEqual(await evaluate("[...document.querySelectorAll('#page-providers .pv-slot input[placeholder=\"实际请求模型\"]')].map(n => n.value)"), ['qa-model-a', 'qa-model-b'], '同角色模型必须填到第二行而不是覆盖第一行');
           await evaluate("document.querySelector('#page-providers .pv-fetched button').click()");
           assert.equal(await evaluate("document.querySelector('#page-providers input[name=model]').value"), 'qa-model-a');
-          await evaluate("[...document.querySelector('#page-providers .pv-slot .pv-levels').querySelectorAll('button')].find(b => b.textContent === 'low').click()");
-          assert.equal(await evaluate("[...document.querySelector('#page-providers .pv-slot .pv-levels').querySelectorAll('button')].find(b => b.textContent === 'low').getAttribute('aria-pressed')"), 'false');
+          await evaluate("document.querySelector('#page-providers .pv-slot .pv-level-trigger').click();[...document.querySelectorAll('#page-providers .pv-level-option')].find(r => r.textContent.includes('low')).querySelector('input').click()");
+          assert.equal(await evaluate("[...document.querySelectorAll('#page-providers .pv-level-option')].find(r => r.textContent.includes('low')).querySelector('input').checked"), false);
           await evaluate("(() => { const select = document.querySelector('#page-providers select[aria-label=\"默认思考等级\"]'); select.value = 'medium'; select.dispatchEvent(new Event('change')); })()");
+          // 0.3.9 界面修复：勾选后面板不收起；面板不伸出页面；Esc 只关面板不关编辑页；Codex 模型行各列在同一行
+          assert.equal(await evaluate("document.querySelector('#page-providers .pv-level-popover').hidden"), false, '勾选 / 换默认等级后面板要保持打开');
+          assert.equal(await evaluate("(() => { const p = document.querySelector('#page-providers .pv-level-popover').getBoundingClientRect(), page = document.querySelector('#page-providers').getBoundingClientRect(); return p.right <= page.right + 1 && p.left >= page.left - 1; })()"), true, '等级面板不能伸出页面');
+          await evaluate("document.querySelector('#page-providers .pv-level-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+          assert.equal(await evaluate("document.querySelector('#page-providers .pv-level-popover').hidden"), true, 'Esc 关掉等级面板');
+          assert.ok(await evaluate("document.querySelector('#page-providers .pv-editor') !== null"), 'Esc 不能连带关掉编辑页');
+          await evaluate("document.querySelector('#page-providers .pv-slot .pv-level-trigger').click()");
+          await evaluate("document.querySelector('#page-providers .pv-model-head').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))");
+          assert.equal(await evaluate("document.querySelector('#page-providers .pv-level-popover').hidden"), true, '点面板外面收起');
+          assert.equal(await evaluate("(() => { const row = document.querySelector('#page-providers .pv-slot:not(.pv-slot-head)'); const tops = [...row.children].map(c => Math.round(c.getBoundingClientRect().top + c.getBoundingClientRect().height / 2)); return Math.max(...tops) - Math.min(...tops) <= 4; })()"), true, 'Codex 模型行的输入、上下文、等级、删除在同一行');
+          assert.equal(await evaluate("document.querySelectorAll('#page-providers .pv-slot-head span').length"), 5, 'Codex 模型行有列标题');
+          // 快速预设只点亮对应的那一个接口格式
+          await evaluate("document.querySelector('#page-providers [data-section=edit-basic]').click(); [...document.querySelectorAll('#page-providers .pv-preset-strip button')].find(b => b.textContent.includes('OpenAI Chat')).click()");
+          assert.deepEqual(await evaluate("[...document.querySelectorAll('#page-providers [data-key=upstream] .pv-chip.on')].map(n => n.dataset.value)"), ['openai-chat'], '选 OpenAI Chat 预设时不能同时点亮 Responses');
+          await evaluate("[...document.querySelectorAll('#page-providers .pv-preset-strip button')].find(b => b.textContent.includes('OpenAI Responses')).click()");
+          assert.deepEqual(await evaluate("[...document.querySelectorAll('#page-providers [data-key=upstream] .pv-chip.on')].map(n => n.dataset.value)"), ['openai-responses']);
+          // 预览跟着当前草稿走（切到预览页时重算）
+          await evaluate("(() => { const input = document.querySelector('#page-providers .pv-slot:not(.pv-slot-head) input[placeholder=\"实际请求模型\"]'); input.value = 'qa-preview-model'; input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#page-providers [data-section=edit-preview]').click(); })()");
+          assert.match(await evaluate("document.querySelector('#page-providers .pv-preview-json').textContent"), /qa-preview-model/, '预览要反映还没保存的修改');
+          await evaluate("(() => { const input = document.querySelector('#page-providers .pv-slot:not(.pv-slot-head) input[placeholder=\"实际请求模型\"]'); input.value = 'qa-model-a'; input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+          // 高级设置：Prompt Cache 路由默认是「自动」（以前 selected=false 让所有选项都被选中，落成「关闭」）
+          assert.equal(await evaluate("document.querySelector('#page-providers select[name=promptCacheRouting]').value"), 'auto');
         }
         await evaluate("(() => { const form = document.querySelector('#page-providers .pv-editor'); form.requestSubmit(); form.requestSubmit(); })()");
         await until("!document.querySelector('#page-providers .pv-editor')");
         const rows = await evaluate(`window.tokenpulse.agentState().then(s => s.providers.filter(p => p.name === 'QA Models ${tool}'))`);
         assert.equal(rows.length, 1, '重复提交不能重复新增供应商');
         assert.equal(rows[0].model, 'qa-model-a');
-        if (tool === 'codex') { assert.equal(rows[0].slots[1].model, 'qa-model-b'); assert.equal(rows[0].slots[0].defaultReasoningLevel, 'medium'); assert.equal(rows[0].slots[0].reasoningLevels.includes('low'), false); }
+        assert.equal(rows[0].dailyLimitUsd, null, '没填限额不能存成 0'); assert.equal(rows[0].monthlyLimitUsd, null);
+        if (tool === 'grok') assert.equal(rows[0].contextWindow, 131072, 'Grok 没改上下文时保存预设值，不写空');
+        if (tool === 'codex') { assert.equal(rows[0].promptCacheRouting, 'auto'); assert.equal(rows[0].slots[1].model, 'qa-model-b'); assert.equal(rows[0].slots[0].defaultReasoningLevel, 'medium'); assert.equal(rows[0].slots[0].reasoningLevels.includes('low'), false); }
       }
     } finally { modelsServer.closeAllConnections(); await new Promise(resolve => modelsServer.close(resolve)); }
     await nav('overview');

@@ -160,6 +160,8 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
   const stream = wantsStream(body, rest);
   let upstreamPath = rest || "/";
   let payload = body;
+  // ChatGPT 的 Codex 接口没有 /v1 前缀：…/backend-api/codex/responses
+  if (target.auth === "codex-oauth") upstreamPath = upstreamPath.replace(/^\/v1(?=\/|$)/, "") || "/";
   if (!same && body.length && looksJson(body)) {
     if (rest.includes("count_tokens")) {
       const estimate = Math.max(1, Math.round(body.length / 4));
@@ -184,12 +186,15 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
   } catch {
     return { kind: "fail", status: 400, error: "供应商地址不是有效的网址" };
   }
+  if (target.auth === "codex-oauth") payload = codexBackendBody(payload);
+  payload = applyRequestBodyOverrides(payload, target.requestBody);
   const headers = forwardHeaders(req, target, payload.length);
   const transport = upstream.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
     const upstreamReq = transport.request(upstream, { method: req.method || "POST", headers, timeout: 120_000 }, (upstreamRes) => {
       const status = upstreamRes.statusCode || 502;
-      if (status === 429 || status >= 500) {
+      // 号池成员：401 / 403 多半是这个账号的登录失效或没权限，换下一个成员
+      if (status === 429 || status >= 500 || (target.pool && (status === 401 || status === 403))) {
         const chunks: Buffer[] = [];
         upstreamRes.on("data", (chunk) => {
           if (chunks.reduce((sum, item) => sum + item.length, 0) < 8000) chunks.push(Buffer.from(chunk));
@@ -269,6 +274,11 @@ function rewriteModel(raw: string, model: string) {
   }
 }
 
+function applyRequestBodyOverrides(payload: Buffer, overrides?: Record<string, unknown>) {
+  if (!overrides || !Object.keys(overrides).length || !looksJson(payload)) return payload;
+  try { const json = JSON.parse(payload.toString("utf8")); if (!json || typeof json !== "object" || Array.isArray(json)) return payload; return Buffer.from(JSON.stringify({ ...json, ...overrides })); } catch { return payload; }
+}
+
 function forwardHeaders(req: http.IncomingMessage, target: ProxyTarget, length: number) {
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(req.headers)) {
@@ -277,7 +287,14 @@ function forwardHeaders(req: http.IncomingMessage, target: ProxyTarget, length: 
     if (lower === "authorization" || lower === "x-api-key" || lower === "x-goog-api-key") continue;
     headers[key] = Array.isArray(value) ? value.join(", ") : value;
   }
-  if (target.apiKey) {
+  // 覆盖的请求头统一小写，免得和转发来的同名头（Node 给的都是小写）变成两份；连接层和长度相关的头不让覆盖
+  for (const [key, value] of Object.entries(target.requestHeaders || {})) {
+    const lower = key.toLowerCase();
+    if (!key || value == null || HOP.has(lower) || lower === "host" || lower === "content-length") continue;
+    headers[lower] = String(value);
+  }
+  if (target.auth) applyOfficialAuth(headers, target);
+  else if (target.apiKey) {
     if (target.upstream === "anthropic") {
       headers["x-api-key"] = target.apiKey;
       headers["anthropic-version"] = headers["anthropic-version"] || "2023-06-01";
@@ -286,6 +303,43 @@ function forwardHeaders(req: http.IncomingMessage, target: ProxyTarget, length: 
   if (length) headers["content-length"] = String(length);
   headers["content-type"] = headers["content-type"] || "application/json";
   return headers;
+}
+
+/**
+ * 号池里的官方账号：请求是真的 CLI 发的（格式本来就对），这里只换认证。
+ * - Claude：Bearer + anthropic-beta 里补上 oauth-2025-04-20（CLI 在 API Key 模式下不会带它）；
+ * - Codex：Bearer + Chatgpt-Account-Id（工作区 id）+ Originator；
+ * - Grok：Bearer（CLI 登录用的就是这把 key）。
+ * 不改 User-Agent、不伪造设备或账号标识。
+ */
+function applyOfficialAuth(headers: Record<string, string>, target: ProxyTarget) {
+  delete headers["x-api-key"];
+  headers.authorization = `Bearer ${target.apiKey}`;
+  if (target.auth === "claude-oauth") {
+    const betas = (headers["anthropic-beta"] || "").split(",").map((item) => item.trim()).filter(Boolean);
+    if (!betas.includes("oauth-2025-04-20")) betas.push("oauth-2025-04-20");
+    headers["anthropic-beta"] = betas.join(",");
+    headers["anthropic-version"] = headers["anthropic-version"] || "2023-06-01";
+  } else if (target.auth === "codex-oauth") {
+    if (target.accountId) headers["chatgpt-account-id"] = target.accountId;
+    headers.originator = headers.originator || "codex_cli_rs";
+  }
+}
+
+/** ChatGPT 的 Codex 接口：只收流式、不存储；API 模式才有的几个字段它不认。 */
+export function codexBackendBody(payload: Buffer) {
+  if (!looksJson(payload)) return payload;
+  try {
+    const json = JSON.parse(payload.toString("utf8"));
+    if (!json || typeof json !== "object" || Array.isArray(json)) return payload;
+    json.stream = true;
+    json.store = false;
+    if (json.instructions == null) json.instructions = "";
+    for (const key of ["previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options", "max_output_tokens"]) delete json[key];
+    return Buffer.from(JSON.stringify(json));
+  } catch {
+    return payload;
+  }
 }
 
 function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse, client: Upstream, target: ProxyTarget, stream: boolean) {

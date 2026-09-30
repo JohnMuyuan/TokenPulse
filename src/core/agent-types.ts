@@ -38,7 +38,34 @@ export type ProxyTarget = {
   model: string;
   /** 桌面端映射：客户端看到的角色 ID → 实际上游模型。 */
   modelMap?: Record<string, string>;
+  requestHeaders?: Record<string, string>;
+  requestBody?: Record<string, unknown>;
+  /**
+   * 号池里的官方账号：用这个账号自己的登录凭据，直接转给官方接口（见 agent-proxy.ts 的 applyOfficialAuth）。
+   * 请求本来就是真的 CLI 发出来的，只换掉认证：Claude 换成 Bearer + OAuth beta；Codex 走 ChatGPT 的 Codex 接口，
+   * 带上工作区 id；Grok 走 CLI 登录用的 cli-chat-proxy。
+   */
+  auth?: "claude-oauth" | "codex-oauth" | "grok-oauth";
+  /** ChatGPT 工作区 id（Chatgpt-Account-Id）。 */
+  accountId?: string;
+  /** 号池成员：401 / 403 也换下一个（别的账号可能还能用）。 */
+  pool?: boolean;
 };
+
+/** 号池：同一工具的多个官方账号 / API Key 供应商轮流用。 */
+export type PoolStrategy = "round-robin" | "fill-first";
+export type PoolMember = { type: "account" | "provider"; id: string };
+export type PoolConfig = { strategy: PoolStrategy; members: PoolMember[] };
+
+/** 号池里官方账号走的接口。桌面端不支持号池（它用自己的网关配置）。 */
+export const POOL_OFFICIAL: Partial<Record<AgentApp, { kind: "claude" | "chatgpt" | "grok"; baseUrl: string; auth: NonNullable<ProxyTarget["auth"]> }>> = {
+  claude: { kind: "claude", baseUrl: "https://api.anthropic.com", auth: "claude-oauth" },
+  codex: { kind: "chatgpt", baseUrl: "https://chatgpt.com/backend-api/codex", auth: "codex-oauth" },
+  grok: { kind: "grok", baseUrl: "https://cli-chat-proxy.grok.com/v1", auth: "grok-oauth" },
+};
+
+/** 号池在配置里占位的密钥：号池只能走本地路由，这个值不会写进任何工具配置。 */
+export const POOL_KEY = "TOKENPULSE_POOL";
 
 export function isAgentApp(value: unknown): value is AgentApp {
   return value === "claude" || value === "desktop" || value === "codex" || value === "grok";

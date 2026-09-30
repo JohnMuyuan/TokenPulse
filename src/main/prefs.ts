@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { dataFile, readJson, writeJson } from "../core/paths";
 
 export type Prefs = {
@@ -19,12 +20,25 @@ export type Prefs = {
   ccSwitch: boolean;
   /** 界面语言。界面自己用 localStorage 记（加载前就要知道），这里再存一份给托盘菜单和通知。 */
   language: "system" | "zh" | "en";
+  /** 声明「只在本机用 Code，不聊天」的官方账号 id（见 core/quota-calibration.ts 的 localOnlyAccounts）。 */
+  localOnlyAccounts: string[];
+  /** 看过「新版本有什么」的版本号（0.3.9 起）。和当前版本不同、且有这版的说明时，启动后弹一次。 */
+  seenVersion: string;
+  /** 新手引导：pending = 全新安装、还没走过；done = 走完或跳过。老用户升级上来是空的，不自动弹（更新说明里可以打开）。 */
+  onboarding: "" | "pending" | "done";
+  /** 供应商「只读保护」：打开后 TokenPulse 不改动 Claude / Codex / Grok 的配置文件（关闭路由、还原备份这类放回去的操作除外）。 */
+  agentReadOnly: boolean;
 };
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system" };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false };
 
 function file() {
   return dataFile("prefs.json");
+}
+
+/** prefs.json 还不存在 = 全新安装（以前的版本每次启动都会写一次开机自启，老用户一定有这个文件）。 */
+export function prefsExist(): boolean {
+  return fs.existsSync(file());
 }
 
 export function readPrefs(): Prefs {

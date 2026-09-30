@@ -103,7 +103,10 @@ export type HealthLevel = "good" | "warning" | "serious" | "critical" | "unknown
 export type HealthReason = "no-data" | "exhausted" | "runs-out-soon" | "runs-out" | "tight" | "five-hour-high" | "ok";
 
 export type AccountReport = {
-  quotaScope?: "account_total";
+  /** account_total：官方百分比是整个账号的；local_only：用户声明只在本机用 Code，可以按本机用量折算容量。 */
+  quotaScope?: "account_total" | "local_only";
+  /** 容量怎么折算的：clean = 只用同期有本机请求的区间（见 quota-offmachine.ts）。 */
+  capacityBasis?: "clean";
   kind: AccountKind;
   sampleCount: number;
   firstSampleAt?: number;
@@ -503,6 +506,8 @@ export function analyzeAccount(
   rows: HourRow[],
   now: number,
   checked?: { at: number; account?: string },
+  /** 用户声明这个账号只在本机用 Code（见 quota-calibration.ts 的 localOnlyAccounts）。 */
+  localOnly = false,
 ): AccountReport {
   const sorted = input.filter((sample) => Number.isFinite(sample.at) && sample.at <= now).sort((a, b) => a.at - b.at);
   /*
@@ -543,6 +548,7 @@ export function analyzeAccount(
         lookbackMs: 24 * HOUR_MS,
         minSpanMs: 2 * HOUR_MS,
         minElapsedMs: 4 * HOUR_MS,
+        completeLocalOnly: localOnly,
       },
       scopedRows,
       now,
@@ -566,6 +572,7 @@ export function analyzeAccount(
         lookbackMs: HOUR_MS,
         minSpanMs: 15 * 60_000,
         minElapsedMs: 30 * 60_000,
+        completeLocalOnly: localOnly,
       },
       scopedRows,
       now,
@@ -621,11 +628,12 @@ export function analyzeAccount(
 
   // 日/小时 Code 用量不是整个账号的用量，不能反推整窗总容量。
   // 有来源声明的短时校准由 model-study 单独处理，不把它回填成历史真实容量。
-  for (const window of [week, five]) if (window) { delete window.capacity; window.capacityReason = "unattributed"; }
+  // 用户声明只在本机用 Code 的账号除外：它的已用百分比就是本机 Code 用掉的，可以直接折算。
+  if (!localOnly) for (const window of [week, five]) if (window) { delete window.capacity; window.capacityReason = "unattributed"; }
   const protectedHistory = (): CapacityHistory => ({ points: [], skipped: { tooLow: 0, noLocal: 0 }, unavailableReason: "unattributed" });
   return {
     kind,
-    quotaScope: "account_total",
+    quotaScope: localOnly ? "local_only" : "account_total",
     sampleCount: samples.length,
     firstSampleAt: samples[0]?.at,
     lastSampleAt: latest?.at,
@@ -643,6 +651,8 @@ export function analyzeAccount(
     hourly,
     models,
     health: healthOf(week, five, now),
-    capacityHistory: { week: protectedHistory(), five: protectedHistory() },
+    capacityHistory: localOnly
+      ? { week: capacityHistory(samples, scopedRows, "week", now, style, true), five: capacityHistory(samples, scopedRows, "five", now, style, true) }
+      : { week: protectedHistory(), five: protectedHistory() },
   };
 }

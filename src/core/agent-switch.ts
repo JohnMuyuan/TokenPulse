@@ -6,7 +6,8 @@
  * 真实密钥由路由在转发时注入。退出 TokenPulse 时把配置写回直连，下次启动再接回路由。
  */
 import crypto from "crypto";
-import { configureConfigFiles, configRead, configWrite, configTransaction, recoverConfig } from "./agent-config";
+import { configureConfigFiles, configRead, configWrite, configTransaction, recoverConfig, configAllowRestore, configPreviewing } from "./agent-config";
+import { listOriginals, readHistory } from "./agent-history";
 import { parseToml, stringifyToml, headerName, tableName, upsertKey, readKey, readValue, replaceTable, setTableKey, quote, unquote, restoreToml } from "./agent-toml";
 import fs from "fs";
 import os from "os";
@@ -14,7 +15,8 @@ import path from "path";
 import { ccSwitchDbPath } from "./cc-switch";
 import { fetchUpstreamModels, probeUrl, startAgentProxy, type ProxyLog } from "./agent-proxy";
 import { canonicalLevels, claudeRoleEnv, desktopModelMap, desktopProfile, desktopRouteModels, DESKTOP_PROFILE_ID, DESKTOP_PROFILE_NAME, emptySlot, loadCodexTemplate, parseSlots, codexCatalogEntry, type DesktopMode, type ModelSlot, type ThinkingFlags } from "./agent-models";
-import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
+import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, POOL_KEY, POOL_OFFICIAL, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type PoolConfig, type PoolMember, type ProxyTarget, type Upstream } from "./agent-types";
+import { readOfficialAccountStore, resolveAccountCredential } from "./accounts";
 import { dataDir, dataFile, readJson, writeJson } from "./paths";
 
 type Endpoint = { baseUrl: string; apiKey: string; model: string; upstream: Upstream };
@@ -36,6 +38,25 @@ type Provider = {
   desktopMode: DesktopMode;
   contextWindow: number | null;
   thinking: ThinkingFlags;
+  websiteUrl: string;
+  category: string;
+  icon: string;
+  iconColor: string;
+  endpointAutoSelect: boolean;
+  commonConfigEnabled: boolean;
+  isFullUrl: boolean;
+  promptCacheKey: string;
+  promptCacheRouting: "auto" | "enabled" | "disabled";
+  codexFastMode: boolean;
+  dailyLimitUsd: number | null;
+  monthlyLimitUsd: number | null;
+  envOverrides: Record<string, string>;
+  requestHeaders: Record<string, string>;
+  requestBody: Record<string, unknown>;
+  /** 自定义头像（data:image/… 小图）。预设头像记在 icon 里。 */
+  avatar: string;
+  /** 号池（null = 普通供应商）。 */
+  pool: PoolConfig | null;
 };
 
 type FileSnapshot = Record<string, string | null>;
@@ -74,6 +95,13 @@ export type ProviderView = {
   desktopMode: DesktopMode;
   contextWindow: number | null;
   thinking: ThinkingFlags;
+  websiteUrl: string; category: string; icon: string; iconColor: string;
+  endpointAutoSelect: boolean; commonConfigEnabled: boolean; isFullUrl: boolean;
+  promptCacheKey: string; promptCacheRouting: "auto" | "enabled" | "disabled"; codexFastMode: boolean;
+  dailyLimitUsd: number | null; monthlyLimitUsd: number | null;
+  envOverrides: Record<string, string>; requestHeaders: Record<string, string>; requestBody: Record<string, unknown>;
+  avatar: string;
+  pool: (PoolConfig & { members: (PoolMember & { name: string; usable: boolean; requests: number; ok: number; lastAt: number; lastStatus: number; health: "ok" | "degraded" | "open" })[] }) | null;
 };
 
 export type AgentView = {
@@ -92,6 +120,30 @@ const CODEX_TOP = ["model_provider", "openai_base_url", "model", "review_model",
 const CODEX_EXCLUSIVE = ["web_search", "model_context_window", "model_auto_compact_token_limit", "model_supports_reasoning_summaries", "model_verbosity"];
 const GROK_TABLE = "tokenpulse_route";
 const SECRET = /TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL/i;
+const ADVANCED_DEFAULTS = { websiteUrl: "", category: "custom", icon: "", iconColor: "", endpointAutoSelect: false, commonConfigEnabled: false, isFullUrl: false, promptCacheKey: "", promptCacheRouting: "auto" as const, codexFastMode: false, dailyLimitUsd: null as number | null, monthlyLimitUsd: null as number | null, envOverrides: {} as Record<string,string>, requestHeaders: {} as Record<string,string>, requestBody: {} as Record<string,unknown>, avatar: "", pool: null as PoolConfig | null };
+/** 头像：只收小图的 data URL（img 标签里的 SVG 不会执行脚本）。 */
+const AVATAR = /^data:image\/(png|jpeg|webp|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/;
+const AVATAR_MAX = 400_000;
+function avatarOf(value: unknown) { const text = typeof value === "string" ? value.trim() : ""; return text.length <= AVATAR_MAX && AVATAR.test(text) ? text : ""; }
+function poolOf(app: AgentApp, value: unknown): PoolConfig | null {
+  if (!value || typeof value !== "object" || !POOL_OFFICIAL[app]) return null;
+  const raw = value as { strategy?: unknown; members?: unknown };
+  const seen = new Set<string>();
+  const members = (Array.isArray(raw.members) ? raw.members : []).flatMap((item): PoolMember[] => {
+    const member = item as { type?: unknown; id?: unknown };
+    if ((member?.type !== "account" && member?.type !== "provider") || typeof member.id !== "string" || !member.id || member.id.length > 200) return [];
+    const key = member.type + ":" + member.id;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ type: member.type, id: member.id }];
+  }).slice(0, 40);
+  return { strategy: raw.strategy === "fill-first" ? "fill-first" : "round-robin", members };
+}
+/** 号池轮到第几个：每个号池一个游标，每来一个请求往后挪一格。 */
+const poolCursor = new Map<string, number>();
+/** 号池成员的转发统计（只在内存里，重启清零）。键是成员的目标 id。 */
+const memberStats = new Map<string, { requests: number; ok: number; lastAt: number; lastStatus: number }>();
+
 
 let runtime: ReturnType<typeof startAgentProxy> | null = null;
 let runtimePort = 0;
@@ -129,7 +181,7 @@ function seedOfficials(store: Store) {
 }
 
 function officialSeed(app: AgentApp, name: string, sort: number): Provider {
-  return { id: `official-${app}`, app, name, official: true, locked: false, notes: "使用这个工具自己的官方登录。", sort, failover: false, createdAt: 0, endpoint: null, apiKeyField: "ANTHROPIC_AUTH_TOKEN", extra: {}, slots: [], desktopMode: "direct", contextWindow: null, thinking: { supportsThinking: false, supportsEffort: false } };
+  return { id: `official-${app}`, app, name, official: true, locked: false, notes: "使用这个工具自己的官方登录。", sort, failover: false, createdAt: 0, endpoint: null, apiKeyField: "ANTHROPIC_AUTH_TOKEN", extra: {}, slots: [], desktopMode: "direct", contextWindow: null, thinking: { supportsThinking: false, supportsEffort: false }, ...ADVANCED_DEFAULTS };
 }
 
 function normalize(raw: Store): Store {
@@ -172,6 +224,12 @@ function normalizeProvider(value: Partial<Provider>): Provider | null {
     desktopMode: value.desktopMode === "map" ? "map" : "direct",
     contextWindow: Number.isInteger(Number(value.contextWindow)) && Number(value.contextWindow) > 0 ? Number(value.contextWindow) : null,
     thinking: { supportsThinking: value.thinking?.supportsThinking === true, supportsEffort: value.thinking?.supportsEffort === true },
+    websiteUrl: String(value.websiteUrl || "").slice(0, 300), category: String(value.category || "custom").slice(0, 60), icon: String(value.icon || "").slice(0, 40), iconColor: String(value.iconColor || "").slice(0, 20),
+    endpointAutoSelect: value.endpointAutoSelect === true, commonConfigEnabled: value.commonConfigEnabled === true, isFullUrl: value.isFullUrl === true,
+    promptCacheKey: String(value.promptCacheKey || "").slice(0, 200), promptCacheRouting: value.promptCacheRouting === "enabled" || value.promptCacheRouting === "disabled" ? value.promptCacheRouting : "auto", codexFastMode: value.codexFastMode === true,
+    dailyLimitUsd: positiveNumber(value.dailyLimitUsd), monthlyLimitUsd: positiveNumber(value.monthlyLimitUsd),
+    envOverrides: stringMap(value.envOverrides, 80), requestHeaders: stringMap(value.requestHeaders, 40), requestBody: objectMap(value.requestBody),
+    avatar: avatarOf(value.avatar), pool: value.official ? null : poolOf(value.app, value.pool),
   };
 }
 
@@ -235,7 +293,12 @@ export function agentView(): AgentView {
           slots: provider.slots,
           desktopMode: provider.desktopMode,
           contextWindow: provider.contextWindow,
-          thinking: provider.thinking,
+          // Codex 整体上下文（config.toml 顶层的 model_context_window / model_auto_compact_token_limit）
+          codexContextWindow: typeof provider.extra.model_context_window === "number" ? provider.extra.model_context_window : null,
+          codexAutoCompact: typeof provider.extra.model_auto_compact_token_limit === "number" ? provider.extra.model_auto_compact_token_limit : null,
+          thinking: provider.thinking, websiteUrl: provider.websiteUrl, category: provider.category, icon: provider.icon, iconColor: provider.iconColor, endpointAutoSelect: provider.endpointAutoSelect, commonConfigEnabled: provider.commonConfigEnabled, isFullUrl: provider.isFullUrl, promptCacheKey: provider.promptCacheKey, promptCacheRouting: provider.promptCacheRouting, codexFastMode: provider.codexFastMode, dailyLimitUsd: provider.dailyLimitUsd, monthlyLimitUsd: provider.monthlyLimitUsd, envOverrides: provider.envOverrides, requestHeaders: provider.requestHeaders, requestBody: provider.requestBody,
+          avatar: provider.avatar,
+          pool: provider.pool ? { ...provider.pool, members: provider.pool.members.map((member) => poolMemberView(store, provider, member)) } : null,
         };
       }),
     proxy: {
@@ -251,6 +314,22 @@ export function agentView(): AgentView {
     health: Object.fromEntries(store.providers.map((provider) => [provider.id, healthOf(provider.id)])),
     logs: logs.slice(0, 30),
   };
+}
+
+/** 号池成员在界面上的样子：名字、现在能不能用、转发统计。不带任何凭据。 */
+function poolMemberView(store: Store, pool: Provider, member: PoolMember) {
+  const targetId = memberTargetId(pool, member);
+  const stats = memberStats.get(targetId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };
+  if (member.type === "provider") {
+    const provider = byId(store, member.id);
+    return { ...member, name: provider?.name || "已删除的供应商", usable: !!provider?.endpoint && !provider.official && !provider.pool, ...stats, health: healthOf(targetId) };
+  }
+  const account = readOfficialAccountStore().accounts.find((item) => item.id === member.id);
+  const usable = !!account && !account.hidden && !resolveAccountCredential(account).expired;
+  return { ...member, name: account ? account.alias || account.email || account.label : "已删除的账号", usable, ...stats, health: healthOf(targetId) };
+}
+function memberTargetId(pool: Provider, member: PoolMember) {
+  return member.type === "provider" ? member.id : `${pool.id}@${member.id}`;
 }
 
 function healthOf(id: string): "ok" | "degraded" | "open" {
@@ -274,12 +353,24 @@ function saveProviderImpl(input: unknown) {
   if (parsed.id && !existing) throw new Error("找不到这个供应商");
   if (existing?.official || existing?.locked) throw new Error("官方供应商不能改成第三方配置");
   if (existing && existing.app !== parsed.app) throw new Error("不能改变供应商所属工具，请在目标工具下新增");
-  const needsProxy = parsed.upstream !== NATIVE_UPSTREAM[parsed.app] || (parsed.app === "desktop" && parsed.desktopMode === "map");
+  if (existing && !!existing.pool !== !!parsed.pool) throw new Error("号池和普通供应商不能互相转换，请新建");
+  const needsProxy = !!parsed.pool || parsed.upstream !== NATIVE_UPSTREAM[parsed.app] || (parsed.app === "desktop" && parsed.desktopMode === "map");
   if (existing && !store.proxy.apps[parsed.app] && currentId(store, parsed.app) === existing.id && needsProxy) {
     throw new Error("当前供应商正在直连。请先开启本地路由，再修改接口格式或模型映射。");
   }
-  const apiKey = parsed.apiKey || (parsed.keepKey ? existing?.endpoint?.apiKey || "" : "");
+  const apiKey = parsed.pool ? POOL_KEY : parsed.apiKey || (parsed.keepKey ? existing?.endpoint?.apiKey || "" : "");
   if (!apiKey) throw new Error("请填写 API Key");
+  if (parsed.pool) {
+    // 成员只能是同一工具的普通供应商或同一家的官方账号
+    const accounts = readOfficialAccountStore().accounts;
+    for (const member of parsed.pool.members) {
+      if (member.type === "provider") {
+        const target = byId(store, member.id);
+        if (!target || target.app !== parsed.app || !target.endpoint || target.official || target.locked || target.pool) throw new Error("号池只能加入同一工具下带地址和密钥的供应商");
+      } else if (!accounts.some((item) => item.id === member.id && item.kind === POOL_OFFICIAL[parsed.app]?.kind)) throw new Error("号池里有找不到的官方账号，请刷新后重选");
+    }
+    if (!parsed.pool.members.length) throw new Error("号池至少要有一个成员");
+  }
   const owned = stillOwned(store, parsed.app);
   const endpoint: Endpoint = { baseUrl: parsed.baseUrl, apiKey, model: parsed.model, upstream: parsed.upstream };
   rejectLoopback(endpoint.baseUrl);
@@ -299,7 +390,7 @@ function saveProviderImpl(input: unknown) {
     slots: [],
     desktopMode: "direct",
     contextWindow: null,
-    thinking: { supportsThinking: false, supportsEffort: false },
+    thinking: { supportsThinking: false, supportsEffort: false }, websiteUrl: "", category: "official", icon: "", iconColor: "", endpointAutoSelect: false, commonConfigEnabled: false, isFullUrl: false, promptCacheKey: "", promptCacheRouting: "auto", codexFastMode: false, dailyLimitUsd: null, monthlyLimitUsd: null, envOverrides: {}, requestHeaders: {}, requestBody: {}, avatar: "", pool: null,
   };
   provider.app = parsed.app;
   provider.name = parsed.name;
@@ -309,7 +400,14 @@ function saveProviderImpl(input: unknown) {
   provider.slots = parsed.slots.length ? parsed.slots : [{ ...emptySlot(parsed.app === "codex" ? "catalog" : "sonnet"), model: parsed.model }];
   provider.desktopMode = parsed.desktopMode;
   provider.contextWindow = parsed.contextWindow;
-  provider.thinking = parsed.thinking;
+  if (parsed.codexContext) {
+    const extra = { ...provider.extra };
+    if (parsed.codexContext.window) extra.model_context_window = parsed.codexContext.window; else delete extra.model_context_window;
+    if (parsed.codexContext.compact) extra.model_auto_compact_token_limit = parsed.codexContext.compact; else delete extra.model_auto_compact_token_limit;
+    provider.extra = extra;
+  }
+  provider.thinking = parsed.thinking; provider.websiteUrl = parsed.websiteUrl; provider.category = parsed.category; provider.icon = parsed.icon; provider.iconColor = parsed.iconColor; provider.endpointAutoSelect = parsed.endpointAutoSelect; provider.commonConfigEnabled = parsed.commonConfigEnabled; provider.isFullUrl = parsed.isFullUrl; provider.promptCacheKey = parsed.promptCacheKey; provider.promptCacheRouting = parsed.promptCacheRouting; provider.codexFastMode = parsed.codexFastMode; provider.dailyLimitUsd = parsed.dailyLimitUsd; provider.monthlyLimitUsd = parsed.monthlyLimitUsd; provider.envOverrides = parsed.envOverrides; provider.requestHeaders = parsed.requestHeaders; provider.requestBody = parsed.requestBody;
+  provider.avatar = parsed.avatar; provider.pool = parsed.pool;
   if (!existing) store.providers.push(provider);
   save(store);
   const current = store.proxy.apps[provider.app] ? store.route[provider.app] : store.direct[provider.app];
@@ -323,18 +421,25 @@ function parseSave(input: unknown) {
   const body = asObj(input);
   const app = body.app;
   const upstream = body.upstream;
-  if (!isAgentApp(app) || !isUpstream(upstream)) throw new Error("工具或接口格式不正确");
+  const poolInput = body.pool && typeof body.pool === "object";
+  if (poolInput && isAgentApp(app) && !POOL_OFFICIAL[app]) throw new Error("Claude 桌面端不支持号池");
+  const pool = isAgentApp(app) && poolInput ? poolOf(app, body.pool) : null;
+  if (!isAgentApp(app) || (!pool && !isUpstream(upstream))) throw new Error("工具或接口格式不正确");
   const name = str(body.name).trim();
-  const baseUrl = str(body.baseUrl).trim().replace(/\/+$/, "");
+  // 号池不用填地址：官方账号走各家官方接口，API Key 成员走它们自己的地址。这里记官方接口，只是占位
+  const baseUrl = pool ? POOL_OFFICIAL[app]!.baseUrl : str(body.baseUrl).trim().replace(/\/+$/, "");
   if (!name || name.length > 60) throw new Error("请填写 60 字以内的名称");
   let url: URL;
   try { url = new URL(baseUrl); } catch { throw new Error("请求地址需要是 http 或 https 网址"); }
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("请求地址需要是 http 或 https 网址");
+  if (Array.isArray(body.slots) && body.slots.length > 24) throw new Error("最多支持 24 个模型，请精简后再保存；未保存任何更改");
   const slots = parseSlots(body.slots);
   const model = str(body.model).trim() || slots.find((slot) => slot.model)?.model || "";
-  if (!model || model.length > 120) throw new Error("请填写模型名");
+  // 号池可以不指定模型：官方账号按 CLI 自己选的模型发。Grok 的配置表必须写一个模型名
+  if ((!model && (!pool || app === "grok")) || model.length > 120) throw new Error("请填写模型名");
   const context = Number(body.contextWindow);
   const thinking = asObj(body.thinking);
+  const codexContext = app === "codex" && ("codexContextWindow" in body || "codexAutoCompact" in body) ? parseCodexContext(body.codexContextWindow, body.codexAutoCompact) : null;
   return {
     id: str(body.id),
     app,
@@ -342,17 +447,46 @@ function parseSave(input: unknown) {
     baseUrl,
     apiKey: str(body.apiKey).trim(),
     model,
-    upstream,
+    upstream: pool ? NATIVE_UPSTREAM[app] : upstream as Upstream,
+    pool,
+    avatar: avatarOf(body.avatar),
     notes: str(body.notes).trim().slice(0, 400),
     keepKey: body.keepKey === true,
     apiKeyField: body.apiKeyField === "ANTHROPIC_API_KEY" ? "ANTHROPIC_API_KEY" as const : "ANTHROPIC_AUTH_TOKEN" as const,
     slots,
     desktopMode: body.desktopMode === "map" ? "map" as const : "direct" as const,
     contextWindow: Number.isInteger(context) && context > 0 ? context : null,
+    codexContext,
     thinking: { supportsThinking: thinking.supportsThinking === true, supportsEffort: thinking.supportsEffort === true },
+    websiteUrl: str(body.websiteUrl).trim().slice(0, 300), category: str(body.category).trim().slice(0, 60) || "custom", icon: str(body.icon).trim().slice(0, 40), iconColor: str(body.iconColor).trim().slice(0, 20), endpointAutoSelect: body.endpointAutoSelect === true, commonConfigEnabled: body.commonConfigEnabled === true, isFullUrl: body.isFullUrl === true, promptCacheKey: str(body.promptCacheKey).trim().slice(0, 200), promptCacheRouting: (body.promptCacheRouting === "enabled" || body.promptCacheRouting === "disabled" ? body.promptCacheRouting : "auto") as "auto" | "enabled" | "disabled", codexFastMode: body.codexFastMode === true, dailyLimitUsd: positiveNumber(body.dailyLimitUsd), monthlyLimitUsd: positiveNumber(body.monthlyLimitUsd), envOverrides: stringMap(body.envOverrides, 80), requestHeaders: stringMap(body.requestHeaders, 40), requestBody: objectMap(body.requestBody),
   };
 }
 
+/**
+ * Codex 整体上下文（0.3.9）：和 CC Switch 一样写 config.toml 顶层的 model_context_window 和 model_auto_compact_token_limit。
+ * 空 = 不写（跟随 Codex 自己的默认）。上限 1000 万；自动压缩阈值要小于上下文窗口。
+ */
+function parseCodexContext(windowValue: unknown, compactValue: unknown) {
+  const read = (value: unknown, label: string) => {
+    if (value == null || (typeof value === "string" && !value.trim())) return null;
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 1000 || n > 10_000_000) throw new Error(label + "要是 1000 到 10000000 之间的整数");
+    return n;
+  };
+  const window = read(windowValue, "上下文窗口");
+  const compact = read(compactValue, "自动压缩阈值");
+  if (window && compact && compact >= window) throw new Error("自动压缩阈值要小于上下文窗口");
+  return { window, compact };
+}
+
+/** 限额：没填（null / 空串 / 空白）就是不限，不能被 Number() 变成 0。 */
+function positiveNumber(value: unknown) {
+  if (value == null || (typeof value === "string" && !value.trim())) return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+function stringMap(value: unknown, limit: number) { const obj = asObj(value); return Object.fromEntries(Object.entries(obj).slice(0, limit).filter(([k,v]) => /^[A-Za-z0-9_:-]{1,100}$/.test(k) && (typeof v === "string" || typeof v === "number" || typeof v === "boolean")).map(([k,v]) => [k, String(v)])); }
+function objectMap(value: unknown) { const obj = asObj(value); return Object.fromEntries(Object.entries(obj).slice(0, 80)); }
 function rejectLoopback(baseUrl: string) {
   const url = new URL(baseUrl);
   const local = url.hostname === "127.0.0.1" || url.hostname === "localhost";
@@ -380,6 +514,7 @@ function setFailoverImpl(id: string, on: boolean) {
   const store = load();
   const provider = must(store, id);
   if (provider.official || provider.locked) throw new Error("官方登录不进入备用队列");
+  if (provider.pool) throw new Error("号池自己会在成员之间切换，不进入备用队列");
   provider.failover = on;
   save(store);
 }
@@ -401,10 +536,10 @@ export async function activateProvider(id: string) {
     const store = load(), provider = must(store, id), app = provider.app;
     if (provider.locked) throw new Error('该供应商的凭证由原工具管理，请添加 API Key 供应商');
     if (provider.official && store.proxy.apps[app]) throw new Error('请先关闭本地路由，再切回官方登录');
-    const cross = !!provider.endpoint && (provider.endpoint.upstream !== NATIVE_UPSTREAM[app] || (app === 'desktop' && provider.desktopMode === 'map'));
+    const cross = !!provider.endpoint && (!!provider.pool || provider.endpoint.upstream !== NATIVE_UPSTREAM[app] || (app === 'desktop' && provider.desktopMode === 'map'));
     if (cross || store.proxy.apps[app]) {
       await enableProxy(app, id);
-      return { message: '已启用 ' + provider.name + '（本地路由）', restart: app !== 'claude' };
+      return { message: '已启用 ' + provider.name + (provider.pool ? '（号池，经本地路由轮流转发）' : '（本地路由）'), restart: app !== 'claude' };
     }
     configTransaction(() => {
       const current = load(); current.direct[app] = id; current.route[app] = id;
@@ -416,7 +551,7 @@ export async function activateProvider(id: string) {
 async function enableProxy(app: AgentApp, selected?: string) {
   const initial = load();
   const id = selected || [initial.route[app], initial.direct[app]].find(id => { const p = byId(initial, id); return p?.endpoint && !p.official && !p.locked; })
-    || initial.providers.find(p => p.app === app && p.endpoint && !p.official && !p.locked)?.id;
+    || initial.providers.find(p => p.app === app && p.endpoint && !p.official && !p.locked && !p.pool)?.id;
   const provider = id ? must(initial, id) : null;
   if (!provider?.endpoint || provider.official || provider.locked) throw new Error('先添加带地址和密钥的供应商');
   if (initial.proxy.apps[app] && initial.restore[app] && !proxyIsOurs(app)) throw new Error('工具连接已在外部修改，请先关闭此路由再明确启用');
@@ -435,9 +570,9 @@ async function enableProxy(app: AgentApp, selected?: string) {
 export async function setAppProxy(app: AgentApp, on: boolean) {
   return asyncMutation(async () => {
     if (on) { await enableProxy(app); return; }
-    configTransaction(() => {
+    configAllowRestore(() => configTransaction(() => {
       const store = load(); restoreProxy(store, app); store.proxy.apps[app] = false; save(store);
-    });
+    }));
     if (!AGENT_APPS.some(app => load().proxy.apps[app])) await stopProxy();
   });
 }
@@ -464,17 +599,46 @@ export async function resumeAgentProxy() {
 }
 export function releaseAgentSwitch() {
   if (mutationPending) throw new Error('供应商操作尚未完成，请稍后退出');
-  configTransaction(() => {
+  configAllowRestore(() => configTransaction(() => {
     const store = load();
     for (const app of AGENT_APPS) if (store.proxy.apps[app]) restoreProxy(store, app);
     save(store);
-  });
+  }));
   if (runtime) {
     const closing = runtime; runtime = null; runtimePort = 0;
     closingProxy = closing.close();
   }
 }
 export async function waitAgentProxyClosed() { await closingProxy; }
+
+/*
+ * 还原配置备份（0.3.9）：把历史里某次修改「之前」的内容，或 TokenPulse 接管前的原件写回去。
+ * 同样走事务（会再记一条历史，所以还原本身也能撤回）；只读保护下也允许，因为这是把东西放回去。
+ * 本地路由开着的工具不许还原：路由退出时要按接管快照恢复，中途改掉会对不上。
+ */
+export function restoreConfigBackup(kind: 'history' | 'original', id: string) {
+  return configAllowRestore(() => syncMutation(() => {
+    const targets: Array<{ file: string; content: string | null }> = [];
+    if (kind === 'history') {
+      const entry = readHistory(id);
+      if (!entry) throw new Error('找不到这份备份，可能已经被新的备份挤掉了');
+      for (const change of entry.files) targets.push({ file: change.file, content: change.before });
+    } else {
+      const original = listOriginals().find((item) => item.id === id);
+      if (!original) throw new Error('找不到这份原件');
+      targets.push({ file: original.file, content: original.content });
+    }
+    const store = load();
+    for (const target of targets) {
+      const app = AGENT_APPS.find((item) => filesForApp(item).some((file) => path.resolve(file) === path.resolve(target.file)));
+      if (!app) throw new Error('这份备份的文件不在当前的工具配置位置，不能自动还原：' + target.file);
+      if (store.proxy.apps[app]) throw new Error(AGENT_LABEL[app] + ' 的本地路由正开着，请先关闭路由再还原');
+    }
+    for (const target of targets) configWrite(target.file, target.content);
+    configNotice = '已还原。TokenPulse 会把还原后的配置当作外部修改，不会自动覆盖；需要切换时请明确点击启用。';
+    return targets.length;
+  }));
+}
 
 export async function importCcProviders() { return syncMutation(() => importCcProvidersImpl()); }
 function importCcProvidersImpl() {
@@ -537,6 +701,7 @@ export async function listProviderModels(input: unknown) {
 export function probeProvider(id: string) {
   const provider = must(load(), id);
   if (!provider.endpoint) return Promise.resolve({ ok: false, error: "官方登录由工具自己连接，这里不探测" });
+  if (provider.pool) return Promise.resolve({ ok: false, error: "号池按成员分别转发，请在号池详情里看各成员的状态" });
   return probeUrl(provider.endpoint.baseUrl);
 }
 
@@ -546,6 +711,8 @@ export async function resetAgentSwitchForTests() {
   await closingProxy;
   configNotice = "";
   circuits.clear();
+  poolCursor.clear();
+  memberStats.clear();
   logs = [];
   const file = storeFile();
   if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -587,6 +754,8 @@ function normalizeUrl(url: string) {
 
 async function ensureProxy() {
   if (runtime) return runtimePort;
+  // 预览（只算改动给用户确认）时不真的起本地路由
+  if (configPreviewing()) return load().proxy.port;
   await closingProxy;
   const store = load();
   const started = startAgentProxy({
@@ -613,7 +782,7 @@ async function ensureProxy() {
 }
 
 async function stopProxy() {
-  if (!runtime) return;
+  if (!runtime || configPreviewing()) return;
   const closing = runtime;
   runtime = null;
   runtimePort = 0;
@@ -624,15 +793,53 @@ function targetsFor(app: AgentApp): ProxyTarget[] {
   const store = load();
   const active = byId(store, store.route[app]);
   const backups = store.providers
-    .filter((item) => item.app === app && item.failover && item.id !== active?.id && item.endpoint && !item.official && !item.locked)
+    .filter((item) => item.app === app && item.failover && item.id !== active?.id && item.endpoint && !item.official && !item.locked && !item.pool)
     .sort((a, b) => a.sort - b.sort);
+  const seen = new Set<string>();
   return [active, ...backups].flatMap((item) => {
     if (!item?.endpoint?.baseUrl || item.official) return [];
-    return [{ id: item.id, name: item.name, upstream: item.endpoint.upstream, baseUrl: item.endpoint.baseUrl, apiKey: item.endpoint.apiKey, model: item.endpoint.model, modelMap: desktopModelMap(item.slots, item.desktopMode) }];
+    return item.pool ? poolTargets(store, item) : [plainTarget(item)];
+  }).filter((target) => !seen.has(target.id) && !!seen.add(target.id));
+}
+function plainTarget(item: Provider): ProxyTarget {
+  return { id: item.id, name: item.name, upstream: item.endpoint!.upstream, baseUrl: item.endpoint!.baseUrl, apiKey: item.endpoint!.apiKey, model: item.endpoint!.model, modelMap: desktopModelMap(item.slots, item.desktopMode), requestHeaders: item.requestHeaders, requestBody: item.requestBody };
+}
+/**
+ * 号池展开成一串目标：轮询时每个请求从下一个成员开始，其余成员依次排在后面当作这次请求的备选；
+ * 用满再换（fill-first）总是从第一个能用的开始。凭据过期 / 找不到的官方账号直接跳过；
+ * 连续失败被熔断的成员由路由自己跳过（open）。
+ */
+function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
+  const spec = POOL_OFFICIAL[pool.app];
+  if (!spec || !pool.pool) return [];
+  const accounts = readOfficialAccountStore().accounts;
+  const members = pool.pool.members.flatMap((member): ProxyTarget[] => {
+    const id = memberTargetId(pool, member);
+    if (member.type === "provider") {
+      const item = byId(store, member.id);
+      if (!item?.endpoint || item.official || item.locked || item.pool || item.app !== pool.app) return [];
+      return [{ ...plainTarget(item), id, name: `${pool.name} · ${item.name}`, pool: true }];
+    }
+    const account = accounts.find((row) => row.id === member.id && row.kind === spec.kind && !row.hidden);
+    if (!account) return [];
+    const { credential, expired } = resolveAccountCredential(account);
+    if (!credential?.token || expired) return [];
+    return [{
+      // AGENT_SWITCH_POOL_BASE 只给自动化测试用：把官方接口换成本机假上游
+      id, name: `${pool.name} · ${account.alias || account.email || account.label}`, upstream: NATIVE_UPSTREAM[pool.app], baseUrl: process.env.AGENT_SWITCH_POOL_BASE ? `${process.env.AGENT_SWITCH_POOL_BASE}/${pool.app}` : spec.baseUrl, apiKey: credential.token,
+      model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, pool: true,
+    }];
   });
+  if (!members.length || pool.pool.strategy === "fill-first") return members;
+  const start = (poolCursor.get(pool.id) ?? 0) % members.length;
+  poolCursor.set(pool.id, start + 1);
+  return [...members.slice(start), ...members.slice(0, start)];
 }
 
 function pushLog(entry: ProxyLog) {
+  const stats = memberStats.get(entry.providerId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };
+  stats.requests += 1; if (!entry.error) stats.ok += 1; stats.lastAt = entry.at; stats.lastStatus = entry.status;
+  memberStats.set(entry.providerId, stats);
   logs = [entry, ...logs].slice(0, 80);
   try { writeJson(dataFile("agent-switch-log.json"), logs); } catch { /* 日志写失败不影响转发 */ }
 }
@@ -648,6 +855,7 @@ function applyProxy(app: AgentApp) {
   const store = load();
   const provider = byId(store, store.route[app]);
   if (!provider?.endpoint) throw new Error("本地路由还没有选定供应商");
+  if (provider.pool && !POOL_OFFICIAL[app]) throw new Error("Claude 桌面端不支持号池");
   const port = runtimePort || store.proxy.port;
   if (app === "claude") writeClaude(store, provider, proxyBase(app, port), PROXY_MANAGED, true);
   else if (app === "desktop") writeDesktop(provider, proxyBase(app, port), PROXY_MANAGED, true);
@@ -658,6 +866,8 @@ function applyProxy(app: AgentApp) {
 }
 
 function applyDirect(provider: Provider) {
+  // 号池没有自己的地址和密钥，绝不能直连写进工具配置
+  if (provider.pool) throw new Error("号池只能经本地路由使用");
   const store = load();
   if (provider.app === "claude") writeClaude(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "desktop") writeDesktop(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
@@ -682,6 +892,7 @@ function writeClaude(store: Store, provider: Provider, baseUrl: string, apiKey: 
     if (apiKey) env[provider.apiKeyField] = apiKey;
     Object.assign(env, claudeRoleEnv(provider.slots, provider.endpoint?.model || ""));
     if (!proxy) {
+      Object.assign(env, provider.envOverrides);
       for (const [key, value] of Object.entries(provider.extra)) if (claudeFloor(key) && !secretKey(key)) env[key] = value;
     }
   }
@@ -772,7 +983,7 @@ function writeDesktop(provider: Provider, baseUrl: string, apiKey: string, proxy
   }
   const mode = proxy || provider.desktopMode === "map" ? "map" : provider.desktopMode;
   const models = desktopRouteModels(provider.slots, mode).map((row) => ({ name: row.name, label: row.label, oneM: row.oneM }));
-  fs.mkdirSync(library, { recursive: true });
+  if (!configPreviewing()) fs.mkdirSync(library, { recursive: true });
   writeObject(profileFile, desktopProfile(baseUrl, apiKey, models));
   const meta = readObject(metaFile);
   const entries = Array.isArray(meta.entries) ? meta.entries.filter((item) => asObj(item).id !== DESKTOP_PROFILE_ID) : [];
@@ -808,7 +1019,7 @@ function providerFromSettings(id: string, app: AgentApp, name: string, settings:
     slots: slotsFromImport(app, settings),
     desktopMode: "direct",
     contextWindow: null,
-    thinking: { supportsThinking: false, supportsEffort: false },
+    thinking: { supportsThinking: false, supportsEffort: false }, ...ADVANCED_DEFAULTS,
   };
 }
 
@@ -877,7 +1088,7 @@ function snapshotLive(app: AgentApp): Provider | null {
     extra: extractExtra(app, app === 'claude' ? readObject(claudeFile()) : { config: readText(app === 'codex' ? codexFile() : grokFile()) }),
     slots: app === 'claude' ? slotsFromImport(app, readObject(claudeFile())) : [],
     desktopMode: 'direct', contextWindow: null,
-    thinking: { supportsThinking: false, supportsEffort: false },
+    thinking: { supportsThinking: false, supportsEffort: false }, ...ADVANCED_DEFAULTS,
   };
 }
 
@@ -960,7 +1171,9 @@ function readObject(file: string) {
 }
 function writeText(file: string, text: string) { configWrite(file, text); }
 function writeObject(file: string, value: unknown) {
-  const indent = (configRead(file) || '').includes('\n    "') ? 4 : 2;
+  // 按第一层键的缩进来（嵌套层总会有 4 空格的行，不能拿来判断）；没有就用 2
+  const first = /^\{\r?\n([ \t]+)"/.exec(configRead(file) || '');
+  const indent = first ? first[1] : 2;
   writeText(file, JSON.stringify(value, null, indent) + '\n');
 }
 function envMap(text: string) {

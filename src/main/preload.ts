@@ -4,7 +4,20 @@ import { contextBridge, ipcRenderer } from "electron";
  * 渲染进程唯一的对外口子。只暴露这几个方法 —— 没有 nodeIntegration，
  * 界面碰不到文件系统，也就不用担心图表库之类的东西乱来。
  */
+/*
+ * 新手引导的演示模式：打开后，读数据的几个方法（快照、模型换算、请求流水）改走演示进程（main/demo.ts），
+ * 主进程推过来的真实快照先不交给界面；会改数据的操作一律拒绝。关掉后界面重新读一次真实快照。
+ */
+let demo = false;
+const blocked = () => Promise.reject(new Error("演示数据不能修改"));
+
 contextBridge.exposeInMainWorld("tokenpulse", {
+  /** 打开演示模式并返回演示快照；关掉时结束演示进程。 */
+  demo: (on: boolean) => {
+    demo = Boolean(on);
+    return on ? ipcRenderer.invoke("demo:snapshot") : ipcRenderer.invoke("demo:end");
+  },
+  isDemo: () => demo,
   egressState: () => ipcRenderer.invoke("egress:state"),
   saveEgress: (config: unknown) => ipcRenderer.invoke("egress:save", config),
   checkEgress: () => ipcRenderer.invoke("egress:check"),
@@ -16,8 +29,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     ipcRenderer.on("egress-state", listener);
     return () => ipcRenderer.off("egress-state", listener);
   },
-  snapshot: () => ipcRenderer.invoke("snapshot"),
-  refresh: () => ipcRenderer.invoke("refresh"),
+  snapshot: () => ipcRenderer.invoke(demo ? "demo:snapshot" : "snapshot"),
+  refresh: () => ipcRenderer.invoke(demo ? "demo:snapshot" : "refresh"),
   readPrefs: () => ipcRenderer.invoke("prefs:read"),
   writePrefs: (patch: Record<string, unknown>) => ipcRenderer.invoke("prefs:write", patch),
   officialAccounts: () => ipcRenderer.invoke("accounts:list"),
@@ -49,11 +62,12 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("window-state", listener);
   },
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
-  exportCsv: (content: string, kind?: "requests") => ipcRenderer.invoke("export-csv", content, kind),
+  exportCsv: (content: string, kind?: "requests") => (demo ? blocked() : ipcRenderer.invoke("export-csv", content, kind)),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */
   modelCalibration: (query: unknown) => ipcRenderer.invoke("models:calibration", query),
-  modelStudy: (query: unknown) => ipcRenderer.invoke("models:study", query),
-  requests: (query: Record<string, unknown>) => ipcRenderer.invoke("requests:query", query),
+  modelStudy: (query: unknown) => ipcRenderer.invoke(demo ? "demo:study" : "models:study", query),
+  modelOffMachine: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("models:offmachine", value)),
+  requests: (query: Record<string, unknown>) => ipcRenderer.invoke(demo ? "demo:requests" : "requests:query", query),
   /** 会话管理：列表、详情（只读本机 CLI 的会话文件）。 */
   sessions: () => ipcRenderer.invoke("sessions:list"),
   sessionDetail: (kind: string, id: string) => ipcRenderer.invoke("sessions:detail", kind, id),
@@ -87,6 +101,17 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   agentImportLive: (app: string) => ipcRenderer.invoke("agent:import-live", app),
   agentProbe: (id: string) => ipcRenderer.invoke("agent:probe", id),
   agentModels: (input: unknown) => ipcRenderer.invoke("agent:models", input),
+  /** 确认预览过的改动（agentSave / agentActivate 等返回 confirm 时）。 */
+  agentConfirm: (token: string) => ipcRenderer.invoke("agent:confirm", token),
+  agentBackups: () => ipcRenderer.invoke("agent:backups"),
+  agentRestore: (kind: "history" | "original", id: string) => ipcRenderer.invoke("agent:restore", kind, id),
+  agentReadOnly: (on: boolean) => ipcRenderer.invoke("agent:readonly", on),
+  /** 托盘里点了切换：交给供应商页走确认流程。 */
+  onAgentActivateRequest: (handler: (id: string) => void) => {
+    const listener = (_event: unknown, id: string) => handler(id);
+    ipcRenderer.on("agent-activate-request", listener);
+    return () => ipcRenderer.off("agent-activate-request", listener);
+  },
   onAgentSwitch: (handler: (state: unknown) => void) => {
     const listener = (_event: unknown, state: unknown) => handler(state);
     ipcRenderer.on("agent-switch", listener);
@@ -105,7 +130,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   },
   /** 主进程每轮刷新完会主动推一份，界面不用自己轮询。 */
   onSnapshot: (handler: (snapshot: unknown) => void) => {
-    const listener = (_event: unknown, snapshot: unknown) => handler(snapshot);
+    // 演示期间真实快照不交给界面（演示结束后界面会自己重读一次）
+    const listener = (_event: unknown, snapshot: unknown) => { if (!demo) handler(snapshot); };
     ipcRenderer.on("snapshot", listener);
     return () => ipcRenderer.off("snapshot", listener);
   },

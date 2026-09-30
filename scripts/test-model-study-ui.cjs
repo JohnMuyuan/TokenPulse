@@ -10,7 +10,7 @@ const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: t
 const now = Date.now(), minute = 60000, iso = at => new Date(at).toISOString();
 const dateKey = at => { const d = new Date(at); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const accounts = ['qa-study', 'qa-other'].map((ref,i) => ({ id:'chatgpt:'+ref, kind:'chatgpt', ref, email:'', label:'QA '+i, createdAt:now, lastSeenAt:now }));
-write(path.join(root, 'data', 'prefs.json'), { autoLaunch:false, autoUpdate:false, closeToTray:true, startMinimized:true, language:'zh', notifyAt:0, notifyMismatch:false, ccSwitch:false });
+write(path.join(root, 'data', 'prefs.json'), { autoLaunch:false, autoUpdate:false, closeToTray:true, startMinimized:true, language:'zh', notifyAt:0, notifyMismatch:false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' });
 write(path.join(root, 'data', 'official-accounts.json'), { version:2, accounts, active:{}, removed:[] });
 write(path.join(root, 'data', 'quota-calibrations.json'), {version:1,sessions:accounts.map(a=>({id:'test-'+a.ref,kind:'chatgpt',accountId:a.id,startAt:now-50*minute,endAt:now+10*minute,confirmedLocalOnly:true}))});
 write(path.join(root, 'home', '.codex', 'models_cache.json'), { fetched_at:iso(now), models:[{slug:'gpt-qa',visibility:'list',supported_reasoning_levels:[{effort:'low'},{effort:'high'}],default_reasoning_level:'high'}] });
@@ -26,8 +26,8 @@ let failStudy=false, delayFirst=false;const handle=ipcMain.handle.bind(ipcMain);
 ipcMain.handle=(channel,handler)=>handle(channel,channel==='models:study'?async(event,q)=>{if(failStudy)throw Error('Simulated model study failure');const result=await handler(event,q);if(delayFirst&&q.accountId==='chatgpt:qa-study')await new Promise(r=>setTimeout(r,250));return result;}:handler);
 const watchdog=setTimeout(()=>{console.error('FAIL model-study UI timed out');app.exit(1);},30000);
 app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',async()=>{
- const evaluate=code=>contents.executeJavaScript(code),delay=ms=>new Promise(r=>setTimeout(r,ms));
- const until=async code=>{const end=Date.now()+10000;while(!await evaluate(code)){assert.ok(Date.now()<end,'Timed out: '+code);await delay(30);}};
+ const evaluate=code=>contents.executeJavaScript(code).catch(e=>{throw new Error(e.message+' ← '+String(code).slice(0,160));}),delay=ms=>new Promise(r=>setTimeout(r,ms));
+ const until=async code=>{const end=Date.now()+10000;while(!await evaluate('Promise.resolve('+code+').then(v=>!!v)')){assert.ok(Date.now()<end,'Timed out: '+code);await delay(30);}};
  try {
   const text = sel => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`);
   const count = sel => evaluate(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
@@ -40,7 +40,7 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   assert.equal(await text(`${Q} .ms-row[data-effort=high] .ms-cap.five b`), '50.0K');
   assert.equal(await text(`${Q} .ms-row[data-effort=low] .ms-cap.five b`), '50.0K', '没用过的等级也按同模型单价换算');
   assert.match(await text(`${Q} .ms-row[data-effort=high] .ms-cap.week b`), /^×/, '周窗口不能拿五小时的预算');
-  assert.equal(await text(`${Q} .ms-budget.five .ms-budget-value`), '$0.50本机专用样本 · API 等价参考');
+  assert.equal(await text(`${Q} .ms-budget.five .ms-budget-value`), '$0.50按本机区间折算 · API 等价参考');
   assert.equal(await count(`${Q} .ms-row`), 2, '未记录等级不进排行');
   assert.equal(await count(`${Q} .ms-row[data-effort=unknown]`), 0);
   await evaluate(`document.querySelector('${Q} .seg button[data-value=name]').click()`);
@@ -91,34 +91,119 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   for (const id of [Q, U]) assert.equal(await evaluate(`document.querySelector('${id}').scrollWidth <= document.querySelector('${id}').clientWidth + 1`), true, `${id} 窄窗口只在图表内部滚动`);
   contents.debugger.attach('1.3'); await contents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('${Q} .ms-chip')).transitionDuration`), '0s'); contents.debugger.detach();
-  // 0.3.9：确认/作废走真实 IPC；不允许用新确认授权旧的混用历史。
+  // 0.3.9：本机以外的使用。假历史改成：前面先有一段本机没有请求的上涨（+3%），后面才是本机 Code 的上涨
   await evaluate("state.account='chatgpt:qa-study'; navigate('quota')");
-  await until("document.querySelector('#quota-model-study .ms-calibration') && !document.querySelector('#quota-model-study').hasAttribute('aria-busy')");
-  await evaluate("document.querySelector('#quota-model-study .ms-calibration').open=true; document.querySelector('#quota-model-study [data-calibration-action=discard]').click()");
-  await until("!document.querySelector('#quota-model-study').hasAttribute('aria-busy') && document.querySelector('#quota-model-study .ms-cap.five b').textContent.startsWith('×')");
-  assert.equal(await evaluate("document.querySelector('#quota-model-study [data-calibration-action=start]').disabled"),true);
-  assert.match(await text(Q+' .ms-budget.five .ms-budget-value'),/6\.0%/,'无校准时显示官方已用，不显示伪造美元余额');
-  assert.doesNotMatch(await text(Q+' .ms-budget.five'),/还剩约.*\$/);
-  await evaluate("document.querySelector('#quota-model-study [data-calibration-confirm]').click(); document.querySelector('#quota-model-study [data-calibration-duration]').value='120'; document.querySelector('#quota-model-study [data-calibration-duration]').dispatchEvent(new Event('change'))");
-  assert.equal(await evaluate("document.querySelector('#quota-model-study [data-calibration-confirm]').checked"),false);
-  assert.equal(await evaluate("document.querySelector('#quota-model-study [data-calibration-action=start]').disabled"),true);
-  await evaluate("document.querySelector('#quota-model-study [data-calibration-duration]').value='60'; document.querySelector('#quota-model-study [data-calibration-duration]').dispatchEvent(new Event('change'))");
-  const startedAfter=Date.now();
-  await evaluate("document.querySelector('#quota-model-study [data-calibration-confirm]').click(); document.querySelector('#quota-model-study [data-calibration-action=start]').click()");
-  await until("document.querySelector('#quota-model-study [data-calibration-action=finish]') && !document.querySelector('#quota-model-study').hasAttribute('aria-busy')");
-  const cal=await evaluate("window.tokenpulse.modelStudy({kind:'chatgpt',accountId:'chatgpt:qa-study'}).then(s=>s.calibration.active)");
-  assert.ok(cal.startAt>=startedAfter);assert.equal(cal.endAt-cal.startAt,3600000);
-  assert.ok((await text(Q+' .ms-cap.five b')).startsWith('×'),'新校准不能把过去已存在的额度变化倒推成可信预算');
-  await evaluate("document.querySelector('#quota-model-study [data-calibration-action=finish]').click()");
-  await until("document.querySelector('#quota-model-study [data-calibration-action=start]') && !document.querySelector('#quota-model-study').hasAttribute('aria-busy')");
-  // 假历史里增加一笔没有对应 Code 请求的官方额度变化；保留 4K 的本机日志。
-  write(path.join(root,'data','quota-history.json'),{version:1,accounts:{chatgpt:[...samples,{...samples[3],account:'chatgpt:qa-study',at:Date.now()-1,five:36,week:33}]}});
+  // 还没有本机以外的上涨：汇总缩成一行（没有底色），说明只在感叹号里
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-off-summary')`);
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off-summary').classList.contains('empty')`), true);
+  assert.match(await text(`${U} .ms-cycle.five .ms-off-head > p`), /^本机以外 · 未检测到$/);
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('${U} .ms-cycle.five .ms-off-summary')).backgroundColor`), 'rgba(0, 0, 0, 0)');
+  const offBase = samples.filter(s => s.account === 'chatgpt:qa-study');
+  const shifted = [
+    ...[40, 35, 30, 25, 20].map((ago, i) => ({ ...offBase[0], at: now - ago * minute, five: i === 0 ? 0 : 3, week: i === 0 ? 0 : 3 })),
+    ...offBase.map(s => ({ ...s, five: s.five + 3, week: s.week + 3 })),
+  ];
+  write(path.join(root,'data','quota-history.json'),{version:1,accounts:{chatgpt:[...samples.filter(s => s.account !== 'chatgpt:qa-study'), ...shifted]}});
   await evaluate("window.tokenpulse.refresh()");
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-off.detected') && !document.querySelector('${U}').hasAttribute('aria-busy')`);
+  const study = await evaluate("window.tokenpulse.modelStudy({kind:'chatgpt',accountId:'chatgpt:qa-study'}).then(s=>({off:s.five.offMachine.points,detected:s.five.offMachine.detected.length,budget:s.five.budget.costUsd,used:s.five.selected.used}))");
+  assert.equal(study.off, 3, '本机没有请求的 3 个点识别为本机以外'); assert.equal(study.detected, 1); assert.equal(study.used, 9, '官方已用保持真实值');
+  // 本机区间：-35 到 0 分钟涨了 6 个点，其间 4 条本机请求（含一条未记录等级的）共 0.04 美元；前面本机以外的 3 个点不进分母
+  assert.ok(Math.abs(study.budget - 0.04 / 6 * 100) < 1e-9, '容量只用本机区间折算，本机以外的 3 个点不进分母：' + study.budget);
+  assert.match(await text(`${U} .ms-cycle.five .ms-off-summary`), /本机以外 \+3\.0%/);
+  assert.match(await text(`${U} .ms-cycle.five .ms-off-summary`), /1 段待标注/);
+  // 说明收进感叹号：常驻的只剩结论，长句只在浮层里
+  assert.doesNotMatch(await text(`${U} .ms-cycle.five .ms-off-head > p`), /不计入容量折算/);
+  assert.match(await text(`${U} .ms-cycle.five .ms-off-head .info-tip-pop`), /不计入容量折算/);
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('${U} .ms-cycle.five .ms-off-head .info-tip-pop')).display`), 'none');
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off-summary').classList.contains('empty')`), false);
+  assert.match(await text(`${Q} .ms-budget.five .ms-budget-value`), /\$0\.67按本机区间折算/);
+  // 点虚线块：打开标注，选等级、写备注；填表的时候定时刷新不能把表单冲掉
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.detected').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-mark-editor')`);
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-mark-editor select[aria-label="用了什么模型"]').value`), 'gpt-qa', '默认填这个周期里用得最多的模型');
+  await evaluate(`(() => { const f = document.querySelector('${U} .ms-mark-editor'); const e = f.querySelector('select[aria-label="思考等级"]'); e.value = 'high'; e.dispatchEvent(new Event('change')); const n = f.querySelector('input[aria-label="备注"]'); n.value = '网页上聊天'; n.dispatchEvent(new Event('input')); })()`);
+  const info = await text(`${U} .ms-mark-info`);
+  assert.match(info, /涨了 3\.0 个百分点.*约相当于 2\.0K Tokens/, '按这个模型 × 等级的整窗容量换算：' + info);
+  await evaluate('window.tokenpulse.refresh()'); await delay(600);
+  assert.equal(await evaluate(`document.querySelector('${U} .ms-mark-editor input[aria-label="备注"]')?.value`), '网页上聊天', '刷新不能冲掉正在填的标注');
+  await evaluate(`document.querySelector('${U} .ms-mark-editor').requestSubmit()`);
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-off.marked') && !document.querySelector('${U} .ms-mark-editor')`);
+  await until("[...document.querySelectorAll('#toast-stack .tp-toast')].some(t => t.textContent.includes('已标注'))");
+  const marked = await evaluate("window.tokenpulse.modelStudy({kind:'chatgpt',accountId:'chatgpt:qa-study'}).then(s=>s.five.offMachine)");
+  assert.equal(marked.detected.length, 0); assert.equal(marked.marks.length, 1); assert.equal(marked.marks[0].effort, 'high'); assert.equal(marked.marks[0].note, '网页上聊天');
+  assert.equal(Math.round(marked.marks[0].equivalentTokens), 2000, "整窗 0.04/6×100 美元 ÷ 每 Token 0.00001 美元 × 3%");
+  assert.match(await text(`${U} .ms-cycle.five .ms-off-summary`), /gpt-qa · high/);
+  // 放大：按钮、拖选、Ctrl + 滚轮；回到整个周期
+  const label = () => text(`${U} .ms-cycle.five .ms-zoom-label`);
+  assert.equal(await label(), '整个周期');
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="放大"]').click()`);
+  assert.match(await label(), /^显示 /);
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="回到整个周期"]').click()`);
+  assert.equal(await label(), '整个周期');
+  await evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'), b = svg.getBoundingClientRect(); const y = b.top + 40; const fire = (type, x) => svg.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 7, button: 0 })); fire('pointerdown', b.left + b.width * .55); fire('pointermove', b.left + b.width * .7); fire('pointermove', b.left + b.width * .85); fire('pointerup', b.left + b.width * .85); })()`);
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-select-actions')`);
+  assert.ok(await evaluate(`[...document.querySelectorAll('${U} .ms-select-actions button')].some(b => b.textContent === '标注为本机以外的使用')`));
+  await evaluate(`[...document.querySelectorAll('${U} .ms-select-actions button')].find(b => b.textContent === '放大到这段').click()`);
+  assert.match(await label(), /^显示 /, '拖选后放大到这段');
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="回到整个周期"]').click()`);
+  await evaluate(`(() => { const svg = document.querySelector('${U} .ms-cycle.five .ms-tl svg'), b = svg.getBoundingClientRect(); svg.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100, clientX: b.left + b.width * .7, clientY: b.top + 40 })); })()`);
+  assert.match(await label(), /^显示 /, 'Ctrl + 滚轮放大');
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-zoom-btn[aria-label$="回到整个周期"]').click()`);
+  // 修改 → 删除标注：又变回待标注
+  await evaluate(`document.querySelector('${U} .ms-cycle.five .ms-off.marked').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await until(`[...document.querySelectorAll('${U} .ms-mark-editor button')].some(b => b.textContent === '删除标注')`);
+  await evaluate(`[...document.querySelectorAll('${U} .ms-mark-editor button')].find(b => b.textContent === '删除标注').click()`);
+  await until(`document.querySelector('${U} .ms-cycle.five .ms-off.detected') && !document.querySelector('${U} .ms-mark-editor')`);
+  // Esc 关掉编辑区
+  await evaluate(`document.querySelector('${U} .ms-off-add').click()`);
+  await until(`document.querySelector('${U} .ms-mark-editor')`);
+  await evaluate(`document.querySelector('${U} .ms-mark-editor select').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await until(`!document.querySelector('${U} .ms-mark-editor')`);
+  // 夜间模式：新加的文字也不能是默认黑色
+  await evaluate("setThemeMode('dark')"); await delay(150);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('${U} .ms-tl text, ${U} .ms-off-summary *')].filter(n => (n.tagName === 'text' ? getComputedStyle(n).fill : getComputedStyle(n).color) === 'rgb(0, 0, 0)').map(n => n.className?.baseVal ?? n.className)`), []);
+  await evaluate("setThemeMode('light')"); await delay(300);
+  console.log('PASS 0.3.9 off-machine timeline: detection, summary, clean budget, mark editor with token equivalent, refresh keeps draft, save/delete, zoom buttons, drag-select, ctrl+wheel, Esc, dark mode');
+  // 0.3.9：设置 → 账号里的「只在本机用 Code」开关
+  assert.ok(await evaluate("document.querySelector('#quota-detail .quota-context h2 .quota-scope-tip') !== null"), '默认在标题旁放共享额度说明的感叹号');
+  assert.equal(await evaluate("document.querySelector('#quota-detail .ms-attribution-note')"), null, '共享额度说明不再常驻');
+  // 说明平时隐藏，聚焦感叹号才显示；浮层里的「在设置里打开」按钮可以点到
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#quota-detail .quota-scope-tip .info-tip-pop')).display"), 'none');
+  // 隐藏的测试窗口里 focus() 不触发 focus 事件，这里用悬停打开（键盘聚焦走同一个 open）
+  await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseenter'))");
+  // 打开时浮层挂在 body 上、fixed 定位：不会被卡片裁掉，也不会被后面的面板盖住
+  await until("document.querySelector('body > .info-tip-pop.open')");
+  assert.match(await text('body > .info-tip-pop.open'), /官方已用是整个账号的/);
+  assert.ok(await evaluate("Boolean(document.querySelector('body > .info-tip-pop.open button.text-btn'))"));
+  assert.ok(await evaluate("(() => { const p = document.querySelector('body > .info-tip-pop.open'), r = p.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.bottom - 6); return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && p.contains(hit); })()"), '浮层完整显示、在最上层');
+  await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseleave'))");
+  await until("!document.querySelector('body > .info-tip-pop.open') && document.querySelector('#quota-detail .quota-scope-tip .info-tip-pop')");
+  // 共享账号的额度容量趋势也有折线了（只用本机区间折算）
+  assert.match(await text('#quota-detail .capacity-panel h2'), /额度容量趋势/);
+  assert.ok(await evaluate("Boolean(document.querySelector('#quota-detail .capacity-chart svg')) && !document.querySelector('#quota-detail .capacity-locked')"), '共享账号也按本机区间画出容量趋势');
+  await evaluate("openSettings('accounts')");
+  await until("document.querySelector('#official-accounts [data-local-only=\"chatgpt:qa-study\"]')");
+  assert.equal(await evaluate("document.querySelector('#official-accounts [data-local-only=\"chatgpt:qa-study\"]').getAttribute('aria-checked')"), 'false');
+  await evaluate("document.querySelector('#official-accounts [data-local-only=\"chatgpt:qa-study\"]').click()");
+  await until("window.tokenpulse.readPrefs().then(p => (p.localOnlyAccounts || []).includes('chatgpt:qa-study'))");
+  await until("[...document.querySelectorAll('#toast-stack .tp-toast')].some(t => t.textContent.includes('只在本机用 Code'))");
+  assert.equal(await evaluate("document.querySelector('#official-accounts [data-local-only=\"chatgpt:qa-study\"]').getAttribute('aria-checked')"), 'true');
+  await evaluate("closeModal ? closeModal('settings') : document.querySelector('#settings [data-close]')?.click()");
+  await until("current?.accounts.find(a => a.accountId === 'chatgpt:qa-study')?.quotaScope === 'local_only'");
   await evaluate("state.account='chatgpt:qa-study'; navigate('quota')");
-  await until("document.querySelector('#quota-model-timeline .ms-unmatched-band') && !document.querySelector('#quota-model-timeline').hasAttribute('aria-busy')");
-  const safe=await evaluate("window.tokenpulse.modelStudy({kind:'chatgpt',accountId:'chatgpt:qa-study'}).then(s=>({used:s.five.selected.used,tokens:s.five.totals.tokens,budget:s.five.budget.costUsd}))");
-  assert.equal(safe.used,36);assert.equal(safe.tokens,4000);assert.equal(safe.budget,null);
-  console.log('PASS 0.3.9 shared-pool UI: explicit consent, forward-only calibration, revoke, no fictitious balance, unmatched growth and unchanged official totals');
+  await until("!document.querySelector('#quota-model-study').hasAttribute('aria-busy') && document.querySelector('#quota-model-study .ms-row')");
+  await delay(200);
+  assert.equal(await evaluate("document.querySelector('#quota-detail .quota-scope-tip')"), null, '只在本机用 Code 时不显示共享额度说明');
+  assert.equal(await evaluate("document.querySelector('#quota-model-study .ms-calibration')"), null, '只在本机用 Code 时不显示校准入口');
+  assert.equal(await evaluate("document.querySelector('#page-quota .ms-attribution-note')"), null, '时间线里的归因说明也不显示');
+  assert.match(await text('#quota-detail .capacity-panel h2'), /额度容量趋势/);
+  // 打开后额度容量趋势的周 / 5 小时、Tokens / 费用切换回来
+  await evaluate("document.querySelector('#quota-detail [data-cap-window=five]').click(); document.querySelector('#quota-detail [data-cap-metric=costUsd]').click()");
+  assert.equal(await evaluate("state.capWindow + '/' + state.capMetric"), 'five/costUsd');
+  assert.ok(await evaluate("Boolean(document.querySelector('#quota-detail .capacity-chart svg, #quota-detail .capacity-chart .empty'))"));
+  await evaluate("document.querySelector('#quota-detail [data-cap-window=week]').click(); document.querySelector('#quota-detail [data-cap-metric=tokens]').click()");
+  console.log('PASS 0.3.9 local-only switch: settings toggle, prefs saved, toast, notes and calibration hidden, capacity trend restored');
   console.log('PASS 0.3.8 model sections: both windows listed without querying, budget conversion, relative fallback, sorting, level filter, timeline lanes and quota curve (in quota page, following account tabs), focus, failure without stale data, late responses, 900px and reduced motion');
   clearTimeout(watchdog); app.exit(0);
  } catch(e){console.error('FAIL',e.message);clearTimeout(watchdog);app.exit(1);}

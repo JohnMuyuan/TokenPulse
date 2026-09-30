@@ -4,6 +4,16 @@ import { readOfficialAccountStore } from "./accounts";
 import { readQuotaHistory } from "./quota-history";
 import type { AccountKind } from "./quota";
 
+/**
+ * 用户在设置里声明「这个账号只在本机用 Code，不聊天」的账号。
+ * 对这些账号，官方已用百分比可以认为全部来自本机 Code：按以前的方式直接用「本机用量 ÷ 已用百分比」折算整窗容量，
+ * 不再显示共享额度的说明和校准入口。存在 prefs.json（主进程的设置页写，worker 里直接读）。
+ */
+export function localOnlyAccounts(): string[] {
+  const prefs = readJson<{ localOnlyAccounts?: unknown }>(dataFile("prefs.json"), {});
+  return Array.isArray(prefs.localOnlyAccounts) ? prefs.localOnlyAccounts.filter((id): id is string => typeof id === "string" && id.length <= 400) : [];
+}
+
 export const CALIBRATION_MS = 60 * 60000;
 export const MAX_CALIBRATION_MS = 4 * CALIBRATION_MS;
 export const CALIBRATION_GUARD_MS = 10 * 60000;

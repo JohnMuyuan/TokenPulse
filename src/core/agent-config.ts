@@ -3,12 +3,44 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { dataFile, dataDir } from './paths';
+import { changeSignature, mergeChanges, recordHistory, type FileChange } from './agent-history';
 
 type Change = { file: string; before: string | null; after: string | null };
 type Journal = { version: 1; committed: boolean; files: Change[] };
 let allowedFiles: () => string[] = () => [];
 let active: Map<string, Change> | null = null;
 export function configureConfigFiles(files: () => string[]) { allowedFiles = files; }
+
+/*
+ * 0.3.9 保护措施（都在这一个提交点上，所有写工具配置的路径都绕不开）：
+ * - 只读保护：打开后拒绝改动工具配置文件；只有「把东西放回去」的操作（关闭路由、退出恢复、还原备份）走 configAllowRestore 放行。
+ * - 预览：configPreview 里跑一遍同样的操作，只收集改动、不落盘，给界面显示对比并确认。
+ * - 确认：configExpect 记下确认过的改动签名，真正提交时对不上（确认之后文件又变了）就取消。
+ * - 历史：每次提交把工具配置文件的前后内容记进 agent-history。
+ */
+let readOnly: () => boolean = () => false;
+let allowRestore = 0;
+let preview: FileChange[] | null = null;
+let expected: string | null = null;
+let reason = '';
+export function configureReadOnly(fn: () => boolean) { readOnly = fn; }
+export function configReason(text: string) { reason = text; }
+export function configExpect(signature: string | null) { expected = signature; }
+export function configPreviewing() { return preview !== null; }
+export function configAllowRestore<T>(work: () => T): T {
+  allowRestore++;
+  try { return work(); } finally { allowRestore--; }
+}
+/** 只收集改动，不写文件。work 可以是异步的（启用路由）；预览期间 agent-switch 不启动 / 停止本地路由。 */
+export async function configPreview(work: () => unknown): Promise<FileChange[]> {
+  if (preview) throw new Error('另一个预览正在进行');
+  preview = [];
+  try {
+    await work();
+    return mergeChanges(preview);
+  } finally { preview = null; }
+}
+const isStore = (file: string) => path.resolve(file) === path.resolve(dataFile('agent-switch.json'));
 const journalFile = () => dataFile('agent-config-pending.json');
 const raw = (file: string) => { try { return fs.readFileSync(file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; } };
 function checked(file: string) {
@@ -95,8 +127,17 @@ export function configTransaction<T>(work: () => T): T {
     const reads = [...active.values()];
     const changes = reads.filter(item => item.before !== item.after);
     for (const item of reads) if (raw(item.file) !== item.before) throw new Error('配置已被其他程序修改，本次操作已取消');
+    const tools = changes.filter(item => !isStore(item.file));
+    if (preview) { preview.push(...tools.map(item => ({ ...item }))); return result; }
+    if (tools.length && readOnly() && !allowRestore) throw new Error('只读保护已开启：TokenPulse 不会改动 Claude / Codex / Grok 的配置文件。需要切换时，先在供应商页关闭只读保护。');
+    if (expected !== null && tools.length) {
+      const ok = changeSignature(tools) === expected;
+      expected = null;
+      if (!ok) throw new Error('确认之后配置又有变化，本次没有写入，请重新确认');
+    }
     if (changes.length) {
       for (const item of changes) backup(item);
+      if (tools.length) recordHistory(reason, tools.map(item => ({ file: item.file, before: item.before, after: item.after })));
       atomicRaw(journalFile(), JSON.stringify({ version: 1, committed: false, files: changes }));
       try {
         for (const item of changes) {

@@ -100,7 +100,6 @@
     Q.host ??= $('quota-model-study');
     if (!Q.host) return;
     Q.loader ??= loader(Q.host, mode => drawQuota(mode));
-    if (Q.report?.accountId !== report?.accountId) { Q.scopeConfirmed = false; Q.calibrationMinutes = 60; Q.calibrationOpen = false; Q.calibrationMessage = ""; }
     Q.snapshot = snapshot; Q.report = report;
     if (!report?.accountId) { Q.loader.reset(); drawQuota('none'); return; }
     Q.loader.load(report.accountId, { kind: report.kind, accountId: report.accountId }, stampOf(snapshot, report));
@@ -142,14 +141,13 @@
     const merged = shown.reduce((n, r) => n + r.efforts.length, 0);
     host.replaceChildren(...[
       quotaHeading(),
-      calibrationPanel(data),
       el('div', { class: 'ms-budgets' }, WINDOWS.map(([w, label]) => budgetTile(w, label, data[w]))),
       highlights(merge(rows), data),
-      noBudget ? el('p', { class: 'ms-note', text: '未取得可用的本机专用校准样本，暂停绝对 Token / 美元容量推算。下面的倍数仅比较 API 参考单价，不是官方额度倍数。' }) : null,
+      noBudget ? el('p', { class: 'ms-note', text: '最近 30 天里「额度上涨、同期本机有 Code 请求」的区间还不够多，暂不折算绝对 Token / 美元容量。下面的倍数仅比较 API 参考单价，不是官方额度倍数。' }) : null,
       el('div', { class: 'ms-toolbar' }, [
         el('div', { class: 'ms-chips', role: 'group', 'aria-label': '按思考等级筛选' }, [['all', '全部等级'], ...levels.map(l => [l, levelName(l)])].map(([id, label]) =>
           el('button', { type: 'button', class: 'ms-chip' + (Q.level === id ? ' on' : ''), 'data-level': id, 'aria-pressed': String(Q.level === id), translate: id === 'all' ? null : 'no' }, [label, el('small', { text: String(id === 'all' ? rows.length : rows.filter(r => r.effort === id).length) })]))),
-        el('div', { class: 'ms-legend' }, [el('span', {}, [el('i', { class: 'ms-key full' }), noBudget ? 'API 价格参考' : '校准条件下整窗']), el('span', {}, [el('i', { class: 'ms-key left' }), '按官方剩余比例估算'])])
+        el('div', { class: 'ms-legend' }, [el('span', {}, [el('i', { class: 'ms-key full' }), noBudget ? 'API 价格参考' : '按本机区间折算整窗']), el('span', {}, [el('i', { class: 'ms-key left' }), '按官方剩余比例估算'])])
       ]),
       el('div', { class: 'ms-rank-head', 'aria-hidden': 'true' }, [el('span'), el('span', { text: '模型 · 思考等级' }), el('span', { text: '5 小时整窗' }), el('span', { text: '周整窗' })]),
       list,
@@ -192,65 +190,15 @@
 
   function attributionNote(study) {
     const a = study.attribution;
-    if (!a) return null;
-    const text = '官方百分比是账号总池，本机 Token 只覆盖已记录的 Code 用量。';
-    const detail = a.unmatchedPoints > 0 || a.uncertainPoints > 0
-      ? '已观测的额度增长中：' + a.unmatchedPoints.toFixed(2) + ' 个百分点未匹配本机日志，' + a.uncertainPoints.toFixed(2) + ' 个百分点无法归因。可能是聊天、其他设备或统计延迟，不是精确聊天消耗。'
-      : '即使同一时段有 Code 请求，也无法自动排除同时聊天或其他设备消耗。';
+    // 设置里声明了只在本机用 Code 的账号：官方百分比就是本机用的，不需要这段说明
+    if (!a || study.localOnly) return null;
+    const off = study.offMachine;
+    const text = off && off.points + off.markedPoints > 0 ? `本机以外 +${(off.points + off.markedPoints).toFixed(1)}%，不计入折算` : '按本机区间折算';
+    const detail = off && off.points + off.markedPoints > 0
+      ? '额度涨了、同期本机没有 Code 请求的时段算作聊天或其他设备，已从折算里排除；可以在下方时间线里标注用了什么模型。'
+      : '只用「额度上涨、同期本机有 Code 请求」的区间折算；同一时刻也在聊天的话分不出来，会让容量略偏小。';
     return el('div', { class: 'ms-attribution-note', role: 'note' }, [el('b', { text }), el('p', { text: detail })]);
   }
-  function calibrationPanel(data) {
-    const status = data.calibration || { sessions: [], active: null }, active = status.active;
-    const blocked = new Set([...(data.five.attribution?.blockedSessionIds || []), ...(data.week.attribution?.blockedSessionIds || [])]);
-    const panel = el('details', { class: 'ms-calibration', open: Q.calibrationOpen ? '' : null });
-    panel.addEventListener('toggle', () => { Q.calibrationOpen = panel.open; });
-    panel.append(el('summary', { text: active ? '本机校准进行中 · ' + date(active.endAt) + ' 自动结束' : '共享额度保护 · 可选：短时本机 Code 校准' }));
-    panel.append(el('p', { text: '默认不把聊天等全端消耗分摊给 Code。若需要绝对容量参考，可确认所选时长内仅使用此账号的本机 Code；前 10 分钟缓冲，之后按正常工作采样，不额外发模型请求。' }));
-    panel.append(el('p', { class: 'ms-note', text: '软件无法检测所有同时发生的聊天。期间用了聊天或其他设备，请作废本段；不要确认过去 30 天的混用历史。校准结果也只是当时使用结构的参考。' }));
-    const actions = el('div', { class: 'ms-calibration-actions' });
-    const notice = el('p', { class: 'ms-note', role: 'status', text: Q.calibrationMessage || '' });
-    async function change(action, sessionId, confirmedLocalOnly) {
-      if (Q.calibrationBusy) return;
-      const accountId = data.accountId;
-      Q.calibrationBusy = true;
-      panel.querySelectorAll('button,input,select').forEach(n => { n.disabled = true; });
-      try {
-        await api.modelCalibration({ kind: data.kind, accountId, action, sessionId, confirmedLocalOnly, durationMinutes: Q.calibrationMinutes || 60 });
-        cache.clear();
-        if (Q.report?.accountId === accountId) { Q.scopeConfirmed = false; Q.calibrationMessage = '校准记录已更新。'; Q.loader.reset(); quotaUpdate(Q.snapshot, Q.report); }
-        T.loader?.reset();
-      } catch (error) { notice.textContent = String(error.message || error).replace(/^Error invoking remote method '[^']+': Error: /, ''); notice.setAttribute('role', 'alert'); }
-      finally {
-        Q.calibrationBusy = false;
-        panel.querySelectorAll('button,input').forEach(n => { n.disabled = false; });
-        const start = panel.querySelector('[data-calibration-action=start]'), check = panel.querySelector('[data-calibration-confirm]');
-        if (start) start.disabled = !check?.checked;
-      }
-    }
-    if (active) {
-      actions.append(el('span', { class: 'ms-badge warn', text: blocked.has(active.id) ? '本段有未匹配增长，暂不用于校准' : '用户确认时段 · 等待足够采样' }));
-      const finish = el('button', { type: 'button', class: 'btn', 'data-calibration-action': 'finish', text: '结束本段' }); finish.addEventListener('click', () => change('finish', active.id)); actions.append(finish);
-    } else {
-      const check = el('input', { type: 'checkbox', 'data-calibration-confirm': '' }); check.checked = Boolean(Q.scopeConfirmed);
-      const start = el('button', { type: 'button', class: 'btn', 'data-calibration-action': 'start', text: '开始 ' + (Q.calibrationMinutes || 60) + ' 分钟校准', disabled: Q.scopeConfirmed ? null : '' });
-      const duration = el('select', { 'aria-label': '校准时长', 'data-calibration-duration': '' }, [60,120,240].map(n => el('option', { value: String(n), text: (n / 60) + ' 小时' })));
-      duration.value = String(Q.calibrationMinutes || 60);
-      duration.addEventListener('change', () => { Q.calibrationMinutes = Number(duration.value); Q.scopeConfirmed = false; check.checked = false; start.disabled = true; start.textContent = '开始 ' + duration.value + ' 分钟校准'; });
-      actions.append(duration);
-      check.addEventListener('change', () => { Q.scopeConfirmed = check.checked; start.disabled = !check.checked; });
-      start.addEventListener('click', () => change('start', undefined, check.checked));
-      actions.append(el('label', {}, [check, '我确认本段只使用所选账号的本机 Code']), start);
-    }
-    panel.append(actions, notice);
-    const list = el('div', { class: 'ms-calibration-history' });
-    for (const session of status.sessions) {
-      const row = el('div', {}, [el('span', { text: date(session.startAt) + ' → ' + date(session.stoppedAt || session.endAt) + ' · ' + (session.discardedAt ? '已作废' : blocked.has(session.id) ? '有未匹配增长，暂不采用' : session.id === active?.id ? '进行中' : '已结束') })]);
-      if (!session.discardedAt) { const discard = el('button', { type: 'button', class: 'btn', 'data-calibration-action': 'discard', text: '作废本段' }); discard.addEventListener('click', () => change('discard', session.id)); row.append(discard); }
-      list.append(row);
-    }
-    panel.append(list); return panel;
-  }
-
   function budgetTile(w, label, study) {
     const b = study.budget, sel = study.selected;
     const used = sel?.active && !study.quotaStale ? sel.used : null;
@@ -258,12 +206,12 @@
     const confidence = { medium: ['样本较充分', 'good'], low: ['初步参考', 'warn'], insufficient: ['样本不足', 'muted'] }[b.confidence];
     return el('div', { class: `ms-budget ${w}` }, [
       el('div', { class: 'ms-budget-top' }, [el('i', { class: 'ms-dot' }), el('b', { text: `${label}整窗` }), el('span', { class: `ms-badge ${confidence[1]}`, text: confidence[0] })]),
-      el('strong', { class: 'ms-budget-value' }, b.costUsd != null ? [money(b.costUsd), el('small', { text: '本机专用样本 · API 等价参考' })] : [el('span', { text: used == null ? '—' : `${used.toFixed(1)}%` }), el('small', { text: '官方账号总池已用' })]),
+      el('strong', { class: 'ms-budget-value' }, b.costUsd != null ? [money(b.costUsd), el('small', { text: '按本机区间折算 · API 等价参考' })] : [el('span', { text: used == null ? '—' : `${used.toFixed(1)}%` }), el('small', { text: '官方账号总池已用' })]),
       meter,
       el('p', {}, used != null
         ? [`本周期已用 ${used.toFixed(0)}%`, ` · 官方剩余 ${Math.max(0, 100 - used).toFixed(1)}%`]
         : [study.quotaStale ? '额度采样超过 30 分钟，暂不估算剩余' : '当前没有进行中的周期']),
-      el('small', { text: b.intervals ? `${number(b.intervals)} 个采样区间 · 累计 ${number(Math.round(b.points))} 个百分点 · ${number(b.cycles)} 个周期` : '尚无足够的已确认本机校准区间' }),
+      el('small', { text: b.intervals ? `${number(b.intervals)} 个采样区间 · 累计 ${number(Math.round(b.points))} 个百分点 · ${number(b.cycles)} 个周期` : '还没有「额度上涨、同期本机有请求」的区间' }),
       attributionNote(study)
     ]);
   }
@@ -384,18 +332,25 @@
 
   /* ================= 额度详情：模型与思考等级时间线（0.3.9 从用量明细移过来，跟随上方选中的账号） ================= */
 
-  const T = { host: null, loader: null, snapshot: null, accountId: '', cycles: { five: '', week: '' }, focus: '', width: 0 };
+  /*
+   * 0.3.9：本机以外的消耗。额度涨了、同期本机没有 Code 请求的时段自动标出来（「本机以外」轨道上的虚线块），
+   * 用户点它补上用了什么模型、什么思考等级；标注过的时段不进容量折算，按容量表换算成等价 Token。
+   * 时间线可以放大：拖动选一段 → 放大 / 标注；Ctrl + 滚轮以鼠标位置缩放；按钮缩放、回到整个周期。
+   */
+  const T = { host: null, loader: null, snapshot: null, accountId: '', cycles: { five: '', week: '' }, focus: '', width: 0, zoom: { five: null, week: null }, edit: null, stale: false, cards: {} };
+  const MIN_SPAN = 5 * 60000;
+  const SOURCES = [['chat', '网页 / App 聊天'], ['device', '其他电脑或设备'], ['other', '其他']];
 
   function timelineAccounts(snapshot) { return (snapshot?.accounts || []).filter(a => a.accountId && (a.five || a.week)); }
   function timelineUpdate(snapshot, preferred) {
     T.host ??= $('quota-model-timeline');
     if (!T.host) return;
     T.loader ??= loader(T.host, mode => drawTimeline(mode));
-    if (!T.observer) { T.observer = new ResizeObserver(() => { const w = T.host.clientWidth; if (Math.abs(w - T.width) > 24 && T.loader.view.data) { T.width = w; drawTimeline('update'); } }); T.observer.observe(T.host); }
+    if (!T.observer) { T.observer = new ResizeObserver(() => { const w = T.host.clientWidth; if (Math.abs(w - T.width) > 24 && T.loader.view.data) { T.width = w; for (const card of Object.values(T.cards)) card.redraw(false); } }); T.observer.observe(T.host); }
     T.snapshot = snapshot;
     const accounts = timelineAccounts(snapshot);
     const next = accounts.find(a => a.accountId === preferred)?.accountId || '';
-    if (next !== T.accountId) { T.accountId = next; T.cycles = { five: '', week: '' }; T.focus = ''; }
+    if (next !== T.accountId) { T.accountId = next; T.cycles = { five: '', week: '' }; T.focus = ''; T.zoom = { five: null, week: null }; T.edit = null; }
     const report = accounts.find(a => a.accountId === T.accountId);
     if (!report) { T.loader.reset(); drawTimeline('none'); return; }
     T.loader.load(`${T.accountId}|${T.cycles.five}|${T.cycles.week}`, { kind: report.kind, accountId: report.accountId, cycles: { ...(T.cycles.five ? { five: T.cycles.five } : {}), ...(T.cycles.week ? { week: T.cycles.week } : {}) } }, stampOf(snapshot, report));
@@ -408,7 +363,7 @@
       report ? avatar(report.kind, 'ms-brand') : null,
       el('div', {}, [
         el('h2', {}, ['模型与思考等级 · 时间线', el('span', { class: 'section-tag', text: '按官方周期' })]),
-        el('p', { text: '每个模型 × 思考等级一条轨道，连续使用的时间段连成一段；上方曲线是全账号官方额度已用百分比（可能含聊天及其他设备）。跟随上方选中的账号，不受用量明细的日期和筛选影响。' })
+        el('p', { text: '每个模型 × 思考等级一条轨道，上方曲线是全账号官方额度已用百分比。额度涨了、同期本机没有 Code 请求的时段标在「本机以外」轨道上，可以补上用了什么模型。拖动选一段可放大或标注，Ctrl + 滚轮缩放。' })
       ])
     ])])];
   }
@@ -422,12 +377,18 @@
       host.querySelector('[data-action=retry-study]').addEventListener('click', () => { T.loader.reset(); reloadTimeline(); });
       return;
     }
+    // 正在填标注的时候，定时刷新不能把表单冲掉：记下来，关掉编辑区后再画
+    if (mode === 'update' && T.edit) { T.stale = true; return; }
+    T.stale = false;
     T.width = host.clientWidth;
     const colors = colorMap(data);
-    const cards = WINDOWS.map(([w, label]) => cycleCard(w, label, data[w], colors));
+    T.cards = {};
+    const cards = WINDOWS.map(([w, label]) => (T.cards[w] = cycleCard(w, label, data[w], colors, data)));
     host.replaceChildren(...timelineHeading(), ...cards.map(c => c.node));
-    for (const c of cards) c.draw(mode === 'enter');
+    for (const c of cards) c.redraw(mode === 'enter');
     applyFocus();
+    const editing = host.querySelector('.ms-mark-editor');
+    if (editing && mode !== 'update') editing.querySelector('select, input')?.focus({ preventScroll: true });
   }
 
   /** 颜色跟着模型走（两条时间线一致）：按周期里的用量从多到少分配色相，等级用深浅区分。 */
@@ -438,20 +399,51 @@
     return model => { const i = models.indexOf(model); return i < 0 ? HUES.at(-1) : HUES[i % (HUES.length - 1)]; };
   }
 
-  function cycleCard(w, label, study, colors) {
+  /** 当前显示的时间范围：放大过就是放大的那段，否则是整个周期。 */
+  function viewOf(w, study) {
+    const sel = study.selected, zoom = T.zoom[w];
+    if (!sel) return null;
+    const full = { from: sel.startAt, to: sel.endAt };
+    if (!zoom) return full;
+    return { from: Math.max(full.from, zoom.from), to: Math.min(full.to, zoom.to) };
+  }
+  function setZoom(w, study, from, to) {
+    const sel = study.selected; if (!sel) return;
+    const span = Math.max(MIN_SPAN, to - from), mid = (from + to) / 2;
+    let a = mid - span / 2, b = mid + span / 2;
+    if (a < sel.startAt) { b += sel.startAt - a; a = sel.startAt; }
+    if (b > sel.endAt) { a -= b - sel.endAt; b = sel.endAt; }
+    a = Math.max(sel.startAt, a);
+    T.zoom[w] = b - a >= sel.endAt - sel.startAt - 1000 ? null : { from: a, to: b };
+    T.cards[w]?.redraw(false);
+  }
+  function zoomBy(w, study, factor, center) {
+    const view = viewOf(w, study); if (!view) return;
+    const c = center ?? (view.from + view.to) / 2, span = (view.to - view.from) * factor;
+    setZoom(w, study, c - (c - view.from) * factor, c - (c - view.from) * factor + span);
+  }
+
+  function cycleCard(w, label, study, colors, data) {
     const sel = study.selected, index = sel ? study.cycles.findIndex(c => c.id === sel.id) : -1;
     const combos = summarize(study);
     const step = delta => {
       const next = study.cycles[index + delta];
       if (!next) return;
+      T.zoom[w] = null; if (T.edit?.w === w) T.edit = null;
       T.cycles = { ...T.cycles, [w]: index + delta === 0 ? '' : next.id }; reloadTimeline();
     };
     const older = el('button', { type: 'button', class: 'btn ms-step', 'aria-label': `上一个${label}周期`, title: `上一个${label}周期`, disabled: index < 0 || index >= study.cycles.length - 1 ? '' : null, text: '‹' });
     const newer = el('button', { type: 'button', class: 'btn ms-step', 'aria-label': `下一个${label}周期`, title: `下一个${label}周期`, disabled: index <= 0 ? '' : null, text: '›' });
     older.addEventListener('click', () => step(1)); newer.addEventListener('click', () => step(-1));
     const status = !sel ? null : sel.active ? ['进行中', 'good'] : ['已结束', 'muted'];
+    const zoomBtn = (text, title, action) => { const b = el('button', { type: 'button', class: 'btn ms-zoom-btn', title, 'aria-label': title, text }); b.addEventListener('click', action); return b; };
+    const zoomLabel = el('span', { class: 'ms-zoom-label', 'aria-live': 'polite' });
+    const zoomOut = zoomBtn('−', `${label}时间线缩小`, () => zoomBy(w, study, 2));
+    const zoomIn = zoomBtn('+', `${label}时间线放大`, () => zoomBy(w, study, .5));
+    const zoomAll = zoomBtn('整个周期', `${label}时间线回到整个周期`, () => { T.zoom[w] = null; T.cards[w]?.redraw(false); });
+    const zoom = sel ? el('div', { class: 'ms-zoom', role: 'group', 'aria-label': `${label}时间线缩放` }, [zoomLabel, zoomOut, zoomIn, zoomAll]) : null;
     const chart = el('div', { class: 'ms-tl', 'data-window': w });
-    const node = el('article', { class: `ms-cycle ${w}` }, [
+    const node = el('article', { class: `ms-cycle ${w}`, 'data-window': w }, [
       el('div', { class: 'ms-cycle-head' }, [
         el('div', { class: 'ms-cycle-title' }, [el('i', { class: 'ms-dot' }), el('b', { text: `${label}周期` }),
           sel ? el('span', { class: 'ms-range', text: `${date(sel.startAt)} → ${date(sel.endAt)}` }) : null,
@@ -462,13 +454,26 @@
           older, el('span', { class: 'ms-cycle-pos', text: sel ? `${index + 1} / ${study.cycles.length}` : '—' }), newer
         ])
       ]),
-      attributionNote(study),
+      zoom,
       chart,
+      sel ? offMachineSummary(w, study, combos) : null,
+      T.edit?.w === w && sel ? markEditor(w, study, data) : null,
       combos.length ? comboList(combos, study.totals.tokens, colors, study.query.kind) : null,
       study.totals.unknownEffort ? el('p', { class: 'ms-note', text: `其中 ${number(study.totals.unknownEffort)} 条请求没记录思考等级（旧日志或客户端没写），单独放在「未记录等级」轨道。` }) : null
     ]);
-    return { node, draw: animate => drawLanes(chart, study, combos, colors, animate) };
+    const redraw = animate => {
+      const view = viewOf(w, study);
+      if (view && sel) {
+        const zoomed = Boolean(T.zoom[w]);
+        zoomLabel.textContent = zoomed ? `显示 ${date(view.from)} – ${sameDay(view.from, view.to) ? hm(view.to) : date(view.to)}` : '整个周期';
+        zoomAll.disabled = !zoomed; zoomOut.disabled = !zoomed; zoomIn.disabled = view.to - view.from <= MIN_SPAN + 1000;
+      }
+      drawLanes(chart, study, combos, colors, animate, w);
+      applyFocus();
+    };
+    return { node, redraw };
   }
+  const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
 
   /** 周期里出现过的组合，按用量从多到少。 */
   function summarize(study) {
@@ -480,9 +485,9 @@
     }
     return [...map.values()].sort((a, b) => (a.effort === 'unknown') - (b.effort === 'unknown') || b.tokens - a.tokens);
   }
-  /** 相邻的时间格连成一段：中间空着的不超过一格（五小时窗口至少 5 分钟，周窗口至少 45 分钟）。 */
-  function runsOf(combo, binMs, w) {
-    const gap = Math.max(binMs, w === 'five' ? 5 * 60000 : 45 * 60000), runs = [];
+  /** 相邻的时间格连成一段：间隔按当前显示的范围定（整周看时 45 分钟以内算连续，放大后按比例缩小）。 */
+  function runsOf(combo, binMs, span) {
+    const gap = Math.max(binMs, Math.min(45 * 60000, span / 150)), runs = [];
     for (const b of [...combo.bins].sort((x, y) => x.startAt - y.startAt)) {
       const last = runs.at(-1);
       if (last && b.startAt - last.endAt <= gap) { last.endAt = b.endAt; last.lastAt = b.lastAt; last.tokens += b.tokens; last.calls += b.calls; last.count += b.count; last.costUsd = last.costUsd != null && b.costUsd != null ? last.costUsd + b.costUsd : null; }
@@ -492,79 +497,128 @@
   }
   const colorFor = (combo, colors) => combo.effort === 'unknown' ? 'var(--faint)' : colors(combo.model);
   const alphaFor = effort => STRENGTH[effort] ?? .8;
+  /** 刻度：按显示范围挑一个步长，大约每 90 像素一格。 */
+  const STEPS = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880].map(m => m * 60000);
+  function ticksFor(from, to, width) {
+    const want = Math.max(2, Math.floor(width / 90)), step = STEPS.find(s => (to - from) / s <= want) ?? STEPS.at(-1);
+    const first = new Date(from);
+    if (step >= DAY) first.setHours(24, 0, 0, 0);
+    else { first.setSeconds(0, 0); const m = first.getHours() * 60 + first.getMinutes(), s = step / 60000; first.setHours(0, Math.ceil((m + .001) / s) * s, 0, 0); }
+    const out = [];
+    for (let at = first.getTime(); at < to && out.length < 60; at += step) out.push(at);
+    return { step, ticks: out };
+  }
+  function tickLabel(at, step) {
+    const d = new Date(at);
+    if (step >= DAY) return `${WEEKDAY[d.getDay()]} ${d.getMonth() + 1}/${d.getDate()}`;
+    if (d.getHours() === 0 && d.getMinutes() === 0) return `${d.getMonth() + 1}/${d.getDate()}`;
+    return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  /** 某一时刻的官方已用（阶梯：取那一刻之前最后一次采样）。 */
+  function pctAt(study, at) { let value = null; for (const p of study.track) { if (p.at > at) break; value = p.pct; } return value ?? study.track[0]?.pct ?? 0; }
+  const growth = (study, from, to) => Math.max(0, pctAt(study, to) - pctAt(study, from));
 
-  function drawLanes(host, study, combos, colors, animate) {
+  function drawLanes(host, study, combos, colors, animate, w) {
     host.replaceChildren();
     const sel = study.selected;
     if (!sel) { host.append(empty('这个账号没有这种窗口的官方周期记录。')); return; }
-    const w = Math.max(560, host.clientWidth || 900), labelW = Math.min(230, Math.max(150, w * .24)), left = labelW + 14, right = w - 16;
-    const bandTop = 10, bandH = 58, laneTop = bandTop + bandH + 26, laneH = 34, lanes = Math.max(1, combos.length);
+    const view = viewOf(w, study), start = view.from, end = view.to, span = Math.max(1, end - start);
+    const off = study.offMachine || { detected: [], marks: [] };
+    const hasOff = off.detected.length > 0 || off.marks.length > 0;
+    const width = Math.max(560, host.clientWidth || 900), labelW = Math.min(230, Math.max(150, width * .24)), left = labelW + 14, right = width - 16;
+    const bandTop = 10, bandH = 58, laneTop = bandTop + bandH + 26, laneH = 34, lanes = Math.max(1, combos.length) + (hasOff ? 1 : 0);
     const h = laneTop + lanes * laneH + 26;
-    const start = sel.startAt, end = sel.endAt, span = Math.max(1, end - start);
     const x = at => left + (Math.min(end, Math.max(start, at)) - start) / span * (right - left);
-    const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, width: w, height: h, role: 'group', 'aria-label': '模型与思考等级时间线' });
+    const inView = (a, b) => b > start && a < end;
+    const node = svg('svg', { viewBox: `0 0 ${width} ${h}`, width, height: h, role: 'group', 'aria-label': '模型与思考等级时间线', class: 'ms-tl-svg' });
+    const toTime = clientX => { const box = node.getBoundingClientRect(); return start + ((clientX - box.left) * (width / box.width) - left) / (right - left) * span; };
 
-    // 时间刻度：五小时按整点，周按天
-    const tickStep = study.query.window === 'five' ? HOUR : DAY;
-    const first = new Date(start); if (tickStep === DAY) first.setHours(24, 0, 0, 0); else first.setMinutes(60, 0, 0);
-    for (let at = first.getTime(); at < end; at += tickStep) {
+    const { step, ticks } = ticksFor(start, end, right - left);
+    for (const at of ticks) {
       const tx = x(at);
       node.append(svg('line', { class: 'ms-grid', x1: tx, x2: tx, y1: bandTop, y2: h - 22 }));
-      const d = new Date(at), label = svg('text', { class: 'axis', x: tx, y: h - 6, 'text-anchor': 'middle' });
-      label.textContent = tickStep === DAY ? `${WEEKDAY[d.getDay()]} ${d.getMonth() + 1}/${d.getDate()}` : `${d.getHours()}:00`;
+      const label = svg('text', { class: 'axis', x: tx, y: h - 6, 'text-anchor': 'middle' });
+      label.textContent = tickLabel(at, step);
       node.append(label);
     }
 
+    // 上方：采样区间里说不清的（缺口、刚发生还没下结论）淡色；本机以外的（可点）橙色
     for (const interval of study.attribution?.intervals || []) {
-      if (interval.kind === 'local_present') continue;
-      const band = svg('rect', { x: x(interval.from), y: bandTop, width: Math.max(2, x(interval.to) - x(interval.from)), height: bandH, class: 'ms-unmatched-band', tabindex: 0, role: 'img', 'aria-label': '未匹配本机日志的额度增长' });
-      tipOn(band, date(interval.from) + ' → ' + date(interval.to) + '\n官方增加 ' + interval.points.toFixed(2) + ' 个百分点\n未匹配本机日志或存在采样缺口；可能来自聊天、其他设备或统计延迟。没有从官方总已用中扣除。');
+      if (interval.kind === 'local_present' || !inView(interval.from, interval.to)) continue;
+      const band = svg('rect', { x: x(interval.from), y: bandTop, width: Math.max(2, x(interval.to) - x(interval.from)), height: bandH, class: 'ms-unmatched-band' + (interval.kind === 'unmatched' ? ' off' : ''), tabindex: 0, role: 'img', 'aria-label': interval.kind === 'unmatched' ? '本机以外的额度增长' : '说不清来源的额度增长' });
+      tipOn(band, date(interval.from) + ' → ' + date(interval.to) + '\n官方增加 ' + interval.points.toFixed(2) + ' 个百分点\n' + (interval.kind === 'unmatched' ? '同期本机没有 Code 请求：算作本机以外的使用（聊天、其他设备），不计入容量折算。点下方「本机以外」轨道可以标注用了什么模型。' : '采样缺口或刚发生、还不能判断来源，不计入容量折算。'));
       node.append(band);
     }
-    // 上方：官方额度已用百分比（阶梯线，采样之间保持上一个值）
     const y = pct => bandTop + bandH - Math.min(100, Math.max(0, pct)) / 100 * bandH;
     for (const g of [0, 50, 100]) {
       node.append(svg('line', { class: 'ms-grid faint', x1: left, x2: right, y1: y(g), y2: y(g) }));
       const t = svg('text', { class: 'axis', x: left - 8, y: y(g) + 4, 'text-anchor': 'end' }); t.textContent = `${g}%`; node.append(t);
     }
     const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = '官方总池已用'; node.append(bandLabel);
-    const track = study.track.filter(p => p.at >= start && p.at <= end);
+    const track = study.track.filter(p => p.at <= end);
     if (track.length) {
-      let d = `M${x(start).toFixed(1)},${y(0).toFixed(1)}`;
-      for (const p of track) d += ` H${x(p.at).toFixed(1)} V${y(p.pct).toFixed(1)}`;
-      d += ` H${x(Math.min(end, sel.active ? study.now : track.at(-1).at)).toFixed(1)}`;
-      const lastX = x(Math.min(end, sel.active ? study.now : track.at(-1).at));
+      const before = [...track].reverse().find(p => p.at <= start);
+      let d = `M${x(start).toFixed(1)},${y(before ? before.pct : 0).toFixed(1)}`;
+      for (const p of track) if (p.at > start) d += ` H${x(p.at).toFixed(1)} V${y(p.pct).toFixed(1)}`;
+      const tail = Math.min(end, sel.active ? study.now : track.at(-1).at);
+      d += ` H${x(tail).toFixed(1)}`;
       node.append(svg('path', { class: 'ms-quota-area', d: `${d} V${y(0)} Z` }), svg('path', { class: 'ms-quota-line', d, pathLength: 1, 'stroke-dasharray': 1 }));
-      node.append(svg('circle', { class: 'ms-quota-dot', cx: lastX, cy: y(track.at(-1).pct), r: 3.5 }));
-      const hit = svg('rect', { class: 'ms-hit', x: left, y: bandTop, width: right - left, height: bandH });
-      hit.addEventListener('pointermove', e => {
-        const box = node.getBoundingClientRect(), at = start + ((e.clientX - box.left) * (w / box.width) - left) / (right - left) * span;
-        const p = [...track].reverse().find(q => q.at <= at) ?? track[0];
-        tipAt(`${date(p.at)}\n官方额度已用 ${p.pct.toFixed(0)}%`, e.clientX, e.clientY);
-      });
-      hit.addEventListener('pointerleave', hideTip);
-      node.append(hit);
+      if (tail >= start) node.append(svg('circle', { class: 'ms-quota-dot', cx: x(tail), cy: y(pctAt(study, tail)), r: 3.5 }));
     }
 
-    // 轨道
+    // 「本机以外」轨道：检测到的（虚线，待标注）和用户标注的（实心，写着模型）
+    let laneIndex = 0;
+    if (hasOff) {
+      const cy = laneTop + laneH / 2;
+      const lane = svg('g', { class: 'ms-lane ms-off-lane' });
+      const name = svg('text', { class: 'ms-lane-name', x: 4, y: cy - 2 }); name.textContent = '本机以外';
+      const sub = svg('text', { class: 'ms-lane-level', x: 4, y: cy + 12 }); sub.textContent = '聊天 / 其他设备';
+      lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width, height: laneH - 4, rx: 6 }), name, sub, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }));
+      const block = (item, marked) => {
+        if (!inView(item.from, item.to)) return;
+        const bx = x(item.from), bw = Math.max(8, x(item.to) - bx);
+        const rect = svg('rect', { class: 'ms-off ' + (marked ? 'marked' : 'detected'), x: bx, y: cy - 9, width: bw, height: 18, rx: 4, tabindex: 0, role: 'button', 'data-off': marked ? item.id : `${item.from}-${item.to}` });
+        const text = marked
+          ? `${date(item.from)} – ${hm(item.to)}\n${item.model} · ${levelName(item.effort)}（${SOURCES.find(s => s[0] === item.source)?.[1] || ''}）\n官方增加 ${item.points.toFixed(1)} 个百分点${item.equivalentTokens != null ? `\n≈ ${tokens(item.equivalentTokens)} Tokens` : ''}\n点一下修改`
+          : `${date(item.from)} – ${hm(item.to)}\n官方增加 ${item.points.toFixed(1)} 个百分点，同期本机没有 Code 请求\n点一下标注用了什么模型`;
+        rect.setAttribute('aria-label', text.replaceAll('\n', '，'));
+        tipOn(rect, text);
+        const open = () => openEditor(w, study, marked ? item : { from: item.from, to: item.to });
+        rect.addEventListener('click', e => { e.stopPropagation(); open(); });
+        rect.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+        lane.append(rect);
+        if (bw > 70) {
+          const t = svg('text', { class: 'ms-off-text' + (marked ? ' marked' : ''), x: bx + 6, y: cy + 4 });
+          t.textContent = marked ? `${item.model} · ${levelName(item.effort)}` : `待标注 +${item.points.toFixed(1)}%`;
+          if (marked) t.setAttribute('translate', 'no');
+          lane.append(t);
+        }
+      };
+      off.detected.forEach(item => block(item, false));
+      off.marks.forEach(item => block(item, true));
+      node.append(lane);
+      laneIndex = 1;
+    }
+
+    // 各组合的轨道
     if (!combos.length) {
-      const t = svg('text', { class: 'axis', x: (left + right) / 2, y: laneTop + laneH / 2 + 4, 'text-anchor': 'middle' });
+      const t = svg('text', { class: 'axis', x: (left + right) / 2, y: laneTop + laneIndex * laneH + laneH / 2 + 4, 'text-anchor': 'middle' });
       t.textContent = sel.active && study.cycles.length > 1 ? '这个周期里还没有本机官方请求，点右上角 ‹ 看上一个周期' : '这个周期里没有本机官方请求';
       node.append(t);
     }
     combos.forEach((combo, i) => {
-      const cy = laneTop + i * laneH + laneH / 2, color = colorFor(combo, colors);
+      const cy = laneTop + (i + laneIndex) * laneH + laneH / 2, color = colorFor(combo, colors);
       const lane = svg('g', { class: 'ms-lane', 'data-key': combo.key });
       paint(lane, { '--i': i });
-      // 左边：公司图标 + 模型名 + 等级
       const logo = brandSvg(META[study.query.kind].brand);
       for (const [k, val] of Object.entries({ x: 4, y: cy - 9, width: 18, height: 18, class: 'brand-svg ms-lane-logo' })) logo.setAttribute(k, val);
       const name = svg('text', { class: 'ms-lane-name', x: 30, y: cy - 2 }); name.textContent = combo.model.length > 22 ? combo.model.slice(0, 21) + '…' : combo.model;
       name.setAttribute('translate', 'no');
       const level = svg('text', { class: 'ms-lane-level', x: 30, y: cy + 12 }); level.textContent = levelName(combo.effort);
-      lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width: w, height: laneH - 4, rx: 6 }), logo, name, level, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }));
+      lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width, height: laneH - 4, rx: 6 }), logo, name, level, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }));
       const title = svg('title'); title.textContent = combo.model; name.append(title);
-      for (const run of runsOf(combo, study.binMs, study.query.window)) {
+      for (const run of runsOf(combo, study.binMs, span)) {
+        if (!inView(run.startAt, run.endAt)) continue;
         const rx = x(run.startAt), rw = Math.max(5, x(run.endAt) - rx);
         const rect = svg('rect', { class: 'ms-run', x: rx, y: cy - 7, width: rw, height: 14, rx: Math.min(4, rw / 2), tabindex: 0 });
         paint(rect, { fill: color, fillOpacity: alphaFor(combo.effort) });
@@ -572,19 +626,212 @@
         rect.setAttribute('aria-label', text.replaceAll('\n', '，'));
         lane.append(tipOn(rect, text));
       }
-      lane.addEventListener('click', () => { T.focus = T.focus === combo.key ? '' : combo.key; applyFocus(); });
+      lane.addEventListener('click', () => { if (!host._dragged) { T.focus = T.focus === combo.key ? '' : combo.key; applyFocus(); } });
       node.append(lane);
     });
 
-    if (sel.active && study.now < end) {
+    if (sel.active && study.now < end && study.now > start) {
       const nx = x(study.now);
       node.append(svg('line', { class: 'ms-now', x1: nx, x2: nx, y1: bandTop, y2: h - 22 }));
-      // 贴着左右两端时文字放到线的内侧，别压住坐标轴的百分比
       const side = nx > right - 30 ? ['end', nx - 5] : nx < left + 30 ? ['start', nx + 5] : ['middle', nx];
       const t = svg('text', { class: 'ms-now-label', x: side[1], y: laneTop - 8, 'text-anchor': side[0] }); t.textContent = '现在'; node.append(t);
     }
+
+    // 悬停在上方曲线区：显示那一刻的官方已用
+    const hit = svg('rect', { class: 'ms-hit', x: left, y: bandTop, width: right - left, height: bandH });
+    hit.addEventListener('pointermove', e => { if (!host._dragging) tipAt(`${date(toTime(e.clientX))}\n官方额度已用 ${pctAt(study, toTime(e.clientX)).toFixed(0)}%`, e.clientX, e.clientY); });
+    hit.addEventListener('pointerleave', hideTip);
+    node.insertBefore(hit, node.querySelector('.ms-lane'));
+
+    // 拖动选一段：放大 / 标注。移动不到 5 像素当作点击（不影响点轨道聚焦、点色块标注）
+    const selection = svg('rect', { class: 'ms-select', x: 0, y: bandTop, width: 0, height: h - 22 - bandTop, hidden: '' });
+    node.append(selection);
+    let drag = null;
+    node.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
+      const box = node.getBoundingClientRect(), px = (e.clientX - box.left) * (width / box.width);
+      if (px < left || px > right) return;
+      drag = { x0: px, t0: toTime(e.clientX), id: e.pointerId, moved: false };
+      host.querySelector('.ms-select-actions')?.remove();
+    });
+    node.addEventListener('pointermove', e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const box = node.getBoundingClientRect(), px = Math.min(right, Math.max(left, (e.clientX - box.left) * (width / box.width)));
+      if (!drag.moved && Math.abs(px - drag.x0) < 5) return;
+      if (!drag.moved) { drag.moved = true; host._dragging = true; hideTip(); try { node.setPointerCapture(e.pointerId); } catch { /* 合成事件没有真实指针 */ } }
+      selection.removeAttribute('hidden');
+      selection.setAttribute('x', String(Math.min(px, drag.x0))); selection.setAttribute('width', String(Math.abs(px - drag.x0)));
+      drag.t1 = toTime(e.clientX);
+    });
+    const finish = e => {
+      if (!drag || (e && e.pointerId !== drag.id)) return;
+      const done = drag; drag = null; host._dragging = false;
+      if (!done.moved) return;
+      host._dragged = true; setTimeout(() => { host._dragged = false; }, 0);
+      const from = Math.max(sel.startAt, Math.min(done.t0, done.t1)), to = Math.min(sel.endAt, Math.max(done.t0, done.t1));
+      if (to - from < 60000) { selection.setAttribute('hidden', ''); return; }
+      selectionActions(host, w, study, from, to, (x(from) + x(to)) / 2 / width, selection);
+    };
+    node.addEventListener('pointerup', finish);
+    node.addEventListener('pointercancel', () => { drag = null; host._dragging = false; selection.setAttribute('hidden', ''); });
+    // Ctrl + 滚轮：以鼠标位置为中心缩放（不按 Ctrl 的滚轮照常滚动页面）
+    node.addEventListener('wheel', e => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      zoomBy(w, study, e.deltaY > 0 ? 1.5 : 1 / 1.5, Math.min(end, Math.max(start, toTime(e.clientX))));
+    }, { passive: false });
+
     host.append(node);
     playChart(host, animate);
+  }
+
+  /** 拖选之后浮出的小工具条：放大到这段 / 标注为本机以外 / 取消。 */
+  function selectionActions(host, w, study, from, to, center, selection) {
+    host.querySelector('.ms-select-actions')?.remove();
+    const bar = el('div', { class: 'ms-select-actions', role: 'group', 'aria-label': '所选时段' }, [
+      el('span', { text: `${date(from)} – ${hm(to)} · 官方 +${growth(study, from, to).toFixed(1)}%` }),
+    ]);
+    const act = (text, fn, cls = 'btn') => { const b = el('button', { type: 'button', class: cls, text }); b.addEventListener('click', () => { bar.remove(); selection.setAttribute('hidden', ''); fn(); }); bar.append(b); return b; };
+    const first = act('放大到这段', () => setZoom(w, study, from, to), 'btn btn-accent');
+    act('标注为本机以外的使用', () => openEditor(w, study, { from, to }));
+    act('取消', () => {});
+    paint(bar, { left: `${Math.min(88, Math.max(12, center * 100)).toFixed(1)}%` });
+    host.append(bar);
+    first.focus({ preventScroll: true });
+  }
+
+  /* ---------------- 本机以外：汇总和标注 ---------------- */
+
+  function offMachineSummary(w, study, combos) {
+    const off = study.offMachine || { points: 0, markedPoints: 0, detected: [], marks: [] };
+    const box = el('div', { class: 'ms-off-summary' });
+    const manual = el('button', { type: 'button', class: 'btn ms-off-add', text: '手动标注一段' });
+    manual.addEventListener('click', () => { const view = viewOf(w, study); const to = Math.min(view.to, study.now); openEditor(w, study, { from: Math.max(view.from, to - HOUR), to }); });
+    const total = off.points + off.markedPoints;
+    // 说明文字收进感叹号，常驻的只有结论（涨了多少、几段待标注）
+    const head = el('div', { class: 'ms-off-head' }, [
+      el('i', { class: 'ms-off-key', 'aria-hidden': 'true' }),
+      el('p', {}, total > 0
+        ? [el('b', { text: `本机以外 +${total.toFixed(1)}%` }), off.detected.length ? el('span', { class: 'ms-off-pending', text: `${off.detected.length} 段待标注` }) : null]
+        : [el('span', { class: 'ms-off-none', text: '本机以外 · 未检测到' })]),
+      infoTip(el('span', { text: total > 0
+        ? '这些时段额度涨了、但同期本机没有 Code 请求（或你标注过在别处使用），不计入容量折算。点下面的时段可以标注用了什么模型。'
+        : '这个周期里额度上涨时本机都有 Code 请求。在别处用过也可以手动标注。' }), '本机以外说明'),
+      manual,
+    ]);
+    box.classList.toggle('empty', total <= 0 && !off.marks.length);
+    box.append(head);
+    const items = [...off.detected.map(d => ({ ...d, marked: false })), ...off.marks.map(m => ({ ...m, marked: true }))].sort((a, b) => a.from - b.from);
+    if (items.length) {
+      box.append(el('div', { class: 'ms-off-items' }, items.map(item => {
+        const b = el('button', { type: 'button', class: 'ms-off-item' + (item.marked ? ' marked' : '') }, [
+          el('span', { class: 'ms-off-time', text: `${date(item.from)} – ${sameDay(item.from, item.to) ? hm(item.to) : date(item.to)}` }),
+          el('b', { text: item.marked ? `${item.model} · ${levelName(item.effort)}` : '待标注', translate: item.marked ? 'no' : null }),
+          el('small', { text: `+${item.points.toFixed(1)}%${item.marked && item.equivalentTokens != null ? ` ≈ ${tokens(item.equivalentTokens)} Tokens` : ''}` }),
+        ]);
+        b.addEventListener('click', () => { setZoomAround(w, study, item.from, item.to); openEditor(w, study, item.marked ? item : { from: item.from, to: item.to }); });
+        return b;
+      })));
+    }
+    return box;
+  }
+  /** 打开编辑时顺便放大到那一段（两边各留一点，看得见前后的本机请求）。 */
+  function setZoomAround(w, study, from, to) {
+    const pad = Math.max(10 * 60000, (to - from) * .6);
+    T.zoom[w] = null; setZoom(w, study, from - pad, to + pad);
+  }
+  function openEditor(w, study, item) {
+    const models = summarize(study);
+    T.edit = { w, id: item.id || '', from: item.from, to: item.to, model: item.model || models[0]?.model || '', effort: item.effort || 'unknown', source: item.source || 'chat', note: item.note || '' };
+    drawTimeline('refresh');
+    T.host.querySelector(`.ms-cycle[data-window="${w}"] .ms-mark-editor`)?.scrollIntoView({ block: 'nearest', behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+  }
+  function closeEditor() {
+    T.edit = null;
+    drawTimeline(T.stale ? 'update' : 'refresh');
+  }
+  const toInput = at => { const d = new Date(at); const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
+  const fromInput = value => { const t = new Date(value).getTime(); return Number.isFinite(t) ? t : NaN; };
+
+  function markEditor(w, study, data) {
+    const e = T.edit, kind = study.query.kind;
+    const catalog = (data.catalog || []).filter(c => c.model);
+    const models = [...new Set([...summarize(study).map(c => c.model), ...catalog.map(c => c.model), ...(e.model ? [e.model] : [])])];
+    const fromInputEl = el('input', { type: 'datetime-local', value: toInput(e.from), 'aria-label': '开始时间' });
+    const toInputEl = el('input', { type: 'datetime-local', value: toInput(e.to), 'aria-label': '结束时间' });
+    const source = el('select', { 'aria-label': '在哪里用的' }, SOURCES.map(([id, label]) => el('option', { value: id, text: label, selected: id === e.source ? '' : null })));
+    const model = el('select', { 'aria-label': '用了什么模型' }, [...models.map(m => el('option', { value: m, text: m, selected: m === e.model ? '' : null })), el('option', { value: '__custom', text: '其他（自己填）' })]);
+    model.setAttribute('translate', 'no');
+    const custom = el('input', { type: 'text', placeholder: '模型名，例如 claude-opus-5', maxlength: '120', 'aria-label': '自己填写模型名', hidden: models.includes(e.model) || !e.model ? '' : null, value: models.includes(e.model) ? '' : e.model });
+    const effort = el('select', { 'aria-label': '思考等级' });
+    const note = el('input', { type: 'text', maxlength: '300', placeholder: '可选：例如「网页上让它改文档」', value: e.note, 'aria-label': '备注' });
+    const info = el('p', { class: 'ms-mark-info', role: 'status' });
+    const levelsFor = name => { const list = [...new Set(catalog.filter(c => c.model === name && c.effort && c.effort !== 'unknown').map(c => c.effort))].sort((a, b) => levelRank(a) - levelRank(b)); return list.length ? list : ['none', 'low', 'medium', 'high', 'xhigh', 'max']; };
+    const syncEffort = () => {
+      const name = model.value === '__custom' ? custom.value.trim() : model.value;
+      const list = levelsFor(name);
+      if (!list.includes(e.effort) && e.effort !== 'unknown') e.effort = 'unknown';
+      effort.replaceChildren(el('option', { value: 'unknown', text: '不确定', selected: e.effort === 'unknown' ? '' : null }), ...list.map(l => el('option', { value: l, text: `${l}${LEVEL[l] ? `（${LEVEL[l]}）` : ''}`, selected: l === e.effort ? '' : null })));
+    };
+    const syncInfo = () => {
+      const from = e.from, to = e.to;
+      if (!(to > from)) { info.textContent = '结束时间要晚于开始时间。'; info.classList.add('bad'); return; }
+      info.classList.remove('bad');
+      const rise = growth(study, from, to);
+      const cap = study.capacities.find(c => c.model === (model.value === '__custom' ? custom.value.trim() : model.value) && c.effort === e.effort && c.capacityTokens != null)
+        ?? study.capacities.find(c => c.model === (model.value === '__custom' ? custom.value.trim() : model.value) && c.capacityTokens != null);
+      info.textContent = `这段时间官方额度涨了 ${rise.toFixed(1)} 个百分点${cap ? `，按 ${cap.model} · ${levelName(cap.effort)} 的整窗容量约相当于 ${tokens(cap.capacityTokens * rise / 100)} Tokens` : ''}。保存后这段不计入容量折算。`;
+    };
+    model.addEventListener('change', () => { custom.hidden = model.value !== '__custom'; if (!custom.hidden) custom.focus(); e.model = model.value === '__custom' ? custom.value.trim() : model.value; syncEffort(); syncInfo(); });
+    custom.addEventListener('input', () => { e.model = custom.value.trim(); syncEffort(); syncInfo(); });
+    effort.addEventListener('change', () => { e.effort = effort.value; syncInfo(); });
+    source.addEventListener('change', () => { e.source = source.value; });
+    note.addEventListener('input', () => { e.note = note.value; });
+    // 输入框只精确到分钟：用户改了哪个才用哪个，没改的保留检测到的精确时间（不然会把刚好在那一刻的涨幅切掉）
+    fromInputEl.addEventListener('change', () => { e.from = fromInput(fromInputEl.value); syncInfo(); });
+    toInputEl.addEventListener('change', () => { e.to = fromInput(toInputEl.value); syncInfo(); });
+    syncEffort(); syncInfo();
+    const save = el('button', { type: 'submit', class: 'btn btn-accent', text: '保存标注' });
+    const cancel = el('button', { type: 'button', class: 'btn', text: '取消' });
+    const remove = e.id ? el('button', { type: 'button', class: 'btn danger', text: '删除标注' }) : null;
+    const form = el('form', { class: 'ms-mark-editor', 'aria-label': e.id ? '修改本机以外的使用' : '标注本机以外的使用' }, [
+      el('div', { class: 'ms-mark-title' }, [el('b', { text: e.id ? '修改这段本机以外的使用' : '标注本机以外的使用' }), el('small', { text: '告诉 TokenPulse 这段时间在别处用了什么，容量折算会排除这段，并按你选的模型换算。' })]),
+      el('div', { class: 'ms-mark-grid' }, [
+        el('label', {}, [el('span', { text: '开始' }), fromInputEl]),
+        el('label', {}, [el('span', { text: '结束' }), toInputEl]),
+        el('label', {}, [el('span', { text: '在哪里用的' }), source]),
+        el('label', { class: 'wide' }, [el('span', { text: '模型' }), model, custom]),
+        el('label', {}, [el('span', { text: '思考等级' }), effort]),
+        el('label', { class: 'wide' }, [el('span', { text: '备注' }), note]),
+      ]),
+      info,
+      el('div', { class: 'ms-mark-actions' }, [remove, el('span', { class: 'grow' }), cancel, save].filter(Boolean)),
+    ]);
+    const call = async (payload, done) => {
+      form.querySelectorAll('button, input, select').forEach(n => { n.disabled = true; });
+      try {
+        await api.modelOffMachine({ kind, accountId: study.query.accountId, ...payload });
+        cache.clear(); Q.loader?.reset(); T.loader.reset();
+        T.edit = null;
+        showStatus(done);
+        reloadTimeline(); if (Q.report) quotaUpdate(Q.snapshot, Q.report);
+      } catch (error) {
+        form.querySelectorAll('button, input, select').forEach(n => { n.disabled = false; });
+        info.textContent = String(error?.message || error).replace(/^Error invoking remote method '[^']+': Error: /, '');
+        info.classList.add('bad');
+      }
+    };
+    form.addEventListener('submit', ev => {
+      ev.preventDefault();
+      const from = e.from, to = e.to, name = model.value === '__custom' ? custom.value.trim() : model.value;
+      if (!(to > from)) { info.textContent = '结束时间要晚于开始时间。'; info.classList.add('bad'); return; }
+      if (!name) { info.textContent = '请选择或填写用了什么模型。'; info.classList.add('bad'); (model.value === '__custom' ? custom : model).focus(); return; }
+      call({ id: e.id || undefined, from, to, model: name, effort: effort.value, source: source.value, note: note.value.trim() }, e.id ? '标注已更新，容量已重新折算' : '已标注，这段不再计入容量折算');
+    });
+    cancel.addEventListener('click', closeEditor);
+    remove?.addEventListener('click', () => call({ action: 'delete', id: e.id }, '标注已删除'));
+    form.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); closeEditor(); } });
+    return form;
   }
 
   function comboList(combos, total, colors, kind) {
@@ -604,7 +851,7 @@
   function applyFocus() {
     const host = T.host;
     host.classList.toggle('ms-focusing', Boolean(T.focus));
-    for (const n of host.querySelectorAll('.ms-lane, .ms-combo')) {
+    for (const n of host.querySelectorAll('.ms-lane[data-key], .ms-combo')) {
       const on = n.dataset.key === T.focus;
       n.classList.toggle('focused', on);
       if (n.classList.contains('ms-combo')) n.setAttribute('aria-pressed', String(on));

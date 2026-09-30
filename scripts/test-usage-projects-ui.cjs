@@ -16,9 +16,10 @@ const appRoot = process.env.TOKENPULSE_TEST_APP || path.resolve(__dirname, '..')
 const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value)); };
 const now = Date.now(), minute = 60000;
 const monthKey = at => { const d = new Date(at); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
-write(path.join(root, 'data', 'prefs.json'), { autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false });
+write(path.join(root, 'data', 'prefs.json'), { autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' });
 // 两个项目：Alpha 被 Claude Code 两个对话、Codex 一个对话改过（含一次压缩估算）；Beta 只有 Grok 一个对话
-const at = i => Math.max(new Date(new Date(now).setHours(0, 0, 0, 0)).getTime() + minute, now - (20 - i) * minute);
+// 刚过午夜时都会被夹到 0:01：再按 i 错开几秒，保住先后顺序（否则「最近用过」排序打平）
+const at = i => Math.max(new Date(new Date(now).setHours(0, 0, 0, 0)).getTime() + minute + i * 1000, now - (20 - i) * minute);
 const rec = (i, extra) => ({ id: 'r' + i, at: at(i), input: 1000, output: 100, cacheRead: 400, cacheWrite: 0, reasoning: 10, costUsd: 0, calls: 1, ...extra });
 const records = [
   rec(1, { kind: 'claude-code', file: path.join(root, 'c1.jsonl'), cwd: 'D:\\Work\\Alpha', model: 'claude-opus-5-5', effort: 'high' }),
