@@ -1,6 +1,6 @@
 # 当前接手入口 · 0.3.13（2026-09-30）
 
-## v0.3.13：单价标签 + 时间线「用了多久」和剪辑工具 · 已完成并打包，**未提交、未发布**（Claude）
+## v0.3.13：单价标签 + 时间线「用了多久」和剪辑工具 + 时间线图例 · 已完成，已提交、打包、发布（Claude）
 
 - 用户要求（0.3.13；**没说要发布，发布前先问**）：
   1. 标价来源对不上时，在型号旁标「标价不同」，**优先用 LiteLLM 的价**；单价刚变时标「单价刚更新」；官方优惠价标「优惠价」，带 until 的到期后自动切回。
@@ -28,14 +28,13 @@
   - 测试：test-model-study-ui 加了问号和图例的断言，test-intro-ui 的步骤编号往后顺延一步（12 → 问号，13 → 本机以外，14 / 16 → usage）。
   - 截图检查：看过夜间模式下的图例浮层；「已删除」的色样原来几乎看不见，改成灰色虚线框加一道删除线。
   - 追加后的验证：`npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS。已重新 `npm run dist`（06:53），产物还是 `dist\TokenPulse-0.3.13-*`，asar 里 8 个相关文件和源码一致。没有留下 electron 进程，Setup、Portable 和 app.asar 都没被占用。
-  - Git：仍然没提交、没发布，等用户确认。
+  - **Git / 发布**：用户说「直接编译加发布」。发布用的是 06:53 那次构建，之后代码没再改过。推送前 fetch 过，远端没有新提交。提交 `aa7f71e TokenPulse v0.3.13：单价标签、时间线用了多久与剪辑工具、时间线图例`，标签 `v0.3.13`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.13 已发布，不是草稿，4 个附件的大小和本地一致，releases/latest 是 v0.3.13。发布说明里没有会话链接。没有在本机实际安装。
 - **验证（追加之前的那一轮）**：
   - `npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS。
   - 截图检查用的是 scratchpad 里的 shotui.cjs（测试脚本的复制版，只在 4 个地方截图），看过剪辑工具条、分割、删除、整窗标题旁的感叹号，都正常。
   - 真实知识库里 `priceNotes`：gpt-5.6-sol 同时有优惠价、标价不同、刚更新三种；opus-5-5、gpt-6-astra、sonnet-5 是刚更新。
   - `npm run dist` 退出 0，产物是 `dist\TokenPulse-0.3.13-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`。asar 里 8 个相关文件和源码一致（package.json 被 electron-builder 改写，不同是正常的）。对打包产物跑 test-model-study-ui，4 个 PASS。
   - 收尾检查：没有留下自己启动的 electron 或 node；两个 exe 和 app.asar 都能独占打开（没有被占用）。用户正在用的已安装版 TokenPulse（0.3.12）没有碰。
-- **没做**：没提交、没打标签、没发布（用户没说要发布，按约定先问）；没在本机实际安装。
 - 已知限制：「用了多久」按 1 分钟一格、间隔 5 分钟以内连成一段来估算；待标注的分段在汇总里显示的百分点按曲线差值算，分割点落在两次采样之间时，前一段可能是 +0.0%。
 
 
