@@ -7,6 +7,49 @@ import type { RequestRow } from "./request-log";
 export type CatalogEntry = { model: string; effort: string; origins: string[]; source?: string; checkedAt?: string; semantics?: string };
 export const comboKey = (model: string, effort?: string) => `${model}\u0000${effort || "unknown"}`;
 import { loadKnowledge } from "./knowledge";
+import { priceOf } from "./model-pricing";
+import { dataFile, readJson } from "./paths";
+
+/*
+ * 用户自己加进「换一种模型，整窗能用多少」的型号（0.3.12）：存在 prefs.json 的 studyModels（按家分开），
+ * 没用过也能按单价和思考等级消耗估算。目录来源记为 user。
+ */
+export type StudyModel = { model: string; efforts: string[] };
+const STUDY_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "not_supported"]);
+export function readStudyModels(kind: AccountKind): StudyModel[] {
+  const prefs = readJson<{ studyModels?: Record<string, unknown> }>(dataFile("prefs.json"), {});
+  return parseStudyModels(prefs.studyModels?.[kind]);
+}
+export function parseStudyModels(value: unknown): StudyModel[] {
+  const out: StudyModel[] = [];
+  for (const raw of Array.isArray(value) ? value.slice(0, 40) : []) {
+    const item = raw as { model?: unknown; efforts?: unknown };
+    const model = typeof item?.model === "string" ? item.model.trim() : "";
+    if (!model || model.length > 120 || !/^[A-Za-z0-9][\w.:/@\[\]-]*$/.test(model) || out.some((m) => m.model === model)) continue;
+    const efforts = [...new Set((Array.isArray(item.efforts) ? item.efforts : []).filter((e): e is string => typeof e === "string" && STUDY_EFFORTS.has(e)))];
+    out.push({ model, efforts: efforts.length ? efforts : ["not_supported"] });
+  }
+  return out;
+}
+
+/** 「添加模型」的候选：知识库里有单价的这一家型号 + 思考等级目录 + 等级消耗表里的型号，带上单价和已知的等级。 */
+export type ModelCandidate = { model: string; input: number | null; output: number | null; efforts: string[]; usage: boolean };
+export function modelCandidates(kind: AccountKind, family: RegExp): ModelCandidate[] {
+  const knowledge = loadKnowledge().knowledge;
+  const ids = new Set<string>();
+  for (const rule of knowledge.prices) if (rule.auto && family.test(rule.auto)) ids.add(rule.auto);
+  const doc = capabilities()?.[kind as "claude" | "chatgpt" | "grok"];
+  for (const model of doc?.models ?? []) if (family.test(model)) ids.add(model.toLowerCase());
+  for (const model of Object.keys(knowledge.effortUsage?.models ?? {})) if (family.test(model)) ids.add(model);
+  for (const entry of modelCatalog(kind, [])) if (family.test(entry.model)) ids.add(entry.model);
+  return [...ids].map((model) => {
+    const price = priceOf(model);
+    const rule = doc?.rules.find((r) => new RegExp(r.match, "i").test(model));
+    const usage = knowledge.effortUsage?.models[model]?.perTask;
+    const efforts = [...new Set([...(rule?.efforts ?? []), ...Object.keys(usage ?? {})])];
+    return { model, input: price?.input ?? null, output: price?.output ?? null, efforts, usage: Boolean(usage) };
+  }).sort((a, b) => a.model.localeCompare(b.model, undefined, { numeric: true }));
+}
 /** 思考等级规则：0.3.11 起放在模型知识库里（每天在线更新），不再单独打包一份。 */
 const capabilities = () => loadKnowledge().knowledge.capabilities;
 /** 目录可见性不等于目标账号可用权限；仅返回模型元数据，绝不返回缓存中的身份字段。 */

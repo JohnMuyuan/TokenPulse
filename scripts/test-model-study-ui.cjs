@@ -204,6 +204,43 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   assert.ok(await evaluate("Boolean(document.querySelector('#quota-detail .capacity-chart svg, #quota-detail .capacity-chart .empty'))"));
   await evaluate("document.querySelector('#quota-detail [data-cap-window=week]').click(); document.querySelector('#quota-detail [data-cap-metric=tokens]').click()");
   console.log('PASS 0.3.9 local-only switch: settings toggle, prefs saved, toast, notes and calibration hidden, capacity trend restored');
+  // ---------- 0.3.12：自己添加模型 + 思考等级依据 ----------
+  await evaluate("state.account='chatgpt:qa-study'; navigate('quota')");
+  await until("!document.querySelector('#quota-model-study').hasAttribute('aria-busy') && document.querySelector('#quota-model-study [data-action=add-model]')");
+  await evaluate("document.querySelector('#quota-model-study [data-action=add-model]').click()");
+  await until("document.querySelector('#ms-add .ms-add-item')");
+  await evaluate("(() => { const i = document.querySelector('#ms-add .ms-add-search'); i.value = 'gpt-6.1-sol'; i.dispatchEvent(new Event('input')); })()");
+  await until("document.querySelector('#ms-add .ms-add-item[data-model=\"gpt-6.1-sol\"]')");
+  assert.match(await text('#ms-add .ms-add-item[data-model="gpt-6.1-sol"]'), /\$2 \/ \$10/, '候选带单价（来自知识库）');
+  await evaluate("document.querySelector('#ms-add .ms-add-item[data-model=\"gpt-6.1-sol\"]').click()");
+  await until("document.querySelector('#ms-add .ms-add-detail [data-effort=high]')");
+  await evaluate("['high', 'medium', 'not_supported'].forEach(e => document.querySelector(`#ms-add .ms-add-detail [data-effort=${e}]`).click())");
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#ms-add .ms-add-detail .ms-chip.on')].map(b => b.dataset.effort)"), ['medium', 'high']);
+  await evaluate("document.querySelector('#ms-add [data-action=add-confirm]').click()");
+  await until("window.tokenpulse.readPrefs().then(p => (p.studyModels?.chatgpt || []).some(m => m.model === 'gpt-6.1-sol' && m.efforts.join() === 'medium,high'))");
+  await until("document.querySelector('#ms-add .ms-add-pill')");
+  // 别家的型号：给提示、不能加
+  await evaluate("(() => { const i = document.querySelector('#ms-add .ms-add-search'); i.value = 'claude-x-qa'; i.dispatchEvent(new Event('input')); })()");
+  await until("document.querySelector('#ms-add .ms-add-item.custom')");
+  await evaluate("document.querySelector('#ms-add .ms-add-item.custom').click()");
+  assert.ok(await evaluate("Boolean(document.querySelector('#ms-add .ms-add-warn')) && document.querySelector('#ms-add [data-action=add-confirm]').disabled"), '别家的型号不能加');
+  // 夜间模式：对话框里没有默认黑字
+  await evaluate("setThemeMode('dark')"); await delay(150);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#ms-add *')].filter(n => [...n.childNodes].some(c => c.nodeType === 3 && c.nodeValue.trim()) && getComputedStyle(n).color === 'rgb(0, 0, 0)').map(n => n.className)"), []);
+  await evaluate("setThemeMode('light')");
+  await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+  await until("!document.querySelector('#ms-add')");
+  // 表格里出现，带「你添加的」和思考等级依据
+  await until("document.querySelector('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"]')");
+  const added = await evaluate("[...document.querySelectorAll('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"]')].map(r => ({ effort: r.dataset.effort, user: !!r.querySelector('.ms-user-tag'), tag: r.querySelector('.ms-basis.effort')?.textContent || '', label: r.getAttribute('aria-label') }))");
+  assert.ok(added.length >= 1 && added.every(r => r.user), '你添加的');
+  assert.ok(added.some(r => r.tag === '等级参考' && /Epoch AI/.test(r.label)), '没用过的等级标「等级参考」，悬停写明 Epoch AI：' + JSON.stringify(added));
+  assert.ok(added.every(r => /你添加的：没验证/.test(r.label)));
+  // 行上的 × 移除
+  await evaluate("document.querySelector('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"] .ms-user-remove').click()");
+  await until("!document.querySelector('#quota-model-study .ms-row[data-model=\"gpt-6.1-sol\"]')");
+  assert.deepEqual(await evaluate("window.tokenpulse.readPrefs().then(p => p.studyModels?.chatgpt || [])"), []);
+  console.log('PASS 0.3.12 add models + effort basis: picker from knowledge with prices, effort chips, saved to prefs, other-provider guard, dark mode, row tag "你添加的", "等级参考" with Epoch AI source, remove');
   console.log('PASS 0.3.8 model sections: both windows listed without querying, budget conversion, relative fallback, sorting, level filter, timeline lanes and quota curve (in quota page, following account tabs), focus, failure without stale data, late responses, 900px and reduced motion');
   clearTimeout(watchdog); app.exit(0);
  } catch(e){console.error('FAIL',e.message);clearTimeout(watchdog);app.exit(1);}

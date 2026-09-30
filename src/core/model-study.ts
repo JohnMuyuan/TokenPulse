@@ -4,8 +4,9 @@ import { quotaAttribution, summarizeAttribution } from "./quota-attribution";
 import { readQuotaHistory, type QuotaSample } from "./quota-history";
 import { windowSegments, type WindowSegment } from "./quota-monitor";
 import { queryRequests, type RequestRow } from "./request-log";
-import { modelCatalog, comboKey, type CatalogEntry } from "./model-catalog";
+import { modelCatalog, comboKey, readStudyModels, type CatalogEntry } from "./model-catalog";
 import { estimateCost } from "./model-pricing";
+import { benchmarkEffortRatio } from "./knowledge";
 import { readOfficialAccountStore } from "./accounts";
 import type { AccountKind } from "./quota";
 
@@ -28,7 +29,9 @@ export type ModelCapacity = CatalogEntry & {
   /** 最近 30 天的用量（排序「常用」、单价和单次请求大小用）。 */
   recentTokens: number; recentCalls: number;
   /** 每百万 Token 的参考费用，以及它从哪来：组合自己的实际费用 / 同模型其他等级 / 价格表。 */
-  costPerMTokens: number | null; priceBasis: "combo" | "model" | "price" | null;
+  costPerMTokens: number | null; priceBasis: "combo" | "model" | "price" | "effort" | null;
+  /** 0.3.12：思考等级换算。effortRatio 是从 effortAnchor 档换到这一档的输出倍数；basis：own 本机实测 / benchmark 基准同型号 / family 家族平均。 */
+  effortRatio: number | null; effortBasis: "own" | "benchmark" | "family" | null; effortSource: string | null; effortAnchor: string | null; tokensPerCallBasis: "own" | "scaled" | null;
   /** 最近 30 天平均每次模型调用多少 Token（思考等级主要影响这个）。 */
   tokensPerCall: number | null;
   /** 纯区间实测。 */
@@ -58,6 +61,9 @@ const GAP_MS = 30 * 60000;
 export { FAMILY };
 /** 组合自己的请求少于这么多条时，缓存比例偶然性太大，单价改用同模型全部等级的。 */
 const MIN_COMBO_ROWS = 30;
+/** 本机实测的等级倍数：同型号两档各至少这么多次调用才算数。 */
+const OWN_EFFORT_CALLS = 20;
+type EffortRatio = { ratio: number; basis: "own" | "benchmark" | "family" | null; source: string | null };
 /** 本账号完全没有用量时，价格表按典型的 CLI 编程用量结构折算（输入里约 85% 是缓存读取）。 */
 const DEFAULT_MIX = { input: 1_000_000, cacheRead: 850_000, cacheWrite: 0, output: 30_000 };
 export const TRAINING_DAYS = 30;
@@ -146,14 +152,60 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
   const ownMix = { input: sum(rows, r => r.input), output: sum(rows, r => r.output), cacheRead: sum(rows, r => r.cacheRead), cacheWrite: sum(rows, r => r.cacheWrite || 0) };
   const mix = ownMix.input + ownMix.output > 0 ? ownMix : DEFAULT_MIX, mixTokens = mix.input + mix.output;
   const perToken = (list: RequestRow[]) => { const t = sum(list, r => r.tokens); return t > 0 ? sum(list, r => r.costUsd) / t : null; };
-  const unitCost = (model: string, key: string): [number | null, ModelCapacity["priceBasis"]] => {
+
+  /*
+   * 思考等级（0.3.12）：等级越高，推理 / 输出 token 越多，同样的预算能用的 token 和调用次数都会变。
+   * 没用够的组合从一个真实的起点推算：同型号用得最多的那一档（没用过这个型号就用本账号用得最多的那一档），
+   * 把输出部分乘上「从那一档换到这一档」的倍数。倍数的来源按优先级：
+   *   ① 本机实测：同型号两档各有 ≥ OWN_EFFORT_CALLS 次调用，按每次调用的平均输出算；
+   *   ② Epoch AI 基准（知识库 effortUsage）里这个型号自己的数据；③ 同家族平均。都没有就不调整。
+   * 有足够整段区间的组合仍然直接按实测折算（capacityBasis = measured），不受这里影响。
+   */
+  const kind = q.kind as "claude" | "chatgpt" | "grok";
+  const knownEffort = (r: RequestRow) => !unknownEffort(r);
+  const dominant = (list: RequestRow[]) => {
+    const by = new Map<string, number>();
+    for (const r of list) if (knownEffort(r)) by.set(r.effort!, (by.get(r.effort!) ?? 0) + r.output + 1);
+    return [...by].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  };
+  const effortRatio = (model: string, from: string, to: string): EffortRatio => {
+    if (from === to) return { ratio: 1, basis: null, source: null };
+    const a = rows.filter(r => r.model === model && r.effort === from), b = rows.filter(r => r.model === model && r.effort === to);
+    const ca = sum(a, r => r.calls), cb = sum(b, r => r.calls);
+    if (ca >= OWN_EFFORT_CALLS && cb >= OWN_EFFORT_CALLS) {
+      const oa = sum(a, r => r.output) / ca, ob = sum(b, r => r.output) / cb;
+      if (oa > 0 && ob > 0) return { ratio: ob / oa, basis: "own", source: null };
+    }
+    const bench = benchmarkEffortRatio(kind, model, from, to);
+    return bench ? { ratio: bench.ratio, basis: bench.basis === "model" ? "benchmark" : "family", source: bench.source } : { ratio: 1, basis: null, source: null };
+  };
+  const baseFor = (model: string) => {
+    const same = rows.filter(r => r.model === model && knownEffort(r));
+    const pool = same.length ? same : rows.filter(knownEffort);
+    const anchor = dominant(pool);
+    if (!anchor) return { anchor: "medium", mix: DEFAULT_MIX, calls: 0, sameModel: false };
+    const at = pool.filter(r => r.effort === anchor);
+    return { anchor, mix: { input: sum(at, r => r.input), output: sum(at, r => r.output), cacheRead: sum(at, r => r.cacheRead), cacheWrite: sum(at, r => r.cacheWrite || 0) }, calls: sum(at, r => r.calls), sameModel: same.length > 0 };
+  };
+  const unitCost = (model: string, key: string, effort: string): [number | null, ModelCapacity["priceBasis"], EffortRatio, ReturnType<typeof baseFor>] => {
+    const base = baseFor(model), none: EffortRatio = { ratio: 1, basis: null, source: null };
     const combo = pricedRows.filter(r => comboKey(r.model, r.effort) === key);
     const own = combo.length >= MIN_COMBO_ROWS ? perToken(combo) : null;
-    if (own) return [own, "combo"];
+    if (own) return [own, "combo", none, base];
+    const er = effortRatio(model, base.anchor, effort);
+    if (er.ratio === 1) {
+      const sameModel = perToken(pricedRows.filter(r => r.model === model));
+      if (sameModel) return [sameModel, "model", er, base];
+      const listed = mixTokens > 0 ? estimateCost(model, mix) / mixTokens : 0;
+      return [listed > 0 ? listed : null, listed > 0 ? "price" : null, er, base];
+    }
+    const scaled = { ...base.mix, output: base.mix.output * er.ratio };
+    const scaledTokens = scaled.input + scaled.output;
+    const listed = scaledTokens > 0 ? estimateCost(model, scaled) / scaledTokens : 0;
+    if (listed > 0) return [listed, "effort", er, base];
+    // 价格表里没有这个型号（中转自定义名等）：拆不开输入 / 输出单价，单价沿用同模型的实际费用；等级倍数只用来推算单次调用
     const sameModel = perToken(pricedRows.filter(r => r.model === model));
-    if (sameModel) return [sameModel, "model"];
-    const listed = mixTokens > 0 ? estimateCost(model, mix) / mixTokens : 0;
-    return listed > 0 ? [listed, "price"] : [null, null];
+    return [sameModel, sameModel ? "model" : null, er, base];
   };
 
   const entries = new Map(catalog.filter(c => FAMILY[q.kind].test(c.model)).map(c => [comboKey(c.model, c.effort), c]));
@@ -166,16 +218,20 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     const estimatedTokens = enough ? stat!.tokens / stat!.points * 100 : null;
     const estimatedCostUsd = enough && stat!.priced ? stat!.cost / stat!.points * 100 : null;
     // 未知等级没法说「全用这一档」；不换算，只在时间轴和用量里出现。
-    const [unit, priceBasis] = entry.effort === "unknown" ? [null, null] : unitCost(entry.model, key);
+    const [unit, priceBasis, effortInfo, base] = entry.effort === "unknown" ? [null, null, { ratio: 1, basis: null, source: null } as EffortRatio, null] : unitCost(entry.model, key, entry.effort);
     const derivedTokens = budget.costUsd != null && unit ? budget.costUsd / unit : null;
     // 有合格的同组合样本就优先用它；不能让混合 API 价格假设盖过真实百分点样本。
     const measured = estimatedTokens != null;
     const capacityTokens = measured ? estimatedTokens : derivedTokens;
     const recentCalls = sum(recent, r => r.calls), recentTokens = sum(recent, r => r.tokens);
-    const tokensPerCall = recentCalls > 0 ? recentTokens / recentCalls : null;
+    // 单次调用大小：自己用过就按自己的（实测优先）；没用过按起点那一档的每次调用，输出部分乘等级倍数
+    const scaledPerCall = base && base.calls > 0 ? (base.mix.input + base.mix.output * effortInfo.ratio) / base.calls : null;
+    const tokensPerCall = recentCalls > 0 ? recentTokens / recentCalls : scaledPerCall;
+    const tokensPerCallBasis = recentCalls > 0 ? "own" : scaledPerCall != null ? "scaled" : null;
     return { ...entry, key,
       tokens: sum(actual, r => r.tokens), inputTokens: sum(actual, r => r.input), outputTokens: sum(actual, r => r.output), cacheReadTokens: sum(actual, r => r.cacheRead), calls: sum(actual, r => r.calls), costUsd: actual.every(r => r.priced) ? sum(actual, r => r.costUsd) : null,
-      recentTokens, recentCalls, costPerMTokens: unit == null ? null : unit * 1e6, priceBasis, tokensPerCall,
+      recentTokens, recentCalls, costPerMTokens: unit == null ? null : unit * 1e6, priceBasis, tokensPerCall, tokensPerCallBasis,
+      effortRatio: effortInfo.basis ? effortInfo.ratio : null, effortBasis: effortInfo.basis, effortSource: effortInfo.source, effortAnchor: effortInfo.basis ? base?.anchor ?? null : null,
       calibrationCacheShare: stat?.input ? stat.cacheRead / stat.input : null, intervals: stat?.intervals ?? 0, quotaPoints: stat?.points ?? 0, cycleCount: stat?.cycles.size ?? 0,
       estimatedTokens, estimatedCostUsd, observedMinTokens: enough ? Math.min(...stat!.rates) : null, observedMaxTokens: enough ? Math.max(...stat!.rates) : null, confidence, lastAt: stat?.lastAt,
       derivedTokens, capacityTokens, capacityCostUsd: measured ? estimatedCostUsd : derivedTokens != null ? budget.costUsd : null, capacityBasis: capacityTokens == null ? null : measured ? "measured" : "cost",
@@ -230,6 +286,12 @@ export function queryModelStudy(value: ModelStudyQuery): ModelStudies {
   const all = queryRequests({ from: day(now - TRAINING_DAYS * DAY), to: day(now), since: now - TRAINING_DAYS * DAY, until: now, source, account: q.accountId, status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true, channel: "official" });
   const rows = all.rows.filter(r => FAMILY[q.kind].test(r.model));
   const catalog = modelCatalog(q.kind, rows);
+  // 用户自己加的型号：同名同等级已经在目录里的，只补上「你添加的」来源
+  for (const added of readStudyModels(q.kind)) for (const effort of added.efforts) {
+    const hit = catalog.find(c => c.model === added.model && c.effort === effort);
+    if (hit) { if (!hit.origins.includes("user")) hit.origins.push("user"); }
+    else catalog.push({ model: added.model, effort, origins: ["user"] });
+  }
   const sessions = readCalibrations().filter(s => s.accountId === q.accountId && s.kind === q.kind);
   const localOnly = localOnlyAccounts().includes(q.accountId);
   const marks = readMarks(q.kind, q.accountId);

@@ -1,4 +1,23 @@
-# 当前接手入口 · 0.3.11（2026-09-30）
+# 当前接手入口 · 0.3.12（2026-09-30）
+
+## v0.3.12：自己添加模型 + 按思考等级估算 token 消耗 · 已完成，已提交、打包、发布（Claude）
+
+- 用户要求（0.3.12，做完直接发布 GitHub）：①「换一种模型，整窗能用多少」可以自己添加模型；②把不同思考等级的 token 消耗放进知识库，让估算更准；**有本机实测数据时优先用本机实测**。
+- 数据源调研结论：Artificial Analysis 的免费版不允许再分发，不能用；Aider 排行榜停在 2025-10；**选用 Epoch AI 的基准数据（CC BY 4.0，benchmark_data.zip，每天更新）**：DeepSWE（mini-swe-agent，平均输出 token）为主，CursorBench（每个任务的 token）核对并补位。
+- **已完成（代码和测试都通过）**：
+  - `scripts/update-knowledge.cjs`：零依赖的 unzip 和 CSV 解析，`fromEpoch()` 生成 effortUsage。结构为：models（每个型号：basis、perTask 各等级每任务 token）、families（claude / chatgpt / grok 相对 medium 的几何平均）、source / license / anchor。两个基准的倍数相差超过 2 倍时先不用；Epoch 取不到时沿用上一版；某一档变化超过 50% 时 review=true。报告里有「思考等级消耗」一节。`knowledge/models.json` 已重新生成为 2026.09.30.1，含 14 个型号和家族平均。
+  - `src/core/knowledge.ts`：PriceRule 保留 auto；parseEffortUsage 做校验；新增 `benchmarkEffortRatio(kind, model, from, to)`（先查同型号，再用家族平均；会去掉 [1m] 和日期后缀）。
+  - `src/core/model-study.ts`：没用够的组合从「同型号用得最多的一档；没用过这个型号就取本账号用得最多的一档」出发，输出部分乘等级倍数。倍数优先级：**本机实测（同型号两档各 ≥20 次调用）> Epoch 同型号 > 家族平均**。新增 priceBasis 'effort'，以及 effortRatio / effortBasis / effortSource / effortAnchor / tokensPerCallBasis 字段。有整段实测区间的组合仍按 measured 处理。价格表里没有的型号，单价沿用同模型的实际费用。
+  - `src/core/model-catalog.ts`：readStudyModels / parseStudyModels（prefs.studyModels，按家分开）、modelCandidates；model-study 会把用户添加的型号并入目录，来源记为 user。prefs、applyPrefs 校验、IPC `models:candidates`、preload `modelCandidates` 都已接好。
+  - `renderer/model-study.js/.css`：标题栏有「添加模型」按钮，打开对话框（搜索知识库候选、显示单价、选择等级芯片、可自定义型号名、别家的型号会提示、列出「你添加的」并可移除）。行上显示「你添加的」标签和 ×，以及「等级实测 / 等级参考」标签；悬停说明里写明倍数和来源（Epoch AI）；方法说明也已更新。
+  - 版本号 package.json 和 package-lock 都改成了 0.3.12；intro NOTES 加了 0.3.12；i18n、README 0.3.12 一节、关于页的 Epoch AI 署名（CC BY 4.0）都已完成。
+  - 测试：新增 `scripts/test-effort-usage.cjs`（8/8，已加入 npm test）；`test-knowledge-update.cjs` 加了 Epoch 相关部分（手写 zip、提取、争议、沿用、review），通过；`test-model-study.cjs` 14/14；`test-model-study-ui.cjs` 加了 0.3.12 添加模型的用例，**单独跑通过**。
+- **收尾（额度恢复后续做）**：
+  - 截图检查：之前截图脚本挂住，原因是 scratchpad 里 capture.cjs 的**引号写错**，Electron 弹出「A JavaScript error occurred in the main process」的阻塞对话框，用户在屏幕上也看到了。这是临时脚本的问题，不是软件本身的问题。修好后先 `node --check` 再启动。截图发现两处问题并已修复：添加对话框的详情区多出一个「null」文字（可选元素为空时被当成文字渲染），以及等级芯片的顺序不对（改成 low→max）。「自定义」候选移到了列表最后。
+  - **`npm test` 退出 0；`npm run test:ui` 退出 0，共 30 个 PASS**（新增 0.3.12 添加模型的 UI 用例）。
+  - `npm run dist` 退出 0，产物是 `dist\TokenPulse-0.3.12-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`（0.3.12）。asar 里 10 个相关文件与源码一致，对打包产物跑了 test-model-study-ui，4 个 PASS。
+  - Git 提交、标签和 Release 的情况见下一条。
+- 已知限制：CursorBench 的 token 口径没有写明，所以只用来核对和补位；claude-opus-5-5 只有 max / xhigh 两档的数据，其他档按家族平均估算。
 
 ## v0.3.11：模型知识库全自动更新（Claude，2026-09-30）
 

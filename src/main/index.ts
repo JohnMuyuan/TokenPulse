@@ -10,6 +10,8 @@ import type { Snapshot } from "../core/report";
 import { updateCalibration } from "../core/quota-calibration";
 import { updateMark } from "../core/quota-offmachine";
 import { parseModelStudyQuery } from "../core/model-study";
+import { modelCandidates, parseStudyModels } from "../core/model-catalog";
+import { FAMILY as STUDY_FAMILY } from "../core/quota-offmachine";
 import { loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
 import { cleanAgentEnv, deleteSession as deleteAgentSession, openTerminal, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
@@ -532,6 +534,10 @@ function appVersion(): string {
 
 function applyPrefs(patch: Partial<Prefs>): Prefs {
   if ("agentReadOnly" in patch) patch = { ...patch, agentReadOnly: patch.agentReadOnly === true };
+  if ("studyModels" in patch) {
+    const raw = patch.studyModels && typeof patch.studyModels === "object" ? patch.studyModels as Record<string, unknown> : {};
+    patch = { ...patch, studyModels: Object.fromEntries((["claude", "chatgpt", "grok"] as const).map((kind) => [kind, parseStudyModels(raw[kind])]).filter(([, list]) => (list as unknown[]).length)) };
+  }
   if ("seenVersion" in patch) patch = { ...patch, seenVersion: typeof patch.seenVersion === "string" && /^\d+\.\d+\.\d+[\w.-]{0,20}$/.test(patch.seenVersion) ? patch.seenVersion : "" };
   if ("onboarding" in patch && !["", "pending", "done"].includes(patch.onboarding as string)) patch = { ...patch, onboarding: "done" };
   if ("localOnlyAccounts" in patch) {
@@ -761,6 +767,10 @@ if (!app.requestSingleInstanceLock()) {
     // 时间线上标注「本机以外的使用」：改了之后容量要重算，不用重新查额度
     ipcMain.handle("models:offmachine", (_event, value: unknown) => { const marks = updateMark(value); backgroundRefresh(false); return marks; });
     ipcMain.handle("models:study", (_event, value: unknown) => loadModelStudy(parseModelStudyQuery(value)));
+    ipcMain.handle("models:candidates", (_event, kind: unknown) => {
+      if (kind !== "claude" && kind !== "chatgpt" && kind !== "grok") return [];
+      return modelCandidates(kind, STUDY_FAMILY[kind]);
+    });
     ipcMain.handle("requests:query", (_event, query: unknown) => loadRequests(parseRequestQuery(query)));
     // 新手引导的演示数据：单独的进程、单独的临时目录（demo.ts），查询参数照样在这里校验
     ipcMain.handle("demo:snapshot", () => demoCall("snapshot"));

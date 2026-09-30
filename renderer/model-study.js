@@ -114,8 +114,16 @@
         el('h2', {}, ['换一种模型，整窗能用多少', el('span', { class: 'section-tag', text: '按最近 30 天换算' })]),
         el('p', { text: '如果整个 5 小时 / 周周期只用一种模型和思考等级，大约能用多少 Tokens、等价多少 API 费用。全部可用的模型和等级一次列出。' })
       ])]),
-      segment(SORTS, Q.sort, value => { Q.sort = value; drawQuota('resort'); })
+      el('div', { class: 'ms-head-actions' }, [
+        kind ? addModelButton() : null,
+        segment(SORTS, Q.sort, value => { Q.sort = value; drawQuota('resort'); }),
+      ]),
     ]);
+  }
+  function addModelButton() {
+    const b = el('button', { type: 'button', class: 'btn ms-add-model', 'data-action': 'add-model' }, [icon('plus'), el('span', { text: '添加模型' })]);
+    b.addEventListener('click', openAddModels);
+    return b;
   }
 
   function drawQuota(mode) {
@@ -262,7 +270,7 @@
     const basis = cw.capacityBasis === 'measured' || c5.capacityBasis === 'measured' ? ['样本外推', 'measured'] : c5.priceBasis === 'price' ? ['价格表', 'price'] : c5.priceBasis ? ['按价模拟', 'cost'] : null;
     const meta = [
       c5.costPerMTokens != null ? `${money(c5.costPerMTokens)} / 百万 Tokens` : null,
-      c5.tokensPerCall ? `单次调用约 ${tokens(c5.tokensPerCall)}` : null,
+      c5.tokensPerCall ? `单次调用${c5.tokensPerCallBasis === 'scaled' ? '≈' : '约'} ${tokens(c5.tokensPerCall)}` : null,
       c5.recentTokens ? `30 天用了 ${tokens(c5.recentTokens)}` : '30 天没用过'
     ].filter(Boolean);
     const node = el('div', { class: 'ms-row' + (i < 3 && Q.sort !== 'name' ? ' top' : ''), role: 'listitem', tabindex: 0, 'data-key': row.key, 'data-model': row.model, 'data-effort': row.efforts.join(' ') }, [
@@ -270,7 +278,10 @@
       el('div', { class: 'ms-name' }, [
         avatar(data.kind, 'ms-row-logo'),
         el('div', { class: 'ms-name-text' }, [
-          el('div', { class: 'ms-name-top' }, [el('b', { text: row.model, title: row.model, translate: 'no' }), ...row.efforts.map(levelBadge), basis ? el('span', { class: `ms-basis ${basis[1]}`, text: basis[0] }) : null]),
+          el('div', { class: 'ms-name-top' }, [el('b', { text: row.model, title: row.model, translate: 'no' }), ...row.efforts.map(levelBadge), basis ? el('span', { class: `ms-basis ${basis[1]}`, text: basis[0] }) : null,
+            c5.effortBasis ? el('span', { class: 'ms-basis effort ' + (c5.effortBasis === 'own' ? 'own' : 'ref'), text: c5.effortBasis === 'own' ? '等级实测' : '等级参考' }) : null,
+            row.origins.includes('user') ? el('span', { class: 'ms-user-tag', text: '你添加的' }) : null,
+            row.origins.includes('user') ? removeButton(row) : null]),
           el('small', { text: meta.join(' · ') })
         ])
       ]),
@@ -294,11 +305,17 @@
     }
     if (row.five.capacityBasis === 'cost' || row.week.capacityBasis === 'cost') lines.push('按价模拟：假设扣额与 API 费用成比例，未被官方确认，不是实测额度。');
     const c = row.five;
-    const basis = { combo: '这个组合自己最近 30 天的实际费用', model: '同模型其他等级的实际费用', price: '价格表 × 本账号的用量结构' }[c.priceBasis];
+    const basis = { combo: '这个组合自己最近 30 天的实际费用', model: '同模型其他等级的实际费用', price: '价格表 × 本账号的用量结构', effort: '价格表 × 本账号的用量结构，输出部分按思考等级倍数换算' }[c.priceBasis];
     if (basis) lines.push(`单价：${money(c.costPerMTokens)} / 百万 Tokens，来自${basis}`);
-    if (c.tokensPerCall) lines.push(`最近 30 天：${number(c.recentCalls)} 次调用，平均每次 ${tokens(c.tokensPerCall)} Tokens`);
+    if (c.effortBasis) {
+      const ratio = `${levelName(c.effortAnchor)} → ${levelName(row.effort)} 输出约 ×${c.effortRatio.toFixed(2)}`;
+      lines.push(c.effortBasis === 'own' ? `思考等级：按你自己的用量实测，${ratio}` : c.effortBasis === 'benchmark' ? `思考等级：参考 Epoch AI 基准（${c.effortSource}）同型号，${ratio}` : `思考等级：参考 Epoch AI 基准的同家族平均，${ratio}`);
+    }
+    if (c.tokensPerCall && c.tokensPerCallBasis !== 'scaled') lines.push(`最近 30 天：${number(c.recentCalls)} 次调用，平均每次 ${tokens(c.tokensPerCall)} Tokens`);
+    else if (c.tokensPerCall) lines.push(`没用过这个组合：单次调用按 ${levelName(c.effortAnchor || '')} 档的实际大小推算，约 ${tokens(c.tokensPerCall)} Tokens`);
+    if (row.origins.includes('user')) lines.push('你添加的：没验证这个账号能不能用，只按单价和思考等级消耗估算');
     if (row.semantics === 'agent_count') lines.push('这个模型的等级控制协作智能体数量');
-    lines.push(`目录来源：${row.origins.map(o => ({ cache: '本机模型目录', docs: '官方文档', observed: '日志里出现过' })[o] || o).join('、')}`);
+    lines.push(`目录来源：${row.origins.map(o => ({ cache: '本机模型目录', docs: '官方文档', observed: '日志里出现过', user: '你添加的' })[o] || o).join('、')}`);
     return lines.join('\n');
   }
 
@@ -312,9 +329,132 @@
         el('li', { text: '优先使用已确认的同模型/等级样本。没有合格专属样本时的「按价模拟」假设扣额与 API 参考费用成比例，此假设未被官方确认，不能当作真实额度或保证。' }),
         el('li', { text: '标「样本外推」的组合：有足够多整段只用它的采样区间，直接按实测折算。即使数值接近，也不能证明官方按 API 单价扣额度。' }),
         el('li', { text: '思考等级、上下文和缓存会改变请求构成；API 单价不代表官方扣额权重，不保证较高等级一定能调用更少次数。「≈ 次调用」按这个组合最近 30 天的平均算。' }),
-        el('li', { text: '其他设备的用量、长时间没有采样、跨重置卡、套餐变化都会让结果偏离；API 等价费用不是订阅余额。目录里的模型不保证这个账号都能用。' })
+        el('li', { text: '思考等级：等级越高推理 / 输出 token 越多。没用够的组合按你最常用那一档的实际用量，把输出部分乘上等级倍数推算；倍数优先用你自己的实测（同型号两档各 20 次调用以上），其次参考 Epoch AI 基准数据（DeepSWE / CursorBench，CC BY 4.0）的同型号数据或同家族平均，标「等级参考」。' }),
+        el('li', { text: '其他设备的用量、长时间没有采样、跨重置卡、套餐变化都会让结果偏离；API 等价费用不是订阅余额。目录里的模型、以及你自己添加的模型，不保证这个账号都能用。' })
       ]));
     return node;
+  }
+
+  /* ---------------- 自己添加模型（0.3.12） ---------------- */
+
+  const STUDY_FAMILY = { claude: /^claude/i, chatgpt: /^(gpt|codex|o\d)/i, grok: /^grok/i };
+  const STANDARD_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+  async function saveStudyModels(kind, next) {
+    const prefs = await api.readPrefs();
+    await api.writePrefs({ studyModels: { ...(prefs.studyModels || {}), [kind]: next } });
+    cache.clear(); Q.loader.reset(); quotaUpdate(Q.snapshot, Q.report);
+  }
+  function removeButton(row) {
+    const b = el('button', { type: 'button', class: 'ms-user-remove', 'aria-label': `从表格里移除 ${row.model}`, title: '从表格里移除' }, [icon('close')]);
+    b.addEventListener('click', async e => {
+      e.stopPropagation();
+      const kind = Q.report?.kind; if (!kind) return;
+      const prefs = await api.readPrefs();
+      await saveStudyModels(kind, (prefs.studyModels?.[kind] || []).filter(m => m.model !== row.model));
+      showStatus(`已移除 ${row.model}`);
+    });
+    return b;
+  }
+  async function openAddModels() {
+    const kind = Q.report?.kind; if (!kind) return;
+    let prefs, candidates;
+    try { [prefs, candidates] = await Promise.all([api.readPrefs(), api.modelCandidates(kind)]); } catch { showStatus('候选型号读取失败，请重试。', true); return; }
+    let mine = (prefs.studyModels?.[kind] || []).map(m => ({ model: m.model, efforts: [...m.efforts] }));
+    const shown = new Set((Q.loader.view.data?.five.capacities || []).map(c => c.model));
+    let picked = null, chosen = new Set();
+    const last = document.activeElement;
+    const search = el('input', { type: 'search', class: 'ms-add-search', placeholder: '搜索型号，或直接输入型号名…', 'aria-label': '搜索型号', autocomplete: 'off', spellcheck: 'false' });
+    const list = el('div', { class: 'ms-add-list', role: 'listbox', 'aria-label': '候选型号' });
+    const detailBox = el('div', { class: 'ms-add-detail' });
+    const mineBox = el('div', { class: 'ms-add-mine' });
+    const close = el('button', { type: 'button', class: 'icon-circle', 'aria-label': '关闭' }, [icon('close')]);
+    const done = el('button', { type: 'button', class: 'btn btn-accent', text: '完成' });
+    const card = el('section', { class: 'modal-card ms-add-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'ms-add-title' }, [
+      el('header', { class: 'ms-add-head' }, [el('div', {}, [el('h2', { id: 'ms-add-title', text: '添加模型到换算表' }), el('p', { text: '没用过也能按单价和思考等级消耗估算整窗大约能用多少。列表来自模型知识库（每天自动更新）；也可以直接输入型号名。' })]), close]),
+      search, el('div', { class: 'ms-add-body' }, [list, detailBox]), mineBox,
+      el('footer', { class: 'ms-add-foot' }, [done]),
+    ]);
+    const modal = el('div', { class: 'modal', id: 'ms-add' }, [card]);
+    const price = c => c.input != null ? `$${c.input} / $${c.output}` : '未定价';
+    const drawList = () => {
+      const q = search.value.trim().toLowerCase();
+      const rows = candidates.filter(c => !q || c.model.includes(q)).slice(0, 80);
+      const exact = candidates.some(c => c.model === q);
+      const items = rows.map(c => {
+        const on = picked?.model === c.model;
+        const b = el('button', { type: 'button', class: 'ms-add-item' + (on ? ' on' : ''), role: 'option', 'aria-selected': String(on), 'data-model': c.model }, [
+          el('b', { text: c.model, translate: 'no' }), el('small', { text: price(c) }),
+          c.usage ? el('span', { class: 'ms-add-tag', text: '有等级消耗数据' }) : null,
+          shown.has(c.model) ? el('span', { class: 'ms-add-tag muted', text: '已在表里' }) : null,
+        ]);
+        b.addEventListener('click', () => pick(c));
+        return b;
+      });
+      if (q && !exact && /^[a-z0-9][\w.:/@\[\]-]*$/i.test(q)) {
+        const b = el('button', { type: 'button', class: 'ms-add-item custom', role: 'option', 'data-model': q }, [el('b', {}, ['自定义：', el('span', { text: q, translate: 'no' })]), el('small', { text: '知识库里没有的型号名' })]);
+        b.addEventListener('click', () => pick({ model: q, input: null, output: null, efforts: [], usage: false, custom: true }));
+        items.push(b); // 自定义放在最后：有真实候选时先看候选
+      }
+      list.replaceChildren(...(items.length ? items : [el('p', { class: 'ms-add-empty', text: '没有匹配的型号' })]));
+    };
+    const drawDetail = () => {
+      if (!picked) { detailBox.replaceChildren(el('p', { class: 'ms-add-empty', text: '在左边选一个型号' })); return; }
+      const efforts = (picked.efforts.length ? picked.efforts.filter(e => e !== 'not_supported') : STANDARD_EFFORTS).slice().sort((a, b) => levelRank(a) - levelRank(b));
+      const chips = [...efforts, 'not_supported'].map(e => {
+        const on = chosen.has(e);
+        const b = el('button', { type: 'button', class: 'ms-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), 'data-effort': e, text: e === 'not_supported' ? '不指定等级' : levelName(e), translate: e === 'not_supported' ? null : 'no' });
+        b.addEventListener('click', () => { if (chosen.has(e)) chosen.delete(e); else chosen.add(e); drawDetail(); });
+        return b;
+      });
+      const wrong = !STUDY_FAMILY[kind].test(picked.model);
+      const add = el('button', { type: 'button', class: 'btn btn-accent', 'data-action': 'add-confirm', text: '添加到表格' });
+      add.disabled = !chosen.size || wrong;
+      add.addEventListener('click', async () => {
+        const next = mine.filter(m => m.model !== picked.model).concat({ model: picked.model, efforts: [...chosen].sort((x, y) => levelRank(x) - levelRank(y)) });
+        add.disabled = true;
+        try { await saveStudyModels(kind, next); mine = next; shown.add(picked.model); showStatus(`已添加 ${picked.model}`); drawMine(); drawList(); }
+        catch { showStatus('添加失败，请重试。', true); add.disabled = false; }
+      });
+      detailBox.replaceChildren(...[
+        el('b', { class: 'ms-add-name', text: picked.model, translate: 'no' }),
+        el('small', { text: `单价：${price(picked)}（每百万 token，输入 / 输出）${picked.usage ? ' · 有 Epoch AI 的思考等级消耗数据' : ''}` }),
+        wrong ? el('p', { class: 'ms-add-warn', text: '这个型号不属于这一家，额度换算不会列出。' }) : null,
+        el('div', { class: 'ms-add-label', text: '要列出的思考等级' }),
+        el('div', { class: 'ms-chips' }, chips),
+        add,
+      ].filter(Boolean));
+    };
+    const drawMine = () => {
+      mineBox.replaceChildren(el('div', { class: 'ms-add-label', text: mine.length ? `你添加的（${mine.length}）` : '你还没有添加模型' }), ...mine.map(m => {
+        const x = el('button', { type: 'button', class: 'ms-user-remove', 'aria-label': `移除 ${m.model}` }, [icon('close')]);
+        x.addEventListener('click', async () => { const next = mine.filter(n => n.model !== m.model); try { await saveStudyModels(kind, next); mine = next; shown.delete(m.model); drawMine(); drawList(); } catch { showStatus('移除失败，请重试。', true); } });
+        return el('span', { class: 'ms-add-pill' }, [el('b', { text: m.model, translate: 'no' }), el('small', { text: m.efforts.map(e => e === 'not_supported' ? '不指定' : e).join(' · ') }), x]);
+      }));
+    };
+    const pick = c => {
+      picked = c;
+      const existing = mine.find(m => m.model === c.model);
+      const pool = c.efforts.length ? c.efforts.filter(e => e !== 'not_supported') : [];
+      chosen = new Set(existing ? existing.efforts : pool.length ? pool : ['not_supported']);
+      drawList(); drawDetail();
+    };
+    const finish = () => { document.removeEventListener('keydown', onKey, true); modal.remove(); document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = false; document.body.classList.remove('modal-open'); last?.focus?.(); };
+    const onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); return; }
+      if (e.key !== 'Tab') return;
+      const controls = [...card.querySelectorAll('button:not(:disabled), input')].filter(n => n.offsetParent);
+      if (e.shiftKey && document.activeElement === controls[0]) { e.preventDefault(); controls.at(-1).focus(); }
+      else if (!e.shiftKey && document.activeElement === controls.at(-1)) { e.preventDefault(); controls[0].focus(); }
+    };
+    search.addEventListener('input', drawList);
+    close.addEventListener('click', finish); done.addEventListener('click', finish);
+    modal.addEventListener('click', e => { if (e.target === modal) finish(); });
+    document.addEventListener('keydown', onKey, true);
+    document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = true;
+    document.body.classList.add('modal-open');
+    document.body.append(modal);
+    drawList(); drawDetail(); drawMine();
+    search.focus();
   }
 
   /** 换排序 / 筛选时，行从旧位置滑到新位置（FLIP）。 */

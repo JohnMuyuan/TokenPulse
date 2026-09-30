@@ -28,9 +28,11 @@ export type Prefs = {
   onboarding: "" | "pending" | "done";
   /** 供应商「只读保护」：打开后 TokenPulse 不改动 Claude / Codex / Grok 的配置文件（关闭路由、还原备份这类放回去的操作除外）。 */
   agentReadOnly: boolean;
+  /** 自己加进「换一种模型，整窗能用多少」的型号（0.3.12），按家分开；model-catalog.ts 的 readStudyModels 在 worker 里直接读。 */
+  studyModels: Partial<Record<"claude" | "chatgpt" | "grok", { model: string; efforts: string[] }[]>>;
 };
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {} };
 
 function file() {
   return dataFile("prefs.json");

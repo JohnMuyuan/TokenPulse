@@ -252,3 +252,42 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .ms-mark-actions .btn.danger { color: var(--danger); }
 @media (max-width: 900px) { .ms-mark-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ms-mark-grid label.wide { grid-column: 1 / -1; } }
 @media (prefers-reduced-motion: reduce) { .ms-off { transition: none; } }
+
+/* ---------------- 自己添加模型、思考等级依据（0.3.12） ---------------- */
+.ms-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.ms-add-model { min-height: 32px; padding: 5px 12px; font-size: 12.5px; }
+.ms-basis.effort.own { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ms-basis.effort.ref { color: var(--muted); background: var(--tile-neutral); }
+.ms-user-tag { padding: 1px 7px; border-radius: 99px; background: color-mix(in srgb, var(--ring-week, #6d6ae8) 14%, transparent); color: var(--ring-week, #6d6ae8); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.ms-user-remove { display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.ms-user-remove .icon { width: 13px; height: 13px; }
+.ms-user-remove:hover, .ms-user-remove:focus-visible { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); outline: none; }
+.ms-add-card { display: flex; flex-direction: column; gap: 12px; width: min(760px, 100%); max-height: min(86vh, 820px); overflow: hidden; padding: 22px 24px 18px; }
+.ms-add-head { display: flex; justify-content: space-between; gap: 16px; }
+.ms-add-head h2 { font: 650 19px/1.35 var(--font-display); }
+.ms-add-head p { margin-top: 4px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.ms-add-search { width: 100%; min-height: 38px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; }
+.ms-add-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ms-add-body { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; min-height: 0; flex: 1; }
+.ms-add-list { display: grid; align-content: start; gap: 4px; min-height: 0; max-height: 46vh; overflow-y: auto; padding-right: 4px; }
+.ms-add-item { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; background: var(--surface-2); color: var(--text-2); text-align: left; font: inherit; font-size: 12.5px; cursor: pointer; }
+.ms-add-item b { color: var(--text); font-weight: 600; }
+.ms-add-item small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.ms-add-item:hover, .ms-add-item:focus-visible { border-color: var(--line-strong); outline: none; }
+.ms-add-item.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.ms-add-item.custom { border-style: dashed; border-color: var(--line-strong); }
+.ms-add-tag { padding: 0 6px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 11px; }
+.ms-add-tag.muted { background: var(--tile-neutral); color: var(--muted); }
+.ms-add-detail { display: grid; align-content: start; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.ms-add-detail .btn { justify-self: start; }
+.ms-add-name { font-size: 14px; color: var(--text); }
+.ms-add-detail small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.ms-add-label { color: var(--text-2); font-size: 12px; font-weight: 600; }
+.ms-add-warn { color: var(--warn); font-size: 12px; }
+.ms-add-empty { color: var(--muted); font-size: 12.5px; padding: 8px 2px; }
+.ms-add-mine { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ms-add-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font-size: 12px; }
+.ms-add-pill b { color: var(--text); font-weight: 600; }
+.ms-add-pill small { color: var(--muted); }
+.ms-add-foot { display: flex; justify-content: flex-end; }
+@media (max-width: 760px) { .ms-add-body { grid-template-columns: 1fr; } }

@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.09.30",
-  "updatedAt": "2026-09-30T10:00:00.000Z",
+  "version": "2026.09.30.1",
+  "updatedAt": "2026-09-30T12:00:00.000Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。",
   "prices": [
     {
@@ -1197,6 +1197,171 @@
           "semantics": "agent_count"
         }
       ]
+    }
+  },
+  "effortUsage": {
+    "source": "Epoch AI Benchmarking Hub（CC BY 4.0）：DeepSWE（mini-swe-agent，平均输出 token）为主，CursorBench 核对",
+    "sourceUrl": "https://epoch.ai/data/ai-benchmarking-dashboard",
+    "license": "CC BY 4.0",
+    "anchor": "medium",
+    "updatedAt": "2026-09-30",
+    "models": {
+      "claude-fable-5": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "xhigh": 80352,
+          "max": 118593,
+          "high": 57287,
+          "medium": 40201,
+          "low": 25243
+        }
+      },
+      "claude-fable-5-1": {
+        "basis": "CursorBench",
+        "perTask": {
+          "max": 117236,
+          "xhigh": 87294,
+          "high": 58438,
+          "medium": 45411,
+          "low": 34795
+        }
+      },
+      "claude-opus-4-8": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "max": 135032,
+          "xhigh": 86089,
+          "high": 50064,
+          "medium": 41313,
+          "low": 28923
+        }
+      },
+      "claude-opus-5": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "max": 117566,
+          "xhigh": 91672,
+          "high": 64207,
+          "medium": 36982,
+          "low": 19884
+        }
+      },
+      "claude-opus-5-5": {
+        "basis": "CursorBench",
+        "perTask": {
+          "max": 218363,
+          "xhigh": 101083
+        }
+      },
+      "claude-sonnet-5": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "max": 214118,
+          "xhigh": 120699,
+          "high": 87295,
+          "medium": 56817,
+          "low": 35595
+        }
+      },
+      "claude-sonnet-5-5": {
+        "basis": "CursorBench",
+        "perTask": {
+          "max": 271920,
+          "xhigh": 100158,
+          "high": 37391,
+          "medium": 16036,
+          "low": 11668
+        }
+      },
+      "gpt-5.5": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "xhigh": 46295,
+          "high": 31159,
+          "medium": 19625,
+          "low": 9443
+        }
+      },
+      "gpt-5.6-luna": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "max": 73400,
+          "xhigh": 44678,
+          "high": 25778,
+          "medium": 8180,
+          "low": 3128
+        }
+      },
+      "gpt-5.6-sol": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "max": 60014,
+          "xhigh": 40745,
+          "high": 28450,
+          "medium": 18425,
+          "low": 10579
+        }
+      },
+      "gpt-5.6-terra": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "max": 71939,
+          "xhigh": 39617,
+          "high": 21517,
+          "medium": 11747,
+          "low": 8572
+        }
+      },
+      "gpt-6-astra": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "xhigh": 29557,
+          "high": 26506,
+          "max": 61149,
+          "medium": 20362,
+          "low": 10580
+        }
+      },
+      "grok-4.6": {
+        "basis": "DeepSWE",
+        "perTask": {
+          "medium": 49764,
+          "xhigh": 71404,
+          "high": 61161,
+          "low": 16458
+        }
+      },
+      "grok-4.7": {
+        "basis": "CursorBench",
+        "perTask": {
+          "xhigh": 70141,
+          "high": 56382,
+          "medium": 36683,
+          "low": 15677
+        }
+      }
+    },
+    "families": {
+      "claude": {
+        "xhigh": 2.532,
+        "max": 4.143,
+        "high": 1.549,
+        "medium": 1,
+        "low": 0.66
+      },
+      "chatgpt": {
+        "xhigh": 2.685,
+        "high": 1.791,
+        "medium": 1,
+        "low": 0.525,
+        "max": 4.815
+      },
+      "grok": {
+        "medium": 1,
+        "xhigh": 1.656,
+        "high": 1.374,
+        "low": 0.376
+      }
     }
   }
 }

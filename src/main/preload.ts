@@ -65,6 +65,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   exportCsv: (content: string, kind?: "requests") => (demo ? blocked() : ipcRenderer.invoke("export-csv", content, kind)),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */
   modelCalibration: (query: unknown) => ipcRenderer.invoke("models:calibration", query),
+  /** 「添加模型」的候选（知识库里这一家有单价的型号，带已知的思考等级）。 */
+  modelCandidates: (kind: string) => ipcRenderer.invoke("models:candidates", kind),
   modelStudy: (query: unknown) => ipcRenderer.invoke(demo ? "demo:study" : "models:study", query),
   modelOffMachine: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("models:offmachine", value)),
   requests: (query: Record<string, unknown>) => ipcRenderer.invoke(demo ? "demo:requests" : "requests:query", query),

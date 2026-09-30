@@ -23,6 +23,11 @@
 
 ---
 
+## 0.3.12 · 自己添加模型、按思考等级估算
+
+- 「换一种模型，整窗能用多少」可以自己添加模型：从模型知识库里挑（带单价和已知的思考等级），也可以直接输入型号名；没用过也能估算整窗大约能用多少。
+- 思考等级越高，推理 / 输出 token 越多。没用够的组合按你最常用那一档的实际用量，把输出部分乘上等级倍数推算：**优先用你自己的实测**（同型号两档各 20 次调用以上），其次参考 [Epoch AI](https://epoch.ai/data/ai-benchmarking-dashboard) 的编程 Agent 基准数据（DeepSWE 为主、CursorBench 核对，CC BY 4.0）的同型号数据或同家族平均，标「等级参考」。这份数据也由知识库每天自动更新；两个基准差太多的型号先不用。
+
 ## 0.3.11 · 模型单价全自动更新
 
 模型知识库不再需要手动维护：GitHub Actions（`.github/workflows/knowledge.yml`）每天运行 `scripts/update-knowledge.cjs`，从 [LiteLLM](https://github.com/BerriAI/litellm) 的公开价格表同步 Claude、GPT / o 系列 / Codex、Grok 的逐个型号单价，并用 OpenRouter 交叉核对。小改动直接更新，单价变化超过 50% 或一次新增太多会开 PR 等人确认；两边价格对不上的型号先不用；从不自动删除规则。已安装的 TokenPulse 每天自动下载。
@@ -158,7 +163,7 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 <td valign="top">
 
 ### 📚 模型知识库 · 🌐 English
-单价、型号等价规则和思考等级规则放在 `knowledge/models.json`，**每天由 GitHub Actions 自动从公开价格表同步**（LiteLLM，用 OpenRouter 交叉核对），TokenPulse 每天自动下载，新型号不用等新版本就能认出来、算出费用。手动维护的部分在 `knowledge/manual.json`。界面支持简体中文和 English，托盘菜单和通知一起切换。
+单价、型号等价规则、思考等级规则和各等级的 token 消耗放在 `knowledge/models.json`，**每天由 GitHub Actions 自动同步**（单价来自 LiteLLM、用 OpenRouter 交叉核对；等级消耗来自 Epoch AI，CC BY 4.0），TokenPulse 每天自动下载，新型号不用等新版本就能认出来、算出费用。手动维护的部分在 `knowledge/manual.json`。界面支持简体中文和 English，托盘菜单和通知一起切换。
 
 </td>
 </tr>

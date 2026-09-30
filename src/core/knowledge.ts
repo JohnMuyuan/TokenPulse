@@ -15,13 +15,15 @@ import { dataFile, readJson, writeJson } from "./paths";
  * 下载来的内容要当成不可信输入：只收认识的字段，正则限长、编不过的丢掉，数字必须是有限的非负数。
  */
 
-export type PriceRule = { match: string; input: number; output: number; cacheRead: number; cacheWrite: number; note: string };
+export type PriceRule = { match: string; input: number; output: number; cacheRead: number; cacheWrite: number; note: string; /** 自动同步的规则对应的型号 id（0.3.12 起用来列「添加模型」的候选）。 */ auto?: string };
 export type AliasRule = { match: string; replace: string; note: string };
 /** 思考等级规则（0.3.11 起随知识库在线下发）：每家列出型号，以及「哪些型号支持哪些等级」。 */
 export type CapabilityRule = { match: string; efforts: string[]; semantics?: string };
 export type CapabilityDoc = { source?: string; modelsSource?: string; models: string[]; rules: CapabilityRule[] };
 export type Capabilities = { checkedAt: string } & Partial<Record<"claude" | "chatgpt" | "grok", CapabilityDoc>>;
-export type Knowledge = { schema: 1; version: string; updatedAt: string; prices: PriceRule[]; aliases: AliasRule[]; capabilities?: Capabilities };
+/** 思考等级的 token 消耗（0.3.12，Epoch AI 基准数据）：同一型号各等级每个任务的输出 token，和各家族相对 medium 的平均倍数。 */
+export type EffortUsage = { source: string; sourceUrl: string; license: string; anchor: string; updatedAt: string; models: Record<string, { basis: string; perTask: Record<string, number> }>; families: Partial<Record<"claude" | "chatgpt" | "grok", Record<string, number>>> };
+export type Knowledge = { schema: 1; version: string; updatedAt: string; prices: PriceRule[]; aliases: AliasRule[]; capabilities?: Capabilities; effortUsage?: EffortUsage };
 export type KnowledgeSource = "bundled" | "downloaded";
 
 export const KNOWLEDGE_URL = "https://raw.githubusercontent.com/JohnMuyuan/TokenPulse/main/knowledge/models.json";
@@ -63,7 +65,8 @@ export function parseKnowledge(value: unknown): Knowledge | null {
     const numbers = [rule?.input, rule?.output, rule?.cacheRead, rule?.cacheWrite].map(finite);
     if (!match || !compiles(match) || numbers.some((n) => n === null)) continue;
     const [inputPrice, output, cacheRead, cacheWrite] = numbers as number[];
-    prices.push({ match, input: inputPrice, output, cacheRead, cacheWrite, note: text(rule.note) });
+    const auto = typeof rule.auto === "string" && /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(rule.auto) ? rule.auto.toLowerCase() : undefined;
+    prices.push({ match, input: inputPrice, output, cacheRead, cacheWrite, note: text(rule.note), ...(auto ? { auto } : {}) });
   }
   const aliases: AliasRule[] = [];
   for (const raw of Array.isArray(input.aliases) ? input.aliases.slice(0, MAX_RULES) : []) {
@@ -74,10 +77,46 @@ export function parseKnowledge(value: unknown): Knowledge | null {
   }
   if (!prices.length) return null;
   const capabilities = parseCapabilities(input.capabilities);
-  return { schema: 1, version: input.version, updatedAt: text(input.updatedAt, 40), prices, aliases, ...(capabilities ? { capabilities } : {}) };
+  const effortUsage = parseEffortUsage(input.effortUsage);
+  return { schema: 1, version: input.version, updatedAt: text(input.updatedAt, 40), prices, aliases, ...(capabilities ? { capabilities } : {}), ...(effortUsage ? { effortUsage } : {}) };
 }
 
 const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "adaptive", "auto", "not_supported"]);
+const USAGE_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+/** 等级消耗表：只收认识的等级名、正的有限数字，型号 id 限长、数量有上限。 */
+function parseEffortUsage(value: unknown): EffortUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as Record<string, unknown>;
+  const levels = (raw: unknown): Record<string, number> => Object.fromEntries(Object.entries(raw && typeof raw === "object" ? raw as Record<string, unknown> : {})
+    .filter((entry): entry is [string, number] => USAGE_EFFORTS.has(entry[0]) && typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] > 0 && entry[1] < 1e9));
+  const models: EffortUsage["models"] = {};
+  for (const [id, raw] of Object.entries(input.models && typeof input.models === "object" ? input.models as Record<string, unknown> : {}).slice(0, 500)) {
+    const m = raw as Record<string, unknown>;
+    const perTask = levels(m?.perTask);
+    if (id.length <= 80 && /^[a-z0-9][a-z0-9._-]*$/i.test(id) && Object.keys(perTask).length >= 2) models[id.toLowerCase()] = { basis: text(m.basis, 40), perTask };
+  }
+  const families: EffortUsage["families"] = {};
+  const fams = input.families && typeof input.families === "object" ? input.families as Record<string, unknown> : {};
+  for (const kind of ["claude", "chatgpt", "grok"] as const) { const r = levels(fams[kind]); if (Object.keys(r).length >= 2) families[kind] = r; }
+  if (!Object.keys(models).length && !Object.keys(families).length) return undefined;
+  return { source: text(input.source, 300), sourceUrl: text(input.sourceUrl, 300), license: text(input.license, 40), anchor: text(input.anchor, 20) || "medium", updatedAt: text(input.updatedAt, 40), models, families };
+}
+
+/**
+ * 同一型号从 from 档换到 to 档，每个任务的输出 token 大约乘几倍（按 Epoch 的基准数据）。
+ * 先找这个型号自己的数据（去掉 [1m]、日期后缀），没有就用家族平均；都没有返回 null。
+ */
+export function benchmarkEffortRatio(kind: "claude" | "chatgpt" | "grok", model: string, from: string, to: string): { ratio: number; basis: "model" | "family"; source: string } | null {
+  const usage = loadKnowledge().knowledge.effortUsage;
+  if (!usage || from === to) return null;
+  const id = model.toLowerCase().replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  const own = usage.models[id]?.perTask;
+  if (own?.[from] && own?.[to]) return { ratio: own[to] / own[from], basis: "model", source: usage.models[id].basis };
+  const fam = usage.families[kind];
+  if (fam?.[from] && fam?.[to]) return { ratio: fam[to] / fam[from], basis: "family", source: "family" };
+  return null;
+}
+
 /** 思考等级规则同样是下载来的：只收认识的家和等级名，正则要编得过。 */
 function parseCapabilities(value: unknown): Capabilities | undefined {
   if (!value || typeof value !== "object") return undefined;
