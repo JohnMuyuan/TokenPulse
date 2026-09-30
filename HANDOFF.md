@@ -25,6 +25,8 @@
   - 结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 29 个 PASS**。对打包后的 asar 跑了 test-agent-drift-ui 和 test-intro-ui，都通过。
 - 截图检查（用户允许 Claude 看截图）：漂移弹窗和跨版本更新说明，修复后重新截图确认过。
 - **产物**：`dist\TokenPulse-0.3.10-Setup.exe`、`.blockmap`、`TokenPulse-0.3.10-Portable.exe`、`dist\latest.yml`（version 0.3.10）。win-unpacked 的 asar 与源码一致。Git 提交、标签和 Release 的情况见本条末尾。
+- **Git / 发布**：提交 `99a0aad TokenPulse v0.3.10：工具配置被改走时提醒，修复 Grok 号池被旧会话切回`，已推到 origin/main（推送前 fetch 过，远端没有新提交）。标签 `v0.3.10`（annotated）指向 99a0aad。GitHub Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.10 已发布：不是草稿，也不是预发布，4 个附件大小与本地一致。releases/latest 是 v0.3.10，线上 latest.yml 的 sha512 与 Setup.exe 一致，0.3.9 及更早的安装版能收到更新。说明里没有会话链接。没有在本机实际装一遍、走自动更新。
+- **给用户的 Grok 用法**：启用号池后，在 Grok 里新开会话，或者在旧会话里输入 `/model tokenpulse_route`。万一又被切回，右上角会提醒，点「切回」就行。
 
 ## 排查：Grok 号池一用就切回原来的配置 · 结论：Grok 恢复旧会话时把 models.default 改了回去，没有改代码（2026-09-30，Claude）
 
