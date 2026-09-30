@@ -32,6 +32,12 @@ try {
   check("内置知识库能读到并通过校验", bundled.source === "bundled" && bundled.knowledge.prices.length > 10, bundled.knowledge.version);
   check("单价从知识库来：Claude Opus / GPT-5.6 / 免费模型", pricing.priceOf("claude-opus-5")?.input === 5 && pricing.priceOf("gpt-5.6-sol")?.output === 30 && pricing.priceOf("nemotron-3-ultra-free")?.input === 0);
   check("认不出的型号不编价格", pricing.priceOf("totally-new-model") === null);
+  // 日志里的型号常带日期：以前 claude-opus-4-1-20250805 落到 Opus 4.5 的价，只算了三分之一
+  {
+    const want = { "claude-opus-4-1-20250805": 15, "claude-opus-4-20250514": 15, "claude-opus-4-1": 15, "claude-3-opus-20240229": 15, "claude-opus-4-5-20251101": 5, "claude-opus-4-6": 5, "claude-opus-5-5": 5, "claude-3-5-haiku-20241022": 0.8, "claude-haiku-4-5-20251001": 1 };
+    const wrong = Object.entries(want).filter(([model, input]) => pricing.priceOf(model)?.input !== input).map(([model]) => `${model}=${pricing.priceOf(model)?.input}`);
+    check("Claude 各代单价：带日期后缀的也认对", !wrong.length, wrong.join(" "));
+  }
   // 2026-09-24 新版 Codex 开始报缓存写入：GPT 没有单独的写入价，按输入价算，不能当免费（实测一条请求少算 96%）
   const cacheWriteRow = { input: 78824, output: 13, cacheRead: 22132, cacheWrite: 56692 };
   const expected = (56692 * 5 + 13 * 30 + 22132 * 0.5) / 1e6;

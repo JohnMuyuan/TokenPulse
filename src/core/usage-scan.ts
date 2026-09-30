@@ -68,6 +68,10 @@ type FileState = {
   days: DayBuckets;
   /** Codex 的型号写在前面的 turn_context / thread_settings_applied 里，跨批次要记住。 */
   model?: string;
+  /** 这个 Codex 文件已经出现过 token_usage_record：之后的旧格式 token_count 一律不算（见 codexTokenCountRow）。 */
+  codexRecords?: boolean;
+  /** 上一条算过的 token_count（累计 + 本次）：Codex 会原样重复写同一条，重复的跳过。 */
+  lastTokenCount?: string;
   effort?: string;
   effortSource?: string;
   /**
@@ -115,6 +119,19 @@ type FileState = {
   accountEmail?: string;
   /** 账本结构版本，见 STATE_VERSION。 */
   v?: number;
+  /** 最近一次真实请求的型号（Claude / Grok）。压缩上下文的那次调用不写型号，按它记。 */
+  lastModel?: string;
+  /** Codex 旧格式：上一条 token_count 的本次用量，压缩时的上下文大小从这里估。 */
+  lastContext?: { input: number; cached: number; output: number; total: number };
+  /**
+   * 读到了压缩、还没记账的那一笔（跨批次也要记住）：
+   * Claude 等 compact_boundary 后面的摘要行；Grok 等这一轮的 turn_completed，型号按这一轮实际计费的型号记。
+   */
+  pendingCompact?: { at: number; pre: number; id: string; cached?: number; output?: number };
+  /** Grok：compaction_checkpoint 里估出来的摘要长度，等 auto_compact_completed 一起记。 */
+  grokCompactOutput?: number;
+  /** Grok：最近一轮缓存读取占输入的比例，压缩那次的输入按它拆缓存。 */
+  cacheRatio?: number;
 };
 
 export type UsageRollups = {
@@ -143,8 +160,11 @@ export type UsageRollups = {
  * 5：流水里记下 Claude 会话自带的账号（accountRef / accountEmail），重扫补上。
  * 6：官方小时账按账号拆分，修复多个账号的额度容量互相污染。
  * 7：流水补采明确记录的思考等级；旧会话文件还在的会自动重扫，已删除的保持未知。
+ * 8：Codex 旧版本（0.149–0.155 一带）只写 event_msg / token_count、不写 token_usage_record，以前整份漏算
+ *    （实测 27 个会话、约 1.07 亿 Token）。Codex 文件整份重算；其他来源没有变化，不重读。
+ * 9：补记「压缩上下文」那一次模型调用（见 compactionRow 一节）。三家都整份重算。
  */
-const STATE_VERSION = 7;
+const STATE_VERSION = 9;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -431,7 +451,80 @@ type Row = {
   responseId?: string;
   requestId?: string;
   cwd?: string;
+  /** 压缩上下文那一次调用：CLI 没写 usage，按上下文大小和摘要长度估的。 */
+  compaction?: boolean;
 };
+
+/* ---------------- 压缩上下文 ---------------- */
+
+/*
+ * 上下文快满时 CLI 会把整段对话再发一遍，让模型写一份摘要 —— 这次调用照样扣额度，
+ * 但好几种日志里没有它的 usage，以前整笔漏算（长会话压缩一次就是二三十万 Token 的输入）：
+ *
+ * | CLI | 压缩留下的记录 | usage |
+ * |-----|----------------|-------|
+ * | Claude Code | `system / compact_boundary`（compactMetadata.preTokens）+ 下一行 isCompactSummary 的摘要 | 没有 |
+ * | Codex 0.149–0.154（只写 token_count） | `compacted`（远端压缩 message 为空，摘要是 replacement_history 里加密的 compaction） | 没有，累计值也不涨 |
+ * | Codex 0.155+（写 token_usage_record） | 同上 | **有**，就是紧挨着的那条 record，已经算过 |
+ * | Grok Build | `auto_compact_completed`（tokens_before）+ compaction_checkpoint 文件 | 没有，轮内 modelCalls 也不含它 |
+ *
+ * 只给没有 usage 的几种估：输入 = 压缩前的上下文（CLI 自己报的数），输出 = 摘要长度。
+ * Codex 的加密摘要按 0.155+ 真实记录校准过：输出 Token ≈ 密文长度 × 0.17（5 次实测 0.164–0.173），
+ * 输入 ≈ 上一次调用的输入 + 输出（实测误差 5% 以内）。估出来的行在流水里带 compaction 标记。
+ */
+const CODEX_COMPACT_RATIO = 0.17;
+
+/** 摘要的 Token 粗估：汉字一个算一个，其余四个字符算一个。 */
+export function estimateTextTokens(text: string) {
+  let han = 0;
+  for (const ch of text) if (/[぀-ヿ㐀-鿿豈-﫿가-힯]/.test(ch)) han += 1;
+  return Math.round(han + (text.length - han) / 4);
+}
+
+function compactionUsage(input: number, cached: number, output: number): UsageBucket {
+  return { input, output, cacheRead: Math.min(input, Math.max(0, Math.round(cached))), cacheWrite: 0, reasoning: 0, costUsd: 0, requests: 1 };
+}
+
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((part) => (typeof part === "string" ? part : typeof (part as { text?: unknown })?.text === "string" ? (part as { text: string }).text : "")).join("");
+  return "";
+}
+
+function codexCompactionRow(obj: Record<string, unknown>, state: FileState): Row | null {
+  if (obj.type !== "compacted" || state.codexRecords || !state.lastContext) return null;
+  const at = Date.parse(String(obj.timestamp || "")) || 0;
+  if (!at) return null;
+  const ctx = state.lastContext;
+  const input = ctx.input + ctx.output || ctx.total;
+  if (!input) return null;
+  const payload = obj.payload as Record<string, unknown> | undefined;
+  const message = typeof payload?.message === "string" ? payload.message : "";
+  let output = message ? estimateTextTokens(message) : 0;
+  if (!output) {
+    const history = Array.isArray(payload?.replacement_history) ? (payload.replacement_history as Record<string, unknown>[]) : [];
+    const summary = [...history].reverse().find((item) => item?.type === "compaction" && typeof item.encrypted_content === "string");
+    output = Math.round(String(summary?.encrypted_content ?? "").length * CODEX_COMPACT_RATIO);
+  }
+  const cached = ctx.input ? (ctx.cached / ctx.input) * input : 0;
+  return { at, id: `compact:${obj.timestamp}`, model: "", usage: compactionUsage(input, cached, output), compaction: true };
+}
+
+function grokCheckpointOutput(file: string, relative: unknown) {
+  if (typeof relative !== "string" || !relative) return 0;
+  const dir = path.dirname(file);
+  const target = path.resolve(dir, relative);
+  if (!target.startsWith(dir + path.sep)) return 0;
+  try {
+    if (fs.statSync(target).size > 8 * 1024 * 1024) return 0;
+    const checkpoint = JSON.parse(fs.readFileSync(target, "utf8")) as { compacted_history?: { type?: string; content?: unknown; synthetic_reason?: unknown }[] };
+    // 压缩后的历史里，模型写的摘要是那条以「This session is being continued」开头的合成用户消息
+    const summary = (checkpoint.compacted_history ?? []).map((item) => textOf(item?.content)).find((text) => /session is being continued/i.test(text.slice(0, 200)));
+    return summary ? estimateTextTokens(summary) : 0;
+  } catch {
+    return 0;
+  }
+}
 
 function claudeRow(obj: Record<string, unknown>): Row | null {
   if (obj.type !== "assistant") return null;
@@ -489,6 +582,39 @@ function codexRow(obj: Record<string, unknown>): Row | null {
       requests: 1,
     },
   };
+}
+
+/**
+ * Codex 旧格式：`event_msg` / `token_count`。info.last_token_usage 是这一次调用的用量（字段和 token_usage_record 一样），
+ * total_token_usage 是会话累计。
+ * - 只用 last：累计值在压缩上下文后会骤降，续接的会话第一条就带着之前的累计（实测 2500 万 vs 本次 21.6 万）；
+ * - 同一条会被原样写两遍（累计和本次都不变），跳过；
+ * - 新版本两种都写，而且粒度不同（没有一条 record 和 token_count 数字相同），所以文件里一出现 record 就只认 record。
+ *   实测新版文件里同一轮不会先写 token_count 再写 record；唯一一条早于 record 的 token_count 属于切换版本前的那一轮，本来就该算。
+ */
+function codexTokenCountRow(obj: Record<string, unknown>, state: FileState): Row | null {
+  if (obj.type !== "event_msg") return null;
+  const payload = obj.payload as Record<string, unknown> | undefined;
+  if (payload?.type !== "token_count") return null;
+  const info = payload.info as Record<string, unknown> | null | undefined;
+  const last = info?.last_token_usage as Record<string, unknown> | undefined;
+  if (!last) return null;
+  const at = Date.parse(String(obj.timestamp || "")) || 0;
+  if (!at) return null;
+  const signature = JSON.stringify([info?.total_token_usage ?? null, last]);
+  if (signature === state.lastTokenCount) return null;
+  state.lastTokenCount = signature;
+  const usage = {
+    input: num(last.input_tokens),
+    output: num(last.output_tokens),
+    cacheRead: num(last.cached_input_tokens),
+    cacheWrite: num(last.cache_write_input_tokens),
+    reasoning: num(last.reasoning_output_tokens),
+    costUsd: 0,
+    requests: 1,
+  };
+  if (!usage.input && !usage.output) return null;
+  return { at, model: "", usage };
 }
 
 function grokRows(obj: Record<string, unknown>): Row[] {
@@ -562,11 +688,18 @@ function scanFile(
     state.requested = undefined;
     state.accountRef = undefined;
     state.accountEmail = undefined;
+    state.codexRecords = undefined;
+    state.lastTokenCount = undefined;
+    state.lastModel = undefined;
+    state.lastContext = undefined;
+    state.pendingCompact = undefined;
+    state.grokCompactOutput = undefined;
+    state.cacheRatio = undefined;
   };
   if (state.v !== STATE_VERSION) {
-    const metadataOnly = state.v === 6 && state.offset > 0 && stat.size >= state.offset;
     state.v = STATE_VERSION;
-    reset(metadataOnly);
+    // 9 给三家都补了压缩上下文的用量：旧账里没有这几笔，整份重算（重读的流水扫完会整理去重）。
+    reset();
   }
   // 变小了 = 被重写/截断过，之前记的账对不上了：整份清掉重读。
   if (stat.size < state.offset) reset();
@@ -598,6 +731,7 @@ function scanFile(
   const source = SOURCES[kind];
   let touched = false;
   let lineEnd = state.offset;
+  const rowsBefore: Row[] = [];
   for (const line of text.slice(0, lastBreak).split(String.fromCharCode(10))) {
     lineEnd += Buffer.byteLength(line, "utf8") + 1;
     const metadataOnly = state.metadataOnlyUntil != null && lineEnd <= state.metadataOnlyUntil;
@@ -671,17 +805,57 @@ function scanFile(
         state.effort = found?.effort; state.effortSource = found ? "update._meta." + found.source : undefined;
       }
     }
-    const one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : null;
-    const rows = kind === "grok-build" ? grokRows(obj) : one ? [one] : [];
+    let one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : null;
+    if (kind === "codex") {
+      if (obj.type === "token_usage_record") state.codexRecords = true;
+      else if (!one && !state.codexRecords) one = codexTokenCountRow(obj, state);
+      const tokenInfo = obj.type === "event_msg" && context?.type === "token_count" ? (context.info as Record<string, unknown> | null | undefined) : undefined;
+      const last = tokenInfo?.last_token_usage as Record<string, unknown> | undefined;
+      if (last) state.lastContext = { input: num(last.input_tokens), cached: num(last.cached_input_tokens), output: num(last.output_tokens), total: num(last.total_tokens) };
+      one ??= codexCompactionRow(obj, state);
+    }
+    if (kind === "claude-code") {
+      const compact = obj.type === "system" && obj.subtype === "compact_boundary" ? (obj.compactMetadata as Record<string, unknown> | undefined) : undefined;
+      const at = Date.parse(String(obj.timestamp || "")) || 0;
+      if (compact && num(compact.preTokens) && at) state.pendingCompact = { at, pre: num(compact.preTokens), id: `compact:${obj.uuid || obj.timestamp}` };
+      const summary = obj.type === "user" && obj.isCompactSummary === true;
+      // 摘要紧跟在分界线后面；万一没写摘要，下一次真实请求前也要把这笔记上（输出按 0）
+      if (state.pendingCompact && (summary || (one && !compact))) {
+        const pending = state.pendingCompact;
+        state.pendingCompact = undefined;
+        const output = summary ? estimateTextTokens(textOf((obj.message as Record<string, unknown> | undefined)?.content)) : 0;
+        const row: Row = { at: pending.at, id: pending.id, model: state.lastModel || "", usage: compactionUsage(pending.pre, pending.pre, output), compaction: true };
+        rowsBefore.push(row);
+      }
+    }
+    if (kind === "grok-build") {
+      const update = (obj.params as Record<string, unknown> | undefined)?.update as Record<string, unknown> | undefined;
+      if (update?.sessionUpdate === "compaction_checkpoint") state.grokCompactOutput = grokCheckpointOutput(file, update.checkpoint_file);
+      if (update?.sessionUpdate === "auto_compact_completed" && num(update.tokens_before)) {
+        const at = num(obj.timestamp) * 1000;
+        const before = num(update.tokens_before);
+        if (at) state.pendingCompact = { at, pre: before, id: `compact:${at}:${before}`, cached: before * (state.cacheRatio ?? 0), output: state.grokCompactOutput ?? 0 };
+        state.grokCompactOutput = undefined;
+      }
+    }
+    const turnRows = kind === "grok-build" ? grokRows(obj) : one ? [one] : [];
+    if (kind === "grok-build" && state.pendingCompact && turnRows.length) {
+      const pending = state.pendingCompact;
+      state.pendingCompact = undefined;
+      rowsBefore.push({ at: pending.at, id: pending.id, model: turnRows[0].model, usage: compactionUsage(pending.pre, pending.cached ?? 0, pending.output ?? 0), compaction: true });
+    }
+    const rows = [...rowsBefore.splice(0), ...turnRows];
     for (const row of rows) {
       const model = row.model || state.model || "未知模型";
       // Claude Code 内部占位的那种，不是真的 API 请求，别算进去。
       if (model === "<synthetic>") continue;
       // 同一次响应被拆成多行、每行都带同一份 usage：只认第一行（见 FileState.lastId）。
-      if (kind === "claude-code") {
+      if (kind === "claude-code" && !row.compaction) {
         if (row.id && row.id === state.lastId) continue;
         state.lastId = row.id;
       }
+      if (!row.compaction && model !== "未知模型") state.lastModel = model;
+      if (kind === "grok-build" && !row.compaction && row.usage.input) state.cacheRatio = Math.min(1, row.usage.cacheRead / row.usage.input);
       if (!metadataOnly) {
         addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
         const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
@@ -702,7 +876,7 @@ function scanFile(
       }
       if (row.cwd) state.cwd = row.cwd;
       const effortMatchesModel = kind !== "grok-build" || Boolean(state.requested && normalizeModel(model) === normalizeModel(state.requested));
-      const responseEffort = kind === "claude-code" ? recordedEffort(obj) : undefined;
+      const responseEffort = kind === "claude-code" && !row.compaction ? recordedEffort(obj) : undefined;
       out.records.push({
         // 没有 ID 的（极少）用时间 + 型号 + token 凑一个，重读时还是同一个键
         id: row.id || `${row.at}:${model}:${row.usage.input}:${row.usage.output}`,
@@ -726,6 +900,7 @@ function scanFile(
         calls: row.usage.requests,
         accountRef: state.accountRef,
         accountEmail: state.accountEmail,
+        ...(row.compaction ? { compaction: true } : {}),
       });
       touched = true;
     }

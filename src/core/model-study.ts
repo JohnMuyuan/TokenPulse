@@ -1,3 +1,6 @@
+import { calibrationContains, calibrationStatus, localOnlyAccounts, readCalibrations, type CalibrationSession } from "./quota-calibration";
+import { cleanSegment, FAMILY, mergeOff, overlapsMark, readMarks, type OffMachineMark } from "./quota-offmachine";
+import { quotaAttribution, summarizeAttribution } from "./quota-attribution";
 import { readQuotaHistory, type QuotaSample } from "./quota-history";
 import { windowSegments, type WindowSegment } from "./quota-monitor";
 import { queryRequests, type RequestRow } from "./request-log";
@@ -7,16 +10,10 @@ import { readOfficialAccountStore } from "./accounts";
 import type { AccountKind } from "./quota";
 
 /*
- * 模型 × 思考等级：一个五小时 / 周周期全用一种组合，大约能用多少 Token；以及周期里用了哪些组合。
- *
- * 换算分两层：
- * 1. 整窗预算（API 等价费用）：同账号的采样区间里，本机官方请求的参考费用 ÷ 官方已用百分点 × 100。
- *    费用可以跨模型相加，所以混用模型 / 等级的区间也能用 —— 样本比「纯区间」多得多。
- *    实测（2026-09 用户数据）：同一账号不同模型的纯区间折算出的整窗费用很接近，Token 数却差很多，
- *    说明官方额度大体按 API 等价费用消耗。
- * 2. 每个组合：整窗预算 ÷ 这个组合每 Token 的参考费用。单价优先用这个组合自己最近 30 天的实际费用
- *    （带着它自己的缓存 / 输出比例），没用过就用同模型其他等级的，再没有就用价格表 × 本账号的用量结构。
- *    纯区间（整段只用这一个组合）样本足够时，直接用实测值。
+ * 官方百分比属于整个账号池（含聊天、其他设备）。0.3.9 起按采样区间分开：同期没有本机请求的涨幅是「本机以外」，
+ * 用户在时间线上标注过的时段可能混用，都不进折算；只用同期有本机请求、没标注的区间（见 quota-offmachine.ts）。
+ * 同一时刻本机在跑、网页也在聊的情况分不出来，会让容量略偏小。
+ * API 费用的可加性不证明官方按 API 价格扣额度；跨模型换算仍只是费用情景参考。
  */
 
 export type ModelStudyWindow = "five" | "week";
@@ -40,7 +37,7 @@ export type ModelCapacity = CatalogEntry & {
   observedMinTokens: number | null; observedMaxTokens: number | null; confidence: Confidence; lastAt?: number;
   /** 按整窗预算换算。 */
   derivedTokens: number | null;
-  /** 最终展示的整窗容量：实测样本较充分用实测，否则用换算。 */
+  /** 最终参考：有合格同组合样本优先用样本外推，否则仅作按价情景模拟。 */
   capacityTokens: number | null; capacityCostUsd: number | null; capacityBasis: "measured" | "cost" | null;
   /** 整窗大约能调用多少次（容量 ÷ 单次调用 Token）。 */
   callsPerWindow: number | null;
@@ -58,7 +55,7 @@ const GAP_MS = 30 * 60000;
  * 只有这一家的模型才吃这一家的订阅额度。经 CC Switch 等把 Claude Code 指到别家模型（deepseek、gpt…）的请求，
  * 即使会话被判成官方，也不能算进 Claude 的额度：既不进排行，也不进整窗预算。
  */
-export const FAMILY: Record<AccountKind, RegExp> = { chatgpt: /^(gpt|codex|o\d)/i, claude: /^claude/i, grok: /^grok/i };
+export { FAMILY };
 /** 组合自己的请求少于这么多条时，缓存比例偶然性太大，单价改用同模型全部等级的。 */
 const MIN_COMBO_ROWS = 30;
 /** 本账号完全没有用量时，价格表按典型的 CLI 编程用量结构折算（输入里约 85% 是缓存读取）。 */
@@ -79,7 +76,7 @@ const unknownEffort = (r: RequestRow) => !r.effort || r.effort === "unknown" || 
 const sum = (rows: RequestRow[], pick: (r: RequestRow) => number) => rows.reduce((s, r) => s + pick(r), 0);
 
 /** 用确定归属的本机请求校准；长缺口、跨重置、套餐变化、账号推断的区间不用。 */
-export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], records: RequestRow[], catalog: CatalogEntry[], now = Date.now()) {
+export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], records: RequestRow[], catalog: CatalogEntry[], now = Date.now(), sessions: CalibrationSession[] = [], localOnly = false, marks: OffMachineMark[] = []) {
   const since = now - TRAINING_DAYS * DAY;
   const ownSamples = samples.filter(s => s.account === q.accountId && s.at >= since && s.at <= now).sort((a, b) => a.at - b.at);
   const segments = windowSegments(ownSamples, q.window, q.kind === "chatgpt" ? "moves" : "keeps");
@@ -93,9 +90,15 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
   const quotaStale = Boolean(selected && now - selected.sampleAt > GAP_MS);
   const upperBound = (at: number) => { let low = 0, high = rows.length; while (low < high) { const mid = (low + high) >>> 1; if (rows[mid].at <= at) low = mid + 1; else high = mid; } return low; };
 
+  const attributions = quotaAttribution(segments, rows, now);
+  const otherSegments = windowSegments(ownSamples, q.window === "week" ? "five" : "week", q.kind === "chatgpt" ? "moves" : "keeps");
+  const allAttributions = [...attributions, ...quotaAttribution(otherSegments, rows, now)];
+  const blockedSessionIds = sessions.filter(s => allAttributions.some(i => i.kind === "unmatched" && calibrationContains(s, q.accountId, i.from, i.to, now))).map(s => s.id);
+  const eligibleSessions = sessions.filter(s => s.kind === q.kind && s.accountId === q.accountId && !blockedSessionIds.includes(s.id));
+  const attribution = { ...summarizeAttribution(attributions.filter(i => !selected || i.cycleId === selected.id)), scope: "account_total" as const, simultaneousUsageUnknown: true, blockedSessionIds };
   const stats = new Map<string, { input: number; cacheRead: number; tokens: number; cost: number; priced: boolean; points: number; intervals: number; cycles: Set<string>; rates: number[]; lastAt: number }>();
   const pool = { cost: 0, points: 0, intervals: 0, cycles: new Set<string>() };
-  const excluded = { mixed: 0, unknownEffort: 0, empty: 0, gap: 0, accountUncertain: 0, planChange: 0 };
+  const excluded = { mixed: 0, unknownEffort: 0, empty: 0, gap: 0, accountUncertain: 0, planChange: 0, unverifiedScope: 0, offMachine: 0 };
   const sampleAt = new Map(ownSamples.map(s => [s.at, s]));
   const currentPlan = ownSamples.at(-1)?.plan;
   for (const segment of segments) {
@@ -110,12 +113,16 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
       // 百分比可能按整数报告：0 点变化先累积，避免只把最后一小段 token 除以 1%。
       if (delta < 1) continue;
       const part = rows.slice(upperBound(anchor.at), upperBound(point.at));
+      const from = anchor.at;
       const plans = [sampleAt.get(anchor.at)?.plan, sampleAt.get(point.at)?.plan];
       anchor = point;
       if (plans.some(p => p && currentPlan && p !== currentPlan)) { excluded.planChange++; continue; }
       if (!part.length) { excluded.empty++; continue; }
       if (part.some(r => r.account?.basis === "inferred")) { excluded.accountUncertain++; continue; }
       if (delta > 100) continue;
+      // 用户标注过「这段时间在别处用了」的区间可能混用，不进折算。
+      // 同期没有本机请求的涨幅在上面的 empty 里已经排除（那就是本机以外的消耗）；以前还要求有校准时段，0.3.9 起不再需要
+      if (overlapsMark(marks, from, point.at)) { excluded.offMachine++; continue; }
       // 整窗预算：费用跨模型可加，混用区间也算；有没定价的请求就不算（费用会偏低）。
       if (part.every(r => r.priced)) { pool.cost += sum(part, r => r.costUsd); pool.points += delta; pool.intervals++; pool.cycles.add(idOf(segment)); }
       if (part.some(unknownEffort)) { excluded.unknownEffort++; continue; }
@@ -130,7 +137,8 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
       stats.set(key, stat);
     }
   }
-  const budgetConfidence: Confidence = pool.points >= 15 && pool.cycles.size >= 2 ? "medium" : pool.points >= 5 && pool.intervals >= 3 ? "low" : "insufficient";
+  const budgetEnough = pool.points >= 5 && pool.intervals >= 3;
+  const budgetConfidence: Confidence = !budgetEnough ? "insufficient" : pool.intervals >= 6 && pool.points >= 15 && pool.cycles.size >= 2 ? "medium" : "low";
   const budget: Budget = { costUsd: budgetConfidence === "insufficient" || pool.cost <= 0 ? null : pool.cost / pool.points * 100, points: pool.points, intervals: pool.intervals, cycles: pool.cycles.size, confidence: budgetConfidence };
 
   // 单价：组合自己 → 同模型 → 价格表 × 本账号用量结构（输入 / 缓存 / 输出的比例）。
@@ -160,7 +168,8 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     // 未知等级没法说「全用这一档」；不换算，只在时间轴和用量里出现。
     const [unit, priceBasis] = entry.effort === "unknown" ? [null, null] : unitCost(entry.model, key);
     const derivedTokens = budget.costUsd != null && unit ? budget.costUsd / unit : null;
-    const measured = estimatedTokens != null && (confidence === "medium" || derivedTokens == null);
+    // 有合格的同组合样本就优先用它；不能让混合 API 价格假设盖过真实百分点样本。
+    const measured = estimatedTokens != null;
     const capacityTokens = measured ? estimatedTokens : derivedTokens;
     const recentCalls = sum(recent, r => r.calls), recentTokens = sum(recent, r => r.tokens);
     const tokensPerCall = recentCalls > 0 ? recentTokens / recentCalls : null;
@@ -177,22 +186,39 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
   const reference = capacities.filter(c => c.costPerMTokens).sort((a, b) => b.recentTokens - a.recentTokens || a.costPerMTokens! - b.costPerMTokens!)[0];
   for (const c of capacities) if (reference && c.costPerMTokens) c.relative = reference.costPerMTokens! / c.costPerMTokens;
 
+  // 本机以外的时段：所选周期里「额度涨了、本机没有请求」的区间合并成段，再加上用户的标注。
+  // 标注按容量表换算：这段涨了几个点 × 这个模型 × 等级的整窗容量 = 大约相当于多少 Token。
+  const offClean = selectedSegment ? cleanSegment(selectedSegment, rows, marks, now) : null;
+  const pctAt = (at: number) => { let value = 0; for (const p of selectedSegment?.points ?? []) { if (p.at > at) break; value = p.pct; } return value; };
+  const cycleMarks = selected ? marks.filter(m => m.from < Math.min(selected.endAt, now) && m.to > selected.startAt) : [];
+  const offMachine = {
+    points: offClean?.offPoints ?? 0,
+    markedPoints: offClean?.markedPoints ?? 0,
+    detected: mergeOff(offClean?.offIntervals ?? []).filter(seg => !overlapsMark(cycleMarks, seg.from, seg.to)),
+    marks: cycleMarks.map(m => {
+      const points = Math.max(0, pctAt(Math.min(m.to, selected!.endAt)) - pctAt(Math.max(m.from, selected!.startAt)));
+      const capacity = capacities.find(c => c.key === comboKey(m.model, m.effort)) ?? capacities.find(c => c.model === m.model && c.capacityTokens != null);
+      return { ...m, points, equivalentTokens: capacity?.capacityTokens != null ? capacity.capacityTokens * points / 100 : null, equivalentCostUsd: budget.costUsd != null ? budget.costUsd * points / 100 : null };
+    }),
+  };
+
   const bins = new Map<string, TimelineBin>();
-  const binMs = selected ? Math.max(60000, Math.ceil((selected.endAt - selected.startAt) / 240 / 60000) * 60000) : 60000;
+  // 一分钟一格：时间线可以放大到几分钟的范围看；格子只按有请求的分钟生成，数量不超过请求条数
+  const binMs = 60000;
   for (const r of observed) {
     const key = comboKey(r.model, r.effort), start = selected!.startAt + Math.floor((r.at - selected!.startAt) / binMs) * binMs;
     const k = key + "|" + start;
     const bin = bins.get(k) ?? { key, model: r.model, effort: r.effort || "unknown", startAt: start, endAt: Math.min(start + binMs, selected!.endAt), firstAt: r.at, lastAt: r.at, count: 0, calls: 0, tokens: 0, costUsd: 0 };
     bin.firstAt = Math.min(bin.firstAt, r.at); bin.lastAt = Math.max(bin.lastAt, r.at); bin.count++; bin.calls += r.calls; bin.tokens += r.tokens; bin.costUsd = bin.costUsd != null && r.priced ? bin.costUsd + r.costUsd : null; bins.set(k, bin);
   }
-  return { query: q, now, trainingSince: since, trainingDays: TRAINING_DAYS, cycles, selected, quotaStale, partialCycle: Boolean(selected && selected.startAt < since), budget, capacities, timeline: [...bins.values()].sort((a, b) => a.startAt - b.startAt), binMs, excluded,
+  return { query: q, now, localOnly, trainingSince: since, trainingDays: TRAINING_DAYS, cycles, selected, quotaStale, partialCycle: Boolean(selected && selected.startAt < since), attribution, budget, capacities, timeline: [...bins.values()].sort((a, b) => a.startAt - b.startAt), binMs, excluded, offMachine,
     /** 所选周期的额度采样（画在时间轴上方）。 */
     track: (selectedSegment?.points ?? []).map(p => ({ at: p.at, pct: p.pct })),
     totals: { tokens: sum(observed, r => r.tokens), calls: sum(observed, r => r.calls), records: observed.length, unknownEffort: observed.filter(unknownEffort).length },
     coverage: { firstRecordAt: rows[0]?.at ?? null, latestRecordAt: rows.at(-1)?.at ?? null, quotaSampleAt: ownSamples.at(-1)?.at ?? null } };
 }
 export type ModelStudy = ReturnType<typeof analyzeModelStudy>;
-export type ModelStudies = { kind: AccountKind; accountId: string; five: ModelStudy; week: ModelStudy };
+export type ModelStudies = { kind: AccountKind; accountId: string; calibration: ReturnType<typeof calibrationStatus>; localOnly: boolean; catalog: CatalogEntry[]; five: ModelStudy; week: ModelStudy };
 
 /** 一次算出五小时和周两个窗口：两边共用同一份 30 天请求流水，只读一次。 */
 export function queryModelStudy(value: ModelStudyQuery): ModelStudies {
@@ -204,6 +230,9 @@ export function queryModelStudy(value: ModelStudyQuery): ModelStudies {
   const all = queryRequests({ from: day(now - TRAINING_DAYS * DAY), to: day(now), since: now - TRAINING_DAYS * DAY, until: now, source, account: q.accountId, status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true, channel: "official" });
   const rows = all.rows.filter(r => FAMILY[q.kind].test(r.model));
   const catalog = modelCatalog(q.kind, rows);
-  const one = (window: ModelStudyWindow) => analyzeModelStudy({ kind: q.kind, accountId: q.accountId, window, cycle: q.cycles?.[window] }, samples, rows, catalog, now);
-  return { kind: q.kind, accountId: q.accountId, five: one("five"), week: one("week") };
+  const sessions = readCalibrations().filter(s => s.accountId === q.accountId && s.kind === q.kind);
+  const localOnly = localOnlyAccounts().includes(q.accountId);
+  const marks = readMarks(q.kind, q.accountId);
+  const one = (window: ModelStudyWindow) => analyzeModelStudy({ kind: q.kind, accountId: q.accountId, window, cycle: q.cycles?.[window] }, samples, rows, catalog, now, sessions, localOnly, marks);
+  return { kind: q.kind, accountId: q.accountId, calibration: calibrationStatus(q.kind, q.accountId, now), localOnly, catalog: catalog.filter(c => FAMILY[q.kind].test(c.model)), five: one("five"), week: one("week") };
 }

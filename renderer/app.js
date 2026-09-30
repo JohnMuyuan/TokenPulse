@@ -54,6 +54,50 @@ function icon(name, cls = 'icon') {
   node.append(svg('use', { href: '#i-' + name }));
   return node;
 }
+/**
+ * 带圆圈感叹号的说明：平时只占一个小图标，鼠标悬停或键盘聚焦时弹出说明。
+ * 浮层打开时挂到 body 上、用 fixed 定位（卡片的 overflow / 后面面板的层级都挡不住它），关上再放回图标旁边。
+ * content 可以带按钮：鼠标从图标移到浮层上不会关。
+ */
+function infoTip(content, label = '说明', cls = '') {
+  const pop = el('span', { class: 'info-tip-pop', role: 'tooltip' }, content);
+  const button = el('button', { type: 'button', class: 'info-tip-btn', 'aria-label': label }, [icon('notice')]);
+  const tip = el('span', { class: ('info-tip ' + cls).trim() }, [button, pop]);
+  let timer = 0, watch = null;
+  const place = () => {
+    const r = button.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, gap = 8;
+    const left = Math.min(Math.max(12, r.left + r.width / 2 - w / 2), window.innerWidth - w - 12);
+    const below = r.bottom + gap + h <= window.innerHeight - 12;
+    pop.style.left = Math.round(left) + 'px';
+    pop.style.top = Math.round(below ? r.bottom + gap : r.top - gap - h) + 'px';
+  };
+  const open = () => {
+    clearTimeout(timer);
+    if (pop.classList.contains('open') || !tip.isConnected) return;
+    document.body.append(pop);
+    pop.classList.add('open');
+    place();
+    window.addEventListener('scroll', close, true);
+    // 打开期间定时重画把图标换掉了：浮层跟着收掉，不留在 body 上
+    watch = new MutationObserver(() => { if (!tip.isConnected) close(); });
+    watch.observe(document.body, { childList: true, subtree: true });
+  };
+  function close() {
+    clearTimeout(timer);
+    pop.classList.remove('open');
+    window.removeEventListener('scroll', close, true);
+    watch?.disconnect(); watch = null;
+    if (tip.isConnected) tip.append(pop); else pop.remove();
+  }
+  const later = () => { clearTimeout(timer); timer = setTimeout(() => { if (!tip.matches(':hover') && !pop.matches(':hover') && !tip.contains(document.activeElement) && !pop.contains(document.activeElement)) close(); }, 120); };
+  tip.addEventListener('mouseenter', open); tip.addEventListener('mouseleave', later);
+  pop.addEventListener('mouseenter', () => clearTimeout(timer)); pop.addEventListener('mouseleave', later);
+  button.addEventListener('focus', open);
+  tip.addEventListener('focusout', later); pop.addEventListener('focusout', later);
+  const onKey = e => { if (e.key === 'Escape' && pop.classList.contains('open')) { e.stopPropagation(); close(); button.focus(); } };
+  tip.addEventListener('keydown', onKey); pop.addEventListener('keydown', onKey);
+  return tip;
+}
 /** 官方品牌图标：有自带颜色的路径保留原色（Claude 橙），其余跟随 currentColor。 */
 function brandSvg(brand) {
   const spec = BRAND[brand];
@@ -135,6 +179,7 @@ function renderOfficialAccounts(statuses = []) {
           quotaText ? el('small', { class: 'oauth-account-quota' + (pooled.exhausted ? ' exhausted' : pooled.active ? ' active' : ''), text: quotaText }) : null
         ]),
         account.autoRenew && !account.hidden ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，不用重新登录' }) : null,
+        account.hidden ? null : localOnlySwitch(account.id, name),
         el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: state }),
         el('span', { class: 'oauth-actions' }, actions)
       ]);
@@ -156,7 +201,7 @@ async function saveAccountOrder(list, message = '已调整顺序') {
   const ids = rowsOf(list).map(row => row.dataset.accountRow);
   try {
     renderOfficialAccounts(await api.reorderOfficialAccounts(list.dataset.kind, ids));
-    $('prefs-status').textContent = message;
+    settingsDone(message);
   } catch (error) {
     $('prefs-status').textContent = cleanRemoteError(error, '顺序没保存上，请重试');
     loadOfficialAccounts();
@@ -253,7 +298,7 @@ function startRename(button) {
     input.disabled = true;
     try {
       renderOfficialAccounts(await api.manageOfficialAccount('rename', id, value));
-      $('prefs-status').textContent = value ? '已改名' : '已去掉名字，显示邮箱';
+      settingsDone(value ? '已改名' : '已去掉名字，显示邮箱');
       $('official-accounts').querySelector(`[data-account-row="${CSS.escape(id)}"] [data-account-action="rename"]`)?.focus();
     } catch (error) {
       input.replaceWith(label);
@@ -267,8 +312,34 @@ function startRename(button) {
   });
   input.addEventListener('blur', () => finish(true));
 }
+/**
+ * 「只在本机用 Code，不聊天」：打开后这个账号的官方已用百分比就当作全部来自本机 Code，
+ * 按「本机用量 ÷ 已用百分比」直接折算整窗容量，额度详情里不再显示共享额度的说明和校准入口。
+ */
+let localOnly = new Set();
+function localOnlySwitch(id, name) {
+  const on = localOnly.has(id);
+  const button = el('button', { type: 'button', class: 'oauth-localonly' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on), 'data-local-only': id,
+    title: '打开后：这个账号的已用额度当作全部来自这台电脑的 Code 工具，直接折算整窗能用多少 Token / 费用。在网页、App 或别的电脑上也用这个账号时请保持关闭，否则容量会算小。',
+    'aria-label': `只在本机用 Code，不聊天：${name}` }, [el('i', { 'aria-hidden': 'true' }), el('span', { text: '只在本机用 Code' })]);
+  return button;
+}
+async function toggleLocalOnly(button) {
+  const id = button.dataset.localOnly, next = new Set(localOnly);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  button.disabled = true;
+  try {
+    await api.writePrefs({ localOnlyAccounts: [...next] });
+    localOnly = next;
+    const on = next.has(id);
+    button.classList.toggle('on', on); button.setAttribute('aria-checked', String(on));
+    settingsDone(on ? '已设为只在本机用 Code：按本机用量直接折算容量' : '已关闭：官方额度按整个账号共享处理');
+  } catch (error) { $('prefs-status').textContent = cleanRemoteError(error, '设置没保存上，请重试'); }
+  finally { button.disabled = false; }
+}
 async function loadOfficialAccounts() {
   $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '正在读取账号状态…' }));
+  try { localOnly = new Set((await api.readPrefs()).localOnlyAccounts || []); } catch { /* 读不到就按都没打开显示 */ }
   try { renderOfficialAccounts(await api.officialAccounts()); }
   catch { $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' })); }
 }
@@ -344,7 +415,7 @@ function countTo(node, key, value, format) {
   const start = performance.now(), origin = Number.isFinite(from) ? from : 0, span = 750;
   const step = now => {
     if (!node.isConnected) return;
-    const t = Math.min(1, (now - start) / span), eased = 1 - Math.pow(1 - t, 3);
+    const t = Math.max(0, Math.min(1, (now - start) / span)), eased = 1 - Math.pow(1 - t, 3);
     node.textContent = format(t >= 1 ? value : origin + (value - origin) * eased);
     if (t < 1) requestAnimationFrame(step);
   };
@@ -375,14 +446,61 @@ function moveIndicator() {
 /* ---------------- 状态 ---------------- */
 
 let statusTimer = 0;
+let toastSeq = 0;
 function showStatus(message, error = false) {
   const status = $('app-status');
   clearTimeout(statusTimer);
   status.textContent = message;
-  status.hidden = false;
   status.setAttribute('role', error ? 'alert' : 'status');
-  statusTimer = setTimeout(() => { status.hidden = true; }, error ? 6500 : 3600);
+  status.hidden = !error;
+  toast(message, { kind: error ? 'error' : 'success' });
+  if (!error) statusTimer = setTimeout(() => { status.hidden = true; }, 150);
 }
+/*
+ * 右上角提示。kind：success / error / warning / pending（转圈、不自动消失，等同一个 key 的下一条换掉它）。
+ * key：同一个 key 的提示原地更新，不叠一串（「正在切换…」→「已切换」）。
+ * actions：[{ label, onClick, primary }]，带按钮的提示不自动消失，点了按钮就关。
+ * 返回 { close }。
+ */
+const toastKeys = new Map();
+function toast(message, { kind = 'success', key = '', actions = [], cls = '' } = {}) {
+  const stack = document.getElementById('toast-stack') || (() => { const node = el('div', { id: 'toast-stack', 'aria-live': 'polite' }); document.body.append(node); return node; })();
+  const loud = kind === 'error' || kind === 'warning';
+  const old = key ? toastKeys.get(key) : null;
+  if (old?.node.isConnected) old.dispose();
+  const icon = { error: '!', warning: '!', pending: '', success: '✓' }[kind] ?? '✓';
+  const node = el('div', { class: `tp-toast ${kind}${actions.length ? ' has-actions' : ''}${cls ? ' ' + cls : ''}`, role: loud || actions.length ? 'alert' : 'status', 'data-toast': String(++toastSeq), 'data-kind': kind }, [
+    el('span', { class: 'tp-toast-icon', text: icon, 'aria-hidden': 'true' }),
+    el('span', { class: 'tp-toast-message', text: message }),
+    el('button', { type: 'button', class: 'tp-toast-close', 'aria-label': '关闭提示', text: '×' }),
+    actions.length ? el('div', { class: 'tp-toast-actions' }, actions.map(action => {
+      const b = el('button', { type: 'button', class: 'btn' + (action.primary ? ' btn-accent' : ''), text: action.label });
+      b.addEventListener('click', () => { close(); action.onClick?.(); });
+      return b;
+    })) : null,
+  ]);
+  const sticky = kind === 'pending' || actions.length > 0;
+  let left = kind === 'error' ? 6500 : kind === 'warning' ? 5000 : 3600, since = Date.now(), timer = sticky ? 0 : setTimeout(() => close(), left);
+  function dispose() { clearTimeout(timer); node.remove(); if (key && toastKeys.get(key)?.node === node) toastKeys.delete(key); }
+  function close() {
+    clearTimeout(timer);
+    if (key && toastKeys.get(key)?.node === node) toastKeys.delete(key);
+    node.classList.add('leaving'); setTimeout(() => node.remove(), reducedMotion.matches ? 0 : 160);
+  }
+  node.querySelector('.tp-toast-close').addEventListener('click', () => close());
+  if (!sticky) {
+    // 鼠标停在提示上时不自动消失（进度线同步暂停），移开后按剩下的时间继续
+    node.addEventListener('mouseenter', () => { clearTimeout(timer); left -= Date.now() - since; });
+    node.addEventListener('mouseleave', () => { since = Date.now(); timer = setTimeout(() => close(), Math.max(800, left)); });
+  }
+  // 原地替换：新提示放在旧提示的位置，免得跳来跳去
+  if (old?.node.isConnected) old.node.replaceWith(node); else stack.append(node);
+  if (old) node.classList.add('visible'); else requestAnimationFrame(() => node.classList.add('visible'));
+  if (key) toastKeys.set(key, { node, dispose });
+  return { close, node };
+}
+/** 成功消息一律走右上角的提示，设置页底部那行只留「正在…」和失败原因。 */
+function settingsDone(message) { $('prefs-status').textContent = ''; showStatus(message); }
 function empty(message) { return el('div', { class: 'empty', text: message }); }
 function track(pct, warning = false, label = '已用额度', identity = '') {
   // identity：双环卡片里进度条用和环一样的身份色（5 小时 / 周），预警改由文字颜色表达；快用完（≥90%）仍然变红。
@@ -921,7 +1039,7 @@ function windowPanel(label, report, account) {
   panel.append(metricGroup('Token 与费用', 'tokens', [
     metric('本窗口已用（本机）', amount(report.usedTokens), { unit: 'Tokens', approx: cnApprox(report.usedTokens), sub: money(report.usedCostUsd) }),
     unknown ? metric('剩余可用（估算）', '—', { sub: waitText }) : tokenMetric('剩余可用（估算）', byCapacity(report, 100 - report.used), { tone: 'accent' }),
-    unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : '已用不到 2%，暂无法折算' })
+    unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : report.capacityReason === 'unattributed' ? '账号池含其他端，不能按本机日志倒推容量' : '已用不到 2%，暂无法折算' })
       : tokenMetric('整窗容量折算', byCapacity(report, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } })
   ]));
 
@@ -959,7 +1077,9 @@ function capacityChart(host, history, windowName, metric, animate) {
   const fmt = metric === 'costUsd' ? money : tokens;
   const w = Math.max(320, host.clientWidth), h = host.clientHeight || 240, left = 56, right = 24, top = 18, bottom = 30;
   const reference = points.filter(p => !p.current && p.confidence !== 'low').map(value).sort((a, b) => a - b);
-  const median = reference.length ? reference[Math.floor((reference.length - 1) / 2)] : null;
+  // 真正的中位数：偶数个时取中间两个的平均（以前取偏小的那个，只有两周时直接显示成较小的那周）
+  const mid = reference.length >> 1;
+  const median = !reference.length ? null : reference.length % 2 ? reference[mid] : (reference[mid - 1] + reference[mid]) / 2;
   const max = Math.max(...points.map(value), median ?? 0) * 1.15 || 1;
   const from = points[0].startAt, span = Math.max(1, points.at(-1).startAt - from);
   // 两头各留 14px：点落在坐标轴上看着像被截了一半
@@ -977,7 +1097,7 @@ function capacityChart(host, history, windowName, metric, animate) {
   points.forEach((p, i) => {
     // 被重置卡提前结束的段，结束时间是重置那一刻，不是原来的重置日期
     const resetNote = [p.startedByReset && `从重置卡之后开始（${RESET_CARD[p.startedByReset]}）`, p.endedByReset && `用了重置卡，提前结束（${RESET_CARD[p.endedByReset]}）`].filter(Boolean).join('\n');
-    const text = `${date(p.startAt)} → ${date(p.endAt ?? p.resetAt)}${p.current ? '（进行中）' : ''}${resetNote ? '\n' + resetNote : ''}\n最后一次采样已用 ${percent(p.pct)}\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
+    const text = `${date(p.startAt)} → ${date(p.endAt ?? p.resetAt)}${p.current ? '（进行中）' : ''}${resetNote ? '\n' + resetNote : ''}\n最后一次采样已用 ${percent(p.pct)}${p.cleanPoints != null ? `\n折算用的区间：官方 +${p.cleanPoints.toFixed(1)}%，同期本机 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}${p.offPoints || p.markedPoints ? `\n本机以外 +${((p.offPoints || 0) + (p.markedPoints || 0)).toFixed(1)}%（不计入）` : ''}` : `\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}`}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
     const dot = svg('circle', { class: `cap-dot ${p.confidence === 'low' ? 'low' : 'solid'}${p.current ? ' current' : ''}`, cx: x(p), cy: y(value(p)), r: p.current ? 6 : 4.5, tabindex: 0, 'aria-label': text });
     dot.style.animationDelay = `${Math.round(600 + i * 60)}ms`;
     dot.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
@@ -993,7 +1113,8 @@ function capacityChart(host, history, windowName, metric, animate) {
   });
   host.append(node);
   playChart(host, animate);
-  return median == null ? null : fmt(median);
+  const last = points.filter(p => !p.current).at(-1);
+  return { median: median == null ? null : fmt(median), count: reference.length, last: last ? { text: fmt(value(last)), range: `${date(last.startAt)} → ${date(last.endAt ?? last.resetAt)}`, low: last.confidence === 'low' } : null };
 }
 function capacityPanel(account) {
   const host = el('div', { class: 'chart capacity-chart' });
@@ -1004,15 +1125,27 @@ function capacityPanel(account) {
     ...[['tokens', 'Tokens'], ['costUsd', '费用']].map(([id, label]) => el('button', { 'data-cap-metric': id, class: state.capMetric === id ? 'on' : null, text: label }))]);
   const draw = animate => {
     const history = account.capacityHistory?.[state.capWindow];
-    const median = capacityChart(host, history, state.capWindow, state.capMetric, animate);
+    if (history?.unavailableReason === 'unattributed') {
+      // 共享额度保护下不折算容量：模块留着，说明为什么空、怎么打开（以前整块改名成「历史容量来源保护」，看起来像被删了）
+      const open = el('button', { type: 'button', class: 'btn', text: '在设置里打开「只在本机用 Code」' });
+      open.addEventListener('click', () => openSettings('accounts'));
+      host.replaceChildren(el('div', { class: 'empty capacity-locked' }, [
+        el('p', { text: '这个账号的官方额度按整个账号共享处理（可能包含网页聊天和其他设备），所以不按本机用量折算每周能用多少。' }),
+        el('p', { text: '如果这个账号只在这台电脑上用 Code、不聊天，打开「只在本机用 Code」就会显示每个窗口折算出的容量趋势。' }),
+        open,
+      ]));
+      note.textContent = ''; return;
+    }
+    const summary = capacityChart(host, history, state.capWindow, state.capMetric, animate) || {};
     const { tooLow = 0, noLocal = 0 } = history?.skipped || {};
     const skipped = [tooLow && `${tooLow} 个已用不到 2%`, noLocal && `${noLocal} 个本机没有用量（可能用在别的设备上）`].filter(Boolean);
-    note.textContent = `${median ? `已结束且较可信的窗口中位数约 ${median}（虚线）。` : ''}${skipped.length ? `未计入 ${tooLow + noLocal} 个窗口：${skipped.join('，')}。` : ''}实心点可信，空心点已用不到 5%、偏差较大。按本机用量倒推，多设备使用时会偏低。`;
+    note.textContent = `${summary.last ? `上一个窗口（${summary.last.range}）约 ${summary.last.text}${summary.last.low ? '，已用不到 5%，偏差较大' : ''}。` : ''}${summary.median ? `已结束且较可信的 ${summary.count} 个窗口中位数约 ${summary.median}（虚线）。` : ''}${skipped.length ? `未计入 ${tooLow + noLocal} 个窗口：${skipped.join('，')}。` : ''}实心点可信，空心点折算用的区间不到 5 个百分点、偏差较大。${account.capacityBasis === 'clean' ? '只用「额度上涨、同期本机有 Code 请求」的区间折算，本机以外的使用不计入。' : '按本机用量倒推，多设备使用时会偏低。'}`;
   };
-  const panel = el('article', { class: 'panel capacity-panel' }, [
+  const locked = account.capacityHistory?.week?.unavailableReason === 'unattributed';
+  const panel = el('article', { class: 'panel capacity-panel' + (locked ? ' protected' : '') }, [
     el('div', { class: 'panel-heading' }, [
-      el('div', {}, [el('h2', { text: '额度容量趋势' }), el('p', { text: '每个历史窗口折算出的「整窗能用多少」，看官方给的总额度有没有变化' })]),
-      el('div', { class: 'capacity-controls' }, [windowSeg, metricSeg])
+      el('div', {}, [el('h2', { text: '额度容量趋势' }), el('p', { text: locked ? '需要打开「只在本机用 Code」才能折算' : '每个历史窗口折算出的「整窗能用多少」，看官方给的总额度有没有变化' })]),
+      locked ? null : el('div', { class: 'capacity-controls' }, [windowSeg, metricSeg])
     ]),
     host, note
   ]);
@@ -1196,6 +1329,7 @@ function renderQuota() {
   drawAccountTabs(slots);
   const { account, kind } = slot, meta = META[kind], who = accountWho(account);
   window.PulseModelStudy?.quota(current, account);
+  window.PulseModelStudy?.timeline(current, account?.accountId || '');
   const sessions = current.sessions[kind] || { included: 0, excluded: 0 };
   const pool = poolOf(kind);
   if (pool?.accountCount > 1) host.append(poolPanel(pool));
@@ -1207,6 +1341,12 @@ function renderQuota() {
     ]),
     el('div', { class: 'context-meta', text: account ? `${date(checkedAt(account))} 更新 · ${number(account.sampleCount)} 个采样点` : '尚无额度采样' })
   ]));
+  if (account?.quotaScope === 'account_total') {
+    const toSettings = el('button', { type: 'button', class: 'text-btn', text: '只在本机用 Code？在设置里打开' });
+    toSettings.addEventListener('click', () => openSettings('accounts'));
+    // 说明收进标题旁的感叹号：悬停 / 聚焦才显示，不再常驻一大块
+    host.querySelector('.quota-context h2')?.append(infoTip([el('span', { text: '官方已用是整个账号的（含网页聊天、其他设备）。额度上涨时本机没有 Code 请求的时段会被识别为「本机以外」，不计入容量折算；可以在下方时间线里标注这些时段用了什么模型。' }), toSettings], '共享额度说明', 'quota-scope-tip'));
+  }
   if (!account) {
     host.append(el('article', { class: 'panel empty large' }, [el('h3', { text: '暂时还没有这个账号的额度数据' }), el('p', { text: `确认 ${meta.source} 已登录官方账号，然后点击「刷新数据」。` }), el('p', { text: '凭据过期或网络错误也可能导致采样失败；这不会影响本机用量统计。' })])); return;
   }
@@ -1258,7 +1398,7 @@ function renderUsage() {
     return el('div', { class: 'breakdown-item' }, [el('small', { text: label }), el('strong', { title: number(t[key]) }, [value, approx ? el('small', { class: 'cn-approx', text: approx }) : null]), el('span', { text: note })]);
   }));
   window.PulseInsights?.render(analysis, entering());
-  window.PulseModelStudy?.timeline(current, state.reqAccount);
+  window.PulseProjects?.render();
   renderRecords();
   revealDetailResults();
 }
@@ -1487,7 +1627,7 @@ function quotaShare(row) {
 function sharePct(value) { return value < 0.01 ? '<0.01%' : value < 1 ? value.toFixed(2) + '%' : value.toFixed(1) + '%'; }
 function quotaCell(row) {
   const share = quotaShare(row);
-  if (!share) return el('td', { class: 'n muted quota-share', text: '—', title: '走中转 / 没对上账号，或者这个窗口还折算不出整窗容量' });
+  if (!share) return el('td', { class: 'n muted quota-share', text: '—', title: '当前没有可信的单次官方扣额，不按全账号涨幅倒推本机请求占比' });
   const lines = [share.five ? `5 小时 ${sharePct(share.five.pct)}` : null, share.week ? `周 ${sharePct(share.week.pct)}` : null].filter(Boolean);
   const low = [share.five, share.week].some(item => item && item.confidence === 'low');
   return el('td', { class: 'n quota-share' + (low ? ' low' : ''), title: `≈ 这次请求的 Token ÷ 窗口整窗容量（按本机用量倒推的估算）${low ? '\n窗口已用不到 5%，偏差较大' : ''}` },
@@ -1623,6 +1763,7 @@ function renderPage(snapshot) {
   // 会话页自己管数据；只在还没读过或列表放了一阵子时重读，不跟着每分钟的快照整页重画
   if (state.page === 'sessions') window.PulseSessions?.show();
   if (state.page === 'egress') window.PulseEgress?.show();
+  if (state.page === 'providers') window.PulseProviders?.show();
   if (state.page === 'usage') loadRequests();
   renderRequestAlert(snapshot);
   syncSourceOptions(snapshot);
@@ -1633,16 +1774,19 @@ function renderPage(snapshot) {
 }
 /** 逐条请求在用量明细页里，是它的默认视图。 */
 function requestsVisible() { return state.page === 'usage' && state.usageView === 'requests'; }
+const USAGE_VIEWS = {
+  requests: '每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情',
+  daily: '按日期、工具、模型聚合；费用为参考估算',
+  projects: '按项目文件夹汇总：多少个 Agent 对话、多少 Token 和额度，由哪些模型和思考等级组成。点开看构成'
+};
 function showUsageView(view) {
-  state.usageView = view === 'daily' ? 'daily' : 'requests';
-  const requests = state.usageView === 'requests';
-  $('view-requests').hidden = !requests; $('view-daily').hidden = requests;
-  $('request-count').hidden = !requests; $('record-count').hidden = requests;
-  // 标题栏上的按钮跟着视图换：说明和逐条导出只属于逐条请求
-  $('verify-help').hidden = $('export-requests').hidden = !requests; $('export-csv').hidden = requests;
-  $('detail-caption').textContent = requests
-    ? '每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情'
-    : '按日期、工具、模型聚合；费用为参考估算';
+  state.usageView = USAGE_VIEWS[view] ? view : 'requests';
+  const requests = state.usageView === 'requests', daily = state.usageView === 'daily', projects = state.usageView === 'projects';
+  $('view-requests').hidden = !requests; $('view-daily').hidden = !daily; $('view-projects').hidden = !projects;
+  $('request-count').hidden = !requests; $('record-count').hidden = !daily; $('project-count').hidden = !projects;
+  // 标题栏上的按钮跟着视图换：说明和逐条导出只属于逐条请求，按日导出只属于按日汇总
+  $('verify-help').hidden = $('export-requests').hidden = !requests; $('export-csv').hidden = !daily;
+  $('detail-caption').textContent = USAGE_VIEWS[state.usageView];
   for (const button of $('usage-view').querySelectorAll('[data-view]')) { const on = button.dataset.view === state.usageView; button.classList.toggle('on', on); button.setAttribute('aria-pressed', String(on)); }
   syncSeg($('usage-view'));
 }
@@ -1653,7 +1797,7 @@ const overviewRange = { days: 30, from: '', to: '', follow: false };
 function navigate(page) {
   // 以前的「请求记录」页并进了用量明细（通知、额度详情的链接还会传 requests 过来）
   if (page === 'requests') { page = 'usage'; showUsageView('requests'); }
-  if (!['overview', 'quota', 'usage', 'egress', 'sessions'].includes(page)) page = 'overview';
+  if (!['overview', 'quota', 'usage', 'egress', 'sessions', 'providers'].includes(page)) page = 'overview';
   const rangePage = state.rangePage || 'overview';
   if (page === 'usage' && state.page !== 'usage') {
     if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
@@ -1662,15 +1806,15 @@ function navigate(page) {
   if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
   if (page === 'overview' || page === 'usage') state.rangePage = page;
   state.page = page;
-  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'] }[page];
+  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
-  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions']) $('page-' + name).hidden = name !== page;
+  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions', 'providers']) $('page-' + name).hidden = name !== page;
   // 会话页是占满屏幕的工作台：大标题、页脚在那一页收起来（sessions.css）
   document.body.dataset.page = page;
   $('overview-analysis').hidden = page !== 'overview';
-  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress';
+  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress' || page === 'providers';
   $('tip').hidden = true;
   enter();
   if (current) render(current);
@@ -1804,7 +1948,7 @@ function settingRow(title, hint, control) {
 }
 async function savePref(key, value) {
   $('prefs-status').textContent = '正在保存…';
-  try { await api.writePrefs({ [key]: value }); $('prefs-status').textContent = '设置已保存'; return true; }
+  try { await api.writePrefs({ [key]: value }); settingsDone('设置已保存'); return true; }
   catch { $('prefs-status').textContent = '保存失败，请检查数据目录权限'; return false; }
 }
 function prefRow(row, prefs) {
@@ -2217,7 +2361,7 @@ function revealDetailResults() {
   if (!detailResultsPending || state.page !== 'usage' || analysis.loading || analysis.error || !requestPage) return;
   if (requestKey !== JSON.stringify(requestQuery()) + '|' + (current?.scannedAt || '')) return;
   detailResultsPending = false;
-  detailMotion($(state.usageView === 'daily' ? 'view-daily' : 'view-requests'), { opacity: .65 }, { opacity: 1 });
+  detailMotion($('view-' + state.usageView), { opacity: .65 }, { opacity: 1 });
 }
 function renderDetailChips() {
   const host = $('detail-filter-chips'), chips = [];
@@ -2448,6 +2592,8 @@ function disarmRemove() {
 }
 const ACCOUNT_DONE = { remove: '已删除账号', purge: '已完全删除 TokenPulse 账号', hide: '已隐藏账号，可以随时恢复', restore: '已恢复账号，正在查询额度' };
 $('official-accounts').addEventListener('click', async event => {
+  const local = event.target.closest('[data-local-only]');
+  if (local) { if (!local.disabled) toggleLocalOnly(local); return; }
   const button = event.target.closest('[data-account-action]');
   if (!button || button.disabled) return;
   const { accountAction: action, accountKind: kind, accountId: id } = button.dataset;
@@ -2466,11 +2612,11 @@ $('official-accounts').addEventListener('click', async event => {
       renderOfficialAccounts(result.statuses);
       // 主进程已经在后台刷新额度；这里等它的结果，好让提示和界面同步。
       render(await api.refresh());
-      $('prefs-status').textContent = action === 'reauthorize' ? '重新授权成功，账号凭据已更新并刷新额度' : '登录成功，已添加账号并刷新额度';
+      settingsDone(action === 'reauthorize' ? '重新授权成功，账号凭据已更新并刷新额度' : '登录成功，已添加账号并刷新额度');
     } else {
       // 删除、完全删除、恢复：主进程会重新汇总并把新快照推过来，这里不用再等一轮额度查询
       renderOfficialAccounts(await api.manageOfficialAccount(action, id));
-      $('prefs-status').textContent = ACCOUNT_DONE[hiding ? 'hide' : action];
+      settingsDone(ACCOUNT_DONE[hiding ? 'hide' : action]);
     }
   } catch (error) {
     $('prefs-status').textContent = cleanRemoteError(error, '账号操作失败，请重试');

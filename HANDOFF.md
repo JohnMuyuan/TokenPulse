@@ -1,3 +1,618 @@
+# 当前接手入口 · 0.3.9（2026-09-29）
+
+## 截图检查后的界面修复（含一个改坏用户配置格式的 bug）· 已完成，免安装目录版在 dist（2026-09-30 01:44，Claude）
+
+- 用户觉得界面不好看，本轮**单独允许 Claude 看截图**（AGENTS.md 里「不得查看图片」这一条对其他 AI 仍然有效，不要当成通用规则）。截图用临时数据目录和合成数据生成，脚本放在会话 scratchpad，不在仓库里。仍算 0.3.9，未提交、未打安装包、未发布。
+- **截图发现并修复的问题**：
+  1. **写 JSON 配置时把用户文件整份重排（真实 bug）**：`agent-switch.ts` 的 writeObject 以前只要文件里有 4 空格开头的行就按 4 缩进写。2 空格缩进、带嵌套的 settings.json 必然有这种行，所以一切换就被整份改成 4 缩进，对比框里也显示整份删除、整份新增。现在改为按第一层键的实际缩进（用正则取），没有就用 2。`test-agent-guard.cjs` 增加了断言：缩进保持 2 空格，删除的行不超过 4 行。
+  2. 对比确认框打开时，右上角还在转「正在启用…」：run 里收到 confirm 后先调用 clearPending。
+  3. 额度详情标题旁感叹号的浮层被卡片挡住，只露出两行，还被下面的面板盖住。`infoTip` 改为：打开时把浮层挂到 body 上，用 fixed 定位（下方放不下就放上方，左右不出界），滚动时关闭；关闭后放回原位。只在打开期间监听 DOM，定时重画把图标换掉时顺带收起浮层。hover 和键盘聚焦都能打开，Esc 关闭。CSS 在 app.css「圆圈感叹号说明」一节。
+  4. 配置保护页：原件卡片里重复了一遍文件名，改为「恢复后：+a −d 行」加一个「查看对比」折叠项（`diffBlock` 的第三个参数 title）；左侧菜单「配置保护」的徽章只在只读时显示「只读」，原来的「已开启」容易被误解成只读已开。只读说明和三条规则卡片的文字都精简成一句话。i18n 已同步。
+- **看过的截图**（浅色和深色各一套）：供应商列表、对比确认框、弹窗提示合集、配置保护页、Codex 整体上下文、额度页感叹号浮层、本机以外汇总、更新说明弹窗、新手引导的容量趋势这一步。修复后重新截图确认过：对比框只显示改动的行，浮层完整显示在最上层，深色模式正常。
+- **测试**：`test-model-study-ui` 的感叹号断言改为：关闭时 display:none；打开后在 body 上，完整显示并处于最上层（用 elementFromPoint 检查）。隐藏的测试窗口里 focus() 不触发 focus 事件，所以测试里用 mouseenter 打开。结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 28 个 PASS**。
+- **产物**：用户已经退出旧版，所以这次直接打到 **`dist\win-unpacked\TokenPulse.exe`**（0.3.9.0，app.asar 生成于 01:44）。8 个相关文件与工作区逐字节一致，exe 和 asar 独占打开检测通过，没有残留进程和演示临时目录。上一轮的 `dist-next\` 已经过时，可以删除。
+
+## Codex 一键 1M 上下文 + 供应商提示全部改成右上角弹窗 · 已完成，免安装目录版在 dist-next（2026-09-30 01:29，Claude）
+
+- 用户要求（仍算 0.3.9，只打目录版，未提交、未打安装包、未发布）：①Codex 能自由设置上下文，参考 CC Switch 做一键 1M；②供应商页的所有提醒改成右上角弹窗，不要插进页面的常驻提示。
+- **① Codex 整体上下文**：
+  - 对照 CC Switch（`src/components/providers/forms/CodexConfigSections.tsx`）：打开时写 config.toml 顶层的 `model_context_window = 1000000`，自动压缩阈值没填时补 `model_auto_compact_token_limit = 900000`；关闭时两项都删掉。
+  - 后端（`agent-switch.ts`）：parseSave 新增 `parseCodexContext`，只有 Codex、而且请求里带了 codexContextWindow / codexAutoCompact 时才生效。取值范围 1000～10000000 的整数，压缩阈值必须小于窗口。结果存进 `provider.extra`，由原有的 writeCodex（CODEX_EXCLUSIVE）以整数写入，并在切换时恢复。agentView 输出 codexContextWindow / codexAutoCompact。其他保存入口不带这两个字段时，原值保留。
+  - 界面：Codex 编辑页「模型」步骤顶部新增「整体上下文」区块，包括「1M 上下文」一键按钮（data-action=codex-1m）和两个数字框（name=codexContextWindow / codexAutoCompact，空着表示跟随 Codex 默认）。
+    - 点开 1M 时，模型行里仍是预设 128000 的上下文会一起改成 1000000，关掉时改回来；手动改过的行保留。
+    - 手动填 1000000 时按钮会同步亮起。
+    - 配置预览里能看到这两个字段；editorFingerprint 也包含它们，所以离开时会提示未保存。
+- **② 提示改成弹窗**：
+  - `app.js` 新增全局 `toast(message, { kind, key, actions, cls })`，kind 有 success / error / warning / pending。
+    - pending 带转圈，不自动消失；同一个 key 会原地替换，「正在切换…」直接变成结果。
+    - 带 actions 的弹窗不会自动消失，点按钮后关闭。
+    - 原来的 showStatus 改为调用 toast，行为不变；app.css 补了 warning / pending / 按钮样式和 reduced-motion。
+  - `agent-switch.js`：showFeedback 全部改走 `toast(..., { key: 'providers' })`，删除了页面里的 `.pv-feedback` 框和 drawFeedback。run 的 finally 和获取模型提前返回时，都会清掉残留的 pending。只读保护的 `.pv-readonly-bar` 常驻条删掉了，只保留菜单徽章，被拦下时弹 error。离开编辑时的「有尚未保存的修改」也改成带「继续编辑 / 放弃修改」按钮的弹窗（`.tp-toast.pv-unsaved`），不再插进表单。页面里剩下的只有静态的 `.pv-hint` 说明文字，不属于提醒。
+  - `agent-switch.css` 里旧的 `.pv-feedback` 样式没有删（已经没有地方用到，无害）。
+- **测试**：
+  - 新增 `scripts/test-codex-context.cjs`，已加入 npm test。覆盖：1M 写成整数、自定义值、清空时删掉键、不带字段的保存保留原值、用户自己的 toml 和 mcp 表不变、模型目录里是 1M、校验。
+  - `test-agent-guard-ui.cjs` 增加：供应商页里没有任何提示条；Codex 1M 按钮的开关（两个输入框和模型行上下文联动、配置预览、手动填 1000000 时按钮同步）；未保存提示是右上角弹窗。
+  - `test-provider-feedback-ui`、`test-agent-guard-ui`、`test-agent-switch-ui` 里原来查 `.pv-feedback` / `.pv-unsaved` 的断言都改为查 `#toast-stack .tp-toast`；reduced-motion 断言改为检查 pending 弹窗的转圈动画。
+  - 结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 28 个 PASS**。另外用 TOKENPULSE_TEST_APP 对 dist-next 的 asar 跑了 test-agent-guard-ui，通过。
+- **产物 / 占用**：用户 01:14 启动了上一版 `dist\win-unpacked\TokenPulse.exe`（PID 10428/12452/30020/32876/33836），**没有关闭**。
+  - 打包到 dist 时，electron-builder 删除 `dist\win-unpacked` 报 `EBUSY: resource busy or locked, rmdir`。事后核对，`dist\win-unpacked` 的文件和 node_modules/electron/dist 一致（55 个 locales 都在），没有被删掉一半，但**里面仍是 01:11 的上一版**。
+  - 新版输出到 **`dist-next\win-unpacked\TokenPulse.exe`**（0.3.9.0，app.asar 生成于 01:29），12 个相关文件与工作区逐字节一致，独占打开检测通过；本轮启动的测试和构建进程都已退出。
+  - 用户退出旧版后，可以再编译到 dist，或者直接用 dist-next。两个版本有单实例锁，旧版开着时启动新版只会唤起旧窗口。
+- 视觉效果由用户验收，没有查看截图。
+
+## 供应商配置保护：改动前对比确认 + 每次改动备份 / 一键还原 + 只读保护 · 已完成，免安装目录版在 dist（2026-09-30 01:11，Claude）
+
+- 用户担心供应商专区改坏 agent 配置。本轮做了三件事，仍算 0.3.9，只打目录版，未提交、未打安装包、未发布。
+- **唯一提交点**：所有写工具配置的路径都经过 `src/core/agent-config.ts` 的 `configTransaction`，新增的钩子都放在这里：
+  - `configureReadOnly(fn)`：有工具文件（agent-switch.json 以外）的改动、只读保护打开、又没有处在 `configAllowRestore` 范围内时，直接拒绝，整个事务不写。
+  - `configPreview(work)`：同样的操作跑一遍，到提交点只收集改动，然后返回，不写文件、不写日志、不留历史。agent-switch 在预览期间不启动 / 停止本地路由（ensureProxy / stopProxy 检查 `configPreviewing()`），也不 mkdir 桌面端目录。
+  - `configExpect(signature)`：确认执行时，真实改动的签名（文件 + before + after 的 sha256）必须和预览时一致，否则报「确认之后配置又有变化」且不写。
+  - `recordHistory`：每次提交记下工具文件的前后内容。
+- **历史 / 原件**：新文件 `src/core/agent-history.ts`。
+  - 历史存在 `~/.tokenpulse/backups/agent-history/<id>.json`，权限 0600，保留最近 50 次。
+  - 原件就是已有的 `backups/live-first-write`，永久保留。
+  - `maskSecrets` 负责打码：JSON 和 TOML 里 key/token/secret/authorization… 这类字段、环境变量、sk- / xai- / Bearer 开头的串。
+  - `lineDiff` 做 LCS 行对比，保留上下 3 行；文件太大时退化为整份替换。
+  - `mergeChanges` 把一次操作里对同一文件的多次改写合并；`changeSignature` 生成签名。
+- **还原**：`agent-switch.ts` 新增 `restoreConfigBackup('history'|'original', id)`。
+  - 走 syncMutation + 事务，还原本身也会记一条历史，所以还原可以撤回。
+  - 整体包在 configAllowRestore 里，只读保护下也能还原。
+  - 对应工具的本地路由开着时拒绝还原。
+  - 还原后 TokenPulse 把配置当作外部修改，不会自动覆盖。
+  - 关闭路由（setAppProxy off）和退出恢复（releaseAgentSwitch）也包了 configAllowRestore。
+- **主进程**（`index.ts`）：
+  - save / delete / activate / proxy / port / failover / reorder / import-cc / import-live / restore 都改走 `agentWrite(reason, work, restoring)`：
+    - 先预览；
+    - 没有工具文件改动就直接执行；
+    - 只读保护打开、又不是 restoring 的，直接返回错误；
+    - 否则返回 `{ ok:false, confirm:{ token, reason, files: FileDiff[] } }`，由界面调用 `agent:confirm(token)` 执行（带签名校验，token 10 分钟过期）。
+  - 新增 IPC：`agent:confirm`、`agent:backups`（历史 + 原件，原件和当前文件对比，全部打码）、`agent:restore`、`agent:readonly`。
+  - prefs 新增 `agentReadOnly`（默认 false）。agentView 带 `readOnly`。启动恢复和退出恢复也写上了 reason。
+  - **托盘切换**不再直接写：改为打开窗口，发送 `agent-activate-request`，由供应商页走确认流程；只读时托盘项变灰，并标「（只读保护）」。
+- **界面**（`renderer/agent-switch.js/.css`）：
+  - `run()` 统一处理 confirm：弹出 `#pv-confirm` 对比框，标明工具、文件、新建 / 删除、+N −M 行，红删绿增，默认焦点在「取消」。Esc、取消、点遮罩都不写，并提示「已取消」。
+  - 二级菜单「管理」下新增「配置保护」（徽章显示「已开启」或「只读」），页面内容：
+    - 只读保护开关（role=switch）；
+    - 三条规则说明；
+    - 接管前的原件（和现在不同时显示「恢复原件」和对比）；
+    - 修改记录（原因、时间、工具、文件数、对比，以及「还原到这次之前」）。
+  - 只读时其他页顶部显示 `.pv-readonly-bar`。
+  - 设置 → 数据新增「供应商配置备份」→「打开配置保护」。
+  - 更新说明 NOTES 和引导的供应商那一步都补了这项内容；i18n 补齐了新文字和带数字的模板。
+- **测试**：
+  - 新增 `scripts/test-agent-guard.cjs`，已加入 npm test。覆盖：预览不写文件、不留历史；对比打码；签名不一致时拒绝；只读保护拦截切换但允许改供应商资料；历史的前后内容和 0600 权限；还原、撤回还原、恢复原件；打码规则；50 条上限；只读下关闭路由不报错。
+  - 新增 `scripts/test-agent-guard-ui.cjs`，已加入 test:ui。覆盖：对比框（Esc 取消后文件不变、确认后写入）、界面 HTML 里没有任何密钥原文、配置保护页、只读拦截（不弹框、文件不变、托盘请求也不写）、只读下带确认恢复原件、还原也留记录、设置入口、托盘切换会弹确认、夜间模式、900px。
+  - 已有的 `test-agent-switch-ui`、`test-provider-feedback-ui`、`test-provider-pool-ui` 不是测确认框的，所以在页面里注入自动点击「确认写入」；它们走的仍是真实的「预览 → 确认 → 签名校验 → 写入」路径，全部通过。菜单项从 8 个变为 9 个。
+  - 结果：**`npm test` 退出 0**（含原有配置安全审计 10/10 和事务测试）；**`npm run test:ui` 退出 0，共 28 个 PASS**。另外用 TOKENPULSE_TEST_APP 对打包后的 asar 跑了 test-agent-guard-ui，也通过。
+- **产物**：`dist\win-unpacked\TokenPulse.exe`，0.3.9.0，app.asar 生成于 2026-09-30 01:11。asar 里 11 个相关文件与工作区逐字节一致；exe 和 asar 独占打开检测通过；没有残留进程和演示临时目录。
+- **已知限制**：
+  - 一个操作分成多个事务时，预览只能看到第一个事务之前的磁盘状态。目前所有用户操作都只有一个写工具文件的事务，测试都通过了；以后新增多事务操作时要注意签名校验。
+  - 只读保护下启动时如果需要重新接管路由，会失败，路由保持关闭，这是预期行为。
+  - 历史文件里有 API Key 原文，和工具自己的配置一样只存在本机，权限 0600（Windows 上靠用户目录 ACL）。
+  - 还原会把整个文件换成当时的内容；还原之后在别处做的修改会被覆盖，但还原前有对比确认，并且会留一条历史。
+  - 视觉效果由用户验收，没有查看截图。
+
+## 新手引导改用演示数据、覆盖特色功能 · 已完成，免安装目录版在 dist（2026-09-30 00:45，Claude）
+
+- 用户反馈：上一版引导只高亮侧栏，没有展示「额度容量趋势」「换一种模型，整窗能用多少」「模型与思考等级 · 时间线」等特色功能；而且第一次用没有账号，页面是空的。要求多展示，并用占位数据演示，**演示不能影响原来的数据**。仍算 0.3.9，只打目录版。
+- **演示数据隔离**：
+  - `src/core/demo-data.ts`：`writeDemoData(dir, now)` 生成一个虚构账号 `claude:demo`（演示账号 · Max）。内容包括：约 25 天、每 10 分钟一个额度采样；约 3000 条本机 Claude Code 请求（Opus 5.5 high/xhigh、Sonnet 5 medium/high、Haiku，越近 Opus 越多，3 个演示项目 `D:\Demo\*`）；每周 2～3 段晚上的网页聊天，作为「本机以外」；这一周至少 2 段，一段已标注、一段待标注。周容量按 $500 设计，实算约 $470，4 个完整的周窗口，5 小时窗口约 $90。数据用固定种子生成。
+  - `src/core/demo-worker.ts`：在 Electron **utilityProcess** 里运行（不能用 worker_threads，因为 worker 里的 os.homedir() 仍会读到真实主目录）。启动时环境变量指向 `%TEMP%\tokenpulse-demo-<pid>\data` 和空的假 home，同时清掉 CODEX_HOME / CLAUDE_CONFIG_DIR / GROK_HOME，并改掉 APPDATA / LOCALAPPDATA。进程只做 snapshot / study / requests 三种只读计算；15 分钟没有请求会自己退出。
+  - `src/main/demo.ts`：`demoCall`、`endDemo`。will-quit 时停掉进程、删除目录；spawn 时清理残留目录（目录名里的 pid 对应的进程已经不在）。主动结束时，未完成的请求返回 null，不报错。IPC：`demo:snapshot` / `demo:study` / `demo:requests`（参数照样经过 parseModelStudyQuery / parseRequestQuery 校验）/ `demo:end`。
+  - `preload.ts`：新增 `demo(on)` 和 `isDemo()`。演示期间，snapshot / refresh / modelStudy / requests 改走演示进程；主进程推送的真实快照不交给界面；modelOffMachine 和 exportCsv 直接拒绝（「演示数据不能修改」）。
+- **引导**（`renderer/intro.js` 重写 STEPS 和 startGuide）：
+  - 显示欢迎页的同时在后台切换到演示数据，卡片上出现「演示数据」徽章，state.account 设为 `claude:demo`。
+  - 共 19 步：欢迎 → 导航 → 官方额度卡 → 用量趋势 / 使用节奏 → 刷新 → 额度详情账号标签 → 5 小时 / 周窗口 → **额度容量趋势** → **换一种模型（整窗预算）** → **一眼看结论 + 完整排行** → **时间线** → **本机以外（虚线待标注 / 实心已标注）** → Token 构成与用量分析 → 逐条请求 → **按项目看用量** → 出口监控 → 会话管理 → 供应商 → 设置。
+  - 用量页的几步会把范围切到 7 天，并切换明细视图（切换后重画一次）。异步面板最多等 3 秒，等不到就居中显示、不高亮。等待时高亮框停在原位并变淡。高亮目标会滚到顶栏下方；目标太高时只框上半截，把卡片放在下面。进度条代替了原来的圆点。
+  - 结束或跳过时：`api.demo(false)` 结束进程、删除目录，恢复 state.account 和明细视图，重新读取真实快照并 render，再回到总览（总览会换回自己的时间范围）。演示数据加载失败时，就用真实数据继续引导。
+  - i18n 补了所有新文字。
+- **测试**（`scripts/test-intro-ui.cjs`）：
+  - 新增：切换到演示数据后，current.demo、账号只剩 `claude:demo`、徽章显示、临时目录存在、modelOffMachine 被拒绝。
+  - 逐步断言 10 个特色步骤：切到了正确的页面，高亮框住目标，卡片在窗口内且不压住高亮区。
+  - 演示内容真的算出来了：容量趋势有图、排行 ≥5 行、时间线上待标注和已标注都有、按项目 ≥3 张卡。
+  - 跳过后：真实快照恢复，账号和视图恢复，临时目录已删除，**真实数据目录（data、home）的文件哈希与引导前一致**，里面没有 demo 文件。
+  - 测试窗口是隐藏的，CSS 过渡不会走完，所以几何断言在模拟的「减弱动态」下做。退出前先调用 demo(false)。
+  - 结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 27 个 PASS**。另外用 `TOKENPULSE_TEST_APP=dist\win-unpacked\resources\app.asar` 对打包产物跑了 test-intro-ui，3 个 PASS，证明 utilityProcess 能从 asar 加载。
+- **产物**：`dist\win-unpacked\TokenPulse.exe`，0.3.9.0，app.asar 生成于 2026-09-30 00:44。这次上一版的 dist 进程已经不在，所以直接输出到 dist。asar 里 intro.js/css、index.html、app.js、i18n.js、model-study.js、main/index.js、demo.js、preload.js、prefs.js、core/demo-data.js、demo-worker.js 都与工作区逐字节一致。exe 和 asar 独占打开检测通过；项目目录下没有残留进程；`%TEMP%\tokenpulse-demo-*` 已清空（测试中间留下的几个都是本轮自己的，已删除）。上一轮的 `dist-intro\` 已经过时，可以删除（没有进程占用，本轮没有动它）。未提交、未打安装包、未发布。
+- **已知限制**：演示只有 Claude 一家，ChatGPT / Grok 卡片显示为未登录。出口监控、会话管理、供应商三页仍然显示真实内容，只高亮侧栏入口，因为这几页读的是本机 CLI 配置，不适合造假数据。演示数据按「现在」生成，刚过午夜时「今天」的数据较少，所以用量页改看 7 天。视觉效果由用户验收，没有查看截图。
+
+## 说明改成感叹号浮层 + 更新说明弹窗 + 新手引导 · 已完成（2026-09-30 00:20，Claude；引导步骤和产物已被上面 00:45 的条目取代）
+
+- 用户要求（均算 0.3.9，只打免安装目录版，不打安装包、不提交、不上传 GitHub）：①额度详情里「官方已用是整个账号的……」和时间线下「没有检测到本机以外的消耗……」两段常驻说明不好看，改成带圆圈的感叹号，悬停显示；②从 0.3.9 起，更新后第一次启动弹窗介绍新版本内容，只弹一次；③新手引导，可跳过。
+- **① 感叹号浮层**：
+  - `renderer/app.js` 新增全局 `infoTip(content, label, cls)`：`.info-tip` 里是一个按钮（新图标 `#i-notice`，写在 index.html）和浮层 `.info-tip-pop`（role=tooltip）。悬停或 :focus-within 时显示；浮层和图标之间靠 padding 连着，里面的按钮能点到；右侧放不下时加 `.left` 往左展开；Esc 取消聚焦。样式在 `app.css`（「圆圈感叹号说明」一节），支持 reduced-motion。
+  - 共享额度说明：从常驻的 `.ms-attribution-note` 段落改成额度详情账号标题（`.quota-context h2`）后面的 `.quota-scope-tip`，浮层里保留「只在本机用 Code？在设置里打开」按钮。删除了 app.css 里对应的旧样式。
+  - 本机以外汇总（`model-study.js` 的 offMachineSummary）：常驻部分只剩结论：「本机以外 +X%」+「N 段待标注」徽章，或「本机以外 · 未检测到」；解释放进感叹号。没检测到也没标注时，`.ms-off-summary.empty` 去掉边框和底色，缩成一行，「手动标注一段」按钮缩小。
+  - 时间线里 model-study.js 第 200 行附近的「按本机区间折算」说明（`.ms-attribution-note`）用户没提，保持不变。
+- **② 更新说明 / ③ 新手引导**：新文件 `renderer/intro.js` + `renderer/intro.css`，已在 index.html 引入。
+  - prefs 新增 `seenVersion`、`onboarding`（""/pending/done），在 `src/main/prefs.ts`。新增 `prefsExist()`。`index.ts` 启动时**在第一次写 prefs.json 之前**判断：文件不存在就是全新安装，写入 seenVersion=当前版本、onboarding=pending。老用户的 prefs.json 一定存在，因为以前每次启动都会写开机自启。applyPrefs 会校验这两个字段。`app:version` 改用 `appVersion()`。
+  - 界面逻辑：等首页画完（最多 4 秒）。onboarding=pending → 自动开始引导。否则如果 seenVersion 为空或比当前版本旧：`NOTES` 里有这一版就弹「新版本有什么」，关闭后写入 seenVersion；没有这一版的说明就直接写入，不弹。**以后发版要在 intro.js 的 `NOTES` 里加一项**，否则升级不会弹。
+  - 弹窗：6 条 0.3.9 新内容，有「开始新手引导」和「知道了」两个按钮；Esc、点遮罩、点 × 都能关闭；Tab 在弹窗内循环，背景设为 inert。
+  - 引导：10 步，依次是欢迎、导航、官方额度卡、刷新、额度详情、用量明细、出口监控、会话管理、供应商、设置。页面相关的步骤会先 navigate 到那一页，再高亮侧栏上对应的按钮。高亮用 box-shadow 挖空，卡片优先放在右侧，其次下方、上方，并限制在窗口内。支持「跳过引导」、上一步 / 下一步、←/→、Esc（等于跳过）。结束后写入 onboarding=done，并回到总览。
+  - 设置 → 关于：新增「上手指南」区块，放「重新查看新手引导」和「这个版本的新内容」两个按钮（id 分别是 intro-replay、whatsnew-open）。
+  - i18n：新文字都加了 EN 词条，另加 `P('(\d+) 段待标注')`。
+- **测试**：
+  - 新增 `scripts/test-intro-ui.cjs`，已加入 test:ui。覆盖：全新安装自动引导；高亮和卡片的几何断言；方向键翻页和切页；900px 窗口；跳过后记录 done、重新加载不再弹；从 0.3.8 升级时弹一次，Esc 关闭后写入版本、再加载不弹；从说明进入引导并走完；从设置 → 关于重新打开；reduced-motion；夜间模式下文字不能是黑色。
+  - `test-model-study-ui.cjs` 改为检查感叹号：默认隐藏、聚焦后显示、浮层不出界；汇总的 empty 状态和常驻文字不含长句。
+  - 其余 5 个 UI 测试的 prefs.json 都补上 seenVersion 和 onboarding=done；test-ui.cjs 原来没有 prefs.json，也补上了，否则会弹引导。
+  - **顺带修了一个测试夹具**：`test-usage-projects-ui.cjs` 在本地时间 0:00–0:20 之间运行时，所有记录都被夹到 0:01，「最近用过的排前面」因此打平而失败（00:13 实际复现）。现在按 i 错开几秒。
+  - 结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 27 个 PASS**（原 24 个 + intro 3 个）。
+- **产物 / 占用**：`dist\win-unpacked\TokenPulse.exe`（上一版，23:56 启动的 5 个进程，PID 4164/24472/34792/36388/40472）在本轮开始前就在运行，判断是用户在用，**没有关闭，也没有覆盖 dist**。新版本输出到 **`dist-intro\win-unpacked\TokenPulse.exe`**（0.3.9.0，2026-09-30 00:14），命令是 `npx electron-builder --dir --publish never -c.directories.output=dist-intro`。asar 里的 intro.js/css、index.html、app.js/css、model-study.js/css、i18n.js、build/main/index.js、prefs.js 都与工作区逐字节一致；package.json 由 builder 改写，这是正常的。exe 和 app.asar 独占打开检测通过；本轮启动的测试和构建进程已全部退出。未提交、未打安装包、未发布。
+- **注意**：两个版本的 appId 相同，有单实例锁。旧的 dist 版还开着的时候启动 dist-intro 版，只会唤起旧窗口。要先从托盘退出旧版。用真实数据启动时，prefs.json 已存在且没有 seenVersion，所以会弹一次 0.3.9 更新说明，不会自动开始引导（可以从弹窗或设置 → 关于打开）。
+- 视觉效果由用户验收，没有查看截图。
+
+## 本机以外消耗识别 + 时间线放大 / 标注 · 已完成并交付免安装目录版（2026-09-29 23:43，Claude）
+
+- 用户需求（0.3.9 必须的大改）：「只在本机用 Code」不现实。改成：额度增长、但本机同期没有 Code 请求的时段，自动识别为「本机以外的消耗」，不计入容量折算，并在「模型与思考等级 · 时间线」里标出来；用户可以给这些时段补上用了什么模型、什么思考等级再换算。时间线要支持放大，并能编辑时间段。
+- **算法**：新增 `src/core/quota-offmachine.ts`。
+  - 按相邻采样把窗口切成区间，涨幅不到 1 点先累积；采样间隔超过 30 分钟或百分比回落的区间跳过。
+  - 区间内以及前后 5 分钟都没有本机请求，并且已经过去 5 分钟 → 算作「本机以外」（offPoints）。
+  - 区间和用户标注重叠 → 可能混用，不参与折算（markedPoints）。
+  - 其余有本机请求的区间是「干净区间」：容量 = 干净区间的本机费用 / Token ÷ 干净涨幅 × 100。
+  - 标注存在 `quota-offmachine.json`，字段为 {id, kind, accountId, from, to, model, effort, source(chat/device/other), note}，一段最长 8 天，不能标注未来；完全删除账号时一起清掉。
+- **接入**：
+  - model-study 去掉「必须有校准时段」的门槛（unverifiedScope 固定为 0），排除与标注重叠的区间（excluded.offMachine）。结果里返回 `offMachine`：detected 是合并后的待标注段；marks 带 points、equivalentTokens（按该模型 × 等级的整窗容量换算）、equivalentCostUsd。另外返回 `catalog`；时间线的 bin 改成 1 分钟。
+  - report.ts 对非 local-only 账号调用 applyClean：读一次全部官方请求流水，用干净区间算出 capacityHistory 和当前窗口容量，设置 `capacityBasis='clean'`。每点包含 cleanPoints、offPoints、markedPoints。真实数据下快照耗时约 173ms（在 worker 里）。
+  - IPC：`models:offmachine`（preload.modelOffMachine），修改后调用 backgroundRefresh(false)。
+- **界面**（`renderer/model-study.js` 的时间线整段重写，加上 `model-study.css`）：
+  - 新增「本机以外」轨道：虚线块是待标注，实心块是已标注，块上写着模型 · 等级。
+  - 卡片下方汇总这个周期本机以外涨了多少，列出每一段，点击即可放大并编辑。另有「手动标注一段」按钮。
+  - 标注编辑区：开始 / 结束时间（没改的保留精确到毫秒的检测时间）、来源、模型（周期里用过的和目录里的，或者自己填）、思考等级（按模型列出），实时显示「涨了 X 点 ≈ Y Tokens」；可以保存、删除，按 Esc 取消。编辑时收到定时刷新会推迟重绘，不会冲掉表单。
+  - 缩放：按钮（− / + / 整个周期）、拖选后「放大到这段」或「标注为本机以外的使用」、Ctrl+滚轮；最小范围 5 分钟，刻度按范围自动选步长。
+  - 删除了校准面板（后端的 quota-calibration 保留，旧记录不受影响）。「换一种模型」的文案改为「按本机区间折算」。额度详情的说明和容量面板改用新口径：共享账号的容量趋势恢复折线，只有没有数据时才显示锁定说明。
+- **真实数据核对**（去掉凭据的副本，已删除）：Claude 上周 $562（本机以外 1 点：9/27 21:19–22:51），9/15 周 $443（旧口径 $329，以前的采样间隔大，只有 5 个点是干净区间），本周 $490；ChatGPT 两周分别为 $140 和 $125。
+- **测试**：
+  - `test-shared-quota.cjs` 重写：识别、合并、5 分钟保护、标注换算、混用排除、干净容量、样本门槛、跨三家、标注存储的增删改和校验。
+  - `test-model-study.cjs` 第 18 行按新规则改写。
+  - `test-model-study-ui.cjs`：校准流程替换成时间线用例（识别、汇总、预算、编辑器换算、刷新不冲掉草稿、保存 / 删除、按钮 / 拖选 / Ctrl+滚轮缩放、Esc、夜间模式）；until 改成强制转布尔（以前返回 DOM 元素会报 clone 错误）。
+  - 最终结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 24 个 PASS**。
+- **产物**：`dist\win-unpacked\TokenPulse.exe`，0.3.9.0，构建时间 23:43:04。asar 里 10 个相关文件与工作区逐字节一致；独占打开检测通过，进程残留 0，已安装的 0.3.8 没有动。未提交、未发布。
+- **已知限制**：
+  - 同一时刻既跑 Code 又在网页聊天分不出来，这类区间仍算本机，会让容量略偏小。用户可以手动标注，被标注的区间整段排除。
+  - 标注换算用的是这个模型 × 等级的整窗容量；模型不在容量表里时不给 Token 数。
+  - 时间线只覆盖最近 30 天的周期（TRAINING_DAYS）。
+  - 视觉效果由用户验收，没有查看截图。
+
+## 「只在本机用 Code」开关 + 上周额度 $570→$300 排查 · 已完成并交付免安装目录版（2026-09-29 22:55，Claude）
+
+- 用户要求：①在设置里加一个开关「这个账号只在本机用 Code，不聊天」，打开后按以前的方式直接折算容量，不再显示共享额度的说明和校准入口（用户明确同意，覆盖下方「不要恢复用本机日志倒推容量」的旧约定，但只对手动打开开关的账号生效）；②排查 Claude 上周的额度估值从约 $570 变成约 $300 的原因。版本 0.3.9，只打 dist 目录版。
+- **② 排查结论**：用户日常用的是**已安装的 0.3.8**（`AppData\Local\Programs\TokenPulse`，ProductVersion 0.3.8.0）。
+  - 用 v0.3.8 源码（临时 worktree，已删除）对着真实数据的副本（去掉凭据）重算：9/22–9/29 周 = 本机 $523 ÷ 91% = **$574**；9/15–9/22 周 = $112 ÷ 34% = **$329**。
+  - 本机账本完好（817M Token，全部归在同一个账号），价格表两个版本相同，不是数据丢失。
+  - 原因在 0.3.8 容量图的「中位数」：代码是 `reference[Math.floor((n-1)/2)]`，只有两个已结束窗口时取的是**较小的那个**。重置之前，上周还在进行中，排除在中位数之外，用户看到的是它进行中的 $574；重置之后它变成已结束窗口，中位数就落到了 9/15 那周的 $329。
+  - 9/15 那周本身可信度较低：只用了 34%，而且那一周的采样都没有账号标记（登录时间线从 9/23 才开始），可能混有聊天或其他设备的用量。
+- **修复**（`renderer/app.js` 的 capacityChart）：偶数个窗口时中位数取中间两个的平均；说明文字里单独写出「上一个窗口（起止日期）约 $X」。这个修复只在 0.3.9 生效，已安装的 0.3.8 仍会显示 $329。
+- **① 开关**：
+  - `src/main/prefs.ts` 新增 `localOnlyAccounts: string[]`；`index.ts` 的 applyPrefs 校验这个字段，修改后调用 backgroundRefresh(false) 重算快照。
+  - `core/quota-calibration.ts` 新增 `localOnlyAccounts()`，直接读 prefs.json。
+  - `quota-monitor.ts` 的 analyzeAccount 新增 localOnly 参数：为真时保留窗口容量和 capacityHistory（completeLocalOnly=true），quotaScope 设为 `local_only`。
+  - `report.ts` 按账号传入这个参数；`model-study.ts` 对 localOnly 账号跳过 unverifiedScope 校验，结果里带 localOnly 标记。
+  - 界面：设置 → 账号的每一行有「只在本机用 Code」开关（role=switch，操作结果走 Toast）。额度详情里的共享说明多了一个「在设置里打开」的入口；账号打开开关后，这段说明、时间线里的归因说明和校准面板都不再显示，容量面板恢复为「额度容量趋势」。
+  - 用真实数据副本验证：开关打开后，历史容量恢复为 $329 / $574，模型换算的周预算约 $562。
+- 测试：`test-shared-quota.cjs` 新增 local-only 用例；`test-model-study-ui.cjs` 新增开关的界面用例。最终 **`npm test` 退出 0，`npm run test:ui` 退出 0，共 24 个 PASS**。中位数修复没有专门的自动化测试。
+- **追加（23:1x）：额度容量趋势模块「消失」**。用户以为 0.3.9 把它删了。其实模块还在，但在共享额度保护下，标题被改成「历史容量来源保护」、内容只剩一行字，所以看起来像删掉了。现在的处理：
+  - 标题固定为「额度容量趋势」。
+  - 共享状态下显示说明，加一个「在设置里打开『只在本机用 Code』」按钮（`.capacity-locked`），并隐藏空的周 / 5 小时、Tokens / 费用切换按钮；打开开关后恢复折线和切换。
+  - `test-ui.cjs` 改为检查锁定状态：它的测试账号是没有账号 id 的老式采样，无法单独标成只在本机用 Code，这也是一个已知边界。切换按钮的测试移到 `test-model-study-ui.cjs`，在带 id 且已打开开关的账号上做。
+  - `npm run test:ui` 退出 0，共 24 个 PASS。本轮只改了 renderer（app.js / app.css / i18n.js）和测试，dist 在最后一次修改 renderer 之后重新打过，asar 内容与工作区一致。
+- 产物：`dist\win-unpacked\TokenPulse.exe`（0.3.9），最新构建时间见文件时间（本轮最后一次构建在 renderer 修改之后）。asar 里 10 个相关文件与工作区逐字节一致；独占打开检测通过，进程残留 0，已安装版没有动。未提交、未发布。
+
+## 供应商六项要求核对 + 头像 / 号池 / 入口重设计 · 已完成并交付免安装目录版（2026-09-29 08:56，Claude）
+
+- 用户贴出 6 条原始要求，问是否都已实现，要求补上缺的、把隐蔽的入口重新设计。版本 0.3.9，只打 dist 目录版，未打安装包、未提交、未发布。全程未查看图片。
+- 核对结论：①思考等级下拉多选、②上下文预设、③预览、④Toast 原本已有。④有两处问题：进度线定位 bug；设置、出口监控、账号操作、校准的成功提示仍然写在页面里。③的入口只藏在编辑页第 4 步。⑤头像、⑥号池原本**都没有做**。
+- **②**：Claude / 桌面端的模型行加了「上下文」列（原来只有隐藏的预设值），1M 开关会同步这个输入框。
+- **③**：每家供应商的行上（终端图标）和当前供应商卡片上都有「配置预览」，点开直接进入编辑页的预览步骤。
+- **④**：`.tp-toast` 补上 `position: relative`；鼠标悬停时暂停自动消失，进度线也同步暂停。新增 `settingsDone()`：设置保存、账号改名 / 排序 / 登录 / 删除都改走 Toast，设置页底部那行只留「正在…」和失败原因。egress.js 的 `message()` 成功走 Toast、失败仍留在页面；「有未保存的设置」这类状态提示用 inline 参数保留在页面。model-study 的校准更新也改走 Toast。`test-ui.cjs` 第 99 行的断言相应改为检查 Toast。
+- **⑤ 头像**：
+  - 从 `D:\CodePorject\Web\AllAi\public\brand\presets` 复制 25 个 SVG 到 `renderer/brand/presets/`，已确认不含脚本。
+  - 新文件 `renderer/provider-avatars.js`：移植 AllAi `lib/preset-icons.ts` 的关键词打分，地址权重高于名称。上传的图片用 canvas 缩成 128px 的 PNG data URL。
+  - 编辑页第一步是头像选择：显示当前效果，可选「自动匹配」「名称首字母」、25 个预设，或上传图片。原「高级」步骤里的图标标识 / 图标颜色文本框去掉了（icon 字段改由这里设置，iconColor 原值透传）。
+  - 单色线稿在夜间模式反色。后端 `avatar` 字段只收 ≤400KB 的 png / jpeg / webp / gif / svg data URL。
+- **⑥ 号池**：
+  - 后端：`agent-types.ts` 新增 PoolConfig / POOL_OFFICIAL / POOL_KEY 和 ProxyTarget.auth / accountId / pool。`agent-switch.ts` 新增 Provider.pool / avatar、poolTargets（轮询 / 用满再换，凭据过期或已隐藏的账号跳过）、成员统计（只在内存里）、校验：桌面端不支持；成员必须是同一工具的供应商或同一家的官方账号；号池不能进备用队列、不能和普通供应商互转、不能直连（applyDirect 直接拒绝）；启用时自动打开本地路由。
+  - `agent-proxy.ts` 新增 applyOfficialAuth：Claude 用 Bearer，在 anthropic-beta 里补上 oauth-2025-04-20；Codex 走 `https://chatgpt.com/backend-api/codex`（去掉 /v1），带 Chatgpt-Account-Id 和 originator，body 设 stream=true / store=false、补空 instructions，并删掉 previous_response_id 等 API 专用字段；Grok 走 `https://cli-chat-proxy.grok.com/v1`，用 Bearer。号池成员遇到 401 / 403 也换下一个。**不改 UA、不伪造设备或账号标识**（CPA 的 cloaking 没有移植）。
+  - 界面：Claude Code、Codex、Grok 的工具页多了「新建号池」按钮。号池编辑只有三步（基本信息：头像、名称、可选默认模型，Grok 必填；成员：轮换方式、官方账号勾选、API Key 供应商勾选、顺序上移 / 下移；预览）。设置里没有账号时显示「去设置添加账号」。列表行和当前卡片显示号池标记、成员小标签（可用状态、健康、本次运行的转发次数），号池行没有「检测连通」和「备用」按钮。
+- 测试：
+  - `scripts/test-agent-switch.cjs` 新增 agent pool 用例：本机假上游，通过只给测试用的 `AGENT_SWITCH_POOL_BASE` 注入。
+  - 新增 `scripts/test-provider-pool-ui.cjs`（已加入 test:ui）。
+  - `test-ui.cjs` 的设置保存断言改成检查 Toast。
+  - 最终结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 23 个 PASS**。临时布局诊断在 1400 / 1080 / 900px、日夜两种主题下没有报告溢出、重叠或裁切。
+- 产物：**`dist\win-unpacked\TokenPulse.exe`**，0.3.9.0，构建时间 08:56:54。asar 里 12 个关键文件与工作区逐字节一致，25 个预设 SVG 都已打进包里。进程残留 0，独占打开检测通过，已安装版没有动。
+- **重要限制**：
+  - 号池里官方账号的转发只用本机假上游测过，**没有用真实账号验证过** Anthropic / ChatGPT / Grok 的接口会不会接受。Grok 的 cli-chat-proxy 是否支持 /responses 也未确认。第一次实测时请看「转发记录」里的 HTTP 状态。
+  - 号池的请求在各 CLI 的本地会话日志里，仍会被记在当前 CLI 登录的账号名下，所以额度详情按账号拆分的本机用量会不准；官方百分比本身不受影响。
+  - 成员统计在重启后清零。官方账号的凭据续期沿用原来的机制，只有 TokenPulse 自己登录的账号会自动续期。
+  - 用号池轮换订阅账号是否符合服务条款，由用户自行判断，界面上有提示。
+- Git：`backup/0.3.9-wip` 之后的改动（另一位 AI 的和我这两轮的）**都还没有提交**。
+
+## 供应商专区 · 界面与逻辑排查修复 · 已完成并交付免安装目录版（2026-09-29 08:14，Claude）
+
+- 用户要求：排查「供应商」的 UI 设计问题和功能 BUG 并修复，改动都算 0.3.9。只打 dist 目录版，不打安装包、不提交、不发布。工作区里另一位 AI 上午的四项改动（Toast、预览、等级下拉、上下文预设，尚未提交）全部保留，这轮在它们基础上修改。全程未查看图片。
+- 排查方法：在隔离 HOME 下启动真实页面，用临时诊断脚本（在会话 scratchpad，不进仓库）遍历 8 个分区和 4 家工具的 5 个编辑步骤，在 1400 / 1080 / 900px、日间 / 夜间下量元素是否伸出页面、同排兄弟是否重叠、文字是否被截断，以及对比度。
+- **界面修复**（`renderer/agent-switch.js`、`agent-switch.css`）：
+  - Codex 模型行原来 5 个元素挤在 4 列的网格里：显示名输入被塞进 72px 的角色列，删除按钮掉到第二行。现在按工具分别定列宽，每行一行排开，并加了列标题（Claude / 桌面端：角色 / 显示名 / 实际模型 / 1M；Codex：显示名 / 实际模型 / 上下文 / 思考等级）。Haiku 没有 1M 按钮，补了占位，保证和其他行对齐。900px 下 Codex 行变成两行两列。
+  - 思考等级面板：原来左对齐、宽 310px，所有宽度下都会伸出页面右边，现在改成右对齐。原来每勾一个等级面板就收起，现在保持打开。点面板外面或按 Esc 会收起；原来 Esc 会连带关掉整个编辑页，弹出「放弃修改」。同一时间只开一个面板。触发按钮上显示已选等级和默认等级。
+  - 「添加模型」「一键填到全部角色」不再拉满整行；一键填充时如果还没填任何模型，会给出提示，不再没有反应。
+  - 编辑菜单里的「取消」和其他菜单项样式一致（图标加说明）。
+  - 窄窗口下的二级菜单原来是隐藏滚动条的横向滚动，「转发记录」「导入供应商」被挤到屏幕外；现在改为自动换行。
+  - Claude 桌面端的概览卡片补上品牌色顶条。接口格式说明文字和菜单分组标题的颜色从 faint 提到 muted（原对比度约 2.6:1）。
+  - 1M、Grok 思考开关补 `aria-pressed`，桌面端直连 / 映射补 radio 语义，模型行输入补 `aria-label`。
+- **功能 BUG 修复**：
+  - 快速预设点「OpenAI Chat 兼容」时，旧代码按文字前缀匹配，会同时点亮 Chat 和 Responses 两个接口格式；现在按 `data-value` 精确匹配，并同步 `aria-checked`。
+  - 高级设置的 Prompt Cache 路由：`el()` 把 `selected:false` 写成 `selected="false"` 属性，结果所有选项都被选中，最后一项「关闭」生效，保存时会写成 disabled。现在默认正确显示「自动」。
+  - 预览页原来只在打开编辑页时生成一次，之后的修改不会反映出来；现在切到预览页时按当前草稿重新生成。Grok 预览的上下文改取编辑器里的值。
+  - Grok 的上下文窗口没改时原来会存成空，现在存预设值 131072。Claude 切换 1M 时，如果上下文还是预设值，会跟着在 20 万和 100 万之间切换。
+  - `src/core/agent-switch.ts`：`Number(null)` 和 `Number("")` 都是 0，导致所有供应商读出来都带「限额 日 0 · 月 0」。现在 `positiveNumber` 把空值当作不限，保存和读取两条路径都改了。
+  - `src/core/agent-proxy.ts`：用户自定义的请求头原来会和转发来的同名头变成大小写不同的两份；现在统一转成小写，连接层相关的头和 host / content-length 不允许覆盖。
+- 测试：
+  - `scripts/test-agent-switch-ui.cjs` 新增断言：面板保持打开、不伸出页面、Esc 和点外面能收起、Esc 不关编辑页、Codex 行在同一行、有列标题、预设只点亮一个、预览反映草稿、Prompt Cache 默认自动、限额为 null、Grok 上下文为预设值。
+  - `scripts/test-agent-switch.cjs` 新增限额用例：空串和 null 为不限，"0" 为 0，空白为不限。
+  - `scripts/test-provider-feedback-ui.cjs`（另一位 AI 写的）第 81 行，24 行上限的计数改为排除列标题行，断言的行为不变。
+  - 最终结果：**`npm test` 退出 0，`npm run test:ui` 退出 0，共 22 个 PASS**，日志里的 Synthetic / Simulated 是故障注入。
+- 产物：`npx --no-install electron-builder --dir --publish never` 退出 0。**`dist\win-unpacked\TokenPulse.exe`**，ProductVersion 0.3.9.0，构建时间 08:14:45。app.asar 里的 agent-switch.js/.css、build/core/agent-switch.js、agent-proxy.js 与工作区逐字节一致。未打安装包，未提交，未发布。
+- 收尾：测试、打包和诊断脚本的进程残留为 0；EXE、asar 和两个 build 文件独占打开检测通过，句柄已关闭。用户正在运行的已安装版（5 个进程）没有动。
+- 没有覆盖到的：视觉观感由用户验收；没有连接真实供应商做端到端验证；限额只是元数据，代理并不执行限额（原本就是这样）。Git：备份分支 `backup/0.3.9-wip` 之后的改动（另一位 AI 的，加上本轮的）**都还没有提交**。如需备份，按用户指示再提交。
+
+## 供应商专区 · 0.3.9 前四项修改已完成并交付（2026-09-29 07:14，America/Los_Angeles）
+
+- 用户明确本轮继续使用 0.3.9，要求先完成四项：思考等级下拉多选、上下文默认值、CLI Provider Model 预览、右上角 Toast。本轮未做头像/AllAi资源与号池/CLIProxyAPI，未联网、未查看图片、不操作真实配置、不提交/发布。
+- 思考等级：参考 CC Switch ReasoningLevelsEditor，改为可搜索 Popover 下拉多选、Canonical 顺序、独立默认等级选择；不再把等级全部平铺。
+- 上下文：Claude/Desktop 默认 200,000（1M 标记时 1,000,000），Codex 128,000，Grok 131,072；旧记录为空时编辑器自动补预设，保存后不再写空上下文。
+- Provider Preview：编辑页新增“预览”页面，根据当前未保存草稿生成 Claude Code / Claude Desktop / Codex / Grok 的 CLI provider/config 模型内容，API Key 只显示脱敏占位，保存前可检查。
+- Toast：全局 showStatus 改为右上角可关闭、自动淡出、带进度线的 Toast；供应商保存/启用/导入/排序成功消息接入全局 Toast，错误仍保留可见提示和本地上下文。
+- 回归：npm test 通过；npm run test:ui 通过；供应商专项覆盖 pending lock、失败重试、草稿保护、旧响应、24模型、暗色/900px/减弱动态，以及四项新功能；配置事务回归 24/24。测试中的 QA/Synthetic/Simulated 错误均为故障注入。
+- 交付：electron-builder --dir --publish never 成功。最新免安装版 **D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe**，0.3.9 / ProductVersion 0.3.9.0，2026-09-29 07:14。app.asar 已核对包含 renderer/app.js、renderer/agent-switch.js/.css、index.html，供应商核心/代理代码共享占用检查通过，相关进程残留0。
+- 已知边界：Toast在保留旧 app-status 的错误兼容基础上新增；Provider Preview 是本地草稿投影，不读取真实 CLI live 文件；头像和号池未做，按用户“先做四点”范围保留到下一轮。全程未查看图片。
+
+## 历史交付记录 · 对比专区（2026-09-29 03:15；本模块后续已按用户要求移除）
+
+- 用户要求直接做到最终效果；版本保持 0.3.9。全程不联网、不查看图片、不操作真实账号/供应商配置、不提交/安装/发布。
+- 视觉重做：对比页改成“决策工作台”结构，新增结论 Hero、观测摘要、三家服务卡、额度压力、来源拆分、主要模型、解释说明；推荐视图增加证据条；套餐资料改成独立资料库卡片和更清晰的编辑表单。
+- 动效：新增页面/卡片/摘要/编辑区入场动效、服务卡 hover 层次、Hero 装饰节点、额度条平滑展开；统一使用短时长和可中断的 Web Animations/CSS 过渡，并尊重 prefers-reduced-motion。没有查看或生成任何图片。
+- 代码重点：renderer/comparison.js 增加决策型 Hero、摘要、证据和动效；renderer/comparison.css 完成响应式布局、主题变量、窄窗口适配和减少动态支持。后端 comparison.ts、IPC、套餐本地保存逻辑保持稳定。
+- 修复：发现并解决对比视图返回数组未展开导致的 [object HTMLDivElement]；摘要“主要服务”改为正确显示服务名称。
+- 验证：npm test 退出 0；npm run test:ui 退出 0；对比后端回归及三家卡片/三个视图/套餐编辑 DOM 回归通过；编译通过。测试中的 Simulated/Synthetic 错误是既有错误分支注入，相关断言均通过；GPU warning 来自 Electron 测试环境，不影响通过结果。
+- 交付：npx --no-install electron-builder --dir --publish never 退出 0。最新目录版：**D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe**；package 0.3.9 / ProductVersion 0.3.9.0，构建时间 2026-09-29 03:15。必须保留整个 win-unpacked 目录。
+- 包校验：app.asar 内 build/core/comparison.js、build/main/index.js、build/main/preload.js、renderer/comparison.js、renderer/comparison.css、renderer/index.html、renderer/app.js 与当前文件逐字节一致；版本 0.3.9。
+- 收尾：相关测试/打包进程残留 0；核心 JS、EXE、app.asar 独占读取检测通过，句柄立即释放；未启动新产物、未关闭用户软件。git diff --check 通过，仅保留既有 CRLF→LF 警告。
+- 已知边界：套餐价格/限制仍由用户手动维护，不联网同步；推荐仍是可解释的基础规则，不是黑盒评分；真实上游 API/CLI 和人工视觉验收留给用户。
+
+## Git 备份点（2026-09-29）
+
+- 用户要求在交给下一位 AI 之前先备份。全部 0.3.9 改动已提交到分支 **`backup/0.3.9-wip`**（提交 `0b65440`），并推送到 origin。`main` 仍停在 `bca4478`（v0.3.8 之后）。**当前工作目录就在这个备份分支上**；不要 `git switch main`，否则工作区会退回 0.3.8 的代码。
+- 没提交的只有临时文件：`.tmp-*`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`。没打 tag，没发 Release。
+- 改坏了要恢复：`git restore --source=0b65440 -- .`，或者 `git reset --hard 0b65440`（会丢掉之后的改动）。
+
+## 压缩上下文补计 + 按项目看用量 + 时间线移到额度详情 · 已完成并交付免安装目录版（2026-09-28 23:03 本地，Claude）
+
+- 用户本轮三项要求，均算 **0.3.9**。只打 dist 免安装目录版，不打安装包、不提交、不发 GitHub：①Agent 压缩上下文消耗的额度没被扫到，导致周额度估值偏低（BUG）；②用量明细加「按项目」视图：每个项目文件夹被多少个 Agent 对话改过、多少 Token / 额度、由哪些模型 × 思考等级组成；③「模型与思考等级 · 时间线」移到额度详情。全程未查看图片或截图。
+- **① 压缩上下文补计**（`src/core/usage-scan.ts`）：`STATE_VERSION` 8 → **9**，三家会话整份重算，重读的流水扫完后按 id 整理去重。估算出的流水带 `compaction: true`；`request-log.ts` 把这类行的核验固定为「无法核验」，说明写「压缩上下文（估算）」。
+  - 对真实日志核对的结论：Codex 0.155+ 的压缩调用有 token_usage_record，原本就已计入，不重复估。Codex 0.149–0.154 只写 token_count，远端压缩（`compacted`，message 为空）没有任何 usage，累计值也不涨。Claude Code 的 `system/compact_boundary` 只记了 preTokens。Grok `auto_compact_completed` 的那次调用不在轮内的 modelCalls 里：7 个 turn_completed 的 modelCalls 合计 214，正好等于 loop_started 的 214 次。
+  - 估算方法：输入 = 压缩前的上下文。Claude 取 preTokens，全部按缓存读；Codex 取上一次调用的输入 + 输出，缓存按上一次的比例；Grok 取 tokens_before，缓存按上一轮的比例。输出 = 摘要长度。Claude / Grok 按摘要文字估，汉字 1 个算 1 Token、其余 4 字符算 1 Token；Grok 读 compaction_checkpoint 文件，路径不能越出会话目录。Codex 按密文长度 × 0.17 估，这个系数用 5 次 0.155+ 真实记录校准（0.164–0.173）；输入的估法与实测误差在 5% 以内。
+  - 边界处理：Grok 的压缩要等本轮 turn_completed，型号用这一轮实际计费的型号。文件开头继承来的压缩（还没有 token_count）不算。增量读取正好切在分界线和摘要之间时，跨批次也能记上。
+  - 本机真实数据只读扫描到临时目录（已删除）：补回 23 笔（Claude 8、Grok 11、Codex 4），约 1300 万输入 Token。
+- **② 按项目**：
+  - 后端 `src/core/request-log.ts`：`RequestQuery.projects` 返回 `ProjectAggregate[]`，跟随明细页的全部筛选。`projectKey` 把 Windows 路径的大小写、`/` 和 `\`、末尾斜杠归并成同一个项目，原有的项目筛选也改用同一套归并。`src/main/index.ts` 的 parseRequestQuery 接收 `projects`。
+  - 周额度用 `projectQuota` 算：生产环境里 capacityHistory 被 0.3.9 的共享额度保护清空了，按容量折算的话永远是「无法折算」，所以改用官方周额度采样。在 quotaAttribution 判为 local_present 的区间里，把涨幅按同期 API 等价费用分给各项目（费用为 0 时按 Token），跨几周累加。分母是同一账号的全部官方请求，不受筛选影响。unmatched / uncertain 区间的涨幅不分给任何项目；同一时段如果也在聊天，结果会偏高，界面上有说明。
+  - 前端：新文件 `renderer/usage-projects.js`、`renderer/usage-projects.css`。`index.html` 在「逐条请求 / 按日汇总」旁加第三个视图「按项目」和 `#project-count`；`app.js` 的 `showUsageView` 改成三个视图，`renderUsage` 调用 `PulseProjects.render()`。
+  - 界面内容：顶部四格汇总（项目数、Agent 对话数、Tokens、折合周额度）；搜索框和排序（Tokens / 额度 / 对话数 / 最近）。每个项目一张卡：文件夹名和路径、各工具的对话数标签、Tokens、周额度 ≈ x% 和参考费用，下面一条模型 × 思考等级构成条（颜色区分模型，深浅区分等级），再下面是对话数、调用次数、占比、最近使用时间和「含压缩 N 次」。点开卡片看组合表、Agent 分布、Token 构成、时间范围、额度和压缩说明，也可以「查看这个项目的请求」直接跳到逐条请求并带上项目筛选。每页 12 个，可以「显示更多」。定时刷新时展开状态保留；支持夜间模式、900px 宽度和减弱动态效果。
+- **③ 时间线**：`#quota-model-timeline` 移到 page-quota，放在「换一种模型，整窗能用多少」下面。`renderQuota` 调 `PulseModelStudy.timeline(current, account.accountId)`，时间线跟随额度页的账号标签，原来自带的账号选择器和对应 CSS 已删除。用量明细页不再有时间线。
+- 同步修改：`renderer/i18n.js`（新增词条和模板，「最近」模板只匹配日期，避免抢走「最近 30 天…」）；README 新增 0.3.9 小节；`scripts/capture-ui.cjs` 的选择器已更新，但**没有运行**，因为它会生成截图。
+- 测试：
+  - 新增 `scripts/test-usage-scan.cjs` 的压缩用例（Codex 新旧格式、Claude 跨批次、Grok 型号 / 缓存比例 / 路径越界、v8→v9 不重复计），共 16/16。
+  - `scripts/test-requests.cjs` 新增项目归并、对话数、组合、压缩、Grok 调用次数、项目筛选归并、周额度分摊、筛选后分母不变，共 57/57。
+  - 新增 `scripts/test-usage-projects-ui.cjs`（已加入 test:ui）；`test-model-study-ui.cjs` 改成在额度页通过账号标签切换账号。
+  - 最终结果：**`npm test` 退出 0，`npm run test:ui` 退出 0**，日志中的 Simulated / Synthetic 是既有的注入失败分支。日志在会话 scratchpad：npm-test.log、npm-test-ui.log。
+- 产物：`npm run compile` 后执行 `npx --no-install electron-builder --dir --publish never`，退出 0。**`D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe`**，ProductVersion 0.3.9.0，构建时间 23:03。app.asar 里的 usage-projects.js/.css、index.html、app.js、model-study.js、i18n.js、build/core/usage-scan.js、request-log.js、build/main/index.js 与工作区逐字节一致；asar 里的 package.json 被 builder 改写过，版本仍是 0.3.9。未生成 Portable 或安装包，未安装，未提交，未发布。
+- 收尾：测试和打包进程残留为 0。TokenPulse.exe、app.asar、build/core/usage-scan.js、request-log.js 独占打开检测通过，句柄已立即关闭。用户正在运行的已安装版 `AppData\Local\Programs\TokenPulse`（5 个进程）没有动。本轮没有 EBUSY / EPERM。git diff --check 只报了 CRLF 提示；这些文件在 HEAD 就是 CRLF，已确认没有混用换行。
+- 注意与已知限制：
+  - 新版第一次启动会因账本 v9 重扫全部会话，本机约 800MB，实测几秒钟。重扫后历史用量会增加压缩那部分。
+  - 压缩的用量是估算：Claude 假定上下文全部命中缓存，如果压缩前缓存已经过期，实际花费会更高；Codex 系数来自 5 个样本。
+  - 按项目的周额度是按同期涨幅分摊的，同一时段也在聊天或用其他设备时会偏高；没有同期额度采样的用量不折算，卡片上显示「额度无法折算」或「非官方账号」。
+  - 项目按精确工作目录归并，子目录（例如 `EnglishLearningWeb\server`）算作单独的项目。
+  - 视觉效果、英文界面的实际观感由用户验收；没有启动产物做人工检查。
+- 下一步：用户从托盘退出已安装的旧版后，运行上面的目录版验收。如需调整界面，改 `renderer/usage-projects.*`，并同步 `scripts/test-usage-projects-ui.cjs`。
+
+## 配置安全修复 · 已完成并交付免安装目录版（2026-09-28 22:26，本地 America/Los_Angeles；其产物已被上面 23:03 的目录版取代）
+
+- 用户授权修复原审计风险后打 dist 供测试。版本保持 **0.3.9**，未安装、未提交、未发布；原有用户改动全部保留。全程未查看图片/截图，验证仅用源码、文本、DOM及合成临时配置。
+- 已修原8项：同URL账号身份、外部修改归属保护、TOML多行/引号键/类型、失败后的状态一致性、退出不覆盖外部连接、Claude角色/鉴权导入、桌面profile恢复、Codex导入类型。兼容旧版已存字符串布尔/数字、CC auth API Key。
+- 核心文件：src/core/agent-config.ts（同步事务、pending恢复、路径约束/互斥与首次备份）；agent-toml.ts（AST范围补丁与校验）；agent-switch.ts（本次接管快照、差异恢复、归属/导入/启动恢复）。package.json/package-lock.json锁定生产依赖 toml-eslint-parser@0.10.0。
+- 退出与界面：src/main/index.ts 恢复失败取消退出并提示，成功后等待代理关闭；agent-proxy.ts 关闭本轮网络连接；renderer/agent-switch.js 明确显示外部配置未覆盖。Codex专用 tokenpulse_route 表保留用户 custom 表/扩展字段。
+- 回归：原审计 scripts/audit-agent-config-safety.cjs **10/10**；scripts/test-agent-config.cjs **22/22**（多文件失败、发布/提交阶段子进程中断、外部修改、非法恢复路径、端口/互斥、退出重启、旧快照缺失、网络关闭等）。两者均已纳入 npm test。
+- 最终命令与结果：**npm test 退出0；npm run test:ui 退出0；npx --no-install electron-builder --dir --publish never 退出0**。UI覆盖未覆盖提示、恢复失败取消退出与实际 app.quit。日志内 Synthetic/Simulated 错误是明确注入的测试分支，并非实际失败。
+- 本轮全量UI第一次失败发现原数字动画首帧负进度：scripts/test-number-animation.cjs确定性复现 -4 后修复 renderer/app.js 一行 Math.max(0,...)，再全套UI通过；scripts/test-ui.cjs 和 test-model-study-ui.cjs补齐临时HOME隔离。没有通过删除/放宽断言绕过失败。
+- 最终日志：C:\Users\7ipny\AppData\Local\Temp\tokenpulse-039-final-unit-f0425720a491427aba0181401aac4ef4.log；同目录 tokenpulse-039-final-ui-f0425720a491427aba0181401aac4ef4.log。
+- **最新产物：D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe**，package 0.3.9 / ProductVersion 0.3.9.0，构建时间 2026-09-28 22:26。已包含配置安全修复，不是之前仅UI修复的目录版；未生成单文件Portable或安装包。
+- 包校验：app.asar内8个关键核心/主进程/渲染文件逐字节匹配当前编译/源码；toml-eslint-parser 和 eslint-visitor-keys依赖已包含。未自动启动产物，等待用户测试；需保留整个win-unpacked目录。
+- 收尾：构建与测试命令均退出；匹配相关测试/打包命令的进程残留0；build核心JS、新EXE、app.asar独占读取检测通过，检查句柄立即关闭。没有本轮真实EBUSY/EPERM，没有关闭用户正式软件。git diff --check通过（仅既有oauth.ts换行提示）。
+- 已知边界：旧版接管没有本次快照时不能准确猜测原配置，会拒绝自动恢复并提示先备份/在原工具恢复直连；不凭空修补旧版已经损坏的配置。不是完全移植CC Switch或跨所有外部程序的文件系统原子比较交换，仍不建议两个管理器同时切同一工具。未做真实供应商API/CLI端到端或人工视觉验收。
+- 文档：docs/provider-config-safety-0.3.9-fix.md；原审计报告保留为历史。下一步由用户测试新目录版；若遇缺快照/占用提示，记录工具、动作、错误文字后处理，不要删除真实配置或强行覆盖。
+
+## 配置写入安全审计 · 历史检查点（2026-09-28 21:58 本地，后续已修复）
+
+- 用户要求对照 D:\CodePorject\Exmaple\cc-switch-main（本地 3.20.4）检查写配置是否安全；TokenPulse 仍为 0.3.9。本轮不改产品逻辑和真实配置、不更新 dist、不查看图片、不提交/发布。
+- 完整报告：docs/provider-config-safety-audit-0.3.9.md；可复现脚本：scripts/audit-agent-config-safety.cjs（独立于 npm test，当前有意保持安全断言红灯，不能当作已修复）。
+- 已确认差距：CC Switch 采用结构化补丁、应用写锁、pending/hash 冲突检测与恢复；TokenPulse 只有简易行式 TOML、首次备份、单文件 rename，没有同等保证。
+- 8 项已复现：同 URL 误判当前供应商；编辑过期当前记录覆盖外部连接；TOML 多行内容损坏；写入失败后内部指针未回滚；退出代理覆盖外部改动；导入 Claude 丢鉴权字段/角色；桌面恢复丢原 appliedId；CC 导入 Codex 布尔/数字写成字符串。
+- 验证：npm run compile 通过；最终隔离审计连续两次均 2/10 通过、8 项失败，退出码 1。失败来自安全断言而非环境错误；合成临时 HOME/数据库/服务均清理。未重跑全量 npm test/test:ui，上一轮通过不代表这些新场景通过。没有远端 API 或真实 CLI 验证。
+- 关键使用边界：当前 dist/win-unpacked/TokenPulse.exe 仍是 0.3.9 UI 修复版，核心/UI 三个文件与审计源码匹配，**也存在上述配置安全问题**。建议修复前由 CC Switch 管真实供应商，TokenPulse 仅统计/隔离体验；已开代理者退出会写配置，先备份并有序切回，勿盲目退出。
+- 收尾：相关审计进程为 0；核心 build JS、dist EXE、app.asar 独占读取检测通过，句柄释放；未关闭用户进程。git diff --check 通过，仅原有 oauth.ts 换行提示。
+- 下一步具体动作：用户确认修复后，优先完善事务恢复、外部配置归属保护、TOML 结构化补丁/类型保留，再修身份匹配和导入/恢复；把本审计用例转绿并补故障注入测试，最后按用户要求重新打包。不能把本次审计或下方历史 UI 修复当成配置安全已完成。
+
+## 供应商排错与交互优化 · 已完成代码与自动化验证（2026-09-28，本地日期）
+
+- 本轮用户授权检查 0.3.9 的供应商功能并优化交互。版本保持 **0.3.9**；后续已按用户要求生成 dist 免安装目录版（见下方产物记录），未提交、未安装、未发布；保留接手前所有未提交/未跟踪改动。下方是旧版本检查点，不代表本轮新增产物。
+- 修复（src/core/agent-switch.ts）：正在直连的供应商编辑成跨协议/桌面模型映射时，在持久化前拒绝并提示先开启本地路由，避免把不兼容连接写入工具；禁止通过编辑改变供应商所属工具；本地路由自身地址保护补上 desktop 路径。
+- 修复（renderer/agent-switch.js）：Grok 隐藏的必填模型不再阻止提交校验；保存时先跳到缺失字段所在步骤，再检查原生数值约束；输入去除首尾空白。Grok 获取模型结果可显示并填入模型；Codex 候选按槽位索引填入准确行，同角色不再覆盖第一行；已有模型不被候选静默覆盖。
+- 交互：保留左侧二级设置菜单，增加上一步/下一步/保存按钮及边界状态；思考等级改成单击开关加独立默认等级下拉框；返回/取消/Escape 时有未保存修改则显示继续编辑/放弃修改。重复提交有保存锁；获取模型按钮有忙碌状态、错误处理及旧编辑器异步结果保护。
+- 样式（renderer/agent-switch.css）：默认等级控件、编辑底部操作区跟随既有主题变量，操作区允许换行。
+- 回归（scripts/test-agent-switch.cjs、scripts/test-agent-switch-ui.cjs）：实际先跑出直连不兼容保存、Grok 隐藏必填字段两处红灯，再修复；补本地 HTTP 模型候选、Grok 填入、Codex 第二行、默认等级、重复提交、未保存保护断言。测试隔离临时 HOME/数据目录，不操作真实账号凭证。
+- 实际验证：npm run compile 通过；node scripts/test-agent-switch.cjs 通过；npx electron scripts/test-agent-switch-ui.cjs 通过；**npm test 全部通过；npm run test:ui 全部通过，退出码 0**；node --check renderer/agent-switch.js 通过；git diff --check 通过（仅原有 src/main/oauth.ts CRLF 转 LF 提示）。UI 日志中的 Simulated failure 为既有错误路径测试，相关断言通过。
+- 全程未查看图片、未截图、未调用图片预览；验证使用文本、DOM、计算样式、900px 宽度与减弱动态效果断言。视觉体验由用户验收。未连接真实供应商做远端 API/CLI 端到端验证；已有完整流式转换等历史限制仍适用，本轮不是对全部协议的完整审计。
+- 资源收尾：所有本轮命令退出；Win32_Process 匹配测试入口及项目 Electron 路径的残留为 0。build/core/agent-switch.js、build/main/index.js、dist/win-unpacked/TokenPulse.exe、resources/app.asar 以及 dist 根目录已有 exe/yml/blockmap 独占读取检测均通过，句柄 finally 立即关闭。没有关闭用户正式软件；检查是这些文件的当时共享占用检测，不是全目录/全系统解锁证明。
+- 产物更新（2026-09-28 21:42，America/Los_Angeles）：用户要求生成 dist 免安装版本。npm run compile 与 npx --no-install electron-builder --dir --publish never 均成功退出，产物为 **D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe**（package 0.3.9，EXE ProductVersion 0.3.9.0），现已包含供应商修复。整个 win-unpacked 目录需保留，启动前先从托盘退出旧版。
+- 本次打包验证：读取 app.asar 中 package.json 确认 0.3.9，renderer/agent-switch.js、renderer/agent-switch.css、build/core/agent-switch.js 与工作区逐字节一致。首次归档校验使用斜杠路径报 not found，改为 Windows 标准路径后通过，非漏包。未启动正式应用、未查看图片；本轮未重跑测试，上轮 npm test / npm run test:ui 全通过仍为最新测试记录。
+- 本次打包收尾：匹配项目打包命令/路径的构建进程残留为 0；TokenPulse.exe、resources/app.asar、build/core/agent-switch.js 独占读取检测通过且句柄立即释放。没有 EBUSY/EPERM，没有关闭用户软件。未生成单文件 Portable 或安装包，未提交/安装/发布。下一步由用户运行该目录版验收。
+- 环境：普通沙箱命令出现 helper_sandbox_lock_failed，随后命令经审批在沙箱外执行。当前无测试阻塞。
+
+## 供应商专区 · 用户先停在这里（历史检查点，2026-09-28）
+
+- 用户说目前感觉还行，先暂时这样，之后再继续优化。版本保持 **0.3.9**。不要自行提交、打安装包或发布。
+- 当前可试的目录版：`dist\win-unpacked\TokenPulse.exe`。试之前从托盘退出已安装的 TokenPulse。
+- 下一轮从用户新的优化要求开始。不要把这一版当成最终验收，也不要在没有新要求时重写供应商专区。
+
+## 供应商专区 · 桌面端停住 + 编辑改成左侧菜单（2026-09-28，上一轮）
+
+- 用户反馈：点 Claude 桌面端会跳回概览；编辑供应商不要再用右边浮层，改成二级设置菜单。版本保持 **0.3.9**。不提交、不发布。
+- 原因：渲染时只认 `overview / claude / codex / grok / router / logs / import`，`desktop` 被改回概览。
+- 已改：`desktop` 留在工具页。添加 / 编辑不再弹出右侧抽屉，左侧菜单换成「返回 / 基本信息 / 连接 / 模型 / 保存」，右边只显示当前这一项。
+- 验证：`npx electron scripts/test-agent-switch-ui.cjs` 通过（点桌面端后选中项仍是 `desktop`；编辑页 `position` 是 `static`，左侧有 `edit-models`）。没有看图片。
+- 产物：`dist\win-unpacked\TokenPulse.exe`，0.3.9。这次打包没有 EBUSY。未提交、未发布。
+
+## 供应商专区 · 四家模型候选（2026-09-28，上一轮）
+
+- 用户要求：对照 CC Switch，给 Claude Code、Claude 桌面端、Grok CLI、Codex 做各自的模型候选。有的能填多个模型，有的能同时勾选多个思考等级。版本保持 **0.3.9**。不提交、不打安装包、不发布。只编译免安装目录版。
+- 对照：`D:\CodePorject\Exmaple\cc-switch-main` 的 `ClaudeFormFields.tsx`（角色行 + 1M）、`ClaudeDesktop` 手册（直连 / 模型映射）、`CodexFormFields.tsx` 的模型目录和 `ReasoningLevelsEditor`（none…ultra 多选 + 默认等级）、`GrokBuildProviderForm.tsx`（单模型 + 上下文窗口，Chat 格式另有思考开关）。
+- 已完成：
+  - 侧边栏「供应商」增加 **Claude 桌面端**。Gemini 仍然没有。
+  - Claude Code：Sonnet / Opus / Fable / Haiku / 子代理各一行，显示名、实际模型、1M。留空的角色沿用 Sonnet。启用时写进 `~/.claude/settings.json` 的 `ANTHROPIC_DEFAULT_*_MODEL` 和 `[1M]` 后缀。
+  - Claude 桌面端：直连或模型映射。映射时角色路由 `claude-sonnet-5` 等写进 `%LOCALAPPDATA%\Claude-3p\configLibrary\00000000-0000-4000-8000-000000176210.json`，本地路由把角色 ID 换成真实模型。测试时若设了 `AGENT_SWITCH_HOME`，写到该目录下的 `Claude-3p`，不碰真实桌面端配置。
+  - Codex：模型目录可加多行。每行可多选思考等级，再点一次已选等级设为默认。启用时写 `model`、`model_reasoning_effort`，并生成 `~/.codex/tokenpulse-model-catalog.json`。本机有 `models_cache.json` 时用它当模板。
+  - Grok CLI：一个上游模型、上下文窗口；可声明上游是否支持思考、是否支持思考等级。
+  - 抽屉里可以「获取模型」（请求供应商的 `/v1/models`，密钥留在主进程）。
+- 关键文件：`src/core/agent-models.ts`、`agent-switch.ts`、`agent-proxy.ts`、`agent-types.ts`，`renderer/agent-switch.js`、`agent-switch.css`，`src/main/index.ts` 的 `agent:models`。
+- 验证：`npm test` 通过（含 Claude 角色、Codex 思考等级、桌面端映射）。`npx electron scripts/test-agent-switch-ui.cjs` 通过（菜单 8 项、四家工具卡、抽屉添加、启用、编辑留空保留密钥）。没有再跑整套 `npm run test:ui`。没有看图片。
+- 产物：`npx electron-builder --dir --publish never` 成功，`dist\win-unpacked\TokenPulse.exe`，版本 0.3.9。这次没有 EBUSY。测试和打包进程已退出。已安装目录里的 TokenPulse 没有关。
+- 未提交、未发布。体验前从托盘退出已安装的旧进程，再启动目录版。
+- 还没做到 CC Switch 那一档的：完整流式协议转换、注释级配置补丁、预设供应商库、Codex 目录在没有 `models_cache.json` 时用的是一份骨架，Codex 若拒收目录，默认模型和思考等级仍会写进 `config.toml`。
+
+## 供应商专区 · Claude 重做界面 + 删除 Gemini（2026-09-28，上一轮）
+
+- 用户要求：Grok 4.7 做的「供应商」专区「很不人性化」，改成**有二级菜单**、不是全部堆在一个界面；删掉 Gemini（用户不用）。版本保持 0.3.9，不提交、不发布。
+- 核对：用户真实的 `~/.gemini` 没被草稿改过（文件时间是 8 月 / 5 月），`~/.tokenpulse/backups/live-first-write/` 不存在（草稿从没写过 live 配置）；`~/.tokenpulse/agent-switch.json` 里有 14 个供应商、四家路由都关着。
+- **已完成：后端删 Gemini。** `agent-types.ts`：AgentApp 只剩 claude / codex / grok，Upstream 去掉 gemini。`agent-switch.ts`：删 writeGemini / geminiDir / GEMINI_EXACT；读旧数据时丢掉 gemini 的 direct / route / exclusive 键和上游是 Gemini 的供应商；CC Switch 导入跳过 apiFormat=gemini。`agent-proxy.ts`：删 /gemini 路由、x-goog-api-key、v1beta 路径。`agent-convert.ts`：删 Gemini 请求 / 响应 / 流式转换。`tsc` 通过。`cc-switch.ts` 里的 Gemini 是用量导入的来源名，没动。
+- **已完成：界面重写**（`renderer/agent-switch.js/.css` 整份重写，接口 / IPC 没变）：
+  - 页面左边是二级菜单（`.pv-nav`，分组：概览 / 工具：Claude Code、Codex、Grok Build / 本地路由：路由服务、转发记录 / 管理：导入供应商），每项带一句当前状态（工具项显示当前供应商名，开了路由有「路由」徽章，路由服务显示运行中 · N 家）。右边一次只显示一块。上下方向键在菜单里移动。选中的分区记在 localStorage（`tokenpulse-providers-section`）。窗口 ≤1080px 时菜单变成顶部横排。
+  - 概览：路由状态条（运行中脉冲点、转发数、成功率、端口）+ 三家工具大卡（品牌色顶条、当前供应商、直连 / 本地路由、供应商数、备用数），点卡片进入该工具。
+  - 工具页：标题行有「直连 | 本地路由」分段控件和「添加供应商」；当前供应商大卡（地址、模型、接口格式、密钥末四位、路由地址、检测连通、编辑）；其他供应商列表：拖动把手排序（也可 Alt+↑/↓），行内图标按钮检测 / 编辑 / 备用 / 删除 + 「启用」。**删除要点两次**（第一次按钮变红提示，3 秒内再点才删，不弹系统对话框）。排序只在「当前以外」的列表里调，当前那家原地不动（修过一个 bug：按键会和看不见的当前那家交换）。
+  - 新增 / 编辑在右侧抽屉（`.pv-drawer`）：名称、接口格式芯片（标「原生 / 需要本地路由」）、请求地址、API Key（编辑时留空 = 沿用原密钥，`keepKey`）、Claude 的密钥变量（AUTH_TOKEN / API_KEY，`ProviderView.apiKeyField` 新增字段带回来）、模型、备注。Esc / 点遮罩关闭，Tab 焦点留在抽屉里。
+  - 路由服务：端口（运行时不能改）、三家开关（`.pv-switch`）和故障转移链（当前 → 备用 1 → 备用 2，带健康点）。转发记录：最近 30 条，失败行标红。导入：从当前配置收下（三家按钮）、从 CC Switch 导入。
+  - 数据推送时只在内容变了才重画；抽屉开着或正在拖动时不重画。入场动画只在切换分区时播（`.chart-enter`），支持 reduced-motion。
+  - i18n：新词条和带数字的模板加进 `renderer/i18n.js`；`app.js` 页面副标题去掉了 Gemini CLI。README 的 0.3.9 供应商段落改成二级菜单的说明、去掉 Gemini。
+- 测试（2026-09-28）：`npm test` 通过（`test-agent-switch.cjs`：Gemini 用例改成「保存 Gemini 被拒、旧数据里的 Gemini 条目读入时丢掉、不碰 ~/.gemini」）。`npm run test:ui` 通过（日志 `.tmp-039-providers-ui.log`，20 个 PASS）。`test-agent-switch-ui.cjs` 按新结构重写：菜单 7 项、没有 Gemini、改端口、抽屉添加、启用写 Claude 配置且页面不出现密钥、菜单显示当前供应商、编辑留空保留密钥、Esc 关抽屉、Alt+↓ 排序、删除点两次、切本地路由 / 直连、夜间模式五个分区和抽屉都没有默认黑字、分区内容不伸出页面、抽屉完整在窗口里、900px 菜单变横排、reduced-motion。注意：测试窗口是隐藏的，Chromium 不推进隐藏窗口的 CSS 动画，量抽屉位置前要 `document.getAnimations().forEach(a => a.finish())`；`until()` 已改成先 await 再转布尔（以前 `!!promise` 恒为真，等 agentState 的断言其实没在等）。
+- 没有看图片（遵守 AGENTS.md），版面只用 DOM / 计算样式验证，视觉由用户验收。
+- 产物：`dist\win-unpacked` 又报 EBUSY（`npx electron-builder --dir --publish never` → `rmdir 'dist\win-unpacked'` EBUSY；没有任何进程从 dist 运行，自己的构建 / 测试进程都已退出）。按 AGENTS.md 没有删除 / 移动 / 强制解锁；改为构建到 `dist\v0.3.9\win-unpacked`（08:06），再用 `robocopy /E /IS /IT` 覆盖进 `dist\win-unpacked`（覆盖文件不受目录锁影响），两处 app.asar 逐字节一致，ASAR 里有新界面、没有 Gemini。**`dist\win-unpacked` 目录本身的占用没有解除**，占用者找不到。
+- Git / 发布：和其他 0.3.9 改动一起都未提交、未发布。
+- 没做（超出这次要求）：交接里「下一任要做出的使用效果」那一大段（按 CC Switch 的补丁方式保留注释、完整的流式协议转换矩阵、熔断健康、首次写入备份等）仍是后续大功能，这次只重做了界面和删了 Gemini，后端转发能力还是草稿那一档。
+
+## 供应商与本地路由 · 用户不接受当前草稿，下一任重写
+
+用户原话：这一版写得比较简单，不是想要的效果，交给另一个 AI 重写。版本保持 **0.3.9**。不要提交，不要打安装包，不要发 GitHub Release。用户说可以发布时再 `npm run dist` 并发布。
+
+对照源码：`D:\CodePorject\Exmaple\cc-switch-main`（仓库内发布说明到 3.20.4）。用户要的是日常只挂 TokenPulse：各 Agent 一键换供应商，本地路由由 TokenPulse 在后台转发。先读下面「给下一位做新功能的 AI」和 `AGENTS.md`，再读 CC Switch 的 `src-tauri/src/services/provider/`、`src-tauri/src/live/project/`、`src-tauri/src/proxy/`，以及 `docs/user-manual/zh/2-providers/`、`docs/user-manual/zh/4-proxy/`。手册里的截图不要打开。
+
+### 下一任要做出的使用效果
+
+和 CC Switch 现在的主路径对齐，而不是再做一个「填四个输入框就能转发」的页面。
+
+- **四家切换式工具**：Claude Code、Codex、Gemini CLI、Grok Build。同一时间一家只启用一个供应商。托盘按应用分子菜单，标题上能看到当前供应商，点名称即切换。Claude Code 热切换；Codex、Gemini CLI、Grok Build 在本地路由开启后，后续请求马上走新供应商，模型名变了仍可能要重启对应工具。
+- **只改关键字段**。Claude 的 `~/.claude/settings.json` 只动 `env` 里的 `ANTHROPIC_*` / `AWS_*` / `VERTEX_REGION_*`、协议选择器和少数独有字段，外加顶层 `model` 等；`hooks`、`permissions`、`enabledPlugins` 不动。Codex 的 `~/.codex/config.toml` 只动 `model_provider`、`model`、推理档位和 `[model_providers.custom]`，第三方 Key 写 `experimental_bearer_token`，`requires_openai_auth` 按「盘上还有没有官方登录」决定，**不要删 `auth.json`**。Gemini 只改 `.env` 里的关键行和 `settings.json` 的 `security.auth.selectedType`、`model.name`。Grok 只改 `models.default` 和自己写入的那一张 `[model."<名称>"]`，用户的其他模型表不动。注释和排版按 CC Switch 的补丁方式保留（`live/patch`），不要整份 `JSON.stringify` / 重排 TOML。每个文件第一次改写前，把原文件备份到 `~/.tokenpulse/backups/live-first-write/`。
+- **本地路由是主体，不是附加开关。** CC Switch 默认 `http://127.0.0.1:15721`。开启后，工具配置里的地址改成本地，密钥换成字面量 `PROXY_MANAGED`（旧版靠这个字面量识别接管，不能改词）。真实地址、密钥、模型留在 TokenPulse。按工具分别开关；全部关掉后服务停止。窗口收进托盘时服务继续跑。正常退出先把配置写回「直连」那一家，下次启动再接上。官方供应商不走路由（Codex 的 OpenAI Official 在 CC Switch 里是例外，因为它转发的是 Codex 自己的登录；TokenPulse 仍然不读、不刷新 CLI 的 token / refresh token）。
+- **协议转换按 CC Switch 的矩阵做，并且要能流式用于真实 CLI。** Claude Code 发出 Anthropic Messages，可转到 OpenAI Chat、OpenAI Responses、Gemini `generateContent`。Codex / Grok Build 发出 OpenAI Responses，可转到 Chat Completions 和 Anthropic Messages。同协议原样流式转发，保留头的大小写语义如果 CLI 会校验。转换要覆盖工具调用、流式增量、思考/reasoning、图片；Codex 的 `previous_response_id` 不能在转到 Chat 时丢掉工具调用上下文。CC Switch 里这些在 `src-tauri/src/proxy/providers/` 的 transform 与 streaming 文件，体量很大，不能用「文本加一次 function call」代替。
+- **故障转移**：每家一个有序队列、熔断、健康状态。响应头还没写回客户端时，429 / 5xx / 网络失败才换下一家。队列和当前供应商要在页面上看得见。
+- **供应商从哪来**：预设填 Key 即用；自定义；从本机 CC Switch 库 `~/.cc-switch/cc-switch.db` 的 `providers` 只读导入（`settings_config`、`meta.apiFormat`、`category`、故障转移标记），不写它的库。第一次启动把各工具现有配置收成供应商，不弄丢用户现在的 Key。编辑某一家时，编辑器里看到的是「切到这家之后配置文件的样子」：关键字段归这家，其余改动写回 live、对所有供应商生效。
+- **界面**：新专区，沿用 TokenPulse 现有卡片、品牌图标、分段控件、入场动画只挂在 `.chart-enter`、CSP 禁止 HTML `style`、文案进 `renderer/i18n.js`。用户讨厌「下拉框再点查询」。当前草稿被评价为太简单，重写时按额度详情、用量分析那几页的完成度来，不要表格加四个输入框。
+
+共存式工具（OpenCode、OpenClaw、Hermes、Pi、MiniMax Code）、MCP / Skills / 提示词面板、WebDAV、Deep Link、Copilot OAuth，用户这次点名的是供应商切换和本地路由。先把上面四家和路由做完整。用量统计 TokenPulse 已经有，路由产生的请求日志要能对上现有用量，不要再做一套无关的账。
+
+### 工作区里已经有一版草稿，用户不接受
+
+草稿能切换四家、能在 `127.0.0.1:17621` 转发、同协议流式透传、文本和函数调用的粗转换、503 时换备用、从 CC Switch 库导入基本字段。用户看过效果后否决。下一任重写这一功能；草稿里的测试锁的是这套简表单，重写后要改测试，不要为了让旧测试通过而把行为留在这一档。
+
+草稿文件：
+
+| 路径 | 作用 |
+| --- | --- |
+| `src/core/agent-types.ts` | 四家工具、四种上游协议、`PROXY_MANAGED` |
+| `src/core/agent-switch.ts` | `~/.tokenpulse/agent-switch.json`；写 live；导入 |
+| `src/core/agent-proxy.ts` | 本地 HTTP 路由、备用、连通探测 |
+| `src/core/agent-convert.ts` | 短转换器 |
+| `renderer/agent-switch.js` / `.css` | 「供应商」页 |
+| `scripts/test-agent-switch.cjs` | 已接入 `npm test` |
+| `scripts/test-agent-switch-ui.cjs` | 已接入 `npm run test:ui` |
+
+接入点：`renderer/index.html` 导航与页面、`renderer/app.js` 的 `navigate('providers')`、`renderer/i18n.js`、`src/main/index.ts` 的 IPC `agent:*` 和托盘子菜单、`src/main/preload.ts`、`package.json` 的 `test` / `test:ui`、`README.md` 里描述草稿的那一节。Grok 草稿写入的表名是 `tokenpulse_route`。日志在 `~/.tokenpulse/agent-switch-log.json`。
+
+数据副作用：点过「启用」或打开过路由的话，`~/.claude/settings.json`、`~/.codex/config.toml`、`~/.gemini/.env`、`~/.gemini/settings.json`、`~/.grok/config.toml` 可能已被改写。第一次改写前的副本在 `~/.tokenpulse/backups/live-first-write/`。下一任先看这些文件再改写入逻辑，不要假设它们还是用户原来的内容。密钥在 `agent-switch.json`，交接和日志里不要打印。
+
+草稿的验证只说明「简版当时能跑」，不是用户验收：2026-09-28 `npm test`、`npm run test:ui` 通过。其后只改了卡片上「当前 / 直连」的标法并重新打了目录版，没有再跑整套 UI。产物 `dist\win-unpacked\TokenPulse.exe` 文件版本 0.3.9，ASAR 里有 `build/core/agent-switch.js` 和 `renderer/agent-switch.js`。打包时 `dist\win-unpacked` 没有 EBUSY。测试和打包进程已退出。正在运行的是已安装目录 `AppData\Local\Programs\TokenPulse` 里的 TokenPulse，没有关。
+
+### 必须保住的 0.3.9 其他工作
+
+共享额度池保护、Codex 旧 `token_count` 补计、账本 `STATE_VERSION` **8**、知识库 `2026.09.28.1` 都还在工作区，和这版草稿一起**未提交、未发布**。已发布的是 `v0.3.8`（`46cb39e`）。不要恢复「用本机日志倒推账号总容量」。不要动 CLI 凭据，测试用 `TOKENPULSE_DATA_DIR` 和 `AGENT_SWITCH_HOME`。禁止看图片。重写完成后：`npm test`、`npm run test:ui`、`npx electron-builder --dir --publish never`，确认没有遗留的 electron / app-builder，再更新本节。
+
+未跟踪、和本功能无关、不要提交：`.tmp-*`、`dist-preview/`、`dist-egress-preview/`、`AGENTS.md` 若用户没要求提交就先留在工作区（`AGENTS.md` 是协作约定，提交前看用户是否要收进仓库）。`src/core/quota-attribution.ts`、`quota-calibration.ts`、`scripts/test-shared-quota.cjs` 属于额度保护，保留。
+
+### 下一任的第一步
+
+1. 读本节、下方风格约定、`AGENTS.md`，再读 CC Switch 的 live 投影和 `proxy/providers` 转换，确定重写范围后再改。
+2. 用临时 HOME 看清草稿已经写过的配置；需要的话从 `live-first-write` 备份理解原文件，不要手改用户真实密钥文件。
+3. 重写供应商专区和本地路由，版本保持 0.3.9。做完更新本节，写明测试命令、结果、目录版路径，以及还没有提交和发布。
+
+
+本轮从已发布的 0.3.8 继续修复共享额度池的归因与换算，版本为 **0.3.9**，尚未提交或发布。下方 0.3.8 的说明按历史阅读，尤其不要恢复默认用本机日志倒推账号总容量的算法。用户要求禁止查看图片/截图，继续只用源码、日志和 DOM 验证。
+
+## 给下一位做新功能的 AI：风格与做法（2026-09-28，Claude 整理）
+
+用户接下来要做一轮较大的新功能，由另一个 AI 负责；Claude 之后主要负责修 Bug。下面是这个项目一路做下来、用户认可的风格和踩过的坑。**先读完这一节和 AGENTS.md 再动手。**
+
+### 用户的偏好（最重要）
+
+- **直接呈现，不要让用户「查询」。** 用户明确不喜欢「选下拉框 → 点查询 → 才出结果」（0.3.8 第一版就因此被推翻）。能一次算出来的就直接全部列出（例如 5 小时和周两个窗口同时显示）；切换用按钮 / 分段控件 / 芯片，不用下拉框。
+- **要可视化、要动效、要图标。** 纯文字表格会被评价为「不直观、不美观」。优先用条形图、时间线、圆环、卡片；每家用官方品牌图标（`avatar(kind)`、`miniLogo(source)`、`brandSvg(brand)`）。
+- **先给结论，再给明细。** 例如「一眼看结论」卡片（最耐用 / 调用最多 / 你最常用）放在长列表前面。
+- **全部列出，不截断。** 总览可以只列前几名，专门的页面要完整。重复的行可以合并（同模型换算结果相同的等级合成一行），但不能丢。
+- **数字要真实，口径要写清楚。** 估算要标「估算 / 换算 / 实测 / 参考」，悬停能看到依据；算不出来就说明原因，不编数字。
+- **版本号用户说了算。** 用户说这一轮算哪个版本就是哪个版本，不要自己升（见记忆规则）；只在用户要求时编译安装包、发布 Release。默认只编译免安装目录版（`npx electron-builder --dir --publish never` → `dist\win-unpacked`）。
+- **提交信息、Release 说明里绝对不要放对话链接**（`Claude-Session` 之类），用户明确反感。只提交相关文件，别把 `.tmp-*`、`dist-*` 预览目录提交上去。
+- 用户说中文，界面默认中文；回复简洁、说清做了什么和没做什么。
+
+### 视觉风格
+
+- 颜色全部用 `renderer/app.css` 里的变量（`--accent`、`--ring-five` 绿 / `--ring-week` 蓝紫、`--claude` / `--openai` / `--grok` 品牌色、`--muted`、`--line`、`--surface-2`、`--tile-neutral`、`--warn`、`--danger` 等），深浅色自动跟着走。**不要写死颜色**；新写的 SVG 文字 / 图形要自己给 fill，否则夜间模式是黑字（0.3.8 踩过：时间线坐标 100% / 50% 在夜间看不见）。
+- 5 小时窗口 = 绿（`--ring-five`），周窗口 = 蓝紫（`--ring-week`），全应用统一。
+- 卡片：圆角 12px 左右、1px `--line` 边框、悬停轻微上浮（`translateY(-1~2px)` + `--shadow-sm`）。分段控件用现成的 `.seg compact` + `syncSeg()`（带滑块）；标签用 `.section-tag`；徽章参考 `.ms-badge` / `.ms-level`。
+- 字体：大数字用 `var(--font-display)` + `font-variant-numeric: tabular-nums`。
+- 参考已经做好的模块照着写：`renderer/usage-insights.js/.css`（用量分析）、`renderer/model-study.js/.css`（模型排行 + 时间线）、`renderer/egress.js/.css`（出口监控）。
+
+### 动效约定
+
+- `render()` 每 30 秒 / 每次快照都会重建 DOM：**入场动画只能挂在 `main.entering` 或 `.chart-enter` 下**（用 `playChart(host, animate)`），否则每分钟重播一次。定时刷新只在数据真的变了时重画，而且不播动画；切账号 / 切周期 / 换排序才播。
+- 缓动用 `var(--ease)`，弹性用 `var(--spring)`；现成 keyframes：`fade-up`、`fade-in`、`grow-x`、`grow-y`、`pop-in`、`draw`、`shimmer`。换排序可以用 FLIP（见 model-study.js 的 `flip()`）。
+- 必须支持 `prefers-reduced-motion`（关掉 transition / animation），UI 测试里有检查。
+- 数据每分钟重画时，要保住用户的状态（展开的 details、选中的筛选、高亮），参考 model-study.js 的 `Q.methodOpen`、`T.focus`。
+
+### 技术约束（违反会直接出 Bug）
+
+- **CSP 禁止 inline style**：HTML 里的 `style="..."` 会被整个丢掉。动态宽度 / 颜色一律用 CSSOM：`node.style.x = ...` 或 `style.setProperty('--var', ...)`（见 usage-insights 的 `paint()`）。SVG 的 `fill` 属性不认 `var()`，要用 `node.style.fill`。
+- app.css 的 `.brand-svg` 是 100% 宽高：把品牌图标嵌进 SVG 时必须另给尺寸。
+- `.axis` 只在 `.chart` 里有颜色；不在 `.chart` 里的 SVG 要自己写 `.xxx .axis { fill: var(--muted) }`。
+- 渲染进程的全局工具（app.js）：`el`、`svg`、`icon`、`avatar`、`brandSvg`、`miniLogo`、`sourceLogo`、`tokens`、`money`、`number`、`amount`、`qty`、`cnApprox`、`tipAt`、`syncSeg`、`playChart`、`empty`、`date`、`dateLocale`、`state`、`current`、`api`、`META`、`reducedMotion`、`$`。新模块写成独立的 IIFE 文件（`renderer/xxx.js/.css`），在 index.html 里引入，暴露 `window.PulseXxx`，由 app.js 在对应 render 函数里调用。
+- 重计算（扫描、查询请求流水、分析）放在 worker 里（`src/core/report-worker.ts` + `src/main/snapshot.ts` 的 `runWorker`），主进程不能卡；IPC 参数在主进程校验（参考 `parseModelStudyQuery`）。
+- 异步加载：同一对象的迟到结果不能覆盖新选择（用 seq 计数）；失败时不保留旧账号的数据，给重试按钮；同对象数据更新时先显示上一份，免得页面跳（见 model-study.js 的 `loader()`）。
+- **i18n**：界面文字写中文，英文靠 `renderer/i18n.js` 的 MutationObserver 翻译。新文字要在 `EN` 里加词条，带数字的句子加 `P(...)` 模板；`translate()` 会先按 `\n`、`；`、` · `、`，` 拆开再匹配，所以尽量把固定文字和数字放在不同节点里。用户内容（型号名、账号名）加 `translate="no"`。含反斜杠的正则用编辑工具写，不要用 bash heredoc（会吃掉 `\d`、`\v`）。
+- 模型家族过滤：Claude 额度只认 `claude*` 型号（经 CC Switch 把 Claude Code 指到 deepseek / gpt 的请求会被判成官方会话，但不占 Claude 额度）；新功能涉及额度时沿用 `model-study.ts` 的 `FAMILY`。
+- 共享额度池：Claude / Grok 的聊天和 Code 共用额度，**不要用本机日志倒推账号总容量或单次请求占用**（见下方 0.3.9 修复原则）。
+
+### 数据与安全
+
+- 不读、不打印、不改 CLI 的凭据（token / refresh token）；测试一律用临时 HOME 和 `TOKENPULSE_DATA_DIR`，不碰用户真实的 `~/.tokenpulse`、`~/.codex`、`~/.claude`、`~/.grok`。需要真实数据核对时，复制到临时目录（账号库去掉 `credential`）、只打印计数。
+- 公开的 README 截图必须遮账号名和邮箱（`scripts/capture-ui.cjs` 已经处理，并在截图前检查泄露）。
+- 改账本结构要升 `usage-scan.ts` 的 `STATE_VERSION` 并写清迁移（只补元数据 / 某个来源整份重算），测试「旧账本升级后不重复计」。
+
+### 测试与交付
+
+- 每个功能都要有测试：纯计算放 `scripts/test-*.cjs`（node），界面放 Electron 端到端测试（参考 `scripts/test-model-study-ui.cjs`：真实 IPC + worker + DOM 断言，覆盖切换、失败、迟到结果、900px 窄窗口、reduced-motion、夜间模式文字颜色）。新测试加进 package.json 的 `test` / `test:ui`。
+- 交付前：`npm test`、`npm run test:ui` 都通过；编译目录版；确认 ASAR 里有新代码；确认没有遗留的测试 / 构建进程；更新本文件顶部。
+- 不能看图片：视觉效果交给用户验收，自己用 DOM、计算样式、尺寸断言验证。
+
+## 数据口径核对（Claude，2026-09-28，已完成）
+
+- 用户要求：在 0.3.9 基础上排查还有哪些地方会算错数据并修复，之后开始新一轮功能。版本保持 0.3.9。
+- 基线：`npm test` 通过（含 test-shared-quota）。
+- 已核对无误（真实日志只读统计，只打计数）：Claude 同一 requestId 的多行 usage 完全一致、没有不连续重复；Codex `input_tokens` 已含缓存读 + 缓存写、无重复 response_id；Grok turn 无重复；三家都没有跨文件重复的请求 ID。
+- **已修 1：Codex 旧格式漏算。** 119 个 Codex 会话文件里 27 个（CLI 0.149–0.155，08-23 至 09-23）只有 `event_msg` / `token_count`，以前完全没算。`usage-scan.ts` 新增 `codexTokenCountRow`：
+  - 只用 `info.last_token_usage`（本次）；`total_token_usage` 在压缩上下文后会骤降、续接会话第一条就带着旧累计（实测 2500 万 vs 本次 21.6 万），不可用；
+  - 累计 + 本次都不变的原样重复跳过（`FileState.lastTokenCount`）；
+  - 文件里出现第一条 `token_usage_record` 后不再算 token_count（`FileState.codexRecords`）：新版两种都写且粒度不同（1800 条 record 没有一条和 token_count 数字相同）；实测新版同一轮不会先写 token_count，唯一一条早于 record 的属于换版本前那一轮，应该算。
+  - `STATE_VERSION` 7 → 8：Codex 文件整份重算，其他来源从 7 升上来不重读。
+  - 真实数据（临时目录）：Codex 2.679 亿 → **3.676 亿** Token，请求 1800 → 2702；Claude / Grok 不变。旧版账本（v7）接着用新版扫：结果与从零扫一致，流水无重复 ID。
+  - 回归：`test-usage-scan.cjs` 新增 3 项（旧格式按本次计、跳过重复、不受累计骤降影响；出现 record 后不算 token_count；v7→v8 不重复计），11/11 通过。
+  - 补回的 Codex 用量都有型号（旧格式文件也有 turn_context）：gpt-5.6-sol 2.19 亿、gpt-6-astra 7400 万、gpt-6-sol 5300 万等，全部有单价，没有落到「未知模型」。
+- **已修 2：带日期后缀的 Claude Opus 4 / 4.1 单价错。** `knowledge/models.json` 的 Opus 4 规则 `claude.*opus.*4[.-]?[01]?$` 不认日期后缀：`claude-opus-4-1-20250805` 落到 Opus 4.5 的 $5/$25（应为 $15/$75，费用只算了三分之一）；`claude-opus-4-20250514` 碰巧因为日期以 4 结尾才对。改为 `claude-3-opus|claude.*opus-4(?:[.-][01])?(?:-\d{8})?$`；另加 Claude Haiku 3.5（$0.8/$4，以前按 Haiku 4.5 的 $1/$5）。知识库 version → `2026.09.28.1`（推到 main 后已安装版可在「设置 → 关于 → 模型知识库」更新）。用户自己的型号（opus-5 / 5-5、sonnet-5、haiku-4-5）原本就对。回归：`test-features.cjs`「Claude 各代单价：带日期后缀的也认对」。
+- **核对后确认没问题的**（不用改）：
+  - 三家日志字段口径：Grok / Codex 的 total = input + output，input 已含缓存读，reasoning 是 output 的子集；Claude 在扫描时把缓存读写补进 input。
+  - report.ts 合计：今天 / 7 天 / 30 天按本地日历日；每个「天 × 来源 × 型号」估价一次，各口径共用；最近 60 天补空日。
+  - renderer/data.js 的日期筛选、上一周期对比、按天补空、CSV 转义。
+  - CC Switch 只补 TokenPulse 没有的「天 × 工具」：补回的 Codex 旧日子现在由 TokenPulse 覆盖，不会和 CC Switch 重复。
+  - Claude 额度小时账已排除非 claude 型号（和 model-study 的 FAMILY 一致）。
+- **没有改动的范围**：Astra 0.3.9 的共享额度池保护 / 校准 / 归因逻辑（quota-monitor、quota-attribution、quota-calibration、model-study 的共享池部分）只阅读了交接说明，没有改动。
+- **已知限制（没修，需要时再议）**：长上下文加价（Anthropic 1M 上下文 > 200K 输入、OpenAI > 272K 输入的倍率）没有建模，单次输入很大的请求参考费用会偏低；知识库里也没有这些规则，没有凭空添加。
+- 验证（2026-09-28）：`npm test` 全部通过（usage-scan 11/11、features 通过、模型 14/14、出口 17/17、共享池 3 项）；`npm run test:ui` 通过（日志 `.tmp-039-audit-ui.log`，19 个 PASS、无 FAIL）。
+- 产物：`dist\win-unpacked\TokenPulse.exe`，0.3.9.0，2026-09-28 06:32 构建（日志 `.tmp-039-audit-build.log`）；ASAR 核对含 `codexTokenCountRow` 和知识库 2026.09.28.1。这次直接构建进了 `dist\win-unpacked`，没有 EBUSY。
+- 收尾检查：构建 / 测试结束后没有遗留的 node / electron / app-builder 进程；正在运行的只有用户已安装目录的 TokenPulse（未动）。终端在项目根目录。
+- **Git / 发布**：本轮改动（usage-scan.ts、models.json、两个测试、HANDOFF）和 Astra 的 0.3.9 改动一起都还没提交、没发布。用户说接下来要开始新一轮功能。
+- 升级提示：第一次运行 0.3.9 时 Codex 会话会整份重扫一次（账本 v8），Codex 历史用量会多出约 1 亿 Token。已安装的 0.3.8 和 0.3.9 目录版来回切换会让账本在 v7 / v8 之间反复重扫。
+
+## 持续交接约定（2026-09-28）
+
+- 用户明确要求每次完成工作后都更新交接文档，尤其担心中途额度耗尽。此约定已写入项目根目录 AGENTS.md，供后续 AI 接手时读取。
+- 长任务应在重要阶段完成、方案变化或出现阻塞时同步保存检查点；收尾再写清最终结果。记录已完成/未完成、关键文件、测试与产物、下一步，不能等最后一刻。
+- 本轮仅新增 AGENTS.md 并更新本节，未修改业务代码、未重新运行测试、未重新打包。0.3.9 的验证结果和产物仍为下文记录的上一轮结果。
+
+## dist 占用检查与收尾约定（2026-09-28）
+
+- 用户反馈 dist 曾被占用，影响下一位 AI 打包。本次检查除自身诊断进程外，未发现可识别的本项目测试 Electron / electron-builder / app-builder 残留；正在运行的 TokenPulse 来自用户已安装目录，不是工作区 dist。本轮未终止任何进程。
+- 非破坏性 Windows 共享检查：对 dist、dist/win-unpacked、其 resources、TokenPulse.exe、resources/app.asar 申请 DELETE 访问且允许共享读/写/删除，均成功（Win32Error 0），句柄在 using 中立即关闭。没有执行删除、移动或重命名。
+- 结论仅是这些关键路径**在检查时未检测到阻止该访问的共享占用**，不是所有后续构建必定成功的保证。本次无需强制解锁；历史 EBUSY 的占用者无法由当前状态追溯确定。
+- 新增 AGENTS.md 收尾规则：等待自有测试/构建结束、释放句柄/watcher、避免终端停在产物目录、检查占用、只清理归属明确的自有残留；不批量结束用户程序或修改安全设置。
+- 本轮只更新协作/交接文档，未修改业务代码，未重新编译或打包。0.3.9 产物与功能测试结论仍以之前记录为准。
+
+## 修复原则
+
+- 官方百分比、剩余比例、重置时间和速度预测属于整个账号池。Claude/Grok 的聊天与 Code 可共享额度，其他设备也可能消费。**不修改官方已用，不猜测扣除聊天消耗，不把聊天额度加回剩余。**
+- 本机日志只覆盖可记录、可归属的 Code 请求。即使区间内有 Code 请求，也不能排除同期聊天；“剔除没有 Code 的时段”不足以解决混用归因。
+- 默认保护所有账号/窗口的绝对容量换算。只显示官方总池百分比、本机真实 Token/费用，以及明确标成 API 价格参考的相对值。相对价格不是额度倍数。
+- 原先的整窗历史容量倒推、每次请求额度占比等入口不再发表未经归因的数字。原始额度历史和本机用量数据保留。
+
+## 可选的前向本机校准
+
+- 额度详情保留 0.3.8 的图形、品牌图标、双窗口、排序、时间线和动效；增加折叠的共享额度保护/校准控件。
+- 用户必须明确勾选：所选的 1/2/4 小时（默认 1 小时）只用所选账号的本机 Code，不用聊天或其他设备；前 10 分钟缓冲，按正常工作采样，不发额外模型请求。可提前结束或作废；到时自动结束。
+- 起止时间由主进程生成，不能通过 IPC 传旧时间来批量确认混用历史。同账号只允许一个活动段，记录限 200 条。模型分析仍只用最近 30 天样本。
+- 校准元数据在 ~/.tokenpulse/quota-calibrations.json（可被 TOKENPULSE_DATA_DIR 隔离）。完全删除账号时同时清理其校准记录。
+- 发现明显未匹配本机日志的增长时，整段校准暂不采用，不挑其中好看的区间。后续在校准段之外发生的聊天，不污染之前确认段的参考；当前余量仍按最新官方剩余比例计算。
+- **校准仍依赖用户确认，不是软件自动验证了所有消费来源。** 如果校准时同时聊天且 Code 也在用，现有数据无法必然识别，用户应作废该段。不要宣传为精确聊天识别或固定官方额度。
+
+## 计算与展示
+
+- 新模块 quota-attribution.ts 给出时间区间的同步观测：有本机请求、未匹配本机记录、无法归因。使用 5 分钟邻接/落账缓冲；长采样缺口保持无法归因。诊断按累计至少 1 个百分点的变化分段，小变化和窗口首个样本前的消耗不能据此完整分拆。
+- 时间线保留官方额度阶梯曲线与 Code 轨道，新增淡黄色未匹配/不确定增长带及说明。未匹配不等于确定聊天，可能是其他设备、缺日志或统计延迟。
+- Budget/pure-combo 的绝对学习只接受确认段内的区间，且排除被检测污染的确认段；历史未确认区间保持隔离。
+- 预算最低需要 3 个有效区间和累计 5 个百分点；中等参考强度还需 6 个区间、15 个百分点、2 个周期，修复了旧分支用两段跨周期大增量绕过最低样本数的问题。
+- 合格的同模型/等级样本优先于跨模型 API 价格模拟，避免不同模型的 API 价格差覆盖真实百分比样本。没有专属数据的按价模拟明确标为情景假设，不是官方扣额关系或保证。
+- 取消“还剩约多少美元”的钱包式文案，显示真实官方剩余百分比；API 等价参考仍不是订阅余额。
+- 旧 analyzeWindow/capacityHistory 辅助函数默认也禁止容量倒推；只有内部完整数据集显式 completeLocalOnly 时可计算。生产账号报告不作这个假设；现有历史数学夹具明确其合成数据完整性。
+
+## 关键文件
+
+- src/core/quota-attribution.ts：区间来源观测与汇总。
+- src/core/quota-calibration.ts：用户确认的前向限时记录（最长 4 小时）、校验、结束、作废、到期、账号清理。
+- src/core/model-study.ts：共享池保护、确认段选样、污染段隔离、样本门槛和直接证据优先。
+- src/core/quota-monitor.ts：默认关闭未经归因的旧容量公式，保留官方百分比/趋势、本机实际用量。
+- src/main/index.ts / preload.ts：models:calibration IPC；src/main/oauth.ts：purge 时清理。
+- renderer/model-study.js/css：校准控件、来源提示、未匹配时间带和价格/容量语义；renderer/app.js：主额度区及旧容量/单次占比说明；i18n.js：中英词条。
+- scripts/test-shared-quota.cjs：新增反例、同期使用不可识别、已确认参考不被后来聊天污染、污染段隔离、跨账号、官方余量不被虚增、样本优先/门槛、前向确认与清理测试。
+- 原模型测试的数值夹具显式声明确认段；原 quota-monitor 的完整数据数学夹具显式 completeLocalOnly，真实账号输出测试确认保护。
+
+## 验证状态
+
+- 最新目录版：`D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe`，版本 **0.3.9.0**。最终 ASAR 确认包含共享池保护、1/2/4 小时校准及来源分析；打包代码的原 UI 与模型/校准 UI 回归均通过。
+- 打包日志：.tmp-039-build.log、.tmp-039-packaged-ui.log。未安装、发布或关闭用户的 0.3.8；体验前应从托盘退出旧进程，再启动目录版。
+- 周额度增长慢时可选择更长的确认时段；默认 1 小时，最长 4 小时，更改时长会撤销勾选并要求重新确认。已有有效参考可跨后续共享使用继续作为条件性参考，不能保证未来固定额度。
+
+- npm test 通过，包括原有 17 项出口监控、14 项模型分析，以及新的共享池/校准回归。
+- npm run test:ui 通过；新增 DOM 测试确认必须勾选、作废后撤下绝对推算、不能回填旧历史、时间线出现未匹配增长带、本机 4K Token 不变而官方已用变为 36%。
+- 排查并修正了一处既有 UI 测试竞态：不能只等 50ms 的文本事件就断言 80ms 的工具事件已出现，改为等待真实工具 DOM；没有修改会话业务代码或放宽要求。
+- 日志：.tmp-039-tests.log、.tmp-039-ui.log、.tmp-039-model-ui.log。故障注入产生的 Simulated 错误是预期测试。
+- 未更改真实账号、代理配置或历史用量；未安装、发布、提交；没有查看图片。下一位 AI 应保留保护默认值，不为让数字出现而撤掉来源前提。
+
+---
+
+# 0.3.8 历史资料
+
 # 当前接手入口 · 0.3.8（2026-09-28）
 
 这是 TokenPulse 当前工作区的最新接手说明。当前版本为 **0.3.8**，已于 2026-09-28 提交（`46cb39e`）、打标签 `v0.3.8` 并发布 GitHub Release（Setup、Portable、blockmap、latest.yml）；0.3.7 及更早的安装版会自动更新到它。

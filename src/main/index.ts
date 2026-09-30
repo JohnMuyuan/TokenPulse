@@ -7,19 +7,28 @@ import path from "path";
 import { dataDir } from "../core/paths";
 import { fetchOfficialQuota } from "../core/quota";
 import type { Snapshot } from "../core/report";
+import { updateCalibration } from "../core/quota-calibration";
+import { updateMark } from "../core/quota-offmachine";
 import { parseModelStudyQuery } from "../core/model-study";
 import { loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
 import { cleanAgentEnv, deleteSession as deleteAgentSession, openTerminal, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
 import type { RequestQuery } from "../core/request-log";
-import { readPrefs, writePrefs, type Prefs } from "./prefs";
+import { prefsExist, readPrefs, writePrefs, type Prefs } from "./prefs";
+import { demoCall, endDemo } from "./demo";
 import { tr } from "./i18n";
 import { trayIcon, windowIcon } from "./icon";
 import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
 import { listOfficialOAuthStatus, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
+import { activateProvider, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
+import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
+import { randomUUID } from "crypto";
+import { readFileSync } from "fs";
+import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 /**
  * TokenPulse 的主进程。
@@ -131,6 +140,8 @@ function buildTrayMenu() {
   return Menu.buildFromTemplate([
     { label: tr("打开 TokenPulse"), click: revealWindow },
     { type: "separator" },
+    ...agentTrayItems(),
+    { type: "separator" },
     {
       label: tr("立即刷新"),
       click: () => {
@@ -153,6 +164,94 @@ function buildTrayMenu() {
       },
     },
   ]);
+}
+
+function agentTrayItems() {
+  try {
+    const view = agentView();
+    return AGENT_APPS.map((app) => {
+      const rows = view.providers.filter((item) => item.app === app && !item.locked);
+      const current = rows.find((item) => item.active);
+      return {
+        label: (current ? `${AGENT_LABEL[app]} · ${current.name}` : AGENT_LABEL[app]) + (view.readOnly ? tr("（只读保护）") : ""),
+        submenu: rows.length
+          ? rows.map((item) => ({
+              label: item.active ? `${item.name}  ✓` : item.name,
+              enabled: !view.readOnly || item.active,
+              // 切换会改工具配置：打开窗口，在供应商页里看过改动对比、确认后才写（只读保护开着时不能切）
+              click: () => {
+                revealWindow();
+                win?.webContents.send("agent-activate-request", item.id);
+              },
+            }))
+          : [{ label: tr("还没有供应商"), enabled: false }],
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function publishAgent() {
+  tray?.setContextMenu(buildTrayMenu());
+  if (win && !win.isDestroyed()) win.webContents.send("agent-switch", agentView());
+}
+
+/** 界面上的供应商状态：多带一个「只读保护」开关。 */
+function agentView() {
+  return { ...coreAgentView(), readOnly: readPrefs().agentReadOnly === true };
+}
+
+async function agentCall<T>(work: () => T | Promise<T>, reason = "") {
+  configReason(reason);
+  try {
+    const result = await work();
+    publishAgent();
+    return { ok: true as const, result, state: agentView() };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "操作失败" };
+  } finally {
+    configReason("");
+  }
+}
+
+/*
+ * 会改工具配置的操作先「预览」：同样的操作跑一遍，只收集改动、不写文件（agent-config.ts 的 configPreview）。
+ * - 只改 TokenPulse 自己的供应商列表 → 直接做；
+ * - 要改 Claude / Codex / Grok 的配置文件 → 把逐行对比（密钥打码）交给界面，用户确认后按 token 执行；
+ *   执行时核对改动和确认时一模一样，中间文件被别的程序改过就不写。
+ */
+const confirms = new Map<string, { work: () => unknown; reason: string; signature: string; at: number }>();
+async function agentWrite(reason: string, work: () => unknown, restoring = false) {
+  let changes: FileChange[];
+  configReason(reason);
+  try { changes = await configPreview(work); }
+  catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "操作失败" }; }
+  finally { configReason(""); }
+  if (!changes.length) return agentCall(work, reason);
+  // 只读保护只拦「接管」：关闭路由、还原备份这类把配置放回去的操作照常（仍要确认）
+  if (readPrefs().agentReadOnly && !restoring) return { ok: false as const, error: "只读保护已开启：这个操作要改动工具的配置文件，已拦下。需要切换时，先在供应商页关闭只读保护。" };
+  for (const [key, item] of confirms) if (Date.now() - item.at > 10 * 60000) confirms.delete(key);
+  const token = randomUUID();
+  confirms.set(token, { work, reason, signature: changeSignature(changes), at: Date.now() });
+  return { ok: false as const, confirm: { token, reason, files: changes.map(fileDiff) } };
+}
+async function agentConfirm(token: unknown) {
+  const item = typeof token === "string" ? confirms.get(token) : undefined;
+  if (!item) return { ok: false as const, error: "这次确认已经过期，请重新操作" };
+  confirms.delete(token as string);
+  configExpect(item.signature);
+  try { return await agentCall(item.work, item.reason); } finally { configExpect(null); }
+}
+
+/** 配置备份列表：历史每一次修改（前后对比），和接管前的原件（和现在的文件对比）。都打码。 */
+function agentBackups() {
+  const read = (file: string) => { try { return readFileSync(file, "utf8"); } catch { return null; } };
+  return {
+    readOnly: readPrefs().agentReadOnly === true,
+    entries: listHistory().map((entry) => ({ id: entry.id, at: entry.at, reason: entry.reason, files: entry.files.map(fileDiff) })),
+    originals: listOriginals().map((item) => ({ id: item.id, at: item.at, ...fileDiff({ file: item.file, before: read(item.file), after: item.content }) })),
+  };
 }
 
 function initTray() {
@@ -319,6 +418,7 @@ function parseRequestQuery(value: unknown): RequestQuery {
     project: typeof input.project === "string" ? input.project.slice(0, 4096) : undefined,
     channel: ["official", "api", "unknown"].includes(String(input.channel)) ? input.channel as RequestQuery["channel"] : "all",
     until: Number.isFinite(input.until) ? Number(input.until) : undefined,
+    projects: input.projects === true,
   };
 }
 
@@ -404,8 +504,21 @@ function refresh(withQuota: boolean): Promise<Snapshot> {
 
 /* ---------------- 设置 ---------------- */
 
+function appVersion(): string {
+  return (require("../../package.json") as { version: string }).version;
+}
+
 function applyPrefs(patch: Partial<Prefs>): Prefs {
+  if ("agentReadOnly" in patch) patch = { ...patch, agentReadOnly: patch.agentReadOnly === true };
+  if ("seenVersion" in patch) patch = { ...patch, seenVersion: typeof patch.seenVersion === "string" && /^\d+\.\d+\.\d+[\w.-]{0,20}$/.test(patch.seenVersion) ? patch.seenVersion : "" };
+  if ("onboarding" in patch && !["", "pending", "done"].includes(patch.onboarding as string)) patch = { ...patch, onboarding: "done" };
+  if ("localOnlyAccounts" in patch) {
+    const list = Array.isArray(patch.localOnlyAccounts) ? patch.localOnlyAccounts : [];
+    patch = { ...patch, localOnlyAccounts: [...new Set(list.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 400))].slice(0, 100) };
+  }
   const next = writePrefs(patch);
+  // 容量怎么折算变了：不重新查额度，只按新的口径重算一遍快照
+  if ("localOnlyAccounts" in patch) backgroundRefresh(false);
   /*
    * 只有打好包的版本才去动开机启动项。
    * 开发时（`npm start`）跑的是 node_modules 里的 electron.exe，把它登记进启动项，
@@ -517,9 +630,12 @@ if (!app.requestSingleInstanceLock()) {
     } catch (error) {
       console.error("[TokenPulse] 迁移 Grok 账号失败", error);
     }
+    // 必须在第一次写 prefs.json 之前判断：全新安装要走新手引导，而且不用再看「这版有什么新东西」
+    configureReadOnly(() => readPrefs().agentReadOnly === true);
+    const fresh = !prefsExist();
     const prefs = readPrefs();
     // --hidden 只影响本次自启，不能永久改掉用户手动启动时的偏好。
-    applyPrefs({ autoLaunch: prefs.autoLaunch });
+    applyPrefs(fresh ? { autoLaunch: prefs.autoLaunch, seenVersion: appVersion(), onboarding: "pending" } : { autoLaunch: prefs.autoLaunch });
 
     relaunchHidden = consumeRelaunchHidden();
     initTray();
@@ -576,12 +692,58 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("update:check", () => checkForUpdates(true));
     ipcMain.handle("update:download", () => downloadUpdate());
     ipcMain.handle("update:install", () => installUpdate());
-    ipcMain.handle("app:version", () => (require("../../package.json") as { version: string }).version);
+    ipcMain.handle("app:version", () => appVersion());
     ipcMain.handle("knowledge:state", () => knowledgeState());
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
+    ipcMain.handle("agent:state", () => agentView());
+    const providerName = (id: unknown) => coreAgentView().providers.find((item) => item.id === id)?.name || "";
+    ipcMain.handle("agent:save", (_event, input: unknown) => agentWrite(`保存供应商「${String((input as { name?: unknown })?.name || "").slice(0, 60)}」`, () => saveProvider(input)));
+    ipcMain.handle("agent:delete", (_event, id: unknown) => agentWrite(`删除供应商「${providerName(id)}」`, () => deleteProvider(String(id || ""))));
+    ipcMain.handle("agent:activate", (_event, id: unknown) => agentWrite(`切换到「${providerName(id)}」`, () => activateProvider(String(id || ""))));
+    ipcMain.handle("agent:proxy", (_event, app: unknown, on: unknown) => agentWrite(`${on === true ? "启用" : "关闭"}本地路由（${isAgentApp(app) ? AGENT_LABEL[app] : ""}）`, () => {
+      if (!isAgentApp(app)) throw new Error("不认识这个工具");
+      return setAppProxy(app, on === true);
+    }, on !== true));
+    ipcMain.handle("agent:port", (_event, port: unknown) => agentWrite("修改本地路由端口", () => setProxyPort(Number(port))));
+    ipcMain.handle("agent:failover", (_event, id: unknown, on: unknown) => agentWrite("修改备用队列", () => setFailover(String(id || ""), on === true)));
+    ipcMain.handle("agent:reorder", (_event, app: unknown, ids: unknown) => agentWrite("调整供应商顺序", () => {
+      if (!isAgentApp(app) || !Array.isArray(ids)) throw new Error("排序参数不正确");
+      return reorderProviders(app, ids.map(String));
+    }));
+    ipcMain.handle("agent:import-cc", () => agentWrite("从 CC Switch 导入", () => importCcProviders()));
+    ipcMain.handle("agent:import-live", (_event, app: unknown) => agentWrite("导入当前配置", () => {
+      if (!isAgentApp(app)) throw new Error("不认识这个工具");
+      return importCurrent(app);
+    }));
+    ipcMain.handle("agent:confirm", (_event, token: unknown) => agentConfirm(token));
+    ipcMain.handle("agent:backups", () => agentBackups());
+    ipcMain.handle("agent:restore", (_event, kind: unknown, id: unknown) => {
+      if ((kind !== "history" && kind !== "original") || typeof id !== "string" || id.length > 100) return { ok: false, error: "备份参数无效" };
+      return agentWrite(kind === "original" ? "恢复到 TokenPulse 接管前" : "还原配置备份", () => restoreConfigBackup(kind, id), true);
+    });
+    ipcMain.handle("agent:readonly", (_event, on: unknown) => { applyPrefs({ agentReadOnly: on === true }); publishAgent(); return agentView(); });
+    ipcMain.handle("agent:models", (_event, input: unknown) => agentCall(() => listProviderModels(input)));
+    ipcMain.handle("agent:probe", async (_event, id: unknown) => {
+      try {
+        return { ok: true, result: await probeProvider(String(id || "")) };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : "检测失败" };
+      }
+    });
+    configReason("启动时恢复本地路由");
+    void resumeAgentProxy().finally(() => configReason("")).then(() => publishAgent()).catch((error) => console.error("[TokenPulse] 本地路由没有恢复", error));
+    ipcMain.handle("models:calibration", (_event, value: unknown) => updateCalibration(value));
+    // 时间线上标注「本机以外的使用」：改了之后容量要重算，不用重新查额度
+    ipcMain.handle("models:offmachine", (_event, value: unknown) => { const marks = updateMark(value); backgroundRefresh(false); return marks; });
     ipcMain.handle("models:study", (_event, value: unknown) => loadModelStudy(parseModelStudyQuery(value)));
     ipcMain.handle("requests:query", (_event, query: unknown) => loadRequests(parseRequestQuery(query)));
+    // 新手引导的演示数据：单独的进程、单独的临时目录（demo.ts），查询参数照样在这里校验
+    ipcMain.handle("demo:snapshot", () => demoCall("snapshot"));
+    ipcMain.handle("demo:study", (_event, value: unknown) => demoCall("study", parseModelStudyQuery(value)));
+    ipcMain.handle("demo:requests", (_event, query: unknown) => demoCall("requests", parseRequestQuery(query)));
+    ipcMain.handle("demo:end", () => endDemo());
+
     ipcMain.handle("sessions:list", () => loadSessions());
     ipcMain.handle("sessions:detail", (_event, kind: unknown, id: unknown) => {
       if (!isAgentKind(kind) || typeof id !== "string") throw new Error("会话参数无效");
@@ -639,10 +801,20 @@ if (!app.requestSingleInstanceLock()) {
     if (quitting || !readPrefs().closeToTray) app.quit();
   });
 
-  app.on("before-quit", () => {
-    quitting = true;
-    // 还在跑的回复一起结束，别留下没人管的 CLI 进程
-    exitMonitor.stop();
-    stopAllReplies();
+  let agentQuitReady = false, agentQuitPending = false;
+  app.on('before-quit', event => {
+    if (agentQuitReady) { quitting = true; exitMonitor.stop(); stopAllReplies(); return; }
+    event.preventDefault();
+    if (agentQuitPending) return;
+    agentQuitPending = true;
+    const failed = (error: unknown) => {
+      agentQuitPending = false; quitting = false;
+      console.error('[TokenPulse] 配置恢复失败，取消退出', error);
+      dialog.showErrorBox('暂不能安全退出', error instanceof Error ? error.message : '请先解决配置恢复问题，再退出 TokenPulse。');
+    };
+    configReason("退出时恢复工具配置");
+    try { releaseAgentSwitch(); } catch (error) { configReason(""); failed(error); return; }
+    configReason("");
+    void waitAgentProxyClosed().then(() => { agentQuitReady = true; app.quit(); }).catch(failed);
   });
 }

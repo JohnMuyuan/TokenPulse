@@ -1,0 +1,54 @@
+/* ---------------- 新版本有什么（intro.js） ---------------- */
+
+.whatsnew-card { width: min(540px, 100%); padding: 22px 24px 20px; }
+.whatsnew-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.whatsnew-head h2 { margin-top: 8px; font: 650 20px/1.35 var(--font-display); letter-spacing: -.01em; }
+.whatsnew-list { display: grid; gap: 4px; margin: 16px 0 18px; padding: 0; list-style: none; }
+.whatsnew-list li { display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; padding: 9px 10px; border-radius: 12px; animation: fade-up .4s var(--ease) both; animation-delay: calc(var(--i, 0) * 45ms + 80ms); transition: background .2s; }
+.whatsnew-list li:hover { background: var(--surface-2); }
+.whatsnew-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
+.whatsnew-icon .icon { width: 18px; height: 18px; }
+.whatsnew-list b { display: block; color: var(--text); font-size: 13.5px; font-weight: 620; }
+.whatsnew-list p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+.whatsnew-foot { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* ---------------- 新手引导 ---------------- */
+
+/* 标题栏以下整块盖住；标题栏的最小化 / 关闭照常能点 */
+.tour { position: fixed; inset: var(--titlebar-h) 0 0 0; z-index: 90; }
+.tour.no-target { background: #0b0f1466; }
+.tour-spot {
+  position: fixed; border-radius: 12px; pointer-events: none;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px #0b0f1466;
+  transition: left .35s var(--ease), top .35s var(--ease), width .35s var(--ease), height .35s var(--ease), opacity .2s;
+}
+.tour.no-target .tour-spot { display: none; }
+:root[data-theme=dark] .tour.no-target { background: #0000008c; }
+:root[data-theme=dark] .tour-spot { box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px #0000008c; }
+.tour-card {
+  position: fixed; width: min(360px, calc(100vw - 24px)); padding: 16px 18px 14px;
+  border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-lg);
+  transition: left .35s var(--ease), top .35s var(--ease);
+}
+.tour-card.step-in > * { animation: fade-up .3s var(--ease) both; }
+.tour-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.tour-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tour-skip { font-size: 12.5px; }
+.tour-card h3 { font: 650 16px/1.4 var(--font-display); color: var(--text); }
+.tour-card p { margin: 6px 0 14px; color: var(--text-2); font-size: 13px; line-height: 1.7; }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* 进度条：步骤多，点点排不下 */
+.tour-bar { flex: 1; max-width: 120px; height: 4px; overflow: hidden; border-radius: 99px; background: var(--tile-neutral); }
+.tour-bar i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .35s var(--ease); }
+.tour-meta { display: inline-flex; align-items: center; gap: 8px; }
+.tour-demo { padding: 1px 8px; border-radius: 99px; background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); font-size: 11.5px; font-weight: 600; }
+.tour-demo[hidden] { display: none; }
+/* 等面板加载时高亮框淡一点 */
+.tour.waiting .tour-spot { opacity: .45; }
+.tour-actions { display: flex; gap: 8px; }
+.tour-actions .btn { min-height: 32px; padding: 5px 14px; font-size: 13px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .whatsnew-list li, .tour-card.step-in > * { animation: none; }
+  .tour-spot, .tour-card, .tour-bar i, .whatsnew-list li { transition: none; }
+}

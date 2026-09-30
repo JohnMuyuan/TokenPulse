@@ -1,0 +1,325 @@
+/*
+ * 版本更新说明 + 新手引导（0.3.9 起）。
+ *
+ * - 全新安装：主进程在第一次写 prefs.json 时记下 onboarding = 'pending'，这里启动后自动走一遍引导。
+ * - 升级：prefs.seenVersion 比当前版本旧、且 NOTES 里有这一版的说明，就弹一次「新版本有什么」；关掉后记下版本，以后不再弹。
+ *   没写说明的版本静默记下，不弹空窗口。
+ * - 设置 → 关于 里可以随时重新打开这两样。
+ *
+ * 引导只高亮已有的界面（导航、额度卡片、刷新、设置），不在引导里造假数据；每一步都能「跳过引导」，Esc 同样是跳过。
+ */
+(function () {
+  const api = window.tokenpulse;
+  const $ = id => document.getElementById(id);
+
+  /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
+  const NOTES = {
+    '0.3.9': [
+      ['trace', '识别「本机以外」的额度消耗', '额度涨了、同期本机没有 Code 请求的时段（网页聊天、其他设备）会自动识别出来，不计入容量折算。'],
+      ['clock', '时间线可以放大、可以标注', '「模型与思考等级 · 时间线」支持拖选放大、Ctrl + 滚轮缩放；本机以外的时段可以补上用了什么模型和思考等级。'],
+      ['user', '「只在本机用 Code」开关', '账号只在这台电脑上用 Code、不聊天？在 设置 → 官方账号 里打开，容量直接按本机用量折算。'],
+      ['usage', '按项目看用量', '用量明细新增「按项目」视图；Agent 压缩上下文消耗的额度现在也会计入。'],
+      ['lock', '改动前确认、自动备份、只读保护', '供应商切换前会先列出每个配置文件的逐行对比（密钥打码），确认后才写；每次改动自动备份、可一键还原，接管前的原件永久保留；还可以打开只读保护，完全不动工具配置。'],
+      ['route', '供应商：头像、号池、配置预览、Codex 1M 上下文', '供应商可以选头像；同一家可以组成号池；保存前能预览写进 CLI 的配置；思考等级改成下拉多选；Codex 可以一键放开到 1M 上下文。'],
+      ['overview', '新手引导', '第一次用的话可以跟着走一遍；之后在 设置 → 关于 里也能重新打开。'],
+    ],
+  };
+
+  /*
+   * 引导步骤。引导期间界面读的是演示账号（main/demo.ts，临时目录里的虚构数据），所以第一次用、还没登录账号也能看到每个功能长什么样。
+   * page：先切到这一页；before：切页后要做的准备（切视图）；target：高亮的元素，异步加载的面板最多等 3 秒；
+   * wait：高亮之前再等它里面的某样东西加载出来。等不到或看不见就把卡片放在中间、不高亮。
+   */
+  // 用量明细默认只看今天，演示看最近 7 天更有内容（回到总览时 app.js 会换回总览自己的范围）
+  const usageView = view => {
+    if (typeof state === 'undefined') return;
+    const changed = state.usageView !== view;
+    if (state.days !== 7) window.applyRange?.(7);
+    window.showUsageView?.(view);
+    if (changed && current) window.render?.(current);
+  };
+  const STEPS = [
+    { title: '欢迎使用 TokenPulse', text: 'TokenPulse 常驻托盘，记录本机 AI CLI（Claude Code、Codex、Grok）的用量，并盯住官方订阅额度。接下来用一个演示账号带你走一遍：演示数据只在引导里出现，不会写进你的数据，结束后自动换回来。' },
+    { page: 'overview', target: '#nav', title: '左侧切换页面', text: '总览、额度详情、用量明细、出口监控、会话管理、供应商，都在这里。' },
+    { page: 'overview', target: '#quota-cards', title: '官方额度一眼看完', text: '每个官方账号的 5 小时窗口和周窗口：还剩多少、什么时候重置、照现在的节奏大约什么时候用完。' },
+    { page: 'overview', target: '#overview-analysis .analysis-grid', title: '用量趋势与使用节奏', text: '按天看 Tokens、费用、请求数的走势，以及一天里哪些时段用得最多。上方可以切换时间范围和工具。' },
+    { page: 'overview', target: '#refresh', title: '数据自动更新', text: '后台会定时扫描本机日志、查询官方额度。想马上看最新数字就点「刷新数据」。' },
+    { page: 'quota', target: '#page-quota .quota-toolbar', title: '额度详情 · 按账号看', text: '每个官方账号一个标签；同一家登记了多个账号时分开统计，也能组成账号池。' },
+    { page: 'quota', target: '#quota-detail .quota-window-grid', title: '5 小时与周窗口', text: '已用百分比、重置时间，以及按最近的使用节奏估算「大约什么时候用完」。' },
+    { page: 'quota', target: '#quota-detail .capacity-panel', title: '额度容量趋势', text: '把每个历史窗口折算成「整窗大约能用多少」（Tokens 或 API 等价费用），连成折线。官方悄悄调了额度，这里能看出来。' },
+    { page: 'quota', target: '#quota-model-study .ms-budgets', title: '换一种模型，整窗能用多少', text: '先按本机的真实用量折算出整窗预算，再换算到每个模型 × 思考等级：换成 Sonnet 能多用几倍、开 xhigh 要少用多少，一目了然。' },
+    { page: 'quota', target: '#quota-model-study .ms-highlights', title: '一眼看结论，再看完整排行', text: '最耐用、调用最多、你最常用的组合放在最前面；下面是全部模型 × 思考等级的完整排行，可以换排序、按等级筛选。' },
+    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl', title: '模型与思考等级 · 时间线', text: '每个模型 × 思考等级一条轨道，上面叠着官方额度的已用曲线：哪段时间用了什么、额度涨得多快都能对上。拖选一段可以放大，Ctrl + 滚轮缩放。' },
+    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-off-summary', title: '本机以外的消耗', text: '额度涨了、同期本机却没有 Code 请求的时段（网页聊天、其他设备）会自动识别，不计入容量折算。虚线是待标注，实心是已标注，点一下就能补上用了什么模型和等级。' },
+    { page: 'usage', before: () => usageView('requests'), target: '#page-usage .breakdown-panel', title: 'Token 构成与用量分析', text: '输入、输出、缓存读写、推理各占多少；往下是分工具的趋势、模型排行和使用时段分布。' },
+    { page: 'usage', before: () => usageView('requests'), target: '#page-usage .usage-records', title: '每一次请求', text: '逐条看每次请求用了多少 Token、占了多少额度、是哪个账号发的；型号对不上、响应可疑会直接标出来。也可以按日汇总、导出 CSV。' },
+    { page: 'usage', before: () => usageView('projects'), target: '#page-usage .usage-records', wait: '#view-projects .pj-card', title: '按项目看用量', text: '每个项目文件夹被几个 Agent 对话改过、用了多少 Token 和额度，由哪些模型 × 思考等级组成。' },
+    { page: 'egress', target: '[data-page="egress"]', title: '出口监控', text: '分别检测三家的出口 IP，偏离白名单或地区规则时提醒，还能在出口不对时暂停查询额度。' },
+    { page: 'sessions', target: '[data-page="sessions"]', title: '会话管理', text: '查看本机 Agent 的对话历史，复制项目地址，或者直接接着回复。' },
+    { page: 'providers', target: '[data-page="providers"]', title: '供应商', text: '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 一键切换模型供应商，模型候选和思考等级分开设置。每次改动工具配置前都会先给你看逐行对比、确认后才写，并自动备份；担心改坏可以在「配置保护」里打开只读保护。' },
+    { page: 'overview', target: '#settings-open', title: '设置', text: '在这里登录官方账号、设置额度提醒、切换主题和语言。以后想再看这份引导，到 设置 → 关于 里重新打开。' },
+  ];
+
+  const el = (tag, attrs = {}, children = []) => window.el(tag, attrs, children);
+  const icon = name => window.icon(name);
+  const reduced = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let version = '';
+  let tour = null;
+  let notesOpen = null;
+
+  /** 1.2.3 形式的版本比较，a 比 b 新返回正数。 */
+  function compare(a, b) {
+    const pa = String(a).split(/[.-]/).map(n => parseInt(n, 10) || 0), pb = String(b).split(/[.-]/).map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    return 0;
+  }
+  const save = patch => api.writePrefs(patch).catch(() => { /* 写不进去下次再弹一次，不影响使用 */ });
+
+  /** 背景不可操作：和设置窗口一样把工作区、侧栏设为 inert。 */
+  function lockPage(on) {
+    document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = on;
+    document.body.classList.toggle('modal-open', on);
+  }
+  function trapTab(event, box) {
+    if (event.key !== 'Tab') return;
+    const controls = [...box.querySelectorAll('button:not(:disabled), a[href]')].filter(item => item.offsetParent);
+    if (!controls.length) return;
+    if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+    else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
+  }
+
+  /* ---------------- 新版本有什么 ---------------- */
+
+  function showNotes(v = version, { fromSettings = false } = {}) {
+    const items = NOTES[v];
+    if (!items || notesOpen || tour) return false;
+    const last = document.activeElement;
+    const close = el('button', { type: 'button', class: 'icon-circle', 'aria-label': '关闭' }, [icon('close')]);
+    const ok = el('button', { type: 'button', class: 'btn btn-accent', text: '知道了' });
+    const guide = el('button', { type: 'button', class: 'btn', text: '开始新手引导' });
+    const card = el('section', { class: 'modal-card whatsnew-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'whatsnew-title' }, [
+      el('header', { class: 'whatsnew-head' }, [
+        el('div', {}, [
+          el('span', { class: 'section-tag', text: '版本更新' }),
+          el('h2', { id: 'whatsnew-title' }, ['TokenPulse ', el('span', { text: 'v' + v, translate: 'no' }), ' 有这些新东西']),
+        ]),
+        close,
+      ]),
+      el('ul', { class: 'whatsnew-list' }, items.map(([name, title, text], i) => {
+        const li = el('li', {}, [el('span', { class: 'whatsnew-icon' }, [icon(name)]), el('div', {}, [el('b', { text: title }), el('p', { text })])]);
+        li.style.setProperty('--i', i);
+        return li;
+      })),
+      el('footer', { class: 'whatsnew-foot' }, [guide, ok]),
+    ]);
+    const modal = el('div', { id: 'whatsnew', class: 'modal' }, [card]);
+    const done = startTour => {
+      if (!notesOpen) return;
+      notesOpen = null;
+      document.removeEventListener('keydown', onKey, true);
+      modal.remove();
+      lockPage(false);
+      // 只有自动弹出的那次需要记版本；从设置里打开的本来就看过
+      if (!fromSettings) save({ seenVersion: v });
+      if (startTour) startGuide();
+      else last?.focus?.();
+    };
+    const onKey = event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); done(false); }
+      else trapTab(event, card);
+    };
+    close.addEventListener('click', () => done(false));
+    ok.addEventListener('click', () => done(false));
+    guide.addEventListener('click', () => done(true));
+    modal.addEventListener('click', event => { if (event.target === modal) done(false); });
+    document.addEventListener('keydown', onKey, true);
+    notesOpen = { modal, done };
+    lockPage(true);
+    document.body.append(modal);
+    ok.focus();
+    return true;
+  }
+
+  /* ---------------- 新手引导 ---------------- */
+
+  /** 等某个元素出现并且有尺寸（异步加载的面板），最多等 ms 毫秒。 */
+  function waitFor(selector, ms = 3000) {
+    return new Promise(resolve => {
+      const end = Date.now() + ms;
+      const check = () => {
+        const node = document.querySelector(selector);
+        if (node && node.getClientRects().length) resolve(node);
+        else if (Date.now() > end) resolve(null);
+        else setTimeout(check, 60);
+      };
+      check();
+    });
+  }
+  /** 把目标滚到顶栏下面（工作区自己滚动，不是整页滚）。 */
+  function reveal(target) {
+    const scroller = target.closest('.workspace');
+    if (!scroller) { target.scrollIntoView?.({ block: 'nearest', behavior: 'instant' }); return; }
+    const top = (document.querySelector('.topbar')?.getBoundingClientRect().bottom || 0) + 16;
+    const r = target.getBoundingClientRect();
+    if (r.top < top || r.bottom > window.innerHeight - 16) scroller.scrollTo({ top: scroller.scrollTop + r.top - top, behavior: 'instant' });
+  }
+
+  async function startGuide() {
+    if (tour) return;
+    notesOpen?.done(false);
+    if (!$('settings').hidden) window.closeModal?.('settings');
+    const last = document.activeElement;
+    const saved = typeof state !== 'undefined' ? { account: state.account, usageView: state.usageView } : null;
+    const layer = el('div', { class: 'tour', role: 'presentation' });
+    const spot = el('div', { class: 'tour-spot', 'aria-hidden': 'true' });
+    const count = el('span', { class: 'tour-count' });
+    const badge = el('span', { class: 'tour-demo', text: '演示数据', title: '引导里显示的是虚构的演示账号，不是你的数据', hidden: '' });
+    const title = el('h3', { id: 'tour-title' });
+    const text = el('p', { id: 'tour-text' });
+    const bar = el('div', { class: 'tour-bar', 'aria-hidden': 'true' }, [el('i')]);
+    const skip = el('button', { type: 'button', class: 'text-btn tour-skip', text: '跳过引导' });
+    const prev = el('button', { type: 'button', class: 'btn', text: '上一步' });
+    const next = el('button', { type: 'button', class: 'btn btn-accent' });
+    const card = el('section', { class: 'tour-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tour-title', 'aria-describedby': 'tour-text' }, [
+      el('div', { class: 'tour-top' }, [el('span', { class: 'tour-meta' }, [count, badge]), skip]),
+      title, text,
+      el('div', { class: 'tour-foot' }, [bar, el('div', { class: 'tour-actions' }, [prev, next])]),
+    ]);
+    layer.append(spot, card);
+    const self = tour = { index: 0, layer, spot, card, target: null, frame: 0, last, token: 0, demo: false };
+
+    const place = () => {
+      if (tour !== self) return;
+      const target = self.target;
+      const rect = target && target.isConnected ? target.getBoundingClientRect() : null;
+      const visible = rect && rect.width > 0 && rect.height > 0;
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const top0 = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--titlebar-h')) || 0;
+      layer.classList.toggle('no-target', !visible);
+      const cw = card.offsetWidth, ch = card.offsetHeight, gap = 14, pad = 6, margin = 12;
+      let x, y;
+      if (visible) {
+        // 高亮框：目标四周留 6px，限制在可视区内；目标太高时只框上面一截，给卡片留出位置
+        const box = { left: Math.max(4, rect.left - pad), top: Math.max(top0 + 4, rect.top - pad), right: Math.min(vw - 4, rect.right + pad), bottom: Math.min(vh - 4, rect.bottom + pad) };
+        const sideFits = box.right + gap + cw <= vw - margin && rect.width < vw * .45;
+        if (!sideFits) box.bottom = Math.max(box.top + 40, Math.min(box.bottom, vh - ch - gap - margin * 2));
+        Object.assign(spot.style, { left: box.left + 'px', top: box.top + 'px', width: Math.max(0, box.right - box.left) + 'px', height: Math.max(0, box.bottom - box.top) + 'px' });
+        // 优先放在右边（侧栏的目标），其次下方、上方
+        if (sideFits) { x = box.right + gap; y = box.top; }
+        else if (box.bottom + gap + ch <= vh - margin) { x = box.left; y = box.bottom + gap; }
+        else if (box.top - gap - ch >= top0 + margin) { x = box.left; y = box.top - gap - ch; }
+        else { x = (vw - cw) / 2; y = vh - ch - margin * 2; }
+      } else {
+        x = (vw - cw) / 2; y = top0 + (vh - top0 - ch) / 2;
+      }
+      card.style.left = Math.round(Math.min(Math.max(margin, x), vw - cw - margin)) + 'px';
+      card.style.top = Math.round(Math.min(Math.max(top0 + margin, y), vh - ch - margin)) + 'px';
+    };
+    const schedule = () => { cancelAnimationFrame(self.frame); if (tour === self) self.frame = requestAnimationFrame(place); };
+
+    const show = async i => {
+      const step = STEPS[i], token = ++self.token;
+      self.index = i;
+      count.textContent = `${i + 1} / ${STEPS.length}`;
+      title.textContent = step.title;
+      text.textContent = step.text;
+      bar.firstChild.style.width = `${((i + 1) / STEPS.length) * 100}%`;
+      prev.hidden = i === 0;
+      next.textContent = i === 0 ? '开始' : i === STEPS.length - 1 ? '完成' : '下一步';
+      card.classList.remove('step-in'); void card.offsetWidth; if (!reduced()) card.classList.add('step-in');
+      if (step.page && document.body.dataset.page !== step.page) window.navigate?.(step.page);
+      step.before?.();
+      // 要等面板加载的步骤：高亮框先留在上一个位置（加 waiting 淡一点），免得闪到中间再跳回去
+      layer.classList.toggle('waiting', Boolean(step.target));
+      if (!step.target) { self.target = null; place(); }
+      next.focus({ preventScroll: true });
+      if (step.target) {
+        const target = await waitFor(step.target);
+        if (target && step.wait) await waitFor(step.wait, 2000);
+        if (tour !== self || token !== self.token) return;
+        if (target) reveal(target);
+        self.target = target;
+      }
+      layer.classList.remove('waiting');
+      place();
+      // 切页后布局可能还在变（图表入场、字体）：下一帧、稍后各再对一次位置
+      schedule();
+      setTimeout(schedule, 400);
+    };
+    const finish = async () => {
+      if (tour !== self) return;
+      cancelAnimationFrame(self.frame);
+      window.removeEventListener('resize', schedule);
+      document.removeEventListener('scroll', schedule, true);
+      document.removeEventListener('keydown', onKey, true);
+      self.layer.remove();
+      tour = null;
+      // 换回真实数据：结束演示进程，账号和明细视图恢复成引导前的样子，再重读一次真实快照
+      if (self.demo) {
+        try { await api.demo(false); } catch { /* 进程已经退了也没关系 */ }
+        if (saved) { state.account = saved.account; window.showUsageView?.(saved.usageView); }
+        try { window.render?.(await api.snapshot()); } catch { /* 读不到就等下一次推送 */ }
+      } else if (saved && state.usageView !== saved.usageView) { window.showUsageView?.(saved.usageView); if (current) window.render?.(current); }
+      lockPage(false);
+      save({ onboarding: 'done', seenVersion: version });
+      window.navigate?.('overview');
+      if (self.last?.isConnected) self.last.focus?.();
+    };
+    const onKey = event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(); }
+      else if (event.key === 'ArrowRight' && self.index < STEPS.length - 1) { event.preventDefault(); show(self.index + 1); }
+      else if (event.key === 'ArrowLeft' && self.index > 0) { event.preventDefault(); show(self.index - 1); }
+      else trapTab(event, card);
+    };
+    skip.addEventListener('click', finish);
+    prev.addEventListener('click', () => show(Math.max(0, self.index - 1)));
+    next.addEventListener('click', () => (self.index === STEPS.length - 1 ? finish() : show(self.index + 1)));
+    window.addEventListener('resize', schedule);
+    document.addEventListener('scroll', schedule, true);
+    document.addEventListener('keydown', onKey, true);
+    lockPage(true);
+    document.body.append(layer);
+    show(0);
+    // 换上演示数据（看欢迎页的时候在后台准备好）；失败就用真实数据继续引导
+    try {
+      const snapshot = await api.demo?.(true);
+      if (tour !== self) { api.demo(false).catch(() => {}); return; }
+      if (snapshot) {
+        self.demo = true;
+        badge.hidden = false;
+        if (typeof state !== 'undefined') state.account = 'claude:demo';
+        window.render?.(snapshot);
+        schedule();
+      }
+    } catch {
+      api.demo?.(false)?.catch(() => {});
+    }
+  }
+
+  /* ---------------- 启动 ---------------- */
+
+  /** 等首页第一次画完（最多 4 秒）再弹，免得引导框住的是骨架屏。 */
+  function whenReady() {
+    return new Promise(resolve => {
+      const started = Date.now();
+      const check = () => ($('app-status')?.hidden || Date.now() - started > 4000 ? resolve() : setTimeout(check, 150));
+      check();
+    });
+  }
+  async function boot() {
+    let prefs;
+    try { [prefs, version] = await Promise.all([api.readPrefs(), api.version()]); } catch { return; }
+    await whenReady();
+    if (prefs.onboarding === 'pending') { startGuide(); return; }
+    if (!prefs.seenVersion || compare(version, prefs.seenVersion) > 0) {
+      if (!showNotes(version)) save({ seenVersion: version });
+    }
+  }
+
+  $('intro-replay')?.addEventListener('click', () => startGuide());
+  $('whatsnew-open')?.addEventListener('click', () => { window.closeModal?.('settings'); showNotes(version || undefined, { fromSettings: true }); });
+  api.version?.().then(v => { version = version || v; const btn = $('whatsnew-open'); if (btn) btn.hidden = !NOTES[v]; }).catch(() => {});
+
+  window.PulseIntro = { startGuide, active: () => Boolean(tour), demo: () => Boolean(tour?.demo), showNotes: v => showNotes(v || version, { fromSettings: true }), steps: STEPS.length, notes: NOTES };
+  boot();
+})();

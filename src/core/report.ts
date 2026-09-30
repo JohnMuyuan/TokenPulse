@@ -4,6 +4,9 @@ import { readQuotaChecks, readQuotaHistory } from "./quota-history";
 import type { RequestRow } from "./request-log";
 import { accountLabels } from "./login-timeline";
 import { readOfficialAccountStore } from "./accounts";
+import { localOnlyAccounts } from "./quota-calibration";
+import { accountRows, cleanCapacity, readMarks } from "./quota-offmachine";
+import { queryRequests } from "./request-log";
 import type { QuotaSample } from "./quota-history";
 import { ccSwitchBuckets, ccSwitchEnabled, coveredDays, readCcSwitch, type CcSwitchStatus } from "./cc-switch";
 import { readRollups, emptyBucket, addUsage, type DayBuckets, type UsageBucket } from "./usage-scan";
@@ -329,12 +332,39 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   const labels = accountLabels();
   const store = readOfficialAccountStore();
   // 没采到过额度的账号不显示：没有百分比，就谈不上监控。
+  const localOnly = new Set(localOnlyAccounts());
+  /*
+   * 共享额度的账号（默认）：容量只用「同期有本机请求」的采样区间折算，本机以外的涨幅和用户标注的时段不参与。
+   * 要逐条请求的时间，按天的账切不出来，所以读一次全部官方请求流水（在 worker 里，几千条约一百毫秒）。
+   */
+  let official: RequestRow[] | null = null;
+  const officialRows = () => {
+    if (!official) {
+      try { official = queryRequests({ from: "2000-01-01", to: "2999-12-31", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true, channel: "official" }).rows; }
+      catch { official = []; }
+    }
+    return official;
+  };
+  const allMarks = readMarks();
+  const applyClean = (report: AccountReport, kind: AccountKind, samples: QuotaSample[], id: string) => {
+    const rowsFor = accountRows(officialRows(), kind, id), marks = allMarks.filter((m) => m.accountId === id);
+    const week = cleanCapacity(kind, samples, rowsFor, marks, "week", now), five = cleanCapacity(kind, samples, rowsFor, marks, "five", now);
+    report.capacityHistory = { week: week.history, five: five.history };
+    for (const [window, result] of [[report.week, week], [report.five, five]] as const) {
+      if (!window) continue;
+      delete window.capacityReason;
+      if (result.current) window.capacity = { tokens: result.current.tokens, costUsd: result.current.costUsd, confidence: result.current.confidence };
+    }
+    report.capacityBasis = "clean";
+    return report;
+  };
   const accounts = ACCOUNT_KINDS.flatMap((kind) => {
     const groups = samplesByAccount(Array.isArray(history.accounts[kind]) ? history.accounts[kind] : [], kind, store);
     const reports = groups
       .map(({ id, samples }) => {
         const checked = id && checks.accounts?.[id] != null ? { at: checks.accounts[id], account: id } : checks[kind]?.account === id ? checks[kind] : undefined;
-        return analyzeAccount(kind, samples, rows[kind], now, checked);
+        const report = analyzeAccount(kind, samples, rows[kind], now, checked, !!id && localOnly.has(id));
+        return id && !localOnly.has(id) ? applyClean(report, kind, samples, id) : report;
       })
       .filter((report) => report.sampleCount > 0)
       .map((report) => ({

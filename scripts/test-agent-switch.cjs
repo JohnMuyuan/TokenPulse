@@ -1,0 +1,303 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-agent-'));
+const home = path.join(root, 'home');
+process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
+process.env.AGENT_SWITCH_HOME = home;
+process.env.AGENT_SWITCH_CC_DB = path.join(root, 'missing.db');
+for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'GEMINI_CONFIG_DIR', 'GROK_HOME']) delete process.env[key];
+
+const sw = require('../build/core/agent-switch');
+const conv = require('../build/core/agent-convert');
+
+const read = file => fs.readFileSync(file, 'utf8');
+const claudeFile = path.join(home, '.claude', 'settings.json');
+const codexFile = path.join(home, '.codex', 'config.toml');
+const grokFile = path.join(home, '.grok', 'config.toml');
+
+(async () => {
+  const chat = conv.convertRequest('anthropic', 'openai-chat', JSON.stringify({
+    model: 'claude-sonnet-5', max_tokens: 32, system: 'be brief',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    tools: [{ name: 'read', description: 'read', input_schema: { type: 'object' } }],
+  }), 'gpt-test');
+  assert.equal(chat.path, '/v1/chat/completions');
+  assert.equal(chat.json.model, 'gpt-test');
+  assert.equal(chat.json.messages[1].content, 'ping');
+  assert.equal(chat.json.tools[0].function.name, 'read');
+  const back = conv.convertJsonResponse('anthropic', 'openai-chat', {
+    choices: [{ message: { role: 'assistant', content: 'pong', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"p":1}' } }] }, finish_reason: 'tool_calls' }],
+    usage: { prompt_tokens: 3, completion_tokens: 2 },
+  }, 'claude-sonnet-5');
+  assert.equal(back.content[0].text, 'pong');
+  assert.equal(back.content[1].name, 'read');
+  assert.equal(back.content[1].input.p, 1);
+  assert.equal(back.usage.output_tokens, 2);
+  const bridge = new conv.StreamBridge('openai-chat', 'anthropic', 'claude-sonnet-5');
+  const sse = bridge.push('data: {"choices":[{"delta":{"content":"你"}}]}\n\n') + bridge.push('data: {"choices":[{"finish_reason":"stop"}]}\n\n') + bridge.end();
+  assert.match(sse, /你/);
+  assert.match(sse, /message_stop/);
+  const responses = conv.convertRequest('openai-responses', 'anthropic', JSON.stringify({ model: 'gpt', input: 'hello', stream: true }), 'claude-sonnet-5');
+  assert.equal(responses.path, '/v1/messages');
+  assert.equal(responses.json.messages[0].content[0].text, 'hello');
+  console.log('PASS agent convert: anthropic/chat/responses text and tool call');
+  const models = require('../build/core/agent-models');
+  const roleEnv = models.claudeRoleEnv([
+    { role: 'sonnet', model: 'kimi-k2', displayName: 'Kimi', oneM: true, contextWindow: null, reasoningLevels: [], defaultReasoningLevel: '' },
+    { role: 'haiku', model: 'kimi-fast', displayName: '快', oneM: false, contextWindow: null, reasoningLevels: [], defaultReasoningLevel: '' },
+  ], 'kimi-k2');
+  assert.equal(roleEnv.ANTHROPIC_DEFAULT_SONNET_MODEL, 'kimi-k2[1M]');
+  assert.equal(roleEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'kimi-fast');
+  assert.equal(roleEnv.ANTHROPIC_DEFAULT_OPUS_MODEL, 'kimi-k2');
+  const catalog = models.codexCatalogEntry({ role: 'catalog', model: 'deepseek-v4', displayName: 'DeepSeek', oneM: false, contextWindow: 64000, reasoningLevels: ['xhigh', 'low', 'bogus'], defaultReasoningLevel: 'xhigh' }, null, 0);
+  assert.deepEqual(catalog.supported_reasoning_levels.map(item => item.effort), ['low', 'xhigh']);
+  assert.equal(catalog.default_reasoning_level, 'xhigh');
+  const mapped = models.desktopModelMap([
+    { role: 'sonnet', model: 'kimi-k2', displayName: 'Kimi', oneM: false, contextWindow: null, reasoningLevels: [], defaultReasoningLevel: '' },
+  ], 'map');
+  assert.equal(mapped['claude-sonnet-5'], 'kimi-k2');
+  console.log('PASS agent models: Claude roles, Codex reasoning levels, Desktop mapping');
+
+  await sw.resetAgentSwitchForTests();
+  fs.mkdirSync(path.dirname(claudeFile), { recursive: true });
+  fs.writeFileSync(claudeFile, JSON.stringify({ hooks: { keep: true }, permissions: { allow: ['Read'] }, env: { ANTHROPIC_API_KEY: 'old-key', ANTHROPIC_BASE_URL: 'https://old.example', DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_ARTIFACT: '1' } }, null, 2));
+  const first = sw.saveProvider({ app: 'claude', name: 'Relay', baseUrl: 'https://relay.example/v1', apiKey: 'sk-real', model: 'claude-sonnet-5', upstream: 'anthropic' });
+  const enabled = await sw.activateProvider(first);
+  assert.match(enabled.message, /Relay/);
+  let claude = JSON.parse(read(claudeFile));
+  assert.equal(claude.hooks.keep, true);
+  assert.deepEqual(claude.permissions.allow, ['Read']);
+  assert.equal(claude.env.DISABLE_TELEMETRY, '1');
+  assert.equal(claude.env.ANTHROPIC_AUTH_TOKEN, 'sk-real');
+  assert.equal(claude.env.ANTHROPIC_BASE_URL, 'https://relay.example/v1');
+  assert.equal(claude.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(sw.agentView().providers.find(item => item.id === first).hasKey, true);
+  assert.equal(JSON.stringify(sw.agentView()).includes('sk-real'), false, '界面数据不能带密钥');
+  // 限额没填（表单送来空串、或者旧数据里是 null）就是不限，不能被 Number() 变成 0；填了 0 才是 0
+  {
+    const limited = sw.saveProvider({ app: 'claude', name: 'Limits', baseUrl: 'https://limits.example/v1', apiKey: 'sk-l', model: 'claude-sonnet-5', upstream: 'anthropic', dailyLimitUsd: '', monthlyLimitUsd: '25' });
+    const row = sw.agentView().providers.find(item => item.id === limited);
+    assert.equal(row.dailyLimitUsd, null, '空限额重新读出来还是不限');
+    assert.equal(row.monthlyLimitUsd, 25);
+    const zero = sw.saveProvider({ id: limited, app: 'claude', name: 'Limits', baseUrl: 'https://limits.example/v1', keepKey: true, model: 'claude-sonnet-5', upstream: 'anthropic', dailyLimitUsd: '0', monthlyLimitUsd: '  ' });
+    const again = sw.agentView().providers.find(item => item.id === zero);
+    assert.equal(again.dailyLimitUsd, 0); assert.equal(again.monthlyLimitUsd, null);
+    sw.deleteProvider(limited);
+  }
+  console.log('PASS agent switch: claude key fields replaced, hooks and user env kept');
+  const beforeEdit = read(claudeFile);
+  assert.throws(() => sw.saveProvider({ id: first, app: 'claude', name: 'Relay', baseUrl: 'https://relay.example/v1', keepKey: true, model: 'gpt-test', upstream: 'openai-chat' }), /本地路由/, '当前直连供应商不能静默改成不兼容协议');
+  assert.equal(read(claudeFile), beforeEdit);
+  assert.equal(sw.agentView().providers.find(item => item.id === first).upstream, 'anthropic');
+  assert.throws(() => sw.saveProvider({ app: 'desktop', name: 'Loop', baseUrl: 'http://127.0.0.1:15721/desktop', apiKey: 'test', model: 'test', upstream: 'anthropic' }), /本地路由/);
+
+
+  fs.mkdirSync(path.dirname(codexFile), { recursive: true });
+  fs.writeFileSync(codexFile, '# keep me\nmodel = "old"\n\n[mcp_servers.fetch]\ncommand = "uvx"\n');
+  const codex = sw.saveProvider({ app: 'codex', name: 'Codex Relay', baseUrl: 'https://codex.example/v1', apiKey: 'sk-codex', model: 'gpt-test', upstream: 'openai-responses' });
+  await sw.activateProvider(codex);
+  const toml = read(codexFile);
+  assert.match(toml, /# keep me/);
+  assert.match(toml, /\[mcp_servers\.fetch\]/);
+  assert.match(toml, /command = "uvx"/);
+  assert.match(toml, /experimental_bearer_token = "sk-codex"/);
+  assert.match(toml, /requires_openai_auth = false/);
+  assert.doesNotMatch(toml, /auth\.json/);
+
+  // 用户不用 Gemini：不能再加 Gemini CLI / Gemini 上游的供应商；旧数据里的 Gemini 条目读入时丢掉，也不碰 ~/.gemini
+  assert.throws(() => sw.saveProvider({ app: 'gemini', name: 'Gem', baseUrl: 'https://gem.example', apiKey: 'gk', model: 'gemini-test', upstream: 'gemini' }));
+  assert.throws(() => sw.saveProvider({ app: 'claude', name: 'Gem', baseUrl: 'https://gem.example', apiKey: 'gk', model: 'gemini-test', upstream: 'gemini' }));
+  {
+    const storeFile = path.join(process.env.TOKENPULSE_DATA_DIR, 'agent-switch.json');
+    const saved = JSON.parse(read(storeFile));
+    saved.providers.push(
+      { id: 'old-gemini', app: 'gemini', name: 'Old Gemini', endpoint: { baseUrl: 'https://gem.example', apiKey: 'gk', model: 'g', upstream: 'gemini' } },
+      { id: 'old-claude-gemini', app: 'claude', name: 'Claude via Gemini', endpoint: { baseUrl: 'https://gem.example', apiKey: 'gk', model: 'g', upstream: 'gemini' } },
+    );
+    saved.route = { ...saved.route, gemini: 'old-gemini' };
+    saved.proxy.apps.gemini = true;
+    fs.writeFileSync(storeFile, JSON.stringify(saved));
+    const view = sw.agentView();
+    assert.ok(!view.providers.some(item => item.app === 'gemini' || item.id === 'old-claude-gemini'), '旧的 Gemini 供应商要丢掉');
+    assert.equal('gemini' in view.proxy.apps, false);
+    assert.equal(fs.existsSync(path.join(home, '.gemini')), false, '不能碰 ~/.gemini');
+  }
+
+  fs.mkdirSync(path.dirname(grokFile), { recursive: true });
+  fs.writeFileSync(grokFile, '[model.mine]\nmodel = "keep"\nbase_url = "https://mine.example"\n');
+  const grok = sw.saveProvider({ app: 'grok', name: 'Grok Relay', baseUrl: 'https://grok.example/v1', apiKey: 'sk-grok', model: 'grok-test', upstream: 'openai-responses' });
+  await sw.activateProvider(grok);
+  const grokText = read(grokFile);
+  assert.match(grokText, /\[model\.mine\]/);
+  assert.match(grokText, /model = "keep"/);
+  assert.match(grokText, /\[model\.tokenpulse_route\]/);
+  assert.match(grokText, /api_key = "sk-grok"/);
+  console.log('PASS agent switch: codex and grok keep unrelated config; Gemini rejected and dropped from old data');
+
+  const hit = { body: '', auth: '', url: '', header: '' };
+  const bad = listen((_req, res) => { res.writeHead(503); res.end('nope'); });
+  const good = listen((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      hit.body = Buffer.concat(chunks).toString('utf8');
+      hit.auth = req.headers.authorization || req.headers['x-api-key'] || '';
+      hit.header = req.headers['x-cc-switch'] || '';
+      hit.url = req.url || '';
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'pong' }, finish_reason: 'stop' }] }));
+    });
+  });
+  const [down, up] = await Promise.all([bad, good]);
+  const port = await freePort();
+  await sw.setProxyPort(port);
+  const cross = sw.saveProvider({ app: 'claude', name: 'Chat Upstream', baseUrl: `http://127.0.0.1:${up.port}/v1`, apiKey: 'sk-up', model: 'gpt-test', upstream: 'openai-chat' });
+  const spare = sw.saveProvider({ app: 'claude', name: 'Down', baseUrl: `http://127.0.0.1:${down.port}/v1`, apiKey: 'sk-down', model: 'gpt-test', upstream: 'openai-chat' });
+  sw.saveProvider({ id: cross, app: 'claude', name: 'Chat Upstream', baseUrl: `http://127.0.0.1:${up.port}/v1`, apiKey: 'sk-up', model: 'gpt-test', upstream: 'openai-chat', requestHeaders: { 'x-cc-switch': '1' }, requestBody: { temperature: 0.2 } });
+  await sw.activateProvider(spare);
+  sw.setFailover(cross, true);
+  const response = await fetch(`http://127.0.0.1:${sw.agentView().proxy.port}/claude/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'PROXY_MANAGED' },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] }),
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.content[0].text, 'pong');
+  assert.equal(hit.auth, 'Bearer sk-up');
+  assert.match(hit.url, /chat\/completions/);
+  assert.equal(JSON.parse(hit.body).messages.at(-1).content, 'ping');
+  assert.equal(JSON.parse(hit.body).temperature, 0.2);
+  assert.equal(hit.header, '1');
+  const live = JSON.parse(read(claudeFile));
+  assert.equal(live.env.ANTHROPIC_AUTH_TOKEN, 'PROXY_MANAGED');
+  assert.match(live.env.ANTHROPIC_BASE_URL, /127\.0\.0\.1/);
+  assert.equal(live.hooks.keep, true);
+  assert.equal(JSON.stringify(live).includes('sk-up'), false);
+  sw.releaseAgentSwitch();
+  const restored = JSON.parse(read(claudeFile));
+  assert.equal(restored.hooks.keep, true);
+  assert.equal(restored.env.ANTHROPIC_AUTH_TOKEN, 'sk-real');
+  assert.equal(restored.env.ANTHROPIC_BASE_URL, 'https://relay.example/v1');
+  await sw.setAppProxy('claude', false);
+  const official = sw.agentView().providers.find(item => item.app === 'claude' && item.official);
+  await sw.activateProvider(official.id);
+  claude = JSON.parse(read(claudeFile));
+  assert.equal(claude.hooks.keep, true);
+  assert.equal(claude.env.DISABLE_TELEMETRY, '1');
+  assert.equal(claude.env.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(claude.env.ANTHROPIC_BASE_URL, undefined);
+  assert.equal(claude.env.CLAUDE_CODE_DISABLE_ARTIFACT, '1');
+  down.server.close();
+  up.server.close();
+  console.log('PASS agent proxy: failover, format conversion, placeholder key, restore on quit');
+
+  // 号池（0.3.9）：同一工具的多个官方账号轮流用；官方接口换成本机假上游（AGENT_SWITCH_POOL_BASE 只给测试用）
+  {
+    const now = Date.now();
+    const account = (kind, ref, token, extra = {}) => ({ id: `${kind}:${ref}`, kind, ref, email: `${ref}@example.com`, label: ref, createdAt: now, lastSeenAt: now, credential: { token, expiresAt: now + 3_600_000, ...extra } });
+    fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'official-accounts.json'), JSON.stringify({ version: 2, active: {}, accounts: [
+      account('claude', 'qa-a', 'oauth-token-a'), account('claude', 'qa-b', 'oauth-token-b'), account('claude', 'qa-old', 'oauth-token-old', { expiresAt: now - 60_000 }),
+      account('chatgpt', 'qa-c', 'oauth-token-c', { accountId: 'ws-qa' }),
+    ] }));
+    const hits = [];
+    const fake = await listen((req, res) => {
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const hit = { url: req.url, auth: req.headers.authorization || '', apiKey: req.headers['x-api-key'] || '', beta: req.headers['anthropic-beta'] || '', account: req.headers['chatgpt-account-id'] || '', originator: req.headers.originator || '', body: Buffer.concat(chunks).toString('utf8') };
+        hits.push(hit);
+        // 账号 A 的登录失效：401，号池要换下一个成员而不是把错误还给 CLI
+        if (hit.auth === 'Bearer oauth-token-a' && hits.filter(h => h.auth === hit.auth).length > 1) { res.writeHead(401, { 'content-type': 'application/json' }); res.end('{"error":"expired"}'); return; }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ id: 'msg_x', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }] }));
+      });
+    });
+    process.env.AGENT_SWITCH_POOL_BASE = `http://127.0.0.1:${fake.port}`;
+    try {
+      assert.throws(() => sw.saveProvider({ app: 'desktop', name: 'Desk Pool', pool: { members: [{ type: 'account', id: 'claude:qa-a' }] } }), /桌面端不支持号池/);
+      assert.throws(() => sw.saveProvider({ app: 'claude', name: 'Empty Pool', pool: { members: [] } }), /至少要有一个成员/);
+      assert.throws(() => sw.saveProvider({ app: 'claude', name: 'Wrong Pool', pool: { members: [{ type: 'account', id: 'chatgpt:qa-c' }] } }), /找不到的官方账号/);
+      assert.throws(() => sw.saveProvider({ app: 'claude', name: 'Wrong Pool', pool: { members: [{ type: 'provider', id: codex }] } }), /同一工具/);
+      const pool = sw.saveProvider({ app: 'claude', name: 'Claude 号池', pool: { strategy: 'round-robin', members: [{ type: 'account', id: 'claude:qa-a' }, { type: 'account', id: 'claude:qa-old' }, { type: 'account', id: 'claude:qa-b' }] } });
+      assert.throws(() => sw.saveProvider({ id: pool, app: 'claude', name: 'Claude 号池', baseUrl: 'https://x.example', apiKey: 'k', model: 'm', upstream: 'anthropic' }), /不能互相转换/);
+      assert.throws(() => sw.setFailover(pool, true), /不进入备用队列/);
+      await sw.activateProvider(pool);
+      const live = JSON.parse(read(claudeFile));
+      assert.equal(live.env.ANTHROPIC_AUTH_TOKEN, 'PROXY_MANAGED', '号池只能经本地路由');
+      assert.equal(JSON.stringify(live).includes('TOKENPULSE_POOL') || JSON.stringify(live).includes('oauth-token'), false, '工具配置里不能有号池占位或账号凭据');
+      const send = () => fetch(`http://127.0.0.1:${sw.agentView().proxy.port}/claude/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'PROXY_MANAGED', 'anthropic-beta': 'claude-code-20250219' }, body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }) });
+      for (let i = 0; i < 2; i++) assert.equal((await send()).status, 200);
+      assert.deepEqual(hits.map(h => h.auth), ['Bearer oauth-token-a', 'Bearer oauth-token-b'], '轮询：两次请求用两个账号；过期的账号跳过');
+      assert.ok(hits.every(h => !h.apiKey && h.beta.split(',').includes('oauth-2025-04-20') && h.beta.includes('claude-code-20250219')), '官方账号：Bearer + 补上 OAuth beta，保留 CLI 自己的 beta，不带 x-api-key');
+      assert.equal(JSON.parse(hits[0].body).model, 'claude-sonnet-5', '号池没指定模型时按 CLI 选的模型发');
+      hits.length = 0;
+      hits.push({ auth: 'Bearer oauth-token-a' }); // 让假上游对 A 回 401
+      assert.equal((await send()).status, 200, 'A 失效时换 B，CLI 收到成功');
+      assert.deepEqual(hits.slice(1).map(h => h.auth), ['Bearer oauth-token-a', 'Bearer oauth-token-b']);
+      const view = sw.agentView().providers.find(item => item.id === pool);
+      assert.equal(JSON.stringify(sw.agentView()).includes('oauth-token'), false, '界面数据不能带账号凭据');
+      assert.deepEqual(view.pool.members.map(m => [m.id, m.usable]), [['claude:qa-a', true], ['claude:qa-old', false], ['claude:qa-b', true]]);
+      assert.ok(view.pool.members[2].requests >= 2 && view.pool.members[0].lastStatus === 401);
+      // 用满再换：总是从第一个能用的开始
+      sw.saveProvider({ id: pool, app: 'claude', name: 'Claude 号池', pool: { strategy: 'fill-first', members: [{ type: 'account', id: 'claude:qa-b' }, { type: 'account', id: 'claude:qa-a' }] } });
+      hits.length = 0;
+      for (let i = 0; i < 2; i++) await send();
+      assert.deepEqual(hits.map(h => h.auth), ['Bearer oauth-token-b', 'Bearer oauth-token-b']);
+      // Codex：ChatGPT 的 Codex 接口没有 /v1、要工作区 id、只收流式且不存储
+      const codexPool = sw.saveProvider({ app: 'codex', name: 'Codex 号池', pool: { members: [{ type: 'account', id: 'chatgpt:qa-c' }] } });
+      await sw.activateProvider(codexPool);
+      hits.length = 0;
+      await fetch(`http://127.0.0.1:${sw.agentView().proxy.port}/codex/v1/responses`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer PROXY_MANAGED' }, body: JSON.stringify({ model: 'gpt-qa', input: 'hi', store: true, max_output_tokens: 5, previous_response_id: 'resp_1' }) });
+      const codexHit = hits[0], codexBody = JSON.parse(codexHit.body);
+      assert.equal(codexHit.url, '/codex/responses');
+      assert.equal(codexHit.auth, 'Bearer oauth-token-c'); assert.equal(codexHit.account, 'ws-qa'); assert.equal(codexHit.originator, 'codex_cli_rs');
+      assert.equal(codexBody.stream, true); assert.equal(codexBody.store, false); assert.equal(codexBody.instructions, '');
+      assert.equal('max_output_tokens' in codexBody || 'previous_response_id' in codexBody, false);
+      assert.equal(read(codexFile).includes('oauth-token'), false);
+      console.log('PASS agent pool: round-robin, fill-first, expired accounts skipped, 401 moves on, Claude OAuth beta, Codex backend path/body/workspace, no credentials in config or view, validation');
+    } finally {
+      delete process.env.AGENT_SWITCH_POOL_BASE;
+      sw.releaseAgentSwitch();
+      await sw.setAppProxy('claude', false); await sw.setAppProxy('codex', false);
+      fake.server.close();
+    }
+  }
+
+  const dbFile = path.join(root, 'cc.db');
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(dbFile);
+  db.exec("CREATE TABLE providers (id TEXT, app_type TEXT, name TEXT, settings_config TEXT, category TEXT, notes TEXT, sort_index INTEGER, meta TEXT)");
+  const settings = JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://imported.example', ANTHROPIC_AUTH_TOKEN: 'sk-import', ANTHROPIC_MODEL: 'claude-haiku-4-5' } });
+  db.prepare('INSERT INTO providers (id, app_type, name, settings_config, category, notes, sort_index, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('abc', 'claude', 'Imported', settings, '', '', 3, '{}');
+  db.close();
+  process.env.AGENT_SWITCH_CC_DB = dbFile;
+  const imported = await sw.importCcProviders();
+  assert.equal(imported.added, 1);
+  const card = sw.agentView().providers.find(item => item.name === 'Imported');
+  assert.equal(card.baseUrl, 'https://imported.example');
+  assert.equal(card.hasKey, true);
+  assert.equal(JSON.stringify(sw.agentView()).includes('sk-import'), false);
+  console.log('PASS agent import: CC Switch providers copied without exposing the key');
+})().catch(error => {
+  console.error('FAIL', error);
+  process.exit(1);
+});
+
+function listen(handler) {
+  const server = http.createServer(handler);
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port })));
+}
+function freePort() {
+  return new Promise(resolve => {
+    const server = http.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+  });
+}

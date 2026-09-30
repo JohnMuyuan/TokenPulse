@@ -31,8 +31,13 @@
   /** 风险分按 proxycheck 的口径分三档：0–33 低、34–66 中、67 起高。 */
   const riskLevel = risk => risk == null ? '' : risk < 34 ? 'low' : risk < 67 ? 'medium' : 'high';
   const RISK_LABEL = { low: '低风险', medium: '中风险', high: '高风险' };
-  function message(text, error = false) { const n = document.getElementById('egress-message'); if (n) { n.textContent = t(text); n.classList.toggle('error', error); n.setAttribute('role', error ? 'alert' : 'status'); } }
-  function markDirty() { dirty = true; message('有未保存的设置，保存后生效。'); }
+  /** 成功（已保存、已复制）走右上角提示；失败原因留在页面里，方便对着改。 */
+  function message(text, error = false, inline = false) {
+    const n = document.getElementById('egress-message');
+    if (!error && !inline && typeof showStatus === 'function') { if (n) { n.textContent = ''; n.classList.remove('error'); } showStatus(text); return; }
+    if (n) { n.textContent = t(text); n.classList.toggle('error', error); n.setAttribute('role', error ? 'alert' : 'status'); }
+  }
+  function markDirty() { dirty = true; message('有未保存的设置，保存后生效。', false, true); }
   function field(title, input) { const label = node('label', 'egress-field'); label.append(node('span', '', title), input); return label; }
   function toggleField(title, input) { const label = node('label', 'egress-switch'); label.append(input, node('span', '', title)); return label; }
 

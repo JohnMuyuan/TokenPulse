@@ -21,6 +21,8 @@ egressModule.ExitMonitor = class extends RealExitMonitor {
 };
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-ui-'));
 process.env.TOKENPULSE_DATA_DIR = path.join(temp, 'data');
+process.env.AGENT_SWITCH_HOME = process.env.HOME = process.env.USERPROFILE = path.join(temp, 'home');
+for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'GROK_HOME']) delete process.env[key];
 app.setPath('userData', path.join(temp, 'electron'));
 // Synthetic rows are confined to the test data directory, never to the real ledger.
 const fixtureNow = Date.now(), hour = 3600000;
@@ -28,6 +30,8 @@ const iso = at => new Date(at).toISOString();
 const dayKey = require('../renderer/data.js').dayKey;
 const dataPath = process.env.TOKENPULSE_DATA_DIR;
 fs.mkdirSync(dataPath, { recursive: true });
+// 老用户升级、看过这版说明：不弹「新版本有什么」和新手引导（这两样在 test-intro-ui.cjs 里单独测）
+fs.writeFileSync(path.join(dataPath, 'prefs.json'), JSON.stringify({ seenVersion: require('../package.json').version, onboarding: 'done' }));
 const modelRows = Object.fromEntries(Array.from({ length: 22 }, (_, i) => [`QA-model-${String(i).padStart(2, '0')}`, { input: 1000 + i, output: 100, cacheRead: 500, cacheWrite: 0, reasoning: 20, costUsd: 0.1, requests: 1 }]));
 fs.writeFileSync(path.join(dataPath, 'usage-rollups.json'), JSON.stringify({ version: 1, files: { 'ui-test-fixture': { kind: 'codex', official: true, days: { [dayKey(fixtureNow)]: { 'Codex CLI': modelRows } } } } }));
 fs.writeFileSync(path.join(dataPath, 'quota-history.json'), JSON.stringify({ version: 1, accounts: {
@@ -94,7 +98,10 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("document.getElementById('pref-notifyAt').click()");
       await until("!document.getElementById('option-menu').hidden");
       await evaluate("document.querySelector('#option-menu [data-value=\"90\"]').click()");
-      await until("document.getElementById('prefs-status').textContent.includes('已保存')");
+      // 0.3.9：保存成功改成右上角可关闭的提示，设置页底部那行不再插入成功文字
+      await until("[...document.querySelectorAll('#toast-stack .tp-toast')].some(t => t.textContent.includes('设置已保存'))");
+      assert.equal(await evaluate("document.getElementById('prefs-status').textContent"), '');
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('#toast-stack .tp-toast')).position"), 'relative', '进度线要贴在每条提示自己的底部');
       assert.equal(await evaluate("window.tokenpulse.readPrefs().then(p => p.notifyAt)"), 90);
       assert.match(await evaluate("document.getElementById('pref-notifyAt').textContent"), /90%/);
       await evaluate("document.querySelector('[data-settings-tab=accounts]').click()");
@@ -163,10 +170,18 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("byCapacity({}, 50)"), null, '没有容量折算时不给数');
       // 历史容量折线：周 / 5 小时、Tokens / 费用可以切换
       assert.equal(await evaluate("document.querySelectorAll('.capacity-panel').length"), 1);
-      await evaluate("document.querySelector('[data-cap-window=five]').click(); document.querySelector('[data-cap-metric=costUsd]').click()");
-      assert.equal(await evaluate("state.capWindow + '/' + state.capMetric"), 'five/costUsd');
-      assert.equal(await evaluate("Boolean(document.querySelector('.capacity-chart svg, .capacity-chart .empty'))"), true);
-      await evaluate("document.querySelector('[data-cap-window=week]').click(); document.querySelector('[data-cap-metric=tokens]').click()");
+      // 0.3.9：共享额度（默认）下模块还在、标题不变，只是给出打开「只在本机用 Code」的入口；打开后才有折线和切换
+      assert.match(await evaluate("document.querySelector('.capacity-panel h2').textContent"), /额度容量趋势/);
+      if (await evaluate("!!document.querySelector('.capacity-panel.protected')")) {
+        assert.ok(await evaluate("!!document.querySelector('.capacity-panel .capacity-locked button')"), '共享额度下给出去设置的入口');
+        assert.equal(await evaluate("document.querySelector('.capacity-panel [data-cap-window]')"), null, '没有可折算的数据时不显示空的切换按钮');
+        // 这个测试账号是老式采样（没有账号 id），不能单独标成只在本机用 Code；切换按钮在 test-model-study-ui 的带 id 账号上覆盖
+      } else {
+        await evaluate("document.querySelector('[data-cap-window=five]').click(); document.querySelector('[data-cap-metric=costUsd]').click()");
+        assert.equal(await evaluate("state.capWindow + '/' + state.capMetric"), 'five/costUsd');
+        assert.equal(await evaluate("Boolean(document.querySelector('.capacity-chart svg, .capacity-chart .empty'))"), true);
+        await evaluate("document.querySelector('[data-cap-window=week]').click(); document.querySelector('[data-cap-metric=tokens]').click()");
+      }
       // 定时刷新（onSnapshot / 30 秒重绘）不能把页面拉回顶部
       // 滚动的是工作区，不是整个窗口
       assert.equal(await evaluate("getComputedStyle(document.body).overflow"), 'hidden');
@@ -583,6 +598,7 @@ app.on('web-contents-created', (_, contents) => {
           await evaluate("(() => { const t = document.querySelector('.sw-composer textarea'); t.value = 'QA 提问'; t.dispatchEvent(new Event('input')); t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
           await until("document.querySelector('.sw-row.pending .sw-rich')?.textContent.includes('QA 回复')");
           assert.equal(await evaluate("document.querySelector('.sw-send').textContent.includes('停止')"), true, '回复中按钮变成停止');
+          await until("document.querySelector('.sw-live-tools')?.textContent.includes('Read')");
           assert.equal(await evaluate("document.querySelector('.sw-live-tools')?.textContent.includes('Read')"), true);
           assert.equal(await evaluate("document.querySelector('.sw-composer textarea').value"), '');
           await until("!document.querySelector('.sw-row.pending') && document.querySelector('.sw-send').textContent.includes('发送')");
@@ -652,12 +668,13 @@ app.on('web-contents-created', (_, contents) => {
       await until("!document.getElementById('refresh').disabled && !document.getElementById('app-status').hidden");
       assert.match(await evaluate("document.getElementById('app-status').textContent"), /刷新失败/);
       console.log('PASS failed refresh shows an error and re-enables the button');
+      assert.equal(await evaluate("document.querySelector('[data-page=comparison]') === null && !window.tokenpulse.comparisonQuery"), true);
       assert.equal(await evaluate("window.tokenpulse.readPrefs().then(p => p.startMinimized)"), false,
         '--hidden must not persist startMinimized');
       clearInterval(heartbeat); clearTimeout(watchdog);
       app.exit(0);
     } catch (error) {
-      console.error('FAIL', error.message);
+      console.error('FAIL', error.stack || error.message);
       app.exit(1);
     }
   });

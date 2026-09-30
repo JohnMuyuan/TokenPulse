@@ -1,6 +1,6 @@
 {
   "name": "tokenpulse",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
@@ -10,11 +10,12 @@
     "start": "npm run compile && electron .",
     "dev": "npm run compile && electron . --dev",
     "icons": "node scripts/make-icon.cjs",
-    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs && node scripts/test-sessions.cjs && node scripts/test-egress.cjs && node scripts/test-model-study.cjs && node scripts/test-model-scan.cjs",
-    "test:ui": "npm run compile && electron scripts/test-ui.cjs && electron scripts/test-model-study-ui.cjs",
+    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs && node scripts/test-sessions.cjs && node scripts/test-egress.cjs && node scripts/test-model-study.cjs && node scripts/test-model-scan.cjs && node scripts/test-shared-quota.cjs && node scripts/test-agent-switch.cjs && node scripts/audit-agent-config-safety.cjs && node scripts/test-agent-config.cjs && node scripts/test-agent-guard.cjs && node scripts/test-codex-context.cjs && node scripts/test-number-animation.cjs",
+    "test:ui": "npm run compile && electron scripts/test-ui.cjs && electron scripts/test-model-study-ui.cjs && electron scripts/test-usage-projects-ui.cjs && electron scripts/test-agent-switch-ui.cjs && electron scripts/test-provider-feedback-ui.cjs && electron scripts/test-provider-pool-ui.cjs && electron scripts/test-intro-ui.cjs && electron scripts/test-agent-guard-ui.cjs",
     "dist:portable": "npm run icons && npm run compile && electron-builder --win portable --publish never",
     "dist": "npm run icons && npm run compile && electron-builder --publish never",
-    "test:update": "npm run compile && electron scripts/test-updater.cjs"
+    "test:update": "npm run compile && electron scripts/test-updater.cjs",
+    "test:agent-safety": "npm run compile && node scripts/audit-agent-config-safety.cjs && node scripts/test-agent-config.cjs"
   },
   "build": {
     "appId": "com.tokenpulse.app",
@@ -81,6 +82,7 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "toml-eslint-parser": "0.10.0"
   }
 }
