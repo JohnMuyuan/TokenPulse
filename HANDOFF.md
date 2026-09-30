@@ -23,6 +23,9 @@
 - **需要留意**：manual 里的 `grok.*(code|build)` 兜底是 $0.2/$1.5，而 LiteLLM 上 grok-build-latest 是 $2/$6、grok-build-0.1 是 $1/$2。实际的 grok-build 型号名不在自动规则里时仍走这条兜底，如果用户觉得 Grok Build 的费用偏低，可以改 manual.json。
 - **测试**：新增 `scripts/test-knowledge-update.cjs`（npm test），覆盖上述所有规则、命令行、GITHUB_OUTPUT，并检查仓库里的 models.json 与 manual.json 一致。`test-features.cjs` 里 claude-opus-5-5 的期望值从 5 改成 4（公开价）。`test-intro-ui` 的版本分隔断言改为根据 NOTES 推算。结果：**`npm test` 退出 0；`npm run test:ui` 退出 0，共 29 个 PASS**。对打包产物跑了 test-model-study-ui（用到思考等级规则），通过。
 - **产物**：`dist\TokenPulse-0.3.11-Setup.exe`、`.blockmap`、`TokenPulse-0.3.11-Portable.exe`、`latest.yml`（0.3.11）。asar 里有 knowledge/models.json 和 manual.json，与源码一致。Git 提交、标签、Release，以及 Actions 首次运行的结果见本条末尾。
+- **Git / 发布**：提交 `5a948ec TokenPulse v0.3.11：模型知识库全自动更新`，推送前 fetch 过，远端没有新提交；token 带 workflow 权限，可以推送工作流文件。标签 `v0.3.11` 指向 5a948ec。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.11 已发布：不是草稿，4 个附件大小一致，releases/latest 是 v0.3.11，线上 latest.yml 的 sha512 与 Setup.exe 一致。没有会话链接。没有在本机实际装一遍、走自动更新。
+- **Actions 首次真实运行**（由推送 manual.json 触发，run 36704882009）：结果是 success。在 GitHub 上从 LiteLLM 和 OpenRouter 拉取实时数据生成的结果，与已提交的一致（没有变化），所以没有提交、也没有开 PR；报告里列出了 gpt-5.6-sol 的价格争议。**「直接提交 main」和「开 PR」两条分支还没有在线上真正跑过**，要等到数据源真的有变化时才会触发；Actions 那一页如果报错，就去看这两个步骤。
+- 线上的 `knowledge/models.json` 已经是 2026.09.30（122 条规则，带 capabilities）。0.3.10 及更早版本每天检查时也会下载它（只用 prices 和 aliases）。
 
 ## v0.3.10：工具配置被改走时提醒 + Grok 号池修复 · 已提交、打标签、发布 GitHub Release（2026-09-30，Claude）
 
