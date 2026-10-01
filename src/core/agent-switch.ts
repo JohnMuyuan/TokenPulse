@@ -8,13 +8,14 @@
 import crypto from "crypto";
 import { configureConfigFiles, configRead, configWrite, configTransaction, recoverConfig, configAllowRestore, configPreviewing } from "./agent-config";
 import { listOriginals, readHistory } from "./agent-history";
-import { parseToml, stringifyToml, headerName, tableName, upsertKey, readKey, readValue, replaceTable, setTableKey, quote, unquote, restoreToml } from "./agent-toml";
+import { catalogVerdict, probeCodexCatalog } from "./codex-probe";
+import { parseToml, stringifyToml, headerName, tableName, upsertKey, readKey, readValue, replaceTable, setTableKey, quote, unquote, restoreToml, dropEmptyTable, type Block } from "./agent-toml";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { ccSwitchDbPath } from "./cc-switch";
 import { fetchUpstreamModels, probeUrl, startAgentProxy, type ProxyLog } from "./agent-proxy";
-import { canonicalLevels, claudeRoleEnv, desktopModelMap, desktopProfile, desktopRouteModels, DESKTOP_PROFILE_ID, DESKTOP_PROFILE_NAME, emptySlot, loadCodexTemplate, parseSlots, codexCatalogEntry, type DesktopMode, type ModelSlot, type ThinkingFlags } from "./agent-models";
+import { canonicalLevels, claudeRoleEnv, desktopModelMap, desktopProfile, desktopRouteModels, DESKTOP_PROFILE_ID, DESKTOP_PROFILE_NAME, emptySlot, loadCodexTemplate, parseSlots, codexCatalogEntry, patchCodexCatalog, type DesktopMode, type ModelSlot, type ThinkingFlags } from "./agent-models";
 import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, POOL_KEY, POOL_OFFICIAL, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type PoolConfig, type PoolMember, type ProxyTarget, type Upstream } from "./agent-types";
 import { readOfficialAccountStore, resolveAccountCredential } from "./accounts";
 import { dataDir, dataFile, readJson, writeJson } from "./paths";
@@ -536,6 +537,7 @@ export async function activateProvider(id: string) {
     const store = load(), provider = must(store, id), app = provider.app;
     if (provider.locked) throw new Error('该供应商的凭证由原工具管理，请添加 API Key 供应商');
     if (provider.official && store.proxy.apps[app]) throw new Error('请先关闭本地路由，再切回官方登录');
+    await precheckCodex(provider);
     const cross = !!provider.endpoint && (!!provider.pool || provider.endpoint.upstream !== NATIVE_UPSTREAM[app] || (app === 'desktop' && provider.desktopMode === 'map'));
     if (cross || store.proxy.apps[app]) {
       await enableProxy(app, id, true);
@@ -557,6 +559,7 @@ async function enableProxy(app: AgentApp, selected?: string, explicit = false) {
   // 路由开着、工具配置却被改走了（例如 Grok 继续旧会话时换回了旧模型）：用户明确点「启用」/「切回」时重新接上，
   // 接管前的恢复快照保持不变；启动时的自动恢复不这样做，免得覆盖用户在外面的修改。
   if (initial.proxy.apps[app] && initial.restore[app] && !proxyIsOurs(app) && !explicit) throw new Error('工具连接已在外部修改，请先关闭此路由再明确启用');
+  await precheckCodex(provider);
   await ensureProxy();
   try {
     configTransaction(() => {
@@ -585,9 +588,61 @@ export async function setProxyPort(port: number) {
     const store = load(); store.proxy.port = port; save(store);
   });
 }
+/*
+ * 启动时修复旧版本留下的坏配置（0.3.15）。只动 TokenPulse 自己写的东西，走事务（有备份和历史；只读保护开着就不写、只提示）：
+ * - Codex：空的 [model_providers.tokenpulse_route]（当前没在用它时）——Codex 报「provider name must not be empty」；
+ * - Codex：tokenpulse-model-catalog.json 缺新版 Codex 要求的字段——Codex 报 failed to parse model_catalog_json；
+ * - Grok：空的 [model.tokenpulse_route]。
+ * 两种 Codex 的情况桌面端都显示「无法加载登录要求」，进不了界面。
+ */
+export function repairAgentConfigs(): string[] {
+  const fixed: string[] = [];
+  const work = () => configTransaction(() => {
+    const dropLeftover = (file: string, table: string, inUse: (blocks: Block[]) => boolean) => {
+      const text = configRead(file);
+      if (!text) return false;
+      let blocks: Block[];
+      try { blocks = parseToml(text); } catch { return false; } // 本来就解析不了的文件不是这里能修的
+      if (inUse(blocks) || !dropEmptyTable(blocks, table)) return false;
+      writeText(file, stringifyToml(blocks));
+      return true;
+    };
+    if (dropLeftover(codexFile(), 'model_providers.tokenpulse_route', (blocks) => readKey(blocks[0].lines, 'model_provider') === 'tokenpulse_route')) fixed.push('Codex 配置里留下的空路由表');
+    const catalogFile = path.join(path.dirname(codexFile()), 'tokenpulse-model-catalog.json');
+    const catalogText = configRead(catalogFile);
+    if (catalogText) {
+      try {
+        const catalog = JSON.parse(catalogText);
+        if (patchCodexCatalog(catalog)) { writeText(catalogFile, `${JSON.stringify(catalog, null, 2)}\n`); fixed.push('Codex 模型目录缺少新版要求的字段'); }
+      } catch { /* 不是 JSON：下次切换会重新生成 */ }
+    }
+    if (dropLeftover(grokFile(), 'model.' + GROK_TABLE, (blocks) => { const models = blocks.find((block) => block.header && headerName(block.header) === 'models'); return !!models && readKey(models.lines, 'default') === GROK_TABLE; })) fixed.push('Grok 配置里留下的空路由表');
+    // 接管 / 切换时记下的「我们写的样子」跟着更新，免得把这次修复当成外部修改
+    if (fixed.length) {
+      const store = load();
+      for (const app of ['codex', 'grok'] as AgentApp[]) {
+        if (store.owned[app]) store.owned[app] = snapshotFiles(app);
+        if (store.proxyWritten[app]) store.proxyWritten[app] = snapshotFiles(app);
+      }
+      save(store);
+    }
+  });
+  try { work(); }
+  catch (error) {
+    if (!fixed.length) return [];
+    // 只读保护开着等原因没写成：告诉用户有什么要修
+    configNotice = '发现需要修复的工具配置（' + fixed.join('、') + '），但没有写入：' + (error instanceof Error ? error.message : String(error));
+    return [];
+  }
+  if (fixed.length) configNotice = '已自动修复：' + fixed.join('、') + '（旧版本留下的，会让 Codex 显示「无法加载登录要求」）。改动前的内容在「配置保护」的备份里。';
+  return fixed;
+}
 export async function resumeAgentProxy() {
   return asyncMutation(async () => {
     recoverConfig();
+    repairAgentConfigs();
+    await recheckCodexCatalog();
+    const repairNote = configNotice;
     for (const app of AGENT_APPS) {
       const store = load(); if (!store.proxy.apps[app]) continue;
       if (store.restore[app] && proxyIsOurs(app)) { await ensureProxy(); continue; }
@@ -597,6 +652,8 @@ export async function resumeAgentProxy() {
       }
       await enableProxy(app);
     }
+    // 修复说明别被后面的提示盖掉
+    if (repairNote && !configNotice.includes(repairNote)) configNotice = [repairNote, configNotice].filter(Boolean).join(' ');
   });
 }
 export function releaseAgentSwitch() {
@@ -973,8 +1030,10 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
     if (modelName) upsertKey(root.lines, "model", quote(modelName));
     const effort = primary?.defaultReasoningLevel || canonicalLevels(primary?.reasoningLevels || [])[0];
     if (effort) upsertKey(root.lines, "model_reasoning_effort", quote(effort));
-    const catalogPath = writeCodexCatalog(provider);
-    if (catalogPath) upsertKey(root.lines, "model_catalog_json", quote(catalogPath));
+    // 0.3.15：本机的 Codex 试读过这份目录、明确读不了，就不写目录（写了 Codex 整份配置都读取失败，进不了界面）
+    const catalogJson = codexCatalogJson(provider);
+    if (catalogJson && catalogVerdict(catalogJson) === "rejected") configNotice = CATALOG_REJECTED;
+    else if (catalogJson) upsertKey(root.lines, "model_catalog_json", quote(writeCodexCatalog(catalogJson)));
     for (const key of ["model_reasoning_effort", "plan_mode_reasoning_effort", "disable_response_storage", "review_model"]) {
       if (provider.extra[key] !== undefined) upsertKey(root.lines, key, quote(provider.extra[key]));
     }
@@ -982,11 +1041,13 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
       exclusive[key] = provider.extra[key];
       upsertKey(root.lines, key, quote(provider.extra[key]));
     }
-    const wire = proxy || provider.endpoint?.upstream !== "openai-chat" ? "responses" : "chat";
-    for (const [key, value] of Object.entries({ name: 'TokenPulse', base_url: baseUrl, wire_api: wire, experimental_bearer_token: apiKey, requires_openai_auth: false })) {
+    // Codex 已经不支持 wire_api = "chat"（写了整份配置读取失败）。Chat 格式的上游只能经本地路由转换，这里一律写 responses。
+    for (const [key, value] of Object.entries({ name: 'TokenPulse', base_url: baseUrl, wire_api: 'responses', experimental_bearer_token: apiKey, requires_openai_auth: false })) {
       setTableKey(blocks, 'model_providers.tokenpulse_route', key, quote(value));
     }
   }
+  // 切回官方 / 关掉路由后表里一个键都不剩：整张表删掉。空表会让 Codex 报「provider name must not be empty」，进不了界面
+  dropEmptyTable(blocks, 'model_providers.tokenpulse_route');
   writeText(file, stringifyToml(blocks));
   store.exclusive.codex = exclusive;
 }
@@ -1004,18 +1065,57 @@ function writeGrok(provider: Provider, baseUrl: string, apiKey: string, _proxy: 
       setTableKey(blocks, 'model.' + GROK_TABLE, key, quote(value));
     }
   }
+  dropEmptyTable(blocks, 'model.' + GROK_TABLE);
   writeText(file, stringifyToml(blocks));
 }
 
-function writeCodexCatalog(provider: Provider) {
+const CATALOG_REJECTED = '本机的 Codex 读不了 TokenPulse 生成的模型目录（多半是 Codex 更新后格式变了），这次没有写入模型目录：Codex 能正常使用，模型列表和思考等级用它自带的。请更新 TokenPulse。';
+const codexCatalogFile = () => path.join(path.dirname(codexFile()), "tokenpulse-model-catalog.json");
+/** 这个供应商的 Codex 模型目录（没有填模型就是空串）。 */
+function codexCatalogJson(provider: Provider) {
   const rows = provider.slots.filter((slot) => slot.model);
   if (!rows.length) return "";
-  const dir = path.dirname(codexFile());
-  const template = loadCodexTemplate(dir);
-  const catalog = { models: rows.map((slot, index) => codexCatalogEntry(slot, template, index)) };
-  const file = path.join(dir, "tokenpulse-model-catalog.json");
-  writeText(file, `${JSON.stringify(catalog, null, 2)}\n`);
+  const template = loadCodexTemplate(path.dirname(codexFile()));
+  return `${JSON.stringify({ models: rows.map((slot, index) => codexCatalogEntry(slot, template, index)) }, null, 2)}\n`;
+}
+function writeCodexCatalog(json: string) {
+  const file = codexCatalogFile();
+  writeText(file, json);
   return file;
+}
+/** 写 Codex 配置之前：让本机的 Codex 试读一遍要写的目录（异步，结果记下来给 writeCodex 用）。 */
+async function precheckCodex(provider: Provider | null | undefined) {
+  if (!provider || provider.app !== "codex" || provider.official) return;
+  const json = codexCatalogJson(provider);
+  if (json) await probeCodexCatalog(json);
+}
+/**
+ * 启动时：config.toml 正引用着 TokenPulse 的目录，而本机的 Codex（可能刚更新过）读不了它 → 把这条引用去掉，让 Codex 能进界面。
+ * 走事务（有备份和历史；只读保护开着就不写、只提示）。
+ */
+async function recheckCodexCatalog() {
+  let json = "";
+  try {
+    const blocks = parseToml(readText(codexFile()));
+    const ref = readKey(blocks[0].lines, "model_catalog_json");
+    if (!ref || path.resolve(ref) !== path.resolve(codexCatalogFile())) return;
+    json = configRead(codexCatalogFile()) || "";
+  } catch { return; }
+  if (!json || await probeCodexCatalog(json) !== "rejected") return;
+  try {
+    configTransaction(() => {
+      const blocks = parseToml(readText(codexFile()));
+      upsertKey(blocks[0].lines, "model_catalog_json", null);
+      writeText(codexFile(), stringifyToml(blocks));
+      const store = load();
+      if (store.owned.codex) store.owned.codex = snapshotFiles("codex");
+      if (store.proxyWritten.codex) store.proxyWritten.codex = snapshotFiles("codex");
+      save(store);
+    });
+    configNotice = [configNotice, '已自动修复：本机的 Codex 读不了 TokenPulse 之前写的模型目录（多半是 Codex 更新后格式变了），已经从 Codex 配置里去掉这份目录，Codex 能正常使用。请更新 TokenPulse。'].filter(Boolean).join(' ');
+  } catch (error) {
+    configNotice = [configNotice, '发现需要修复的工具配置（本机的 Codex 读不了 TokenPulse 写的模型目录），但没有写入：' + (error instanceof Error ? error.message : String(error))].filter(Boolean).join(' ');
+  }
 }
 
 function writeDesktop(provider: Provider, baseUrl: string, apiKey: string, proxy: boolean) {

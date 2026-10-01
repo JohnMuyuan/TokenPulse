@@ -1,6 +1,47 @@
-# 当前接手入口 · 0.3.14（2026-09-30，已发布）
+# 当前接手入口 · 0.3.15（2026-10-01，测试版已编译）
 
-## v0.3.14：时间线曲线修复 + 换算表点开看详情 · 已完成，已提交、打包、发布（Claude）
+## v0.3.15：修复切到第三方后 Codex 桌面端「无法加载登录要求」 · 测试版已编译，**未提交、未打安装包、未发布**（Claude）
+
+- 用户反馈：在设置里登录了账号后，选择第三方 API，启动 Codex 桌面端就报「无法加载登录要求」，进不了界面。之后追加：其他 CLI 有没有同类问题也要检查，有就一起修。都算 0.3.15。**用户没说要发布，发布前先问。**
+- **排查过程（都是在临时目录里复现，没碰真实的 ~/.codex）**：
+  - 这句话在 Codex 桌面端 app.asar 里的标识是 `electron.loginMethods.error`。触发条件有两个：读不到管理策略，或者读用户 config 失败（`configReadSucceeded` 为假）。也就是说 config.toml 读不进去时就会显示它。
+  - 用本机的 codex.exe（桌面端自带的 codex-cli 0.159.2）在临时 CODEX_HOME 里跑 `codex features list`，复现出两个原因：
+    1. **第三方状态**：报 `failed to parse model_catalog_json … missing field support_verbosity`。逐个字段试出来，0.159 起每个模型必填 slug、display_name、priority、visibility、supported_in_api、shell_type、base_instructions、supported_reasoning_levels、**support_verbosity、truncation_policy、experimental_supported_tools**，后三项是我们的骨架缺的。另外新版 models_cache.json 里已经没有 base_instructions，`loadCodexTemplate` 找不到模板，所以一直走骨架。
+    2. **切回官方或关掉路由之后**：留下空的 `[model_providers.tokenpulse_route]`，Codex 报 `provider name must not be empty`。用户真实的 config.toml 现在就是这个状态（复制一份到临时目录验证过，读取失败）。
+  - 另外还有两点：每切换一次会多留几个空行（删键时只删了 key = value，没删换行）；`wire_api = "chat"` 新版 Codex 直接拒绝，不过那条路径本来就总走本地路由，实际写不出来。
+- **已完成（未提交）**：
+  - `agent-models.ts`：新增 `CODEX_CATALOG_DEFAULTS`（骨架加必填字段的保守默认值）、`CODEX_CATALOG_REQUIRED`、`patchCodexCatalog()`（给磁盘上的旧目录补字段）；`codexCatalogEntry` 改成先铺默认值，再叠模板。
+  - `agent-toml.ts`：`upsertKey` 删键时连整行一起删；新增 `dropEmptyTable()` 和 `ownTable()`；`restoreToml` 还原后，如果自有表是空的也删掉。
+  - `agent-switch.ts`：`writeCodex` 和 `writeGrok` 写完后调 `dropEmptyTable`；`wire_api` 一律写 responses；新增 `repairAgentConfigs()`，在 `resumeAgentProxy` 开头调用，走 configTransaction（有备份和历史；只读保护开着时不写，只提示）。它修三样：没在使用的空 Codex 路由表、缺字段的目录、空的 Grok 路由表。
+  - 主进程、preload、渲染：新增 IPC `agent:startup-notice`（等启动恢复跑完再返回，只返回一次），`agentStartupNotice`；界面不管在哪个页面都会弹一次修复说明。
+  - 新增 `scripts/test-codex-compat.cjs`（已加进 npm test），6 组：TOML、目录、Codex 第三方和官方来回切 3 次、本地路由开关、Grok、启动修复（含只读保护）。**本机有 codex.exe 时，会用真实的 Codex 把每种写出的配置读一遍**；用 0.159.2 和 npm 装的旧版 0.155.1 各跑过一遍，每次 11 项都通过。找不到 codex.exe 时会跳过并打印 SKIP。
+  - 版本号 0.3.15；intro NOTES 两条；README 0.3.15 一节；i18n。
+- **其他工具的检查结论**：
+  - Grok CLI 1.0.44：遇到空的 `[model.tokenpulse_route]` 不会启动失败，只是 `grok models` 里多一项用不了的，现在一并清掉。
+  - Claude Code 2.1.285：settings 的 env 是按字符串强制转换的，写数字或布尔值没问题。
+  - Claude 桌面端 2.16120：我们写的配置项（inferenceGateway*、inferenceProvider、inferenceModels、supports1m、configLibrary / appliedId 等）在新版 app.asar 里都还在。没有实际启动验证。
+- **验证**：
+  - `npm test` 退出 0（含 test-codex-compat 6/6，真实 Codex 读取 11 项）；`npm run test:ui` 退出 0，共 30 个 PASS。
+  - 端到端（scratchpad 里的 startup-repair.cjs，临时 HOME 里放一份坏配置再启动应用）：启动后空表被删掉、目录补齐；在总览页弹出「已自动修复…」；修复说明只给一次；配置保护的历史里有这次改动。源码和打包后的 app.asar 各跑过一遍，都通过。
+- **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物是 `dist/win-unpacked/TokenPulse.exe`（0.3.15）。asar 里 8 个相关文件和源码一致；对 app.asar 跑 test-agent-switch-ui 通过。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.14 的）。
+- 收尾检查：没有留下 electron、dist 下的 TokenPulse 或 codex 进程；win-unpacked 的 exe 和 app.asar 都没被占用；自己建的临时目录已经删掉。
+- **没做**：没提交、没打安装包、没发布，等用户确认。**用户真实的 `~/.codex/config.toml` 还是坏的**（有空表，Codex 现在读取失败），没有动它；运行 0.3.15 一次会自动修（改动前的内容会进配置保护的备份），或者用户同意后手动删那张空表。
+- **追加（用户同意做，仍算 0.3.15）：切换前让本机的 Codex 试读目录**：
+  - 新文件 `src/core/codex-probe.ts`：
+    - `findCodexExe()` 按顺序找：`TOKENPULSE_CODEX_EXE`；桌面端自带的 `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`（取最新）；npm 全局装的 vendor 里的 exe。设了 `AGENT_SWITCH_HOME`（自动化测试）时不去找真实机器上的，除非明确指定。
+    - `probeCodexCatalog(json)` 是异步的：在临时目录里写目录和一份最小 config，跑 `codex features list`，10 秒超时，用完删掉临时目录。结果有三种：ok、rejected（只有 stderr 里提到 model_catalog_json 才算）、unknown（放行，不记缓存）。缓存按 exe 的大小和修改时间加目录内容来记。
+    - `catalogVerdict(json)` 是同步的，只查缓存。`setCodexProbeForTests()` 给测试用。
+  - `agent-switch.ts`：`activateProvider` 和 `enableProxy` 在事务之前调 `precheckCodex`；`writeCodex` 查到 rejected 就不写 `model_catalog_json`，configNotice 提示；启动时 `recheckCodexCatalog()` 检查：config 正引用着 tokenpulse-model-catalog.json 而 Codex 读不了，就走事务去掉这条引用，只读保护下只提示。别人的目录（比如 CC Switch 的）不管。
+  - 实测本机试读一次约 40 毫秒，命中缓存约 1 毫秒。
+  - test-codex-compat 现在 8 组：新增用假试读测逻辑的一组，和用真实 Codex 判断好、坏目录的一组（真实 Codex 读取共 15 项）。
+  - 追加后的验证：`npm test` 退出 0（test-codex-compat 8/8，真实 Codex 读取 15 项）；`npm run test:ui` 退出 0，共 30 个 PASS。测试版已重新编译（`electron-builder --win dir` 退出 0），asar 里 8 个相关文件（含 codex-probe.js）和源码一致。对 app.asar 跑 startup-repair 端到端和 test-agent-switch-ui，都通过。没有遗留进程，文件没被占用，试读的临时目录没有残留。
+- **追加（仍算 0.3.15）：其中新内容约多少**。用户问「Pro 一周能用 Opus 5.5 medium 10 亿 Token，是不是算错了」。只读汇总了真实请求记录，没有算错：最近 30 天 2,590 次调用里，缓存读占 98.56%、缓存写 1.18%、输出 0.25%，每次调用约 45.6 万 Token，其中新内容约 6,600。用户确认容易误解，要求加一行小字。
+  - `renderer/model-study.js`：`freshShare()`；capCell 多一行 `.ms-cap-new`「其中新内容约 X · y% 是重读缓存」（缓存读占比 ≥ 50% 才显示，title 里有解释）；详情卡片多一个同样的小标签；综合单价下面多一句 `.ms-price-why` 的解释。i18n、intro NOTES、README 都已补。
+  - 验证：test-model-study-ui 加了断言（缓存读 40% 时不显示；98.6% 时显示「其中新内容约 720 · 98.6% 是重读缓存」；详情里有解释；英文能翻译）。`npm test` 退出 0，`npm run test:ui` 退出 0，共 30 个 PASS。夜间模式截图看过排版，小字颜色从 faint 调成了 muted。测试版已重新编译（`electron-builder --win dir` 退出 0），asar 里 6 个相关文件和源码一致，对 app.asar 跑 test-model-study-ui，4 个 PASS。没有遗留进程，文件没被占用。
+- 已知限制：试读只检查模型目录；Codex 如果在别的地方改了格式（比如 provider 表的字段），试读发现不了，要靠 test-codex-compat 在装了新版 Codex 的机器上跑出来。找不到 Codex 可执行文件时（比如只装了别的安装方式）不试读，按原样写。
+
+
+## v0.3.14（历史）：时间线曲线修复 + 换算表点开看详情 · 已完成，已提交、打包、发布（Claude）
 
 - 用户要求（0.3.14；**只编译测试版，不打安装包，不发布 GitHub**）：
   1. 时间线放大后，曲线下的绿色面积变少；放大到最细再左右拖动会抽动，或者看不到线。

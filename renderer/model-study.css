@@ -397,3 +397,7 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .ms-mix-share { text-align: right; }
 .ms-mix-calc { color: var(--muted); }
 @media (max-width: 980px) { .ms-price-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------------- 其中新内容约多少（0.3.15） ---------------- */
+.ms-cap-new { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; cursor: help; }
+.ms-price-why { color: var(--text-2) !important; }

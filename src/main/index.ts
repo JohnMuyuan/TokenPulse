@@ -762,7 +762,14 @@ if (!app.requestSingleInstanceLock()) {
       }
     });
     configReason("启动时恢复本地路由");
-    void resumeAgentProxy().finally(() => configReason("")).then(() => publishAgent()).catch((error) => console.error("[TokenPulse] 本地路由没有恢复", error));
+    // 0.3.15：启动时会顺手修复旧版本留下的坏配置（见 repairAgentConfigs）。修复说明等界面来取，免得界面还没加载好就发过去丢了
+    let startupNotice = "";
+    const resumed = resumeAgentProxy().finally(() => configReason("")).then(() => {
+      const notice = agentView().notice || "";
+      if (/已自动修复|发现需要修复/.test(notice)) startupNotice = notice;
+      publishAgent();
+    }).catch((error) => console.error("[TokenPulse] 本地路由没有恢复", error));
+    ipcMain.handle("agent:startup-notice", async () => { await resumed; const notice = startupNotice; startupNotice = ""; return notice; });
     ipcMain.handle("models:calibration", (_event, value: unknown) => updateCalibration(value));
     // 时间线上标注「本机以外的使用」：改了之后容量要重算，不用重新查额度
     ipcMain.handle("models:offmachine", (_event, value: unknown) => { const marks = updateMark(value); backgroundRefresh(false); return marks; });

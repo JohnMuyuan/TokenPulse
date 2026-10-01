@@ -259,6 +259,9 @@
       cell.append(meter);
       const sub = [c.callsPerWindow ? `≈ ${number(c.callsPerWindow)} 次调用` : null, c.remainingTokens != null ? `本周期还剩 ${tokens(c.remainingTokens)}` : null].filter(Boolean);
       if (sub.length) cell.append(el('small', { class: 'ms-cap-sub', text: sub.join(' · ') }));
+      // 0.3.15：Tokens 里绝大部分是每次调用重读的缓存，容易让人以为能写这么多新内容。写明其中新内容大约多少
+      const fresh = freshShare(c.priceMix);
+      if (fresh && fresh.cacheRead >= .5) cell.append(el('small', { class: 'ms-cap-new', title: '每次调用都会把整段对话重新读一遍（命中缓存，很便宜），这部分也算在 Tokens 里。新内容 = 新输入 + 缓存写 + 输出。', text: `其中新内容约 ${tokens(c.capacityTokens * fresh.fresh)} · ${pct1(fresh.cacheRead)} 是重读缓存` }));
     } else if (c.relative != null) {
       cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: `×${c.relative.toFixed(2)}` }), el('small', { text: 'API 价格参考比' })]),
         el('div', { class: 'ms-meter' }, [paint(el('i', { class: 'full relative' }), { width: `${Math.max(1.5, c.relative / (max.relative || 1) * 100).toFixed(2)}%` })]));
@@ -268,6 +271,13 @@
     return cell;
   }
 
+  /** Token 结构里「新内容」（未命中缓存的输入 + 缓存写 + 输出）和缓存读各占多少。 */
+  function freshShare(mix) {
+    if (!mix) return null;
+    const total = mix.fresh + mix.cacheRead + mix.cacheWrite + mix.output;
+    return total > 0 ? { fresh: (mix.fresh + mix.cacheWrite + mix.output) / total, cacheRead: mix.cacheRead / total } : null;
+  }
+  const pct1 = share => `${(share * 100).toFixed(share > .995 || share < .005 ? 2 : 1)}%`;
   function rankRow(row, i, max, data) {
     const c5 = row.five, cw = row.week;
     const basis = cw.capacityBasis === 'measured' || c5.capacityBasis === 'measured' ? ['样本外推', 'measured'] : c5.priceBasis === 'price' ? ['价格表', 'price'] : c5.priceBasis ? ['按价模拟', 'cost'] : null;
@@ -328,7 +338,8 @@
       if (x.capacityTokens != null) {
         body.push(el('div', { class: 'ms-dw-value' }, [el('strong', { text: tokens(x.capacityTokens) }), el('small', { text: 'Tokens' })]));
         if (x.capacityCostUsd != null) body.push(el('div', { class: 'ms-dw-usd' }, [el('b', { text: money(x.capacityCostUsd) }), el('small', { text: 'API 等价' })]));
-        const stats = [x.callsPerWindow ? `约 ${number(x.callsPerWindow)} 次调用` : null, x.remainingTokens != null ? `本周期还剩约 ${tokens(x.remainingTokens)}` : null].filter(Boolean);
+        const share = freshShare(x.priceMix);
+        const stats = [x.callsPerWindow ? `约 ${number(x.callsPerWindow)} 次调用` : null, x.remainingTokens != null ? `本周期还剩约 ${tokens(x.remainingTokens)}` : null, share && share.cacheRead >= .5 ? `其中新内容约 ${tokens(x.capacityTokens * share.fresh)}` : null].filter(Boolean);
         if (stats.length) body.push(el('div', { class: 'ms-dw-stats' }, stats.map(t => el('span', { text: t }))));
       } else if (x.relative != null) {
         body.push(el('div', { class: 'ms-dw-value' }, [el('strong', { text: `×${x.relative.toFixed(2)}` }), el('small', { text: 'API 价格参考比' })]));
@@ -435,6 +446,7 @@
         bar,
         el('div', { class: 'ms-mix-rows' }, rows),
         el('small', { text: `比例来自${from}。` }),
+        m.cacheRead / total >= .5 ? el('small', { class: 'ms-price-why', text: `为什么 Tokens 这么多：每次调用都会把整段对话重新读一遍，这部分命中缓存、按缓存读计价，也算在 Tokens 里（占 ${pct1(m.cacheRead / total)}）。真正新产生的内容（新输入 + 缓存写 + 输出）只占 ${pct1(1 - m.cacheRead / total)}。对话越长，重读的越多。` }) : null,
         differs ? el('small', { class: 'ms-price-warn', text: `按上面的标价重算是 ${price$(recomputed)}，和实际费用不一样：日志里有些请求带了客户端自报的费用，或者期间单价变过。` }) : null,
       ]));
     } else {

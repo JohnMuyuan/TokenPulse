@@ -130,20 +130,52 @@ export function canonicalLevels(levels: string[]) {
   return REASONING_ORDER.filter((level) => levels.includes(level));
 }
 
-/** Codex 自定义目录的一条。模板来自本机 models_cache，没有就用一份能过解析器的骨架。 */
+/**
+ * Codex 解析 model_catalog_json 时要求每个模型都有的字段，以及保守的默认值（不打开官方模型才有的能力）。
+ * 少任何一个，Codex 整份配置都读取失败：CLI 报 failed to parse model_catalog_json，桌面端显示「无法加载登录要求」。
+ * 0.3.15：Codex 0.159 起多要求 support_verbosity / truncation_policy / experimental_supported_tools（实测 codex-cli 0.159.2），
+ * 之前的骨架没有这三项，切到第三方后 Codex 就进不去了。Codex 以后再加必填字段时在这里补，并更新 test-agent-switch 里的清单。
+ */
+export const CODEX_CATALOG_DEFAULTS: Record<string, unknown> = {
+  visibility: "list",
+  supported_in_api: true,
+  shell_type: "shell_command",
+  supports_reasoning_summaries: false,
+  supports_parallel_tool_calls: true,
+  input_modalities: ["text", "image"],
+  base_instructions: "You are a coding agent. Follow the user's instructions and use the tools you are given.",
+  model_messages: { instructions_template: "You are a coding agent.", instructions_variables: { personality_default: "" } },
+  additional_speed_tiers: [],
+  availability_nux: null,
+  supported_reasoning_levels: [],
+  support_verbosity: false,
+  truncation_policy: { mode: "bytes", limit: 10000 },
+  experimental_supported_tools: [],
+  default_reasoning_summary: "none",
+  supports_search_tool: false,
+  supports_image_detail_original: false,
+  service_tiers: [],
+  upgrade: null,
+  effective_context_window_percent: 95,
+};
+export const CODEX_CATALOG_REQUIRED = ["slug", "display_name", "priority", "visibility", "supported_in_api", "shell_type", "base_instructions", "supported_reasoning_levels", "support_verbosity", "truncation_policy", "experimental_supported_tools"];
+
+/** 已经写在磁盘上的目录（旧版本生成的）：缺的字段补上默认值，别的不动。返回有没有改。 */
+export function patchCodexCatalog(catalog: unknown) {
+  const models = catalog && typeof catalog === "object" ? (catalog as { models?: unknown }).models : null;
+  if (!Array.isArray(models)) return false;
+  let changed = false;
+  for (const model of models) {
+    if (!model || typeof model !== "object" || Array.isArray(model)) continue;
+    const entry = model as Record<string, unknown>;
+    for (const [key, value] of Object.entries(CODEX_CATALOG_DEFAULTS)) if (!(key in entry)) { entry[key] = structuredClone(value); changed = true; }
+  }
+  return changed;
+}
+
+/** Codex 自定义目录的一条。模板来自本机 models_cache，没有就用一份能过解析器的骨架；模板缺的字段也用骨架补齐。 */
 export function codexCatalogEntry(slot: ModelSlot, template: Record<string, unknown> | null, index: number) {
-  const entry: Record<string, unknown> = template ? { ...template } : {
-    visibility: "list",
-    supported_in_api: true,
-    shell_type: "shell_command",
-    supports_reasoning_summaries: false,
-    supports_parallel_tool_calls: true,
-    input_modalities: ["text", "image"],
-    base_instructions: "You are a coding agent. Follow the user's instructions and use the tools you are given.",
-    model_messages: { instructions_template: "You are a coding agent.", instructions_variables: { personality_default: "" } },
-    additional_speed_tiers: [],
-    availability_nux: null,
-  };
+  const entry: Record<string, unknown> = { ...structuredClone(CODEX_CATALOG_DEFAULTS), ...(template ?? {}) };
   const name = slot.displayName || slot.model;
   entry.slug = slot.model;
   entry.display_name = name;

@@ -22,8 +22,8 @@ const months=new Map();for(const r of records){const m=dateKey(r.at).slice(0,7);
 for(const[m,rows]of months)write(path.join(root,'data','requests',m+'.jsonl'),rows.join('\n')+'\n');
 write(path.join(root,'data','usage-rollups.json'),{version:1,files:Object.fromEntries(accounts.map(a=>['fixture-'+a.ref,{kind:'codex',official:true,days:{[dateKey(now)]:{'Codex CLI':{'gpt-qa':records.filter(r=>r.file==='fixture-'+a.ref).reduce((b,r)=>({input:b.input+r.input,output:b.output+r.output,cacheRead:b.cacheRead+r.cacheRead,cacheWrite:0,reasoning:b.reasoning+r.reasoning,costUsd:b.costUsd+r.costUsd,requests:b.requests+1}),{input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0,costUsd:0,requests:0})}}}}]))});
 require(path.join(appRoot,'build/core/quota.js')).fetchOfficialQuota=async()=>({});
-let failStudy=false, delayFirst=false;const handle=ipcMain.handle.bind(ipcMain);
-ipcMain.handle=(channel,handler)=>handle(channel,channel==='models:study'?async(event,q)=>{if(failStudy)throw Error('Simulated model study failure');const result=await handler(event,q);if(delayFirst&&q.accountId==='chatgpt:qa-study')await new Promise(r=>setTimeout(r,250));return result;}:handler);
+let failStudy=false, delayFirst=false, heavyCache=false;const handle=ipcMain.handle.bind(ipcMain);
+ipcMain.handle=(channel,handler)=>handle(channel,channel==='models:study'?async(event,q)=>{if(failStudy)throw Error('Simulated model study failure');const result=await handler(event,q);if(delayFirst&&q.accountId==='chatgpt:qa-study')await new Promise(r=>setTimeout(r,250));if(heavyCache)for(const w of ['five','week'])for(const c of result[w]?.capacities||[])if(c.priceMix)c.priceMix={...c.priceMix,fresh:0,cacheRead:9856,cacheWrite:118,output:26};return result;}:handler);
 const watchdog=setTimeout(()=>{console.error('FAIL model-study UI timed out');app.exit(1);},30000);
 app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',async()=>{
  const evaluate=code=>contents.executeJavaScript(code).catch(e=>{throw new Error(e.message+' ← '+String(code).slice(0,160));}),delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -69,6 +69,22 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   await until(`document.querySelector('${Q} .ms-row[data-effort=low] + .ms-detail')`);
   await evaluate(`document.querySelector('${Q} .ms-row[data-effort=low]').click()`);
   await until(`!document.querySelector('${Q} .ms-detail')`);
+  // 0.3.15：Tokens 里大部分是重读缓存时，格子下面多一行「其中新内容约 X」；缓存读不到一半（这份假数据是 40%）不显示
+  assert.equal(await count(`${Q} .ms-cap-new`), 0, '缓存读不到一半时不加这行');
+  heavyCache = true; await evaluate('window.tokenpulse.refresh()');
+  await until(`document.querySelector('${Q} .ms-row[data-effort=high] .ms-cap.five .ms-cap-new')`);
+  // 50.0K × (缓存写 1.18% + 输出 0.26%) = 720
+  assert.equal(await text(`${Q} .ms-row[data-effort=high] .ms-cap.five .ms-cap-new`), '其中新内容约 720 · 98.6% 是重读缓存');
+  assert.match(await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high] .ms-cap.five .ms-cap-new').title`), /每次调用都会把整段对话重新读一遍/);
+  assert.equal(await count(`${Q} .ms-row[data-effort=high] .ms-cap.week .ms-cap-new`), 0, '没有绝对容量的格子不写');
+  await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high]').click()`);
+  await until(`document.querySelector('${Q} .ms-row[data-effort=high] + .ms-detail .ms-price-why')`);
+  const why = await text(`${Q} .ms-row[data-effort=high] + .ms-detail`);
+  assert.match(why, /其中新内容约 720/); assert.match(why, /为什么 Tokens 这么多：每次调用都会把整段对话重新读一遍.*（占 98\.6%）。真正新产生的内容（新输入 \+ 缓存写 \+ 输出）只占 1\.4%/);
+  assert.deepEqual(await evaluate(`['其中新内容约 720 · 98.6% 是重读缓存', '其中新内容约 720', document.querySelector('${Q} .ms-price-why').textContent, document.querySelector('${Q} .ms-cap-new').title].map(t => PulseI18n.t(t)).filter(t => /[\u4e00-\u9fff]/.test(t))`), [], '英文翻译');
+  await evaluate(`document.querySelector('${Q} .ms-row[data-effort=high]').click()`);
+  heavyCache = false; await evaluate('window.tokenpulse.refresh()');
+  await until(`!document.querySelector('${Q} .ms-cap-new') && !document.querySelector('${Q} .ms-detail')`);
   assert.equal(await count(`${Q} .ms-row[data-effort=unknown]`), 0);
   await evaluate(`document.querySelector('${Q} .seg button[data-value=name]').click()`);
   assert.equal(await evaluate(`document.querySelector('${Q} .ms-row').dataset.effort`), 'low');

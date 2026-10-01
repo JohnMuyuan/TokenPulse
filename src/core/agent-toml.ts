@@ -40,7 +40,15 @@ export function upsertKey(lines: string[], key: string, value: string | null) {
   const { text, node } = entry(lines, key);
   if (!node && value === null) return;
   let next: string;
-  if (node) { const range = value === null ? node.range : node.value.range; next = text.slice(0, range[0]) + (value ?? "") + text.slice(range[1]); }
+  if (node && value === null) {
+    // 0.3.15：删键时连这一整行（含换行）一起删。以前只删掉「key = value」，每切换一次就多留一个空行。
+    // 同一行还有别的内容（行尾注释等）就只删键值本身。
+    const lineStart = text.lastIndexOf("\n", node.range[0] - 1) + 1, newline = text.indexOf("\n", node.range[1]);
+    const lineEnd = newline < 0 ? text.length : newline;
+    const alone = !text.slice(lineStart, node.range[0]).trim() && !text.slice(node.range[1], lineEnd).trim();
+    next = alone ? text.slice(0, lineStart) + text.slice(newline < 0 ? text.length : newline + 1) : text.slice(0, node.range[0]) + text.slice(node.range[1]);
+  }
+  else if (node) { const range = node.value.range; next = text.slice(0, range[0]) + (value ?? "") + text.slice(range[1]); }
   else next = text + (text && !text.endsWith("\n") ? "\n" : "") + (/^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key)) + " = " + value + "\n";
   parseTOML(next);
   lines.splice(0, lines.length, ...next.split("\n"));
@@ -61,6 +69,19 @@ export function setTableKey(blocks: Block[], name: string, key: string, value: s
   if (!block && value !== null) { block = { header: '[' + name + ']', lines: [] }; blocks.push(block); }
   if (block) upsertKey(block.lines, key, value);
 }
+/**
+ * 0.3.15：一张表里一个键都没有了（只剩空行）就整张删掉。
+ * 只给 TokenPulse 自己建的表用：Codex 遇到空的 `[model_providers.tokenpulse_route]` 会报
+ * 「provider name must not be empty」，整份 config.toml 读取失败（桌面端显示「无法加载登录要求」）。
+ */
+export function dropEmptyTable(blocks: Block[], name: string) {
+  const index = blocks.findIndex(block => block.header && headerName(block.header) === name);
+  if (index < 0 || blocks[index].lines.some(line => line.trim())) return false;
+  blocks.splice(index, 1);
+  return true;
+}
+/** TokenPulse 自己建的表（Codex 的 model_providers.tokenpulse_route、Grok 的 model.tokenpulse_route）。 */
+export const ownTable = (name: string) => /(^|\.)tokenpulse_route$/.test(name);
 export function quote(value: unknown) {
   if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") throw new Error("配置值类型不正确");
   return JSON.stringify(value);
@@ -94,6 +115,8 @@ export function restoreToml(current: string, before: string, after: string) {
       upsertKey(liveBlock.lines, key, b.get(key)?.raw ?? null);
     }
     if (name && !original.some(item => blockName(item) === name) && liveBlock && !entries(liveBlock).size) live.splice(live.indexOf(liveBlock), 1);
+    // 接管前的快照里就留着一张空的 TokenPulse 路由表（旧版本切回官方时留下的）：还原后同样删掉
+    else if (name && ownTable(name)) dropEmptyTable(live, name);
   }
   return stringifyToml(live);
 }

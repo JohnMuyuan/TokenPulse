@@ -23,6 +23,17 @@
 
 ---
 
+## 0.3.15 · 修复切到第三方后 Codex 进不去
+
+- **原因**：Codex 0.159 起解析 `model_catalog_json` 时多要求 `support_verbosity`、`truncation_policy`、`experimental_supported_tools` 三个字段。TokenPulse 写的 `tokenpulse-model-catalog.json` 没有这三项，切到第三方后 Codex 整份 `config.toml` 读取失败：CLI 报 `failed to parse model_catalog_json`，桌面端显示「无法加载登录要求」。现在目录按必填清单补齐（模板缺的也补），不打开官方模型才有的能力。
+- 切回官方 / 关掉本地路由后不再留下空的 `[model_providers.tokenpulse_route]`（Codex 会报 `provider name must not be empty`，同样进不去）；Grok 的 `[model.tokenpulse_route]` 同样处理。删键时连整行一起删，来回切换文件不再变长。
+- 启动时自动修复旧版本留下的坏配置（空的自有路由表、缺字段的目录），走配置保护的事务：有备份和历史，只读保护开着就不写、只提示。
+- 写给 Codex 的 `wire_api` 一律是 `responses`（Codex 已不支持 `chat`；Chat 格式的上游本来就只能经本地路由转换）。
+- 一并检查了其他工具：Claude Code 会把 `env` 里的数字 / 布尔值转成字符串，Claude 桌面端用到的配置项新版都还认，Grok CLI 遇到空表不会启动失败（只是模型列表里多一项用不了的）。
+- **切换前试读**（`src/core/codex-probe.ts`）：切到第三方 / 开启本地路由之前，让本机的 Codex（桌面端自带的，或 npm 装的 CLI；可用 `TOKENPULSE_CODEX_EXE` 指定）在临时目录里用 `codex features list` 试读一遍要写的模型目录——只加载配置、不联网、不碰真实的 `~/.codex`。Codex 明确说解析不了就不写 `model_catalog_json` 并提示（Codex 照样能用，模型列表和思考等级用它自带的）；找不到 Codex、超时、别的原因失败一律按原样写。启动时如果配置正引用着本机 Codex 读不了的目录，同样去掉引用。这样 Codex 以后再加必填字段，也不会让人进不了界面。
+- 「换一种模型，整窗能用多少」每一格下面多一行小字「其中新内容约 X · y% 是重读缓存」（缓存读占一半以上时才显示）：Tokens 里绝大部分是每次调用重读整段对话的缓存，不等于能产生这么多新内容。详情的综合单价下面有解释。
+- 新增 `scripts/test-codex-compat.cjs`：本机装了 Codex 时用真实的 codex 可执行文件把每种写出的配置读一遍，并验证试读对好 / 坏目录的判断。
+
 ## 0.3.14 · 单价写清楚、换算表点开看详情、时间线放大修复
 
 - 「换一种模型，整窗能用多少」每一格下面写调用次数和本周期还剩多少（整窗的等价 API 费用对每个模型都一样，就是上方的整窗预算，所以不在格子里重复）。

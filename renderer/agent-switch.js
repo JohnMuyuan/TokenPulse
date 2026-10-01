@@ -1240,6 +1240,8 @@
   }
   api.onAgentDrift?.(list => { for (const d of [].concat(list || [])) showDrift(d); });
   api.agentDriftNow?.().then(list => { for (const d of list || []) showDrift(d); }).catch(() => {});
+  // 0.3.15：启动时自动修复了旧版本留下的坏配置（或者只读保护下没法修）：不管在哪个页面都说一声
+  api.agentStartupNotice?.().then(text => { if (text && typeof toast === 'function') toast(text, { kind: text.includes('发现需要修复') ? 'warning' : 'success', key: 'agent-repair' }); }).catch(() => {});
 
   // 托盘里点了切换：到供应商页走同样的确认流程
   api.onAgentActivateRequest?.(async id => {

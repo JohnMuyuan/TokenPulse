@@ -110,6 +110,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   agentReadOnly: (on: boolean) => ipcRenderer.invoke("agent:readonly", on),
   /** 工具配置被改走了（0.3.10）：现在的情况，和之后新出现的。 */
   agentDriftNow: () => ipcRenderer.invoke("agent:drift"),
+  /** 启动时自动修复了什么（0.3.15）：只返回一次。 */
+  agentStartupNotice: () => (demo ? Promise.resolve("") : ipcRenderer.invoke("agent:startup-notice")),
   onAgentDrift: (handler: (drifts: unknown) => void) => {
     const listener = (_event: unknown, drifts: unknown) => handler(drifts);
     ipcRenderer.on("agent-drift", listener);
