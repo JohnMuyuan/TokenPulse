@@ -1,6 +1,6 @@
-# 当前接手入口 · 0.3.15（2026-10-01，测试版已编译）
+# 当前接手入口 · 0.3.15（2026-10-01，已发布）
 
-## v0.3.15：修复切到第三方后 Codex 桌面端「无法加载登录要求」 · 测试版已编译，**未提交、未打安装包、未发布**（Claude）
+## v0.3.15：修复切到第三方后 Codex 桌面端「无法加载登录要求」 · 已完成，已提交、打包、发布（Claude）
 
 - 用户反馈：在设置里登录了账号后，选择第三方 API，启动 Codex 桌面端就报「无法加载登录要求」，进不了界面。之后追加：其他 CLI 有没有同类问题也要检查，有就一起修。都算 0.3.15。**用户没说要发布，发布前先问。**
 - **排查过程（都是在临时目录里复现，没碰真实的 ~/.codex）**：
@@ -25,7 +25,7 @@
   - 端到端（scratchpad 里的 startup-repair.cjs，临时 HOME 里放一份坏配置再启动应用）：启动后空表被删掉、目录补齐；在总览页弹出「已自动修复…」；修复说明只给一次；配置保护的历史里有这次改动。源码和打包后的 app.asar 各跑过一遍，都通过。
 - **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物是 `dist/win-unpacked/TokenPulse.exe`（0.3.15）。asar 里 8 个相关文件和源码一致；对 app.asar 跑 test-agent-switch-ui 通过。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.14 的）。
 - 收尾检查：没有留下 electron、dist 下的 TokenPulse 或 codex 进程；win-unpacked 的 exe 和 app.asar 都没被占用；自己建的临时目录已经删掉。
-- **没做**：没提交、没打安装包、没发布，等用户确认。**用户真实的 `~/.codex/config.toml` 还是坏的**（有空表，Codex 现在读取失败），没有动它；运行 0.3.15 一次会自动修（改动前的内容会进配置保护的备份），或者用户同意后手动删那张空表。
+- **发布**：用户说「直接编译安装包并发布」。`npm run dist` 退出 0，产物是 `dist/TokenPulse-0.3.15-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`（0.3.15）；asar 里 10 个相关文件和源码一致。推送前 fetch 过，远端没有新提交。提交 `ef47218 TokenPulse v0.3.15：修复切到第三方后 Codex 进不去，切换前让 Codex 试读模型目录`，标签 `v0.3.15`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.15 已发布，不是草稿，4 个附件的大小和本地一致，releases/latest 是 v0.3.15。发布说明里没有会话链接。没有在本机实际安装。**用户真实的 `~/.codex/config.toml` 没有动**（还留着那张空表）；用户决定等更新到 0.3.15 后，由启动修复来处理。
 - **追加（用户同意做，仍算 0.3.15）：切换前让本机的 Codex 试读目录**：
   - 新文件 `src/core/codex-probe.ts`：
     - `findCodexExe()` 按顺序找：`TOKENPULSE_CODEX_EXE`；桌面端自带的 `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`（取最新）；npm 全局装的 vendor 里的 exe。设了 `AGENT_SWITCH_HOME`（自动化测试）时不去找真实机器上的，除非明确指定。
