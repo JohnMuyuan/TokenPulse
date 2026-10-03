@@ -362,7 +362,7 @@
       fact('思考等级', ratio, c.effortBasis === 'own' ? '按你自己的用量实测' : c.effortBasis === 'benchmark' ? `参考 Epoch AI 基准（${c.effortSource}）同型号` : '参考 Epoch AI 基准的同家族平均');
     }
     if (c.tokensPerCall && c.tokensPerCallBasis !== 'scaled') fact('单次调用', `平均每次 ${tokens(c.tokensPerCall)} Tokens`, `最近 30 天 ${number(c.recentCalls)} 次调用`);
-    else if (c.tokensPerCall) fact('单次调用', `约 ${tokens(c.tokensPerCall)} Tokens`, `没用过这个组合：按 ${levelName(c.effortAnchor || '')} 档的实际大小推算`);
+    else if (c.tokensPerCall) fact('单次调用', `约 ${tokens(c.tokensPerCall)} Tokens`, c.effortAnchor ? `没用过这个组合：按 ${levelName(c.effortAnchor)} 档的实际大小推算` : '没用过这个组合：按你最常用那一档的实际大小推算');
     if (c.recentTokens) fact('最近 30 天', `用了 ${tokens(c.recentTokens)} Tokens`);
     fact('目录来源', '', '', el('span', { class: 'ms-fact-tags' }, row.origins.map(o => el('span', { class: 'ms-source-chip', text: ({ cache: '本机模型目录', docs: '官方文档', observed: '日志里出现过', user: '你添加的' })[o] || o }))));
     const cautions = [
@@ -701,7 +701,7 @@
       report ? avatar(report.kind, 'ms-brand') : null,
       el('div', {}, [
         el('h2', {}, ['模型与思考等级 · 时间线', el('span', { class: 'section-tag', text: '按官方周期' })]),
-        el('p', { text: '每个模型 × 思考等级一条轨道，上方曲线是全账号官方额度已用百分比。额度涨了、同期本机没有 Code 请求的时段标在「本机以外」轨道上，可以补上用了什么模型。拖动选一段可放大或标注，Ctrl + 滚轮缩放。' })
+        el('p', { text: '每个模型 × 思考等级一条轨道，上方曲线是全账号官方额度已用百分比。额度涨了、同期本机没有 Code 请求的时段标在「本机以外」轨道上，可以补上用了什么模型。左键拖动平移，按住右键拖选一段可放大或标注，Ctrl + 滚轮缩放。' })
       ])
     ])])];
   }

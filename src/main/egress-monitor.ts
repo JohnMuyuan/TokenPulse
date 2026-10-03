@@ -121,10 +121,14 @@ export class ExitMonitor {
     return false;
   }
   /**
-   * 启动这一家的 CLI 之前要核对的出口规则（0.3.16）。两个白名单都没设就是 null：不检测，直接启动。
-   * 设了 IP 白名单只看 IP；没设 IP、设了地区白名单就看地区。和监控开没开无关：白名单是用户定的规矩。
+   * 启动这一家的 CLI 之前要核对的出口规则（0.3.16）。返回 null 就是不检测、直接启动：
+   * - 出口监控没开：不检测（用户定的：监控关着就不核对出口）；
+   * - 开着，但这一家两个白名单都没设：不检测；
+   * - 开着，设了 IP 白名单：只看 IP；没设 IP、设了地区白名单：看地区。
+   * 注意和额度查询的放行（gateQuota）不一样：那边只看白名单，不看监控开没开。
    */
   launchRule(provider: Provider): { host: string; allowedIps: string[]; allowedRegions: string[] } | null {
+    if (!this.config.enabled) return null;
     const config = this.config.providers[provider];
     return config && (config.allowedIps.length || config.allowedRegions.length) ? { host: config.host, allowedIps: [...config.allowedIps], allowedRegions: [...config.allowedRegions] } : null;
   }

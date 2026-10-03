@@ -166,36 +166,49 @@ const config = { host: 'api.anthropic.com', allowedIps: ['203.0.113.10'], allowe
       m.stop();
     } finally { global.setInterval = realSet; global.clearInterval = realClear; }
   }
-  // 0.3.16：TokenPulse 启动 CLI 之前的出口检查。没设白名单放行；设了就现测，在白名单里才放行，测不出来也不放行
+  // 0.3.16：TokenPulse 启动 CLI 之前的出口检查。监控没开不检测；开着：设了 IP 白名单只看 IP，没设 IP、设了地区白名单看地区，都没设不检测
   {
     let ip = '203.0.113.10', fail = false, probes = 0; const t = NOW + 9e6;
     const m = new ExitMonitor({ now: () => t, probe: async (provider, host) => { probes++; return fail ? { provider, host, checkedAt: t, latencyMs: 1, error: 'timeout' } : sample({ provider, host, checkedAt: t, ip }); } });
-    m.save(E.defaults());
-    assert.equal(m.launchRule('claude'), null); assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.equal(probes, 0, 'no allowlist: no probe');
-    const cfg = E.defaults(); cfg.providers.claude.allowedIps = ['203.0.113.10']; m.save(cfg);
+    // 保存并等这次保存触发的那轮自动检测跑完，后面数探测次数才准
+    const apply = async config => { m.save(config); await m.check(true); };
+    const refusals = () => m.snapshot().events.map(e => e.message).filter(text => text.startsWith('已拒绝启动 CLI'));
+    const gate = async () => { const before = probes; const result = await m.gateLaunch('claude', 'Claude Code'); return { ...result, probed: probes - before }; };
+    const on = () => ({ ...E.defaults(), enabled: true });
+
+    // 监控开着、两个白名单都没设：不检测
+    await apply(on());
+    assert.equal(m.launchRule('claude'), null); assert.deepEqual(await gate(), { ok: true, probed: 0 }, 'no allowlist: start without probing');
+    // 监控开着、设了 IP 白名单
+    const cfg = on(); cfg.providers.claude.allowedIps = ['203.0.113.10']; await apply(cfg);
     assert.deepEqual(m.launchRule('claude'), { host: cfg.providers.claude.host, allowedIps: ['203.0.113.10'], allowedRegions: [] }); assert.equal(m.launchRule('chatgpt'), null);
-    const before = m.snapshot().events.length;
-    assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.equal(probes, 2, 'probes every time, never reuses an old result');
+    assert.deepEqual(await gate(), { ok: true, probed: 1 }); assert.deepEqual(await gate(), { ok: true, probed: 1 }, 'probes every time, never reuses an old result');
     ip = '198.51.100.9';
-    let r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /出口 IP 198\.51\.100\.9 不在白名单里，已拒绝启动 Claude Code/);
-    fail = true; r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /没能确认出口 IP，已拒绝启动 Claude Code/);
-    const events = m.snapshot().events.slice(0, m.snapshot().events.length - before);
-    assert.deepEqual(events.map(e => e.message), ['已拒绝启动 CLI：无法确认出口 IP', '已拒绝启动 CLI：出口 IP 不在允许列表内'], 'refusals are recorded');
-    // 规则：设了 IP 白名单只看 IP（地区白名单不管）；没设 IP、设了地区白名单看地区；都没设不检测
-    fail = false; ip = '203.0.113.10';
-    const both = E.defaults(); both.providers.claude.allowedIps = ['203.0.113.10']; both.providers.claude.allowedRegions = ['JP']; m.save(both);
-    assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }, 'IP matches: region list (JP, exit is US) is ignored');
-    ip = '198.51.100.9'; both.providers.claude.allowedRegions = ['US']; m.save(both);
-    assert.equal((await m.gateLaunch('claude', 'Claude Code')).ok, false, 'IP does not match: a matching region does not rescue it');
-    const regionOnly = E.defaults(); regionOnly.providers.claude.allowedRegions = ['US']; m.save(regionOnly);
+    let r = await gate(); assert.equal(r.ok, false); assert.match(r.message, /出口 IP 198\.51\.100\.9 不在白名单里，已拒绝启动 Claude Code/);
+    fail = true; r = await gate(); assert.equal(r.ok, false); assert.match(r.message, /没能确认出口 IP，已拒绝启动 Claude Code/);
+    assert.deepEqual(refusals(), ['已拒绝启动 CLI：无法确认出口 IP', '已拒绝启动 CLI：出口 IP 不在允许列表内'], 'refusals are recorded');
+    // 监控关着：同样的白名单也不核对，直接启动，不探测（用户定的规矩）
+    fail = false; ip = '198.51.100.9';
+    await apply({ ...cfg, enabled: false });
+    assert.equal(m.launchRule('claude'), null, 'monitor off: no rule even though an allowlist is set');
+    assert.deepEqual(await gate(), { ok: true, probed: 0 }, 'monitor off: start without checking, even from a non-allowlisted exit');
+    assert.equal(refusals().length, 2, 'nothing new recorded while the monitor is off');
+    // IP 和地区都设了：只看 IP
+    ip = '203.0.113.10';
+    const both = on(); both.providers.claude.allowedIps = ['203.0.113.10']; both.providers.claude.allowedRegions = ['JP']; await apply(both);
+    assert.equal((await gate()).ok, true, 'IP matches: region list (JP, exit is US) is ignored');
+    ip = '198.51.100.9'; both.providers.claude.allowedRegions = ['US']; await apply(both);
+    assert.equal((await gate()).ok, false, 'IP does not match: a matching region does not rescue it');
+    // 只设了地区
+    const regionOnly = on(); regionOnly.providers.claude.allowedRegions = ['US']; await apply(regionOnly);
     assert.deepEqual(m.launchRule('claude'), { host: regionOnly.providers.claude.host, allowedIps: [], allowedRegions: ['US'] });
-    assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }, 'region list only: region decides, any IP');
-    regionOnly.providers.claude.allowedRegions = ['JP']; m.save(regionOnly);
-    r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /出口地区 US 不在地区白名单里，已拒绝启动 Claude Code/);
-    fail = true; r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /没能确认出口地区，已拒绝启动 Claude Code/);
-    assert.deepEqual(m.snapshot().events.slice(0, 2).map(e => e.message), ['已拒绝启动 CLI：无法确认出口地区', '已拒绝启动 CLI：出口地区不在允许列表内']);
-    m.save(E.defaults()); const n = probes; assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.equal(probes, n, 'neither list: start without checking');
-    m.stop(); checks++; console.log('PASS CLI launch gate (IP list wins, region list when no IP list, neither = no check): no allowlist passes without probing, allowlisted exit passes, other exit or failed probe refuses and is recorded');
+    assert.equal((await gate()).ok, true, 'region list only: region decides, any IP');
+    regionOnly.providers.claude.allowedRegions = ['JP']; await apply(regionOnly);
+    r = await gate(); assert.equal(r.ok, false); assert.match(r.message, /出口地区 US 不在地区白名单里，已拒绝启动 Claude Code/);
+    fail = true; r = await gate(); assert.equal(r.ok, false); assert.match(r.message, /没能确认出口地区，已拒绝启动 Claude Code/);
+    assert.deepEqual(refusals().slice(0, 2), ['已拒绝启动 CLI：无法确认出口地区', '已拒绝启动 CLI：出口地区不在允许列表内']);
+    await apply({ ...regionOnly, enabled: false }); assert.deepEqual(await gate(), { ok: true, probed: 0 }, 'monitor off again: no check');
+    m.stop(); checks++; console.log('PASS CLI launch gate: monitor off = no check; on: IP list wins, region list when no IP list, neither = no check; other exit or failed probe refuses and is recorded');
   }
   checks++; console.log('PASS check interval: default 10 s, 5–60 s integers only, older settings upgraded, timer re-armed on change, saved across restarts');
   checks++; console.log('PASS monitor looks each exit IP up once, respects the switch and throttles manual refresh');

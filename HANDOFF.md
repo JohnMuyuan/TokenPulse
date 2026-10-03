@@ -40,6 +40,12 @@
 - **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物是 `dist/win-unpacked/TokenPulse.exe`（0.3.16）；asar 里 13 个相关文件和源码一致。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.15 的）。
 - 收尾检查：没有留下 electron 或 dist 下的 TokenPulse 进程；win-unpacked 的 exe 和 app.asar 都没被占用。
 - **发布**：用户试用后说「直接编译安装包并发布」。`npm run dist` 退出 0，产物是 `dist/TokenPulse-0.3.16-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`（0.3.16）；asar 里 17 个相关文件和源码一致。推送前 fetch 过，远端没有新提交。提交 `db6e8e7 TokenPulse v0.3.16：新对话 / 新项目、启动 CLI 前核对出口、检测间隔、单价变化说清楚`，标签 `v0.3.16`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.16 已发布，不是草稿，4 个附件的大小和本地一致，releases/latest 是 v0.3.16。发布说明里没有会话链接。没有在本机实际安装。
+- **发布后的改动，0.3.16 重新发布（2026-10-02，用户要求版本号不变）**：
+  - 规则改成「出口监控关着就不核对出口」：`ExitMonitor.launchRule()` 在 `config.enabled` 为假时返回 null（终端里的检测和「在软件里回复」的 gateLaunch 都走它）。额度查询的 gateQuota 没动，仍然只看 IP 白名单。新手引导、更新说明、README、i18n 的说法都跟着改了。test-egress 的那一组重写（监控关着不探测、不记录；开着的各种情况）。
+  - **README 截图全部重做**，用户要求不能泄露本机真实数据：`scripts/capture-ui.cjs` 改成**完全不读真实数据**。数据目录和主目录都指向新建的临时目录，界面切到软件自带的演示数据（`window.tokenpulse.demo(true)`，账号是「演示账号」），主进程推过来的真实快照在脚本里丢掉，出口监控仍用文档专用地址段的示意数据。每张图截完会检查有没有邮箱、本机用户名、主目录路径，并确认还在演示模式。新增 `detail-light.png`（点开一行的详情）；README 的截图表去掉了 compact-light，加了说明「全部是演示数据」。12 张图都截了，其中 6 张（总览、详情、设置、出口监控、时间线、用量）我看过，确认只有演示账号和示意地址。
+  - 顺手修了两处文字：没有思考等级的型号，详情里「按 档的实际大小推算」中间是空的，改成「按你最常用那一档」；时间线标题下的说明还写着旧的「拖动选一段」，改成左键平移、右键拖选。
+  - 验证：`npm test` 退出 0；`npm run test:ui` 退出 0，共 32 个 PASS。`npm run dist` 退出 0，asar 里相关文件和源码一致，编译后的 launchRule 里有「监控关着返回 null」。
+  - 重新发布的做法见下一条提交记录：v0.3.16 标签移到新提交，Release 的 4 个附件覆盖上传。**已经更新到第一版 0.3.16 的安装版不会再自动更新**（版本号相同），要拿到这次改动需要重新下载安装包。
 - **没有实际验证的**：新对话 / 新项目 / 在终端里继续没有由我真的弹出过终端窗口（自动测试把主进程通道换成了假的；PowerShell 脚本本身实测过）。用户试用后说「看着没啥问题了」。「监控关着但设了白名单时照样核对出口」是按「白名单决定」实现的，向用户说明过，用户没有提出异议。
 - 已知限制：新对话只能在终端里开始，不能在 TokenPulse 里直接发第一条消息；新会话要等 CLI 写出会话文件后才出现在列表里（15 秒后自动刷新一次，或手动点刷新）。
 

@@ -26,10 +26,10 @@
 ## 0.3.16 · 新对话 / 新项目、检测间隔、两个修复
 
 - **会话管理：新对话 / 新项目**。会话列表上方两个按钮：「新对话」打开对话框，选项目文件夹（本机会话里出现过的，或点「选择文件夹…」）和工具（Claude Code / Codex / Grok，没装 CLI 的不能选），在那个文件夹里打开终端启动 CLI；「新项目」先弹系统的选文件夹对话框（可以直接新建文件夹）。新会话由 CLI 自己创建，之后出现在列表里。
-- **启动 CLI 前先核对出口**。凡是 TokenPulse 启动的 CLI（新对话、新项目、在终端里继续、在软件里回复）都按出口监控里那一家的白名单核对，不符合（或测不出来）就不启动。Claude Code 对应 Claude、Codex 对应 ChatGPT、Grok 对应 Grok，用那一家设置的检测域名。规则：
+- **启动 CLI 前先核对出口**。出口监控开着时，凡是 TokenPulse 启动的 CLI（新对话、新项目、在终端里继续、在软件里回复）都按出口监控里那一家的白名单核对，不符合（或测不出来）就不启动。Claude Code 对应 Claude、Codex 对应 ChatGPT、Grok 对应 Grok，用那一家设置的检测域名。规则：
   - 设了 IP 白名单：只看 IP（同时设了地区白名单也不看地区）；
   - 没设 IP 白名单、设了地区白名单：看地区；
-  - 两个都没设：不检测，直接启动。和监控开没开无关。
+  - 两个都没设，或者出口监控关着：不检测，直接启动。（额度查询的放行不一样：那边只看 IP 白名单，监控关着也拦。）
   - 终端里启动的：检测写在同一段 PowerShell 脚本里、在启动 CLI 之前（`session-reply.ts` 的 `exitGuardScript`）——终端里的 CLI 走的是那个 PowerShell 进程的网络环境，和 TokenPulse 自己发请求的路不一定一样，所以必须在那个窗口里测。做法和出口监控一样：`curl.exe` 请求 `/cdn-cgi/trace` 取 `ip=` 和 `loc=`；IP 用 .NET 的 IPAddress 规范化后比较，地区按大写比较。结果用红 / 绿字写在终端里。
   - 在软件里回复：TokenPulse 直接启动 CLI，之前由 `ExitMonitor.gateLaunch` 现测一次（和 CLI 用同一份环境变量），被拦时在出口监控的记录里记一条。
 - 新手引导加了两步：出口监控的「检测间隔，和启动前核对出口」、会话管理的「新对话、新项目」。
@@ -226,6 +226,8 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 
 ## 📸 截图
 
+> 截图里全部是软件自带的**演示数据**（虚构的「演示账号」，和新手引导用的是同一份）；出口监控是文档专用地址段的示意数据。不含任何真实账号、用量或出口信息。
+
 <table>
 <tr>
 <td><img src="artifacts/ui/quota-light.png" alt="额度详情"><p align="center"><sub>额度详情：达到上限预测、Token 与费用折算</sub></p></td>
@@ -233,19 +235,19 @@ CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调�
 </tr>
 <tr>
 <td><img src="artifacts/ui/models-light.png" alt="换一种模型，整窗能用多少"><p align="center"><sub>换一种模型，整窗能用多少：全部模型 × 思考等级的容量排行</sub></p></td>
-<td><img src="artifacts/ui/timeline-light.png" alt="模型与思考等级时间线"><p align="center"><sub>模型与思考等级时间线：5 小时 / 周周期里用了哪些组合</sub></p></td>
+<td><img src="artifacts/ui/detail-light.png" alt="模型详情"><p align="center"><sub>点开一行看详情：四项标价、来源、综合单价怎么算的</sub></p></td>
+</tr>
+<tr>
+<td><img src="artifacts/ui/timeline-light.png" alt="模型与思考等级时间线"><p align="center"><sub>模型与思考等级时间线：每个组合用了多久，「本机以外」可以分割、标注</sub></p></td>
+<td><img src="artifacts/ui/egress-light.png" alt="出口监控"><p align="center"><sub>出口监控：检测间隔、国旗、ASN、线路类型与 IP 数据库评分</sub></p></td>
 </tr>
 <tr>
 <td><img src="artifacts/ui/usage-light.png" alt="用量趋势"><p align="center"><sub>用量明细：按工具分色的用量趋势与工具排行</sub></p></td>
 <td><img src="artifacts/ui/insights-light.png" alt="使用时段分布"><p align="center"><sub>使用时段分布与完整的型号排行</sub></p></td>
 </tr>
 <tr>
-<td><img src="artifacts/ui/egress-light.png" alt="出口监控"><p align="center"><sub>出口监控：国旗、ASN、线路类型与 IP 数据库评分（示意数据）</sub></p></td>
 <td><img src="artifacts/ui/settings-light.png" alt="设置"><p align="center"><sub>设置：外观、官方账号、提醒、数据与自动更新</sub></p></td>
-</tr>
-<tr>
 <td><img src="artifacts/ui/overview-dark.png" alt="深色主题"><p align="center"><sub>深色主题</sub></p></td>
-<td><img src="artifacts/ui/compact-light.png" alt="窄窗口布局"><p align="center"><sub>窄窗口布局</sub></p></td>
 </tr>
 </table>
 
@@ -373,7 +375,7 @@ renderer/            界面：原生 JS、无构建步骤，图表为手写内�
 scripts/             测试、截图与图标生成
 ```
 
-`scripts/capture-ui.cjs` 用真实本机数据生成截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`），读写都在隔离的临时目录里进行；只复制额度采样历史、登录时间线和去掉凭据的账号列表进去，不会改动现有账本，也不带任何账号凭据，截图期间不向官方查额度。截图里的邮箱和账号名会被替换成占位文字，出口监控页用的是文档保留网段的示意 IP，不会发出真实查询。
+`scripts/capture-ui.cjs` 生成 README 的截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`）：**不读本机的任何真实数据**——数据目录和用户主目录都指向新建的临时目录，界面切到软件自带的演示数据（虚构账号，和新手引导同一份），出口监控用文档专用地址段的示意数据，也不向官方查额度。每张图截完会检查页面上有没有邮箱、本机用户名或主目录路径，有就停下、不写文件。
 
 </details>
 
