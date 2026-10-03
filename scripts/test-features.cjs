@@ -83,6 +83,17 @@ try {
     check("规则上的 promo / until 也算优惠价", knowledge.priceNotes("promo-live", pricing.priceOf("promo-live"))?.promo?.until === future);
     check("过期的标签不显示、没说明的型号返回 null", knowledge.priceNotes("old-label", null) === null && knowledge.priceNotes("promo-old", pricing.priceOf("promo-old")) === null);
     check("格式不对的日期丢掉", knowledge.parseKnowledge({ schema: 1, version: "2026.12.03", prices: [{ match: "x", input: 1, output: 1, cacheRead: 0, cacheWrite: 0, until: "明天", changedAt: "昨天", previous: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }], aliases: [] }).prices[0].until === undefined);
+    // 0.3.16：从家族估算换成实际标价的带 fromFallback；前后一样的不算变化
+    knowledge.acceptKnowledge({
+      schema: 1, version: "2026.12.04", updatedAt: day, aliases: [],
+      prices: [
+        { match: "^switched$", input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, note: "", auto: "switched", changedAt: day, previous: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, previousFallback: true },
+        { match: "^repriced$", input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, note: "", auto: "repriced", changedAt: day, previous: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 } },
+        { match: "^same$", input: 4, output: 20, cacheRead: 0.2, cacheWrite: 0, note: "", auto: "same", changedAt: day, previous: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 4 } },
+      ],
+    });
+    check("单价变化：改用实际标价带 fromFallback，真的调价不带", knowledge.priceNotes("switched", pricing.priceOf("switched"))?.changed?.fromFallback === true && knowledge.priceNotes("repriced", pricing.priceOf("repriced"))?.changed?.fromFallback === undefined && knowledge.priceNotes("repriced", pricing.priceOf("repriced"))?.changed?.previous.input === 5);
+    check("前后单价一样的不算变化（缓存写按输入价收 = 输入价）", knowledge.priceNotes("same", pricing.priceOf("same")) === null, JSON.stringify(knowledge.priceNotes("same", pricing.priceOf("same"))));
   }
   fs.rmSync(knowledge.downloadedKnowledgeFile());
   knowledge.resetKnowledgeCache();

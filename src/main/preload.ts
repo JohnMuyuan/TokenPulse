@@ -84,6 +84,10 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("session-reply", listener);
   },
   openSessionTerminal: (kind: string, id: string) => ipcRenderer.invoke("sessions:terminal", kind, id),
+  /** 新对话 / 新项目（0.3.16）：装了哪些 CLI、选文件夹、在文件夹里用某个 CLI 开新对话。 */
+  sessionClis: () => ipcRenderer.invoke("sessions:clis"),
+  pickProjectFolder: (start?: string) => (demo ? Promise.resolve(null) : ipcRenderer.invoke("sessions:pick-folder", start)),
+  startSession: (kind: string, folder: string) => (demo ? blocked() : ipcRenderer.invoke("sessions:new", kind, folder)),
   deleteSession: (kind: string, id: string) => ipcRenderer.invoke("sessions:delete", kind, id),
   /** 模型知识库（型号单价和等价规则）：当前版本、上次检查；手动检查更新。 */
   knowledgeState: () => ipcRenderer.invoke("knowledge:state"),

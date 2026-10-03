@@ -1,6 +1,49 @@
-# 当前接手入口 · 0.3.15（2026-10-01，已发布）
+# 当前接手入口 · 0.3.16（2026-10-02，测试版已编译）
 
-## v0.3.15：修复切到第三方后 Codex 桌面端「无法加载登录要求」 · 已完成，已提交、打包、发布（Claude）
+## v0.3.16：两个修复 + 检测间隔 + 新对话 / 新项目 · 测试版已编译，**未提交、未打安装包、未发布**（Claude）
+
+- 用户要求（都算 0.3.16；**只编译测试版，不打安装包，不发布**）：
+  1. 修：用量明细切换分类时界面突然跳到上面一点；别的地方有同样问题也一起修。
+  2. 修：会话管理里项目文件夹带空格时，「在终端里继续」报错、打不开 CLI。
+  3. 新增：出口监控的检测间隔可以自定义，5 到 60 秒，默认 10 秒。
+  4. 新增：会话管理可以开启新对话、开启新项目。用户说先看做出来的效果，再提修改意见。
+- **已完成（未提交）**：
+  - **页面往上跳**：原因是新内容比原来短，浏览器把滚动位置夹到新的底部。`renderer/app.js` 新增 `scrollGuard`：在 `.workspace` 末尾加一个 `#scroll-floor` 垫片，用 ResizeObserver 加 scroll 事件判断「位置变小而且正好贴着新底部」就是被夹了，垫高后把位置放回去；用户往上滚，垫片跟着缩；`navigate()` 里调 `reset()`。所有页面共用。当场读布局和下一帧才排版两种情况都处理了。
+  - **在终端里继续**：真正的原因不是空格（带空格的路径实测正常），是用户的文件夹叫「JMY‘s Mods All in one」，里面有弯引号 U+2018。PowerShell 把 ‘ ’ ‚ ‛ 都当单引号，`quotePs` 原来只翻倍直引号，脚本在那里断开。现在这四种加直引号都翻倍，`quotePs` 也导出了。
+  - **检测间隔**：`core/egress.ts` 新增 `INTERVAL_SECONDS {min 5, max 60, default 10}` 和 `EgressConfig.intervalSeconds`（旧配置没有这项时用 10；不是 5 到 60 的整数就报错）。`egress-monitor.ts` 按配置定时，间隔变了重新定时，`snapshot.intervalMs` 和 `nextCheckAt` 跟着配置走；手动检测的最小间隔仍是 `INTERVAL_MS` 5 秒。界面在出口监控页顶部加了数字输入框 `#egress-interval`，状态文字写「每 N 秒检查一次」。注意以前固定是 5 秒，升级后默认变成 10 秒。
+  - **新对话 / 新项目**：
+    - 主进程新增 IPC：`sessions:clis`（装了哪些 CLI）、`sessions:pick-folder`（系统选文件夹对话框，可新建）、`sessions:new`（校验工具和文件夹后调 `openTerminal(kind, null, cwd)`）。`terminalScript` 的 id 为 null 时不带参数。preload 新增 `sessionClis`、`pickProjectFolder`、`startSession`。
+    - `renderer/sessions.js`：列表上方 `.sw-new-row` 两个按钮；`openNew(folder?)` 对话框 `#sw-new`，里面是项目文件夹下拉（本机会话里出现过的）加「选择文件夹…」，三个工具卡片（没装的禁用），「在终端里开始」。默认选中正在看的会话的项目和工具。开始后弹提示，15 秒后自动刷新一次列表。
+  - 版本号 0.3.16；intro NOTES 四条；README 0.3.16 一节；i18n。
+  - 测试：`test-sessions.cjs`（弯引号翻倍，真的交给 PowerShell 解析后路径原样还原；新对话脚本）、`test-egress.cjs` 18/18（间隔校验、定时器、保存）、`test-ui.cjs` 新增两组（scroll guard；new chat / new project），出口监控那组加了间隔的断言。这些单独跑都通过。
+  - **scrollGuard 后来的两处补充**（测试偶发失败时用临时日志查出来的）：
+    - 浏览器自己的「滚动锚定」会在切换视图时挪动页面（两种视图高度不同，实测挪了 400 多像素），这也是「点一下界面跳了」的来源之一。所以点了切换类控件（`SWITCHERS`：分段按钮、`[data-view]`、筛选芯片、翻周期、缩放、翻页、下拉）之后的 1.5 秒内，把被点的控件钉在屏幕上原来的位置（`keepPinned`）；只有用户自己操作（滚轮、触摸、键盘、在滚动条上按下）才放弃。
+    - `keepScroll` 改成重画前调 `scrollGuard.sync()`、重画后调 `scrollGuard.restore()`：不能等 scroll 事件，等它到的时候内容已经重建、变高，看不出被夹过。
+    - 注意：点了切换类控件之后的 1.5 秒内，如果代码自己滚动页面，会被拉回去。目前这些控件的处理函数都不滚动；`navigate()` 会 `reset()`。
+  - 截图看过新对话对话框（夜间）和出口监控页的间隔输入框；对话框页脚套用了通用 footer 样式，多出一块空白，已去掉。
+- **追加（用户要求，仍算 0.3.16）：TokenPulse 启动的 CLI 先核对出口 IP 白名单**。用户特别说明：CLI 是在 PowerShell 里跑的，走的网络可能和软件自己不一样，所以检测也要在 PowerShell 里做。
+  - `session-reply.ts`：新增 `exitGuardScript(kind, {host, allowedIps})`，`terminalScript` 和 `openTerminal` 多一个 guard 参数。脚本顺序是：进目录 → 检测 → 启动 CLI。检测用 `curl.exe … https://<host>/cdn-cgi/trace` 取 `ip=`，两边用 `[System.Net.IPAddress]::Parse().ToString()` 规范化后比较；测不出来或不在白名单时，用红字说明后 `return`（窗口是 -NoExit 的，会留着让用户看到原因）。
+  - `egress-monitor.ts`：`launchRule(provider)` 返回 host 和白名单，没设就是 null；`gateLaunch(provider, what)` 给「在软件里回复」用，每次都现测、不用缓存，被拦时记一条 warning 事件。
+  - `main/index.ts`：`CLI_PROVIDER`（claude→claude，codex→chatgpt，grok→grok）；`openInTerminal` 和 `startConversation` 把 guard 传给 `openTerminal`，返回值带 `guarded`；`replyInApp` 先过 `gateLaunch`；`sessions:clis` 多返回 `guarded`。
+  - 渲染：设了白名单的工具在新对话对话框里有一句说明，提示条也会说明「启动前会先在终端里检测出口 IP」。i18n、intro NOTES、README 都已补。
+  - **实测（scratchpad 的 guard-live.cjs，真的在 PowerShell 里跑、真的请求 trace）**：三家的域名都能测到出口；白名单不含当前出口时拒绝，含时放行，域名不可达时拒绝。过程中修了两处：TS 模板字符串里的 `\S` 会变成字母 S，正则改成不用反斜杠的字符类；测试脚本自己的抓取正则写得太贪。
+  - 测试：test-sessions（脚本顺序、两处 return、没设白名单不检测、引号、真的交给 PowerShell 跑一遍 .invalid 域名必须拒绝）；test-egress 19/19（gateLaunch 的四种情况和事件记录）；test-ui（对话框里的说明）。
+  - **用户随后改了规则**：「设了地区白名单又设了 IP 白名单，只看 IP；设了地区、没设 IP，就看地区；都没设就不检测，直接放行」。已照做：`ExitGuard` 加了 `allowedRegions`，新增 `guardMode()` 返回 'ip' / 'region' / null；PowerShell 脚本同时取 `loc=`（XX / ZZ / EU 当作测不出来），地区模式按大写比较；`launchRule` 在任一白名单非空时返回规则，`gateLaunch` 同样分两种；IPC 的 `guarded` 从布尔值改成 'ip' / 'region' / null，界面文字跟着变。实测（guard-live.cjs）7 种情况都符合：IP 对而地区不对时放行，IP 不对而地区对时拒绝，只设地区时按地区放行或拒绝，不可达时拒绝。和监控开没开无关（用户原话里「没开启出口检测」和「两个白名单都没设」是并列说的，这里按「白名单决定」实现，已在回复里向用户说明）。
+  - **新手引导**（用户要求新功能写进教程）：`intro.js` 的 STEPS 加了两步，共 22 步：第 18 步「检测间隔，和启动前核对出口」（高亮 `#page-egress .egress-toolbar`），第 20 步「新对话、新项目」（高亮 `#page-sessions .sw-new-row`）。test-intro-ui 的检查表加了这两步；「一路点到完成」的循环上限从 20 改成 60。
+  - **追加（仍算 0.3.16）：单价变化的标法**。用户问「单价刚更新」是不是真的有变化，没变不该标；真变了要在详情里写涨了还是降了多少。查数据：知识库里 71 条带 changedAt 的规则，previous 全是家族兜底价，没有一条是官方调价。
+    - `scripts/update-knowledge.cjs`：previous 取自兜底价时记 `previousFallback: true`；沿用旧记录时原样带着；旧数据没有这个标记时，previous 等于兜底价就补上。`knowledge/models.json` 用生成器重新生成为 2026.10.03（实际联网拉取；对比过，除了版本号、日期和这个新标记，其他内容完全一样）。
+    - `src/core/knowledge.ts`：PriceRule 加 `previousFallback`；`priceNotes().changed` 带 `fromFallback`；前后四项单价一样的不算变化（缓存写为 0 按输入价比）。
+    - `renderer/model-study.js`：`changeTag()` 分「改用实际标价」（灰）、「刚降价」（绿）、「刚涨价」（红）、「单价刚更新」（有涨有降）；`priceChangeFact()` 是详情里的一栏，逐项列「旧价 → 新价 涨跌幅」，再加按用量结构算的综合单价变化。原来 priceNoteLines 里那句「单价 9/30 更新…」删掉了。
+    - 测试：test-knowledge-update（标记的生成、沿用、旧数据补标、真调价不标）、test-features 46/46（fromFallback、前后一样不算）、test-model-study-ui（改用实际标价的标签和详情；用 IPC 钩子造出降价、涨价、有涨有降三种，断言标签、逐项幅度和英文翻译）。夜间截图看过「刚降价」的详情。
+  - 已知限制：没设白名单的那一家不检测；终端里被拒绝时 TokenPulse 这边不知道结果（只有终端里有提示）；用户在那个终端里之后手动再敲 CLI 命令不受限制；需要系统自带的 curl.exe（Win10 1803 起有），没有就按「测不出来」拒绝。
+- **验证**：`npm test` 退出 0；`npm run test:ui` 退出 0，共 32 个 PASS（比上一版多两组）。test-ui 的滚动那组在源码上连续跑 5 次、在打包后的 app.asar 上连续跑 3 次，都通过。
+- **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物是 `dist/win-unpacked/TokenPulse.exe`（0.3.16）；asar 里 13 个相关文件和源码一致。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.15 的）。
+- 收尾检查：没有留下 electron 或 dist 下的 TokenPulse 进程；win-unpacked 的 exe 和 app.asar 都没被占用。
+- **没做**：没提交、没打安装包、没发布（按用户要求）。新对话 / 新项目没有真的打开过终端窗口（测试里把主进程通道换成了假的；脚本本身交给 PowerShell 解析验证过）。用户说看了效果再提修改意见。
+- 已知限制：新对话只能在终端里开始，不能在 TokenPulse 里直接发第一条消息；新会话要等 CLI 写出会话文件后才出现在列表里（15 秒后自动刷新一次，或手动点刷新）。
+
+
+## v0.3.15（历史）：修复切到第三方后 Codex 桌面端「无法加载登录要求」 · 已完成，已提交、打包、发布（Claude）
 
 - 用户反馈：在设置里登录了账号后，选择第三方 API，启动 Codex 桌面端就报「无法加载登录要求」，进不了界面。之后追加：其他 CLI 有没有同类问题也要检查，有就一起修。都算 0.3.15。**用户没说要发布，发布前先问。**
 - **排查过程（都是在临时目录里复现，没碰真实的 ~/.codex）**：

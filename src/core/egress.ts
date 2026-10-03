@@ -7,10 +7,13 @@ import { curlBin } from "./curl";
 
 export const PROVIDERS = ["chatgpt", "claude", "grok"] as const;
 export type Provider = typeof PROVIDERS[number];
+/** 两轮检测至少隔这么久（手动「立即检测」也一样）。 */
 export const INTERVAL_MS = 5000;
+/** 自动检测的间隔（0.3.16 起可以自己定）：最少 5 秒、最多 60 秒，默认 10 秒。 */
+export const INTERVAL_SECONDS = { min: 5, max: 60, default: 10 } as const;
 export type ProviderConfig = { host: string; allowedIps: string[]; allowedRegions: string[] };
 /** ipIntel：出口 IP 变了时，拿去几个公开的 IP 数据库查归属、类型和风险评分（会把出口 IP 发给它们，见 ip-intel.ts）。 */
-export type EgressConfig = { enabled: boolean; notifications: boolean; ipIntel: boolean; providers: Record<Provider, ProviderConfig> };
+export type EgressConfig = { enabled: boolean; notifications: boolean; ipIntel: boolean; /** 每隔多少秒自动检测一轮。 */ intervalSeconds: number; providers: Record<Provider, ProviderConfig> };
 export type DomainInfo = { name: string; hosts: string[]; defaultHost: string; rules: string[]; ruleSource: string };
 export const DOMAINS: Record<Provider, DomainInfo> = JSON.parse(fs.readFileSync(path.join(__dirname, "../../knowledge/egress-domains.json"), "utf8"));
 export type RegionRule = { status: "verified" | "unverified"; source: string; checkedAt?: string; countries?: string[]; partialCountries?: string[]; scope?: string };
@@ -22,7 +25,7 @@ export type EgressRow = Probe & { status: "checking" | "ok" | "unconfigured" | "
 
 export function defaults(): EgressConfig {
   const provider = (p: Provider): ProviderConfig => ({ host: DOMAINS[p].defaultHost, allowedIps: [], allowedRegions: [] });
-  return { enabled: false, notifications: true, ipIntel: true, providers: { chatgpt: provider("chatgpt"), claude: provider("claude"), grok: provider("grok") } };
+  return { enabled: false, notifications: true, ipIntel: true, intervalSeconds: INTERVAL_SECONDS.default, providers: { chatgpt: provider("chatgpt"), claude: provider("claude"), grok: provider("grok") } };
 }
 export function normalizeIp(value: string) {
   const ip = value.trim();
@@ -36,6 +39,11 @@ export function validateConfig(value: unknown): EgressConfig {
   if (input.ipIntel !== undefined && typeof input.ipIntel !== "boolean") throw new Error("出口监控配置无效。");
   // 0.3.7 的配置没有这一项：默认开
   const next = defaults(); next.enabled = input.enabled; next.notifications = input.notifications; next.ipIntel = input.ipIntel !== false;
+  // 0.3.15 及以前的配置没有这一项：用默认的 10 秒
+  if (input.intervalSeconds !== undefined) {
+    if (!Number.isInteger(input.intervalSeconds) || input.intervalSeconds < INTERVAL_SECONDS.min || input.intervalSeconds > INTERVAL_SECONDS.max) throw new Error(`检测间隔请填 ${INTERVAL_SECONDS.min} 到 ${INTERVAL_SECONDS.max} 之间的整数（秒）。`);
+    next.intervalSeconds = input.intervalSeconds;
+  }
   for (const p of PROVIDERS) {
     const row = input.providers[p];
     if (!row || !DOMAINS[p].hosts.includes(row.host) || !Array.isArray(row.allowedIps) || !Array.isArray(row.allowedRegions) || row.allowedIps.length > 64 || row.allowedRegions.length > 64) throw new Error("检测域名或白名单无效（每项最多 64 条）。");

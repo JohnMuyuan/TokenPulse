@@ -108,19 +108,93 @@ export function cleanAgentEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Pro
   return env;
 }
 
-const quotePs = (value: string) => `'${value.replace(/'/g, "''")}'`;
+/**
+ * PowerShell 单引号字符串。PowerShell 把弯引号（‘ ’ ‚ ‛）也当成单引号：路径里有它们时不翻倍，字符串就在那里断开、整段脚本报错
+ * （0.3.16 修：项目文件夹叫「JMY‘s Mods All in one」时「在终端里继续」打不开 CLI）。几种引号都翻倍。
+ */
+export const quotePs = (value: string) => `'${value.replace(/['‘’‚‛]/g, "$&$&")}'`;
 
 /**
  * 「在终端里继续」要跑的 PowerShell 脚本：进项目目录，用 CLI 的交互模式接着这个会话。
  * 优先用 PATH 上的命令（和用户自己在终端里敲的一样）；PATH 上没有就用找到的 exe（Grok 默认装在 ~/.grok/bin，不一定在 PATH 里）。
  */
-export function terminalScript(kind: AgentKind, id: string, cwd?: string, fallbackExe?: string) {
+/**
+ * 启动 CLI 前的出口规则（0.3.16），来自出口监控里这一家的设置：
+ * - 设了 IP 白名单：只看 IP（地区白名单不管）；
+ * - 没设 IP 白名单、设了地区白名单：看地区；
+ * - 两个都没设：不检测（调用方不传 guard）。
+ */
+export type ExitGuard = { host: string; allowedIps: string[]; allowedRegions: string[] };
+export const guardMode = (guard?: ExitGuard | null): "ip" | "region" | null => guard?.allowedIps.length ? "ip" : guard?.allowedRegions.length ? "region" : null;
+const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok" };
+
+/**
+ * 启动 CLI 之前，在**同一个 PowerShell 窗口里**测一次出口：符合白名单才往下走，否则打印原因、不启动。
+ *
+ * 为什么不在 TokenPulse 里测完再开窗口：终端里的 CLI 走的是这个 PowerShell 进程的网络环境（代理环境变量等），
+ * 和 TokenPulse 自己发请求的路不一定一样。只有在这个窗口里测到的出口，才是 CLI 接下来真正用的出口。
+ *
+ * 做法和出口监控一样：用 curl.exe 请求 `https://<域名>/cdn-cgi/trace`，取里面的 `ip=` 和 `loc=`（两位地区代码）。
+ * IP 两边都用 .NET 的 IPAddress 规范化后比较（IPv6 的写法不同也能对上）；地区按大写比较，XX / ZZ / EU 这类说不清的当作测不出来。
+ * 测不出来（没有 curl、超时、返回的不是 trace）一律不启动——确认不了从哪儿出去，就别启动。
+ * 脚本里的域名、IP、地区都来自已经校验过的出口监控配置，仍然按 PowerShell 字符串规则加引号。
+ */
+export function exitGuardScript(kind: AgentKind, guard: ExitGuard) {
+  const label = CLI_LABEL[kind], byIp = guardMode(guard) === "ip";
+  const refuse = (message: string) => [`  Write-Host ${message} -ForegroundColor Red`];
+  return [
+    byIp ? `$tpAllowed = @(${guard.allowedIps.map(quotePs).join(", ")})` : `$tpAllowed = @(${guard.allowedRegions.map((code) => quotePs(code.toUpperCase())).join(", ")})`,
+    `$tpHost = ${quotePs(guard.host)}`,
+    `Write-Host ('[TokenPulse] 正在这个终端里检测出口${byIp ? " IP" : "地区"}（' + $tpHost + '）…') -ForegroundColor DarkGray`,
+    `$tpNorm = { param($v) try { [System.Net.IPAddress]::Parse(([string]$v).Trim()).ToString().ToLowerInvariant() } catch { ([string]$v).Trim().ToLowerInvariant() } }`,
+    `$tpIp = ''; $tpLoc = ''`,
+    `if (Get-Command curl.exe -ErrorAction SilentlyContinue) {`,
+    `  try {`,
+    `    $tpOut = & curl.exe -sS --max-time 6 --http1.1 --max-filesize 16384 -H 'Cache-Control: no-cache' ('https://' + $tpHost + '/cdn-cgi/trace?tokenpulse=' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) 2>$null`,
+    `    if ($LASTEXITCODE -eq 0) {`,
+    `      $tpText = $tpOut -join [char]10`,
+    `      $tpMatch = [regex]::Match($tpText, '(?m)^ip=([0-9A-Fa-f:.]+)[ ]*$'); if ($tpMatch.Success) { $tpIp = $tpMatch.Groups[1].Value }`,
+    `      $tpMatch = [regex]::Match($tpText, '(?m)^loc=([A-Za-z][A-Za-z])[ ]*$'); if ($tpMatch.Success) { $tpLoc = $tpMatch.Groups[1].Value.ToUpperInvariant() }`,
+    `      if (@('XX', 'ZZ', 'EU') -contains $tpLoc) { $tpLoc = '' }`,
+    `    }`,
+    `  } catch { $tpIp = ''; $tpLoc = '' }`,
+    `}`,
+    ...(byIp ? [
+      `if (-not $tpIp) {`,
+      ...refuse(`'[TokenPulse] 没能确认这个终端的出口 IP，已拒绝启动 ${label}。请检查网络或代理后重试。'`),
+      `  return`,
+      `}`,
+      `if (@($tpAllowed | ForEach-Object { & $tpNorm $_ }) -notcontains (& $tpNorm $tpIp)) {`,
+      ...refuse(`('[TokenPulse] 这个终端的出口 IP 是 ' + $tpIp + '，不在白名单里，已拒绝启动 ${label}。')`),
+      `  Write-Host ('[TokenPulse] IP 白名单：' + ($tpAllowed -join '、') + '。可以在 TokenPulse 的「出口监控」里修改。') -ForegroundColor DarkGray`,
+      `  return`,
+      `}`,
+      `Write-Host ('[TokenPulse] 出口 IP ' + $tpIp + ' 在白名单里，启动 ${label}。') -ForegroundColor Green`,
+    ] : [
+      `if (-not $tpLoc) {`,
+      ...refuse(`'[TokenPulse] 没能确认这个终端的出口地区，已拒绝启动 ${label}。请检查网络或代理后重试。'`),
+      `  return`,
+      `}`,
+      `if ($tpAllowed -notcontains $tpLoc) {`,
+      ...refuse(`('[TokenPulse] 这个终端的出口地区是 ' + $tpLoc + '（IP ' + $tpIp + '），不在地区白名单里，已拒绝启动 ${label}。')`),
+      `  Write-Host ('[TokenPulse] 地区白名单：' + ($tpAllowed -join '、') + '。可以在 TokenPulse 的「出口监控」里修改。') -ForegroundColor DarkGray`,
+      `  return`,
+      `}`,
+      `Write-Host ('[TokenPulse] 出口地区 ' + $tpLoc + '（IP ' + $tpIp + '）在地区白名单里，启动 ${label}。') -ForegroundColor Green`,
+    ]),
+  ].join("\n");
+}
+
+export function terminalScript(kind: AgentKind, id: string | null, cwd?: string, fallbackExe?: string, guard?: ExitGuard | null) {
   const name = kind === "claude" ? "claude" : kind === "codex" ? "codex" : "grok";
-  const args = (kind === "codex" ? ["resume", id] : ["--resume", id]).map(quotePs).join(" ");
+  // id 为 null：开一个新对话（0.3.16），不带任何参数，和用户自己在这个目录里敲命令一样
+  const args = id === null ? "" : (kind === "codex" ? ["resume", id] : ["--resume", id]).map(quotePs).join(" ");
   return [
     cwd ? `Set-Location -LiteralPath ${quotePs(cwd)}` : "",
+    // 设了出口白名单（IP 优先，没有 IP 就看地区）：先测，不符合就到此为止（脚本里的 return），下面两行不会执行
+    guard && guardMode(guard) ? exitGuardScript(kind, guard) : "",
     `$cli = if (Get-Command ${name} -ErrorAction SilentlyContinue) { ${quotePs(name)} } else { ${quotePs(fallbackExe || name)} }`,
-    `& $cli ${args}`,
+    `& $cli ${args}`.trimEnd(),
   ].filter(Boolean).join("\n");
 }
 
@@ -129,10 +203,10 @@ export function terminalScript(kind: AgentKind, id: string, cwd?: string, fallba
  * 直接 spawn powershell（detached）在 Electron 这种 GUI 程序里拿不到控制台：进程立刻退出、什么窗口都不出（0.3.3 的 bug）。
  * 交给 `cmd /c start` 开新控制台（Win11 默认是 Windows Terminal）；脚本用 -EncodedCommand 传，路径里的空格、引号、中文都不用操心转义。
  */
-export function openTerminal(kind: AgentKind, id: string, cwd?: string) {
+export function openTerminal(kind: AgentKind, id: string | null, cwd?: string, guard?: ExitGuard | null) {
   const cli = resolveCli(kind);
   const fallbackExe = cli && cli.prefix.length === 0 ? cli.file : undefined;
-  const encoded = Buffer.from(terminalScript(kind, id, cwd, fallbackExe), "utf16le").toString("base64");
+  const encoded = Buffer.from(terminalScript(kind, id, cwd, fallbackExe, guard), "utf16le").toString("base64");
   const child = spawn("cmd.exe", ["/d", "/c", "start", '""', "powershell.exe", "-NoExit", "-NoProfile", "-EncodedCommand", encoded], {
     env: cleanAgentEnv(),
     stdio: "ignore",

@@ -289,6 +289,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   overflow-x: hidden; overflow-y: auto; scroll-behavior: smooth;
   scrollbar-gutter: stable;
 }
+/* 内容变短时垫在末尾的空白（见 app.js 的 scrollGuard） */
+#scroll-floor { height: 0; pointer-events: none; }
 .workspace::-webkit-scrollbar { width: 12px; }
 .workspace::-webkit-scrollbar-track { background: transparent; }
 .workspace::-webkit-scrollbar-thumb {

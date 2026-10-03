@@ -27,6 +27,10 @@
     grok: { name: 'Grok Build', short: 'Grok', brand: 'grok' }
   };
   const DAY = 86400000;
+  /** 0.3.16：这一家设了出口 IP 白名单时，TokenPulse 启动的 CLI 会先测出口。 */
+  const GUARD_NOTES = { ip: '启动前会先在终端里检测出口 IP，不在白名单就不会启动。', region: '启动前会先在终端里检测出口地区，不在地区白名单就不会启动。' };
+  /** guarded：'ip' / 'region' / 没有（旧的布尔值 true 当作 ip）。 */
+  const guardNote = mode => GUARD_NOTES[mode === true ? 'ip' : mode] || '';
   let built = false;
   let N = {};
 
@@ -135,8 +139,17 @@
     N.project = el('select', { class: 'sw-project', 'aria-label': '按项目筛选' });
     N.list = el('div', { class: 'sw-items', role: 'listbox', 'aria-label': '会话列表' });
     N.count = el('span', { class: 'section-tag' });
+    // 0.3.16：新对话（在已有项目里）/ 新项目（选或新建一个文件夹）
+    N.newChat = button('新对话', 'plus', 'btn btn-accent sw-new', { 'data-action': 'new-chat', title: '在一个项目里开一个新对话' });
+    N.newProject = button('新项目', 'folder', 'btn sw-new', { 'data-action': 'new-project', title: '选择或新建一个项目文件夹，在里面开始第一个对话' });
+    N.newChat.addEventListener('click', () => openNew());
+    N.newProject.addEventListener('click', async () => {
+      const folder = await api.pickProjectFolder?.(currentFolder() || undefined).catch(() => null);
+      if (folder) openNew(folder);
+    });
     const aside = el('aside', { class: 'panel sw-side' }, [
       el('div', { class: 'sw-side-head' }, [el('h2', {}, ['会话列表 ', N.count]), N.refresh]),
+      el('div', { class: 'sw-new-row' }, [N.newChat, N.newProject]),
       el('label', { class: 'search-field sw-search' }, [icon('search'), N.search]),
       N.kinds,
       N.project,
@@ -163,6 +176,98 @@
       if (next && next !== S.key) { event.preventDefault(); select(next); N.list.querySelector(`[data-key="${CSS.escape(next)}"]`)?.focus(); }
     });
     api.onSessionReply?.(onReplyEvent);
+  }
+
+  /* ---------------- 新对话 / 新项目（0.3.16） ---------------- */
+
+  /** 现在看着的那段会话所在的项目文件夹（没有选中就取最近一段会话的）。 */
+  function currentFolder() {
+    return S.detail?.cwd || S.items.find(item => item.key === S.key)?.cwd || S.items.find(item => item.cwd)?.cwd || '';
+  }
+  /** 本机会话里出现过的项目文件夹，最近用过的在前。 */
+  function knownFolders() {
+    const seen = new Map();
+    for (const item of S.items) if (item.cwd && !seen.has(item.cwd.toLowerCase())) seen.set(item.cwd.toLowerCase(), { cwd: item.cwd, name: item.project });
+    return [...seen.values()];
+  }
+  /**
+   * 对话框：选项目文件夹 + 用哪个工具，然后在那个文件夹里打开终端启动 CLI。
+   * folder：预先选好的文件夹（「新项目」选完文件夹后传进来）。
+   */
+  async function openNew(folder) {
+    document.getElementById('sw-new')?.remove();
+    const last = document.activeElement;
+    let clis = {};
+    try { clis = await api.sessionClis?.() || {}; } catch { /* 查不到就当都没装，下面会提示 */ }
+    const folders = knownFolders();
+    let chosen = folder || currentFolder() || folders[0]?.cwd || '';
+    const currentKind = S.detail?.kind || S.items.find(item => item.key === S.key)?.kind;
+    let kind = [currentKind, 'claude', 'codex', 'grok'].find(k => k && clis[k]) || '';
+
+    const select = el('select', { class: 'sw-new-folder', 'aria-label': '项目文件夹' });
+    const path = el('p', { class: 'sw-new-path', translate: 'no' });
+    const drawFolders = () => {
+      const list = [...folders];
+      if (chosen && !list.some(f => f.cwd.toLowerCase() === chosen.toLowerCase())) list.unshift({ cwd: chosen, name: chosen.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || chosen });
+      select.replaceChildren(...(list.length ? list : [{ cwd: '', name: '还没有项目，点右边选一个文件夹' }]).map(f => el('option', { value: f.cwd, text: f.name, translate: 'no' })));
+      select.value = chosen; path.textContent = chosen || ''; path.title = chosen;
+      sync();
+    };
+    const browse = button('选择文件夹…', 'folder', 'btn', { 'data-action': 'browse' });
+    const tools = el('div', { class: 'sw-new-tools', role: 'radiogroup', 'aria-label': '用哪个工具' });
+    const drawTools = () => tools.replaceChildren(...['claude', 'codex', 'grok'].map(k => {
+      const b = el('button', { type: 'button', class: 'sw-new-tool' + (kind === k ? ' on' : ''), role: 'radio', 'aria-checked': String(kind === k), 'data-kind': k, disabled: clis[k] ? null : '' }, [
+        mark(k), el('b', { text: AGENTS[k].name, translate: 'no' }), el('small', { text: clis[k] ? '已安装' : '没有找到 CLI' })
+      ]);
+      b.addEventListener('click', () => { kind = k; drawTools(); sync(); });
+      return b;
+    }));
+    const start = el('button', { type: 'button', class: 'btn btn-accent', 'data-action': 'start', text: '在终端里开始' });
+    const cancel = el('button', { type: 'button', class: 'btn', text: '取消' });
+    const close = el('button', { type: 'button', class: 'icon-circle', 'aria-label': '关闭' }, [icon('close')]);
+    const note = el('p', { class: 'sw-new-note', role: 'status' });
+    function sync() {
+      start.disabled = !chosen || !kind;
+      note.classList.remove('bad');
+      note.textContent = !['claude', 'codex', 'grok'].some(k => clis[k]) ? '本机没有找到 Claude Code、Codex 或 Grok 的命令行程序，请先安装。' : !chosen ? '先选一个项目文件夹。' : guardNote(clis.guarded?.[kind]) ? (clis.guarded[kind] === 'region' ? '这个工具设了出口地区白名单：' : '这个工具设了出口 IP 白名单：') + guardNote(clis.guarded[kind]) : '';
+    }
+    const card = el('section', { class: 'modal-card sw-new-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'sw-new-title' }, [
+      el('header', { class: 'sw-new-head' }, [el('div', {}, [
+        el('h2', { id: 'sw-new-title', text: folder ? '在新项目里开始' : '开一个新对话' }),
+        el('p', { text: '会打开一个终端窗口，在项目文件夹里启动所选的工具。新对话开始后会出现在会话列表里（点刷新）。' })
+      ]), close]),
+      el('div', { class: 'sw-new-field' }, [el('span', { class: 'sw-new-label', text: '项目文件夹' }), el('div', { class: 'sw-new-folder-row' }, [select, browse]), path]),
+      el('div', { class: 'sw-new-field' }, [el('span', { class: 'sw-new-label', text: '用哪个工具' }), tools]),
+      note,
+      el('footer', { class: 'sw-new-foot' }, [cancel, start]),
+    ]);
+    const modal = el('div', { class: 'modal', id: 'sw-new' }, [card]);
+    const shut = () => { modal.remove(); document.removeEventListener('keydown', onKey, true); last?.focus?.(); };
+    const onKey = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); shut(); } };
+    select.addEventListener('change', () => { chosen = select.value; path.textContent = chosen; path.title = chosen; sync(); });
+    browse.addEventListener('click', async () => {
+      const picked = await api.pickProjectFolder?.(chosen || undefined).catch(() => null);
+      if (picked) { chosen = picked; drawFolders(); }
+    });
+    close.addEventListener('click', shut); cancel.addEventListener('click', shut);
+    modal.addEventListener('click', event => { if (event.target === modal) shut(); });
+    document.addEventListener('keydown', onKey, true);
+    start.addEventListener('click', async () => {
+      start.disabled = true;
+      try {
+        const result = await api.startSession(kind, chosen);
+        shut();
+        showStatus(guardNote(result?.guarded) ? `已打开终端。${guardNote(result.guarded)}` : `已在终端里打开 ${AGENTS[kind].name}。发出第一条消息后，点刷新就能在列表里看到这段新对话。`);
+        // 新会话要等 CLI 写出文件：过一会儿自己刷新一次
+        setTimeout(() => { if (state.page === 'sessions') loadList(true, true); }, 15000);
+      } catch (error) {
+        note.textContent = cleanError(error, '打不开终端，请确认对应的 CLI 已安装。'); note.classList.add('bad');
+        start.disabled = false;
+      }
+    });
+    drawFolders(); drawTools(); sync();
+    document.body.append(modal);
+    (start.disabled ? browse : start).focus();
   }
 
   /* ---------------- 列表 ---------------- */
@@ -300,7 +405,7 @@
       if (value === 'id') copy(d.id, '会话 ID 已复制');
       if (value === 'delete') await deleteConversation(d);
       if (value === 'terminal') {
-        try { await api.openSessionTerminal(d.kind, d.id); showStatus('已在终端里打开这段会话。'); }
+        try { const result = await api.openSessionTerminal(d.kind, d.id); showStatus(guardNote(result?.guarded) ? '已打开终端。' + guardNote(result.guarded) : '已在终端里打开这段会话。'); }
         catch (error) { showStatus(cleanError(error, '打不开终端，请确认对应的 CLI 已安装。'), true); }
       }
     });

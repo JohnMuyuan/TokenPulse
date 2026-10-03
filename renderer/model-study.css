@@ -401,3 +401,20 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 /* ---------------- 其中新内容约多少（0.3.15） ---------------- */
 .ms-cap-new { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; cursor: help; }
 .ms-price-why { color: var(--text-2) !important; }
+
+/* ---------------- 单价变化（0.3.16）：改用实际标价 / 降价 / 涨价 ---------------- */
+.ms-price-tag.changed.switch { background: var(--tile-neutral); color: var(--text-2); }
+.ms-price-tag.changed.down { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-strong); }
+.ms-price-tag.changed.up { background: color-mix(in srgb, var(--bad, #d9534f) 14%, transparent); color: var(--bad, #d9534f); }
+.ms-change-rows { display: grid; gap: 3px; margin: 4px 0 2px; }
+.ms-change-row { display: grid; grid-template-columns: minmax(110px, 1fr) 72px 16px 72px 64px; gap: 8px; align-items: baseline; color: var(--text-2); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.ms-change-row > :nth-child(n+2) { text-align: right; }
+.ms-change-from { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent); }
+.ms-change-row.flat .ms-change-from { text-decoration: none; }
+.ms-change-arrow { color: var(--faint); text-align: center !important; }
+.ms-change-row b { color: var(--text); font-weight: 600; }
+.ms-change-pct { font-weight: 600; }
+.ms-change-row.down .ms-change-pct { color: var(--accent-strong); }
+.ms-change-row.up .ms-change-pct { color: var(--bad, #d9534f); }
+.ms-change-row.flat .ms-change-pct { color: var(--faint); font-weight: 400; }
+.ms-change-overall { color: var(--text-2) !important; }

@@ -353,6 +353,8 @@
     const basis = { combo: '这个组合自己最近 30 天的实际费用', model: '同模型其他等级的实际费用', price: '价格表 × 本账号的用量结构', effort: '价格表 × 本账号的用量结构，输出部分按思考等级倍数换算' }[c.priceBasis];
     const priceBlock = priceDetail(c, data.five.priceSource, basis);
     if (priceBlock) facts.push(...priceBlock);
+    const changeFact = priceChangeFact(c);
+    if (changeFact) facts.push(changeFact);
     const notes = priceNoteLines(c.priceNotes);
     if (notes.length) fact('单价说明', '', '', el('ul', { class: 'ms-fact-list' }, notes.map(t => el('li', { text: t }))));
     if (c.effortBasis) {
@@ -469,8 +471,55 @@
     return [
       notes.promo ? el('span', { class: 'ms-price-tag promo', text: '优惠价' }) : null,
       notes.dispute ? el('span', { class: 'ms-price-tag dispute', text: '标价不同' }) : null,
-      recentChange(notes) ? el('span', { class: 'ms-price-tag changed', text: '单价刚更新' }) : null,
+      changeTag(notes),
     ].filter(Boolean);
+  }
+  /*
+   * 单价变化（0.3.16 重做）。两种情况要分开，不然用户会以为官方调价了：
+   * - fromFallback：以前没有这个型号的单独标价，按型号家族估算；现在换成它自己的标价。官方价格没变 → 「改用实际标价」；
+   * - 否则是真的调价 → 「刚降价」/「刚涨价」（有涨有降写「单价刚更新」）。
+   * 前后一样的不算变化（主进程已经过滤掉了）。
+   */
+  const PRICE_ITEMS = [['input', '输入'], ['cacheRead', '缓存读（命中）'], ['cacheWrite', '缓存写'], ['output', '输出']];
+  const unitOf = (price, key) => key === 'cacheWrite' && !(price.cacheWrite > 0) ? price.input : price[key];
+  function changeDirection(notes) {
+    const now = notes.price, was = notes.changed.previous;
+    const moves = PRICE_ITEMS.map(([key]) => Math.sign(unitOf(now, key) - unitOf(was, key))).filter(Boolean);
+    return !moves.length ? 'same' : moves.every(m => m < 0) ? 'down' : moves.every(m => m > 0) ? 'up' : 'mixed';
+  }
+  function changeTag(notes) {
+    if (!recentChange(notes) || !notes.price) return null;
+    if (notes.changed.fromFallback) return el('span', { class: 'ms-price-tag changed switch', text: '改用实际标价', title: '官方价格没有变：以前按型号家族估算，现在用这个型号自己的标价' });
+    const direction = changeDirection(notes);
+    return direction === 'same' ? null : el('span', { class: 'ms-price-tag changed ' + direction, text: { down: '刚降价', up: '刚涨价', mixed: '单价刚更新' }[direction] });
+  }
+  /** 「+25%」「−20%」：涨跌幅度。 */
+  function changePct(now, was) {
+    if (!(was > 0)) return now > 0 ? '新增' : '';
+    const pct = (now - was) / was * 100;
+    return `${pct > 0 ? '+' : '−'}${Math.abs(pct) >= 10 ? Math.abs(pct).toFixed(0) : Math.abs(pct).toFixed(1)}%`;
+  }
+  /** 详情里的「单价变化」：逐项写前后单价和涨跌幅；有用量结构时再算综合单价前后差多少。 */
+  function priceChangeFact(c) {
+    const notes = c.priceNotes;
+    if (!recentChange(notes) || !notes.price) return null;
+    const now = notes.price, was = notes.changed.previous, d = new Date(notes.changed.at + 'T00:00:00'), day = `${d.getMonth() + 1}/${d.getDate()}`;
+    const rows = PRICE_ITEMS.map(([key, label]) => {
+      const a = unitOf(was, key), b = unitOf(now, key), dir = b < a ? 'down' : b > a ? 'up' : 'flat';
+      return el('div', { class: 'ms-change-row ' + dir }, [el('span', { text: label }), el('span', { class: 'ms-change-from', text: price$(a) }), el('span', { class: 'ms-change-arrow', text: '→', 'aria-hidden': 'true' }), el('b', { text: price$(b) }), el('span', { class: 'ms-change-pct', text: dir === 'flat' ? '没变' : changePct(b, a) })]);
+    });
+    const m = c.priceMix, total = m ? m.fresh + m.cacheRead + m.cacheWrite + m.output : 0;
+    const blended = price => (m.fresh * price.input + m.cacheRead * price.cacheRead + m.cacheWrite * unitOf(price, 'cacheWrite') + m.output * price.output) / total;
+    const head = notes.changed.fromFallback
+      ? `${day} 起改用这个型号自己的标价。官方价格没有变：之前价格表里没有它的单独标价，按型号家族估算。`
+      : `${day} 官方调价（${{ down: '降价', up: '涨价', mixed: '有涨有降', same: '没变' }[changeDirection(notes)]}）。`;
+    const overall = total > 0 ? (() => { const a = blended(was), b = blended(now); return a > 0 && Math.abs(b - a) / a >= .005 ? `按你的用量结构，综合单价 ${price$(a)} → ${price$(b)}（${changePct(b, a)}）。` : '按你的用量结构，综合单价基本没变。'; })() : '';
+    return el('div', { class: 'ms-fact ms-change' }, [el('dt', { text: notes.changed.fromFallback ? '估算依据变化' : '单价变化' }), el('dd', {}, [
+      el('span', { text: head }),
+      el('div', { class: 'ms-change-rows' }, rows),
+      overall ? el('small', { class: 'ms-change-overall', text: overall }) : null,
+      el('small', { text: '这之前的美元估值按旧单价算，所以前后会有差别。Tokens 不受影响。' }),
+    ])]);
   }
   function priceNoteLines(notes) {
     if (!notes) return [];
@@ -480,10 +529,7 @@
       if (notes.promo.note) out.push(notes.promo.note);
     }
     if (notes.dispute && p) out.push(`标价不同：LiteLLM ${usd(p.input)} / ${usd(p.output)}，OpenRouter ${usd(notes.dispute.openrouter.input)} / ${usd(notes.dispute.openrouter.output)}（每百万 token，输入 / 输出），按 LiteLLM 算。`);
-    if (recentChange(notes) && p) {
-      const q = notes.changed.previous, d = new Date(notes.changed.at + 'T00:00:00');
-      out.push(`单价 ${d.getMonth() + 1}/${d.getDate()} 更新：${usd(q.input)} / ${usd(q.output)}（缓存读 ${usd(q.cacheRead)}）→ ${usd(p.input)} / ${usd(p.output)}（缓存读 ${usd(p.cacheRead)}）。这之前的美元估值按旧单价算，所以前后差别会比较大，Tokens 不受影响。`);
-    }
+    // 单价变化单独一栏（priceChangeFact），逐项写涨跌
     return out;
   }
 

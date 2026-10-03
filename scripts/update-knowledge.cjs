@@ -19,7 +19,8 @@
  * 安全规则：
  * - 和 OpenRouter 的价格差超过 25%：0.3.13 起**按 LiteLLM 的用**（优惠价这类 LiteLLM 更准），规则上记下 dispute（两边的价格），
  *   软件在型号旁标「标价不同」，用户知道估值为什么和别处不一样；
- * - 每次单价变化（包括从家族兜底换成逐个型号的价格）记下 changedAt 和 previous，软件在一段时间内标「单价刚更新」；
+ * - 每次单价变化记下 changedAt 和 previous，软件在一段时间内标出来。previousFallback = true 表示 previous 是按型号家族估算的兜底价
+ *   （官方价格没变，只是换成了这个型号自己的标价），软件标「改用实际标价」；没有这个标记的才是真的调价，标「刚降价 / 刚涨价」；
  * - manual.labels：手动给型号打标签（promo 优惠价、until 到期日、note），到期自动去掉；manual.pinned 的规则也可以带 until，到期不再生效；
  * - 已有的自动规则单价变化超过 50%，或一次新增超过 60 条：report.review = true，工作流开 PR 让人确认，而不是直接推 main；
  * 永远不自动删除规则（来源里消失的型号保留原价）；收费型号给出 0 价的不收；缓存读价缺失时按输入价算（不当成免费）。
@@ -216,10 +217,14 @@ function build({ manual, current, litellm, openrouter, epoch, today }) {
         const big = ['input', 'output'].some(k => relative(old[k], rule[k]) > BIG_CHANGE);
         report.changed.push({ id, from: pick(old), to: pick(rule), big });
         rule.changedAt = day; rule.previous = pick(old);
-      } else if (old.changedAt) { rule.changedAt = old.changedAt; rule.previous = old.previous; }
+      } else if (old.changedAt) {
+        rule.changedAt = old.changedAt; rule.previous = old.previous;
+        // 0.3.16 之前没有这个标记：previous 和兜底价一样的，就是从兜底换过来的
+        if (old.previousFallback || (fallback && old.previous && samePrice(fallback, old.previous))) rule.previousFallback = true;
+      }
       else if (fallback && !samePrice(fallback, rule)) {
         // 0.3.11 从家族兜底换成逐个型号价格时没记日期：补上（按那一版知识库的日期）
-        rule.changedAt = String(current?.updatedAt || day).slice(0, 10); rule.previous = pick(fallback);
+        rule.changedAt = String(current?.updatedAt || day).slice(0, 10); rule.previous = pick(fallback); rule.previousFallback = true;
       }
       auto.set(id, rule);
       continue;
@@ -227,7 +232,7 @@ function build({ manual, current, litellm, openrouter, epoch, today }) {
     // 兜底规则算出来一样就不用单独加一条
     if (samePrice(fallback, rule)) continue;
     report.added.push({ id, to: pick(rule), fallback: pick(fallback) });
-    if (fallback) { rule.changedAt = day; rule.previous = pick(fallback); }
+    if (fallback) { rule.changedAt = day; rule.previous = pick(fallback); rule.previousFallback = true; }
     auto.set(id, rule);
   }
   // 来源里没了的：原样保留，不自动删

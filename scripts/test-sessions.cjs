@@ -168,6 +168,55 @@ assert(script.includes("Get-Command grok") && script.includes("'C:\\Users\\x\\.g
 assert(script.endsWith("& $cli '--resume' 'a''b'"));
 assert(reply.terminalScript('codex', 'abc').endsWith("& $cli 'resume' 'abc'"));
 assert(!reply.terminalScript('codex', 'abc').includes('Set-Location'), '没有项目目录就不切');
+// 0.3.16：PowerShell 把弯引号（‘ ’ ‚ ‛）也当单引号，路径里有它们时要一起翻倍（项目文件夹「JMY‘s Mods All in one」打不开终端）
+assert.strictEqual(reply.quotePs("JMY\u2018s Mods All in one"), "'JMY\u2018\u2018s Mods All in one'");
+assert.strictEqual(reply.quotePs("a'b\u2019c\u201Ad\u201Be f"), "'a''b\u2019\u2019c\u201A\u201Ad\u201B\u201Be f'");
+assert(reply.terminalScript('claude', 'abc', "D:\\Mods\\JMY\u2018s Mods All in one").startsWith("Set-Location -LiteralPath 'D:\\Mods\\JMY\u2018\u2018s Mods All in one'"));
+// 真的交给 PowerShell 解析一遍：带空格、直引号、弯引号的路径原样还原
+if (process.platform === 'win32') {
+  const { spawnSync } = require('node:child_process');
+  const tricky = ["C:\\a b\\JMY\u2018s Mods All in one", "D:\\it's \u2019here\u201A \u201Bok"];
+  const ps = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' + tricky.map(v => `Write-Output (${reply.quotePs(v)})`).join('; ');
+  const out = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 60000 });
+  assert.deepStrictEqual(out.stdout.split(/\r?\n/).filter(Boolean), tricky, 'PowerShell 解析后的路径和原来一样：' + out.stderr.slice(0, 200));
+}
+// 0.3.16 出口 IP 白名单：检测放在同一个 PowerShell 里、在启动 CLI 之前；没设白名单就没有这一段
+{
+  const guarded = reply.terminalScript('claude', 'abc', 'D:\\x y', 'C:\\c\\claude.exe', { host: 'api.anthropic.com', allowedIps: ['203.0.113.7', "2001:db8::1"], allowedRegions: ['US'] });
+  const lines = guarded.split('\n');
+  assert.strictEqual(lines[0], "Set-Location -LiteralPath 'D:\\x y'");
+  assert.strictEqual(lines[1], "$tpAllowed = @('203.0.113.7', '2001:db8::1')");
+  assert.strictEqual(lines[2], "$tpHost = 'api.anthropic.com'");
+  const at = text => lines.findIndex(line => line.includes(text));
+  assert(at('curl.exe -sS') > 0 && at("/cdn-cgi/trace") > 0, '用 curl 请求 trace');
+  assert(at('-notcontains') > at('curl.exe -sS') && at('& $cli') > at('-notcontains'), '先测、再比、最后才启动 CLI');
+  assert.strictEqual(lines.filter(line => line.trim() === 'return').length, 2, '测不出来、不在白名单：两处都直接结束，不往下启动');
+  assert(!guarded.includes('地区白名单'), '设了 IP 白名单就只看 IP，地区白名单不参与');
+  assert(guarded.includes("已拒绝启动 Claude Code") && guarded.endsWith("& $cli '--resume' 'abc'"));
+  assert(reply.terminalScript('codex', null, 'D:\\x', undefined, { host: 'chatgpt.com', allowedIps: ['1.1.1.1'], allowedRegions: [] }).includes('已拒绝启动 Codex'));
+  // 没设 IP 白名单、设了地区白名单：按地区比（代码统一成大写）；两个都没设：不检测
+  const byRegion = reply.terminalScript('grok', 'abc', 'D:\\x', undefined, { host: 'grok.com', allowedIps: [], allowedRegions: ['us', 'JP'] });
+  assert(byRegion.includes("$tpAllowed = @('US', 'JP')") && byRegion.includes('$tpAllowed -notcontains $tpLoc') && byRegion.includes('不在地区白名单里，已拒绝启动 Grok'));
+  assert(!byRegion.includes('& $tpNorm $tpIp'), '地区模式不比 IP');
+  assert.strictEqual(byRegion.split('\n').filter(line => line.trim() === 'return').length, 2);
+  assert.deepStrictEqual([reply.guardMode({ host: 'h', allowedIps: ['1.1.1.1'], allowedRegions: ['US'] }), reply.guardMode({ host: 'h', allowedIps: [], allowedRegions: ['US'] }), reply.guardMode({ host: 'h', allowedIps: [], allowedRegions: [] }), reply.guardMode(null)], ['ip', 'region', null, null]);
+  for (const none of [undefined, null, { host: 'chatgpt.com', allowedIps: [], allowedRegions: [] }]) assert(!reply.terminalScript('codex', 'abc', 'D:\\x', undefined, none).includes('tpAllowed'), '没设白名单不检测');
+  // 白名单里的值按 PowerShell 字符串规则加引号（配置校验过只会是 IP，这里再保一层）
+  assert(reply.exitGuardScript('grok', { host: 'grok.com', allowedIps: ["1.1.1.1'; calc; '"], allowedRegions: [] }).includes("@('1.1.1.1''; calc; ''')"));
+  // 真的交给 PowerShell 解析一遍（不联网：域名是保留的 .invalid，测不出来 → 必须拒绝，后面的语句不执行）
+  if (process.platform === 'win32') {
+    const { spawnSync } = require('node:child_process');
+    const ps = '[Console]::OutputEncoding=[Text.Encoding]::UTF8\n' + reply.exitGuardScript('claude', { host: 'tokenpulse-test.invalid', allowedIps: ['203.0.113.7'], allowedRegions: [] }) + "\nWrite-Output 'CLI-STARTED'";
+    const out = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 60000 });
+    assert(!out.stdout.includes('CLI-STARTED'), '测不出出口时不启动：' + out.stdout.slice(0, 300) + out.stderr.slice(0, 300));
+    assert(out.stdout.includes('没能确认这个终端的出口 IP，已拒绝启动 Claude Code'), out.stdout.slice(0, 300) + out.stderr.slice(0, 300));
+  }
+}
+// 0.3.16 新对话：不带会话参数，只进目录、启动 CLI
+const fresh = reply.terminalScript('claude', null, 'D:\\My Projects\\demo app', 'C:\\x\\claude.exe');
+assert.strictEqual(fresh.split('\n')[0], "Set-Location -LiteralPath 'D:\\My Projects\\demo app'");
+assert(fresh.endsWith('& $cli'), fresh);
+assert(reply.terminalScript('codex', null, 'D:\\x').endsWith('& $cli') && !reply.terminalScript('codex', null, 'D:\\x').includes('resume'));
 
 // 从 Claude Code 里启动时继承的会话标记要去掉（否则 Claude 不存对话记录、终端没颜色）；用户自己配的 CLAUDE_CODE_* 留着
 const cleaned = reply.cleanAgentEnv({ CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ID: 'x', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: '1', NO_COLOR: '1', CLAUDE_CODE_GIT_BASH_PATH: 'C:\\git\\bash.exe', PATH: 'p' });

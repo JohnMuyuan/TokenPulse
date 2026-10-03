@@ -85,6 +85,8 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
       [11, 'quota', '#quota-model-timeline .ms-cycle.week .ms-tl', /时间线/], [12, 'quota', '#quota-model-timeline .ms-cycle.week .ms-tl-help', /看不懂颜色？点问号/],
       [13, 'quota', '#quota-model-timeline .ms-cycle.week .ms-off-summary', /本机以外/],
       [14, 'usage', '#page-usage .breakdown-panel', /Token 构成/], [16, 'usage', '#page-usage .usage-records', /按项目/],
+      // 0.3.16：出口监控的检测间隔和启动前核对、会话管理的新对话 / 新项目
+      [18, 'egress', '#page-egress .egress-toolbar', /检测间隔，和启动前核对出口/], [20, 'sessions', '#page-sessions .sw-new-row', /新对话、新项目/],
     ];
     for (const [n, page, sel, heading] of checks) {
       await go(n);
@@ -154,7 +156,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     await until("document.querySelector('.tour .tour-card') && !document.querySelector('#whatsnew')");
     assert.equal(prefsFile().seenVersion, version);
     // 一路点到「完成」
-    for (let i = 0; i < 20 && await evaluate("Boolean(document.querySelector('.tour'))"); i++) { await evaluate("[...document.querySelectorAll('.tour-actions .btn')].at(-1).click()"); await delay(60); }
+    for (let i = 0; i < 60 && await evaluate("Boolean(document.querySelector('.tour'))"); i++) { await evaluate("[...document.querySelectorAll('.tour-actions .btn')].at(-1).click()"); await delay(60); }
     await until("!document.querySelector('.tour')");
     assert.equal(prefsFile().onboarding, 'done');
     console.log('PASS 0.3.9 what\'s new: shown once after upgrade, Esc closes and saves version, not shown again, starts tour, tour completes');

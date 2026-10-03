@@ -53,7 +53,9 @@ const argued = first.knowledge.prices.find(r => r.auto === 'gpt-9-disputed');
 assert.deepEqual(argued.dispute, { openrouter: { input: 2, output: 10 } });
 assert.equal(argued.changedAt, undefined, '没有兜底的新型号不算「单价更新」');
 const opus9 = first.knowledge.prices.find(r => r.auto === 'claude-opus-9');
-assert.equal(opus9.changedAt, '2026-09-30'); assert.deepEqual(opus9.previous, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, '原来走兜底的价格');
+assert.equal(opus9.changedAt, '2026-09-30');
+// 0.3.16：从家族兜底换成逐个型号标价的，标 previousFallback（官方没调价，软件里写「改用实际标价」）
+assert.equal(opus9.previousFallback, true); assert.deepEqual(opus9.previous, { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, '原来走兜底的价格');
 assert.deepEqual(first.report.skipped.map(s => s.id), ['gpt-9-zero']);
 assert.equal(first.report.review, false);
 const pro = first.knowledge.prices.find(r => r.auto === 'gpt-9-pro');
@@ -97,6 +99,19 @@ assert.equal(small.report.review, false);
 assert.equal(small.report.changed[0].id, 'claude-opus-9');
 const opusSmall = small.knowledge.prices.find(r => r.auto === 'claude-opus-9');
 assert.deepEqual(opusSmall.previous, { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 }, '调价记下调价前的价格');
+assert.equal(opusSmall.previousFallback, undefined, '真的调价不带 previousFallback');
+assert.equal(parseKnowledge(JSON.parse(JSON.stringify(first.knowledge))).prices.find(r => r.auto === 'claude-opus-9').previousFallback, true, '软件能收下 previousFallback');
+{
+  // 没变的下一版原样带着标记；0.3.15 及以前生成的没有这个标记：previous 和兜底价一样的补上，不一样的（真调过价）不补
+  const kept = build({ manual, current: first.knowledge, litellm, openrouter, today: '2026-10-04T00:00:00.000Z' });
+  assert.equal(kept.knowledge.prices.find(r => r.auto === 'claude-opus-9').previousFallback, true);
+  const legacy = JSON.parse(JSON.stringify(first.knowledge)); for (const r of legacy.prices) delete r.previousFallback;
+  const migrated = build({ manual, current: legacy, litellm, openrouter, today: '2026-10-04T00:00:00.000Z' });
+  assert.equal(migrated.changed, true, '补标记算一次更新');
+  assert.equal(migrated.knowledge.prices.find(r => r.auto === 'claude-opus-9').previousFallback, true, '旧数据：previous 等于兜底价 → 补上');
+  const legacyReal = JSON.parse(JSON.stringify(small.knowledge)); for (const r of legacyReal.prices) delete r.previousFallback;
+  assert.equal(build({ manual, current: legacyReal, litellm: cheaper, openrouter, today: '2026-10-04T00:00:00.000Z' }).knowledge.prices.find(r => r.auto === 'claude-opus-9').previousFallback, undefined, '旧数据：previous 是上一次的真实标价 → 不补');
+}
 // 价格没变的下一版：changedAt / previous 原样带着
 const carried = build({ manual, current: small.knowledge, litellm: cheaper, openrouter, today: '2026-10-05T00:00:00.000Z' });
 assert.equal(carried.changed, false); assert.equal(carried.knowledge.prices.find(r => r.auto === 'claude-opus-9').changedAt, '2026-09-30');

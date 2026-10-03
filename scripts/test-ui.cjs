@@ -209,6 +209,47 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("document.querySelector('#usage-view [data-view=daily]').click()");
       assert.equal(await evaluate("document.getElementById('view-daily').hidden"), false);
       assert.equal(await evaluate("document.getElementById('view-requests').hidden"), true);
+      // 0.3.16：内容变短时页面不往上跳。滚到底，把一大块内容藏掉（切分类、换筛选、列表变成「加载中」都是这种情况），滚动位置保持不动
+      {
+        const frames = () => evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))");
+        await evaluate("(() => { const w = document.querySelector('.workspace'); const tall = document.createElement('div'); tall.id = 'qa-tall'; tall.style.height = '1600px'; document.getElementById('main').append(tall); /* 像用户那样滚：先有滚轮事件 */ w.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 100 })); w.scrollTo({ top: w.scrollHeight, behavior: 'instant' }); })()");
+        // 等进场动画（位移）放完再量位置
+        await evaluate("Promise.all(document.getAnimations().filter(a => a.effect?.getTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})))"); await new Promise(r => setTimeout(r, 700));
+        await frames();
+        const before = await evaluate("(() => { const w = document.querySelector('.workspace'); return { top: w.scrollTop, anchor: document.getElementById('usage-view').getBoundingClientRect().top }; })()");
+        assert.ok(before.top > 800, '先滚到了下面：' + before.top);
+        // 当场读一次布局（脚本里读 scrollTop 会让浏览器立刻夹住位置）——这是最难的情况
+        await evaluate("(() => { document.getElementById('qa-tall').style.height = '40px'; return document.querySelector('.workspace').scrollTop; })()");
+        await frames(); await frames();
+        const after = await evaluate("(() => { const w = document.querySelector('.workspace'); return { top: w.scrollTop, anchor: document.getElementById('usage-view').getBoundingClientRect().top, pad: document.getElementById('scroll-floor').offsetHeight }; })()");
+        assert.ok(Math.abs(after.top - before.top) <= 1, `内容变短后滚动位置不变：${before.top} → ${after.top}`);
+        assert.ok(Math.abs(after.anchor - before.anchor) <= 1, '分类按钮还在原来的位置');
+        assert.ok(after.pad > 1000, '末尾垫了空白：' + after.pad);
+        // 不读布局、等下一帧排版时才夹住的情况（恢复高度再缩一次）
+        await evaluate("document.getElementById('qa-tall').style.height = '1600px'"); await frames();
+        await evaluate("document.getElementById('qa-tall').style.height = '40px'"); await frames(); await frames();
+        assert.ok(Math.abs(await evaluate("document.querySelector('.workspace').scrollTop") - before.top) <= 1, '下一帧才排版的情况也不跳');
+        // 切换分类：分类按钮不动
+        await evaluate("document.querySelector('#usage-view [data-view=requests]').click()"); await frames(); await frames();
+        { const now = await evaluate("(() => { const w = document.querySelector('.workspace'); return { anchor: document.getElementById('usage-view').getBoundingClientRect().top, top: w.scrollTop, limit: w.scrollHeight - w.clientHeight, pad: document.getElementById('scroll-floor').offsetHeight }; })()");
+          assert.ok(Math.abs(now.anchor - before.anchor) <= 1, '切换分类后按钮还在原位：' + JSON.stringify({ before, now })); }
+        await evaluate("document.querySelector('#usage-view [data-view=daily]').click()"); await frames(); await frames();
+        assert.ok(Math.abs(await evaluate("document.getElementById('usage-view').getBoundingClientRect().top") - before.anchor) <= 1);
+        // 用户自己往上滚：空白跟着缩掉，滚到顶就没有了
+        await evaluate("(() => { const w = document.querySelector('.workspace'); w.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 })); w.scrollTo({ top: 300, behavior: 'instant' }); })()"); await frames(); await frames();
+        const mid = await evaluate("({ top: document.querySelector('.workspace').scrollTop, pad: document.getElementById('scroll-floor').offsetHeight })");
+        assert.equal(Math.round(mid.top), 300, '用户往上滚不会被拉回去'); assert.ok(mid.pad < after.pad, '空白缩小了');
+        await evaluate("(() => { const w = document.querySelector('.workspace'); w.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -100 })); w.scrollTo({ top: 0, behavior: 'instant' }); })()"); await frames(); await frames();
+        assert.equal(await evaluate("document.getElementById('scroll-floor').offsetHeight"), 0, '回到顶部后不留空白');
+        await evaluate("document.getElementById('qa-tall').remove()");
+        // 换页：回到顶部，不带着上一页的位置
+        await evaluate("document.querySelector('.workspace').scrollTo({ top: 200, behavior: 'instant' })"); await frames();
+        await evaluate("navigate('overview')"); await frames(); await frames();
+        assert.equal(await evaluate("document.querySelector('.workspace').scrollTop"), 0, '换页后在顶部');
+        await evaluate("navigate('usage')"); await frames();
+        await evaluate("document.querySelector('#usage-view [data-view=daily]').click()");
+        console.log('PASS 0.3.16 scroll guard: shrinking content keeps the scroll position (sync and next-frame clamps, view switch), padding shrinks as the user scrolls up, navigation resets');
+      }
       await evaluate("document.getElementById('request-search').value='QA-model'; document.getElementById('request-search').dispatchEvent(new Event('input'))");
       await until("!analysis.loading && filteredRecords.length === 22");
       assert.equal(await evaluate("document.querySelectorAll('#records tr').length"), 15);
@@ -607,12 +648,72 @@ app.on('web-contents-created', (_, contents) => {
           ipcMain.removeHandler('sessions:reply');
         }
       }
+      // 0.3.16：新对话 / 新项目。主进程的三个通道换成假的：不真的弹选文件夹对话框、不真的开终端
+      {
+        const started = [];
+        for (const channel of ['sessions:clis', 'sessions:new', 'sessions:pick-folder']) ipcMain.removeHandler(channel);
+        ipcMain.handle('sessions:clis', () => ({ claude: true, codex: true, grok: false, guarded: { claude: 'ip', codex: 'region', grok: null } }));
+        ipcMain.handle('sessions:pick-folder', () => path.join(temp, 'My New ‘Project’'));
+        ipcMain.handle('sessions:new', (_event, kind, folder) => { started.push([kind, folder]); return { ok: true, cwd: folder }; });
+        assert.deepEqual(await evaluate("[...document.querySelectorAll('.sw-new-row [data-action]')].map(b => b.dataset.action + ':' + b.textContent.trim())"), ['new-chat:新对话', 'new-project:新项目']);
+        // 新项目：先选文件夹，再选工具
+        await evaluate("document.querySelector('.sw-new-row [data-action=new-project]').click()");
+        await until("document.querySelector('#sw-new .sw-new-tool')");
+        assert.equal(await evaluate("document.getElementById('sw-new-title').textContent"), '在新项目里开始');
+        assert.equal(await evaluate("document.querySelector('#sw-new .sw-new-path').textContent"), path.join(temp, 'My New ‘Project’'));
+        assert.equal(await evaluate("document.querySelector('#sw-new .sw-new-folder').selectedOptions[0].textContent"), 'My New ‘Project’', '下拉里显示文件夹名');
+        assert.deepEqual(await evaluate("[...document.querySelectorAll('#sw-new .sw-new-tool')].map(b => b.dataset.kind + ':' + b.disabled + ':' + b.querySelector('small').textContent)"), ['claude:false:已安装', 'codex:false:已安装', 'grok:true:没有找到 CLI']);
+        // 设了出口 IP 白名单的工具：对话框里说明启动前会先在终端里检测
+        await evaluate("document.querySelector('#sw-new .sw-new-tool[data-kind=claude]').click()");
+        assert.match(await evaluate("document.querySelector('#sw-new .sw-new-note').textContent"), /这个工具设了出口 IP 白名单：启动前会先在终端里检测出口 IP，不在白名单就不会启动。/);
+        await evaluate("document.querySelector('#sw-new .sw-new-tool[data-kind=codex]').click()");
+        assert.match(await evaluate("document.querySelector('#sw-new .sw-new-note').textContent"), /这个工具设了出口地区白名单：启动前会先在终端里检测出口地区，不在地区白名单就不会启动。/);
+        assert.equal(await evaluate("document.querySelector('#sw-new .sw-new-tool.on').dataset.kind"), 'codex');
+        await evaluate("document.querySelector('#sw-new [data-action=start]').click()");
+        await until("!document.getElementById('sw-new')");
+        assert.deepEqual(started, [['codex', path.join(temp, 'My New ‘Project’')]]);
+        await until("[...document.querySelectorAll('#toast-stack .tp-toast')].some(t => t.textContent.includes('已在终端里打开 Codex CLI'))");
+        // 新对话：默认是正在看的那段会话的项目和工具；Esc 关闭；失败时把原因写在对话框里
+        await evaluate("document.querySelector('.sw-new-row [data-action=new-chat]').click()");
+        await until("document.querySelector('#sw-new .sw-new-tool')");
+        assert.equal(await evaluate("document.getElementById('sw-new-title').textContent"), '开一个新对话');
+        const preset = await evaluate("(async () => { const items = await window.tokenpulse.sessions(); const active = document.querySelector('.sw-item.active')?.dataset.key; const hit = items.find(i => i.key === active); return { cwd: hit?.cwd || '', chosen: document.querySelector('#sw-new .sw-new-folder').value }; })()");
+        if (preset.cwd) assert.equal(preset.chosen, preset.cwd, '默认选中正在看的会话的项目');
+        ipcMain.removeHandler('sessions:new'); ipcMain.handle('sessions:new', () => { throw new Error('这个文件夹不存在：X:\\gone'); });
+        if (await evaluate("!document.querySelector('#sw-new [data-action=start]').disabled")) {
+          await evaluate("document.querySelector('#sw-new [data-action=start]').click()");
+          await until("/这个文件夹不存在/.test(document.querySelector('#sw-new .sw-new-note').textContent)");
+          assert.ok(await evaluate("Boolean(document.getElementById('sw-new'))"), '失败时对话框留着');
+        }
+        await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+        await until("!document.getElementById('sw-new')");
+        // 夜间模式：对话框里没有默认黑字
+        await evaluate("document.querySelector('.sw-new-row [data-action=new-chat]').click()"); await until("document.querySelector('#sw-new .sw-new-tool')");
+        await evaluate("setThemeMode('dark')"); await new Promise(r => setTimeout(r, 200));
+        assert.deepEqual(await evaluate("[...document.querySelectorAll('#sw-new *')].filter(n => [...n.childNodes].some(c => c.nodeType === 3 && c.nodeValue.trim()) && getComputedStyle(n).color === 'rgb(0, 0, 0)').map(n => n.className)"), []);
+        await evaluate("setThemeMode('light')");
+        await evaluate("document.querySelector('#sw-new .icon-circle').click()"); await until("!document.getElementById('sw-new')");
+        for (const channel of ['sessions:clis', 'sessions:new', 'sessions:pick-folder']) ipcMain.removeHandler(channel);
+        console.log('PASS 0.3.16 new chat / new project: folder picker then tool choice, uninstalled CLI disabled, start passes tool and folder, defaults to the current session, failure shown in dialog, Esc closes, dark mode');
+      }
       console.log('PASS session management list, filters, copy path and streamed in-app reply');
       egressNow = Date.now();
       await evaluate("navigate('egress')");
       await until("document.querySelectorAll('#page-egress .egress-card').length === 3");
       assert.equal(await evaluate("document.getElementById('usage-summary').hidden && document.getElementById('usage-filters').hidden"), true);
       assert.equal(await evaluate("document.getElementById('egress-toggle').getAttribute('aria-checked')"), 'false');
+      // 0.3.16：检测间隔自己定（5–60 秒，默认 10）
+      assert.equal(await evaluate("document.getElementById('egress-interval').value"), '10');
+      assert.match(await evaluate("document.getElementById('egress-status-sub').textContent"), /每 10 秒检查一次/);
+      await evaluate("(() => { const i = document.getElementById('egress-interval'); i.value = '3'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
+      await evaluate("document.getElementById('egress-save').click()");
+      await until("/5 到 60/.test(document.getElementById('egress-message').textContent)");
+      assert.equal(await evaluate("window.tokenpulse.egressState().then(s => s.config.intervalSeconds)"), 10, '不合法的间隔不保存');
+      await evaluate("(() => { const i = document.getElementById('egress-interval'); i.value = '30'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
+      await evaluate("document.getElementById('egress-save').click()");
+      await until("window.tokenpulse.egressState().then(s => s.config.intervalSeconds === 30 && s.intervalMs === 30000)");
+      await until("/每 30 秒检查一次/.test(document.getElementById('egress-status-sub').textContent)");
+      assert.equal(await evaluate("document.getElementById('egress-interval').value"), '30');
       assert.equal(await evaluate("document.getElementById('page-egress').scrollWidth <= document.getElementById('page-egress').clientWidth + 1"), true, '监控页不能横向溢出');
       assert.equal(await evaluate("getComputedStyle(document.getElementById('refresh')).display"), 'none', '额度刷新按钮不出现在出口检测页');
       await evaluate("document.getElementById('egress-check').click()");

@@ -14,7 +14,7 @@ import { modelCandidates, parseStudyModels } from "../core/model-catalog";
 import { FAMILY as STUDY_FAMILY } from "../core/quota-offmachine";
 import { loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
-import { cleanAgentEnv, deleteSession as deleteAgentSession, openTerminal, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
+import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerminal, resolveCli, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
 import type { RequestQuery } from "../core/request-log";
 import { prefsExist, readPrefs, writePrefs, type Prefs } from "./prefs";
@@ -593,6 +593,9 @@ async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unk
   if (prompt.length > 100_000) throw new Error("回复内容太长");
   const cwd = hit.session.cwd;
   if (!cwd || !fsSync.existsSync(cwd)) throw new Error("这个会话的项目目录已经不在了，没法在原目录里继续");
+  // 0.3.16：凡是 TokenPulse 启动的 CLI，设了出口 IP 白名单就先测出口，不在白名单不启动
+  const gate = await exitMonitor.gateLaunch(CLI_PROVIDER[hit.kind], CLI_NAME[hit.kind]);
+  if (!gate.ok) throw new Error(gate.message);
   const runId = startReply({ kind: hit.kind, id: hit.id, cwd, prompt, mode: (mode === "edit" ? "edit" : "readonly") as ReplyMode }, (event) => {
     if (win && !win.isDestroyed()) win.webContents.send("session-reply", event);
   });
@@ -604,8 +607,43 @@ async function openInTerminal(kind: unknown, id: unknown) {
   const hit = await sessionOf(kind, id);
   const session = hit.session;
   const cwd = session.cwd && fsSync.existsSync(session.cwd) ? session.cwd : undefined;
-  openTerminal(hit.kind, hit.id, cwd);
-  return { ok: true, command: sessionCommand(hit.kind, hit.id) };
+  // 终端里的 CLI 走的是那个 PowerShell 的网络环境：出口检测放在终端里做（见 session-reply.ts 的 exitGuardScript）
+  const guard = exitMonitor.launchRule(CLI_PROVIDER[hit.kind]);
+  openTerminal(hit.kind, hit.id, cwd, guard);
+  return { ok: true, command: sessionCommand(hit.kind, hit.id), guarded: guardMode(guard) };
+}
+/** CLI 对应出口监控里的哪一家。 */
+const CLI_PROVIDER = { claude: "claude", codex: "chatgpt", grok: "grok" } as const;
+const CLI_NAME = { claude: "Claude Code", codex: "Codex", grok: "Grok" } as const;
+/** 本机装了哪几家的 CLI（新对话只能用装了的）；guarded：哪几家设了出口 IP 白名单（启动前会先测出口）。 */
+function installedClis() {
+  const kinds = ["claude", "codex", "grok"] as const;
+  return { ...Object.fromEntries(kinds.map((kind) => [kind, resolveCli(kind) !== null])), guarded: Object.fromEntries(kinds.map((kind) => [kind, guardMode(exitMonitor.launchRule(CLI_PROVIDER[kind]))])) };
+}
+/** 项目文件夹：必须是已经存在的目录的绝对路径。 */
+function projectFolder(value: unknown) {
+  if (typeof value !== "string" || !value.trim() || value.length > 1000 || !path.isAbsolute(value)) throw new Error("请选择一个项目文件夹");
+  const folder = path.resolve(value);
+  let stat: fsSync.Stats;
+  try { stat = fsSync.statSync(folder); } catch { throw new Error("这个文件夹不存在：" + folder); }
+  if (!stat.isDirectory()) throw new Error("这不是一个文件夹：" + folder);
+  return folder;
+}
+/** 开一个新对话（0.3.16）：在项目文件夹里打开终端，启动选的那个 CLI。新会话由 CLI 自己建，之后会出现在会话列表里。 */
+function startConversation(kind: unknown, folder: unknown) {
+  if (!isAgentKind(kind)) throw new Error("请选择一个工具");
+  const cwd = projectFolder(folder);
+  if (!resolveCli(kind)) throw new Error("没有找到这个工具的命令行程序，请先安装它的 CLI");
+  const guard = exitMonitor.launchRule(CLI_PROVIDER[kind]);
+  openTerminal(kind, null, cwd, guard);
+  return { ok: true, cwd, guarded: guardMode(guard) };
+}
+/** 选（或者新建）一个项目文件夹。系统的选文件夹对话框里可以直接新建文件夹。 */
+async function pickProjectFolder(start: unknown) {
+  const defaultPath = typeof start === "string" && start && fsSync.existsSync(start) ? start : app.getPath("documents");
+  const options: Electron.OpenDialogOptions = { title: "选择或新建项目文件夹", buttonLabel: "用这个文件夹", defaultPath, properties: ["openDirectory", "createDirectory", "promptToCreate"] };
+  const result = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
 }
 /** 永久删除一段对话：先由主进程弹确认框，再调用各家 CLI（Claude 走本地文件回退）。 */
 async function deleteConversation(kind: unknown, id: unknown) {
@@ -804,6 +842,9 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("sessions:reply", (_event, kind: unknown, id: unknown, prompt: unknown, mode: unknown) => replyInApp(kind, id, prompt, mode));
     ipcMain.handle("sessions:reply-stop", (_event, runId: unknown) => typeof runId === "string" && stopReply(runId));
     ipcMain.handle("sessions:terminal", (_event, kind: unknown, id: unknown) => openInTerminal(kind, id));
+    ipcMain.handle("sessions:clis", () => installedClis());
+    ipcMain.handle("sessions:new", (_event, kind: unknown, folder: unknown) => startConversation(kind, folder));
+    ipcMain.handle("sessions:pick-folder", (_event, start: unknown) => pickProjectFolder(start));
     ipcMain.handle("sessions:delete", (_event, kind: unknown, id: unknown) => deleteConversation(kind, id));
     ipcMain.handle("export-csv", async (_event, content: unknown, kind: unknown) => {
       if (typeof content !== "string" || Buffer.byteLength(content) > 10 * 1024 * 1024) {

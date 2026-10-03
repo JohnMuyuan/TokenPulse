@@ -143,6 +143,61 @@ const config = { host: 'api.anthropic.com', allowedIps: ['203.0.113.10'], allowe
   off.save({ ...E.defaults(), ipIntel: false }); clock += 5000; await off.check(true); await new Promise(r => setTimeout(r, 20));
   assert.equal(offLookups, 0, 'switched off: exit IP is not sent to databases'); off.stop();
   assert.equal(E.validateConfig({ enabled: false, notifications: true, providers: E.defaults().providers }).ipIntel, true, 'older settings without the switch default to on');
+  // 0.3.16：检测间隔自己定，5 到 60 秒的整数，默认 10 秒；旧配置没有这一项就用默认
+  assert.equal(E.defaults().intervalSeconds, 10);
+  assert.equal(E.validateConfig({ enabled: false, notifications: true, providers: E.defaults().providers }).intervalSeconds, 10, 'older settings default to 10 seconds');
+  for (const ok of [5, 10, 37, 60]) assert.equal(E.validateConfig({ ...E.defaults(), intervalSeconds: ok }).intervalSeconds, ok);
+  for (const bad of [4, 61, 0, -5, 7.5, NaN, '10', null]) assert.throws(() => E.validateConfig({ ...E.defaults(), intervalSeconds: bad }), /5 到 60/, String(bad));
+  {
+    const realSet = global.setInterval, realClear = global.clearInterval; const timers = []; let cleared = 0;
+    global.setInterval = (fn, ms) => { const t = { ms, unref() {} }; timers.push(t); return t; }; global.clearInterval = () => { cleared++; };
+    try {
+      let t = NOW; const m = new ExitMonitor({ now: () => t, probe: async (provider, host) => sample({ provider, host, checkedAt: t }) });
+      m.save({ ...E.defaults(), intervalSeconds: 10 });
+      m.start(); assert.equal(timers.at(-1).ms, 10000, 'timer follows the configured interval');
+      assert.equal(m.snapshot().intervalMs, 10000);
+      const snap = m.save({ ...E.defaults(), intervalSeconds: 45 });
+      assert.equal(timers.at(-1).ms, 45000, 'changing the interval re-arms the timer'); assert.ok(cleared >= 1); assert.equal(snap.intervalMs, 45000); assert.equal(snap.config.intervalSeconds, 45);
+      const count = timers.length; m.save({ ...E.defaults(), intervalSeconds: 45, notifications: false }); assert.equal(timers.length, count, 'same interval keeps the timer');
+
+     
+      m.save({ ...E.defaults(), enabled: true, intervalSeconds: 45 }); await m.check(true); assert.equal(m.snapshot().nextCheckAt, t + 45000, 'next automatic check is one interval after the last one');
+      assert.equal(new ExitMonitor().snapshot().config.intervalSeconds, 45, 'interval is saved');
+      m.stop();
+    } finally { global.setInterval = realSet; global.clearInterval = realClear; }
+  }
+  // 0.3.16：TokenPulse 启动 CLI 之前的出口检查。没设白名单放行；设了就现测，在白名单里才放行，测不出来也不放行
+  {
+    let ip = '203.0.113.10', fail = false, probes = 0; const t = NOW + 9e6;
+    const m = new ExitMonitor({ now: () => t, probe: async (provider, host) => { probes++; return fail ? { provider, host, checkedAt: t, latencyMs: 1, error: 'timeout' } : sample({ provider, host, checkedAt: t, ip }); } });
+    m.save(E.defaults());
+    assert.equal(m.launchRule('claude'), null); assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.equal(probes, 0, 'no allowlist: no probe');
+    const cfg = E.defaults(); cfg.providers.claude.allowedIps = ['203.0.113.10']; m.save(cfg);
+    assert.deepEqual(m.launchRule('claude'), { host: cfg.providers.claude.host, allowedIps: ['203.0.113.10'], allowedRegions: [] }); assert.equal(m.launchRule('chatgpt'), null);
+    const before = m.snapshot().events.length;
+    assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.equal(probes, 2, 'probes every time, never reuses an old result');
+    ip = '198.51.100.9';
+    let r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /出口 IP 198\.51\.100\.9 不在白名单里，已拒绝启动 Claude Code/);
+    fail = true; r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /没能确认出口 IP，已拒绝启动 Claude Code/);
+    const events = m.snapshot().events.slice(0, m.snapshot().events.length - before);
+    assert.deepEqual(events.map(e => e.message), ['已拒绝启动 CLI：无法确认出口 IP', '已拒绝启动 CLI：出口 IP 不在允许列表内'], 'refusals are recorded');
+    // 规则：设了 IP 白名单只看 IP（地区白名单不管）；没设 IP、设了地区白名单看地区；都没设不检测
+    fail = false; ip = '203.0.113.10';
+    const both = E.defaults(); both.providers.claude.allowedIps = ['203.0.113.10']; both.providers.claude.allowedRegions = ['JP']; m.save(both);
+    assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }, 'IP matches: region list (JP, exit is US) is ignored');
+    ip = '198.51.100.9'; both.providers.claude.allowedRegions = ['US']; m.save(both);
+    assert.equal((await m.gateLaunch('claude', 'Claude Code')).ok, false, 'IP does not match: a matching region does not rescue it');
+    const regionOnly = E.defaults(); regionOnly.providers.claude.allowedRegions = ['US']; m.save(regionOnly);
+    assert.deepEqual(m.launchRule('claude'), { host: regionOnly.providers.claude.host, allowedIps: [], allowedRegions: ['US'] });
+    assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }, 'region list only: region decides, any IP');
+    regionOnly.providers.claude.allowedRegions = ['JP']; m.save(regionOnly);
+    r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /出口地区 US 不在地区白名单里，已拒绝启动 Claude Code/);
+    fail = true; r = await m.gateLaunch('claude', 'Claude Code'); assert.equal(r.ok, false); assert.match(r.message, /没能确认出口地区，已拒绝启动 Claude Code/);
+    assert.deepEqual(m.snapshot().events.slice(0, 2).map(e => e.message), ['已拒绝启动 CLI：无法确认出口地区', '已拒绝启动 CLI：出口地区不在允许列表内']);
+    m.save(E.defaults()); const n = probes; assert.deepEqual(await m.gateLaunch('claude', 'Claude Code'), { ok: true }); assert.equal(probes, n, 'neither list: start without checking');
+    m.stop(); checks++; console.log('PASS CLI launch gate (IP list wins, region list when no IP list, neither = no check): no allowlist passes without probing, allowlisted exit passes, other exit or failed probe refuses and is recorded');
+  }
+  checks++; console.log('PASS check interval: default 10 s, 5–60 s integers only, older settings upgraded, timer re-armed on change, saved across restarts');
   checks++; console.log('PASS monitor looks each exit IP up once, respects the switch and throttles manual refresh');
   // ---- 额度查询前的出口 IP 放行检查 ----
   {

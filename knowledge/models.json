@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.09.30.2",
-  "updatedAt": "2026-09-30T14:00:00.000Z",
+  "version": "2026.10.03",
+  "updatedAt": "2026-10-03T06:16:40.628Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。 labels：给型号打标签（promo 优惠价、until 到期日 YYYY-MM-DD、note 说明），到期自动去掉；pinned 规则也可以带 until。",
   "prices": [
     {
@@ -26,7 +26,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-experimental-beta-0304-non-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -42,7 +43,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-multi-agent-experimental-beta-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -58,7 +60,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-experimental-beta-reasoning-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -74,7 +77,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-multi-agent-experimental-beta-0304(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -90,7 +94,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-experimental-beta-0304-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -106,7 +111,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-beta-latest-non-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -122,7 +128,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-experimental-beta-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -138,7 +145,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-beta-0309-non-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -154,7 +162,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-multi-agent-beta-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -170,7 +179,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-experimental-beta-0304(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -186,7 +196,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-beta-latest-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -202,7 +213,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-multi-agent-beta-0309(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -218,7 +230,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-non-reasoning-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -234,7 +247,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-beta-0309-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -250,7 +264,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-0309-non-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -266,7 +281,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-beta-non-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -282,7 +298,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-multi-agent-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -298,7 +315,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-non-reasoning-gv2(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -314,7 +332,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-multi-agent-0309(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -330,7 +349,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-reasoning-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -346,7 +366,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-daybreak-blue-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -371,7 +392,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-beta-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -387,7 +409,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-daybreak-red-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -412,7 +435,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-reasoning-gv2(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -428,7 +452,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-mythos-preview(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -444,7 +469,8 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-rosalind-research(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -469,7 +495,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-multi-agent(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -485,7 +512,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-code-fast-1-0825(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -501,7 +529,8 @@
         "output": 1.5,
         "cacheRead": 0.02,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5\\.1-chat-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -535,7 +564,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-reasoning(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -551,7 +581,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-3\\.5-turbo-0125(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -603,7 +634,8 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-sonnet-5-5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -619,7 +651,8 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-3\\.5-turbo-16k(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -644,7 +677,8 @@
         "output": 10,
         "cacheRead": 1.25,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5-chat-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -678,7 +712,8 @@
         "output": 1.5,
         "cacheRead": 0.02,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-fable-5-1(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -694,7 +729,8 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5-search-api(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -719,7 +755,8 @@
         "output": 1.5,
         "cacheRead": 0.02,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?o3-deep-research(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -735,7 +772,8 @@
         "output": 8,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-mythos-5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -751,7 +789,8 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-opus-5-5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -767,7 +806,8 @@
         "output": 25,
         "cacheRead": 0.5,
         "cacheWrite": 6.25
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-sonnet-5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -783,7 +823,8 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.3-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -799,7 +840,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.5-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -815,7 +857,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-fable-5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -831,7 +874,8 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-0309(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -847,7 +891,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-beta(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -863,7 +908,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-build-0\\.1(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -879,7 +925,8 @@
         "output": 1.5,
         "cacheRead": 0.02,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-code-fast(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -895,7 +942,8 @@
         "output": 1.5,
         "cacheRead": 0.02,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-3\\.5-turbo(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -938,7 +986,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5\\.6-cyber(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -954,7 +1003,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5\\.6-terra(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -970,7 +1020,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-4\\.1-mini(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1004,7 +1055,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-4-turbo(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1020,7 +1072,8 @@
         "output": 10,
         "cacheRead": 1.25,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-4o-mini(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1036,7 +1089,8 @@
         "output": 10,
         "cacheRead": 1.25,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5-codex(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1061,7 +1115,8 @@
         "output": 14,
         "cacheRead": 0.175,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5\\.4-pro(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1077,7 +1132,8 @@
         "output": 15,
         "cacheRead": 0.25,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5\\.5-pro(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1093,7 +1149,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5\\.6-sol(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1115,7 +1172,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-6-astra(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1131,7 +1189,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-6\\.1-sol(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1147,7 +1206,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-4-0613(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1199,7 +1259,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-5-pro(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1224,7 +1285,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1240,7 +1302,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.3(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1256,7 +1319,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1272,7 +1336,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.6(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1288,7 +1353,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.7(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1304,7 +1370,8 @@
         "output": 15,
         "cacheRead": 0.75,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-4\\.1(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1338,7 +1405,8 @@
         "output": 30,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?o3-mini(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1354,7 +1422,8 @@
         "output": 8,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?o4-mini(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1370,7 +1439,8 @@
         "output": 8,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?o1-pro(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1395,7 +1465,8 @@
         "output": 8,
         "cacheRead": 0.5,
         "cacheWrite": 0
-      }
+      },
+      "previousFallback": true
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-4(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",

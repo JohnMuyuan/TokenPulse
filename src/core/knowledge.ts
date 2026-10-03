@@ -20,6 +20,7 @@ export type PriceRule = Price4 & { match: string; note: string;
   /** 自动同步的规则对应的型号 id（0.3.12 起用来列「添加模型」的候选）。 */ auto?: string;
   /** 0.3.13：两个价格来源对不上（按 LiteLLM 用），OpenRouter 的价格。 */ dispute?: { openrouter: { input: number; output: number } };
   /** 0.3.13：单价哪天变的、变之前是多少（从家族兜底换成逐个型号的价格也算）。 */ changedAt?: string; previous?: Price4;
+  /** 0.3.16：previous 是按型号家族估算的兜底价（官方价格没变，只是换成了这个型号自己的标价）。 */ previousFallback?: boolean;
   /** 0.3.13：手动规则的到期日（YYYY-MM-DD，本地日期），过了就不再生效；promo 表示优惠价。 */ until?: string; promo?: boolean };
 /** 0.3.13：手动给型号打的标签（优惠价等），until 过了就不显示。 */
 export type ModelLabel = { model: string; promo?: boolean; until?: string; note?: string };
@@ -82,7 +83,7 @@ export function parseKnowledge(value: unknown): Knowledge | null {
     const dispute = two((rule.dispute as Record<string, unknown> | undefined)?.openrouter);
     if (dispute) extra.dispute = { openrouter: dispute };
     const previous = four(rule.previous);
-    if (previous && isDay(rule.changedAt)) { extra.previous = previous; extra.changedAt = rule.changedAt as string; }
+    if (previous && isDay(rule.changedAt)) { extra.previous = previous; extra.changedAt = rule.changedAt as string; if (rule.previousFallback === true) extra.previousFallback = true; }
     if (isDay(rule.until)) extra.until = rule.until as string;
     if (rule.promo === true) extra.promo = true;
     prices.push({ match, input: inputPrice, output, cacheRead, cacheWrite, note: text(rule.note), ...(auto ? { auto } : {}), ...extra });
@@ -212,7 +213,7 @@ let compiledDay = "";
  * 型号单价的说明（0.3.13，界面在型号旁边标注用）：优惠价 / 标价不同 / 单价刚更新。
  * 标签按型号 id 匹配（去掉 [1m]、日期后缀）；「刚更新」由界面按 changedAt 决定显示多久。
  */
-export type PriceNotes = { price?: Price4; promo?: { until?: string; note?: string }; dispute?: { openrouter: { input: number; output: number } }; changed?: { at: string; previous: Price4 } };
+export type PriceNotes = { price?: Price4; promo?: { until?: string; note?: string }; dispute?: { openrouter: { input: number; output: number } }; changed?: { at: string; previous: Price4; /** previous 是家族估算价：官方没调价，只是改用了这个型号自己的标价。 */ fromFallback?: boolean } };
 export function priceNotes(modelId: string, rule: PriceRule | null): PriceNotes | null {
   const id = modelId.toLowerCase().replace(/\[[^\]]*\]$/, "").replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
   const today = localDay();
@@ -220,7 +221,10 @@ export function priceNotes(modelId: string, rule: PriceRule | null): PriceNotes 
   const notes: PriceNotes = {};
   if (label?.promo || rule?.promo) notes.promo = { ...(label?.until || rule?.until ? { until: label?.until || rule?.until } : {}), ...(label?.note ? { note: label.note } : {}) };
   if (rule?.dispute) notes.dispute = rule.dispute;
-  if (rule?.changedAt && rule.previous) notes.changed = { at: rule.changedAt, previous: rule.previous };
+  // 前后一模一样的不算变化（缓存写为 0 表示按输入价收，和输入价相同也算一样）
+  const write = (p: Price4) => p.cacheWrite > 0 ? p.cacheWrite : p.input;
+  const differs = rule?.previous && (rule.previous.input !== rule.input || rule.previous.output !== rule.output || rule.previous.cacheRead !== rule.cacheRead || write(rule.previous) !== write(rule));
+  if (rule?.changedAt && rule.previous && differs) notes.changed = { at: rule.changedAt, previous: rule.previous, ...(rule.previousFallback ? { fromFallback: true } : {}) };
   if (!Object.keys(notes).length) return null;
   if (rule) notes.price = { input: rule.input, output: rule.output, cacheRead: rule.cacheRead, cacheWrite: rule.cacheWrite };
   return notes;

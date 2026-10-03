@@ -48,7 +48,7 @@
     const pulse = node('span', 'egress-pulse'); pulse.id = 'egress-pulse'; pulse.setAttribute('aria-hidden', 'true');
     const statusText = node('div', 'egress-status-text');
     const statusTitle = node('strong', '', '已暂停'); statusTitle.id = 'egress-status-title';
-    const statusSub = node('span', 'muted', '每 5 秒检查一次 · 连续两次异常才告警'); statusSub.id = 'egress-status-sub';
+    const statusSub = node('span', 'muted', '每 10 秒检查一次 · 连续两次异常才告警'); statusSub.id = 'egress-status-sub';
     statusText.append(statusTitle, statusSub); status.append(pulse, statusText);
     const actions = node('div', 'egress-actions');
     const toggle = button('开启监控', async () => {
@@ -65,7 +65,12 @@
     const notify = node('input'); notify.type = 'checkbox'; notify.id = 'egress-notifications'; notify.addEventListener('change', markDirty);
     const intel = node('input'); intel.type = 'checkbox'; intel.id = 'egress-intel'; intel.addEventListener('change', markDirty);
     const intelLabel = toggleField('查询 IP 数据库', intel); intelLabel.title = t('出口 IP 变了时，发给 proxycheck.io、ip-api.com、ipinfo.io、ipapi.is 查询归属和风险；同一个 IP 12 小时内只查一次。');
-    actions.append(toggleField('系统通知', notify), intelLabel, check, toggle);
+    // 0.3.16：检测间隔自己定，5 到 60 秒
+    const interval = node('input'); interval.type = 'number'; interval.id = 'egress-interval'; interval.min = '5'; interval.max = '60'; interval.step = '1'; interval.inputMode = 'numeric';
+    interval.setAttribute('aria-label', '检测间隔（秒）'); interval.addEventListener('input', markDirty);
+    const intervalLabel = node('label', 'egress-interval'); intervalLabel.title = t('每隔多少秒自动检测一轮：最少 5 秒，最多 60 秒，默认 10 秒。');
+    intervalLabel.append(node('span', '', '检测间隔'), interval, node('span', 'muted', '秒'));
+    actions.append(intervalLabel, toggleField('系统通知', notify), intelLabel, check, toggle);
     toolbar.append(status, actions);
 
     const note = node('p', 'egress-explanation', '只验证所选域名经 TokenPulse 的 curl 和环境代理的出口，不代表全部分流域名或其他程序；不读取账号凭证，也不调用模型或额度接口。收进托盘后继续监控，退出软件即停止。');
@@ -152,11 +157,12 @@
     for (const p of keys) { const c = controls.get(p), s = snapshot.config.providers[p]; c.host.value = s.host; c.ips.value = s.allowedIps.join('\n'); c.regions.value = s.allowedRegions.join(', '); }
     document.getElementById('egress-notifications').checked = snapshot.config.notifications;
     document.getElementById('egress-intel').checked = snapshot.config.ipIntel !== false;
+    document.getElementById('egress-interval').value = String(snapshot.config.intervalSeconds ?? 10);
     dirty = false;
   }
   async function save(enabled = snapshot?.config.enabled) {
     if (saving || !snapshot) return;
-    const next = { enabled, notifications: document.getElementById('egress-notifications').checked, ipIntel: document.getElementById('egress-intel').checked, providers: {} };
+    const next = { enabled, notifications: document.getElementById('egress-notifications').checked, ipIntel: document.getElementById('egress-intel').checked, intervalSeconds: Number(document.getElementById('egress-interval').value.trim() || NaN), providers: {} };
     for (const p of keys) { const c = controls.get(p); next.providers[p] = { host: c.host.value, allowedIps: split(c.ips.value), allowedRegions: split(c.regions.value) }; }
     saving = true; root.querySelectorAll('input,select,textarea,button').forEach(n => n.disabled = true);
     try { snapshot = await api.saveEgress(next); syncInputs(); message('设置已保存。'); } catch (e) { message(String(e.message || '保存失败。').replace(/^Error invoking remote method '[^']+': Error: /, ''), true); }
@@ -212,7 +218,8 @@
     document.getElementById('egress-pulse').className = 'egress-pulse ' + (!on ? 'off' : alerts ? 'bad' : 'live');
     document.getElementById('egress-status-title').textContent = t(!on ? '监控已暂停' : alerts ? `${alerts} 家出口异常` : '监控中');
     const last = Math.max(0, ...snapshot.providers.map(p => p.row?.checkedAt || 0));
-    document.getElementById('egress-status-sub').textContent = on ? `${t('每 5 秒检查一次')} · ${t('上次检测')} ${clock(last || null)}` : t('开启后每 5 秒检查一次，连续两次异常才告警');
+    const seconds = Math.round((snapshot.intervalMs || 10000) / 1000);
+    document.getElementById('egress-status-sub').textContent = on ? `${t(`每 ${seconds} 秒检查一次`)} · ${t('上次检测')} ${clock(last || null)}` : t(`开启后每 ${seconds} 秒检查一次，连续两次异常才告警`);
     const intelMap = snapshot.intel || {}, loading = new Set(snapshot.intelLoading || []);
 
     for (const p of snapshot.providers) {

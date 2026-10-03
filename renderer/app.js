@@ -1741,14 +1741,91 @@ function render(snapshot) {
 /** 滚动的是工作区，不是整个窗口（标题栏下面那块，见 app.css 的 .workspace）。 */
 const scroller = document.querySelector('.workspace');
 function keepScroll(rebuild) {
-  const main = $('main'), scrollY = scroller.scrollTop;
+  const main = $('main');
+  scrollGuard.sync();
   main.style.minHeight = `${main.offsetHeight}px`;
   try { rebuild(); }
   finally {
     main.style.minHeight = '';
-    if (scroller.scrollTop !== scrollY) scroller.scrollTo({ top: scrollY, behavior: 'instant' });
+    scrollGuard.restore();
   }
 }
+/*
+ * 内容变短时页面不往上跳（0.3.16）。
+ * 切换用量明细的分类、换筛选、翻周期、列表换成「加载中」……只要新内容比原来短，浏览器就会把滚动位置夹到新的底部，
+ * 看起来就是「点一下，界面突然跳到上面去了」。这里统一处理：内容变短、滚动位置被夹住时，在工作区末尾垫一块空白，
+ * 把位置放回去；用户自己往上滚，空白跟着缩掉。用户主动滚动、导航换页不受影响。
+ */
+const scrollGuard = (() => {
+  const main = $('main');
+  if (!scroller || !main || typeof ResizeObserver !== 'function') return { reset() {}, sync() {}, restore() {} };
+  const pad = el('div', { id: 'scroll-floor', 'aria-hidden': 'true' });
+  scroller.append(pad);
+  let wanted = scroller.scrollTop, height = 0;
+  const setPad = value => { const next = Math.max(0, Math.round(value)); if (next !== height) { height = next; pad.style.height = next ? `${next}px` : ''; } };
+  /** 不算垫片，内容自己有多高。 */
+  const natural = () => scroller.scrollHeight - height;
+  const fit = () => setPad(wanted + scroller.clientHeight - natural());
+  /*
+   * 被夹住的样子：位置比原来小，而且正好贴着新的底部。用户自己往上滚不会正好停在底部，所以两者分得开。
+   * 夹住可能发生在两个时刻：下一帧排版时（ResizeObserver 先知道），或者脚本里读了一次布局当场就夹了
+   * （这时先来的是 scroll 事件）。两边用同一个判断。
+   */
+  const settle = () => {
+    const top = scroller.scrollTop, limit = scroller.scrollHeight - scroller.clientHeight;
+    if (top < wanted - 1 && top >= limit - 1) { fit(); scroller.scrollTo({ top: wanted, behavior: 'instant' }); }
+    else { if (top !== wanted && !resizing) wanted = top; fit(); }
+  };
+  /*
+   * 点了「切换类」的控件（分段按钮、筛选芯片、下拉、翻周期）之后，被点的那个控件留在屏幕上原来的位置：
+   * 它上面的内容高度变了（比如筛选条多一行）、下面的内容变短了，都不让它从鼠标底下跑掉。
+   * 只在内容高度变化时调整，只管点击后的一小段时间；用户一滚动就不管了。
+   */
+  const SWITCHERS = '.seg button, [data-view], .ms-chip, .ms-step, .ms-zoom-btn, .pager button, select';
+  let pinned = null;
+  const unpin = () => { pinned = null; };
+  main.addEventListener('click', event => {
+    const node = event.target.closest?.(SWITCHERS);
+    pinned = node ? { node, top: node.getBoundingClientRect().top, until: performance.now() + 1500 } : null;
+  }, true);
+  // 只有用户自己动了（滚轮、触摸、键盘、拖滚动条）才不再钉着。浏览器自己的「滚动锚定」也会在内容换掉时挪位置，
+  // 那不是用户的意思：切换的两种视图高度不同，它能把页面挪走几百像素，正是「点一下界面跳了」的来源之一。
+  for (const type of ['wheel', 'touchmove', 'keydown']) scroller.addEventListener(type, unpin, { passive: true });
+  scroller.addEventListener('pointerdown', event => { if (event.target === scroller) unpin(); }, { passive: true });
+  const keepPinned = () => {
+    if (!pinned) return false;
+    if (performance.now() > pinned.until || !pinned.node.isConnected) { pinned = null; return false; }
+    const delta = pinned.node.getBoundingClientRect().top - pinned.top;
+    if (Math.abs(delta) <= 1) return false;
+    wanted = Math.max(0, scroller.scrollTop + delta);
+    fit(); scroller.scrollTo({ top: wanted, behavior: 'instant' });
+    return true;
+  };
+  let resizing = false;
+  new ResizeObserver(() => { resizing = true; try { if (!keepPinned()) settle(); } finally { resizing = false; } }).observe(main);
+  scroller.addEventListener('scroll', () => {
+    const top = scroller.scrollTop, limit = scroller.scrollHeight - scroller.clientHeight;
+    // 被夹住的滚动：按上面的规则放回去
+    if (top < wanted - 1 && top >= limit - 1) { if (!keepPinned()) settle(); }
+    else settle();
+  }, { passive: true });
+  return {
+    reset() { wanted = scroller.scrollTop; unpin(); fit(); },
+    /**
+     * 整页重画前后各调一次（keepScroll）。重画前：这一刻的位置要是「被夹住」的（刚藏掉一块内容），就不认它，留着原来想要的位置；
+     * 否则记下现在的位置。重画后：把位置（或被点的控件）放回去。不能等 scroll 事件：等它到的时候内容已经重建、又变高了，看不出被夹过。
+     */
+    sync() {
+      const top = scroller.scrollTop, limit = scroller.scrollHeight - scroller.clientHeight;
+      if (!(top < wanted - 1 && top >= limit - 1)) wanted = top;
+    },
+    restore() {
+      if (keepPinned()) return;
+      fit();
+      if (Math.abs(scroller.scrollTop - wanted) > 1) scroller.scrollTo({ top: wanted, behavior: 'instant' });
+    },
+  };
+})();
 function renderPage(snapshot) {
   if ($('app-status').getAttribute('role') !== 'alert') $('app-status').hidden = true;
   updateRange(); renderStats();
@@ -1820,6 +1897,7 @@ function navigate(page) {
   if (current) render(current);
   syncSegs();
   scroller.scrollTo({ top: 0, behavior: 'instant' });
+  scrollGuard.reset();
 }
 let themeTimer = 0;
 function resolvedTheme() { return themeMode === 'system' ? (darkQuery.matches ? 'dark' : 'light') : themeMode; }

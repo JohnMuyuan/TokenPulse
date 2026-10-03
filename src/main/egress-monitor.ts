@@ -38,16 +38,21 @@ export class ExitMonitor {
     for (const tracker of this.trackers.values()) for (const ip of [tracker.row?.ip, tracker.row?.lastGood?.ip]) if (ip) ips.add(ip);
     const intel = Object.fromEntries([...ips].filter((ip) => this.intel.has(ip)).map((ip) => [ip, this.intel.get(ip)!]));
     const quotaBlocks = Object.fromEntries([...this.quotaBlocks].map(([p, { key: _key, ...block }]) => [p, block]));
-    return { now: this.now(), intervalMs: INTERVAL_MS, checking: Boolean(this.running), intel, quotaBlocks, intelLoading: [...this.intelLoading].filter((ip) => ips.has(ip)), nextCheckAt: this.config.enabled && Number.isFinite(this.lastStarted) ? this.lastStarted + INTERVAL_MS : null, config: structuredClone(this.config), configError: this.configError, storageError: this.storageError,
+    return { now: this.now(), intervalMs: this.config.intervalSeconds * 1000, checking: Boolean(this.running), intel, quotaBlocks, intelLoading: [...this.intelLoading].filter((ip) => ips.has(ip)), nextCheckAt: this.config.enabled && Number.isFinite(this.lastStarted) ? this.lastStarted + this.config.intervalSeconds * 1000 : null, config: structuredClone(this.config), configError: this.configError, storageError: this.storageError,
       providers: PROVIDERS.map(provider => ({ provider, ...DOMAINS[provider], ...this.config.providers[provider], policy: ruleFor(provider, this.config.providers[provider].host), row: this.trackers.get(provider)!.row ?? null })), events: this.events.slice() };
   }
   private publish() { this.options.publish?.(this.snapshot()); }
   start() {
     if (this.timer) return;
     this.stopped = false;
-    this.timer = setInterval(() => { if (this.config.enabled) void this.check(); }, INTERVAL_MS);
-    this.timer.unref();
+    this.schedule();
     if (this.config.enabled) void this.check();
+  }
+  /** 按设置的间隔定时检测；间隔改了重新定时。 */
+  private schedule() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = setInterval(() => { if (this.config.enabled) void this.check(); }, this.config.intervalSeconds * 1000);
+    this.timer.unref();
   }
   stop() { this.stopped = true; this.epoch++; this.abort?.abort(); if (this.timer) clearInterval(this.timer); this.timer = undefined; }
   save(value: unknown) {
@@ -55,7 +60,9 @@ export class ExitMonitor {
     writeJson(dataFile("egress-settings.json"), next);
     this.epoch++; this.abort?.abort();
     for (const p of PROVIDERS) if (next.enabled !== this.config.enabled || JSON.stringify(next.providers[p]) !== JSON.stringify(this.config.providers[p])) this.trackers.set(p, new EgressTracker());
+    const retime = next.intervalSeconds !== this.config.intervalSeconds;
     this.config = next; this.configError = ""; this.lastStarted = -Infinity;
+    if (retime && this.timer) this.schedule();
     this.publish();
     if (next.enabled) { if (this.running) void this.running.then(() => this.check()); else void this.check(); }
     return this.snapshot();
@@ -112,6 +119,33 @@ export class ExitMonitor {
       this.record({ at: this.now(), provider, host: config.host, type: "warning", message: reason === "probe_failed" ? "已拦截额度查询：无法确认出口 IP" : "已拦截额度查询：出口 IP 不在允许列表内", ip: probe.ip, region: probe.region }, true);
     } else this.publish();
     return false;
+  }
+  /**
+   * 启动这一家的 CLI 之前要核对的出口规则（0.3.16）。两个白名单都没设就是 null：不检测，直接启动。
+   * 设了 IP 白名单只看 IP；没设 IP、设了地区白名单就看地区。和监控开没开无关：白名单是用户定的规矩。
+   */
+  launchRule(provider: Provider): { host: string; allowedIps: string[]; allowedRegions: string[] } | null {
+    const config = this.config.providers[provider];
+    return config && (config.allowedIps.length || config.allowedRegions.length) ? { host: config.host, allowedIps: [...config.allowedIps], allowedRegions: [...config.allowedRegions] } : null;
+  }
+  /**
+   * TokenPulse 自己直接启动 CLI（在软件里回复对话）之前的放行检查（0.3.16）：
+   * 没有规则放行；有就现测一次（不用旧结果），符合才放行，测不出来也不放行。
+   * 这里的 curl 和接下来启动的 CLI 用的是同一份环境变量，走的是同一条路。被拦时记一条告警。
+   */
+  async gateLaunch(provider: Provider, what: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const rule = this.launchRule(provider);
+    if (!rule) return { ok: true };
+    const byIp = rule.allowedIps.length > 0;
+    let probe: Probe;
+    try { probe = await (this.options.probe ?? probeExit)(provider, rule.host); }
+    catch { probe = { provider, host: rule.host, checkedAt: this.now(), latencyMs: 0, error: "network" }; }
+    const seen = probe.error ? undefined : byIp ? probe.ip : probe.region;
+    if (seen != null && (byIp ? rule.allowedIps : rule.allowedRegions).includes(seen)) return { ok: true };
+    const subject = byIp ? "出口 IP" : "出口地区";
+    const message = seen == null ? `没能确认${subject}，已拒绝启动 ${what}。请检查网络或代理后重试。` : `${subject} ${seen} 不在${byIp ? "" : "地区"}白名单里，已拒绝启动 ${what}。`;
+    this.record({ at: this.now(), provider, host: rule.host, type: "warning", message: seen == null ? `已拒绝启动 CLI：无法确认${subject}` : byIp ? "已拒绝启动 CLI：出口 IP 不在允许列表内" : "已拒绝启动 CLI：出口地区不在允许列表内", ip: probe.ip, region: probe.region }, false);
+    return { ok: false, message };
   }
   /** 记一条变化 / 告警：进历史、按设置弹通知、推给界面。 */
   private record(event: EgressEvent, notify: boolean) {

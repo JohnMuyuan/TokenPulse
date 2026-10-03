@@ -22,8 +22,8 @@ const months=new Map();for(const r of records){const m=dateKey(r.at).slice(0,7);
 for(const[m,rows]of months)write(path.join(root,'data','requests',m+'.jsonl'),rows.join('\n')+'\n');
 write(path.join(root,'data','usage-rollups.json'),{version:1,files:Object.fromEntries(accounts.map(a=>['fixture-'+a.ref,{kind:'codex',official:true,days:{[dateKey(now)]:{'Codex CLI':{'gpt-qa':records.filter(r=>r.file==='fixture-'+a.ref).reduce((b,r)=>({input:b.input+r.input,output:b.output+r.output,cacheRead:b.cacheRead+r.cacheRead,cacheWrite:0,reasoning:b.reasoning+r.reasoning,costUsd:b.costUsd+r.costUsd,requests:b.requests+1}),{input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0,costUsd:0,requests:0})}}}}]))});
 require(path.join(appRoot,'build/core/quota.js')).fetchOfficialQuota=async()=>({});
-let failStudy=false, delayFirst=false, heavyCache=false;const handle=ipcMain.handle.bind(ipcMain);
-ipcMain.handle=(channel,handler)=>handle(channel,channel==='models:study'?async(event,q)=>{if(failStudy)throw Error('Simulated model study failure');const result=await handler(event,q);if(delayFirst&&q.accountId==='chatgpt:qa-study')await new Promise(r=>setTimeout(r,250));if(heavyCache)for(const w of ['five','week'])for(const c of result[w]?.capacities||[])if(c.priceMix)c.priceMix={...c.priceMix,fresh:0,cacheRead:9856,cacheWrite:118,output:26};return result;}:handler);
+let failStudy=false, delayFirst=false, heavyCache=false, repriced='';const handle=ipcMain.handle.bind(ipcMain);
+ipcMain.handle=(channel,handler)=>handle(channel,channel==='models:study'?async(event,q)=>{if(failStudy)throw Error('Simulated model study failure');const result=await handler(event,q);if(delayFirst&&q.accountId==='chatgpt:qa-study')await new Promise(r=>setTimeout(r,250));if(heavyCache)for(const w of ['five','week'])for(const c of result[w]?.capacities||[])if(c.priceMix)c.priceMix={...c.priceMix,fresh:0,cacheRead:9856,cacheWrite:118,output:26};if(repriced)for(const w of ['five','week'])for(const c of result[w]?.capacities||[])if(c.model==='gpt-6.1-sol'&&c.priceNotes?.changed){const p=c.priceNotes.price;c.priceNotes={...c.priceNotes,changed:{at:c.priceNotes.changed.at,previous:repriced==='down'?{input:p.input*1.25,output:p.output*2,cacheRead:p.cacheRead,cacheWrite:p.cacheWrite}:repriced==='up'?{input:p.input/2,output:p.output/2,cacheRead:p.cacheRead/2,cacheWrite:p.cacheWrite/2}:{input:p.input*2,output:p.output/2,cacheRead:p.cacheRead,cacheWrite:p.cacheWrite}}};}return result;}:handler);
 const watchdog=setTimeout(()=>{console.error('FAIL model-study UI timed out');app.exit(1);},30000);
 app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',async()=>{
  const evaluate=code=>contents.executeJavaScript(code).catch(e=>{throw new Error(e.message+' ← '+String(code).slice(0,160));}),delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -369,6 +369,33 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
     assert.match(r.label, /综合单价\$[\d.]+ \/ 百万 Tokens= 每一项占的比例 × 它的标价，加起来/);
     assert.match(r.label, /缓存读（命中）[\d.]+%× \$0\.10 = /);
   }
+  // 0.3.16：gpt-6.1-sol 以前按 GPT 家族估算（$5 / $30），现在用它自己的标价（$2 / $10）。官方没调价 → 标「改用实际标价」，不写「单价刚更新」
+  const solRow = '#quota-model-study .ms-row[data-model="gpt-6.1-sol"]';
+  assert.deepEqual(await evaluate(`[...document.querySelector('${solRow}').querySelectorAll('.ms-price-tag.changed')].map(n => n.textContent + '|' + n.className)`), ['改用实际标价|ms-price-tag changed switch']);
+  assert.ok(!added.some(r => /单价刚更新|刚降价|刚涨价/.test(r.label)), '不是官方调价');
+  for (const r of added) {
+    assert.match(r.label, /估算依据变化\d+\/\d+ 起改用这个型号自己的标价。官方价格没有变：之前价格表里没有它的单独标价，按型号家族估算。/, r.label);
+    assert.match(r.label, /输入\$5\.00→\$2\.00−60%缓存读（命中）\$0\.50→\$0\.10−80%缓存写\$5\.00→\$2\.50−50%输出\$30\.00→\$10\.00−67%/, '逐项写前后单价和幅度：' + r.label);
+    assert.match(r.label, /按你的用量结构，综合单价 \$[\d.]+ → \$[\d.]+（−\d+%）。/);
+  }
+  // 真的调价：降价 / 涨价 / 有涨有降，标签和详情跟着变
+  const changeOf = async kind => {
+    repriced = kind; await evaluate('window.tokenpulse.refresh()');
+    const want = { down: '刚降价', up: '刚涨价', mixed: '单价刚更新' }[kind];
+    await until(`document.querySelector('${solRow} .ms-price-tag.changed')?.textContent === '${want}'`);
+    return evaluate(`(() => { const row = document.querySelector('${solRow}'); const tag = row.querySelector('.ms-price-tag.changed').className; row.click(); const d = row.nextElementSibling; const out = { tag, text: d.querySelector('.ms-change').textContent, rows: [...d.querySelectorAll('.ms-change-row')].map(n => n.className.replace('ms-change-row ', '') + ':' + n.querySelector('.ms-change-pct').textContent) }; row.click(); return out; })()`);
+  };
+  let change = await changeOf('down');
+  assert.match(change.tag, /changed down$/); assert.match(change.text, /^单价变化\d+\/\d+ 官方调价（降价）。/);
+  assert.deepEqual(change.rows, ['down:−20%', 'flat:没变', 'flat:没变', 'down:−50%'], '输入 2.5 → 2、输出 20 → 10，缓存价没变');
+  change = await changeOf('up');
+  assert.match(change.tag, /changed up$/); assert.match(change.text, /官方调价（涨价）。/); assert.deepEqual(change.rows, ['up:+100%', 'up:+100%', 'up:+100%', 'up:+100%']);
+  assert.match(change.text, /综合单价 \$[\d.]+ → \$[\d.]+（\+100%）。/);
+  change = await changeOf('mixed');
+  assert.match(change.tag, /changed mixed$/); assert.match(change.text, /官方调价（有涨有降）。/); assert.deepEqual(change.rows, ['down:−50%', 'flat:没变', 'flat:没变', 'up:+100%']);
+  assert.deepEqual(await evaluate(`(() => { const row = document.querySelector('${solRow}'); row.click(); const texts = [row.querySelector('.ms-price-tag.changed').textContent]; const w = document.createTreeWalker(row.nextElementSibling.querySelector('.ms-change'), NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) if (n.nodeValue.trim()) texts.push(n.nodeValue.trim()); row.click(); return texts.map(t => [t, PulseI18n.t(t)]).filter(([, e]) => /[\u4e00-\u9fff]/.test(e)); })()`), [], '单价变化的英文翻译');
+  repriced = ''; await evaluate('window.tokenpulse.refresh()');
+  await until(`document.querySelector('${solRow} .ms-price-tag.changed')?.textContent === '改用实际标价'`);
   // 英文：新加的单价明细都能翻出来（行上的小字、详情里每一段）
   const untranslated = await evaluate(`(() => { const row = document.querySelector('#quota-model-study .ms-row[data-model="gpt-6.1-sol"]'); row.click(); const texts = [row.querySelector('.ms-name-text small').textContent]; const w = document.createTreeWalker(row.nextElementSibling, NodeFilter.SHOW_TEXT); let n; while ((n = w.nextNode())) if (n.nodeValue.trim()) texts.push(n.nodeValue.trim()); row.click(); return texts.map(t => [t, PulseI18n.t(t)]).filter(([, e]) => /[\u4e00-\u9fff]/.test(e)); })()`);
   assert.deepEqual(untranslated, [], '单价明细的英文翻译');
