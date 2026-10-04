@@ -32,7 +32,7 @@
   const HUES = ['#4f7fd9', '#d9774f', '#10a37f', '#8b5cf6', '#c9832f', '#e05a8a', '#0ea5a4', '#65a30d'];
   const SECTION_KEY = 'tokenpulse-providers-section';
 
-  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'router', 'logs', 'import', 'safety'];
+  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'router', 'logs', 'prism', 'import', 'safety'];
   /** 能建号池的工具（桌面端用自己的网关配置，不支持）。 */
   const POOL_APPS = ['claude', 'codex', 'grok'];
   let view = null, signature = '', section = 'overview', editor = null, editorPane = 'basic', dragging = null, entered = false;
@@ -165,7 +165,7 @@
     const main = el('div', { class: 'pv-main', role: 'tabpanel', 'aria-label': editor ? '编辑供应商' : sectionTitle() });
     if (editor) main.append(editorForm());
     else {
-      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), router, logs, import: importSection, safety: safetySection }[section]();
+      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), router, logs, prism: prismSection, import: importSection, safety: safetySection }[section]();
       main.append(...[].concat(body));
     }
     const layout = el('div', { class: 'pv' }, [editor ? editorNav() : nav(), main]);
@@ -181,7 +181,7 @@
     root.querySelector(`.pv-nav [data-section="${next}"]`)?.focus();
   }
   function sectionTitle() {
-    return { overview: '概览', router: '本地路由', logs: '转发记录', import: '导入供应商', safety: '配置保护' }[section] || appOf(section)?.name || '';
+    return { overview: '概览', router: '本地路由', logs: '转发记录', prism: 'Prism 桥', import: '导入供应商', safety: '配置保护' }[section] || appOf(section)?.name || '';
   }
 
   /** 二级菜单：概览 / 四家工具 / 路由 / 导入。每项带一句当前状态，不用点进去也知道现在是什么情况。 */
@@ -207,6 +207,7 @@
       ['本地路由', [
         item('router', '路由服务', view.proxy.running ? `运行中 · ${routeOn} 家` : '已停止', lead('route'), el('i', { class: 'pv-dot ' + (view.proxy.running ? 'ok' : 'off') })),
         item('logs', '转发记录', null, lead('trace'), (view.logs || []).length ? el('span', { class: 'pv-nav-badge', text: String(view.logs.length) }) : null),
+        item('prism', 'Prism 桥', prism ? PRISM_PHASE[prism.phase] : null, lead('globe'), el('i', { class: 'pv-dot ' + (prism?.phase === 'running' ? 'ok' : prism?.phase === 'starting' ? 'degraded' : 'off') })),
       ]],
       ['管理', [item('import', '导入供应商', null, lead('download')), item('safety', '配置保护', null, lead('lock'), view.readOnly ? el('span', { class: 'pv-nav-badge guard', text: '只读' }) : null)]],
     ];
@@ -458,6 +459,127 @@
       item.error ? el('small', { class: 'pv-log-error', text: item.error, translate: 'no' }) : null,
     ]), { '--i': Math.min(i, 16) }))) : el('div', { class: 'pv-empty' }, [el('p', { text: '还没有经过本地路由的请求。打开某一家的本地路由后，这里会列出最近的转发。' })]);
     return [head('转发记录', '最近经过本地路由的请求（最多 30 条）。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), table];
+  }
+
+  /* ---------------- Prism 桥（0.3.19） ---------------- */
+
+  /*
+   * 随软件带的 Prism Bridge（作者 yyyllllming，MIT）：用真实浏览器登录用户自己的 Prism 账号，在本机开一个 OpenAI 兼容接口。
+   * 四步：装运行环境 → 登录 → 启动服务 → 加成 Codex 供应商。安装和登录可能要几分钟，不走 run()（它会锁住整页），
+   * 按主进程推过来的状态禁用按钮；只有「加成供应商」会改到工具配置，走 run() 的确认流程。
+   */
+  const PRISM_PHASE = { running: '运行中', starting: '启动中', stopped: '已停止' };
+  let prism = null, prismLogOpen = null;
+  const prismKey = s => JSON.stringify([s.available, s.deps, s.login, s.phase, s.task, s.port, s.autoStart, s.error, s.provider]);
+  function fillPrismLog(box) {
+    box.textContent = prism.logs.length ? prism.logs.join('\n') : '还没有日志。';
+    box.scrollTop = box.scrollHeight;
+  }
+  function setPrism(state) {
+    const before = prism ? prismKey(prism) : '';
+    prism = state;
+    if (document.body.dataset.page !== 'providers' || editor || dragging || pending || !view) return;
+    if (prismKey(state) !== before) { render(false); return; }
+    const box = root.querySelector('.pv-prism-log');
+    if (box) fillPrismLog(box);
+  }
+  async function prismDo(work, okText) {
+    let result;
+    try { result = await work(); } catch (error) { result = { ok: false, error: error?.message }; }
+    if (result?.state) setPrism(result.state);
+    if (!result?.ok) showFeedback(result?.error || '操作失败，请重试。', 'error');
+    else if (okText) showFeedback(okText);
+  }
+  function prismSection() {
+    const title = head('Prism 桥', 'ChatGPT 账号被降智时，换一条路用回完整的模型：经你自己的 Prism 账号，在本机给 Codex 开一个接口。');
+    if (!prism) return [title, el('p', { class: 'pv-empty', text: '正在读取状态…' })];
+    if (!prism.available) return [title, el('p', { class: 'pv-empty', text: '这个版本里没有带 Prism 桥的程序文件。' })];
+    const s = prism, busy = !!s.task, running = s.phase !== 'stopped', signedIn = !!s.login && !s.login.expired;
+    const mine = providersOf('codex').find(p => !p.official && !p.pool && (p.name === 'Prism 桥' || p.baseUrl === `http://127.0.0.1:${s.port}/v1`));
+    const inUse = !!mine?.active;
+    // 走到第几步了：0 装环境，1 登录，2 启动，3 接到 Codex，4 全部做完
+    const stage = !s.deps ? 0 : !signedIn ? 1 : s.phase !== 'running' ? 2 : !inUse ? 3 : 4;
+    const daysLeft = signedIn && s.login.expiresAt ? Math.max(0, Math.ceil((s.login.expiresAt - Date.now()) / 86400000)) : null;
+    const act = (label, onClick, off, cls = 'btn') => { const b = button(label, onClick, cls); b.disabled = !!off; return b; };
+    const install = () => prismDo(api.prismInstall, '运行环境已经装好');
+    const signIn = () => prismDo(api.prismLogin, '登录成功');
+    const start = () => prismDo(api.prismStart, 'Prism 桥已经启动');
+    const refresh = () => api.prismState().then(setPrism).catch(() => {});
+    const addProvider = async () => { await run(() => api.prismProvider(), '已保存到 Codex 的供应商列表', '正在保存供应商…'); refresh(); };
+    const enable = async () => { await run(() => api.agentActivate(mine.id), 'Codex 已切换到 Prism 桥', '正在切换 Codex…'); refresh(); };
+
+    /* 总状态：一眼看出现在到哪了、下一步点什么 */
+    const [stateTitle, stateText] = s.task === 'install' ? ['正在安装运行环境…', '进度看下面的日志，第一次可能要几分钟。']
+      : s.task === 'login' ? ['等你在浏览器里登录…', '看到 Prism 的界面后，把那个浏览器窗口关掉。']
+      : s.phase === 'starting' ? ['正在启动…', '唤醒 Chromium 和 Prism 工作区，通常 15 到 25 秒。']
+      : [['还没有装运行环境', '第一次用要先装一次，之后就不用了。'], ['还没有登录 Prism', '用你电脑上的浏览器登录一次，大约十天有效。'], s.error ? ['服务没有启动成功', s.error] : ['服务没有启动', '启动后 Codex 才能通过它发请求。'], [mine ? '服务运行中，Codex 还没有切过来' : '服务运行中，还没有接到 Codex', '做完下面第 4 步就能用了。'], ['Codex 正在经 Prism 桥发请求', '想换回官方登录，到 Codex 页面启用官方那一家。']][stage];
+    const next = busy || s.phase === 'starting' ? null
+      : [() => act('安装运行环境', install, false, 'btn btn-accent'), () => act('登录', signIn, false, 'btn btn-accent'), () => act('启动', start, false, 'btn btn-accent'), () => mine ? act('在 Codex 里启用', enable, false, 'btn btn-accent') : act('添加到 Codex 供应商', addProvider, false, 'btn btn-accent'), () => null][stage]();
+    const failed = stage === 2 && !!s.error && !busy && s.phase === 'stopped';
+    const hero = el('section', { class: 'pv-hero pv-prism-hero' + (s.phase === 'running' ? ' on' : '') + (busy || s.phase === 'starting' ? ' busy' : '') + (failed ? ' failed' : '') }, [
+      el('div', { class: 'pv-hero-state' }, [el('i', { class: 'pv-pulse' }), el('div', {}, [el('b', { text: stateTitle }), el('small', { text: stateText })])]),
+      el('div', { class: 'pv-hero-stats' }, [
+        stat('进度', `${Math.min(stage, 4)}/4`),
+        stat('登录还剩', daysLeft == null ? '—' : `${daysLeft} 天`),
+        stat('端口', String(s.port)),
+      ]),
+      next,
+    ]);
+    const broken = inUse && s.phase === 'stopped' && !busy ? el('section', { class: 'pv-prism-warn', role: 'alert' }, [
+      icon('alert'),
+      el('div', { class: 'pv-grow' }, [el('b', { text: 'Codex 现在选的是 Prism 桥，但服务没有启动' }), el('small', { text: 'Codex 这时发请求会连不上。启动服务，或者到 Codex 页面换回官方登录。' })]),
+    ]) : null;
+
+    /* 适合谁用 + 风险：先说清楚再让人动手 */
+    const fitRow = (kind, name, heading, text) => el('li', { class: 'pv-prism-fit-row ' + kind }, [el('span', { class: 'pv-prism-fit-icon', 'aria-hidden': 'true' }, [icon(name)]), el('div', {}, [el('b', { text: heading }), el('p', { text })])]);
+    const fit = el('ul', { class: 'pv-card pv-prism-fit' }, [
+      fitRow('yes', 'check', '适合：账号被「降智」了', '官方登录下，模型明显变笨，或者被悄悄换成了低一档的型号。走 Prism 桥拿到的是没有被降级的模型。'),
+      fitRow('no', 'info', '没必要：账号是正常的', '账号没被降智就继续用官方登录：回复是边生成边显示的，没有限流等待，也不用担多余的风险。'),
+      fitRow('risk', 'alert', '用之前请先知道', '这不是官方提供的用法：它用浏览器自动操作你自己的 Prism 账号，可能不符合 OpenAI 的服务条款，账号有被限制的风险，请自己决定要不要用。只给你本人在这台电脑上用，不要转售或共享。回复是整段生成完才返回的；短时间连发多轮会被限流几十秒到十几分钟，每次工具调用都算一轮。'),
+    ]);
+
+    const stepCard = (n, done, name, text, actions) => el('section', { class: 'pv-card pv-prism-step' + (done ? ' done' : '') + (stage === n - 1 ? ' current' : '') + (stage < n - 1 ? ' later' : ''), 'data-step': name }, [el('div', { class: 'pv-card-row' }, [
+      el('span', { class: 'pv-prism-num', 'aria-hidden': 'true' }, [done ? icon('check') : document.createTextNode(String(n))]),
+      el('div', { class: 'pv-grow' }, text),
+      ...actions,
+    ])]);
+
+    const env = stepCard(1, s.deps, 'deps', [
+      el('b', { text: '安装运行环境' }),
+      el('small', { text: s.task === 'install' ? '正在安装，进度看下面的日志。第一次要下载约 200 MB，可能要几分钟。' : s.deps ? '已经装好：独立的 Python 环境、playwright 和 Chromium。' : '需要 Python、playwright 和一个 Chromium 浏览器。都装在 TokenPulse 的数据目录里，不影响电脑上别的 Python；电脑上没有 Python 时会先用 winget 安装。' }),
+    ], [act(s.task === 'install' ? '正在安装…' : s.deps ? '重新安装' : '安装运行环境', install, busy || running)]);
+
+    const login = stepCard(2, signedIn, 'login', [
+      el('b', { text: '登录 Prism' }),
+      el('small', { class: daysLeft != null && daysLeft <= 2 ? 'pv-prism-soon' : null, text: s.task === 'login' ? '请在弹出的浏览器窗口里登录，看到 Prism 的界面后把那个窗口关掉，这里会自动继续。' : !s.login ? '会用你电脑上的 Chrome 或 Edge 打开一个单独的登录窗口（不带你平时的登录状态和插件），在里面登录你自己的 OpenAI 账号。登录状态大约十天过期，过期后再登录一次。' : s.login.expired ? '登录已经过期，请重新登录。' : `已登录${s.login.plan ? ' · ' + s.login.plan : ''} · ${when(s.login.expiresAt)} 过期${daysLeft <= 2 ? '，快到期了' : ''}` }),
+    ], [act(s.task === 'login' ? '等待登录…' : s.login ? '重新登录' : '登录', signIn, busy || !s.deps)]);
+
+    const auto = el('button', { type: 'button', class: 'pv-switch' + (s.autoStart ? ' on' : ''), role: 'switch', 'aria-checked': String(!!s.autoStart), 'aria-label': '跟着 TokenPulse 启动' }, [el('i')]);
+    auto.addEventListener('click', () => prismDo(() => api.prismAutoStart(!s.autoStart)));
+    const service = stepCard(3, s.phase === 'running', 'service', [
+      el('b', { text: '启动服务' }),
+      el('small', { translate: s.phase === 'running' ? 'no' : null, text: s.phase === 'running' ? `http://127.0.0.1:${s.port}/v1` : s.phase === 'starting' ? '正在唤醒 Chromium 和 Prism 工作区，通常 15 到 25 秒。' : '启动后 Codex 才能通过它发请求。退出 TokenPulse 时服务会一起停掉。' }),
+      el('label', { class: 'pv-prism-auto' }, [auto, el('span', { text: '跟着 TokenPulse 启动' })]),
+    ], [running ? act('停止', () => prismDo(api.prismStop, '服务已停止'), busy) : act('启动', start, busy || !s.deps || !signedIn)]);
+
+    const provider = stepCard(4, inUse, 'provider', [
+      el('b', { text: '接到 Codex' }),
+      el('small', { text: inUse ? 'Codex 现在用的就是这一家。想换回官方登录，到 Codex 页面启用官方那一家。' : mine ? '已经在 Codex 的供应商列表里，还没有启用。' : '把这个本机接口加成 Codex 的一家供应商，地址和密钥自动填好，然后启用。' }),
+      el('div', { class: 'pv-prism-models' }, (s.models || []).map(name => el('span', { class: 'pv-member', translate: 'no' }, [el('b', { text: name })]))),
+    ], [
+      mine ? act('更新供应商', addProvider, false, 'btn') : null,
+      inUse ? act('去 Codex 页面', () => go('codex')) : mine ? act('在 Codex 里启用', enable) : act('添加到 Codex 供应商', addProvider),
+    ]);
+
+    /* 日志：平时收着，安装 / 登录 / 启动中或出错时自己展开；用户点过就听用户的 */
+    const pre = el('pre', { class: 'pv-prism-log', translate: 'no', tabindex: '0', 'aria-label': '日志' });
+    fillPrismLog(pre);
+    const summary = el('summary', {}, [el('b', { text: '日志' }), el('small', { text: 'Prism Bridge 由 yyyllllming 开源（MIT 协议）。' })]);
+    const logBox = el('details', { class: 'pv-prism-logbox' }, [summary, pre]);
+    logBox.open = prismLogOpen ?? (busy || s.phase === 'starting' || !!s.error);
+    summary.addEventListener('click', () => { prismLogOpen = !logBox.open; queueMicrotask(() => { pre.scrollTop = pre.scrollHeight; }); });
+    queueMicrotask(() => { pre.scrollTop = pre.scrollHeight; });
+    return [title, hero, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), logBox].filter(Boolean);
   }
 
   /* ---------------- 导入 ---------------- */
@@ -1287,5 +1409,7 @@
     if (next !== signature || !root.querySelector('.pv')) { signature = next; render(false); }
     if (state.notice) showFeedback(state.notice, 'warning');
   });
+  api.prismState?.().then(setPrism).catch(() => {});
+  api.onPrism?.(setPrism);
   window.PulseProviders = { show };
 })();

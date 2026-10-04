@@ -26,6 +26,7 @@ import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, in
 import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
+import { installPrism, loginPrism, onPrismChange, prismEndpoint, prismState, releasePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, PRISM_MODELS, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
 import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
@@ -821,6 +822,37 @@ if (!app.requestSingleInstanceLock()) {
       }
     });
     /*
+     * Prism 桥（0.3.19）：随软件带的 Prism Bridge。安装、登录、启动都是用户点了才做；密钥不交给界面。
+     * 加成 Codex 供应商走 agentWrite：这家正在用时会改到 Codex 配置，照常先让用户确认。
+     */
+    const prismProvider = () => {
+      const baseUrl = `http://127.0.0.1:${prismState().port}/v1`;
+      return coreAgentView().providers.find((item) => item.app === "codex" && !item.official && !item.pool && (item.baseUrl === baseUrl || item.name === PRISM_PROVIDER_NAME));
+    };
+    const prismView = () => ({ ...prismState(), provider: !!prismProvider(), models: PRISM_MODELS.map((item) => item[1]) });
+    const prismCall = async (work: () => unknown) => {
+      try { await work(); return { ok: true as const, state: prismView() }; }
+      catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "操作失败", state: prismView() }; }
+    };
+    onPrismChange(() => { if (win && !win.isDestroyed()) win.webContents.send("prism-bridge", prismView()); });
+    ipcMain.handle("prism:state", () => prismView());
+    ipcMain.handle("prism:install", () => prismCall(() => installPrism()));
+    ipcMain.handle("prism:login", () => prismCall(() => loginPrism()));
+    ipcMain.handle("prism:start", () => prismCall(() => startPrism()));
+    ipcMain.handle("prism:stop", () => prismCall(() => stopPrism()));
+    ipcMain.handle("prism:auto-start", (_event, on: unknown) => prismCall(() => setPrismAutoStart(on === true)));
+    ipcMain.handle("prism:provider", () => agentWrite(`保存供应商「${PRISM_PROVIDER_NAME}」`, () => saveProvider({
+      id: prismProvider()?.id || "",
+      app: "codex",
+      name: PRISM_PROVIDER_NAME,
+      ...prismEndpoint(),
+      upstream: "openai-responses",
+      model: PRISM_MODELS[0][0],
+      websiteUrl: PRISM_ORIGIN,
+      notes: "经 TokenPulse 的 Prism 桥访问你自己的 Prism 账号。要先在「Prism 桥」里启动服务。",
+      slots: PRISM_MODELS.map(([model, displayName]) => ({ role: "catalog", model, displayName, contextWindow: 128000, reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "high" })),
+    })));
+    /*
      * 代理：让软件里所有往外发的请求走同一套规则（环境变量里的代理优先，没有就用系统代理）。
      * - Node 自己发的（本地路由转发、获取模型列表、检测地址）和 curl 发的（查额度、续期、出口检测、IP 数据库）：
      *   通过下面这个解析器问系统代理（见 upstream-proxy.ts）；
@@ -829,6 +861,7 @@ if (!app.requestSingleInstanceLock()) {
      */
     setSystemProxyResolver((url) => session.defaultSession.resolveProxy(url));
     void alignElectronProxy().catch(() => undefined);
+    resumePrism();
     configReason("启动时恢复本地路由");
     // 0.3.15：启动时会顺手修复旧版本留下的坏配置（见 repairAgentConfigs）。修复说明等界面来取，免得界面还没加载好就发过去丢了
     let startupNotice = "";
@@ -915,7 +948,7 @@ if (!app.requestSingleInstanceLock()) {
 
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
-    if (agentQuitReady) { quitting = true; exitMonitor.stop(); stopAllReplies(); return; }
+    if (agentQuitReady) { quitting = true; exitMonitor.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

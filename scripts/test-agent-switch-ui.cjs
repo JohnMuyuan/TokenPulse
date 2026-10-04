@@ -40,9 +40,26 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until("document.querySelector('[data-page=providers]')");
     await evaluate("navigate('providers')");
     // 概览：二级菜单 + 三家工具卡，没有 Gemini
-    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 9 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
+    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 10 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
     assert.equal(await evaluate(`document.querySelector('${P}').innerText.includes('Gemini')`), false, '页面上不能再有 Gemini');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'overview');
+    // Prism 桥（0.3.19）：全新环境下四步都没做，只有「安装运行环境」和「添加到 Codex 供应商」能点；先写明风险
+    await nav('prism');
+    await until(`document.querySelectorAll('${P} .pv-prism-step').length === 4`);
+    const fit = await evaluate(`[...document.querySelectorAll('${P} .pv-prism-fit-row')].map(r => r.textContent)`);
+    assert.equal(fit.length, 3);
+    assert.match(fit[0], /适合.*降智/, '先说适合被降智的账号');
+    assert.match(fit[1], /没必要.*正常/, '账号正常就没必要用');
+    assert.match(fit[2], /服务条款.*风险/);
+    assert.deepEqual(await evaluate(`[document.querySelector('${P} .pv-prism-hero b').textContent, document.querySelector('${P} .pv-prism-hero .btn-accent').textContent, document.querySelector('${P} .pv-prism-step.current').dataset.step, document.querySelectorAll('${P} .pv-prism-step.later').length, document.querySelector('${P} .pv-prism-logbox').open]`), ['还没有装运行环境', '安装运行环境', 'deps', 3, false], '总状态指出下一步，当前步骤高亮，日志平时收着');
+    assert.equal(await evaluate(`document.querySelectorAll('${P} .pv-prism-models .pv-member').length`), 4, '列出能用的模型');
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-prism-step')].map(s => [s.dataset.step, s.classList.contains('done'), [...s.querySelectorAll('button.btn')].map(b => b.disabled)])`), [['deps', false, [false]], ['login', false, [true]], ['service', false, [true]], ['provider', false, [false]]]);
+    assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=prism] small').textContent`), '已停止');
+    await evaluate(`document.querySelector('${P} [data-step=provider] button.btn').click()`);
+    await until(`[...document.querySelectorAll('${P} [data-step=provider] button.btn')].map(b => b.textContent).join('|') === '更新供应商|在 Codex 里启用'`);
+    const prismStore = JSON.parse(fs.readFileSync(path.join(root, 'data', 'agent-switch.json'), 'utf8')).providers.find(p => p.name === 'Prism 桥');
+    assert.deepEqual([prismStore.app, prismStore.endpoint.baseUrl, prismStore.endpoint.upstream, prismStore.endpoint.model, prismStore.slots.length], ['codex', 'http://127.0.0.1:18765/v1', 'openai-responses', 'gpt-6.1-sol', 4]);
+    assert.ok(prismStore.endpoint.apiKey.length >= 20 && !(await evaluate(`document.querySelector('${P}').innerHTML`)).includes(prismStore.endpoint.apiKey), '密钥不出现在页面上');
     await nav('desktop');
     await until(`document.querySelector('${P} .pv-head h2')?.textContent === 'Claude 桌面端'`);
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'desktop', '点 Claude 桌面端必须留在这一页');

@@ -464,3 +464,44 @@
 .pv-codex-onem { flex: none; }
 .pv-codex-context-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .pv-codex-context-fields code { color: var(--muted); font-size: 11px; }
+
+/* Prism 桥（0.3.19） */
+.pv-prism-hero.busy .pv-pulse { background: var(--warn); }
+.pv-prism-hero.busy .pv-pulse::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--warn); animation: ping 1.6s var(--ease) infinite; }
+.pv-prism-warn { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
+.pv-prism-warn > .icon { flex: none; width: 18px; height: 18px; color: var(--danger); }
+.pv-prism-fit { grid-template-columns: 1fr 1fr; gap: 0 28px; margin: 0; padding: 4px 18px; list-style: none; }
+.pv-prism-fit-row.risk { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+@media (max-width: 1100px) { .pv-prism-fit { grid-template-columns: 1fr; } .pv-prism-fit-row.no { border-top: 1px solid var(--line); } }
+.pv-prism-fit-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; }
+.pv-prism-fit-row b { font-size: 13.5px; }
+.pv-prism-fit-row p { margin: 3px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
+.pv-prism-fit-icon { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; background: var(--tile-neutral); color: var(--muted); }
+.pv-prism-fit-icon .icon { width: 15px; height: 15px; }
+.pv-prism-fit-row.yes .pv-prism-fit-icon { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.pv-prism-fit-row.risk .pv-prism-fit-icon { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.pv-prism-steps { display: grid; gap: 8px; }
+.pv-prism-step { transition: border-color .2s, opacity .2s; }
+.pv-prism-step.current { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
+.pv-prism-step.later { opacity: .62; }
+.pv-prism-step .pv-grow b { font-size: 14px; }
+.pv-prism-num { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 26px; height: 26px; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--muted); font-size: 12px; font-weight: 600; }
+.pv-prism-num .icon { width: 14px; height: 14px; }
+.pv-prism-step.current .pv-prism-num { border-color: var(--accent); color: var(--accent); }
+.pv-prism-step.done .pv-prism-num { border-color: var(--accent); background: var(--accent); color: #fff; }
+.pv-prism-auto { display: inline-flex; align-items: center; justify-self: start; gap: 8px; margin-top: 6px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.pv-prism-hero.failed { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
+.pv-prism-hero.failed .pv-pulse { background: var(--danger); }
+.pv-prism-hero.failed .pv-hero-state small { color: var(--danger); overflow-wrap: anywhere; }
+.pv-prism-error { color: var(--danger); }
+.pv-prism-soon { color: var(--warn); }
+.pv-prism-models { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pv-prism-models:empty { display: none; }
+.pv-prism-logbox { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.pv-prism-logbox > summary { display: flex; align-items: baseline; gap: 12px; padding: 12px 16px; cursor: pointer; list-style: none; }
+.pv-prism-logbox > summary::-webkit-details-marker { display: none; }
+.pv-prism-logbox > summary::before { content: ""; flex: none; align-self: center; width: 7px; height: 7px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .2s var(--ease); }
+.pv-prism-logbox[open] > summary::before { transform: rotate(45deg); }
+.pv-prism-logbox > summary small { color: var(--muted); font-size: 12px; }
+.pv-prism-log { max-height: 260px; min-height: 72px; margin: 0; padding: 12px 16px; overflow: auto; border-top: 1px solid var(--line); color: var(--muted); font: 12px/1.7 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+@media (prefers-reduced-motion: reduce) { .pv-prism-step, .pv-prism-logbox > summary::before { transition: none; } .pv-prism-hero.busy .pv-pulse::after { animation: none; } }

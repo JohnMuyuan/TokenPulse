@@ -1,6 +1,6 @@
 {
   "name": "tokenpulse",
-  "version": "0.3.18",
+  "version": "0.3.19",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
@@ -10,7 +10,7 @@
     "start": "npm run compile && electron .",
     "dev": "npm run compile && electron . --dev",
     "icons": "node scripts/make-icon.cjs",
-    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs && node scripts/test-sessions.cjs && node scripts/test-egress.cjs && node scripts/test-model-study.cjs && node scripts/test-model-scan.cjs && node scripts/test-shared-quota.cjs && node scripts/test-agent-switch.cjs && node scripts/audit-agent-config-safety.cjs && node scripts/test-agent-config.cjs && node scripts/test-agent-guard.cjs && node scripts/test-codex-context.cjs && node scripts/test-agent-drift.cjs && node scripts/test-codex-compat.cjs && node scripts/test-upstream-proxy.cjs && node scripts/test-knowledge-update.cjs && node scripts/test-effort-usage.cjs && node scripts/test-number-animation.cjs",
+    "test": "npm run compile && node scripts/test-quota-monitor.cjs && node scripts/test-usage-scan.cjs && node scripts/test-dashboard.cjs && node scripts/test-accounts.cjs && node scripts/test-requests.cjs && node scripts/test-features.cjs && node scripts/test-sessions.cjs && node scripts/test-egress.cjs && node scripts/test-model-study.cjs && node scripts/test-model-scan.cjs && node scripts/test-shared-quota.cjs && node scripts/test-agent-switch.cjs && node scripts/audit-agent-config-safety.cjs && node scripts/test-agent-config.cjs && node scripts/test-agent-guard.cjs && node scripts/test-codex-context.cjs && node scripts/test-agent-drift.cjs && node scripts/test-codex-compat.cjs && node scripts/test-upstream-proxy.cjs && node scripts/test-prism-bridge.cjs && node scripts/test-knowledge-update.cjs && node scripts/test-effort-usage.cjs && node scripts/test-number-animation.cjs",
     "test:ui": "npm run compile && electron scripts/test-ui.cjs && electron scripts/test-model-study-ui.cjs && electron scripts/test-usage-projects-ui.cjs && electron scripts/test-agent-switch-ui.cjs && electron scripts/test-provider-feedback-ui.cjs && electron scripts/test-provider-pool-ui.cjs && electron scripts/test-intro-ui.cjs && electron scripts/test-agent-guard-ui.cjs && electron scripts/test-agent-drift-ui.cjs",
     "dist:portable": "npm run icons && npm run compile && electron-builder --win portable --publish never",
     "dist": "npm run icons && npm run compile && electron-builder --publish never",
@@ -31,6 +31,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "vendor/prism-bridge",
+        "to": "prism-bridge"
+      },
       {
         "from": "packaging",
         "to": "packaging",

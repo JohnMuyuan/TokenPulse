@@ -97,6 +97,19 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   /** 立刻从 CC Switch 的库同步一次，返回新快照。 */
   syncCcSwitch: () => ipcRenderer.invoke("ccswitch:sync"),
   /** 供应商切换和本地路由。列表里的密钥已打码。 */
+  /** Prism 桥（0.3.19）：随软件带的 Prism Bridge，装环境、登录、启动 / 停止、加成 Codex 供应商。 */
+  prismState: () => ipcRenderer.invoke("prism:state"),
+  prismInstall: () => ipcRenderer.invoke("prism:install"),
+  prismLogin: () => ipcRenderer.invoke("prism:login"),
+  prismStart: () => ipcRenderer.invoke("prism:start"),
+  prismStop: () => ipcRenderer.invoke("prism:stop"),
+  prismAutoStart: (on: boolean) => ipcRenderer.invoke("prism:auto-start", on),
+  prismProvider: () => ipcRenderer.invoke("prism:provider"),
+  onPrism: (handler: (state: unknown) => void) => {
+    const listener = (_event: unknown, state: unknown) => handler(state);
+    ipcRenderer.on("prism-bridge", listener);
+    return () => ipcRenderer.off("prism-bridge", listener);
+  },
   agentState: () => ipcRenderer.invoke("agent:state"),
   agentSave: (input: unknown) => ipcRenderer.invoke("agent:save", input),
   agentDelete: (id: string) => ipcRenderer.invoke("agent:delete", id),
