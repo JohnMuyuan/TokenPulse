@@ -4,6 +4,7 @@ import { isIP } from "net";
 import fs from "fs";
 import path from "path";
 import { curlBin } from "./curl";
+import { curlProxyArgs } from "./upstream-proxy";
 
 export const PROVIDERS = ["chatgpt", "claude", "grok"] as const;
 export type Provider = typeof PROVIDERS[number];
@@ -88,7 +89,9 @@ export async function probeExit(provider: Provider, host: string, signal?: Abort
   const base = () => ({ provider, host, checkedAt: Date.now(), latencyMs: Date.now() - start });
   if (!DOMAINS[provider].hosts.includes(host)) return { ...base(), error: "invalid_host" };
   try {
-    const { stdout } = await exec(curlBin(), ["-sS", "--max-time", "4", "--http1.1", "--max-filesize", "16384", "-H", "Cache-Control: no-cache", "-w", "\n%{http_code}", `https://${host}/cdn-cgi/trace?tokenpulse=${start}`], { timeout: 4500, windowsHide: true, maxBuffer: 32768, signal });
+    // 和查额度的请求走同一条路（环境变量里的代理；没有就按系统代理），这样「出口不对就不查额度」的判断才对得上
+    const url = `https://${host}/cdn-cgi/trace?tokenpulse=${start}`;
+    const { stdout } = await exec(curlBin(), ["-sS", "--max-time", "4", "--http1.1", "--max-filesize", "16384", ...(await curlProxyArgs(url)), "-H", "Cache-Control: no-cache", "-w", "\n%{http_code}", url], { timeout: 4500, windowsHide: true, maxBuffer: 32768, signal });
     const cut = stdout.lastIndexOf("\n"), status = Number(stdout.slice(cut + 1));
     if (status !== 200) return { ...base(), error: `http_${status}` };
     return { ...base(), ...parseTrace(stdout.slice(0, cut), host) };

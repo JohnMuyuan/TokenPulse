@@ -5,6 +5,7 @@ import path from "path";
 import { promisify } from "util";
 import { rememberOfficialAccount, renewStoredCredentials, visibleAccounts } from "./accounts";
 import { curlBin, curlJson } from "./curl";
+import { curlProxyArgs } from "./upstream-proxy";
 import { isExpired, readCliAccounts, type OfficialAccountKind } from "./credentials";
 import { recordQuotaSamples } from "./quota-history";
 
@@ -56,7 +57,7 @@ function tmpName(prefix: string) {
 
 async function curlBinary(url: string, headers: string[], bodyFile: string) {
   const out = tmpName("tokenpulse-quota");
-  const args = ["-sS", "-m", "15", "-X", "POST", "-o", out, "--data-binary", `@${bodyFile}`, url];
+  const args = ["-sS", "-m", "15", ...(await curlProxyArgs(url)), "-X", "POST", "-o", out, "--data-binary", `@${bodyFile}`, url];
   for (const header of headers) args.push("-H", header);
   try {
     await execFileAsync(curlBin(), args, { timeout: 18000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });

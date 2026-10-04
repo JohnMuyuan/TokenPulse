@@ -73,7 +73,7 @@
     actions.append(intervalLabel, toggleField('系统通知', notify), intelLabel, check, toggle);
     toolbar.append(status, actions);
 
-    const note = node('p', 'egress-explanation', '只验证所选域名经 TokenPulse 的 curl 和环境代理的出口，不代表全部分流域名或其他程序；不读取账号凭证，也不调用模型或额度接口。收进托盘后继续监控，退出软件即停止。');
+    const note = node('p', 'egress-explanation', '只验证所选域名经 TokenPulse 的 curl 的出口（走环境变量里的代理，没有就走系统代理），不代表全部分流域名或其他程序；不读取账号凭证，也不调用模型或额度接口。收进托盘后继续监控，退出软件即停止。');
 
     /* ---- 三家卡片 ---- */
     const grid = node('div', 'egress-grid');

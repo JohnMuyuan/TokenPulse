@@ -1,4 +1,28 @@
-# 当前接手入口 · 0.3.16（2026-10-02，已发布）
+# 当前接手入口 · 0.3.17（2026-10-03，发布中）
+
+## v0.3.17：本地路由 / 号池转发走代理，所有联网请求统一代理规则 · 发布中（Claude）
+
+- 用户反馈：Grok 号池里的账号明明登录着，转发记录却全是 502，问是不是 BUG。
+- **结论：是 BUG**。只读查了本机 `~/.tokenpulse/agent-switch-log.json`：7 条都是 grok、502、error 为空，耗时依次相差约 21 秒；6 个 Grok 账号凭据都在、没过期。实测：本机要经 `127.0.0.1:7890` 代理才能连 `cli-chat-proxy.grok.com`（经代理不到 1 秒回 401，直连 21 秒超时）。`agent-proxy.ts` 的转发用 Node 的 `https.request`，不看 HTTPS_PROXY 也不看系统代理，一律直连，所以每个成员都连接超时；超时抛的是 AggregateError，message 是空的，所以记录里没有原因。和登录状态无关。
+- **改动（未提交）**：
+  - 新文件 `src/core/upstream-proxy.ts`：`envProxyFor`（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY，大小写都认；NO_PROXY；本机地址永远直连；只支持 http:// 代理，SOCKS 按直连）、`setSystemProxyResolver` + `proxyFor`（环境变量没有时问系统代理，结果缓存 30 秒）、`upstreamRequest`（https 上游用 CONNECT 隧道的 `TunnelAgent`，明文上游把完整地址交给代理）、`describeNetError`（把超时、拒绝、DNS 失败说清楚，没走代理时提示去设代理）。没有引入新依赖。
+  - `src/core/agent-proxy.ts`：`forward`、`fetchUpstreamModels`、`probeUrl` 三处都改成先 `proxyFor` 再 `upstreamRequest`；错误原因用 `describeNetError`。
+  - `src/main/index.ts`：启动时 `setSystemProxyResolver(url => session.defaultSession.resolveProxy(url))`。
+  - 新增 `scripts/test-upstream-proxy.cjs`（已加进 npm test，4 组）：选代理、错误说明、经假代理发请求（含 CONNECT 被拒、代理连不上、NO_PROXY）、本地路由整条链路。
+- **验证**：`npm test` 退出 0；`npm run test:ui` 退出 0，共 32 个 PASS。真实链路（临时起一个本地路由，转到 Grok 官方地址，用假令牌，不碰用户账号）：两个成员各在约 1 秒内拿到 Grok 返回的 401，不再是 21 秒超时。
+- **追加（用户：「开着代理为什么还有漏网之鱼，都补上」）：把所有往外发请求的地方排查了一遍**。结论是三类请求认的代理不一样：
+  | 谁发的 | 用在哪 | 环境变量里的代理 | 系统代理 | 处理 |
+  |---|---|---|---|---|
+  | Node 的 https | 本地路由转发、获取模型列表、检测地址 | 原来不认 | 原来不认 | 已改：两种都认（上面那条） |
+  | curl | 查额度、续期登录、出口检测、IP 数据库 | 认 | 原来不认 | 已改：环境变量里没有时，按系统代理补 `--proxy`（`curlProxyArgs`，用在 curl.ts 的 curlJson / curlPost、quota.ts 的 curlBinary、egress.ts 的 probeExit） |
+  | Electron 内核 | 自动更新、知识库更新 | 原来不认 | 认 | 已改：系统代理没开、环境变量里有 HTTP 代理时，启动时 `session.setProxy`（`alignElectronProxy`） |
+  - 出口检测（probeExit）特意和查额度走同一条路，不然「出口不对就不查额度」的判断对不上。出口监控页那句说明改成了「走环境变量里的代理，没有就走系统代理」。
+  - 环境变量里是 SOCKS 代理时：curl 自己会用，Node 这边不支持、按直连，也不改用系统代理。
+  - **没有改的**：TokenPulse 启动的 CLI（登录、在软件里回复、终端里的新对话）不注入代理，仍然继承环境变量。原因是 CLI 走哪条路要和用户自己在终端里敲命令时一样，出口 IP 才对得上；替它加代理会让出口和用户以为的不一样。
+  - 实测：去掉环境变量里的代理、模拟「只开系统代理」，出口检测从超时变成 1 秒内测到出口。test-upstream-proxy 补了 curlProxyArgs 的各种情况。`npm test` 退出 0，`npm run test:ui` 退出 0，共 32 个 PASS。
+- **还没做 / 等用户决定**：版本号（按约定不自己改，要问用户算哪个版本）、提交、打包、发布。没有用用户的真实号池跑过（那会用真实令牌发请求）；装了修复版之后需要用户自己发一条消息确认。
+- 已知限制：只支持 HTTP 代理，SOCKS 代理不支持（按直连）；TokenPulse 进程里要能拿到代理（环境变量，或系统代理开着）。Clash 这类软件如果只开了「TUN 模式」则本来就不需要这个。
+
 
 ## v0.3.16：两个修复 + 检测间隔 + 新对话 / 新项目 · 已完成，已提交、打包、发布（Claude）
 

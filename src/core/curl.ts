@@ -1,9 +1,13 @@
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
+import { curlProxyArgs } from "./upstream-proxy";
 
 /**
  * 走系统 curl 发请求。为什么不用 Node 的 fetch：这几家官方接口对 TLS 指纹和 HTTP/2 比较挑，
  * fetch 经常被挡；curl 在 Windows 10+ 和 macOS 自带。额度查询和 OAuth 续期共用。
+ *
+ * 代理：curl 自己读环境变量（HTTPS_PROXY 等），但不读 Windows 的系统代理。环境变量里没有时，
+ * 由 curlProxyArgs 按系统代理补一个 --proxy（见 upstream-proxy.ts），不然「只开了系统代理」的机器上这些请求全是直连。
  */
 
 const execFileAsync = promisify(execFile);
@@ -13,7 +17,7 @@ export function curlBin() {
 }
 
 export async function curlJson(url: string, headers: string[], timeout = 15000) {
-  const args = ["-sS", "-m", "12", "--http1.1", url];
+  const args = ["-sS", "-m", "12", "--http1.1", ...(await curlProxyArgs(url)), url];
   for (const header of headers) args.push("-H", header);
   const { stdout } = await execFileAsync(curlBin(), args, {
     timeout,
@@ -30,9 +34,10 @@ export async function curlJson(url: string, headers: string[], timeout = 15000) 
  * 请求体从 stdin 喂给 curl（`--data-binary @-`），不放进命令行参数：
  * 里面是 refresh token，命令行对本机其它进程是可见的。
  */
-export function curlPost(url: string, body: string, headers: string[], timeoutMs = 25_000): Promise<{ status: number; json: any }> {
+export async function curlPost(url: string, body: string, headers: string[], timeoutMs = 25_000): Promise<{ status: number; json: any }> {
+  const proxyArgs = await curlProxyArgs(url);
   return new Promise((resolve, reject) => {
-    const args = ["-sS", "-m", "20", "--http1.1", "-X", "POST", url, "--data-binary", "@-", "-w", "\n%{http_code}"];
+    const args = ["-sS", "-m", "20", "--http1.1", ...proxyArgs, "-X", "POST", url, "--data-binary", "@-", "-w", "\n%{http_code}"];
     for (const header of headers) args.push("-H", header);
     const proc = spawn(curlBin(), args, { windowsHide: true });
     let out = "";

@@ -1,6 +1,6 @@
 import { ExitMonitor } from "./egress-monitor";
 import { DOMAINS } from "../core/egress";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
 import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
@@ -19,6 +19,7 @@ import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowl
 import type { RequestQuery } from "../core/request-log";
 import { prefsExist, readPrefs, writePrefs, type Prefs } from "./prefs";
 import { demoCall, endDemo } from "./demo";
+import { envProxyFor, setSystemProxyResolver } from "../core/upstream-proxy";
 import { tr } from "./i18n";
 import { trayIcon, windowIcon } from "./icon";
 import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
@@ -197,6 +198,20 @@ function agentTrayItems() {
 function publishAgent() {
   tray?.setContextMenu(buildTrayMenu());
   if (win && !win.isDestroyed()) win.webContents.send("agent-switch", agentView());
+}
+
+/**
+ * Electron 内核（自动更新、知识库更新用的 net）只认系统代理，不认 HTTPS_PROXY 这类环境变量。
+ * 系统代理没开、环境变量里有 HTTP 代理（不带用户名密码）时，把它设成这个会话的代理；系统代理开着就不动，照系统的走。
+ */
+async function alignElectronProxy() {
+  const probe = new URL("https://github.com/");
+  const proxy = envProxyFor(probe);
+  if (!proxy || proxy.auth) return;
+  const system = await session.defaultSession.resolveProxy(probe.href);
+  if (!/^\s*DIRECT\s*$/i.test(system)) return;
+  const bypass = (process.env.NO_PROXY || process.env.no_proxy || "").split(",").map((item) => item.trim()).filter((item) => item && item !== "*");
+  await session.defaultSession.setProxy({ proxyRules: `http=${proxy.host}:${proxy.port};https=${proxy.host}:${proxy.port}`, proxyBypassRules: ["<local>", ...bypass].join(",") });
 }
 
 /** 界面上的供应商状态：多带一个「只读保护」开关。 */
@@ -799,6 +814,15 @@ if (!app.requestSingleInstanceLock()) {
         return { ok: false, error: error instanceof Error ? error.message : "检测失败" };
       }
     });
+    /*
+     * 代理：让软件里所有往外发的请求走同一套规则（环境变量里的代理优先，没有就用系统代理）。
+     * - Node 自己发的（本地路由转发、获取模型列表、检测地址）和 curl 发的（查额度、续期、出口检测、IP 数据库）：
+     *   通过下面这个解析器问系统代理（见 upstream-proxy.ts）；
+     * - Electron 内核发的（自动更新、模型知识库更新）：本来只认系统代理、不认环境变量。只设了环境变量、系统代理没开的机器上，
+     *   把环境变量里的代理告诉它（alignElectronProxy）。
+     */
+    setSystemProxyResolver((url) => session.defaultSession.resolveProxy(url));
+    void alignElectronProxy().catch(() => undefined);
     configReason("启动时恢复本地路由");
     // 0.3.15：启动时会顺手修复旧版本留下的坏配置（见 repairAgentConfigs）。修复说明等界面来取，免得界面还没加载好就发过去丢了
     let startupNotice = "";

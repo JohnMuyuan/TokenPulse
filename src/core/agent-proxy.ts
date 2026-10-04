@@ -10,6 +10,7 @@ import https from "https";
 import { URL } from "url";
 import { clientError, convertJsonResponse, convertRequest, StreamBridge } from "./agent-convert";
 import { NATIVE_UPSTREAM, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
+import { describeNetError, proxyFor, upstreamRequest } from "./upstream-proxy";
 
 export type ProxyLog = {
   at: number;
@@ -189,9 +190,10 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
   if (target.auth === "codex-oauth") payload = codexBackendBody(payload);
   payload = applyRequestBodyOverrides(payload, target.requestBody);
   const headers = forwardHeaders(req, target, payload.length);
-  const transport = upstream.protocol === "https:" ? https : http;
+  // 上游走代理（环境变量 / 系统代理，见 upstream-proxy.ts）。以前一律直连，需要代理的机器上每个成员都连接超时、记成 502
+  const proxy = await proxyFor(upstream);
   return new Promise((resolve) => {
-    const upstreamReq = transport.request(upstream, { method: req.method || "POST", headers, timeout: 120_000 }, (upstreamRes) => {
+    const upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers, timeout: 120_000 }, (upstreamRes) => {
       const status = upstreamRes.statusCode || 502;
       // 号池成员：401 / 403 多半是这个账号的登录失效或没权限，换下一个成员
       if (status === 429 || status >= 500 || (target.pool && (status === 401 || status === 403))) {
@@ -229,7 +231,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
     };
     res.once('close', clientClosed);
     upstreamReq.once('close', () => res.off('close', clientClosed));
-    upstreamReq.on("error", (error) => resolve({ kind: "fail", status: 502, error: error.message }));
+    upstreamReq.on("error", (error) => resolve({ kind: "fail", status: 502, error: describeNetError(error, Boolean(proxy)) }));
     upstreamReq.on("timeout", () => {
       upstreamReq.destroy();
       resolve({ kind: "fail", status: 504, error: "上游超时" });
@@ -383,14 +385,14 @@ function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse,
   });
 }
 
-export function fetchUpstreamModels(baseUrl: string, apiKey: string) {
+export async function fetchUpstreamModels(baseUrl: string, apiKey: string) {
+  let url: URL;
+  try { url = joinUpstream(baseUrl, "/v1/models"); } catch { throw new Error("地址不是有效的网址"); }
+  const proxy = await proxyFor(url);
   return new Promise<string[]>((resolve, reject) => {
-    let url: URL;
-    try { url = joinUpstream(baseUrl, "/v1/models"); } catch { reject(new Error("地址不是有效的网址")); return; }
-    const transport = url.protocol === "https:" ? https : http;
     const headers: Record<string, string> = {};
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-    const request = transport.request(url, { method: "GET", timeout: 8000, headers }, (response) => {
+    const request = upstreamRequest(url, proxy, { method: "GET", timeout: 8000, headers }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
       response.on("end", () => {
@@ -408,7 +410,7 @@ export function fetchUpstreamModels(baseUrl: string, apiKey: string) {
       });
     });
     request.on("timeout", () => { request.destroy(); reject(new Error("获取模型超时")); });
-    request.on("error", (error) => reject(new Error(error.message)));
+    request.on("error", (error) => reject(new Error(describeNetError(error, Boolean(proxy)))));
     request.end();
   });
 }
@@ -421,9 +423,9 @@ export async function probeUrl(raw: string) {
     return { ok: false, error: "地址不是有效的网址" };
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return { ok: false, error: "只接受 http 或 https" };
-  const transport = url.protocol === "https:" ? https : http;
+  const proxy = await proxyFor(url);
   return new Promise<{ ok: boolean; status?: number; error?: string }>((resolve) => {
-    const request = transport.request(url, { method: "GET", timeout: 8000 }, (response) => {
+    const request = upstreamRequest(url, proxy, { method: "GET", timeout: 8000 }, (response) => {
       response.resume();
       const status = response.statusCode || 0;
       resolve({ ok: status > 0 && status < 500, status });
@@ -432,7 +434,7 @@ export async function probeUrl(raw: string) {
       request.destroy();
       resolve({ ok: false, error: "连接超时" });
     });
-    request.on("error", (error) => resolve({ ok: false, error: error.message }));
+    request.on("error", (error) => resolve({ ok: false, error: describeNetError(error, Boolean(proxy)) }));
     request.end();
   });
 }
