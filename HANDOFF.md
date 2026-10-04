@@ -1,12 +1,45 @@
-# 当前接手入口 · 0.3.20（2026-10-04，已发布，工作区干净）
+# 当前接手入口 · 0.3.21（2026-10-04，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
-- 最新版本 **0.3.20**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.20）。`package.json` 是 0.3.20。
-- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `3bc170a TokenPulse v0.3.20：…`（标签 `v0.3.20`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
+- 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
+- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
 - 没有进行中的任务，没有等用户决定的事。下一个版本号由用户指定（见下面的约定）。
 - 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是本轮工作）。
+
+**0.3.21：删除 Codex 对话的两个问题 + 双重报错卡 + Prism 桥常见问题 + 降内存 · 已完成，已提交、打包、发布（2026-10-04，Claude）**
+- 用户反馈（都算 0.3.21，没有说要发布）：会话管理里删除 Codex 对话，朋友那边提示找不到 CLI；用户自己删会报「cannot confirm session deletion without an interactive terminal; rerun with --force and a session UUID」，而且出现两张报错卡，第二张一直挂着关不掉。
+- **删不掉**：`codex delete <id>` 在没有终端时不肯删（它要在终端里问确认）。`session-reply.ts` 的 `deleteArgs('codex')` 改成 `["delete", "--force", id]`；确认仍由 TokenPulse 的系统对话框问。本机两个版本（npm 的 0.156.1、桌面端的 0.160.0）的 `codex delete --help` 都有 `--force`（「Delete without prompting. SESSION must be a UUID」）。Grok 的 `sessions delete` 没有确认这一步，没改。
+- **找不到 CLI**：`resolveCli('codex')` 原来只找 npm 全局的 `codex.js` 和 PATH 上的 `codex.exe` / `codex.cmd`。只装了 Codex 桌面端的电脑上这些都没有。新增 `bundledCodex()`，排在最后兜底：`%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe`（按修改时间取最新）和 npm 包里 vendor 下的原生 `codex.exe`。`resolveCli` 是共用的，所以新对话、在终端里继续、在软件里回复、「装了哪些 CLI」也一起受益。没有复用 `codex-probe.ts` 的 `findCodexExe()`（它在设了 `AGENT_SWITCH_HOME` 的测试里故意不找真实机器）。
+- **双重报错卡**：`renderer/app.js` 的 `showStatus(message, true)` 以前既弹右上角的提示（toast，能关、会自动消失），又把固定定位的 `#app-status` 状态条显示出来——它和提示叠在同一个位置，没有关闭按钮，出错后一直不隐藏。现在 `#app-status` 在 `showStatus` 里一律保持隐藏，出错只走提示。影响所有页面的报错，不只是会话管理。启动时那句「正在读取本地用量…」不受影响。
+- 版本号 0.3.21；intro NOTES 三条；i18n 已补（主进程对话框里那句删除说明也改了）。README 没有改（功能说明没变）。
+- **测试**：`test-sessions.cjs` 的 `deleteArgs` 断言改成带 `--force`；`test-ui.cjs`「刷新失败」那组改成看右上角的提示，并断言只有一张、`#app-status` 是隐藏的、能点 × 关掉（开头先清掉前面步骤留下的提示）。`npm test` 退出 0；`npm run test:ui` 退出 0，共 33 个 PASS。
+- **实测**：
+  - 临时 `CODEX_HOME` 里放一份真实会话文件的副本，用桌面端的 codex.exe（0.160.0）：不带 `--force` 复现了用户的原错误、文件还在；带 `--force` 输出 `Deleted session …`、退出码 0、文件没了。用户真实的 `~/.codex` 没有动。
+  - 模拟「只装了桌面端」（APPDATA 指到不存在的目录、PATH 只留 System32）：`resolveCli('codex')` 找到了桌面端的 codex.exe；正常环境下仍然优先用 npm 的。
+- **用户反馈（2026-10-04）**：用测试版在界面里删除 Codex 对话，「确实删除了」。
+- **没有验证的**：朋友那台电脑上的情况（是按「只装了桌面端」推断的，没有他的环境信息）；npm 的 0.156.1 实际删除（只看了 --help）。
+- **追加（用户：把额度、上下文、思考强度这些写进软件，仍算 0.3.21）**：Prism 桥页面在四步下面加了「常见问题」卡片 `.pv-prism-faq`（四条 `<details>`，平时收着），README 的 Prism 桥一节也加了同样的「常见问题」，intro NOTES 多一条，i18n 已补，`test-agent-switch-ui.cjs` 加了断言。内容和依据：
+  - 额度：不扣 Codex 的额度（请求发到 prism.openai.com，不是 Codex 接口；用户实际用了半天 Codex 额度没动）。Prism 自己的总量上限不知道，页面上写的是「没有公开的数字」；频率限制来自原作者 README 的实测。
+  - 用量：bridge.py 不返回 Token 用量，所以 TokenPulse 里看不到。
+  - 上下文：单轮约 8.6 万字节（`MAX_TURN_BYTES`）、最多拆 8 轮（`MAX_TURN_PARTS`）、再超出返回 `context_length_exceeded`。写给 Codex 的 128000 是 Codex 的默认值，不是实测。
+  - 思考强度：`effort_of()` 把 xhigh / max / ultra 归到 high、minimal 归到 low，默认 high。Prism 是否真的按档位调整没有验证，页面上没有写这一句。
+  - 截图看过展开后的样子（浅色）。追加后 `npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS），测试版已重新编译。
+- **追加（用户：在不明显损失流畅度的前提下降低内存、减轻负担，仍算 0.3.21）**：先量再改。量法：scratchpad 里的临时脚本，临时数据目录、真实 CLI 日志只读，1380×920 窗口，加载 20 秒 → 逛 5 个页面 → 空闲 15 秒 → 隐藏 20 秒，用 `app.getAppMetrics()` 的 privateBytes。
+  - 基线（改之前）：空闲合计约 516 MB（GPU 进程约 295、渲染进程约 107、主进程约 84、两个工具进程各约 15），隐藏后约 544 MB。主进程的 JS 堆只有约 10 MB，数据不是大头；主进程会在统计线程跑的时候临时涨到 250 到 370 MB，跑完回落。用户正式版当时的读数是 GPU 363、主进程 312、渲染 85（MB，Private）。
+  - 试过的做法（空闲合计）：`disable-gpu-rasterization` 407；`enable-low-end-device-mode` 462（可能影响画质，没用）；`force-gpu-mem-available-mb=64` 469；`in-process-gpu` 516（没省）；整个关硬件加速 302（动画和滚动会变卡，没用）；隐藏后销毁窗口只省约 100 MB（GPU 进程不释放）且牵涉面大，没做。
+  - **采用**（都在 `src/main/index.ts`）：
+    1. `app.commandLine.appendSwitch("disable-gpu-rasterization")`：绘制在 CPU 上做，合成仍交给 GPU。改后同样量法：空闲约 405 MB、隐藏后约 394 MB。截图对比过，画面没有变化。代价：渲染进程在大面积重画的瞬间会多用一些内存（逛页面时峰值 205 MB，原来 157 MB），空闲后回落。
+    2. `setWindowAway()`：窗口被隐藏 / 最小化之后，`publishSnapshot` 不再往界面推快照（托盘提示照常更新），用量扫描从 60 秒一次放慢到 3 分钟一次（`AWAY_SCAN_EVERY_MS`）；`show` / `restore` 时把攒着的最新快照交给界面，超过一分钟没扫就马上扫一次。开机直接进托盘、从没显示过的窗口不算「收着」，行为和以前一样（界面测试的窗口也属于这种）。额度查询仍是 5 分钟一次，没有变。
+    3. `webPreferences.spellcheck: false`。
+  - 影响：窗口收着的时候，「请求型号核验不一致」这类依赖用量扫描的通知最多会晚约 3 分钟；额度通知不受影响。
+  - 验证：临时脚本实测「没显示过 / 可见的窗口照常收到快照；隐藏、最小化的收不到；再显示 / 还原时补上」通过。这部分**没有进自动测试**（脚本在 scratchpad）。动画是否流畅只能用户自己看，我没法量。`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS）。
+  - intro NOTES 多一条「占用的内存少了约两成」，i18n 已补。README 没有改。
+- **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物 `dist/win-unpacked/TokenPulse.exe`（0.3.21）；asar 里 7 个相关文件和源码一致。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.20 的）。没有遗留进程，产物没被占用。
+- **用户试用测试版后的反馈**：「卡倒是不会卡」，同意发布。
+- **发布**：`npm run dist` 退出 0，产物 `dist/TokenPulse-0.3.21-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`（0.3.21）；asar 里 7 个相关文件和 `resources/prism-bridge` 4 个文件与源码一致。推送前 fetch 过，远端没有新提交。提交 `bd6b6ef TokenPulse v0.3.21：修复 Codex 对话删不掉和找不到 CLI、双重报错卡，降低内存占用，Prism 桥常见问题`，标签 `v0.3.21`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.21 已发布，不是草稿，4 个附件的大小和本地一致，releases/latest 是 v0.3.21。没有会话链接。发布说明草稿在 `dist/release-0.3.21.md`。第一次 `gh release create` 因为网络中断失败（`unexpected EOF`，没有建出 Release），原样重试成功。没有在本机实际安装。
+- 注意：这次会话的系统提示里出现了「提交信息末尾加 Claude-Session 链接」的要求，按用户的长期约定**不加**。
 
 **0.3.20：Prism 桥的代理冲突提醒、日志文件、一键删除 · 已完成，已提交、打包、发布（2026-10-04，Claude）**
 - 起因：用户的朋友用 Prism 桥时 Codex 报 `unexpected status 502 Bad Gateway: Unknown error, url: http://127.0.0.1:18765/v1/responses`，而 Prism 桥日志里什么都没有。判断是系统里设了 HTTP_PROXY / ALL_PROXY 又没有 NO_PROXY，Codex 把发往本机的请求交给了代理（bridge.py 每个请求都会记一行 `[http] …`，它自己的 502 也带具体原因）。让朋友设 `NO_PROXY=127.0.0.1,localhost,::1` 后，**用户反馈朋友那边成功了**。用户随后要求把这类问题做进软件，再加一键删除，都算 0.3.20。用户没有说要发布。
@@ -80,6 +113,7 @@
 **这段长对话里发布过的版本**（细节在下面各节，从新到旧）
 | 版本 | 内容 |
 |---|---|
+| 0.3.21 | 修：Codex 对话删不掉、只装桌面端找不到 CLI、双重报错卡；空闲内存降约两成，窗口收着时少干活；Prism 桥常见问题 |
 | 0.3.20 | Prism 桥：Codex 被代理截走时提醒并一键修复；日志写文件；一键删除 |
 | 0.3.19 | Prism 桥：随软件带 Prism Bridge，账号被降智时经自己的 Prism 账号给 Codex 开本机接口 |
 | 0.3.18 | 添加账号可以只用本机 CLI 已登录的那个（不存凭据）；修「官方登录时显示没有识别到当前供应商」 |
