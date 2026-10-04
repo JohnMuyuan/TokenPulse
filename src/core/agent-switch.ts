@@ -342,8 +342,23 @@ function healthOf(id: string): "ok" | "degraded" | "open" {
 
 function currentId(store: Store, app: AgentApp) {
   if (store.proxy.apps[app] && store.route[app] && proxyIsOurs(app)) return store.route[app] || "";
-  if (app === 'desktop') return stillOwned(store, app) ? store.direct[app] || '' : '';
-  return matchLive(store, app) || (!liveMarker(app) && stillOwned(store, app) ? store.direct[app] || '' : '');
+  /*
+   * 0.3.18：工具配置里没有第三方地址，就是在用它自己的官方登录——当前供应商是「官方登录」那一条。
+   * 以前只有「TokenPulse 切换过、之后配置一个字没变」才认；从没在 TokenPulse 里切换过，或者工具自己改过配置文件
+   * （Codex 经常改 config.toml），就显示「没有识别到当前供应商」，明明列表里就有官方登录。
+   */
+  const official = officialOf(store, app).id;
+  if (app === 'desktop') {
+    if (stillOwned(store, app) && store.direct[app]) return store.direct[app] || '';
+    // 桌面端：配置库里没有启用任何网关配置 = 官方登录；启用的是别人的配置就认不出来
+    let applied: unknown;
+    try { applied = readObject(path.join(desktopDir(), 'configLibrary', '_meta.json')).appliedId; } catch { return ''; }
+    return applied ? '' : official;
+  }
+  const matched = matchLive(store, app);
+  if (matched) return matched;
+  if (liveMarker(app)) return '';
+  return stillOwned(store, app) && store.direct[app] ? store.direct[app] || '' : official;
 }
 
 export function saveProvider(input: unknown) { return syncMutation(() => saveProviderImpl(input)); }

@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   writePrefs: (patch: Record<string, unknown>) => ipcRenderer.invoke("prefs:write", patch),
   officialAccounts: () => ipcRenderer.invoke("accounts:list"),
   loginOfficialAccount: (kind: string, replaceId?: string) => ipcRenderer.invoke("accounts:login", kind, replaceId),
+  /** 添加本机 CLI 已经登录的账号（0.3.18）：不保存凭据，每次现读 CLI 的登录。 */
+  addCliAccount: (kind: string) => ipcRenderer.invoke("accounts:add-cli", kind),
   /** 账号管理：remove 隐藏 / 普通删除，purge 完全删除 TokenPulse 记录，restore 恢复，rename 改名。 */
   manageOfficialAccount: (action: "remove" | "purge" | "restore" | "rename", id: string, alias?: string) => ipcRenderer.invoke("accounts:manage", action, id, alias),
   /** 拖拽排序：这一家账号的新顺序。 */

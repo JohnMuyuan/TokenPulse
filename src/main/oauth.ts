@@ -8,7 +8,7 @@ import { promisify } from "util";
 import {
   accountIdOf,
   readOfficialAccountStore,
-  rememberOfficialAccount,
+  adoptCliAccount, rememberOfficialAccount,
   removeOfficialAccount,
   purgeOfficialAccount,
   renameOfficialAccount,
@@ -253,6 +253,18 @@ export async function listOfficialOAuthStatus(now = Date.now()): Promise<Officia
       });
     return { kind, label: LABELS[kind], installed: Boolean(installed[index]), accounts };
   });
+}
+
+/**
+ * 添加本机 CLI 已经登录的账号（0.3.18）：不走登录流程、不保存凭据，只把 CLI 现在登录的那个（些）账号登记进来。
+ * 之后查额度、统计用量时凭据每次现读 CLI 的文件；CLI 换了账号或退出登录，这个账号就查不了了（记录还在）。
+ */
+export async function addCliAccounts(kind: OfficialAccountKind) {
+  const live = readCliAccounts(kind);
+  if (!live.length) throw new Error(`本机的 ${LABELS[kind]} CLI 还没有登录账号。请先在终端里用它的 CLI 登录，或者改用「登录一个新账号」。`);
+  let added = 0;
+  for (const account of live) if (adoptCliAccount(account).added) added += 1;
+  return { ok: true as const, added, total: live.length, statuses: await listOfficialOAuthStatus() };
 }
 
 /**

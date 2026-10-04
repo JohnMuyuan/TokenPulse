@@ -1,6 +1,25 @@
-# 当前接手入口 · 0.3.17（2026-10-03，已发布）
+# 当前接手入口 · 0.3.18（2026-10-04，测试版已编译）
 
-## v0.3.17：本地路由 / 号池转发走代理，所有联网请求统一代理规则 · 已完成，已提交、打包、发布（Claude）
+## v0.3.18：添加本机 CLI 已登录的账号 + 官方登录识别为当前供应商 · 测试版已编译，**未提交、未打安装包、未发布**（Claude）
+
+- 用户要求（都算 0.3.18；**改完给测试版，不打安装包，不发布**）：
+  1. 官方账号里可以选择「添加一个本机 CLI 已经登录的账号」：不把账号托管在 TokenPulse 里，也能读到使用情况。
+  2. BUG：Claude Code 和 Codex 明明用的是官方登录，供应商页却显示「没有识别到当前供应商」。
+- **第 2 条（BUG）**：`agent-switch.ts` 的 `currentId()` 原来只在「TokenPulse 切换过，而且之后配置文件一个字没变」时才认官方登录；从没切换过，或者工具自己改过配置（Codex 经常改 config.toml），就返回空。现在：工具配置里没有第三方地址（`liveMarker` 为空）就是官方登录，返回 `officialOf(store, app).id`。Claude 桌面端：配置库的 `_meta.json` 没有启用任何配置时是官方，启用了别人的配置则认不出。配置里是不认识的第三方地址时仍然是「没有识别到」。
+- **第 1 条**：
+  - 背景（只读查过用户本机）：CLI 登录的账号本来会自动登记（只记名字、不存凭据）。但用户的 ChatGPT 账号以前被「完全删除」过，进了 `removed` 名单，自动登记不会让它回来；界面上「添加账号」只有登录这一条路，而登录会把凭据存进 TokenPulse。
+  - `core/accounts.ts`：新增 `adoptCliAccount()`，只登记名字、不存凭据；会取消隐藏、从 `removed` 里去掉；已经存着的凭据不动。
+  - `main/oauth.ts`：新增 `addCliAccounts(kind)`，CLI 没登录时报错说明；`main/index.ts` 新增 IPC `accounts:add-cli`（之后后台刷新额度）；preload 新增 `addCliAccount`。
+  - `renderer/app.js`：「添加账号」按钮改成弹菜单（`data-account-action="add"`）：「用本机 CLI 已登录的账号」/「登录一个新账号」；点击处理拆成 `runAccountAction()`。添加成功先提示，额度在后台刷新（不等它）。设置页下面那句安全说明也改了。
+  - CLI 之后换了账号或退出登录，这个账号就没有可用凭据了（记录还在，状态显示凭据过期），这是「不托管」的固有限制。
+- 测试：`test-codex-compat.cjs` 加了一组（没切换过的四个工具都识别为官方；工具自己改配置后仍是官方；不认识的第三方地址不算官方），9/9；`test-accounts.cjs` 加了 9 条（67/67）；`test-ui.cjs` 加了添加账号菜单一组（主进程通道换成假的），并把「页面上不能出现『本机 CLI』」那条旧断言收窄到关于页。
+- 版本号 0.3.18；intro NOTES 两条；README 只在「官方额度」那格补了一句（没有加版本小节）；i18n 已补。
+- **验证**：`npm test` 退出 0；`npm run test:ui` 退出 0，共 33 个 PASS。
+- **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物是 `dist/win-unpacked/TokenPulse.exe`（0.3.18）；asar 里 9 个相关文件和源码一致；对 app.asar 跑 test-ui，新加的那组通过。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.17 的）。没有遗留进程，文件没被占用。
+- **没做 / 没验证**：没提交、没打安装包、没发布，等用户试用。没有在用户的真实数据上跑过（界面测试里主进程通道是假的）：用户的 ChatGPT 账号现在在 `removed` 名单里，需要用户在测试版里点「添加账号 → 用本机 CLI 已登录的账号」确认能加回来；供应商页的「官方登录」也需要用户看一眼。
+
+
+## v0.3.17（历史）：本地路由 / 号池转发走代理，所有联网请求统一代理规则 · 已完成，已提交、打包、发布（Claude）
 
 - 用户反馈：Grok 号池里的账号明明登录着，转发记录却全是 502，问是不是 BUG。
 - **结论：是 BUG**。只读查了本机 `~/.tokenpulse/agent-switch-log.json`：7 条都是 grok、502、error 为空，耗时依次相差约 21 秒；6 个 Grok 账号凭据都在、没过期。实测：本机要经 `127.0.0.1:7890` 代理才能连 `cli-chat-proxy.grok.com`（经代理不到 1 秒回 401，直连 21 秒超时）。`agent-proxy.ts` 的转发用 Node 的 `https.request`，不看 HTTPS_PROXY 也不看系统代理，一律直连，所以每个成员都连接超时；超时抛的是 AggregateError，message 是空的，所以记录里没有原因。和登录状态无关。

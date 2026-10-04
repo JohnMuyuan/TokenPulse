@@ -296,6 +296,38 @@ accounts.rememberOfficialAccount({ kind: "grok", ref: "purge", email: "purge@exa
     env.USERPROFILE === real.USERPROFILE && env.APPDATA === real.APPDATA && env.LOCALAPPDATA === real.LOCALAPPDATA,
   );
   check("隔离目录里的凭据路径和读取路径一致", creds.authFile("chatgpt", temp) === path.join(env.CODEX_HOME, "auth.json") && creds.authFile("grok", temp) === path.join(env.GROK_HOME, "auth.json"));
+  // ---- 0.3.18：添加本机 CLI 已登录的账号（不保存凭据） ----
+  {
+    const cliHome = path.join(root, "adopt-cli");
+    claudeHome(cliHome, "uuid-adopt", "adopt@example.com", "tok-adopt");
+    const cli = creds.readCliAccounts("claude", cliHome)[0];
+    const id = "claude:uuid-adopt";
+    const find = () => accounts.readOfficialAccountStore().accounts.find((item) => item.id === id);
+    // 被「完全删除」过的：自动登记不会让它回来，明确添加才回来
+    accounts.rememberOfficialAccount(cli, false, NOW); accounts.purgeOfficialAccount(id);
+    accounts.rememberOfficialAccount(cli, false, NOW + 1);
+    check("完全删除过的 CLI 账号：自动登记不回来", !find() && accounts.readOfficialAccountStore().removed.includes(id));
+    let result = accounts.adoptCliAccount(cli, NOW + 2);
+    check("明确添加 CLI 账号：回到列表，从 removed 里去掉，不保存凭据", result.added === true && result.id === id && find() && find().credential === undefined && !(accounts.readOfficialAccountStore().removed || []).includes(id) && find().email === "adopt@example.com");
+    check("账号库文件里没有这个账号的令牌", !fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, "official-accounts.json"), "utf8").includes("tok-adopt"));
+    result = accounts.adoptCliAccount(cli, NOW + 3);
+    check("已经在列表里再添加：不算新增", result.added === false && accounts.readOfficialAccountStore().accounts.filter((item) => item.id === id).length === 1);
+    // 隐藏的：恢复显示
+    accounts.removeOfficialAccount(id, true);
+    check("先隐藏", find().hidden === true);
+    result = accounts.adoptCliAccount(cli, NOW + 4);
+    check("明确添加隐藏的 CLI 账号：恢复显示", result.added === true && find().hidden === undefined);
+    // 以前在 TokenPulse 里登录过（存着凭据）的：凭据不动
+    accounts.rememberOfficialAccount(cli, true, NOW + 5);
+    const stored = find().credential.token;
+    result = accounts.adoptCliAccount(cli, NOW + 6);
+    check("已保存凭据的账号再用 CLI 方式添加：凭据不动", result.added === false && find().credential.token === stored);
+    // 能查额度：凭据现读 CLI 的
+    accounts.purgeOfficialAccount(id); accounts.adoptCliAccount(cli, NOW + 7);
+    const resolved = accounts.resolveAccountCredential(find(), NOW + 8, [cli]);
+    check("CLI 账号的凭据每次现读 CLI：能用、inCli", resolved.inCli === true && resolved.expired === false && resolved.credential.token === cli.credential.token);
+    check("CLI 退出登录后：这个账号没有可用凭据", accounts.resolveAccountCredential(find(), NOW + 9, []).credential === undefined);
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

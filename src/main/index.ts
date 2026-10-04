@@ -23,7 +23,7 @@ import { envProxyFor, setSystemProxyResolver } from "../core/upstream-proxy";
 import { tr } from "./i18n";
 import { trayIcon, windowIcon } from "./icon";
 import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
-import { listOfficialOAuthStatus, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
+import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
@@ -741,6 +741,12 @@ if (!app.requestSingleInstanceLock()) {
       if (replaceId !== undefined && (typeof replaceId !== "string" || replaceId.length > 400)) throw new Error("官方账号参数无效");
       const result = await loginOfficialOAuth(kind, typeof replaceId === "string" ? replaceId : undefined);
       if (result.ok) backgroundRefresh(true);
+      return result;
+    });
+    ipcMain.handle("accounts:add-cli", async (_event, kind: unknown) => {
+      if (!isOfficialAccountKind(kind)) throw new Error("官方账号类型无效");
+      const result = await addCliAccounts(kind);
+      backgroundRefresh(true);
       return result;
     });
     ipcMain.handle("accounts:manage", async (_event, action: unknown, id: unknown, alias: unknown) => {

@@ -116,6 +116,27 @@ function codexLoads(label) {
     const seed = '# keep me\nservice_tier = "default"\n\n[model_providers.custom]\nname = "OpenAI"\nrequires_openai_auth = true\nwire_api = "responses"\n\n[mcp_servers.fetch]\ncommand = "uvx"\n';
     fs.writeFileSync(codexFile, seed);
     codexLoads('初始');
+    // 0.3.18：从没在 TokenPulse 里切换过，工具配置里也没有第三方地址 → 当前供应商就是「官方登录」，不能显示「没有识别到」
+    {
+      const active = () => Object.fromEntries(['claude', 'desktop', 'codex', 'grok'].map(app => [app, sw.agentView().providers.filter(p => p.app === app && p.active).map(p => (p.official ? 'official' : p.name))]));
+      assert.deepEqual(active(), { claude: ['official'], desktop: ['official'], codex: ['official'], grok: ['official'] }, '没切换过：四个工具都识别为官方登录');
+      // 工具自己改了配置文件（Codex 经常改 config.toml）：还是官方登录
+      fs.appendFileSync(codexFile, ['', "[projects.'d:\\x']", 'trust_level = "trusted"', ''].join('\n'));
+      assert.deepEqual(active().codex, ['official']);
+      // Claude Code 的 settings.json 里只有别的设置、没有第三方地址：官方登录
+      const claudeFile = path.join(home, '.claude', 'settings.json');
+      fs.mkdirSync(path.dirname(claudeFile), { recursive: true });
+      fs.writeFileSync(claudeFile, JSON.stringify({ env: { CLAUDE_CODE_GIT_BASH_PATH: 'C:/git/bash.exe' }, permissions: { allow: [] } }));
+      assert.deepEqual(active().claude, ['official']);
+      // 配置里是 TokenPulse 不认识的第三方地址：既不是官方，也认不出是哪一家
+      fs.writeFileSync(claudeFile, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://unknown-relay.example', ANTHROPIC_AUTH_TOKEN: 'sk-unknown' } }));
+      assert.deepEqual(active().claude, [], '不认识的第三方地址不算官方');
+      fs.rmSync(claudeFile);
+      fs.writeFileSync(codexFile, ['model_provider = "someone"', '[model_providers.someone]', 'name = "X"', 'base_url = "https://unknown.example/v1"', ''].join('\n'));
+      assert.deepEqual(active().codex, []);
+      fs.writeFileSync(codexFile, seed);
+      pass('current provider: untouched tools with no third-party address are recognised as official login; unknown third-party addresses are not');
+    }
     await sw.setProxyPort(await freePort());
     const relay = sw.saveProvider({ app: 'codex', name: 'Codex Relay', baseUrl: 'https://codex.example/v1', apiKey: 'sk-codex-test', model: 'gpt-test', upstream: 'openai-responses' });
     const official = () => sw.agentView().providers.find(item => item.app === 'codex' && item.official).id;

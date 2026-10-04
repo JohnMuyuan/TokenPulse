@@ -143,7 +143,7 @@ function renderOfficialAccounts(statuses = []) {
     const visibleCount = status.accounts.filter(account => !account.hidden).length;
     const poolSummary = visibleCount > 1 ? el('span', { class: 'oauth-pool-summary', text: pool?.week.reporting ? `${visibleCount} 个账号 · 周池剩余 ${pool.week.remainingPoints.toFixed(1)}%` : `${visibleCount} 个账号 · 用完再换` }) : null;
     const add = status.installed
-      ? el('button', { class: 'btn btn-accent', 'data-account-action': 'login', 'data-account-kind': status.kind }, [icon('plus'), '添加账号'])
+      ? el('button', { class: 'btn btn-accent', 'data-account-action': 'add', 'data-account-kind': status.kind, 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, [icon('plus'), '添加账号'])
       : el('span', { class: 'oauth-card-state', text: '未检测到官方 CLI' });
     const sortable = status.accounts.length > 1;
     const rows = status.accounts.map(account => {
@@ -2674,7 +2674,19 @@ $('official-accounts').addEventListener('click', async event => {
   if (local) { if (!local.disabled) toggleLocalOnly(local); return; }
   const button = event.target.closest('[data-account-action]');
   if (!button || button.disabled) return;
-  const { accountAction: action, accountKind: kind, accountId: id } = button.dataset;
+  const { accountKind: kind, accountId: id } = button.dataset;
+  // 0.3.18：添加账号有两种——在 TokenPulse 里登录（保存凭据、自动续期），或者只用本机 CLI 已经登录的那个（不保存凭据）
+  if (button.dataset.accountAction === 'add') {
+    disarmRemove();
+    openOptionMenu(button, '添加账号', [
+      { value: 'add-cli', label: '用本机 CLI 已登录的账号', hint: '不在 TokenPulse 里保存凭据：每次读取 CLI 自己的登录，用来查额度和统计用量' },
+      { value: 'login', label: '登录一个新账号', hint: '在浏览器里授权，凭据由 TokenPulse 保存并自动续期；可以添加多个' },
+    ], null, value => runAccountAction(value, kind, id, button));
+    return;
+  }
+  return runAccountAction(button.dataset.accountAction, kind, id, button);
+});
+async function runAccountAction(action, kind, id, button) {
   if (action === 'rename') { disarmRemove(); startRename(button); return; }
   if ((action === 'remove' || action === 'purge') && removeArmed?.button !== button) { armRemove(button); return; }
   const hiding = action === 'remove' && button.dataset.inCli === '1';
@@ -2682,9 +2694,15 @@ $('official-accounts').addEventListener('click', async event => {
   const buttons = [...$('official-accounts').querySelectorAll('button')];
   const disabledBefore = new Set(buttons.filter(item => item.disabled));
   buttons.forEach(item => { item.disabled = true; });
-  $('prefs-status').textContent = action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : '正在保存…';
+  $('prefs-status').textContent = action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : action === 'add-cli' ? '正在读取 CLI 的登录…' : '正在保存…';
   try {
-    if (action === 'login' || action === 'reauthorize') {
+    if (action === 'add-cli') {
+      const result = await api.addCliAccount(kind);
+      renderOfficialAccounts(result.statuses);
+      settingsDone(result.added ? '已添加 CLI 登录的账号（不保存凭据），正在刷新额度' : 'CLI 登录的账号已经在列表里了');
+      // 不用等额度查完才告诉用户加好了：查完再把界面换上
+      api.refresh().then(render).catch(() => {});
+    } else if (action === 'login' || action === 'reauthorize') {
       const result = await api.loginOfficialAccount(kind, action === 'reauthorize' ? id : undefined);
       if (!result?.ok) throw new Error(result?.error || 'OAuth 登录失败');
       renderOfficialAccounts(result.statuses);
@@ -2702,7 +2720,7 @@ $('official-accounts').addEventListener('click', async event => {
     // 列表重画过的话这些按钮已经不在了；没重画（出错）就恢复原来的可用状态
     for (const item of buttons) if (item.isConnected) item.disabled = disabledBefore.has(item);
   }
-});
+}
 $('open-data').addEventListener('click', async () => { try { const error = await api.openDataDir(); if (error) $('prefs-status').textContent = '无法打开数据目录：' + error; } catch { $('prefs-status').textContent = '无法打开数据目录'; } });
 document.addEventListener('keydown', event => {
   const modal = ['settings'].find(id => !$(id).hidden); if (!modal || menuOwner) return;

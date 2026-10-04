@@ -209,6 +209,27 @@ export function restoreOfficialAccount(id: string) {
 }
 
 /**
+ * 用户明确要求「添加本机 CLI 已经登录的账号」（0.3.18）：只登记名字，**不保存凭据**（每次现读 CLI 的文件）。
+ * 和自动登记的区别：以前被隐藏、或者被「完全删除」过的账号也会回来（rememberOfficialAccount 遇到删掉过的会跳过）。
+ * 账号库里已经存着的凭据（以前在 TokenPulse 里登录过）不动。返回这次是不是新出现在列表里的。
+ */
+export function adoptCliAccount(account: CliAccount, now = Date.now()) {
+  const store = readOfficialAccountStore();
+  const id = accountIdOf(account.kind, account.ref);
+  const found = store.accounts.find((item) => item.id === id);
+  const added = !found || Boolean(found.hidden);
+  if (found) {
+    Object.assign(found, { email: account.email || found.email || "", label: account.label, lastSeenAt: now });
+    delete found.hidden;
+  } else {
+    store.accounts.push({ id, kind: account.kind, ref: account.ref, email: account.email || "", label: account.label, createdAt: now, lastSeenAt: now });
+  }
+  if (store.removed?.includes(id)) store.removed = store.removed.filter((item) => item !== id);
+  writeOfficialAccountStore(store);
+  return { id, added };
+}
+
+/**
  * 某一个账号现在能用的凭据：CLI 正登录着它时，CLI 文件里的和 TokenPulse 存的哪份新用哪份（见 fresherCredential）；
  * 否则只能用 TokenPulse 存的。
  */

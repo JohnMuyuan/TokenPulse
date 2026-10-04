@@ -109,6 +109,30 @@ app.on('web-contents-created', (_, contents) => {
       // 账号列表在设置窗口打开后才异步加载（要探测 CLI），先等它出来。
       await until("document.querySelectorAll('#official-accounts .oauth-card').length === 3");
       assert.match(await evaluate("document.getElementById('official-accounts').textContent"), /添加账号|未检测到官方 CLI/);
+      // 0.3.18：「添加账号」有两种——用本机 CLI 已登录的（不保存凭据），或者登录一个新账号。主进程通道换成假的，不真的读 CLI、不真的登录
+      if (await evaluate("Boolean(document.querySelector('#official-accounts [data-account-action=add]'))")) {
+        const added = [];
+        const realList = await evaluate("window.tokenpulse.officialAccounts ? window.tokenpulse.officialAccounts() : window.tokenpulse.listOfficialAccounts()");
+        ipcMain.removeHandler('accounts:add-cli');
+        ipcMain.handle('accounts:add-cli', (_event, kind) => { added.push(kind); if (added.length === 2) throw new Error('本机的 Claude CLI 还没有登录账号。请先在终端里用它的 CLI 登录，或者改用「登录一个新账号」。'); return { ok: true, added: 1, total: 1, statuses: realList }; });
+        const kind = await evaluate("document.querySelector('#official-accounts [data-account-action=add]').dataset.accountKind");
+        await evaluate("document.querySelector('#official-accounts [data-account-action=add]').click()");
+        await until("!document.getElementById('option-menu').hidden");
+        assert.deepEqual(await evaluate("[...document.querySelectorAll('#option-menu .option-item')].map(n => n.dataset.value + ':' + n.querySelector('b').textContent)"), ['add-cli:用本机 CLI 已登录的账号', 'login:登录一个新账号']);
+        assert.match(await evaluate("document.querySelector('#option-menu .option-item[data-value=add-cli] small').textContent"), /不在 TokenPulse 里保存凭据/);
+        await evaluate("document.querySelector('#option-menu .option-item[data-value=add-cli]').click()");
+        await until("/已添加 CLI 登录的账号（不保存凭据）/.test(document.getElementById('prefs-status').textContent + [...document.querySelectorAll('#toast-stack .tp-toast')].map(t => t.textContent).join(' '))");
+        assert.deepEqual(added, [kind]);
+        // CLI 没登录：把原因告诉用户，列表不变
+        await evaluate("document.querySelector('#official-accounts [data-account-action=add]').click()");
+        await until("!document.getElementById('option-menu').hidden");
+        await evaluate("document.querySelector('#option-menu .option-item[data-value=add-cli]').click()");
+        await until("/CLI 还没有登录账号/.test(document.getElementById('prefs-status').textContent)");
+        assert.equal(await evaluate("document.querySelectorAll('#official-accounts .oauth-card').length"), 3);
+        assert.equal(await evaluate("document.querySelector('#official-accounts [data-account-action=add]').disabled"), false, '出错后按钮恢复可用');
+        ipcMain.removeHandler('accounts:add-cli');
+        console.log('PASS 0.3.18 add account menu: use the local CLI login (no credentials stored) or sign in, success and not-logged-in messages');
+      }
       // 账号列表里不能出现凭据：字段名或 JWT 形状的值。不能只搜「token / refresh」这两个词 ——
       // 「完全删除 TokenPulse 记录」和重新授权按钮的 #i-refresh 图标本来就含这两个词，会误报
       assert.doesNotMatch(await evaluate("document.getElementById('official-accounts').innerHTML"), /access_?token|refresh_?token|id_?token|accessToken|refreshToken|\beyJ[\w-]{10,}/i);
@@ -135,7 +159,8 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("window.PulseI18n.t('请求记录')"), 'Requests');
       await evaluate("document.querySelector('[data-settings-tab=about]').click()");
       // 这一版去掉的：关于里的「本机 CLI」、侧栏「本机持续记录」、总览「数据只保存在本机」；「偏好设置」改叫「设置」。
-      assert.equal(await evaluate("document.body.textContent.includes('本机 CLI') || document.body.textContent.includes('本机持续记录') || document.body.textContent.includes('数据只保存在本机')"), false);
+      // 「本机 CLI」只查关于页：0.3.18 起官方账号页有「用本机 CLI 已登录的账号」这个选项
+      assert.equal(await evaluate("document.querySelector('[data-panel=about]').textContent.includes('本机 CLI') || document.body.textContent.includes('本机持续记录') || document.body.textContent.includes('数据只保存在本机')"), false);
       assert.equal(await evaluate("document.getElementById('settings-open').textContent.trim()"), '设置');
       // 自绘标题栏：三个窗口按钮都在，颜色跟着主题变量走
       assert.equal(await evaluate("document.querySelectorAll('#titlebar .titlebar-buttons button').length"), 3);
