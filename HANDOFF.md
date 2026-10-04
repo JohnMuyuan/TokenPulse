@@ -1,12 +1,26 @@
-# 当前接手入口 · 0.3.19（2026-10-04，已发布，工作区干净）
+# 当前接手入口 · 0.3.20（2026-10-04，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
-- 最新版本 **0.3.19**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.19）。`package.json` 是 0.3.19。
-- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `050d371 TokenPulse v0.3.19：…`（标签 `v0.3.19`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
+- 最新版本 **0.3.20**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.20）。`package.json` 是 0.3.20。
+- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `3bc170a TokenPulse v0.3.20：…`（标签 `v0.3.20`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
 - 没有进行中的任务，没有等用户决定的事。下一个版本号由用户指定（见下面的约定）。
 - 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是本轮工作）。
+
+**0.3.20：Prism 桥的代理冲突提醒、日志文件、一键删除 · 已完成，已提交、打包、发布（2026-10-04，Claude）**
+- 起因：用户的朋友用 Prism 桥时 Codex 报 `unexpected status 502 Bad Gateway: Unknown error, url: http://127.0.0.1:18765/v1/responses`，而 Prism 桥日志里什么都没有。判断是系统里设了 HTTP_PROXY / ALL_PROXY 又没有 NO_PROXY，Codex 把发往本机的请求交给了代理（bridge.py 每个请求都会记一行 `[http] …`，它自己的 502 也带具体原因）。让朋友设 `NO_PROXY=127.0.0.1,localhost,::1` 后，**用户反馈朋友那边成功了**。用户随后要求把这类问题做进软件，再加一键删除，都算 0.3.20。用户没有说要发布。
+- **改动**（`src/core/prism-bridge.ts` 末尾两段 + `main/index.ts`、`preload.ts`、`renderer/agent-switch.js` 的 `prismSection()`）：
+  - **代理冲突提醒 + 一键修复**：`checkPrismProxy()` 只在服务运行中检查。`launchEnv()` 读「新开的程序会拿到的环境变量」（Windows 读注册表 HKLM + HKCU，不用 TokenPulse 自己进程里那份旧的）；`loopbackProxy()` 判断发往 `http://127.0.0.1` 的请求会不会交给代理（HTTP_PROXY 或 ALL_PROXY 有值，且 NO_PROXY 里没有 `127.0.0.1` / `127.0.0.0/8` / `*`；只有 `localhost` 不算）。会的话**经那个代理实际请求一次本机的 `/health`**：返回 200 就不提醒；到不了就 `proxyIssue.certain = true`；代理类型试不了（SOCKS）是 `certain = false`。触发时机：服务就绪时、界面取状态时。`fixPrismProxy()` 用 `setx` 把 `127.0.0.1,localhost,::1` 并进用户级 NO_PROXY（保留原有条目）。界面是顶部红色提醒 `.pv-prism-warn[data-warn=proxy]` + 「一键修复」。
+    - 为什么要实际试：用户自己这台机器注册表里就有 `HTTP_PROXY=http://127.0.0.1:7890`、没有 NO_PROXY，但他的代理软件会把发往本机的请求送回本机（实测经 7890 访问 `http://127.0.0.1:18765/health` 返回 200），所以不该提醒。只看环境变量会误报。
+    - 查不到的情况：Codex 是从某个自己设了代理变量的脚本 / 终端里启动的（环境变量不在注册表里）。用户朋友就有这样一个脚本（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 都指向 7890，`NO_PROXY=` 为空）；如果 Codex 是从那个脚本启动的，要改脚本里的 NO_PROXY。
+  - **日志写文件**：`~/.tokenpulse/prism-bridge/bridge.log`，每行带本地时间；超过 1 MB 把旧的挪成 `bridge.log.1`。日志框标题右边多了「打开日志文件」（IPC `prism:open-log`，在资源管理器里定位）。
+  - **一键删除**：页面最下面 `.pv-prism-remove`，按钮要点两次（4 秒内）。界面先处理供应商（Codex 正在用 → `agentActivate(官方)`，会走改配置的确认流程；再 `agentDelete`），然后 IPC `prism:remove` → `removePrism()`：停服务 → `venv python -m playwright uninstall`（只删这份 Playwright 自己用的浏览器，不带 `--all`，别的程序装的不动）→ 删整个 `~/.tokenpulse/prism-bridge`。不动的：电脑上的 Python、NO_PROXY、TokenPulse 本身。卡片上显示占用空间（IPC `prism:usage`，只量数据目录；Chromium 写的是「约 300 MB」的估计值）。`PrismState` 多了 `installed`、`proxyIssue`，`PrismTask` 多了 `remove`。
+  - 版本号 0.3.20；intro NOTES 三条；i18n 已补（一条带占用空间的格式放在 PATTERNS 开头）；README 的 Prism 桥一节加了「出了问题怎么查」「不想用了，一键删除」（没有加版本小节）。
+- **测试**：`test-prism-bridge.cjs` 现在 7 组（新增：日志文件 + 代理判断 / 用两个假代理实测 / 一键修复；一键删除）。`test-agent-switch-ui.cjs` 加了「打开日志文件」按钮和一键删除（点两次、删完数据目录和供应商都没了、页面回到全新状态）。`npm test` 退出 0；`npm run test:ui` 退出 0，共 33 个 PASS。用假状态截图看过代理提醒和一键删除卡片（浅色）。
+- **没有验证的**：`setx` 真实写用户环境变量（没有在用户机器上执行，怕改他的环境）；`playwright uninstall` 真实执行（只确认了命令存在和说明；没有删用户正在用的环境）；Codex 正在用 Prism 桥时一键删除的整条流程（先切回官方那一步只有代码，界面测试里供应商没有启用）；SOCKS 代理的真实情况。
+- **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物 `dist/win-unpacked/TokenPulse.exe`（0.3.20）；asar 里 7 个相关文件和 `resources/prism-bridge` 的脚本与源码一致。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.19 的）。没有遗留进程，产物没被占用。
+- **发布**：用户说「编译并发布 0.3.20」。`npm run dist` 退出 0，产物 `dist/TokenPulse-0.3.20-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`（0.3.20）；asar 里 7 个相关文件和 `resources/prism-bridge` 4 个文件与源码一致。推送前 fetch 过，远端没有新提交。提交 `3bc170a TokenPulse v0.3.20：Prism 桥的代理冲突提醒、日志文件、一键删除`，标签 `v0.3.20`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.20 已发布，不是草稿，4 个附件的大小和本地一致，releases/latest 是 v0.3.20。没有会话链接。发布说明照前几版的格式，草稿在 `dist/release-0.3.20.md`。提交、打标签并推送、建 Release 分三步执行（一条命令串起来会被自动模式的权限规则拒绝）。没有在本机实际安装；上面「没有验证的」几项发布时仍然没有验证。
 
 **0.3.19：Prism 桥 · 已完成，已提交、打包、发布（2026-10-04，Claude）**
 - 用户要求：把第三方开源的 Prism Bridge（`D:\CodePorject\Tools\prism-bridge-main`，作者 yyyllllming，MIT）整合进 TokenPulse，算 0.3.19；做好只编译测试版，不发布。用户的目标是让小白用户也能用，所以代码随软件打包。用户知道并接受它可能不符合 OpenAI 服务条款的风险；界面、README、更新说明里都写了这条风险。
@@ -66,6 +80,7 @@
 **这段长对话里发布过的版本**（细节在下面各节，从新到旧）
 | 版本 | 内容 |
 |---|---|
+| 0.3.20 | Prism 桥：Codex 被代理截走时提醒并一键修复；日志写文件；一键删除 |
 | 0.3.19 | Prism 桥：随软件带 Prism Bridge，账号被降智时经自己的 Prism 账号给 Codex 开本机接口 |
 | 0.3.18 | 添加账号可以只用本机 CLI 已登录的那个（不存凭据）；修「官方登录时显示没有识别到当前供应商」 |
 | 0.3.17 | 号池 / 本地路由转发走代理；所有联网请求统一代理规则（环境变量优先，其次系统代理） |
