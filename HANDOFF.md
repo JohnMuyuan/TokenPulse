@@ -4,7 +4,7 @@
 
 **现在的状态**
 - 最新版本 **0.3.18**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.18）。`package.json` 是 0.3.18。
-- 本地 `main` 和 `origin/main` 一致，最后一个提交是 `9ee18a0 HANDOFF：记录 v0.3.18 已发布`。工作区没有未提交的改动。
+- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `98d22a9 TokenPulse v0.3.18：…`（标签 `v0.3.18`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
 - 没有进行中的任务，没有等用户决定的事。下一个版本号由用户指定（见下面的约定）。
 - 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是本轮工作）。
 
