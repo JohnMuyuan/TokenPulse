@@ -105,6 +105,10 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   prismStop: () => ipcRenderer.invoke("prism:stop"),
   prismAutoStart: (on: boolean) => ipcRenderer.invoke("prism:auto-start", on),
   prismProvider: () => ipcRenderer.invoke("prism:provider"),
+  prismFixProxy: () => ipcRenderer.invoke("prism:fix-proxy"),
+  prismOpenLog: () => ipcRenderer.invoke("prism:open-log"),
+  prismUsage: () => ipcRenderer.invoke("prism:usage"),
+  prismRemove: () => ipcRenderer.invoke("prism:remove"),
   onPrism: (handler: (state: unknown) => void) => {
     const listener = (_event: unknown, state: unknown) => handler(state);
     ipcRenderer.on("prism-bridge", listener);

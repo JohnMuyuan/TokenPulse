@@ -99,6 +99,23 @@
     "端口只能在服务停止时修改。": "The port can only be changed while the service is stopped.",
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
+    "正在删除…": "Removing…",
+    "停掉服务，删掉运行环境、下载的 Chromium、登录信息和设置。": "Stopping the service and removing the runtime, the downloaded Chromium, the sign-in and the settings.",
+    "Codex 的请求会被代理截走，到不了 Prism 桥": "Codex's requests are intercepted by the proxy and never reach the Prism bridge",
+    "Codex 的请求可能会被代理截走": "Codex's requests may be intercepted by the proxy",
+    "系统里设了代理，但没有把本机地址排除在外，Codex 会报 502 Bad Gateway，这里的日志里却什么都没有。点「一键修复」把 127.0.0.1 加进 NO_PROXY，然后把 Codex 和终端完全关掉再打开。": "A proxy is set system-wide without excluding this PC's own address, so Codex reports 502 Bad Gateway while the log here stays empty. Click “Fix it” to add 127.0.0.1 to NO_PROXY, then fully close and reopen Codex and the terminal.",
+    "一键修复": "Fix it",
+    "已经设置好。请把 Codex 和终端完全关掉再打开。": "Done. Fully close and reopen Codex and the terminal.",
+    "打开日志文件": "Open log file",
+    "再点一次，确认删除": "Click again to confirm",
+    "全部删除": "Remove everything",
+    "Codex 已切回官方登录": "Codex switched back to the official sign-in",
+    "正在把 Codex 切回官方登录…": "Switching Codex back to the official sign-in…",
+    "正在删除供应商…": "Removing the provider…",
+    "Prism 桥留下的文件已经全部删除": "Everything the Prism bridge left behind has been removed",
+    "不想用了？一键删除": "Done with it? Remove everything",
+    "删掉 Prism 桥的运行环境、下载的 Chromium、登录信息、设置和日志，并去掉 Codex 里的「Prism 桥」供应商（Codex 正在用的话先切回官方登录）。": "Removes the Prism bridge runtime, the downloaded Chromium, the sign-in, settings and logs, and takes the “Prism bridge” provider out of Codex (switching Codex back to the official sign-in first if it is in use).",
+    "不会动 TokenPulse 本身、你电脑上的 Python 和别的程序装的浏览器。以后想用，重新走一遍四步就行。": "TokenPulse itself, the Python on this PC and browsers installed by other programs are left alone. To use it again later, just go through the four steps again.",
     "ChatGPT 账号被降智时，换一条路用回完整的模型：经你自己的 Prism 账号，在本机给 Codex 开一个接口。": "When your ChatGPT account has been quietly downgraded, this is another way back to the full models: a local endpoint for Codex through your own Prism account.",
     "正在安装运行环境…": "Installing the runtime…",
     "进度看下面的日志，第一次可能要几分钟。": "See the log below for progress; the first time may take a few minutes.",
@@ -1376,6 +1393,7 @@
   // 变量里也可能有中文（「5 小时」「接口未提供」），递归翻一下
   const v = text => translate(text);
   const PATTERNS = [
+    P('删掉 Prism 桥的运行环境、下载的 Chromium、登录信息、设置和日志，并去掉 Codex 里的「Prism 桥」供应商（Codex 正在用的话先切回官方登录）。现在占用约 (\\d+) MB（另有下载的 Chromium 约 300 MB）。', m => `Removes the Prism bridge runtime, the downloaded Chromium, the sign-in, settings and logs, and takes the “Prism bridge” provider out of Codex (switching Codex back to the official sign-in first if it is in use). It currently uses about ${m[1]} MB (plus about 300 MB for the downloaded Chromium).`),
     P('已登录(?: · (\\S+))? · (.+?) 过期(，快到期了)?', m => `Signed in${m[1] ? ' · ' + m[1] : ''} · expires ${m[2]}${m[3] ? ', expiring soon' : ''}`),
     // 额度详情 · 本机以外的使用
     P('本机以外 \\+([\\d.]+)%', m => `Off this PC +${m[1]}%`),

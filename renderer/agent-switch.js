@@ -469,8 +469,15 @@
    * 按主进程推过来的状态禁用按钮；只有「加成供应商」会改到工具配置，走 run() 的确认流程。
    */
   const PRISM_PHASE = { running: '运行中', starting: '启动中', stopped: '已停止' };
-  let prism = null, prismLogOpen = null;
-  const prismKey = s => JSON.stringify([s.available, s.deps, s.login, s.phase, s.task, s.port, s.autoStart, s.error, s.provider]);
+  let prism = null, prismLogOpen = null, prismUsage = null, prismUsageLoading = false;
+  const prismKey = s => JSON.stringify([s.available, s.deps, s.login, s.phase, s.task, s.port, s.autoStart, s.error, s.provider, s.installed, s.proxyIssue]);
+  const prismVisible = () => section === 'prism' && !editor && !dragging && !pending && document.body.dataset.page === 'providers';
+  /** 占了多少空间：打开这一页时量一次，装完 / 删完之后重新量。 */
+  function loadPrismUsage() {
+    if (prismUsageLoading || !api.prismUsage) return;
+    prismUsageLoading = true;
+    api.prismUsage().then(bytes => { prismUsage = Number(bytes) || 0; }).catch(() => { prismUsage = 0; }).finally(() => { prismUsageLoading = false; if (prismVisible()) render(false); });
+  }
   function fillPrismLog(box) {
     box.textContent = prism.logs.length ? prism.logs.join('\n') : '还没有日志。';
     box.scrollTop = box.scrollHeight;
@@ -489,6 +496,7 @@
     if (result?.state) setPrism(result.state);
     if (!result?.ok) showFeedback(result?.error || '操作失败，请重试。', 'error');
     else if (okText) showFeedback(okText);
+    return !!result?.ok;
   }
   function prismSection() {
     const title = head('Prism 桥', 'ChatGPT 账号被降智时，换一条路用回完整的模型：经你自己的 Prism 账号，在本机给 Codex 开一个接口。');
@@ -501,7 +509,7 @@
     const stage = !s.deps ? 0 : !signedIn ? 1 : s.phase !== 'running' ? 2 : !inUse ? 3 : 4;
     const daysLeft = signedIn && s.login.expiresAt ? Math.max(0, Math.ceil((s.login.expiresAt - Date.now()) / 86400000)) : null;
     const act = (label, onClick, off, cls = 'btn') => { const b = button(label, onClick, cls); b.disabled = !!off; return b; };
-    const install = () => prismDo(api.prismInstall, '运行环境已经装好');
+    const install = async () => { await prismDo(api.prismInstall, '运行环境已经装好'); prismUsage = null; if (prismVisible()) render(false); };
     const signIn = () => prismDo(api.prismLogin, '登录成功');
     const start = () => prismDo(api.prismStart, 'Prism 桥已经启动');
     const refresh = () => api.prismState().then(setPrism).catch(() => {});
@@ -509,7 +517,8 @@
     const enable = async () => { await run(() => api.agentActivate(mine.id), 'Codex 已切换到 Prism 桥', '正在切换 Codex…'); refresh(); };
 
     /* 总状态：一眼看出现在到哪了、下一步点什么 */
-    const [stateTitle, stateText] = s.task === 'install' ? ['正在安装运行环境…', '进度看下面的日志，第一次可能要几分钟。']
+    const [stateTitle, stateText] = s.task === 'remove' ? ['正在删除…', '停掉服务，删掉运行环境、下载的 Chromium、登录信息和设置。']
+      : s.task === 'install' ? ['正在安装运行环境…', '进度看下面的日志，第一次可能要几分钟。']
       : s.task === 'login' ? ['等你在浏览器里登录…', '看到 Prism 的界面后，把那个浏览器窗口关掉。']
       : s.phase === 'starting' ? ['正在启动…', '唤醒 Chromium 和 Prism 工作区，通常 15 到 25 秒。']
       : [['还没有装运行环境', '第一次用要先装一次，之后就不用了。'], ['还没有登录 Prism', '用你电脑上的浏览器登录一次，大约十天有效。'], s.error ? ['服务没有启动成功', s.error] : ['服务没有启动', '启动后 Codex 才能通过它发请求。'], [mine ? '服务运行中，Codex 还没有切过来' : '服务运行中，还没有接到 Codex', '做完下面第 4 步就能用了。'], ['Codex 正在经 Prism 桥发请求', '想换回官方登录，到 Codex 页面启用官方那一家。']][stage];
@@ -528,6 +537,17 @@
     const broken = inUse && s.phase === 'stopped' && !busy ? el('section', { class: 'pv-prism-warn', role: 'alert' }, [
       icon('alert'),
       el('div', { class: 'pv-grow' }, [el('b', { text: 'Codex 现在选的是 Prism 桥，但服务没有启动' }), el('small', { text: 'Codex 这时发请求会连不上。启动服务，或者到 Codex 页面换回官方登录。' })]),
+    ]) : null;
+
+    // 0.3.20：系统里设了代理、又没把本机地址排除时，Codex 发来的请求会被代理截走（Codex 报 502，这边日志里什么都没有）
+    const proxied = s.proxyIssue ? el('section', { class: 'pv-prism-warn', role: 'alert', 'data-warn': 'proxy' }, [
+      icon('alert'),
+      el('div', { class: 'pv-grow' }, [
+        el('b', { text: s.proxyIssue.certain ? 'Codex 的请求会被代理截走，到不了 Prism 桥' : 'Codex 的请求可能会被代理截走' }),
+        el('small', { text: '系统里设了代理，但没有把本机地址排除在外，Codex 会报 502 Bad Gateway，这里的日志里却什么都没有。点「一键修复」把 127.0.0.1 加进 NO_PROXY，然后把 Codex 和终端完全关掉再打开。' }),
+        el('small', { translate: 'no', text: s.proxyIssue.proxy }),
+      ]),
+      act('一键修复', () => prismDo(api.prismFixProxy, '已经设置好。请把 Codex 和终端完全关掉再打开。'), busy),
     ]) : null;
 
     /* 适合谁用 + 风险：先说清楚再让人动手 */
@@ -574,12 +594,48 @@
     /* 日志：平时收着，安装 / 登录 / 启动中或出错时自己展开；用户点过就听用户的 */
     const pre = el('pre', { class: 'pv-prism-log', translate: 'no', tabindex: '0', 'aria-label': '日志' });
     fillPrismLog(pre);
-    const summary = el('summary', {}, [el('b', { text: '日志' }), el('small', { text: 'Prism Bridge 由 yyyllllming 开源（MIT 协议）。' })]);
+    const openLog = act('打开日志文件', event => { event.preventDefault(); event.stopPropagation(); api.prismOpenLog(); });
+    const summary = el('summary', {}, [el('b', { text: '日志' }), el('small', { text: 'Prism Bridge 由 yyyllllming 开源（MIT 协议）。' }), openLog]);
     const logBox = el('details', { class: 'pv-prism-logbox' }, [summary, pre]);
     logBox.open = prismLogOpen ?? (busy || s.phase === 'starting' || !!s.error);
     summary.addEventListener('click', () => { prismLogOpen = !logBox.open; queueMicrotask(() => { pre.scrollTop = pre.scrollHeight; }); });
     queueMicrotask(() => { pre.scrollTop = pre.scrollHeight; });
-    return [title, hero, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), logBox].filter(Boolean);
+
+    /* 一键删除（0.3.20）：不想用了，把它留下的东西全部清掉。要点两次。 */
+    let removal = null;
+    if (s.installed || mine) {
+      if (prismUsage == null) loadPrismUsage();
+      const size = prismUsage == null ? '' : prismUsage >= 1048576 ? `现在占用约 ${Math.round(prismUsage / 1048576)} MB（另有下载的 Chromium 约 300 MB）。` : '';
+      const removeAll = async event => {
+        const btn = event.currentTarget;
+        if (!btn.classList.contains('confirm')) {
+          btn.classList.add('confirm');
+          btn.querySelector('span').textContent = '再点一次，确认删除';
+          clearTimeout(btn._reset);
+          btn._reset = setTimeout(() => { btn.classList.remove('confirm'); btn.querySelector('span').textContent = '全部删除'; }, 4000);
+          return;
+        }
+        clearTimeout(btn._reset);
+        if (mine) {
+          // Codex 正在用这一家：先切回官方登录（会改 Codex 配置，照常先确认），再把供应商删掉
+          if (inUse) {
+            const official = providersOf('codex').find(p => p.official);
+            if (!official || !await run(() => api.agentActivate(official.id), 'Codex 已切回官方登录', '正在把 Codex 切回官方登录…')) return;
+          }
+          if (!await run(() => api.agentDelete(mine.id), null, '正在删除供应商…')) return;
+        }
+        if (await prismDo(api.prismRemove, 'Prism 桥留下的文件已经全部删除')) { prismUsage = null; prismLogOpen = null; if (prismVisible()) render(false); }
+      };
+      removal = el('section', { class: 'pv-card pv-prism-remove' }, [el('div', { class: 'pv-card-row' }, [
+        el('div', { class: 'pv-grow' }, [
+          el('b', { text: '不想用了？一键删除' }),
+          el('small', { text: '删掉 Prism 桥的运行环境、下载的 Chromium、登录信息、设置和日志，并去掉 Codex 里的「Prism 桥」供应商（Codex 正在用的话先切回官方登录）。' + size }),
+          el('small', { text: '不会动 TokenPulse 本身、你电脑上的 Python 和别的程序装的浏览器。以后想用，重新走一遍四步就行。' }),
+        ]),
+        act('全部删除', removeAll, busy || s.phase === 'starting'),
+      ])]);
+    }
+    return [title, hero, proxied, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), logBox, removal].filter(Boolean);
   }
 
   /* ---------------- 导入 ---------------- */

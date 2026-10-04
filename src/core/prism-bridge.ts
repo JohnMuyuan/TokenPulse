@@ -3,7 +3,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { dataDir, readJson, writeJson } from "./paths";
-import { proxyFor } from "./upstream-proxy";
+import { envProxyFor, proxyFor, upstreamRequest } from "./upstream-proxy";
 
 /**
  * Prism 桥（0.3.19）：管理随软件带的 Prism Bridge（vendor/prism-bridge/bridge.py，作者 yyyllllming，MIT）。
@@ -22,12 +22,13 @@ export const PRISM_MODELS: [string, string][] = [["gpt-6.1-sol", "GPT-6.1 Sol"],
 const DEFAULT_PORT = 18765;
 const LOG_MAX = 300;
 const READY_MARK = "服务已就绪";
+const LOG_FILE_MAX = 1024 * 1024;
 const LOGIN_WAIT_MS = 20 * 60_000;
 const PIP_MIRROR = "https://pypi.tuna.tsinghua.edu.cn/simple";
 const BROWSER_MIRROR = "https://cdn.npmmirror.com/binaries/playwright";
 
 export type PrismPhase = "stopped" | "starting" | "running";
-export type PrismTask = "" | "install" | "login";
+export type PrismTask = "" | "install" | "login" | "remove";
 export type PrismState = {
   /** 软件里带着 bridge.py（开发环境在 vendor，安装版在 resources）。 */
   available: boolean;
@@ -40,6 +41,13 @@ export type PrismState = {
   autoStart: boolean;
   error: string;
   logs: string[];
+  /** 数据目录里有 Prism 桥的东西（装过环境、登录过或改过设置）。 */
+  installed: boolean;
+  /**
+   * 服务在跑，但新开的程序（Codex）发往本机地址的请求会先交给代理（0.3.20）：设了 HTTP_PROXY / ALL_PROXY，NO_PROXY 里没有 127.0.0.1。
+   * certain：经那个代理实际试过，到不了本机的服务；false：代理类型试不了（比如 SOCKS），只是可能。
+   */
+  proxyIssue: { proxy: string; certain: boolean } | null;
 };
 
 type Config = { port: number; key: string; autoStart: boolean };
@@ -51,6 +59,7 @@ const profileDir = () => path.join(home(), "profile");
 const loginProfileDir = () => path.join(home(), "login-profile");
 const venvDir = () => path.join(home(), "venv");
 const readyFile = () => path.join(home(), "deps.json");
+const logFile = () => path.join(home(), "bridge.log");
 const venvPython = () => path.join(venvDir(), process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python");
 /** 测试用：直接指定解释器，跳过虚拟环境。 */
 const pythonOverride = () => process.env.TOKENPULSE_PRISM_PYTHON || "";
@@ -80,18 +89,33 @@ let stopping = false;
 let logs: string[] = [];
 let listener: (() => void) | null = null;
 let timer: NodeJS.Timeout | null = null;
+let proxyIssue: PrismState["proxyIssue"] = null;
 
 function emit() {
   if (!listener || timer) return;
   timer = setTimeout(() => { timer = null; listener?.(); }, 150);
 }
-function log(line: string) {
+function log(line: string, toFile = true) {
   const text = line.replace(/\s+$/, "");
   if (!text) return;
   logs.push(text.slice(0, 600));
   if (logs.length > LOG_MAX) logs = logs.slice(-LOG_MAX);
+  if (toFile) writeLogFile(text);
   emit();
 }
+
+/** 日志同时写进文件（0.3.20），方便把文件发给别人排查。超过 1 MB 就把旧的挪成 bridge.log.1，只留这两份。 */
+function writeLogFile(text: string) {
+  try {
+    fs.mkdirSync(home(), { recursive: true });
+    try { if (fs.statSync(logFile()).size > LOG_FILE_MAX) fs.renameSync(logFile(), logFile() + ".1"); } catch { /* 还没有日志文件 */ }
+    fs.appendFileSync(logFile(), `${new Date().toLocaleString("sv")} ${text}\n`);
+  } catch { /* 日志写不进去不影响使用 */ }
+}
+
+/** 日志文件的位置；还没有日志时返回空。 */
+export function prismLogFile() { return fs.existsSync(logFile()) ? logFile() : ""; }
+export function prismHome() { return home(); }
 
 /** 状态变了就调（日志会合并，最多每 150 毫秒一次）。 */
 export function onPrismChange(handler: (() => void) | null) { listener = handler; }
@@ -110,7 +134,7 @@ function loginInfo(): PrismState["login"] {
 
 export function prismState(): PrismState {
   const cfg = config(false);
-  return { available: !!scriptPath(), deps: depsReady(), login: loginInfo(), phase, task, port: cfg.port, autoStart: cfg.autoStart, error: lastError, logs: logs.slice() };
+  return { available: !!scriptPath(), deps: depsReady(), login: loginInfo(), phase, task, port: cfg.port, autoStart: cfg.autoStart, error: lastError, logs: logs.slice(), installed: fs.existsSync(home()), proxyIssue };
 }
 
 /** 给 Codex 加供应商用的地址和密钥。密钥只在主进程里用，不交给界面。 */
@@ -204,7 +228,7 @@ async function findPython(): Promise<Python | null> {
 }
 
 function busy() {
-  if (task) throw new Error(task === "install" ? "正在安装运行环境，请等它完成" : "正在登录，请先完成或关掉登录窗口");
+  if (task) throw new Error(task === "install" ? "正在安装运行环境，请等它完成" : task === "remove" ? "正在删除，请等它完成" : "正在登录，请先完成或关掉登录窗口");
 }
 function fail(error: unknown): never {
   lastError = error instanceof Error ? error.message : String(error);
@@ -319,13 +343,13 @@ export async function startPrism() {
   return new Promise<void>((resolve, reject) => {
     pipe(child, (line) => {
       if (/\[fatal\]|\[错误\]|端口 \d+ 已有服务|timeout/i.test(line)) reason = line.trim();
-      if (phase === "starting" && line.includes(READY_MARK)) { phase = "running"; emit(); resolve(); }
+      if (phase === "starting" && line.includes(READY_MARK)) { phase = "running"; emit(); resolve(); void checkPrismProxy(); }
     });
     const ended = (message: string) => {
       if (server !== child) return;
       server = null;
       const wasStarting = phase === "starting";
-      phase = "stopped";
+      phase = "stopped"; proxyIssue = null;
       if (!stopping) { lastError = message; log("[TokenPulse] " + message); }
       emit();
       if (wasStarting) reject(new Error(stopping ? "已停止" : message));
@@ -366,4 +390,119 @@ export function resumePrism() {
   const state = prismState();
   if (!state.autoStart || !state.available || !state.deps || !state.login || state.login.expired) return;
   void startPrism().catch(() => undefined);
+}
+
+/* ---------------- 代理会不会截走发往本机的请求（0.3.20） ---------------- */
+
+let envForTests: Record<string, string> | null = null;
+/** 测试用：代替「新开的程序会拿到的环境变量」；一键修复也只改这个对象。 */
+export function setPrismEnvForTests(env: Record<string, string> | null) { envForTests = env; }
+
+/**
+ * 新开的程序（Codex）会拿到的环境变量，变量名统一成大写。Windows 上读注册表（系统的 + 用户的，用户的优先）：
+ * TokenPulse 自己进程里的是启动那一刻的，之后改过就不准了。
+ */
+async function launchEnv(): Promise<Record<string, string>> {
+  if (envForTests) return envForTests;
+  const out: Record<string, string> = {};
+  if (process.platform !== "win32") {
+    for (const [name, value] of Object.entries(process.env)) if (value) out[name.toUpperCase()] = value;
+    return out;
+  }
+  for (const key of ["HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", "HKCU\\Environment"]) {
+    const text = await new Promise<string>((resolve) => execFile("reg", ["query", key], { windowsHide: true, timeout: 5000 }, (error, stdout) => resolve(error ? "" : String(stdout))));
+    for (const line of text.split(/\r?\n/)) {
+      const hit = /^\s+(.+?)\s+REG_(?:EXPAND_)?SZ\s+(.*)$/.exec(line);
+      if (hit) out[hit[1].trim().toUpperCase()] = hit[2].trim();
+    }
+  }
+  return out;
+}
+
+/** 这套环境变量下，发往 http://127.0.0.1 的请求会交给哪个代理；不会交给代理就返回空。 */
+export function loopbackProxy(env: Record<string, string>) {
+  const proxy = (env.HTTP_PROXY || env.ALL_PROXY || "").trim();
+  if (!proxy) return "";
+  const skip = (env.NO_PROXY || "").split(",").map((item) => item.trim().toLowerCase());
+  return skip.some((item) => item === "*" || item === "127.0.0.1" || item === "127.0.0.0/8") ? "" : proxy;
+}
+
+/** 经这个代理访问本机的服务，看到不到得了。 */
+function reachesThrough(proxy: NonNullable<ReturnType<typeof envProxyFor>>) {
+  return new Promise<boolean>((resolve) => {
+    const request = upstreamRequest(new URL(`http://127.0.0.1:${config(false).port}/health`), proxy, { method: "GET", timeout: 6000 }, (response) => { response.resume(); resolve(response.statusCode === 200); });
+    request.on("timeout", () => request.destroy(new Error("timeout")));
+    request.on("error", () => resolve(false));
+    request.end();
+  });
+}
+
+/** 服务在跑时检查一次：会被代理截走就记下来，界面上提醒。 */
+export async function checkPrismProxy() {
+  let issue: PrismState["proxyIssue"] = null;
+  if (phase === "running") {
+    const proxy = loopbackProxy(await launchEnv());
+    if (proxy) {
+      const parsed = envProxyFor(new URL("http://example.com/"), { HTTP_PROXY: proxy });
+      const reached = parsed ? await reachesThrough(parsed) : null;
+      // 地址里的用户名密码不交给界面
+      if (reached !== true && phase === "running") issue = { proxy: proxy.replace(/\/\/[^/@]*@/, "//"), certain: reached === false };
+    }
+  }
+  if (JSON.stringify(issue) !== JSON.stringify(proxyIssue)) { proxyIssue = issue; emit(); }
+}
+
+/** 一键修复：把本机地址加进用户级的 NO_PROXY（原来有的保留）。新开的程序才生效。 */
+export async function fixPrismProxy() {
+  const env = await launchEnv();
+  const items = (env.NO_PROXY || "").split(",").map((item) => item.trim()).filter(Boolean);
+  for (const add of ["127.0.0.1", "localhost", "::1"]) if (!items.some((item) => item.toLowerCase() === add)) items.push(add);
+  const value = items.join(",");
+  if (envForTests) envForTests.NO_PROXY = value;
+  else if (process.platform !== "win32") throw new Error("请在启动 Codex 的环境里设置 NO_PROXY=" + value);
+  else {
+    await new Promise<void>((resolve, reject) => execFile("setx", ["NO_PROXY", value], { windowsHide: true, timeout: 15_000 }, (error) => (error ? reject(new Error("没有设置成功：" + error.message)) : resolve())));
+  }
+  log("[TokenPulse] 已把用户环境变量 NO_PROXY 设为 " + value + "。重新打开的程序才会生效。");
+  await checkPrismProxy();
+}
+
+/* ---------------- 占用空间、一键删除（0.3.20） ---------------- */
+
+/** Prism 桥在数据目录里占了多少字节（运行环境、浏览器数据、设置、日志）。下载的 Chromium 在 Playwright 自己的目录里，不算在内。 */
+export async function prismDiskUsage() {
+  const walk = async (dir: string): Promise<number> => {
+    let total = 0;
+    for (const entry of await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) total += await walk(file);
+      else total += (await fs.promises.stat(file).catch(() => null))?.size || 0;
+    }
+    return total;
+  };
+  return walk(home());
+}
+
+/**
+ * 一键删除：停掉服务，删掉这次安装下载的 Chromium（playwright uninstall 只删这一份 Playwright 用的，别的程序装的不动），
+ * 再把数据目录里的 prism-bridge 整个删掉（运行环境、登录信息、设置、日志）。
+ * 不动的：电脑上的 Python、用户环境变量 NO_PROXY、Codex 里的供应商（那个由界面先走「切回官方 + 删除供应商」）。
+ */
+export async function removePrism() {
+  busy();
+  task = "remove"; lastError = ""; emit();
+  try {
+    await stopPrism();
+    if (!pythonOverride() && fs.existsSync(venvPython())) {
+      log("[TokenPulse] 正在删除下载的 Chromium…");
+      await step(venvPython(), ["-m", "playwright", "uninstall"], await childEnv()).catch((error) => log("[TokenPulse] Chromium 没有删掉：" + (error instanceof Error ? error.message : error)));
+    }
+    await fs.promises.rm(home(), { recursive: true, force: true, maxRetries: 8, retryDelay: 400 });
+    logs = []; proxyIssue = null;
+    log("[TokenPulse] Prism 桥的运行环境、登录信息、设置和日志都已删除。", false);
+  } catch (error) {
+    fail(error);
+  } finally {
+    task = ""; emit();
+  }
 }

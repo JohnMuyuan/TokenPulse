@@ -60,6 +60,18 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     const prismStore = JSON.parse(fs.readFileSync(path.join(root, 'data', 'agent-switch.json'), 'utf8')).providers.find(p => p.name === 'Prism 桥');
     assert.deepEqual([prismStore.app, prismStore.endpoint.baseUrl, prismStore.endpoint.upstream, prismStore.endpoint.model, prismStore.slots.length], ['codex', 'http://127.0.0.1:18765/v1', 'openai-responses', 'gpt-6.1-sol', 4]);
     assert.ok(prismStore.endpoint.apiKey.length >= 20 && !(await evaluate(`document.querySelector('${P}').innerHTML`)).includes(prismStore.endpoint.apiKey), '密钥不出现在页面上');
+    // 0.3.20：日志文件按钮；一键删除要点两次，删完供应商和数据目录都没了，页面回到全新状态
+    assert.equal(await evaluate(`document.querySelector('${P} .pv-prism-logbox summary .btn').textContent`), '打开日志文件');
+    assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), true);
+    const removeButton = `document.querySelector('${P} .pv-prism-remove .btn')`;
+    assert.match(await evaluate(`document.querySelector('${P} .pv-prism-remove').textContent`), /运行环境.*Chromium.*登录信息.*供应商.*不会动/);
+    await evaluate(`${removeButton}.click()`);
+    assert.equal(await evaluate(`${removeButton}.textContent`), '再点一次，确认删除', '第一次点只是要求确认');
+    assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), true);
+    await evaluate(`${removeButton}.click()`);
+    await until(`!document.querySelector('${P} .pv-prism-remove') && document.querySelector('${P} [data-step=provider] button.btn')?.textContent === '添加到 Codex 供应商'`);
+    assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), false, '数据目录里的 prism-bridge 整个删掉');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'data', 'agent-switch.json'), 'utf8')).providers.some(p => p.name === 'Prism 桥'), false, 'Codex 里的供应商也去掉');
     await nav('desktop');
     await until(`document.querySelector('${P} .pv-head h2')?.textContent === 'Claude 桌面端'`);
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'desktop', '点 Claude 桌面端必须留在这一页');

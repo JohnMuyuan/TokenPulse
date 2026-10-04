@@ -26,7 +26,7 @@ import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, in
 import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
-import { installPrism, loginPrism, onPrismChange, prismEndpoint, prismState, releasePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, PRISM_MODELS, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
+import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, PRISM_MODELS, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
 import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
@@ -835,7 +835,12 @@ if (!app.requestSingleInstanceLock()) {
       catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "操作失败", state: prismView() }; }
     };
     onPrismChange(() => { if (win && !win.isDestroyed()) win.webContents.send("prism-bridge", prismView()); });
-    ipcMain.handle("prism:state", () => prismView());
+    ipcMain.handle("prism:state", async () => { await checkPrismProxy().catch(() => undefined); return prismView(); });
+    // 0.3.20：代理冲突一键修复、日志文件、占用空间、一键删除（供应商由界面先走「切回官方 + 删除」，这里只删文件）
+    ipcMain.handle("prism:fix-proxy", () => prismCall(() => fixPrismProxy()));
+    ipcMain.handle("prism:open-log", () => { const file = prismLogFile(); if (file) shell.showItemInFolder(file); else void shell.openPath(prismHome()); return !!file; });
+    ipcMain.handle("prism:usage", () => prismDiskUsage().catch(() => 0));
+    ipcMain.handle("prism:remove", () => prismCall(() => removePrism()));
     ipcMain.handle("prism:install", () => prismCall(() => installPrism()));
     ipcMain.handle("prism:login", () => prismCall(() => loginPrism()));
     ipcMain.handle("prism:start", () => prismCall(() => startPrism()));

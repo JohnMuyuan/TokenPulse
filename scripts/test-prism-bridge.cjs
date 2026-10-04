@@ -9,6 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const http = require('http');
 
 const python = ['python', 'python3'].find(name => { try { execFileSync(name, ['-c', 'print(1)'], { stdio: 'pipe', windowsHide: true }); return true; } catch { return false; } });
 if (!python) { console.log('SKIP prism bridge: 本机没有 python'); process.exit(0); }
@@ -75,6 +76,40 @@ const home = path.join(process.env.TOKENPULSE_DATA_DIR, 'prism-bridge');
     await prism.startPrism();
     assert.equal(prism.prismState().phase, 'running');
     assert.ok(prism.prismState().logs.some(line => line.includes('服务已就绪')));
+    assert.match(fs.readFileSync(path.join(home, 'bridge.log'), 'utf8'), /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d .*服务已就绪/m, '日志带时间写进文件');
+    assert.equal(prism.prismLogFile(), path.join(home, 'bridge.log'));
+    assert.equal(prism.prismState().installed, true);
+
+    // 0.3.20：系统里的代理会不会截走发往本机的请求。用两个假代理：一个回 502，一个回 200
+    assert.equal(prism.loopbackProxy({}), '');
+    assert.equal(prism.loopbackProxy({ HTTPS_PROXY: 'http://p:1' }), '', '只给 https 设的代理管不到 http://127.0.0.1');
+    assert.equal(prism.loopbackProxy({ HTTP_PROXY: 'http://p:1' }), 'http://p:1');
+    assert.equal(prism.loopbackProxy({ ALL_PROXY: 'socks5://p:1', NO_PROXY: 'localhost' }), 'socks5://p:1', '只排除 localhost 不够');
+    assert.equal(prism.loopbackProxy({ HTTP_PROXY: 'http://p:1', NO_PROXY: 'example.com, 127.0.0.1' }), '');
+    assert.equal(prism.loopbackProxy({ HTTP_PROXY: 'http://p:1', NO_PROXY: '*' }), '');
+    const seenByProxy = [];
+    const fakeProxy = status => new Promise(resolve => { const server = http.createServer((req, res) => { seenByProxy.push(req.url); res.writeHead(status); res.end('{}'); }); server.listen(0, '127.0.0.1', () => resolve(server)); });
+    const bad = await fakeProxy(502), good = await fakeProxy(200);
+    try {
+      const env = { HTTP_PROXY: `http://user:pass@127.0.0.1:${bad.address().port}`, NO_PROXY: 'example.com' };
+      prism.setPrismEnvForTests(env);
+      await prism.checkPrismProxy();
+      assert.deepEqual(prism.prismState().proxyIssue, { proxy: `http://127.0.0.1:${bad.address().port}`, certain: true }, '经代理到不了本机的服务：确定有问题，地址里的密码不交出去');
+      assert.equal(seenByProxy[0], 'http://127.0.0.1:18765/health', '是真的经那个代理试了一次');
+      prism.setPrismEnvForTests({ HTTP_PROXY: `http://127.0.0.1:${good.address().port}` });
+      await prism.checkPrismProxy();
+      assert.equal(prism.prismState().proxyIssue, null, '代理能把请求送回本机就不提醒');
+      prism.setPrismEnvForTests({ ALL_PROXY: 'socks5://127.0.0.1:1080' });
+      await prism.checkPrismProxy();
+      assert.deepEqual(prism.prismState().proxyIssue, { proxy: 'socks5://127.0.0.1:1080', certain: false }, '试不了的代理类型只说可能');
+      prism.setPrismEnvForTests(env);
+      await prism.checkPrismProxy();
+      await prism.fixPrismProxy();
+      assert.equal(env.NO_PROXY, 'example.com,127.0.0.1,localhost,::1', '一键修复保留原来的条目');
+      assert.equal(prism.prismState().proxyIssue, null);
+    } finally { bad.close(); good.close(); }
+    console.log('PASS prism bridge: log file, proxy interception check and fix');
+
     await prism.stopPrism();
     assert.equal(prism.prismState().phase, 'stopped');
     assert.equal(prism.prismState().error, '', '自己停的不算出错');
@@ -98,6 +133,18 @@ const home = path.join(process.env.TOKENPULSE_DATA_DIR, 'prism-bridge');
     assert.equal(prism.prismState().phase, 'stopped', '退出时把服务结束掉');
     assert.ok(changes > 0);
     console.log('PASS prism bridge: auto start and release');
+
+    // 0.3.20：一键删除。服务开着也能删：先停，再把数据目录里的东西全删掉，而且不会被日志重新建出来
+    await prism.startPrism();
+    assert.ok(await prism.prismDiskUsage() > 0);
+    await prism.removePrism();
+    await new Promise(r => setTimeout(r, 300));
+    const gone = prism.prismState();
+    assert.deepEqual([gone.phase, gone.task, gone.login, gone.installed, gone.autoStart, gone.error], ['stopped', '', null, false, false, '']);
+    assert.equal(fs.existsSync(home), false, '整个目录都删掉');
+    assert.equal(await prism.prismDiskUsage(), 0);
+    assert.ok(gone.logs.at(-1).includes('都已删除'));
+    console.log('PASS prism bridge: remove everything');
   } finally {
     prism.releasePrism();
     prism.onPrismChange(null);

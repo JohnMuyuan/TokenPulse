@@ -71,6 +71,15 @@ Grok 的 `/model` 列表里，TokenPulse 的路由显示为「TokenPulse · 供�
 >
 > 已知限制：回复是整段生成完才返回的；短时间连发多轮会被 Prism 限流几十秒到十几分钟（每次工具调用都算一轮）；Prism 网页改版后可能失效。
 
+**出了问题怎么查**
+
+- **Codex 报 `502 Bad Gateway`，Prism 桥的日志里却什么都没有**：多半是系统里设了代理（`HTTP_PROXY` / `ALL_PROXY`），又没有把本机地址排除在外，Codex 发往 `127.0.0.1` 的请求被代理截走了。服务启动后 TokenPulse 会经那个代理实际试一次，有这个问题就在页面顶部提醒，点「一键修复」会把 `127.0.0.1,localhost,::1` 加进用户环境变量 `NO_PROXY`（原来的条目保留），然后把 Codex 和终端完全关掉再打开。
+- **日志**：除了显示在页面上，也写进 `~/.tokenpulse/prism-bridge/bridge.log`（超过 1 MB 会把旧的挪成 `bridge.log.1`），点「打开日志文件」就能找到，方便发给别人帮忙看。
+
+**不想用了，一键删除**
+
+Prism 桥页面最下面的「全部删除」（要点两次确认）：停掉服务，删掉运行环境、这次安装下载的 Chromium、登录信息、设置和日志，并去掉 Codex 里的「Prism 桥」供应商（Codex 正在用的话先切回官方登录）。页面上会写现在占了多少空间。不会动 TokenPulse 本身、电脑上的 Python、别的程序装的浏览器，以及「一键修复」设过的 `NO_PROXY`。
+
 程序来自开源项目 Prism Bridge（作者 [@yyyllllming](https://github.com/yyyllllming)，MIT 协议），源码在 `vendor/prism-bridge`。
 
 ## 🧭 本机以外的使用
