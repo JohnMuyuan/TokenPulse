@@ -47,6 +47,8 @@ import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
  */
 
 const SCAN_EVERY_MS = 60_000;
+/** 窗口收进托盘或最小化时，用量扫描放慢到这个间隔（0.3.21）。额度查询本来就是 5 分钟一次，不变。 */
+const AWAY_SCAN_EVERY_MS = 3 * 60_000;
 const QUOTA_EVERY_MS = 5 * 60_000;
 
 let win: BrowserWindow | null = null;
@@ -93,6 +95,8 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      // 界面里没有需要拼写检查的输入；关掉就不加载词典
+      spellcheck: false,
     },
   });
   win = next;
@@ -119,6 +123,11 @@ function createWindow() {
   // 用户不在看窗口了：下载好的更新趁这个时候静默装上（见 updater.ts）。
   next.on("hide", onWindowAway);
   next.on("minimize", onWindowAway);
+  // 0.3.21：没人看窗口的时候少干活（见 setWindowAway）
+  next.on("hide", () => setWindowAway(true));
+  next.on("minimize", () => setWindowAway(true));
+  next.on("show", () => setWindowAway(false));
+  next.on("restore", () => setWindowAway(false));
   const sendState = () => next.webContents.send("window-state", { maximized: next.isMaximized() });
   next.on("maximize", sendState);
   next.on("unmaximize", sendState);
@@ -471,8 +480,27 @@ let initialSnapshot: Promise<Snapshot> | null = null;
 function publishSnapshot(snapshot: Snapshot): Snapshot {
   lastSnapshot = snapshot;
   updateTrayTip(snapshot);
-  win?.webContents.send("snapshot", snapshot);
+  // 窗口收着的时候不往界面推（推了它就要把整页重画一遍，没人看）；再打开时补上最新的
+  if (windowAway) snapshotHeld = true;
+  else win?.webContents.send("snapshot", snapshot);
   return snapshot;
+}
+
+/*
+ * 窗口被收进托盘或最小化之后（0.3.21）：
+ * - 快照不再推给界面，托盘提示和通知照常更新；
+ * - 用量扫描从每分钟一次放慢到每 3 分钟一次（每次扫描都要起一个统计线程，会把主进程的内存顶上去一截）。
+ * 窗口再打开时：把攒着的最新快照交给界面，超过一分钟没扫就马上扫一次。
+ * 只在窗口真的被隐藏 / 最小化过之后才算「收着」：开机直接进托盘、还没显示过的窗口不算，和以前一样。
+ */
+let windowAway = false, snapshotHeld = false, lastScanAt = 0;
+function setWindowAway(away: boolean) {
+  if (windowAway === away) return;
+  windowAway = away;
+  if (away) return;
+  if (snapshotHeld && lastSnapshot) win?.webContents.send("snapshot", lastSnapshot);
+  snapshotHeld = false;
+  if (Date.now() - lastScanAt >= SCAN_EVERY_MS) backgroundRefresh(false);
 }
 
 function getInitialSnapshot(): Promise<Snapshot> {
@@ -486,6 +514,7 @@ function getInitialSnapshot(): Promise<Snapshot> {
 }
 
 function backgroundRefresh(withQuota: boolean) {
+  lastScanAt = Date.now();
   void refresh(withQuota).catch((error) => {
     console.error("[TokenPulse] 刷新失败", error);
     win?.webContents.send("refresh-error", "刷新失败，请重试并检查数据目录是否可写。");
@@ -667,7 +696,7 @@ async function deleteConversation(kind: unknown, id: unknown) {
   const method = hit.kind === "claude"
     ? "Claude Code 没有普通对话删除命令；TokenPulse 会删除本机的会话记录文件和同名附属目录。此操作无法撤销。"
     : hit.kind === "codex"
-      ? "将调用 codex delete <会话 ID> 永久删除这段对话。此操作无法撤销。"
+      ? "将调用 codex delete --force <会话 ID> 永久删除这段对话。此操作无法撤销。"
       : "将调用 grok sessions delete <会话 ID> 永久删除这段对话。此操作无法撤销。";
   const options = {
     type: "warning" as const,
@@ -693,6 +722,14 @@ const cleanEnv = cleanAgentEnv();
 for (const key of Object.keys(process.env)) if (!(key in cleanEnv)) delete process.env[key];
 
 // 只允许一个实例：两个进程同时往同一个账本里写会互相覆盖。
+/*
+ * 内存（0.3.21）：界面的绘制放到 CPU 上做，合成仍然交给 GPU。
+ * 实测（1380×920 窗口，逛过几个页面后空闲）：GPU 进程从约 295 MB 降到约 180 MB，全部进程合计从约 516 MB 降到约 407 MB。
+ * 动画用的是 transform / opacity，仍由 GPU 合成，不受影响；整个关掉硬件加速能再省约 100 MB，但动画和滚动会变卡，没有采用。
+ * 必须在 app ready 之前设置。
+ */
+app.commandLine.appendSwitch("disable-gpu-rasterization");
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -934,7 +971,7 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     backgroundRefresh(true);
-    setInterval(() => backgroundRefresh(false), SCAN_EVERY_MS);
+    setInterval(() => { if (!windowAway || Date.now() - lastScanAt >= AWAY_SCAN_EVERY_MS - 1000) backgroundRefresh(false); }, SCAN_EVERY_MS);
     setInterval(() => backgroundRefresh(true), QUOTA_EVERY_MS);
 
     app.on("activate", () => {

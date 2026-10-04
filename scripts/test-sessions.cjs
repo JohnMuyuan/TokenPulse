@@ -157,7 +157,7 @@ const grokArgs = reply.replyArgs('grok', 'abc', 'readonly', 'C:\\tmp\\p.txt');
 assert(grokArgs.includes('dontAsk') && grokArgs.at(-1) === 'C:\\tmp\\p.txt' && grokArgs[grokArgs.indexOf('--resume') + 1] === 'abc');
 // 提示词绝不进命令行
 for (const args of [claudeArgs, codexArgs, grokArgs]) assert(!args.some(arg => arg.includes('提示词')));
-assert.deepStrictEqual(reply.deleteArgs('codex', 'abc'), ['delete', 'abc']);
+assert.deepStrictEqual(reply.deleteArgs('codex', 'abc'), ['delete', '--force', 'abc'], 'Codex 删除要带 --force：没有终端时它没法问确认');
 assert.deepStrictEqual(reply.deleteArgs('grok', 'abc'), ['sessions', 'delete', 'abc']);
 assert.strictEqual(reply.deleteArgs('claude', 'abc'), null);
 

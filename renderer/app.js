@@ -452,9 +452,9 @@ function showStatus(message, error = false) {
   clearTimeout(statusTimer);
   status.textContent = message;
   status.setAttribute('role', error ? 'alert' : 'status');
-  status.hidden = !error;
+  // 0.3.21：出错时以前除了右上角的提示，还把这一条也显示出来，叠成两张报错卡，而且这一条没有关闭按钮、一直挂着。现在只走右上角的提示
+  status.hidden = true;
   toast(message, { kind: error ? 'error' : 'success' });
-  if (!error) statusTimer = setTimeout(() => { status.hidden = true; }, 150);
 }
 /*
  * 右上角提示。kind：success / error / warning / pending（转圈、不自动消失，等同一个 key 的下一条换掉它）。

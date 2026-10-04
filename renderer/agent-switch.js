@@ -601,6 +601,14 @@
     summary.addEventListener('click', () => { prismLogOpen = !logBox.open; queueMicrotask(() => { pre.scrollTop = pre.scrollHeight; }); });
     queueMicrotask(() => { pre.scrollTop = pre.scrollHeight; });
 
+    /* 常见问题（0.3.21）：额度、用量、上下文、思考强度。数字来自 bridge.py 的代码和原作者的实测，Prism 官方没有公开的写明「没有公开」 */
+    const faq = el('section', { class: 'pv-card pv-prism-faq' }, [el('b', { text: '常见问题' }), ...[
+      ['用的是哪里的额度？会扣 Codex 的额度吗？', '不扣 Codex 的额度。请求发到的是 Prism 这个网页产品，和 Codex 的 5 小时、每周额度不是一回事。Prism 自己有没有总量上限，没有公开的数字。已知的是频率限制：短时间连发多轮会被拒绝几十秒到十几分钟。'],
+      ['为什么 TokenPulse 里看不到这部分用量？', 'Prism 桥不返回 Token 用量，所以经它发的请求不会出现在用量统计和额度里。'],
+      ['最大上下文是多少？', '模型在 Prism 那边的上下文窗口没有公开的数字。桥这一层的限制是：单轮输入约 8.6 万字节，超出会自动拆成最多 8 轮发进同一个会话（合计约 68 万字节），再超出时 Codex 会自己压缩历史后重试。TokenPulse 写给 Codex 的上下文窗口是 128000，这是默认值，不是实测的，可以在 Codex 页面编辑这家供应商时改。'],
+      ['思考强度有哪些？', '实际只有 low、medium、high 三档，默认 high。在 Codex 里选更高的（xhigh、max、ultra）按 high 算，选 minimal 按 low 算。'],
+    ].map(([question, answer]) => el('details', {}, [el('summary', { text: question }), el('p', { text: answer })]))]);
+
     /* 一键删除（0.3.20）：不想用了，把它留下的东西全部清掉。要点两次。 */
     let removal = null;
     if (s.installed || mine) {
@@ -635,7 +643,7 @@
         act('全部删除', removeAll, busy || s.phase === 'starting'),
       ])]);
     }
-    return [title, hero, proxied, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), logBox, removal].filter(Boolean);
+    return [title, hero, proxied, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), faq, logBox, removal].filter(Boolean);
   }
 
   /* ---------------- 导入 ---------------- */

@@ -790,9 +790,14 @@ app.on('web-contents-created', (_, contents) => {
       // UI 回归仅使用 DOM、布局与计算样式断言，不生成或读取截图。
       ipcMain.removeHandler('refresh');
       ipcMain.handle('refresh', () => { throw new Error('Simulated scan failure'); });
-      await evaluate("document.getElementById('refresh').click()");
-      await until("!document.getElementById('refresh').disabled && !document.getElementById('app-status').hidden");
-      assert.match(await evaluate("document.getElementById('app-status').textContent"), /刷新失败/);
+      // 前面的步骤可能还留着别的提示，先清掉，下面只看这一次刷新失败弹出来的
+      await evaluate("document.querySelectorAll('.tp-toast').forEach(node => node.remove()); document.getElementById('refresh').click()");
+      await until("!document.getElementById('refresh').disabled && document.querySelector('.tp-toast.error')");
+      assert.match(await evaluate("document.querySelector('.tp-toast.error .tp-toast-message').textContent"), /刷新失败/);
+      // 0.3.21：出错只出一张右上角的提示（能关），不再同时挂一条关不掉的状态条
+      assert.deepEqual(await evaluate("[document.querySelectorAll('.tp-toast.error').length, document.getElementById('app-status').hidden, !!document.querySelector('.tp-toast.error .tp-toast-close')]"), [1, true, true]);
+      await evaluate("document.querySelector('.tp-toast.error .tp-toast-close').click()");
+      await until("!document.querySelector('.tp-toast.error')");
       console.log('PASS failed refresh shows an error and re-enables the button');
       assert.equal(await evaluate("document.querySelector('[data-page=comparison]') === null && !window.tokenpulse.comparisonQuery"), true);
       assert.equal(await evaluate("window.tokenpulse.readPrefs().then(p => p.startMinimized)"), false,

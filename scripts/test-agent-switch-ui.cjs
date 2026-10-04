@@ -60,6 +60,9 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     const prismStore = JSON.parse(fs.readFileSync(path.join(root, 'data', 'agent-switch.json'), 'utf8')).providers.find(p => p.name === 'Prism 桥');
     assert.deepEqual([prismStore.app, prismStore.endpoint.baseUrl, prismStore.endpoint.upstream, prismStore.endpoint.model, prismStore.slots.length], ['codex', 'http://127.0.0.1:18765/v1', 'openai-responses', 'gpt-6.1-sol', 4]);
     assert.ok(prismStore.endpoint.apiKey.length >= 20 && !(await evaluate(`document.querySelector('${P}').innerHTML`)).includes(prismStore.endpoint.apiKey), '密钥不出现在页面上');
+    // 0.3.21：常见问题四条（额度、用量、上下文、思考强度），平时收着
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-prism-faq details')].map(d => [d.open, /额度|用量|上下文|思考强度/.test(d.querySelector('summary').textContent), d.querySelector('p').textContent.length > 20])`), [[false, true, true], [false, true, true], [false, true, true], [false, true, true]]);
+    assert.match(await evaluate(`document.querySelector('${P} .pv-prism-faq details p').textContent`), /不扣 Codex 的额度/);
     // 0.3.20：日志文件按钮；一键删除要点两次，删完供应商和数据目录都没了，页面回到全新状态
     assert.equal(await evaluate(`document.querySelector('${P} .pv-prism-logbox summary .btn').textContent`), '打开日志文件');
     assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), true);

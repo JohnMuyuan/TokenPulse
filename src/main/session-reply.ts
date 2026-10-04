@@ -55,6 +55,23 @@ function unwrapNpm(command: string) {
   }
 }
 
+/**
+ * 不在 PATH 上的 codex.exe（0.3.21）：只装了 Codex 桌面端、没有用 npm 装 CLI 的电脑上，`where codex` 找不到任何东西，
+ * 但桌面端自己带着一份（%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe，目录名随更新变，取最新的）；
+ * npm 包里也有一份原生的（.cmd 包装被删掉或 PATH 没配好时还能用）。
+ */
+function bundledCodex(): string[] {
+  const children = (dir: string) => { try { return fs.readdirSync(dir).map((name) => path.join(dir, name)); } catch { return []; } };
+  const newestFirst = (files: string[]) => files
+    .flatMap((file) => { try { return [{ file, at: fs.statSync(file).mtimeMs }]; } catch { return []; } })
+    .sort((a, b) => b.at - a.at)
+    .map((item) => item.file);
+  const local = process.env.LOCALAPPDATA, roaming = process.env.APPDATA;
+  const desktop = local ? children(path.join(local, "OpenAI", "Codex", "bin")).map((dir) => path.join(dir, "codex.exe")) : [];
+  const vendor = roaming ? children(path.join(roaming, "npm", "node_modules", "@openai", "codex", "node_modules", "@openai")).flatMap((pkg) => children(path.join(pkg, "vendor")).map((triple) => path.join(triple, "bin", "codex.exe"))) : [];
+  return [...newestFirst(desktop), ...newestFirst(vendor)];
+}
+
 /** 找到这家 CLI 的可执行文件，返回 spawn 用的 [程序, 前置参数, 额外环境变量]。 */
 export function resolveCli(kind: AgentKind): { file: string; prefix: string[]; env?: Record<string, string> } | null {
   const home = os.homedir();
@@ -64,6 +81,7 @@ export function resolveCli(kind: AgentKind): { file: string; prefix: string[]; e
       path.join(npm, "node_modules", "@openai", "codex", "bin", "codex.js"),
       ...where("codex.exe"),
       ...where("codex.cmd"),
+      ...bundledCodex(),
     ];
     for (const candidate of candidates) {
       if (!fs.existsSync(candidate)) continue;
@@ -234,9 +252,13 @@ export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFi
     "--prompt-file", promptFile ?? "",
   ];
 }
-/** 删除命令对着本机 CLI 的 --help 核过。Claude Code 没有普通对话删除子命令。 */
+/**
+ * 删除命令对着本机 CLI 的 --help 核过。Claude Code 没有普通对话删除子命令。
+ * Codex 要带 --force（0.3.21）：不带的话它要在终端里问一句确认，TokenPulse 起的进程没有终端，
+ * 直接报「cannot confirm session deletion without an interactive terminal」。确认已经由 TokenPulse 自己的对话框问过了。
+ */
 export function deleteArgs(kind: AgentKind, id: string): string[] | null {
-  if (kind === "codex") return ["delete", id];
+  if (kind === "codex") return ["delete", "--force", id];
   if (kind === "grok") return ["sessions", "delete", id];
   return null;
 }
@@ -251,7 +273,7 @@ export async function deleteSession(kind: AgentKind, id: string) {
     return;
   }
   const cli = resolveCli(kind);
-  if (!cli) throw new Error(`没找到 ${kind === "codex" ? "Codex CLI" : "Grok Build"}，无法删除会话`);
+  if (!cli) throw new Error(kind === "codex" ? "没找到 Codex 的命令行程序（装了 Codex 桌面端，或者用 npm 装了 codex 都可以），无法删除会话" : "没找到 Grok Build，无法删除会话");
   const env: NodeJS.ProcessEnv = { ...cleanAgentEnv(), ...cli.env };
   if (!cli.env?.ELECTRON_RUN_AS_NODE) delete env.ELECTRON_RUN_AS_NODE;
   await new Promise<void>((resolve, reject) => {
