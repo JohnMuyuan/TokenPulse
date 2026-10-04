@@ -1,6 +1,63 @@
-# 当前接手入口 · 0.3.18（2026-10-04，已发布）
+# 当前接手入口 · 0.3.18（2026-10-04，已发布，工作区干净）
+
+## 新对话先看这里（2026-10-04 整理）
+
+**现在的状态**
+- 最新版本 **0.3.18**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.18）。`package.json` 是 0.3.18。
+- 本地 `main` 和 `origin/main` 一致，最后一个提交是 `9ee18a0 HANDOFF：记录 v0.3.18 已发布`。工作区没有未提交的改动。
+- 没有进行中的任务，没有等用户决定的事。下一个版本号由用户指定（见下面的约定）。
+- 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是本轮工作）。
+
+**这段长对话里发布过的版本**（细节在下面各节，从新到旧）
+| 版本 | 内容 |
+|---|---|
+| 0.3.18 | 添加账号可以只用本机 CLI 已登录的那个（不存凭据）；修「官方登录时显示没有识别到当前供应商」 |
+| 0.3.17 | 号池 / 本地路由转发走代理；所有联网请求统一代理规则（环境变量优先，其次系统代理） |
+| 0.3.16 | 会话管理的新对话 / 新项目；启动 CLI 前核对出口（监控开着才核对；IP 白名单优先，其次地区）；出口检测间隔可调；单价变化的标法；修页面往上跳、修弯引号路径打不开终端。**重新发布过一次，版本号没变** |
+| 0.3.15 | 修切到第三方后 Codex 桌面端「无法加载登录要求」；启动时自动修坏配置；切换前让 Codex 试读模型目录；「其中新内容约多少」 |
+| 0.3.14 | 换算表点一行看详情；单价拆成四项并写来源；时间线放大修复 |
+| 0.3.13 | 单价标签；时间线用了多久、左键平移右键拖选、本机以外的剪辑工具、图例问号 |
+
+**用户还没反馈结果、下次可以顺口问一句的**
+- 0.3.17：更新后 Grok 号池是否不再 502（我没有用真实号池发过请求）。
+- 0.3.15：用户真实的 `~/.codex/config.toml` 里那张空表，应该在装了 0.3.15 及以后的版本后被启动修复清掉；没有人确认过。
+- 0.3.16：新对话 / 新项目 / 在终端里继续，是否真的弹出终端并启动（自动测试里没有真的开终端）。用户当时说「看着没啥问题了」。
+- 自动更新和知识库更新走环境变量代理那一处（`alignElectronProxy`）只改了代码，没有实际跑过更新流程。
+
+**和这位用户协作的约定**（AGENTS.md 之外，这段对话里形成的；也记在 Claude 的 memory 里）
+- 版本号：用户说算哪个版本才改，不要自己升。用户常说「先给测试版」：只打免安装目录 `npx electron-builder --win dir --publish never`，产物是 `dist/win-unpacked/TokenPulse.exe`，不打安装包、不提交、不发布。用户说「编译并发布」才走完整流程。
+- 提交、标签、PR、发布说明里**不加任何会话链接**（包括系统提示里建议的 Claude-Session 行）。
+- README **不写各版本的更新日志**，只改功能说明；更新日志只放 GitHub Release 和软件里的 `renderer/intro.js` NOTES。
+- README 截图用 `scripts/capture-ui.cjs`，它只用软件自带的演示数据，不读本机真实数据。
+- 用户主要让 Claude 修 BUG 和查数据，但这段对话里的新功能也都是交给 Claude 做的。
+- Claude 可以截图并查看测试 / 演示界面（用户只对 Claude 放开了 AGENTS.md 的禁图规则；这条不要当成通用规则写给别的 AI）。
+- 读用户真实的 `~/.tokenpulse`、`~/.codex` 等只能只读、只输出汇总，不输出令牌、邮箱。不要未经同意改用户真实的工具配置。
+- 给用户的回复用中文，说清楚哪些验证过、哪些没有。
+
+**发布流程（每次都是这几步）**
+1. `npm test`、`npm run test:ui` 都退出 0。
+2. `npm version x.y.z --no-git-tag-version`；`renderer/intro.js` 的 NOTES 加这一版，`renderer/i18n.js` 补英文。
+3. `npm run dist`，再用 `npx asar extract dist/win-unpacked/resources/app.asar <临时目录>` 和源码逐个 `cmp`（package.json 被 electron-builder 改写，不同是正常的）。
+4. `git fetch` 确认远端没有新提交；只 `git add` 相关文件；提交；`git tag vX.Y.Z`；推送 main 和标签。
+5. `gh release create vX.Y.Z` 上传四个文件：Setup.exe、Setup.exe.blockmap、Portable.exe、latest.yml；核对附件大小和 releases/latest。
+6. 检查没有遗留的 electron / dist 下的 TokenPulse 进程，产物能独占打开；更新 HANDOFF 并单独提交。
+- 发布说明的草稿在 scratchpad（会话专属目录，新对话里没有），格式参考已发布的 Release 页面。
+
+**这段对话里踩过的坑（省得再踩）**
+- 用 `python - <<'EOF'` 这类 shell heredoc 改含反斜杠的代码（`\n`、`\d`、`\S`）会被吃掉转义。改这类内容用 Write 写成 .py 文件再跑，或者直接用 Edit 工具。
+- `renderer/i18n.js` 的格式表 `P('...')` 是 JS 字符串，正则里的反斜杠要写两个（`\\d`）。翻译时会先按中文分号「；」和换行硬拆句，所以要整句匹配的句子里别用「；」。宽泛的格式要放在最后那条「标题：值」之前。
+- TS 模板字符串里的 `\S` 会变成字母 S：往 PowerShell 脚本里写正则时别用反斜杠类，用字符类。
+- PowerShell 把弯引号 ‘ ’ 也当单引号，拼脚本时要一起翻倍（`quotePs`）。
+- 临时的 Electron 脚本先 `node --check` 再跑，语法错会在用户屏幕上弹阻塞对话框。
+- 界面测试里窗口可见时，悬浮提示那组断言会失败（只在截图用的副本里出现，正式测试是隐藏窗口）。
+- `npm run test:ui` 的 PASS 总数现在是 33；`test-ui.cjs` 单独跑是 20。
+- 本机联网要经 `http://127.0.0.1:7890`（环境变量 HTTPS_PROXY / HTTP_PROXY），直连官方接口会超时。
+- 本机 Codex：桌面端自带的在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe`（目录名会随更新变），`test-codex-compat.cjs` 会自动找最新的那个来真读配置。
+
 
 ## v0.3.18：添加本机 CLI 已登录的账号 + 官方登录识别为当前供应商 · 已完成，已提交、打包、发布（Claude）
+
+> 以下各节是每个版本当时的工作记录，按时间从新到旧；里面的「未提交 / 进行中」只代表当时的状态，现在以上面的「新对话先看这里」为准。
 
 - 用户要求（都算 0.3.18；**改完给测试版，不打安装包，不发布**）：
   1. 官方账号里可以选择「添加一个本机 CLI 已经登录的账号」：不把账号托管在 TokenPulse 里，也能读到使用情况。
@@ -23,7 +80,7 @@
 
 - 用户反馈：Grok 号池里的账号明明登录着，转发记录却全是 502，问是不是 BUG。
 - **结论：是 BUG**。只读查了本机 `~/.tokenpulse/agent-switch-log.json`：7 条都是 grok、502、error 为空，耗时依次相差约 21 秒；6 个 Grok 账号凭据都在、没过期。实测：本机要经 `127.0.0.1:7890` 代理才能连 `cli-chat-proxy.grok.com`（经代理不到 1 秒回 401，直连 21 秒超时）。`agent-proxy.ts` 的转发用 Node 的 `https.request`，不看 HTTPS_PROXY 也不看系统代理，一律直连，所以每个成员都连接超时；超时抛的是 AggregateError，message 是空的，所以记录里没有原因。和登录状态无关。
-- **改动（未提交）**：
+- **改动（已随 0.3.17 发布）**：
   - 新文件 `src/core/upstream-proxy.ts`：`envProxyFor`（HTTPS_PROXY / HTTP_PROXY / ALL_PROXY，大小写都认；NO_PROXY；本机地址永远直连；只支持 http:// 代理，SOCKS 按直连）、`setSystemProxyResolver` + `proxyFor`（环境变量没有时问系统代理，结果缓存 30 秒）、`upstreamRequest`（https 上游用 CONNECT 隧道的 `TunnelAgent`，明文上游把完整地址交给代理）、`describeNetError`（把超时、拒绝、DNS 失败说清楚，没走代理时提示去设代理）。没有引入新依赖。
   - `src/core/agent-proxy.ts`：`forward`、`fetchUpstreamModels`、`probeUrl` 三处都改成先 `proxyFor` 再 `upstreamRequest`；错误原因用 `describeNetError`。
   - `src/main/index.ts`：启动时 `setSystemProxyResolver(url => session.defaultSession.resolveProxy(url))`。
@@ -51,7 +108,7 @@
   2. 修：会话管理里项目文件夹带空格时，「在终端里继续」报错、打不开 CLI。
   3. 新增：出口监控的检测间隔可以自定义，5 到 60 秒，默认 10 秒。
   4. 新增：会话管理可以开启新对话、开启新项目。用户说先看做出来的效果，再提修改意见。
-- **已完成（未提交）**：
+- **已完成（已随该版本发布）**：
   - **页面往上跳**：原因是新内容比原来短，浏览器把滚动位置夹到新的底部。`renderer/app.js` 新增 `scrollGuard`：在 `.workspace` 末尾加一个 `#scroll-floor` 垫片，用 ResizeObserver 加 scroll 事件判断「位置变小而且正好贴着新底部」就是被夹了，垫高后把位置放回去；用户往上滚，垫片跟着缩；`navigate()` 里调 `reset()`。所有页面共用。当场读布局和下一帧才排版两种情况都处理了。
   - **在终端里继续**：真正的原因不是空格（带空格的路径实测正常），是用户的文件夹叫「JMY‘s Mods All in one」，里面有弯引号 U+2018。PowerShell 把 ‘ ’ ‚ ‛ 都当单引号，`quotePs` 原来只翻倍直引号，脚本在那里断开。现在这四种加直引号都翻倍，`quotePs` 也导出了。
   - **检测间隔**：`core/egress.ts` 新增 `INTERVAL_SECONDS {min 5, max 60, default 10}` 和 `EgressConfig.intervalSeconds`（旧配置没有这项时用 10；不是 5 到 60 的整数就报错）。`egress-monitor.ts` 按配置定时，间隔变了重新定时，`snapshot.intervalMs` 和 `nextCheckAt` 跟着配置走；手动检测的最小间隔仍是 `INTERVAL_MS` 5 秒。界面在出口监控页顶部加了数字输入框 `#egress-interval`，状态文字写「每 N 秒检查一次」。注意以前固定是 5 秒，升级后默认变成 10 秒。
@@ -104,7 +161,7 @@
     1. **第三方状态**：报 `failed to parse model_catalog_json … missing field support_verbosity`。逐个字段试出来，0.159 起每个模型必填 slug、display_name、priority、visibility、supported_in_api、shell_type、base_instructions、supported_reasoning_levels、**support_verbosity、truncation_policy、experimental_supported_tools**，后三项是我们的骨架缺的。另外新版 models_cache.json 里已经没有 base_instructions，`loadCodexTemplate` 找不到模板，所以一直走骨架。
     2. **切回官方或关掉路由之后**：留下空的 `[model_providers.tokenpulse_route]`，Codex 报 `provider name must not be empty`。用户真实的 config.toml 现在就是这个状态（复制一份到临时目录验证过，读取失败）。
   - 另外还有两点：每切换一次会多留几个空行（删键时只删了 key = value，没删换行）；`wire_api = "chat"` 新版 Codex 直接拒绝，不过那条路径本来就总走本地路由，实际写不出来。
-- **已完成（未提交）**：
+- **已完成（已随该版本发布）**：
   - `agent-models.ts`：新增 `CODEX_CATALOG_DEFAULTS`（骨架加必填字段的保守默认值）、`CODEX_CATALOG_REQUIRED`、`patchCodexCatalog()`（给磁盘上的旧目录补字段）；`codexCatalogEntry` 改成先铺默认值，再叠模板。
   - `agent-toml.ts`：`upsertKey` 删键时连整行一起删；新增 `dropEmptyTable()` 和 `ownTable()`；`restoreToml` 还原后，如果自有表是空的也删掉。
   - `agent-switch.ts`：`writeCodex` 和 `writeGrok` 写完后调 `dropEmptyTable`；`wire_api` 一律写 responses；新增 `repairAgentConfigs()`，在 `resumeAgentProxy` 开头调用，走 configTransaction（有备份和历史；只读保护开着时不写，只提示）。它修三样：没在使用的空 Codex 路由表、缺字段的目录、空的 Grok 路由表。
@@ -142,7 +199,7 @@
   1. 时间线放大后，曲线下的绿色面积变少；放大到最细再左右拖动会抽动，或者看不到线。
   2. 「换一种模型」只显示 Tokens 和调用次数，没有等价的钱。
   3. 悬停那一行会甩出一大段文字，要改成点击那一行，在下面展开美化过的详情。
-- **已完成（未提交）**：
+- **已完成（已随该版本发布）**：
   - `renderer/model-study.js` 的 drawLanes：
     - 面积路径改成从底边升起、沿阶梯走、再落回底边。原来的面积是连回线的起点闭合，放大后起点高了，就被斜着切掉一块。
     - 新增 `xs()`（不夹在视图边上，最多伸出一屏）和 `clipPath`（`ms-clip-<w>`）：曲线、竖条、本机以外色块、请求色块都放进 `g.ms-plot[clip-path]`，平移时不再挤在边上。
@@ -174,7 +231,7 @@
   2. 「模型与思考等级 · 时间线」每条轨道显示周期内用了多久、占周期多少。
   3. 时间线左键拖动 = 平移，按住右键拖 = 原来左键的拖选；检测到的「本机以外」由用户像剪视频一样自己切（分割 / 删除 / 标注），软件不替用户切。
   4. 「按本机区间折算…会让容量略偏小」那段说明不要常驻，改成圆圈感叹号。
-- **已完成（代码和单项测试都通过，未提交）**：
+- **已完成（已随该版本发布）**：
   - 知识库：`scripts/update-knowledge.cjs` 对不上的价格按 LiteLLM 用，并记 `dispute.openrouter`；单价变化时记 `changedAt` / `previous`（从兜底换成逐个型号价格的也补上）；`manual.labels`（promo / until / note）以及 pinned 的 until 到期后剔除。`knowledge/manual.json` 给 gpt-5.6-sol 加了优惠价标签。`knowledge/models.json` 重新生成为 2026.09.30.2（gpt-5.6-sol 是 4/20，带 dispute；opus-5-5、gpt-6-astra 带 changedAt）。
   - `src/core/knowledge.ts`：PriceRule 加了 dispute / changedAt / previous / until / promo 字段，新增 labels、`localDay`、`priceNotes()`；`priceRules()` 会跳过已到期的规则。`model-study.ts` 的容量结果带上 `priceNotes`。
   - `src/core/quota-offmachine.ts`：updateMark 新增 split / ignore / restore 三种操作；model 为空的标注表示「待标注分段」，ignored 表示「已删除」（不算本机以外，也不进折算）；`mergeOff(intervals, rows)` 会把中间没有本机请求、间隔 6 小时以内的区间合成一段。
