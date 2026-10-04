@@ -1,16 +1,72 @@
-# 当前接手入口 · 0.3.18（2026-10-04，已发布，工作区干净）
+# 当前接手入口 · 0.3.19（2026-10-04，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
-- 最新版本 **0.3.18**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.18）。`package.json` 是 0.3.18。
-- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `98d22a9 TokenPulse v0.3.18：…`（标签 `v0.3.18`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
+- 最新版本 **0.3.19**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.19）。`package.json` 是 0.3.19。
+- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `050d371 TokenPulse v0.3.19：…`（标签 `v0.3.19`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
 - 没有进行中的任务，没有等用户决定的事。下一个版本号由用户指定（见下面的约定）。
 - 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是本轮工作）。
+
+**0.3.19：Prism 桥 · 已完成，已提交、打包、发布（2026-10-04，Claude）**
+- 用户要求：把第三方开源的 Prism Bridge（`D:\CodePorject\Tools\prism-bridge-main`，作者 yyyllllming，MIT）整合进 TokenPulse，算 0.3.19；做好只编译测试版，不发布。用户的目标是让小白用户也能用，所以代码随软件打包。用户知道并接受它可能不符合 OpenAI 服务条款的风险；界面、README、更新说明里都写了这条风险。
+- 它是什么：`bridge.py`（约 3100 行，依赖 playwright）用真实 Chromium 登录用户自己的 Prism（prism.openai.com）账号，在本机开 OpenAI 兼容接口（Responses / Chat Completions）给 Codex 用。命令 `login | serve | status`。
+- **改动**：
+  - `vendor/prism-bridge/`：`bridge.py`、`LICENSE`、`NOTICE.md`。对 bridge.py 的第一处改动：新增环境变量 `PRISM_PROXY`，传给 `launch_persistent_context(proxy=…)`（登录和服务两处，搜 `PROXY_OPTION`），因为 Chromium 不读 HTTPS_PROXY。以后换新版 bridge.py 要把这处补回去。`package.json` 的 extraResources 把它打到 `resources/prism-bridge`。
+  - 新文件 `src/core/prism-bridge.ts`：数据都在 `~/.tokenpulse/prism-bridge/`（`config.json` 端口 / 随机密钥 / 是否跟着启动，`venv/`，`deps.json` 装好的标记，`profile/` 浏览器数据和 auth.json）。
+    - `installPrism()`：找 Python 3.10+（`python`、`py -3`、`%LOCALAPPDATA%\Programs\Python\Python3*`），没有就试 `winget install Python.Python.3.13`；建 venv；`pip install playwright`（失败换清华镜像）；`playwright install chromium`（失败换 npmmirror）。
+    - `loginPrism()` / `startPrism()` / `stopPrism()` / `releasePrism()` / `resumePrism()`：子进程管理。就绪判断是 stdout 里出现「服务已就绪」。停止用 `taskkill /PID <自己起的 pid> /T /F`。
+    - 子进程环境：外面的 `PRISM_*` 一律不继承；强制 `PRISM_HOST=127.0.0.1`、总带随机 `PRISM_BRIDGE_API_KEY`；代理按 `proxyFor`（环境变量优先，其次系统代理）给 pip / playwright 下载和浏览器（`PRISM_PROXY`）。
+    - 交给界面的状态只有账号 id、套餐、过期时间；cookie 和密钥不出主进程。只看状态不会写文件。
+    - 测试用的环境变量：`TOKENPULSE_PRISM_SCRIPT`（换脚本）、`TOKENPULSE_PRISM_PYTHON`（直接指定解释器，跳过 venv）。
+  - `src/main/index.ts`：IPC `prism:state / install / login / start / stop / auto-start / provider`，事件 `prism-bridge`；启动时 `resumePrism()`；`before-quit` 里 `releasePrism()`。`prism:provider` 走 `agentWrite` + `saveProvider`（Codex，openai-responses，`http://127.0.0.1:18765/v1`，四个模型，默认 gpt-6.1-sol；按地址或名字「Prism 桥」找已有的来更新）。`src/main/preload.ts` 加了对应方法。
+  - `renderer/agent-switch.js`：「本地路由」分组下新增一节 `prism`（SECTIONS、nav、sectionTitle、render 分发表）。四步卡片（`.pv-prism-step[data-step=deps|login|service|provider]`）+ 风险说明 + 日志。安装 / 登录 / 启动不走 `run()`（会锁整页），按推送的状态禁用按钮；加供应商走 `run()`。样式在 `agent-switch.css` 末尾。
+  - 版本号 0.3.19；intro NOTES 一条；i18n 已补（两条格式在 PATTERNS 开头）；README 在「供应商切换与本地路由」下加了「Prism 桥」一节（没有加版本小节）。
+- **测试**：
+  - 新增 `scripts/test-prism-bridge.cjs`（已加进 npm test，5 组）：用本机 python 跑一个假的 bridge.py，测状态、登录后不泄露 cookie / 密钥、环境变量、启动 / 停止、失败原因、跟着启动、退出时结束。本机没有 python 会 SKIP。
+  - `test-agent-switch-ui.cjs`：二级菜单数 9 → 10；加了 Prism 桥一段（四步的初始可点状态、风险文字、点「添加到 Codex 供应商」后存进去的内容、密钥不出现在页面上）。
+  - `npm test` 退出 0；`npm run test:ui` 退出 0，共 33 个 PASS。
+  - **真实跑过的**：`installPrism()` 在本机真实执行成功（装到 `~/.tokenpulse/prism-bridge`：playwright 1.63.0，Chromium 下到 `%LOCALAPPDATA%\ms-playwright` 的 1243 版）。第一次从 PyPI 下载超时失败（走 7890 代理也只有 160 kB/s），所以加了重试和镜像；第二次成功，pip 一步用了约 10 分钟。用这个 venv 跑打过补丁的 `bridge.py status` 正常。
+  - **没有验证的（都需要用户本人的账号）**：真实登录、真实启动服务、Codex 经它发请求、`PRISM_PROXY` 是否真的让浏览器走了代理、winget 装 Python 那条路（本机已有 Python）、界面的实际观感（没有截图看过）。
+- **追加（用户：登录不要单独弹一个测试版浏览器，用用户自己的浏览器）**：登录窗口改用系统里装的 Chrome / Edge。
+  - `bridge.py` 第二处改动：环境变量 `PRISM_LOGIN_CHANNEL`（`chrome` / `msedge`）传给登录那次 `launch_persistent_context(channel=…)`。
+  - `prism-bridge.ts` 的 `loginChannel()`：读注册表里 https 的默认浏览器，是 Chrome / Edge 就用它；是别的（Playwright 只能驱动这两种）就装了 Chrome 用 Chrome、否则 Edge；都没有用自带 Chromium。
+  - 登录窗口用单独的浏览器数据 `login-profile/`（系统 Chrome 和服务用的 headless Chromium 版本不同，不能共用一份）；凭据用 `PRISM_AUTH_FILE` 写到 `profile/auth.json`，服务启动时从那里注入 cookie（bridge.py 原本就支持凭据文件和浏览器数据分开）。服务仍用 Playwright 的 headless Chromium，没有窗口。
+  - **做不到的**：直接用用户平时浏览器里已登录的状态（读不到那份数据，Chrome 也不允许自动化默认用户目录）。登录窗口是 Chrome / Edge 的一个干净窗口，要在里面登录一次。已向用户说明。
+  - 实测：用 venv 的 playwright 以 `channel='chrome'`、经 `http://127.0.0.1:7890` 无头打开 prism.openai.com，返回 200（Chrome 154）。说明系统 Chrome 能被驱动、代理参数生效。有界面的登录流程本身仍没有验证。
+  - 追加后：`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS），测试版已重新编译，下面的产物核对是这次之后做的。
+- **追加（用户反馈：登录窗口一直让验证是不是真人，验证多少次都过不了）**：
+  - 原因判断：登录窗口是 Playwright 控制着打开的，登录页的真人验证认得出被自动化控制的浏览器。没有抓包确认，是按现象判断的。
+  - 改法：登录改成**用正常方式启动**系统的 Chrome / Edge（`spawn(chrome.exe, --user-data-dir=login-profile, [--proxy-server], prism 网址)`），登录过程中没有程序控制它。用户登录到看见 Prism 界面后**自己关掉窗口**；TokenPulse 等进程退出（最多 20 分钟），再跑新文件 `vendor/prism-bridge/collect_login.py`（TokenPulse 自己写的）：用同一个浏览器无头打开那份数据、不加载任何网页，读出 cookie，按 bridge.py 的格式存 auth.json。找不到 Chrome / Edge 时仍走 bridge.py 原来的 `login`。
+  - `loginChannel()` 改名 `loginBrowser()`，返回 `{ channel, exe }`；测试用的 `TOKENPULSE_PRISM_PYTHON` 设了就不用系统浏览器（走原来的 login），`TOKENPULSE_PRISM_BROWSER` 可以指定浏览器程序。
+  - **不做的事**：不给自动化浏览器加任何伪装 / 反检测参数。后台服务（无头 Chromium）如果自己也被拦，不走伪装这条路，先让用户换代理节点。
+  - 实测：正常启动的 Chrome（临时目录，无头）存下的 cookie，事后用 Playwright `channel='chrome'` 打开同一目录能读出来（6 个，值都非空）。`collect_login.py` 对着还没登录的 `login-profile` 运行，输出「没有有效会话」、退出码 2、没有写 auth.json。**真实登录后能不能读到 Prism 的会话、会话 cookie 关窗口后还在不在，没有验证**（需要用户登录）。
+  - 追加后：`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS），测试版已重新编译；`resources/prism-bridge` 现在是 4 个文件，和源码一致；没有遗留进程，产物没被占用。
+- **测试版**：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，产物 `dist/win-unpacked/TokenPulse.exe`（0.3.19）。`resources/prism-bridge` 的 3 个文件和 asar 里 7 个相关文件与源码一致。没有打 Setup 和 Portable（dist 里的安装包还是 0.3.18 的）。
+- 收尾检查：没有留下本轮起的 electron / python 进程；win-unpacked 的 exe、app.asar、bridge.py 能独占打开。当时在跑的 TokenPulse.exe 是用户自己装的正式版（`AppData\Local\Programs\TokenPulse`，14:53 启动），没有动。
+- **Git**：都没有提交。新增未跟踪：`vendor/`、`src/core/prism-bridge.ts`、`scripts/test-prism-bridge.cjs`。发布前要想清楚：发布等于把 Prism Bridge 的代码随安装包公开分发。
+- 已知限制：端口固定 18765（只能手改 config.json）；只支持 HTTP 代理；安装版每次装环境要联网下载约 200 MB；退出时是强制结束进程树；Codex 切到这家后，TokenPulse 没开或服务没启动时 Codex 会连不上（可以打开「跟着 TokenPulse 启动」）。
+- **用户反馈（2026-10-04，改成正常启动 Chrome 登录之后）**：整条链路都成功了（登录、启动服务、Codex 经它发请求），拿到的模型是没有被降智的版本。这是用户本人用真实账号验证的，不是我验证的。
+- **追加（用户：优化 Prism 桥的界面，写明适合「降智」账号、正常账号没必要用）**：`renderer/agent-switch.js` 的 `prismSection()` 重写，样式在 `agent-switch.css` 末尾（`.pv-prism-*`）。
+  - 顶部总状态 `.pv-prism-hero`：一句话写现在到哪一步，进度 n/4、登录还剩几天、端口，加**唯一的主按钮**（下一步该点的那个）。安装 / 登录 / 启动中是黄色脉冲（`.busy`），启动失败是红色并直接写原因（`.failed`）。
+  - `.pv-prism-fit`：「适合：账号被降智了」「没必要：账号是正常的」并排，下面是风险说明（原来单独的风险卡片并进来了）。
+  - 四步 `.pv-prism-step`：当前步骤 `.current` 高亮，后面的 `.later` 变淡，做完的 `.done` 打勾。第 4 步改成「接到 Codex」：没加 → 添加；加了没启用 → 「在 Codex 里启用」（直接 `agentActivate`，走确认流程）；启用了才算完成。下面列出四个模型。
+  - Codex 选着 Prism 桥、服务却没启动时，顶部多一条红色提醒 `.pv-prism-warn`。
+  - 日志改成可折叠 `.pv-prism-logbox`：平时收着，安装 / 登录 / 启动中或出错时自己展开，用户点过就听用户的。
+  - 「跟着 TokenPulse 启动」开关挪到第 3 步的说明下面。主进程的 `prismView` 多返回 `models`。
+  - 更新说明、README 这一节的标题和开头都改成先说适合谁用；README 的登录步骤改成现在的做法。i18n 已补。
+  - 用临时数据目录 + 假状态截图看过四种状态（全新、安装中、运行中未接 Codex、启动失败）的浅色和深色（截图脚本在 scratchpad，没有进仓库）。「Codex 正在用」和红色提醒这两种状态没有截图看，只有代码。
+  - `test-agent-switch-ui.cjs` 的 Prism 桥一段改成断言新结构。`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS），测试版已重新编译并核对。
+- **发布**：用户试用通过后说「直接编译并发布」。`npm run dist` 退出 0，产物 `dist/TokenPulse-0.3.19-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`（0.3.19）；`resources/prism-bridge` 4 个文件和 asar 里 7 个相关文件与源码一致。推送前 fetch 过，远端没有新提交。提交 `050d371 TokenPulse v0.3.19：Prism 桥，账号被降智时经自己的 Prism 账号给 Codex 开本机接口`，标签 `v0.3.19`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.19 已发布，不是草稿，4 个附件的大小和本地一致，releases/latest 是 v0.3.19。没有会话链接。发布说明按前几版的格式写（用户要求模仿之前的风格），草稿留在 `dist/release-0.3.19.md`。
+  - 第一次把「提交 + 打标签 + 推送 + 建 Release」写成一条命令时，被 Claude Code 自动模式的权限规则拒绝；用户明确说「直接帮我提交创建 release」之后，分成提交、打标签并推送、建 Release 三步执行，都通过了。
+  - 没有在本机实际安装 0.3.19 的安装包（用户试用通过的是免安装测试版，代码相同）；自动更新到 0.3.19 也没有人确认过。
+  - 收尾检查：没有留下本轮起的进程；dist 里的安装包和 app.asar 能独占打开。
+- 以后要注意：`vendor/prism-bridge/bridge.py` 是随安装包公开分发的第三方代码；Prism 网页改版后桥可能失效，届时要拿原项目的新版覆盖，并把 NOTICE.md 里写的两处改动补回去。
 
 **这段长对话里发布过的版本**（细节在下面各节，从新到旧）
 | 版本 | 内容 |
 |---|---|
+| 0.3.19 | Prism 桥：随软件带 Prism Bridge，账号被降智时经自己的 Prism 账号给 Codex 开本机接口 |
 | 0.3.18 | 添加账号可以只用本机 CLI 已登录的那个（不存凭据）；修「官方登录时显示没有识别到当前供应商」 |
 | 0.3.17 | 号池 / 本地路由转发走代理；所有联网请求统一代理规则（环境变量优先，其次系统代理） |
 | 0.3.16 | 会话管理的新对话 / 新项目；启动 CLI 前核对出口（监控开着才核对；IP 白名单优先，其次地区）；出口检测间隔可调；单价变化的标法；修页面往上跳、修弯引号路径打不开终端。**重新发布过一次，版本号没变** |
@@ -50,7 +106,7 @@
 - PowerShell 把弯引号 ‘ ’ 也当单引号，拼脚本时要一起翻倍（`quotePs`）。
 - 临时的 Electron 脚本先 `node --check` 再跑，语法错会在用户屏幕上弹阻塞对话框。
 - 界面测试里窗口可见时，悬浮提示那组断言会失败（只在截图用的副本里出现，正式测试是隐藏窗口）。
-- `npm run test:ui` 的 PASS 总数现在是 33；`test-ui.cjs` 单独跑是 20。
+- `npm run test:ui` 的 PASS 总数现在是 33（0.3.19 没有变）；`test-ui.cjs` 单独跑是 20。
 - 本机联网要经 `http://127.0.0.1:7890`（环境变量 HTTPS_PROXY / HTTP_PROXY），直连官方接口会超时。
 - 本机 Codex：桌面端自带的在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe`（目录名会随更新变），`test-codex-compat.cjs` 会自动找最新的那个来真读配置。
 
