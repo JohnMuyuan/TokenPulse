@@ -623,6 +623,13 @@ export function repairAgentConfigs(): string[] {
       return true;
     };
     if (dropLeftover(codexFile(), 'model_providers.tokenpulse_route', (blocks) => readKey(blocks[0].lines, 'model_provider') === 'tokenpulse_route')) fixed.push('Codex 配置里留下的空路由表');
+    // 0.3.26：TokenPulse 在管 Codex 的配置时，把旧对话用到、配置里又没有的供应商表补上（见 syncCodexLegacyProviders）
+    if (load().owned.codex) {
+      const text = configRead(codexFile());
+      let blocks: Block[] | null = null;
+      try { blocks = text ? parseToml(text) : null; } catch { blocks = null; }
+      if (blocks && syncCodexLegacyProviders(blocks)) { writeText(codexFile(), stringifyToml(blocks)); fixed.push(CODEX_LEGACY_FIX); }
+    }
     const catalogFile = path.join(path.dirname(codexFile()), 'tokenpulse-model-catalog.json');
     const catalogText = configRead(catalogFile);
     if (catalogText) {
@@ -649,7 +656,8 @@ export function repairAgentConfigs(): string[] {
     configNotice = '发现需要修复的工具配置（' + fixed.join('、') + '），但没有写入：' + (error instanceof Error ? error.message : String(error));
     return [];
   }
-  if (fixed.length) configNotice = '已自动修复：' + fixed.join('、') + '（旧版本留下的，会让 Codex 显示「无法加载登录要求」）。改动前的内容在「配置保护」的备份里。';
+  if (fixed.length === 1 && fixed[0] === CODEX_LEGACY_FIX) configNotice = '已自动补上 Codex 旧对话用到的供应商配置：缺了它，打开旧对话会报「Model provider not found」。改动前的内容在「配置保护」的备份里。';
+  else if (fixed.length) configNotice = '已自动修复：' + fixed.join('、') + '（旧版本留下的，会让 Codex 显示「无法加载登录要求」）。改动前的内容在「配置保护」的备份里。';
   return fixed;
 }
 export async function resumeAgentProxy() {
@@ -1027,6 +1035,64 @@ function writeClaude(store: Store, provider: Provider, baseUrl: string, apiKey: 
   store.exclusive.claude = exclusive;
 }
 
+/*
+ * 0.3.26：Codex 的每个对话都记着创建时的 model_provider（config.toml 里那张表的名字）。打开旧对话时这张表
+ * 不在了，Codex 就报「Model provider 'custom' not found」，对话看不了也接不下去。常见的两种：
+ * - 以前用别的工具配的中转站（表名多半是 custom），后来那张表被删了；
+ * - 用 TokenPulse 的供应商（表名 tokenpulse_route）聊过，之后切回了官方登录，这张表被清掉了。
+ * 这里把本机对话里出现过、配置里又没有的名字补成一张表：正在用 TokenPulse 的供应商时指向同一个地址
+ * （旧对话可以接着聊，走的是现在这家）；用官方登录时是一张走官方登录的表。
+ * 只管自己补的表（name 是 CODEX_LEGACY_NAME）：每次重写，用不着了就删；别人写的同名表不动。
+ */
+const CODEX_LEGACY_NAME = "TokenPulse (earlier chats)";
+const CODEX_LEGACY_FIX = "Codex 旧对话用到的供应商配置（缺了会打不开旧对话）";
+const CODEX_PROVIDER_KEYS = ["name", "base_url", "wire_api", "experimental_bearer_token", "requires_openai_auth"];
+const CODEX_BUILTIN_PROVIDERS = new Set(["openai", "ollama", "lmstudio", "oss"]);
+/** 本机 Codex 对话里出现过的 model_provider。只读每个文件开头（session_meta 在第一行，这个字段在前 1 KB 左右）。 */
+function codexSessionProviders(): string[] {
+  const names = new Set<string>(), buffer = Buffer.allocUnsafe(16 * 1024);
+  const walk = (dir: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) { if (depth < 6) walk(file, depth + 1); continue; }
+      if (!entry.name.endsWith(".jsonl")) continue;
+      let fd: number | null = null;
+      try {
+        fd = fs.openSync(file, "r");
+        const found = buffer.subarray(0, fs.readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8").match(/"model_provider"\s*:\s*"([^"\\]{1,64})"/);
+        if (found) names.add(found[1]);
+      } catch { /* 读不了的文件跳过 */ }
+      finally { if (fd != null) try { fs.closeSync(fd); } catch { /* 忽略 */ } }
+    }
+  };
+  const home = path.dirname(codexFile());
+  walk(path.join(home, "sessions"), 0); walk(path.join(home, "archived_sessions"), 0);
+  return [...names].sort();
+}
+/** 返回有没有改动。 */
+function syncCodexLegacyProviders(blocks: Block[]) {
+  const before = stringifyToml(blocks);
+  const header = (name: string) => tableName("model_providers", name);
+  for (const block of [...blocks]) {
+    if (!block.header || !/^model_providers\./.test(headerName(block.header)) || readKey(block.lines, "name") !== CODEX_LEGACY_NAME) continue;
+    const name = headerName(block.header);
+    for (const key of CODEX_PROVIDER_KEYS) upsertKey(block.lines, key, null);
+    dropEmptyTable(blocks, name);
+  }
+  const route = readKey(blocks[0].lines, "model_provider") === "tokenpulse_route" ? blocks.find((block) => block.header && headerName(block.header) === header("tokenpulse_route")) : undefined;
+  const baseUrl = route ? readKey(route.lines, "base_url") : "", token = route ? readKey(route.lines, "experimental_bearer_token") : "";
+  for (const name of codexSessionProviders()) {
+    if (CODEX_BUILTIN_PROVIDERS.has(name) || blocks.some((block) => block.header && headerName(block.header) === header(name))) continue;
+    const keys: Record<string, string | boolean> = baseUrl
+      ? { name: CODEX_LEGACY_NAME, base_url: baseUrl, wire_api: "responses", experimental_bearer_token: token || "", requires_openai_auth: false }
+      : { name: CODEX_LEGACY_NAME, wire_api: "responses", requires_openai_auth: true };
+    for (const [key, value] of Object.entries(keys)) setTableKey(blocks, header(name), key, quote(value));
+  }
+  return stringifyToml(blocks) !== before;
+}
+
 function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: string, proxy: boolean) {
   const file = codexFile();
   const blocks = parseToml(readText(file));
@@ -1063,6 +1129,7 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
   }
   // 切回官方 / 关掉路由后表里一个键都不剩：整张表删掉。空表会让 Codex 报「provider name must not be empty」，进不了界面
   dropEmptyTable(blocks, 'model_providers.tokenpulse_route');
+  syncCodexLegacyProviders(blocks);
   writeText(file, stringifyToml(blocks));
   store.exclusive.codex = exclusive;
 }

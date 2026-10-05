@@ -108,6 +108,48 @@ const grokFile = path.join(home, '.grok', 'config.toml');
   assert.match(toml, /requires_openai_auth = false/);
   assert.doesNotMatch(toml, /auth\.json/);
 
+  // 0.3.26：旧对话记着创建时的 model_provider；配置里没有那张表，Codex 就打不开旧对话（Model provider 'custom' not found）
+  {
+    const sessions = path.join(path.dirname(codexFile), 'sessions', '2026', '10', '01');
+    fs.mkdirSync(sessions, { recursive: true }); fs.mkdirSync(path.join(path.dirname(codexFile), 'archived_sessions'), { recursive: true });
+    const meta = name => JSON.stringify({ timestamp: '2026-10-01T00:00:00Z', type: 'session_meta', payload: { id: name, cwd: 'D:/x', model_provider: name } }) + '\n';
+    for (const name of ['custom', 'openai', 'tokenpulse_route', 'mine']) fs.writeFileSync(path.join(sessions, `rollout-${name}.jsonl`), meta(name));
+    fs.writeFileSync(path.join(path.dirname(codexFile), 'archived_sessions', 'rollout-old.jsonl'), meta('old relay'));
+    fs.writeFileSync(codexFile, read(codexFile) + '\n[model_providers.mine]\nname = "Mine"\nbase_url = "https://mine.example/v1"\n');
+    const table = (text, name) => (text.split(/\n(?=\[)/).find(part => part.startsWith(`[model_providers.${name}]`)) || '');
+    await sw.activateProvider(codex);
+    let now = read(codexFile);
+    // 正在用 TokenPulse 的供应商：补的表指向同一个地址，旧对话能接着聊
+    for (const name of ['custom', '"old relay"']) {
+      assert.match(table(now, name), /name = "TokenPulse \(earlier chats\)"/, name);
+      assert.match(table(now, name), /base_url = "https:\/\/codex\.example\/v1"/); assert.match(table(now, name), /experimental_bearer_token = "sk-codex"/); assert.match(table(now, name), /requires_openai_auth = false/);
+    }
+    assert.equal(table(now, 'openai'), '', '内置的不补');
+    assert.match(table(now, 'mine'), /name = "Mine"\nbase_url = "https:\/\/mine\.example\/v1"/, '用户自己的表不动');
+    assert.match(table(now, 'tokenpulse_route'), /name = "TokenPulse"\n/);
+    await sw.activateProvider(codex);
+    assert.equal(read(codexFile), now, '再切一次不会越补越多');
+    // 切回官方登录：补的表改成走官方登录；tokenpulse_route 自己也有旧对话，同样补上
+    await sw.activateProvider(sw.agentView().providers.find(item => item.app === 'codex' && item.official).id);
+    now = read(codexFile);
+    assert.doesNotMatch(now, /^model_provider\s*=/m); assert.doesNotMatch(now, /sk-codex|codex\.example/);
+    for (const name of ['custom', '"old relay"', 'tokenpulse_route']) assert.match(table(now, name), /name = "TokenPulse \(earlier chats\)"\nwire_api = "responses"\nrequires_openai_auth = true/, name);
+    assert.match(table(now, 'mine'), /name = "Mine"/);
+    // 启动修复：表被别的工具删了会补回来；那个名字的对话都删了之后，补的表也跟着删
+    fs.writeFileSync(codexFile, now.replace(table(now, 'custom'), ''));
+    assert.equal(table(read(codexFile), 'custom'), '');
+    assert.equal(sw.repairAgentConfigs().length, 1);
+    assert.match(table(read(codexFile), 'custom'), /TokenPulse \(earlier chats\)/);
+    assert.deepEqual(sw.repairAgentConfigs(), []);
+    fs.rmSync(path.join(sessions, 'rollout-custom.jsonl'));
+    assert.equal(sw.repairAgentConfigs().length, 1);
+    assert.equal(table(read(codexFile), 'custom'), ''); assert.match(table(read(codexFile), '"old relay"'), /earlier chats/);
+    fs.rmSync(path.join(path.dirname(codexFile), 'sessions'), { recursive: true }); fs.rmSync(path.join(path.dirname(codexFile), 'archived_sessions'), { recursive: true });
+    await sw.activateProvider(codex);
+    assert.doesNotMatch(read(codexFile), /earlier chats/, '没有旧对话就一张都不留');
+    console.log('PASS agent switch: earlier Codex chats keep a provider table (mirrors the active route, official stub, own tables untouched, repair, cleanup)');
+  }
+
   // 用户不用 Gemini：不能再加 Gemini CLI / Gemini 上游的供应商；旧数据里的 Gemini 条目读入时丢掉，也不碰 ~/.gemini
   assert.throws(() => sw.saveProvider({ app: 'gemini', name: 'Gem', baseUrl: 'https://gem.example', apiKey: 'gk', model: 'gemini-test', upstream: 'gemini' }));
   assert.throws(() => sw.saveProvider({ app: 'claude', name: 'Gem', baseUrl: 'https://gem.example', apiKey: 'gk', model: 'gemini-test', upstream: 'gemini' }));

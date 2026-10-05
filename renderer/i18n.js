@@ -100,6 +100,10 @@
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
     "占用的内存少了约两成": "About a fifth less memory",
+    "修复：用了 TokenPulse 的供应商后，Codex 打不开以前的对话": "Fix: Codex could not open earlier chats after switching to a TokenPulse provider",
+    "用 Prism 桥或别的供应商时，打开以前用中转站、官方登录时的 Codex 对话，会报「Model provider 'custom' not found」，看不了也接不下去。原因是 Codex 的每个对话都记着当时那家供应商的名字，而配置里已经没有这个名字了。现在 TokenPulse 会自动把缺的名字补上（启动时和切换供应商时），旧对话可以正常打开；接着聊会走你现在选的这家。切回官方登录后，用 TokenPulse 的供应商聊过的对话也一样能打开。": "While using the Prism bridge or another provider, opening Codex chats from the time you used a relay or the official sign-in failed with \"Model provider 'custom' not found\", so they could be neither read nor continued. Every Codex chat remembers the name of the provider it was created with, and that name was no longer in the config. TokenPulse now adds the missing names automatically (at startup and when you switch providers), so earlier chats open normally; continuing one uses the provider you have selected now. After switching back to the official sign-in, chats made with a TokenPulse provider open as well.",
+    "Codex 旧对话用到的供应商配置（缺了会打不开旧对话）": "the provider tables earlier Codex chats rely on (without them those chats cannot be opened)",
+    "已自动补上 Codex 旧对话用到的供应商配置：缺了它，打开旧对话会报「Model provider not found」。改动前的内容在「配置保护」的备份里。": "Added the provider tables earlier Codex chats rely on: without them, opening an earlier chat fails with “Model provider not found”. The previous content is in the Config protection backups.",
     "Prism 桥：很长的对话不再发不出去": "Prism bridge: very long conversations can be sent again",
     "跟进了上游 Prism Bridge 的更新。对话历史太长、拆成 8 轮也装不下时，桥会自动摘掉一部分较早的历史再发，不再直接报错。这是直接删减，不是让模型总结，较早的细节可能丢失；当前的提问、工具调用和结果、图片不会被删。": "Follows the upstream Prism Bridge update. When the history is too long to fit even split into 8 turns, the bridge now drops part of the earlier history before sending instead of failing. This is plain trimming, not a model summary, so earlier details can be lost; the current question, tool calls and results, and images are never trimmed.",
     "Prism 桥：每一轮等得更短": "Prism bridge: shorter waits on every turn",
