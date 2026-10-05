@@ -1,11 +1,18 @@
-# 当前接手入口 · 0.3.24（2026-10-05，已发布，工作区干净）
+# 当前接手入口 · 0.3.25（2026-10-06，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
 - 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
 - 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
-- 最新版本 **0.3.24**，用户看过三轮测试版后同意发布；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.24-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；asar 里的 `renderer/model-study.js` 与源码一致；发布说明草稿 `dist/release-0.3.24.md`。提交、标签 `v0.3.24`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.24 。没有会话链接。没有在本机安装。发布后用户反馈「测试没问题」（2026-10-05）。
+- 最新版本 **0.3.25**，用户试用测试版后说「没啥问题」，同意发布；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。发布记录：推送前 fetch 并快进合入远端的新提交（如有，是知识库机器人的）；`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.25-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；包里的 `bridge.py` 与源码一致；发布说明草稿 `dist/release-0.3.25.md`。提交、标签 `v0.3.25`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.25 。没有会话链接。没有在本机安装。
+- **0.3.25 的改动（2026-10-06，Claude）：`vendor/prism-bridge/bridge.py` 从上游 `8ae73c0` 更新到 `1bd4b79`（https://github.com/yyyllllming/prism-bridge ，3143 行 → 3922 行）。**
+  - 上游这四个提交带来的：① 自动历史压缩（`PRISM_COMPACT_MAX_PARTS`，默认 2）：历史拆成 8 段也装不下时摘掉较早的部分再发，是有损删减不是模型摘要，当前提问 / 工具调用和结果 / 图片不裁。② 401 / 403、超时、断流、执行状态未知时不再自动重发最终作答。③ 轮询提速：第一次立即查，之后每 0.4 秒（`PRISM_STATUS_POLL`）；多段之间的 8 秒间隔扣掉上一轮已花的时间；启动时页面等待 1 秒。④ Windows 登录改成拉起不被 Playwright 接管的系统 Chrome / Edge，关窗后读会话（和 TokenPulse 0.3.19 自己做的 `collect_login.py` 思路一样）。
+  - 上游**没有**修的：12 小时会话令牌过期后重新注入导致 401（0.3.22 的修复）；没有代理支持。所以三处 `TokenPulse` 改动照旧补回，`NOTICE.md` 已更新并写明对应的上游提交。`PROXY_OPTION` 现在加在三个地方：服务的浏览器、`_launch_login_context`、`_launch_unmanaged_login_browser`（`--proxy-server`）。`LOGIN_CHANNEL` 常量只给 `collect_login.py` 用。
+  - TokenPulse 这边的登录流程**没有换成上游的**：仍然是 `src/core/prism-bridge.ts` 自己拉起浏览器 + `collect_login.py`（用户实测过）；找不到 Chrome / Edge 时才调 `bridge.py login`，上游那边同样会退回 Playwright 窗口。`collect_login.py` 用到的 `PROFILE_DIR`、`LOGIN_CHANNEL`、`context_cookie_header`、`get_token_claims`、`token_expiry`、`save_auth_cookie` 新版里都在。模型清单没有变。
+  - 界面 / 文档：Prism 桥页「最大上下文是多少？」和 README 同一段改写了「再超出时」那半句（现在是桥自动摘掉较早的历史）。
+  - 验证：上游自带的三个测试文件（`test_bridge_compaction` / `independent` / `login`，没有放进仓库）对着补完改动的 `bridge.py` 跑：72 个全过。**真实启动过一次**：用户的服务正在运行占着浏览器目录，所以把 `auth.json` 拷到临时目录、另开端口 18799 启动新版桥：23 秒就绪，`/health` 200，`/v1/models` 返回 7 个型号，`gpt-5.6-terra` 问一句 12 秒返回正确答案；跑完进程已结束、临时目录（含那份 `auth.json`）已删除。没有验证：真的超长对话触发自动压缩；通过 TokenPulse 界面启动。
+- 上一版 **0.3.24**，用户看过三轮测试版后同意发布；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.24-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；asar 里的 `renderer/model-study.js` 与源码一致；发布说明草稿 `dist/release-0.3.24.md`。提交、标签 `v0.3.24`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.24 。没有会话链接。没有在本机安装。发布后用户反馈「测试没问题」（2026-10-05）。
 - **0.3.24 的改动（2026-10-05，Claude）：「换一种模型，整窗能用多少」改成「所有行都显示估计值，有实测的另外并排显示实测值」。**
   - 起因：用户发现 Opus 5.5 的 low 比 high 能用的还少。不是算错：low 那行是实测（用户用 low 的会话里缓存写入占 2.0%，medium 是 1.2%，每 Token 贵约一成），high 那行是从 medium 推算的，两种来源混在一列里比。用户要求：全部先按估计值展示，实测值插进去并存、标出来、带圆圈问号解释两者的差别；原来的「样本外推」标签看不懂也不显眼。
   - `src/core/model-study.ts`：① `unitCost` 不再用「这个组合自己的实际费用」定价（`priceBasis` 不会再是 `combo`，类型里还留着）。同一型号的所有等级用同一个起点（`baseFor`：用得最多那一档的用量结构），只把输出按等级倍数换算；倍数为 1 时用 价格表 × 起点结构（`priceBasis = price`，`priceMix.basis` 为 `model` / `account` / `default`）。价格表里没有的型号仍用同模型实际费用。② `capacityTokens = derivedTokens ?? estimatedTokens`：排行、还剩多少、调用次数、本机以外标注的折算都统一用估计值；实测值仍在 `estimatedTokens`（字段名是历史遗留，它是实测）。`capacityBasis` 只有估计不出来时才是 `measured`。
