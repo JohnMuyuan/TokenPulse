@@ -1,12 +1,13 @@
-# 当前接手入口 · 0.3.21 已发布；之后有一处修复未提交、未发布（2026-10-05）
+# 当前接手入口 · 0.3.22（2026-10-05，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
 - 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
 - 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
-- **进行中：0.3.22（用户 2026-10-05 指定，「先不急」，还要继续优化别的，没说发布）。** `package.json` / `package-lock.json` 已改成 0.3.22；没有提交、没有打包。`renderer/intro.js` 已有 0.3.22 的 NOTES（两条，i18n 已补；版本号升了而 NOTES 没有这一版时 `test:ui` 会失败）。发布前还要写发布说明；之后再加功能要同步加 NOTES。最近一次验证（2026-10-05）：`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS），没有留下进程。
-- **未提交的修复（2026-10-05，Claude）：Prism 桥登录约 12 小时后再启动服务就报 `[fatal] RuntimeError: list Prism projects HTTP 401 {"error":"Request verification failed"}`，重新登录才好。**
+- 最新版本 **0.3.22**，已提交、打标签、发布（下面两条是它的内容）。没有进行中的任务。本入口里更早写的「最新版本 0.3.21」「最后一个代码提交 bd6b6ef」是 0.3.21 当时的状态。
+- **0.3.22 发布记录（2026-10-05）**：推送前 fetch，远端多一个机器人提交 `d78e011 知识库：自动更新到 2026.10.05`，已快进合入后再打包。`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0。产物 `dist/TokenPulse-0.3.22-Setup.exe`（112,420,949）、`.blockmap`（119,537）、`Portable.exe`（112,163,808）、`latest.yml`（352，0.3.22）；包里的 `bridge.py` 和 asar 里的 `intro.js` 与源码一致。提交 `446e879 TokenPulse v0.3.22：修复 Prism 桥隔半天再启动报 401，标出预览版`，标签 `v0.3.22`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.22 不是草稿、不是 prerelease，4 个附件大小和本地一致，releases/latest 是 v0.3.22。发布说明草稿 `dist/release-0.3.22.md`，开头有一句「目前是预览版」；README 简介下面也加了同一句。没有会话链接。没有在本机安装 0.3.22；「预览版」标签的样子和 Prism 桥修复在安装版里的效果等用户确认。
+- **0.3.22 的修复（2026-10-05，Claude）：Prism 桥登录约 12 小时后再启动服务就报 `[fatal] RuntimeError: list Prism projects HTTP 401 {"error":"Request verification failed"}`，重新登录才好。**
   - 用户的说法是「关机再开机后就用不了」。实际和关机无关，和时间有关：服务一直开着不受影响，停掉后隔了 12 小时再启动就会中。
   - 原因：Prism 的 Cookie 里 `prism_oai_access_token` 有效 10 天，`prism_session_token` 只有 12 小时。`auth.json` 只在登录时写一次；`bridge.py` 每次启动都用 `cookie_header_to_playwright` 把里面的 Cookie 注入浏览器（域 `.openai.com`）。过期的会话令牌盖住了 Prism 打开页面时新发的那份（域 `prism.openai.com`），所有请求 401。界面上「登录还剩」看的是访问令牌，所以显示还有 200 多小时。原项目 README 把这个报错解释成连不上 `sentinel.openai.com`，这里不是这个原因（sentinel 的请求都是 200）。
   - 确认过程：用户机器上用 scratchpad 的临时脚本照 `bridge.py` 的启动方式打开 Prism（只输出状态码和 Cookie 名字）。照原样注入：45 秒内 4 次都是 401。不注入会话令牌：第一次就是 200。改完后照原样再跑：200。
