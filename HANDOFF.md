@@ -1,58 +1,206 @@
-# 当前接手入口 · 0.3.27（2026-10-06，已发布，工作区干净）
+# 当前接手入口 · 0.3.27（2026-10-06 全面整理，已发布，工作区干净）
 
-## 新对话先看这里（2026-10-04 整理）
+## 新对话先看这里
 
-**现在的状态**
-- 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
-- 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
-- 最新版本 **0.3.27**（用户指定），已提交、打标签、发布，内容是下面这一条。没有进行中的任务。用户的朋友按临时办法（停止再启动服务）确实恢复了，印证了「重建会话能解决」。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.27-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；包里的 `bridge.py` 与源码一致；`renderer/intro.js` 有 0.3.27 的 NOTES（i18n 已补）；发布说明草稿 `dist/release-0.3.27.md`。提交、标签 `v0.3.27`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.27 。没有会话链接。没有在本机安装。0.3.26 的「朋友确认桌面端能打开旧对话」仍然没有回音。
-- **0.3.27 的修复（2026-10-06，Claude）：Prism 桥报 `stream disconnected before completion: Project file synchronization timed out while starting the response.` 后一直失败。**（用户朋友的日志 `Downloadsridge.log`，只读看过）
-  - 这句话是 Prism 服务器返回的（每轮开始前把项目文件同步进沙箱，这一步超时），桥里没有这段文字。
-  - 日志里的事实：旧版桥（0.3.24 及以前）遇到它会打印 `start failed, re-boot and retry` 并 `boot()` 重建会话，10-05 01:14 和 02:16 两次都是重建后立刻成功。朋友 08:17 更新到 0.3.25（上游 `1bd4b79`）后，09:18 起同一个错误连续 16 次，每次约 62 秒超时，没有一次重建。原因：上游这次把 `chat()` 里的重试循环整个去掉了（「不盲目重发」），连这种「明确没开始执行」的情况也不再重建会话。这是 0.3.25 跟进上游带来的退步。
-  - 改动：`vendor/prism-bridge/bridge.py` 的 `PrismPage.chat` 包一层：错误信息含 `REBOOT_AND_RETRY_MARKS`（目前只有这一句）时 `boot()` 后再发一次，第二次还失败就照常报错；别的错误不变。`Reconnecting to sandbox…will resume automatically` 和 `Unable to confirm the response started` 没有加进去（前者 Prism 说会自己恢复，后者不确定有没有执行）。第四处 `TokenPulse` 改动，`NOTICE.md` 已同步。`scripts/test-prism-bridge.cjs` 加了一组。
-  - 验证：`npm test` 退出 0；上游自带的 72 个测试对着改后的文件全过。**没有在真实环境复现这个错误**（它是 Prism 服务端的状态，本机造不出来），「重建后能恢复」的依据是朋友日志里旧版的两次成功。没有跑 `test:ui`（没有改界面）。
-  - 在修复发布前的临时办法：在 Prism 桥页面停止服务再启动（效果等于重建会话）。
-- 上一版 **0.3.26**，用户同意直接发布（「没事的」）；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。**待确认：用户的朋友装上后，桌面端能不能打开旧对话**（见下面「没能复现」那句）。发布记录：推送前 fetch 并快进合入远端新提交（如有，是知识库机器人的）；`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.26-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；asar 里的 `build/core/agent-switch.js` 与编译结果一致；发布说明草稿 `dist/release-0.3.26.md`。提交、标签 `v0.3.26`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.26 。没有会话链接。没有在本机安装。
-- **0.3.26 的改动（2026-10-06，Claude）：用 Prism 桥（或任何 TokenPulse 供应商）时，Codex 桌面端打不开以前的对话，报「ChatGPT 无法加载 config.toml…Model provider 'custom' not found」。**（用户朋友反馈）
-  - 原因：Codex 每个对话的 `session_meta` 里记着创建时的 `model_provider`（config.toml 里那张表的名字）。桌面端打开旧对话时按这个名字找表，找不到就拒绝加载。`custom` 是别的工具（如 CC Switch）以前写的表名，朋友机器上这张表已经不在了。同类问题 TokenPulse 自己也会造成：用 `tokenpulse_route` 聊过之后切回官方，`writeCodex` 会把这张表删掉。用户自己的机器没中，是因为 config.toml 里还留着 CC Switch 写的 `[model_providers.custom]`（name = "OpenAI"、requires_openai_auth = true、wire_api = "responses"，没有 base_url）。
-  - 改动（`src/core/agent-switch.ts`）：`codexSessionProviders()` 读 `sessions/`、`archived_sessions/` 下每个 `.jsonl` 的前 16 KB，取出现过的 `model_provider`（实测这个字段在前 1.1 KB 以内）；`syncCodexLegacyProviders(blocks)` 把「对话里出现过、不是内置（openai / ollama / lmstudio / oss）、配置里又没有」的名字补成一张表，`name = "TokenPulse (earlier chats)"`。正在用 `tokenpulse_route` 时照抄它的 base_url 和令牌（旧对话接着聊会走现在这家）；官方登录时写成和 CC Switch 那张一样的官方登录表。只认 name 是这个值的表为自己的：每次先清掉再按需要重补，别人写的同名表不动，对话都删了表也跟着删。调用点：`writeCodex` 末尾（每次切换）和 `repairAgentConfigs`（启动时，只在 `store.owned.codex` 有值即 TokenPulse 管过 Codex 时）。启动时补了会出一条提示（`CODEX_LEGACY_FIX`，单独的文案）。
-  - 测试：`scripts/test-agent-switch.cjs` 加了一组（照抄当前路由、官方登录表、内置名不补、用户自己的表不动、重复切换不变、启动修复补回 / 清理、没有旧对话时一张不留）。`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS）。
-  - 用真实 Codex（桌面端自带的 codex-cli 0.160.0，临时 CODEX_HOME）验证过：带这两种补表的 config.toml 能正常加载（`codex features list` 退出 0）。**没能复现和验证桌面端的报错本身**：命令行的 `codex exec resume` 用的是当前配置的供应商，不按对话里记的名字找表，没有这张表也不报错；这个报错只出现在桌面端。所以「补表后桌面端能打开旧对话」的依据是用户机器上那张 CC Switch 的同名表（89 个 `custom` 对话），需要用户的朋友实际确认。
-- 上一版 **0.3.25**，用户试用测试版后说「没啥问题」，同意发布；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。发布记录：推送前 fetch 并快进合入远端的新提交（如有，是知识库机器人的）；`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.25-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；包里的 `bridge.py` 与源码一致；发布说明草稿 `dist/release-0.3.25.md`。提交、标签 `v0.3.25`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.25 。没有会话链接。没有在本机安装。
-- **0.3.25 的改动（2026-10-06，Claude）：`vendor/prism-bridge/bridge.py` 从上游 `8ae73c0` 更新到 `1bd4b79`（https://github.com/yyyllllming/prism-bridge ，3143 行 → 3922 行）。**
-  - 上游这四个提交带来的：① 自动历史压缩（`PRISM_COMPACT_MAX_PARTS`，默认 2）：历史拆成 8 段也装不下时摘掉较早的部分再发，是有损删减不是模型摘要，当前提问 / 工具调用和结果 / 图片不裁。② 401 / 403、超时、断流、执行状态未知时不再自动重发最终作答。③ 轮询提速：第一次立即查，之后每 0.4 秒（`PRISM_STATUS_POLL`）；多段之间的 8 秒间隔扣掉上一轮已花的时间；启动时页面等待 1 秒。④ Windows 登录改成拉起不被 Playwright 接管的系统 Chrome / Edge，关窗后读会话（和 TokenPulse 0.3.19 自己做的 `collect_login.py` 思路一样）。
-  - 上游**没有**修的：12 小时会话令牌过期后重新注入导致 401（0.3.22 的修复）；没有代理支持。所以三处 `TokenPulse` 改动照旧补回，`NOTICE.md` 已更新并写明对应的上游提交。`PROXY_OPTION` 现在加在三个地方：服务的浏览器、`_launch_login_context`、`_launch_unmanaged_login_browser`（`--proxy-server`）。`LOGIN_CHANNEL` 常量只给 `collect_login.py` 用。
-  - TokenPulse 这边的登录流程**没有换成上游的**：仍然是 `src/core/prism-bridge.ts` 自己拉起浏览器 + `collect_login.py`（用户实测过）；找不到 Chrome / Edge 时才调 `bridge.py login`，上游那边同样会退回 Playwright 窗口。`collect_login.py` 用到的 `PROFILE_DIR`、`LOGIN_CHANNEL`、`context_cookie_header`、`get_token_claims`、`token_expiry`、`save_auth_cookie` 新版里都在。模型清单没有变。
-  - 界面 / 文档：Prism 桥页「最大上下文是多少？」和 README 同一段改写了「再超出时」那半句（现在是桥自动摘掉较早的历史）。
-  - 验证：上游自带的三个测试文件（`test_bridge_compaction` / `independent` / `login`，没有放进仓库）对着补完改动的 `bridge.py` 跑：72 个全过。**真实启动过一次**：用户的服务正在运行占着浏览器目录，所以把 `auth.json` 拷到临时目录、另开端口 18799 启动新版桥：23 秒就绪，`/health` 200，`/v1/models` 返回 7 个型号，`gpt-5.6-terra` 问一句 12 秒返回正确答案；跑完进程已结束、临时目录（含那份 `auth.json`）已删除。没有验证：真的超长对话触发自动压缩；通过 TokenPulse 界面启动。
-- 上一版 **0.3.24**，用户看过三轮测试版后同意发布；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.24-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；asar 里的 `renderer/model-study.js` 与源码一致；发布说明草稿 `dist/release-0.3.24.md`。提交、标签 `v0.3.24`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.24 。没有会话链接。没有在本机安装。发布后用户反馈「测试没问题」（2026-10-05）。
-- **0.3.24 的改动（2026-10-05，Claude）：「换一种模型，整窗能用多少」改成「所有行都显示估计值，有实测的另外并排显示实测值」。**
-  - 起因：用户发现 Opus 5.5 的 low 比 high 能用的还少。不是算错：low 那行是实测（用户用 low 的会话里缓存写入占 2.0%，medium 是 1.2%，每 Token 贵约一成），high 那行是从 medium 推算的，两种来源混在一列里比。用户要求：全部先按估计值展示，实测值插进去并存、标出来、带圆圈问号解释两者的差别；原来的「样本外推」标签看不懂也不显眼。
-  - `src/core/model-study.ts`：① `unitCost` 不再用「这个组合自己的实际费用」定价（`priceBasis` 不会再是 `combo`，类型里还留着）。同一型号的所有等级用同一个起点（`baseFor`：用得最多那一档的用量结构），只把输出按等级倍数换算；倍数为 1 时用 价格表 × 起点结构（`priceBasis = price`，`priceMix.basis` 为 `model` / `account` / `default`）。价格表里没有的型号仍用同模型实际费用。② `capacityTokens = derivedTokens ?? estimatedTokens`：排行、还剩多少、调用次数、本机以外标注的折算都统一用估计值；实测值仍在 `estimatedTokens`（字段名是历史遗留，它是实测）。`capacityBasis` 只有估计不出来时才是 `measured`。
-  - `renderer/model-study.js`：主数字后面标「估计」（`.ms-cap-kind`）；有实测时下面多一行 `.ms-cap-measured`：「实测」标签 + 数值 + 样本较充分 / 初步参考 + 圆圈问号（`infoTip(…, 'help')`，三段说明）。名字那行的「样本外推」换成「有实测」。合并同值行的判断改成看 `estimatedTokens`。「怎么换算的」里两条说明改写。样式在 `renderer/model-study.css`，i18n 已补。
-  - 用户真实数据上的结果（只读、只看汇总，五小时窗口）：Opus 5.5 估计值 medium 约 1.26 亿、low 约 1.26 亿、high 约 1.18 亿、xhigh 约 0.99 亿。low 和 medium 几乎一样是因为等级倍数用了用户自己的实测（low 每次调用的输出是 medium 的 1.03 倍，标「等级实测」），不是基准数据。
-  - **同一版追加（用户看过第一个测试版后提的）**：① 搜索模型：工具栏左边的 `.ms-search` 输入框，`Q.search`，不分大小写按型号名筛；整块重画后用 `Q.searchFocus` 把焦点和光标放回去，输入法组字期间不重画。② 有实测的组合名字变绿（`.ms-measured-name`，`--accent-strong`），「有实测」标签保留。③ 右上角 `.ms-show` 切换 `Q.show`：都显示（默认）/ 只看估计（不画实测那行）/ 只看实测（`measuredView`：只留有实测的组合，主数字换成实测值，调用次数和还剩多少按比例换，某个窗口没有实测显示「这个窗口没有实测」）。用户原话是两个选项（只显示估计 / 只显示实测）；「都显示」是我加的，因为上一轮用户要求两者并存，等用户看了决定留不留。`.ms-head-actions` 加了 `margin-left: auto`，换行后仍靠右。`scripts/test-model-study-ui.cjs` 加了对应断言。用演示数据截图看过排版（`capture-ui.cjs` 会覆盖 `artifacts/ui` 里 README 用的图，看完已 `git checkout -- artifacts/ui` 还原）。
-  - **第三轮（用户看了第二个测试版）**：① 头部按钮：「添加模型」+ 排序靠左（`.ms-head-left`），显示切换靠右（`.ms-head-actions` 占满一行，两端对齐）。② 实测值不再贴在估计值下面（`.ms-cap-measured` 已删），改成**单独一行**（`measuredRows`，key 加 `|measured`，`data-kind=measured`，名字绿色、「实测」色块标签 + 问号），和估计值的行一起排序，用户能看出两个数差多远、中间隔着哪些组合。估计行 `data-kind=estimate`，有实测的仍带「有实测」标签。「只看估计」只列估计行，「只看实测」只列实测行，「都显示」两种都列。底部「共 N 个组合」不把实测行算进去。上一条里「下面多一行」的描述以这条为准。
-  - 测试：`scripts/test-model-study.cjs`、`test-effort-usage.cjs`、`test-shared-quota.cjs` 改成新口径；`scripts/test-model-study-ui.cjs` 加了估计 / 实测两行、「有实测」标签、问号说明、点问号不展开行的断言。`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS）。**没有看过实际界面**（格子多了一行，窄窗口下的排版没验证）。没有留下进程，没有动 dist。
-- 上一版 **0.3.23**（用户指定），已提交、打标签、发布，内容是下面这一条修复。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.23-Setup.exe`（112,421,541）、`.blockmap`（119,562）、`Portable.exe`（112,164,391）、`latest.yml`（352）；asar 里的 `build/core/model-study.js` 与编译结果一致；`renderer/intro.js` 有 0.3.23 的 NOTES（i18n 已补）；发布说明草稿 `dist/release-0.3.23.md`。提交、标签 `v0.3.23`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.23 。没有会话链接。没有在本机安装。
-- **0.3.23 的修复（2026-10-05，Claude）：「换一种模型，整窗能用多少」里 Sonnet 5.5 能用的量比 Fable 5.1 还少。**
-  - 价格表没有错（和 LiteLLM 一致：Sonnet 5.5 输入 2 / 输出 10 / 缓存读 0.2，Fable 5.1 是 10 / 50 / 0.25，美元每百万）。
-  - 原因：用户这 30 天只用过 2 次 Sonnet 5.5，都是新会话的头一两句，token 里约三成是缓存写入。`src/core/model-study.ts` 的 `unitCost` 只要同型号有一条记录就按「同模型的实际费用」算单价，得到每百万约 1.10 美元；`baseFor` 也拿这 2 条当推算起点。Fable 5.1 一次没用过，按价格表 × 本账号用量结构（98.5% 缓存读）算，每百万约 0.54 美元。于是 Sonnet 反而「更贵」。单次调用大小同理（1 次调用就当成平均值，「能调用多少次」虚高）。
-  - 改动：加了 `representative(list)`：至少 `MIN_COMBO_ROWS`（30）条，或者占本账号这 30 天请求的两成以上，才算数。`baseFor` 的同型号起点、`unitCost` 的「同模型实际费用」、单次调用的「自己的实测」三处都用它；不够就按本账号整体的用量结构算。价格表里没有的型号仍沿用同模型实际费用（没有别的办法）。有整段实测区间的组合（`capacityBasis = measured`）不受影响。
-  - 用户真实数据上的结果（只读、只看汇总，五小时窗口，预算约 39 美元）：改前 Sonnet 5.5 medium 约 4150 万、Fable 5.1 medium 约 7290 万；改后 Sonnet 5.5 medium 约 1.53 亿、high 约 1.37 亿，Fable 5.1 不变。Opus 5.5 high（只有 3 次调用）的「能调用多少次」从 1631 变成 265。
-  - 测试：`scripts/test-model-study.cjs` 加了一组（只试过一次的型号不按自己的冷启动请求定价；占两成以上仍然算数）。`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS）。没有在界面里实际看这张表。没有留下进程，没有动 dist。
-- 上一版 **0.3.22**，已提交、打标签、发布（下面两条是它的内容）。没有进行中的任务。本入口里更早写的「最新版本 0.3.21」「最后一个代码提交 bd6b6ef」是 0.3.21 当时的状态。
-- **0.3.22 发布记录（2026-10-05）**：推送前 fetch，远端多一个机器人提交 `d78e011 知识库：自动更新到 2026.10.05`，已快进合入后再打包。`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0。产物 `dist/TokenPulse-0.3.22-Setup.exe`（112,420,949）、`.blockmap`（119,537）、`Portable.exe`（112,163,808）、`latest.yml`（352，0.3.22）；包里的 `bridge.py` 和 asar 里的 `intro.js` 与源码一致。提交 `446e879 TokenPulse v0.3.22：修复 Prism 桥隔半天再启动报 401，标出预览版`，标签 `v0.3.22`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.22 不是草稿、不是 prerelease，4 个附件大小和本地一致，releases/latest 是 v0.3.22。发布说明草稿 `dist/release-0.3.22.md`，开头有一句「目前是预览版」；README 简介下面也加了同一句。没有会话链接。没有在本机安装 0.3.22；「预览版」标签的样子和 Prism 桥修复在安装版里的效果等用户确认。
-- **0.3.22 的修复（2026-10-05，Claude）：Prism 桥登录约 12 小时后再启动服务就报 `[fatal] RuntimeError: list Prism projects HTTP 401 {"error":"Request verification failed"}`，重新登录才好。**
-  - 用户的说法是「关机再开机后就用不了」。实际和关机无关，和时间有关：服务一直开着不受影响，停掉后隔了 12 小时再启动就会中。
-  - 原因：Prism 的 Cookie 里 `prism_oai_access_token` 有效 10 天，`prism_session_token` 只有 12 小时。`auth.json` 只在登录时写一次；`bridge.py` 每次启动都用 `cookie_header_to_playwright` 把里面的 Cookie 注入浏览器（域 `.openai.com`）。过期的会话令牌盖住了 Prism 打开页面时新发的那份（域 `prism.openai.com`），所有请求 401。界面上「登录还剩」看的是访问令牌，所以显示还有 200 多小时。原项目 README 把这个报错解释成连不上 `sentinel.openai.com`，这里不是这个原因（sentinel 的请求都是 200）。
-  - 确认过程：用户机器上用 scratchpad 的临时脚本照 `bridge.py` 的启动方式打开 Prism（只输出状态码和 Cookie 名字）。照原样注入：45 秒内 4 次都是 401。不注入会话令牌：第一次就是 200。改完后照原样再跑：200。
-  - 改动：`vendor/prism-bridge/bridge.py` 的 `cookie_header_to_playwright` 跳过已经过期的 `prism_session_token`（第三处 `TokenPulse:` 改动，`NOTICE.md` 已同步）；`scripts/test-prism-bridge.cjs` 加了一组，用空壳 playwright 导入真的 `bridge.py` 验证这个函数。
-  - 验证：`npm run compile` 退出 0；`npm test` 退出 0。没有跑 `npm run test:ui`（没有改界面）。没有通过 TokenPulse 界面实际启动服务验证（用户装的是 0.3.21 正式版，里面还是旧的 `bridge.py`）。
-  - 用户装的 0.3.21 在修复发布前的临时办法：隔了 12 小时以上再启动服务前，先重新登录一次。
-  - 没有留下进程；没有动 dist。
-- **0.3.22 追加：软件里标「预览版」（用户：0.x 都是预览版，还没有正式版）。** 版本号以 `0.` 开头时，侧栏底部「TokenPulse」后面和设置 → 关于的版本号后面各显示一个「预览版」标签，关于页多一句「现在还是预览版…正式版会从 1.0 开始」。文件：`renderer/index.html`、`renderer/app.js`（取到版本号后决定显不显示）、`renderer/app.css`（`.preview-tag` / `.preview-note`）、`renderer/i18n.js`、`scripts/test-ui.cjs`。GitHub Release **没有**改成 prerelease：自动更新和 `releases/latest` 都不认 prerelease。标签的样子等用户看过。
-- 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是本轮工作）。
+这一节是 2026-10-06 按实际代码和 Git 状态重写的，以它为准。再往下是各版本的详细记录，都是**按当时的状态**写的，和这一节冲突时听这一节的。
+
+### 现在的状态
+
+- 最新版本 **0.3.27**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.27）。`package.json` 是 0.3.27。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `f2810c8 TokenPulse v0.3.27：…`（标签 `v0.3.27`）。接手时用 `git status`、`git log -3` 核对。
+- **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。
+- 软件处于**预览版**阶段：用户说 0.x 都是预览版，正式版从 1.0 开始。软件里、README、每次的发布说明开头都写了这一点。
+- 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是 Claude 的工作）。
+- GitHub 上有一个知识库机器人，每天可能往 `main` 推一个 `知识库：自动更新到 …` 的提交（只改 `knowledge/models.json`）。推送前先 `git fetch`，有就 `git pull --ff-only` 再打包。
+
+### 最近发布的版本（从新到旧）
+
+| 版本 | 提交 | 内容 |
+|---|---|---|
+| 0.3.27 | `f2810c8` | 修：Prism 桥报「Project file synchronization timed out」后一直失败（恢复自动重建会话） |
+| 0.3.26 | `df5bcc4` | 修：用了 TokenPulse 的供应商后，Codex 桌面端打不开以前的对话（Model provider 'custom' not found） |
+| 0.3.25 | `00a51ab` | Prism 桥跟进上游（长对话自动压缩、轮询提速、出错不盲目重发） |
+| 0.3.24 | `ba95815` | 「整窗能用多少」估计值和实测值分成两种行；搜索模型；都显示 / 只看估计 / 只看实测 |
+| 0.3.23 | `8f38110` | 修：只试过一两次的型号「整窗能用多少」算得偏少 |
+| 0.3.22 | `446e879` | 修：Prism 桥登录 12 小时后再启动报 401；软件里标「预览版」 |
+| 0.3.21 | `bd6b6ef` | 修：Codex 对话删不掉、只装桌面端找不到 CLI、双重报错卡；空闲内存降约两成；Prism 桥常见问题 |
+| 0.3.20 | `3bc170a` | Prism 桥：Codex 被代理截走时提醒并一键修复；日志写文件；一键删除 |
+| 0.3.19 | `050d371` | Prism 桥：随软件带 Prism Bridge，账号被降智时经自己的 Prism 账号给 Codex 开本机接口 |
+| 0.3.18 | | 添加账号可以只用本机 CLI 已登录的那个（不存凭据）；修「官方登录时显示没有识别到当前供应商」 |
+| 0.3.17 | | 号池 / 本地路由转发走代理；所有联网请求统一代理规则（环境变量优先，其次系统代理） |
+| 0.3.16 | | 会话管理的新对话 / 新项目；启动 CLI 前核对出口；出口检测间隔可调；单价变化的标法。**重新发布过一次，版本号没变** |
+| 0.3.15 | | 修切到第三方后 Codex 桌面端「无法加载登录要求」；启动时自动修坏配置；切换前让 Codex 试读模型目录 |
+| 0.3.14 | | 换算表点一行看详情；单价拆成四项并写来源；时间线放大修复 |
+| 0.3.13 | | 单价标签；时间线用了多久、左键平移右键拖选、本机以外的剪辑工具、图例问号 |
+
+每一版的发布说明草稿在 `dist/release-<版本>.md`（0.3.19 起；`dist` 不进 Git）。
+
+### 已经由用户或用户的朋友确认过的
+
+- 0.3.19：整条链路（登录、启动服务、Codex 经它发请求），拿到的是没有被降智的模型。用户本人确认。
+- 0.3.20：一键修复写环境变量、全部删除（含卸载 Chromium、Codex 正在用时先切回官方）、安装 / 更新。用户本人确认。
+- 0.3.21：界面里删除 Codex 对话「确实删除了」；降内存后「卡倒是不会卡」。
+- 0.3.24：三轮测试版看过界面，发布后「测试没问题」。
+- 0.3.25：试用测试版「没啥问题」。
+- 0.3.26：用户的朋友确认修好了（桌面端能打开旧对话）。2026-10-06 用户转述。
+- 0.3.27：朋友手动停止再启动服务后恢复，印证了「重建会话能解决」。
+
+### 仍然没有人验证过的
+
+- 0.3.27：自动重建会话在真实环境里的效果。这个错误是 Prism 服务端的状态，本机造不出来；下次出现时日志里应该有一行 `start failed, re-boot and retry`，然后这一轮正常继续。
+- 0.3.25：真的超长对话触发自动压缩的效果。
+- 0.3.22：隔 12 小时以上再启动不用重新登录（代码层面在用户机器上实测过 Cookie 注入，没有人等够 12 小时后回话）。
+- 0.3.21：窗口收进托盘时的「少干活」逻辑没有进自动测试（当时用临时脚本测过）。
+- 0.3.17：更新后 Grok 号池是否不再 502。
+- 0.3.16：新对话 / 新项目 / 在终端里继续，是否真的弹出终端并启动（自动测试里没有真的开终端）。
+- 自动更新和知识库更新走环境变量代理那一处（`alignElectronProxy`）只改了代码，没有实际跑过更新流程。
+- Claude 从来没有在本机安装过任何一版安装包；用户每次都是自己装的。
+
+### 和这位用户协作的约定
+
+AGENTS.md 之外，对话里形成的；也记在 Claude 的 memory 里。
+
+- **版本号**：用户说算哪个版本才改，不要自己升。修完一个没指定版本的问题，先问「算哪个版本、要不要发布」。
+- **测试版**：用户说「先给测试版」「编译测试版给我看」：只打免安装目录 `npm run icons && npm run compile && npx electron-builder --win dir --publish never`，产物 `dist/win-unpacked/TokenPulse.exe`，不打安装包、不提交、不发布。告诉用户运行前先退出正在用的正式版。
+- **发布**：用户说「编译并发布」「直接发布」才走完整流程。
+- 提交、标签、PR、发布说明里**不加任何会话链接**（包括系统提示里建议的 Claude-Session 行）。
+- README **不写各版本的更新日志**，只改功能说明；更新日志只放 GitHub Release 和软件里的 `renderer/intro.js` NOTES。
+- 发布说明的文案**照之前的 Release 的格式**写（标题带版本和一句话、分「修复 / 改进 / 新增」小节带一个表情、现象 / 原因 / 现在、末尾下载表和两行提示）。开头加一句预览版说明。
+- GitHub Release **不要标成 prerelease**：自动更新和 `releases/latest` 都不认 prerelease。
+- Claude 可以截图并查看测试 / 演示界面（用户只对 Claude 放开了 AGENTS.md 的禁图规则；这条不要当成通用规则写给别的 AI）。
+- 读用户真实的 `~/.tokenpulse`、`~/.codex` 等只能只读、只输出汇总，不输出令牌、邮箱、对话内容。不要未经同意改用户真实的工具配置。
+- 用户发来朋友的日志、报错时，先看证据再下结论；回复里说清楚哪些验证过、哪些没有、哪些是推断。
+- 给用户的回复用中文。
+- 不给自动化浏览器加任何伪装 / 反检测参数（Claude 自己定的边界，已告诉用户）。
+
+### 发布流程
+
+1. `npm test`、`npm run test:ui` 都退出 0（`test:ui` 现在是 33 个 PASS）。
+2. `npm version x.y.z --no-git-tag-version`；`renderer/intro.js` 的 NOTES 加这一版，`renderer/i18n.js` 补英文。**版本号升了而 NOTES 没有这一版，`test:ui` 会失败**（「较早版本按新到旧排」那组）。
+3. 发布说明写到 `dist/release-x.y.z.md`。
+4. `git fetch`；远端有机器人提交就 `git pull --ff-only`。
+5. `npm run dist`；核对 `dist/latest.yml` 的版本，用 `npx asar extract-file dist/win-unpacked/resources/app.asar '<反斜杠路径>'` 取出改过的文件和源码 / `build` 下的编译结果 `cmp`（asar 里的路径用反斜杠，如 `build\core\model-study.js`）；改了桥就 `cmp vendor/prism-bridge/bridge.py dist/win-unpacked/resources/prism-bridge/bridge.py`。
+6. 更新 HANDOFF；只 `git add` 相关文件（连同 HANDOFF）；提交。
+7. `git tag vX.Y.Z`；`git push origin main vX.Y.Z`。
+8. `gh release create vX.Y.Z` 上传四个文件：Setup.exe、Setup.exe.blockmap、Portable.exe、latest.yml，`--title "TokenPulse X.Y.Z" --notes-file dist/release-X.Y.Z.md`；核对附件大小、`isDraft` / `isPrerelease` 都是 false、`releases/latest`。
+9. 检查没有遗留的 electron / dist 下的 TokenPulse 进程，安装包能独占打开。
+
+- 提交、打标签并推送、建 Release **分三条命令**执行；串成一条会被 Claude Code 自动模式的权限规则拒绝。
+- `gh release create` 偶尔因为网络报 `unexpected EOF`、没有建出 Release，原样重试即可。
+
+### Prism 桥：现在是什么样（0.3.19 到 0.3.27 的结果）
+
+- **它是什么**：第三方开源项目 Prism Bridge（https://github.com/yyyllllming/prism-bridge ，作者 yyyllllming，MIT）。`bridge.py` 用无头 Chromium 登录用户自己的 Prism（prism.openai.com）账号，在本机 `http://127.0.0.1:18765/v1` 开 OpenAI 兼容接口给 Codex 用。适合 ChatGPT 账号被「降智」的用户；界面、README、更新说明里都写了适合谁、正常账号没必要用、以及可能不符合 OpenAI 服务条款的风险。
+- **代码位置**：`vendor/prism-bridge/`（`bridge.py`、`LICENSE`、`NOTICE.md`、`collect_login.py`），随安装包打到 `resources/prism-bridge`。进程管理在 `src/core/prism-bridge.ts`，界面在 `renderer/agent-switch.js` 的 `prismSection()`（「本地路由」分组下的 `prism` 一节），样式在 `renderer/agent-switch.css` 末尾（`.pv-prism-*`）。
+- **上游版本**：当前这份对应上游提交 `1bd4b79`（2026-10-05）。
+- **TokenPulse 对 `bridge.py` 的四处改动**（代码里都带 `TokenPulse` 注释，`NOTICE.md` 里有清单；以后换新版要全部补回）：
+  1. `PRISM_PROXY` → `BROWSER_PROXY` / `PROXY_OPTION`：给浏览器当代理（服务、Playwright 登录窗口、上游拉起的系统浏览器登录窗口）。上游没有代理支持。
+  2. `LOGIN_CHANNEL` 常量（环境变量 `PRISM_LOGIN_CHANNEL`）：只给 `collect_login.py` 用。
+  3. `cookie_header_to_playwright` 跳过已过期的 `prism_session_token`（12 小时有效；不跳过的话登录 12 小时后再启动报 `401 Request verification failed`）。上游没有修。
+  4. `PrismPage.chat`：错误含 `REBOOT_AND_RETRY_MARKS`（目前只有 `Project file synchronization timed out while starting the response`）时 `boot()` 重建会话再发一次。上游 `1bd4b79` 把旧版的重建逻辑整个去掉了。
+- **更新上游的做法**（0.3.25 做过一遍）：克隆上游到 scratchpad → 用新版 `bridge.py` 覆盖 → 补回四处改动 → 上游自带的 `test_bridge_*.py`（不进我们的仓库）拷到临时目录，用 `~/.tokenpulse/prism-bridge/venv` 的 python 跑 `-m unittest` → `npm test` → 真实启动一次（用户的服务通常正在运行占着浏览器目录：把 `profile/auth.json` 拷到临时目录、另开端口、跑完删除）→ 更新 `NOTICE.md` 里的上游提交号。**特别检查上游有没有去掉我们依赖的恢复 / 重试行为**（0.3.27 就是这么来的）。
+- **登录**：TokenPulse 自己用正常方式启动系统的 Chrome / Edge（`--user-data-dir=login-profile`，不被程序控制），用户登录到看见 Prism 界面后自己关窗口，再跑 `collect_login.py` 从那份浏览器数据里读出 Cookie 存成 `profile/auth.json`。被 Playwright 控制的登录窗口过不了真人验证。找不到 Chrome / Edge 时才调 `bridge.py login`。上游后来也做了同样思路的登录，我们没有换过去。
+- **数据**都在 `~/.tokenpulse/prism-bridge/`：`config.json`（端口、随机密钥、是否跟着启动）、`venv/`、`deps.json`、`profile/`（服务的浏览器数据和 `auth.json`）、`login-profile/`、`bridge.log`（超过 1 MB 轮转成 `.1`）。Cookie 和密钥不出主进程。
+- **已有的保护 / 功能**：代理冲突检测 + 一键修复（`checkPrismProxy` / `fixPrismProxy`，会经代理实际请求一次本机 `/health` 才提醒）；日志文件 + 「打开日志文件」；一键全部删除；跟着 TokenPulse 启动；页面上的「常见问题」（额度、用量、上下文、思考强度）。
+- **排查线索**（都遇到过）：
+  - Codex 报 502 而桥日志里什么都没有 → 请求被代理截走了，设 `NO_PROXY=127.0.0.1,localhost,::1`。
+  - 启动报 `list Prism projects HTTP 401 Request verification failed` → 0.3.22 以前是过期的会话令牌；之后再出现要看是不是连不上 `sentinel.openai.com`。
+  - `Project file synchronization timed out while starting the response` → Prism 服务端同步项目文件超时，重建会话即可（0.3.27 起自动）。
+  - `Error while processing conversation (403 Forbidden)` → Prism 限流，停一会儿。
+  - 桥每个请求都会记一行 `[http] …`；`[llm] start …` 后面跟着的英文是 Prism 返回的原话。
+- **已知限制**：回复是整段生成完才返回；桥不返回 Token 用量，TokenPulse 里看不到这部分用量；端口固定 18765（只能手改 `config.json`）；只支持 HTTP 代理；Prism 网页改版后可能失效。
+
+### 「换一种模型，整窗能用多少」：现在的口径（0.3.23、0.3.24 的结果）
+
+- 代码：`src/core/model-study.ts`（计算）、`renderer/model-study.js` / `.css`（界面）。
+- **估计值**：每个组合都有。整窗预算 ÷ 综合单价。综合单价 = 价格表 × 用量结构；同一个型号的所有等级用同一个起点（`baseFor`：这个型号用得最多那一档的用量结构），只把输出部分按等级倍数换算。不再用「这个组合自己的实际费用」定价（`priceBasis` 不会再是 `combo`，类型里还留着这个值）。
+- **样本够不够**：`representative(list)`：至少 30 条（`MIN_COMBO_ROWS`），或占本账号近 30 天请求的两成以上。不够的型号按本账号整体的用量结构算，单次调用大小也按推算的来。
+- **实测值**：字段是 `estimatedTokens`（名字是历史遗留，它是实测）。有足够整段只用这个组合的采样区间才有。
+- `capacityTokens = derivedTokens ?? estimatedTokens`：排行、还剩多少、调用次数、本机以外标注的折算都用估计值；`capacityBasis` 只有估计不出来时才是 `measured`。
+- **界面**：估计值一行（`data-kind=estimate`，主数字后标「估计」，有实测的带「有实测」小标签）；有实测的组合另外多出**单独一行**（`data-kind=measured`，名字绿色、「实测」色块标签 + 圆圈问号说明），两种行一起排序。右上角切换 `Q.show`：都显示（默认）/ 只看估计 / 只看实测。「添加模型」和排序靠左。工具栏左边有搜索框（`Q.search`）。
+- 等级倍数优先用用户自己的实测（同型号两档各 20 次调用以上，标「等级实测」），其次 Epoch AI 基准。所以用户的 Opus 5.5 low 和 medium 的估计值几乎一样（他用 low 时每次调用的输出是 medium 的 1.03 倍）。用户知道这一点，没有要求改。
+
+### Codex 旧对话的供应商表（0.3.26 的结果）
+
+- Codex 每个对话的 `session_meta` 里记着创建时的 `model_provider`（`config.toml` 里那张表的名字）。**桌面端**打开旧对话时按这个名字找表，找不到就报「Model provider 'xxx' not found」；命令行的 `codex exec resume` 不检查，所以这个报错在命令行复现不了。
+- `src/core/agent-switch.ts` 的 `syncCodexLegacyProviders()`：把本机对话里出现过、不是内置（openai / ollama / lmstudio / oss）、配置里又没有的名字补成一张表，`name = "TokenPulse (earlier chats)"`。正在用 `tokenpulse_route` 时照抄它的地址和令牌；官方登录时写成走官方登录的表。只认这个 name 的表为自己的，每次先清再补；别人写的同名表不动。
+- 调用点：`writeCodex` 末尾（每次切换）和 `repairAgentConfigs`（启动时，只在 TokenPulse 管过 Codex 时）。
+
+### 踩过的坑（省得再踩）
+
+- 用 `python - <<'EOF'` 这类 shell heredoc 改含反斜杠的代码（`\n`、`\d`、`\s`、`\x`、正则里的 `\\`）会被吃掉或改坏转义。改这类内容用 Write 写成 .py 文件再跑，或者直接用 Edit 工具。改完用 `node --check` / `npm run compile` 确认。
+- Git Bash 里 `python - <<EOF` 读文件默认按 GBK 解码：打开文件一律写 `io.open(p, encoding="utf-8", newline="")`，并保留原来的换行符（仓库里 CRLF 和 LF 的文件都有）。
+- `renderer/i18n.js` 的格式表 `P('...')` 是 JS 字符串，正则里的反斜杠要写两个（`\\d`）。翻译时会先按中文分号「；」和换行硬拆句，所以要整句匹配的句子里别用「；」。宽泛的格式要放在最后那条「标题：值」之前。
+- 界面上新加的中文文字都要在 `renderer/i18n.js` 里补英文；动态拼出来的文字（中文 + 变量）字典匹配不上，要么拆成独立的元素，要么加 `P(...)` 格式。
+- TS 模板字符串里的 `\S` 会变成字母 S：往 PowerShell 脚本里写正则时别用反斜杠类，用字符类。
+- PowerShell 把弯引号 ‘ ’ 也当单引号，拼脚本时要一起翻倍（`quotePs`）。
+- 临时的 Electron 脚本先 `node --check` 再跑，语法错会在用户屏幕上弹阻塞对话框。
+- `scripts/capture-ui.cjs` 会覆盖 `artifacts/ui/` 里 README 用的截图（这些文件在 Git 里）。只是想看一眼排版的话，截完把要看的图拷到 scratchpad，再 `git checkout -- artifacts/ui` 还原。
+- 界面测试里窗口可见时，悬浮提示那组断言会失败（只在截图用的副本里出现，正式测试是隐藏窗口）。
+- 本机联网要经 `http://127.0.0.1:7890`（环境变量 HTTPS_PROXY / HTTP_PROXY），直连官方接口会超时。
+- 本机 Codex：桌面端自带的在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe`（目录名会随更新变，2026-10-06 是 codex-cli 0.160.0），`test-codex-compat.cjs` 会自动找最新的那个来真读配置。
+- 用户的正式版 TokenPulse 通常一直开着（`AppData\Local\Programs\TokenPulse`），它的 Prism 桥占着 `~/.tokenpulse/prism-bridge/profile`；不要动它，要真实测试桥就另开端口和临时目录。
+- 收尾检查进程时，命令行里带 `prism-bridge` 字样的 bash / powershell 可能就是自己这条检查命令，别误判。
+
+---
+
+## 0.3.22 到 0.3.27 的详细记录（2026-10-05 到 10-06，Claude）
+
+### 0.3.27：Prism 桥报「Project file synchronization timed out」后一直失败
+
+- 现象：Codex 报 `stream disconnected before completion: Project file synchronization timed out while starting the response.`。前半句是 Codex 加的前缀，后半句是 Prism 服务器返回的（每轮开始前把项目文件同步进沙箱，这一步超时），桥里没有这段文字。
+- 证据（用户朋友的 `bridge.log`，只读看过）：旧版桥（0.3.24 及以前）遇到它会打印 `start failed, re-boot and retry` 并 `boot()` 重建会话，10-05 01:14 和 02:16 两次都是重建后立刻成功。朋友 08:17 更新到 0.3.25 后，09:18 起同一个错误连续 16 次，每次约 62 秒超时，没有一次重建。
+- 原因：上游 `1bd4b79` 把 `chat()` 里的重试循环整个去掉了（「不盲目重发」），连这种「明确没开始执行」的情况也不再重建会话。是 0.3.25 跟进上游带来的退步。
+- 改动：`PrismPage.chat` 包一层，错误信息含 `REBOOT_AND_RETRY_MARKS` 时 `boot()` 后再发一次，第二次还失败照常报错；别的错误不变。`Reconnecting to sandbox…will resume automatically` 和 `Unable to confirm the response started` 没有加进去（前者 Prism 说会自己恢复，后者不确定有没有执行）。`scripts/test-prism-bridge.cjs` 加了一组（用空壳 playwright 导入真的 `bridge.py`）。
+- 验证：`npm test`、`npm run test:ui` 退出 0；上游自带的 72 个测试对着改后的文件全过。没有在真实环境复现。
+
+### 0.3.26：Codex 桌面端打不开以前的对话
+
+- 现象（用户朋友）：用 Prism 桥时打开以前用中转站 / 官方登录时的对话，桌面端提示「ChatGPT 无法加载 config.toml…Model provider 'custom' not found」。
+- 原因和改法见上面「Codex 旧对话的供应商表」。`custom` 是别的工具（如 CC Switch）以前写的表名，朋友机器上这张表已经不在了。同类问题 TokenPulse 自己也会造成：用 `tokenpulse_route` 聊过之后切回官方，`writeCodex` 会把这张表删掉。用户自己的机器没中，是因为 `config.toml` 里还留着 CC Switch 写的 `[model_providers.custom]`（name = "OpenAI"、requires_openai_auth = true、wire_api = "responses"，没有 base_url），官方登录时补的表就是照它写的。
+- `codexSessionProviders()` 读 `sessions/`、`archived_sessions/` 下每个 `.jsonl` 的前 16 KB（实测 `model_provider` 在前 1.1 KB 以内）。启动时补了会出一条单独文案的提示（`CODEX_LEGACY_FIX`）。
+- 测试：`scripts/test-agent-switch.cjs` 加了一组（照抄当前路由、官方登录表、内置名不补、用户自己的表不动、重复切换不变、启动修复补回 / 清理、没有旧对话时一张不留）。用真实 Codex 验证过带补表的 `config.toml` 能加载（`codex features list` 退出 0）。
+- 用户的朋友确认修好了。
+
+### 0.3.25：Prism 桥跟进上游
+
+- `bridge.py` 从上游 `8ae73c0`（我们最初拿到的那份）更新到 `1bd4b79`，3143 行 → 3922 行。
+- 上游带来的：① 自动历史压缩（`PRISM_COMPACT_MAX_PARTS`，默认 2）：历史拆成 8 段也装不下时摘掉较早的部分再发，是有损删减不是模型摘要，当前提问 / 工具调用和结果 / 图片不裁。② 401 / 403、超时、断流、执行状态未知时不再自动重发（0.3.27 为其中一种情况加回了重建会话）。③ 轮询提速：第一次立即查，之后每 0.4 秒（`PRISM_STATUS_POLL`）；多段之间的 8 秒间隔扣掉上一轮已花的时间；启动时页面等待 1 秒。④ Windows 登录改成拉起不被 Playwright 接管的系统浏览器。
+- 模型清单没有变（`/v1/models` 返回 7 个：gpt-6-astra、gpt-6.1-sol、gpt-6-sol、gpt-5.6-sol、gpt-5.6-terra、gpt-6-luna、auto；TokenPulse 写给 Codex 的仍是四个）。
+- 界面 / 文档：Prism 桥页「最大上下文是多少？」和 README 同一段按新行为改写。
+- 验证：上游 72 个测试全过；真实启动过一次（临时目录 + 端口 18799：23 秒就绪，`gpt-5.6-terra` 问一句 12 秒返回正确答案，跑完已清理）。
+
+### 0.3.24：「整窗能用多少」估计值和实测值分开
+
+- 起因：用户发现 Opus 5.5 的 low 比 high 能用的还少。不是算错：low 那行是实测（用户用 low 的会话里缓存写入占 2.0%，medium 是 1.2%，每 Token 贵约一成），high 那行是从 medium 推算的，两种来源混在一列里比。原来的「样本外推」标签看不懂也不显眼。
+- 用户看了三轮测试版才定下来，最终样子见上面「现在的口径」。中间做过又改掉的：实测值贴在估计值下面的一行（`.ms-cap-measured`，已删）；切换按钮和排序挤在一起（用户要「添加模型」和排序靠左、切换靠右）。
+- 「都显示」这个选项是 Claude 加的（用户原话只有「只显示估计 / 只显示实测」两个），用户看过没有要求去掉。
+- 测试：`test-model-study.cjs`、`test-effort-usage.cjs`、`test-shared-quota.cjs` 改成新口径；`test-model-study-ui.cjs` 开头测完三种显示方式和搜索后切到「只看估计」，后面的旧断言都在这个模式下跑。
+
+### 0.3.23：只试过一两次的型号算得偏少
+
+- 现象：Sonnet 5.5 能用的量比 Fable 5.1 还少。价格表没有错（和 LiteLLM 一致：Sonnet 5.5 输入 2 / 输出 10 / 缓存读 0.2，Fable 5.1 是 10 / 50 / 0.25，美元每百万）。
+- 原因：用户这 30 天只用过 2 次 Sonnet 5.5，都是新会话的头一两句，token 里约三成是缓存写入；旧代码只要同型号有一条记录就按它的实际费用算单价（每百万约 1.10 美元），而没用过的 Fable 5.1 按价格表 × 账号用量结构（98.5% 缓存读）算出约 0.54 美元。
+- 改动：`representative(list)`，见上面「现在的口径」。
+- 用户数据上的结果（五小时窗口）：Sonnet 5.5 medium 从约 4150 万变成约 1.53 亿；Opus 5.5 high（只有 3 次调用）的「能调用多少次」从 1631 变成 265。
+
+### 0.3.22：Prism 桥 12 小时后再启动报 401；标「预览版」
+
+- 用户的说法是「关机再开机后就用不了，要重新登录」。实际和关机无关，和时间有关：服务一直开着不受影响，停掉后隔了 12 小时再启动就会中。
+- 原因：`prism_oai_access_token` 有效 10 天，`prism_session_token` 只有 12 小时。`auth.json` 只在登录时写一次；`bridge.py` 每次启动都把里面的 Cookie 注入浏览器（域 `.openai.com`），过期的会话令牌盖住了 Prism 打开页面时新发的那份（域 `prism.openai.com`）。界面上「登录还剩」看的是访问令牌，所以显示还有 200 多小时。上游 README 把这个报错解释成连不上 `sentinel.openai.com`，这次不是这个原因。
+- 确认过程：在用户机器上照 `bridge.py` 的启动方式打开 Prism（只输出状态码和 Cookie 名字）。照原样注入：45 秒内 4 次都是 401；不注入会话令牌：第一次就是 200。
+- 预览版标签：版本号以 `0.` 开头时，侧栏底部和「设置 → 关于」各显示一个「预览版」标签（`.preview-tag`），关于页多一句说明（`.preview-note`）；到 1.0 会自己消失。README 简介下面和每次发布说明开头也写了。
+
+---
+
+## 0.3.19 到 0.3.21 的详细记录（2026-10-04，Claude）
+
+下面三段是当时逐步写下的原文，保留了过程。其中这些说法已经被后面的版本改掉，以上面「新对话先看这里」为准：
+- 「对 `bridge.py` 的改动有两处」「约 3100 行」→ 现在四处、约 3900 行。
+- `PRISM_LOGIN_CHANNEL`「传给登录那次 `launch_persistent_context`」→ 现在只给 `collect_login.py` 用。
+- 「上下文：再超出返回 `context_length_exceeded`」→ 0.3.25 起桥会自动摘掉较早的历史。
+- 「`test-prism-bridge.cjs` 5 组 / 7 组」→ 现在 9 组。
+- 「Git：都没有提交」「没有打 Setup 和 Portable」这类是当时测试版阶段的状态，这三版后来都发布了。
 
 **0.3.21：删除 Codex 对话的两个问题 + 双重报错卡 + Prism 桥常见问题 + 降内存 · 已完成，已提交、打包、发布（2026-10-04，Claude）**
 - 用户反馈（都算 0.3.21，没有说要发布）：会话管理里删除 Codex 对话，朋友那边提示找不到 CLI；用户自己删会报「cannot confirm session deletion without an interactive terminal; rerun with --force and a session UUID」，而且出现两张报错卡，第二张一直挂着关不掉。
@@ -156,55 +304,11 @@
   - 收尾检查：没有留下本轮起的进程；dist 里的安装包和 app.asar 能独占打开。
 - 以后要注意：`vendor/prism-bridge/bridge.py` 是随安装包公开分发的第三方代码；Prism 网页改版后桥可能失效，届时要拿原项目的新版覆盖，并把 NOTICE.md 里写的两处改动补回去。
 
-**这段长对话里发布过的版本**（细节在下面各节，从新到旧）
-| 版本 | 内容 |
-|---|---|
-| 0.3.21 | 修：Codex 对话删不掉、只装桌面端找不到 CLI、双重报错卡；空闲内存降约两成，窗口收着时少干活；Prism 桥常见问题 |
-| 0.3.20 | Prism 桥：Codex 被代理截走时提醒并一键修复；日志写文件；一键删除 |
-| 0.3.19 | Prism 桥：随软件带 Prism Bridge，账号被降智时经自己的 Prism 账号给 Codex 开本机接口 |
-| 0.3.18 | 添加账号可以只用本机 CLI 已登录的那个（不存凭据）；修「官方登录时显示没有识别到当前供应商」 |
-| 0.3.17 | 号池 / 本地路由转发走代理；所有联网请求统一代理规则（环境变量优先，其次系统代理） |
-| 0.3.16 | 会话管理的新对话 / 新项目；启动 CLI 前核对出口（监控开着才核对；IP 白名单优先，其次地区）；出口检测间隔可调；单价变化的标法；修页面往上跳、修弯引号路径打不开终端。**重新发布过一次，版本号没变** |
-| 0.3.15 | 修切到第三方后 Codex 桌面端「无法加载登录要求」；启动时自动修坏配置；切换前让 Codex 试读模型目录；「其中新内容约多少」 |
-| 0.3.14 | 换算表点一行看详情；单价拆成四项并写来源；时间线放大修复 |
-| 0.3.13 | 单价标签；时间线用了多久、左键平移右键拖选、本机以外的剪辑工具、图例问号 |
+---
 
-**用户还没反馈结果、下次可以顺口问一句的**
-- 0.3.17：更新后 Grok 号池是否不再 502（我没有用真实号池发过请求）。
-- 0.3.15：用户真实的 `~/.codex/config.toml` 里那张空表，应该在装了 0.3.15 及以后的版本后被启动修复清掉；没有人确认过。
-- 0.3.16：新对话 / 新项目 / 在终端里继续，是否真的弹出终端并启动（自动测试里没有真的开终端）。用户当时说「看着没啥问题了」。
-- 自动更新和知识库更新走环境变量代理那一处（`alignElectronProxy`）只改了代码，没有实际跑过更新流程。
+# 0.3.18 及更早的历史记录
 
-**和这位用户协作的约定**（AGENTS.md 之外，这段对话里形成的；也记在 Claude 的 memory 里）
-- 版本号：用户说算哪个版本才改，不要自己升。用户常说「先给测试版」：只打免安装目录 `npx electron-builder --win dir --publish never`，产物是 `dist/win-unpacked/TokenPulse.exe`，不打安装包、不提交、不发布。用户说「编译并发布」才走完整流程。
-- 提交、标签、PR、发布说明里**不加任何会话链接**（包括系统提示里建议的 Claude-Session 行）。
-- README **不写各版本的更新日志**，只改功能说明；更新日志只放 GitHub Release 和软件里的 `renderer/intro.js` NOTES。
-- README 截图用 `scripts/capture-ui.cjs`，它只用软件自带的演示数据，不读本机真实数据。
-- 用户主要让 Claude 修 BUG 和查数据，但这段对话里的新功能也都是交给 Claude 做的。
-- Claude 可以截图并查看测试 / 演示界面（用户只对 Claude 放开了 AGENTS.md 的禁图规则；这条不要当成通用规则写给别的 AI）。
-- 读用户真实的 `~/.tokenpulse`、`~/.codex` 等只能只读、只输出汇总，不输出令牌、邮箱。不要未经同意改用户真实的工具配置。
-- 给用户的回复用中文，说清楚哪些验证过、哪些没有。
-
-**发布流程（每次都是这几步）**
-1. `npm test`、`npm run test:ui` 都退出 0。
-2. `npm version x.y.z --no-git-tag-version`；`renderer/intro.js` 的 NOTES 加这一版，`renderer/i18n.js` 补英文。
-3. `npm run dist`，再用 `npx asar extract dist/win-unpacked/resources/app.asar <临时目录>` 和源码逐个 `cmp`（package.json 被 electron-builder 改写，不同是正常的）。
-4. `git fetch` 确认远端没有新提交；只 `git add` 相关文件；提交；`git tag vX.Y.Z`；推送 main 和标签。
-5. `gh release create vX.Y.Z` 上传四个文件：Setup.exe、Setup.exe.blockmap、Portable.exe、latest.yml；核对附件大小和 releases/latest。
-6. 检查没有遗留的 electron / dist 下的 TokenPulse 进程，产物能独占打开；更新 HANDOFF 并单独提交。
-- 发布说明的草稿在 scratchpad（会话专属目录，新对话里没有），格式参考已发布的 Release 页面。
-
-**这段对话里踩过的坑（省得再踩）**
-- 用 `python - <<'EOF'` 这类 shell heredoc 改含反斜杠的代码（`\n`、`\d`、`\S`）会被吃掉转义。改这类内容用 Write 写成 .py 文件再跑，或者直接用 Edit 工具。
-- `renderer/i18n.js` 的格式表 `P('...')` 是 JS 字符串，正则里的反斜杠要写两个（`\\d`）。翻译时会先按中文分号「；」和换行硬拆句，所以要整句匹配的句子里别用「；」。宽泛的格式要放在最后那条「标题：值」之前。
-- TS 模板字符串里的 `\S` 会变成字母 S：往 PowerShell 脚本里写正则时别用反斜杠类，用字符类。
-- PowerShell 把弯引号 ‘ ’ 也当单引号，拼脚本时要一起翻倍（`quotePs`）。
-- 临时的 Electron 脚本先 `node --check` 再跑，语法错会在用户屏幕上弹阻塞对话框。
-- 界面测试里窗口可见时，悬浮提示那组断言会失败（只在截图用的副本里出现，正式测试是隐藏窗口）。
-- `npm run test:ui` 的 PASS 总数现在是 33（0.3.19 没有变）；`test-ui.cjs` 单独跑是 20。
-- 本机联网要经 `http://127.0.0.1:7890`（环境变量 HTTPS_PROXY / HTTP_PROXY），直连官方接口会超时。
-- 本机 Codex：桌面端自带的在 `%LOCALAPPDATA%\OpenAI\Codex\bin\<哈希>\codex.exe`（目录名会随更新变），`test-codex-compat.cjs` 会自动找最新的那个来真读配置。
-
+以下各节都是按当时的状态写的，产物路径、测试数量、「未提交 / 待验证」这类说法只对当时成立。当前状态看文档最上面的「新对话先看这里」。
 
 ## v0.3.18：添加本机 CLI 已登录的账号 + 官方登录识别为当前供应商 · 已完成，已提交、打包、发布（Claude）
 
@@ -986,7 +1090,7 @@
 
 ## 给下一位做新功能的 AI：风格与做法（2026-09-28，Claude 整理）
 
-用户接下来要做一轮较大的新功能，由另一个 AI 负责；Claude 之后主要负责修 Bug。下面是这个项目一路做下来、用户认可的风格和踩过的坑。**先读完这一节和 AGENTS.md 再动手。**
+（2026-10-06 核对：这一节的风格、动效、技术约束仍然有效。当时写的是「新功能由另一个 AI 负责，Claude 主要修 Bug」，实际上 0.3.9 之后的新功能和修复都是 Claude 做的。）下面是这个项目一路做下来、用户认可的风格和踩过的坑。**先读完这一节和 AGENTS.md 再动手。**
 
 ### 用户的偏好（最重要）
 
@@ -1029,14 +1133,14 @@
 ### 数据与安全
 
 - 不读、不打印、不改 CLI 的凭据（token / refresh token）；测试一律用临时 HOME 和 `TOKENPULSE_DATA_DIR`，不碰用户真实的 `~/.tokenpulse`、`~/.codex`、`~/.claude`、`~/.grok`。需要真实数据核对时，复制到临时目录（账号库去掉 `credential`）、只打印计数。
-- 公开的 README 截图必须遮账号名和邮箱（`scripts/capture-ui.cjs` 已经处理，并在截图前检查泄露）。
+- 公开的 README 截图只用软件自带的演示数据（`scripts/capture-ui.cjs`，0.3.16 起；截图前会检查有没有邮箱、本机用户名漏出来）。它会覆盖 `artifacts/ui/` 里的图。
 - 改账本结构要升 `usage-scan.ts` 的 `STATE_VERSION` 并写清迁移（只补元数据 / 某个来源整份重算），测试「旧账本升级后不重复计」。
 
 ### 测试与交付
 
 - 每个功能都要有测试：纯计算放 `scripts/test-*.cjs`（node），界面放 Electron 端到端测试（参考 `scripts/test-model-study-ui.cjs`：真实 IPC + worker + DOM 断言，覆盖切换、失败、迟到结果、900px 窄窗口、reduced-motion、夜间模式文字颜色）。新测试加进 package.json 的 `test` / `test:ui`。
 - 交付前：`npm test`、`npm run test:ui` 都通过；编译目录版；确认 ASAR 里有新代码；确认没有遗留的测试 / 构建进程；更新本文件顶部。
-- 不能看图片：视觉效果交给用户验收，自己用 DOM、计算样式、尺寸断言验证。
+- 看图片：AGENTS.md 规定不能看图片、截图（会让客户端报错），别的 AI 照这条做，用 DOM、计算样式、尺寸断言验证，视觉交给用户验收。用户只对 Claude 放开了这条：Claude 可以截测试 / 演示界面来看。
 
 ## 数据口径核对（Claude，2026-09-28，已完成）
 
