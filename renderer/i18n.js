@@ -100,6 +100,8 @@
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
     "占用的内存少了约两成": "About a fifth less memory",
+    "修复：只试过一两次的型号，「整窗能用多少」算得偏少": "Fix: models tried only once or twice showed too little full-window capacity",
+    "「换一种模型，整窗能用多少」里，只用过一两次的型号会按那一两次的实际花费定价。新会话的头几句大多是缓存写入，单价偏高，结果便宜的型号反而显得能用的更少（比如 Sonnet 5.5 比 Fable 5.1 还少）。现在记录不够多的型号按价格表和你平时的用量结构来算，「能调用多少次」也一样。": "In \"Switch models: what a full window buys\", a model used only once or twice was priced from what those few requests actually cost. The first messages of a new session are mostly cache writes, which are expensive, so a cheaper model could look like it gives you less (for example Sonnet 5.5 below Fable 5.1). Models without enough records are now priced from the price table and your usual usage mix, and the same goes for how many calls you get.",
     "修复：Prism 桥隔半天再启动就报 401": "Fix: Prism bridge failed with 401 when started half a day later",
     "登录约 12 小时后再启动服务，会报「list Prism projects HTTP 401 Request verification failed」，要重新登录才能用。现在登录一次，10 天内都能直接启动。": "Starting the service about 12 hours after signing in failed with \"list Prism projects HTTP 401 Request verification failed\" until you signed in again. Now one sign-in lets you start it directly for 10 days.",
     "标出这是预览版": "Marked as a preview",

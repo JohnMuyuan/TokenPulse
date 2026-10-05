@@ -175,6 +175,11 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
    * 有足够整段区间的组合仍然直接按实测折算（capacityBasis = measured），不受这里影响。
    */
   const kind = q.kind as "claude" | "chatgpt" | "grok";
+  /*
+   * 样本够不够代表平时的用法：至少 MIN_COMBO_ROWS 条，或者占本账号这 30 天请求的两成以上。
+   * 只试过一两句的型号不算：冷启动的请求几乎全是缓存写入，按它算单价会高出好几倍，单次调用也小得多。
+   */
+  const representative = (list: RequestRow[]) => list.length >= MIN_COMBO_ROWS || (list.length > 0 && list.length * 5 >= rows.length);
   const knownEffort = (r: RequestRow) => !unknownEffort(r);
   const dominant = (list: RequestRow[]) => {
     const by = new Map<string, number>();
@@ -193,7 +198,9 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     return bench ? { ratio: bench.ratio, basis: bench.basis === "model" ? "benchmark" : "family", source: bench.source } : { ratio: 1, basis: null, source: null };
   };
   const baseFor = (model: string) => {
-    const same = rows.filter(r => r.model === model && knownEffort(r));
+    // 同型号的样本不够就按本账号的整体用量算
+    const sameAll = rows.filter(r => r.model === model && knownEffort(r));
+    const same = representative(sameAll) ? sameAll : [];
     const pool = same.length ? same : rows.filter(knownEffort);
     const anchor = dominant(pool);
     if (!anchor) return { anchor: "medium", mix: DEFAULT_MIX, calls: 0, sameModel: false };
@@ -213,7 +220,7 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     const er = effortRatio(model, base.anchor, effort);
     const modelRows = pricedRows.filter(r => r.model === model);
     if (er.ratio === 1) {
-      const sameModel = perToken(modelRows);
+      const sameModel = representative(modelRows) ? perToken(modelRows) : null;
       if (sameModel) return [sameModel, "model", er, base, shape(mixOf(modelRows), "model", modelRows.length)];
       const listed = mixTokens > 0 ? estimateCost(model, mix) / mixTokens : 0;
       return [listed > 0 ? listed : null, listed > 0 ? "price" : null, er, base, listed > 0 ? shape(mix, mix === DEFAULT_MIX ? "default" : "account", mix === DEFAULT_MIX ? 0 : rows.length) : null];
@@ -249,8 +256,9 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     const recentCalls = sum(recent, r => r.calls), recentTokens = sum(recent, r => r.tokens);
     // 单次调用大小：自己用过就按自己的（实测优先）；没用过按起点那一档的每次调用，输出部分乘等级倍数
     const scaledPerCall = base && base.calls > 0 ? (base.mix.input + base.mix.output * effortInfo.ratio) / base.calls : null;
-    const tokensPerCall = recentCalls > 0 ? recentTokens / recentCalls : scaledPerCall;
-    const tokensPerCallBasis = recentCalls > 0 ? "own" : scaledPerCall != null ? "scaled" : null;
+    const ownPerCall = recentCalls > 0 && (representative(recent) || scaledPerCall == null);
+    const tokensPerCall = ownPerCall ? recentTokens / recentCalls : scaledPerCall;
+    const tokensPerCallBasis = ownPerCall ? "own" : scaledPerCall != null ? "scaled" : null;
     return { ...entry, key,
       tokens: sum(actual, r => r.tokens), inputTokens: sum(actual, r => r.input), outputTokens: sum(actual, r => r.output), cacheReadTokens: sum(actual, r => r.cacheRead), calls: sum(actual, r => r.calls), costUsd: actual.every(r => r.priced) ? sum(actual, r => r.costUsd) : null,
       recentTokens, recentCalls, costPerMTokens: unit == null ? null : unit * 1e6, priceBasis, tokensPerCall, tokensPerCallBasis,

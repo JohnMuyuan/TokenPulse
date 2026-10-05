@@ -1,11 +1,18 @@
-# 当前接手入口 · 0.3.22（2026-10-05，已发布，工作区干净）
+# 当前接手入口 · 0.3.23（2026-10-05，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
 - 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
 - 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
-- 最新版本 **0.3.22**，已提交、打标签、发布（下面两条是它的内容）。没有进行中的任务。本入口里更早写的「最新版本 0.3.21」「最后一个代码提交 bd6b6ef」是 0.3.21 当时的状态。
+- 最新版本 **0.3.23**（用户指定），已提交、打标签、发布，内容是下面这一条修复。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.23-Setup.exe`（112,421,541）、`.blockmap`（119,562）、`Portable.exe`（112,164,391）、`latest.yml`（352）；asar 里的 `build/core/model-study.js` 与编译结果一致；`renderer/intro.js` 有 0.3.23 的 NOTES（i18n 已补）；发布说明草稿 `dist/release-0.3.23.md`。提交、标签 `v0.3.23`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.23 。没有会话链接。没有在本机安装。
+- **0.3.23 的修复（2026-10-05，Claude）：「换一种模型，整窗能用多少」里 Sonnet 5.5 能用的量比 Fable 5.1 还少。**
+  - 价格表没有错（和 LiteLLM 一致：Sonnet 5.5 输入 2 / 输出 10 / 缓存读 0.2，Fable 5.1 是 10 / 50 / 0.25，美元每百万）。
+  - 原因：用户这 30 天只用过 2 次 Sonnet 5.5，都是新会话的头一两句，token 里约三成是缓存写入。`src/core/model-study.ts` 的 `unitCost` 只要同型号有一条记录就按「同模型的实际费用」算单价，得到每百万约 1.10 美元；`baseFor` 也拿这 2 条当推算起点。Fable 5.1 一次没用过，按价格表 × 本账号用量结构（98.5% 缓存读）算，每百万约 0.54 美元。于是 Sonnet 反而「更贵」。单次调用大小同理（1 次调用就当成平均值，「能调用多少次」虚高）。
+  - 改动：加了 `representative(list)`：至少 `MIN_COMBO_ROWS`（30）条，或者占本账号这 30 天请求的两成以上，才算数。`baseFor` 的同型号起点、`unitCost` 的「同模型实际费用」、单次调用的「自己的实测」三处都用它；不够就按本账号整体的用量结构算。价格表里没有的型号仍沿用同模型实际费用（没有别的办法）。有整段实测区间的组合（`capacityBasis = measured`）不受影响。
+  - 用户真实数据上的结果（只读、只看汇总，五小时窗口，预算约 39 美元）：改前 Sonnet 5.5 medium 约 4150 万、Fable 5.1 medium 约 7290 万；改后 Sonnet 5.5 medium 约 1.53 亿、high 约 1.37 亿，Fable 5.1 不变。Opus 5.5 high（只有 3 次调用）的「能调用多少次」从 1631 变成 265。
+  - 测试：`scripts/test-model-study.cjs` 加了一组（只试过一次的型号不按自己的冷启动请求定价；占两成以上仍然算数）。`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS）。没有在界面里实际看这张表。没有留下进程，没有动 dist。
+- 上一版 **0.3.22**，已提交、打标签、发布（下面两条是它的内容）。没有进行中的任务。本入口里更早写的「最新版本 0.3.21」「最后一个代码提交 bd6b6ef」是 0.3.21 当时的状态。
 - **0.3.22 发布记录（2026-10-05）**：推送前 fetch，远端多一个机器人提交 `d78e011 知识库：自动更新到 2026.10.05`，已快进合入后再打包。`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0。产物 `dist/TokenPulse-0.3.22-Setup.exe`（112,420,949）、`.blockmap`（119,537）、`Portable.exe`（112,163,808）、`latest.yml`（352，0.3.22）；包里的 `bridge.py` 和 asar 里的 `intro.js` 与源码一致。提交 `446e879 TokenPulse v0.3.22：修复 Prism 桥隔半天再启动报 401，标出预览版`，标签 `v0.3.22`。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.22 不是草稿、不是 prerelease，4 个附件大小和本地一致，releases/latest 是 v0.3.22。发布说明草稿 `dist/release-0.3.22.md`，开头有一句「目前是预览版」；README 简介下面也加了同一句。没有会话链接。没有在本机安装 0.3.22；「预览版」标签的样子和 Prism 桥修复在安装版里的效果等用户确认。
 - **0.3.22 的修复（2026-10-05，Claude）：Prism 桥登录约 12 小时后再启动服务就报 `[fatal] RuntimeError: list Prism projects HTTP 401 {"error":"Request verification failed"}`，重新登录才好。**
   - 用户的说法是「关机再开机后就用不了」。实际和关机无关，和时间有关：服务一直开着不受影响，停掉后隔了 12 小时再启动就会中。
