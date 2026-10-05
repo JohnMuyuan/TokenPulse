@@ -138,6 +138,8 @@ app.on('web-contents-created', (_, contents) => {
       assert.doesNotMatch(await evaluate("document.getElementById('official-accounts').innerHTML"), /access_?token|refresh_?token|id_?token|accessToken|refreshToken|\beyJ[\w-]{10,}/i);
       await evaluate("document.querySelector('[data-settings-tab=about]').click()");
       assert.ok((await evaluate("document.querySelector('.about-name').textContent")).includes('v' + require(path.join(appRoot, 'package.json')).version));
+      // 1.0 之前标「预览版」：侧栏、关于页各一个标签，关于页多一句说明
+      assert.deepEqual(await evaluate("[...document.querySelectorAll('.preview-tag, .preview-note')].map(n => n.hidden)"), Array(3).fill(!require(path.join(appRoot, 'package.json')).version.startsWith('0.')));
       // 软件更新区：开发环境不检查更新，要说明原因、不显示开关
       await until("document.getElementById('update-card').textContent.length > 0");
       assert.match(await evaluate("document.getElementById('update-card').textContent"), /当前版本 v\d+\.\d+\.\d+/);

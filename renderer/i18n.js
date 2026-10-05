@@ -100,6 +100,10 @@
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
     "占用的内存少了约两成": "About a fifth less memory",
+    "修复：Prism 桥隔半天再启动就报 401": "Fix: Prism bridge failed with 401 when started half a day later",
+    "登录约 12 小时后再启动服务，会报「list Prism projects HTTP 401 Request verification failed」，要重新登录才能用。现在登录一次，10 天内都能直接启动。": "Starting the service about 12 hours after signing in failed with \"list Prism projects HTTP 401 Request verification failed\" until you signed in again. Now one sign-in lets you start it directly for 10 days.",
+    "标出这是预览版": "Marked as a preview",
+    "1.0 之前都是预览版，功能在快速增加和调整，所以更新比较频繁。侧栏底部和「设置 → 关于」里现在有「预览版」标签。": "Everything before 1.0 is a preview: features are being added and changed quickly, which is why updates are frequent. The sidebar footer and Settings → About now show a Preview label.",
     "界面的绘制方式调整后，空闲时全部进程合计的内存从约 516 MB 降到约 405 MB（同一台电脑、同样的操作实测），动画照旧。窗口收进托盘或最小化时，后台不再重画界面，用量扫描从每分钟一次放慢到每 3 分钟一次；再打开窗口时马上补上最新的数据。": "With a change to how the interface is drawn, total memory across all processes when idle dropped from about 516 MB to about 405 MB (measured on the same PC with the same steps); animations are unchanged. While the window is in the tray or minimised, the interface is no longer redrawn in the background and usage scans slow from once a minute to once every 3 minutes; the latest data is filled in as soon as you open the window again.",
     "常见问题": "Common questions",
     "用的是哪里的额度？会扣 Codex 的额度吗？": "Which quota does it use? Does it use my Codex quota?",
@@ -1149,7 +1153,7 @@
     '统计、明细和导出使用相同筛选；请求条数与模型调用次数分别统计。': 'Totals, details and exports share filters; request rows and model calls are counted separately.',
     // 页面与导航
     'TokenPulse · 用量与额度': 'TokenPulse · Usage & Quota', '工作空间': 'Workspace', '总览': 'Overview', '额度详情': 'Quota', '用量明细': 'Usage', '请求记录': 'Requests', '会话管理': 'Sessions', '设置': 'Settings',
-    '主导航': 'Main navigation', 'TokenPulse 总览': 'TokenPulse overview', '本地数据 ·': 'Local data ·', '最小化': 'Minimize', '最大化': 'Maximize', '还原': 'Restore', '关闭': 'Close',
+    '主导航': 'Main navigation', '预览版': 'Preview', '现在还是预览版：功能在快速增加和调整，所以更新比较频繁。正式版会从 1.0 开始。': 'This is still a preview: features are being added and changed quickly, which is why updates are frequent. The stable release will start at 1.0.', 'TokenPulse 总览': 'TokenPulse overview', '本地数据 ·': 'Local data ·', '最小化': 'Minimize', '最大化': 'Maximize', '还原': 'Restore', '关闭': 'Close',
     '刷新数据': 'Refresh', '正在刷新…': 'Refreshing…', '正在读取本地数据': 'Reading local data', '正在读取本地用量…': 'Reading local usage…', '正在扫描本地会话…': 'Scanning local sessions…',
     '今天的用量与额度': "Today's usage and quota", '看看还剩多少额度，再安排接下来的工作。': 'See how much quota is left, then plan the rest of your work.',
     // 出口监控 · IP 数据库（0.3.7 改版）

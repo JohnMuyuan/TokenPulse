@@ -9,6 +9,8 @@
 一个常驻托盘的桌面小工具：记下本机所有 AI CLI 的 token 消耗，<br>
 盯住各家官方订阅的 5 小时 / 周额度，按最近趋势估计达到上限的时间，并显示重置时预计使用比例。
 
+> 目前是预览版（0.x）：功能还在快速增加和调整，所以更新比较频繁。正式版会从 1.0 开始。
+
 [![Release](https://img.shields.io/github/v/release/JohnMuyuan/TokenPulse?style=flat-square&color=34735e)](https://github.com/JohnMuyuan/TokenPulse/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/JohnMuyuan/TokenPulse/total?style=flat-square&color=34735e)](https://github.com/JohnMuyuan/TokenPulse/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078d4?style=flat-square)

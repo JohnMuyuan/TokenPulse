@@ -246,6 +246,11 @@ def cookie_header_to_playwright(cookie: str) -> list[dict]:
         name = name.strip()
         if name.startswith("__cf") or name == "cf_clearance":
             continue
+        # TokenPulse: the Prism session token lives 12 hours while auth.json is only written at login.
+        # Re-injecting an expired one shadows the token Prism issues on page load, and every request
+        # then fails with 401 "Request verification failed". Leave it out; the access token is enough.
+        if name == "prism_session_token" and float(jwt_payload(value.strip()).get("exp") or 0) < time.time():
+            continue
         out.append({"name": name, "value": value.strip(), "domain": ".openai.com", "path": "/"})
     return out
 

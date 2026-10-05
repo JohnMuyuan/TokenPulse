@@ -1,11 +1,20 @@
-# 当前接手入口 · 0.3.21（2026-10-04，已发布，工作区干净）
+# 当前接手入口 · 0.3.21 已发布；之后有一处修复未提交、未发布（2026-10-05）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
 - 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
 - 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
-- 没有进行中的任务，没有等用户决定的事。下一个版本号由用户指定（见下面的约定）。
+- **进行中：0.3.22（用户 2026-10-05 指定，「先不急」，还要继续优化别的，没说发布）。** `package.json` / `package-lock.json` 已改成 0.3.22；没有提交、没有打包。`renderer/intro.js` 已有 0.3.22 的 NOTES（两条，i18n 已补；版本号升了而 NOTES 没有这一版时 `test:ui` 会失败）。发布前还要写发布说明；之后再加功能要同步加 NOTES。最近一次验证（2026-10-05）：`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS），没有留下进程。
+- **未提交的修复（2026-10-05，Claude）：Prism 桥登录约 12 小时后再启动服务就报 `[fatal] RuntimeError: list Prism projects HTTP 401 {"error":"Request verification failed"}`，重新登录才好。**
+  - 用户的说法是「关机再开机后就用不了」。实际和关机无关，和时间有关：服务一直开着不受影响，停掉后隔了 12 小时再启动就会中。
+  - 原因：Prism 的 Cookie 里 `prism_oai_access_token` 有效 10 天，`prism_session_token` 只有 12 小时。`auth.json` 只在登录时写一次；`bridge.py` 每次启动都用 `cookie_header_to_playwright` 把里面的 Cookie 注入浏览器（域 `.openai.com`）。过期的会话令牌盖住了 Prism 打开页面时新发的那份（域 `prism.openai.com`），所有请求 401。界面上「登录还剩」看的是访问令牌，所以显示还有 200 多小时。原项目 README 把这个报错解释成连不上 `sentinel.openai.com`，这里不是这个原因（sentinel 的请求都是 200）。
+  - 确认过程：用户机器上用 scratchpad 的临时脚本照 `bridge.py` 的启动方式打开 Prism（只输出状态码和 Cookie 名字）。照原样注入：45 秒内 4 次都是 401。不注入会话令牌：第一次就是 200。改完后照原样再跑：200。
+  - 改动：`vendor/prism-bridge/bridge.py` 的 `cookie_header_to_playwright` 跳过已经过期的 `prism_session_token`（第三处 `TokenPulse:` 改动，`NOTICE.md` 已同步）；`scripts/test-prism-bridge.cjs` 加了一组，用空壳 playwright 导入真的 `bridge.py` 验证这个函数。
+  - 验证：`npm run compile` 退出 0；`npm test` 退出 0。没有跑 `npm run test:ui`（没有改界面）。没有通过 TokenPulse 界面实际启动服务验证（用户装的是 0.3.21 正式版，里面还是旧的 `bridge.py`）。
+  - 用户装的 0.3.21 在修复发布前的临时办法：隔了 12 小时以上再启动服务前，先重新登录一次。
+  - 没有留下进程；没有动 dist。
+- **0.3.22 追加：软件里标「预览版」（用户：0.x 都是预览版，还没有正式版）。** 版本号以 `0.` 开头时，侧栏底部「TokenPulse」后面和设置 → 关于的版本号后面各显示一个「预览版」标签，关于页多一句「现在还是预览版…正式版会从 1.0 开始」。文件：`renderer/index.html`、`renderer/app.js`（取到版本号后决定显不显示）、`renderer/app.css`（`.preview-tag` / `.preview-note`）、`renderer/i18n.js`、`scripts/test-ui.cjs`。GitHub Release **没有**改成 prerelease：自动更新和 `releases/latest` 都不认 prerelease。标签的样子等用户看过。
 - 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是本轮工作）。
 
 **0.3.21：删除 Codex 对话的两个问题 + 双重报错卡 + Prism 桥常见问题 + 降内存 · 已完成，已提交、打包、发布（2026-10-04，Claude）**

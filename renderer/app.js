@@ -2254,7 +2254,11 @@ for (const slot of document.querySelectorAll('[data-brand]')) slot.append(brandS
 applyTheme();
 darkQuery.addEventListener('change', () => { if (themeMode === 'system') applyTheme(true); });
 moveIndicator();
-api.version?.().then(version => { for (const node of document.querySelectorAll('.app-version')) node.textContent = 'v' + version; }).catch(() => {});
+api.version?.().then(version => {
+  for (const node of document.querySelectorAll('.app-version')) node.textContent = 'v' + version;
+  // 1.0 之前都是预览版
+  for (const node of document.querySelectorAll('.preview-tag, .preview-note')) node.hidden = !/^0\./.test(version);
+}).catch(() => {});
 for (const button of document.querySelectorAll('[data-page], [data-go]')) button.addEventListener('click', () => navigate(button.dataset.page || button.dataset.go));
 document.querySelector('.brand').addEventListener('click', e => { e.preventDefault(); navigate('overview'); });
 const picker = { from: '', to: '', follow: false, month: '' };

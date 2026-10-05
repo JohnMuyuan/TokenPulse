@@ -15,6 +15,27 @@ const python = ['python', 'python3'].find(name => { try { execFileSync(name, ['-
 if (!python) { console.log('SKIP prism bridge: 本机没有 python'); process.exit(0); }
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-prism-'));
+
+// 真的 bridge.py 里的一处改动：过期的 prism_session_token（只有 12 小时）不能再注入浏览器，
+// 否则登录 12 小时后再启动服务会报 401 Request verification failed。playwright 用空壳顶替，不启动浏览器。
+{
+  const stub = path.join(dir, 'stub', 'playwright');
+  fs.mkdirSync(stub, { recursive: true });
+  fs.writeFileSync(path.join(stub, '__init__.py'), '');
+  fs.writeFileSync(path.join(stub, 'sync_api.py'), 'sync_playwright = None\nclass Error(Exception):\n    pass\n');
+  const vendor = path.join(__dirname, '..', 'vendor', 'prism-bridge');
+  const code = [
+    'import base64, json, time, bridge',
+    'jwt = lambda exp: "h." + base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=") + ".s"',
+    'names = lambda header: [c["name"] for c in bridge.cookie_header_to_playwright(header)]',
+    'old = "prism_oai_access_token=a; prism_session_token=" + jwt(time.time() - 60) + "; __cf_bm=x"',
+    'new = "prism_oai_access_token=a; prism_session_token=" + jwt(time.time() + 3600)',
+    'print(json.dumps([names(old), names(new)]))',
+  ].join('\n');
+  const out = execFileSync(python, ['-c', code], { encoding: 'utf8', windowsHide: true, env: { ...process.env, PYTHONPATH: [path.dirname(stub), vendor].join(path.delimiter), PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' } });
+  assert.deepEqual(JSON.parse(out.trim().split(/\r?\n/).pop()), [['prism_oai_access_token'], ['prism_oai_access_token', 'prism_session_token']]);
+  console.log('PASS prism bridge: an expired session token is not injected again');
+}
 const fake = path.join(dir, 'bridge.py');
 fs.writeFileSync(fake, `
 import os, sys, json, time
