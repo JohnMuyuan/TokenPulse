@@ -2118,6 +2118,10 @@ def extract_llm_text(payload: dict | None) -> tuple[str, str]:
 # Prism Core Page Controller
 # ---------------------------------------------------------------------------
 
+# TokenPulse: failures where Prism states the turn never started; see PrismPage.chat.
+REBOOT_AND_RETRY_MARKS = ("Project file synchronization timed out while starting the response",)
+
+
 class PrismTurnError(RuntimeError):
     """The turn reached the model and ended badly (timeout, failure, empty output). Never resubmitted."""
 
@@ -2472,16 +2476,18 @@ class PrismPage:
             if not self.cookie:
                 raise RuntimeError("sandbox not ready: no cookie")
             self.boot(self.cookie)
-        return self._chat_once(
-            input_items,
-            model,
-            effort,
-            images,
-            conversation_id,
-            tool_names,
-            previous_response_id,
-            listen_snapshot,
-        )
+        args = (input_items, model, effort, images, conversation_id, tool_names, previous_response_id, listen_snapshot)
+        try:
+            return self._chat_once(*args)
+        except RuntimeError as e:
+            # TokenPulse: Prism says so itself when its sandbox failed to sync before the turn began. Nothing
+            # was generated, and the same session keeps failing every time until it is rebuilt (seen 16 times
+            # in a row). Rebuild it and send the turn once more, as the bridge did before 1bd4b79.
+            if not any(mark in str(e) for mark in REBOOT_AND_RETRY_MARKS):
+                raise
+            print("[llm] start failed, re-boot and retry:", str(e)[:120], flush=True)
+            self.boot(self.cookie)
+            return self._chat_once(*args)
 
     def _chat_once(
         self,

@@ -35,6 +35,26 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-prism-'));
   const out = execFileSync(python, ['-c', code], { encoding: 'utf8', windowsHide: true, env: { ...process.env, PYTHONPATH: [path.dirname(stub), vendor].join(path.delimiter), PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' } });
   assert.deepEqual(JSON.parse(out.trim().split(/\r?\n/).pop()), [['prism_oai_access_token'], ['prism_oai_access_token', 'prism_session_token']]);
   console.log('PASS prism bridge: an expired session token is not injected again');
+  // 真的 bridge.py 里的另一处改动：Prism 说「项目文件同步超时、这一轮没开始」时，重建会话再发一次；别的错误照旧不重发
+  const retry = [
+    'import json, bridge',
+    'def run(errors):',
+    '    page = bridge.PrismPage(); page.sandbox = {"ok": 1}; page.cookie = "c"; log = []',
+    '    page.boot = lambda cookie: log.append("boot")',
+    '    def once(*args):',
+    '        log.append("send")',
+    '        if errors: raise errors.pop(0)',
+    '        return {"text": "ok"}',
+    '    page._chat_once = once',
+    '    try: out = page.chat([], "m", "high")["text"]',
+    '    except Exception as e: out = type(e).__name__',
+    '    return log + [out]',
+    'sync = "Project file synchronization timed out while starting the response."',
+    'print(json.dumps([run([]), run([bridge.PrismTurnError(sync)]), run([bridge.PrismTurnError(sync), bridge.PrismTurnError(sync)]), run([bridge.PrismTurnError("llm start HTTP 403 x")])]))',
+  ].join('\n');
+  const retried = execFileSync(python, ['-c', retry], { encoding: 'utf8', windowsHide: true, env: { ...process.env, PYTHONPATH: [path.dirname(stub), vendor].join(path.delimiter), PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' } });
+  assert.deepEqual(JSON.parse(retried.trim().split(/\r?\n/).pop()), [['send', 'ok'], ['send', 'boot', 'send', 'ok'], ['send', 'boot', 'send', 'PrismTurnError'], ['send', 'PrismTurnError']]);
+  console.log('PASS prism bridge: a turn that never started because Prism failed to sync is retried once after a re-boot');
 }
 const fake = path.join(dir, 'bridge.py');
 fs.writeFileSync(fake, `

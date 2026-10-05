@@ -1,11 +1,18 @@
-# 当前接手入口 · 0.3.26（2026-10-06，已发布，工作区干净）
+# 当前接手入口 · 0.3.27（2026-10-06，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
 - 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
 - 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
-- 最新版本 **0.3.26**，用户同意直接发布（「没事的」）；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。**待确认：用户的朋友装上后，桌面端能不能打开旧对话**（见下面「没能复现」那句）。发布记录：推送前 fetch 并快进合入远端新提交（如有，是知识库机器人的）；`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.26-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；asar 里的 `build/core/agent-switch.js` 与编译结果一致；发布说明草稿 `dist/release-0.3.26.md`。提交、标签 `v0.3.26`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.26 。没有会话链接。没有在本机安装。
+- 最新版本 **0.3.27**（用户指定），已提交、打标签、发布，内容是下面这一条。没有进行中的任务。用户的朋友按临时办法（停止再启动服务）确实恢复了，印证了「重建会话能解决」。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.27-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；包里的 `bridge.py` 与源码一致；`renderer/intro.js` 有 0.3.27 的 NOTES（i18n 已补）；发布说明草稿 `dist/release-0.3.27.md`。提交、标签 `v0.3.27`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.27 。没有会话链接。没有在本机安装。0.3.26 的「朋友确认桌面端能打开旧对话」仍然没有回音。
+- **0.3.27 的修复（2026-10-06，Claude）：Prism 桥报 `stream disconnected before completion: Project file synchronization timed out while starting the response.` 后一直失败。**（用户朋友的日志 `Downloadsridge.log`，只读看过）
+  - 这句话是 Prism 服务器返回的（每轮开始前把项目文件同步进沙箱，这一步超时），桥里没有这段文字。
+  - 日志里的事实：旧版桥（0.3.24 及以前）遇到它会打印 `start failed, re-boot and retry` 并 `boot()` 重建会话，10-05 01:14 和 02:16 两次都是重建后立刻成功。朋友 08:17 更新到 0.3.25（上游 `1bd4b79`）后，09:18 起同一个错误连续 16 次，每次约 62 秒超时，没有一次重建。原因：上游这次把 `chat()` 里的重试循环整个去掉了（「不盲目重发」），连这种「明确没开始执行」的情况也不再重建会话。这是 0.3.25 跟进上游带来的退步。
+  - 改动：`vendor/prism-bridge/bridge.py` 的 `PrismPage.chat` 包一层：错误信息含 `REBOOT_AND_RETRY_MARKS`（目前只有这一句）时 `boot()` 后再发一次，第二次还失败就照常报错；别的错误不变。`Reconnecting to sandbox…will resume automatically` 和 `Unable to confirm the response started` 没有加进去（前者 Prism 说会自己恢复，后者不确定有没有执行）。第四处 `TokenPulse` 改动，`NOTICE.md` 已同步。`scripts/test-prism-bridge.cjs` 加了一组。
+  - 验证：`npm test` 退出 0；上游自带的 72 个测试对着改后的文件全过。**没有在真实环境复现这个错误**（它是 Prism 服务端的状态，本机造不出来），「重建后能恢复」的依据是朋友日志里旧版的两次成功。没有跑 `test:ui`（没有改界面）。
+  - 在修复发布前的临时办法：在 Prism 桥页面停止服务再启动（效果等于重建会话）。
+- 上一版 **0.3.26**，用户同意直接发布（「没事的」）；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。**待确认：用户的朋友装上后，桌面端能不能打开旧对话**（见下面「没能复现」那句）。发布记录：推送前 fetch 并快进合入远端新提交（如有，是知识库机器人的）；`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.26-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；asar 里的 `build/core/agent-switch.js` 与编译结果一致；发布说明草稿 `dist/release-0.3.26.md`。提交、标签 `v0.3.26`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.26 。没有会话链接。没有在本机安装。
 - **0.3.26 的改动（2026-10-06，Claude）：用 Prism 桥（或任何 TokenPulse 供应商）时，Codex 桌面端打不开以前的对话，报「ChatGPT 无法加载 config.toml…Model provider 'custom' not found」。**（用户朋友反馈）
   - 原因：Codex 每个对话的 `session_meta` 里记着创建时的 `model_provider`（config.toml 里那张表的名字）。桌面端打开旧对话时按这个名字找表，找不到就拒绝加载。`custom` 是别的工具（如 CC Switch）以前写的表名，朋友机器上这张表已经不在了。同类问题 TokenPulse 自己也会造成：用 `tokenpulse_route` 聊过之后切回官方，`writeCodex` 会把这张表删掉。用户自己的机器没中，是因为 config.toml 里还留着 CC Switch 写的 `[model_providers.custom]`（name = "OpenAI"、requires_openai_auth = true、wire_api = "responses"，没有 base_url）。
   - 改动（`src/core/agent-switch.ts`）：`codexSessionProviders()` 读 `sessions/`、`archived_sessions/` 下每个 `.jsonl` 的前 16 KB，取出现过的 `model_provider`（实测这个字段在前 1.1 KB 以内）；`syncCodexLegacyProviders(blocks)` 把「对话里出现过、不是内置（openai / ollama / lmstudio / oss）、配置里又没有」的名字补成一张表，`name = "TokenPulse (earlier chats)"`。正在用 `tokenpulse_route` 时照抄它的 base_url 和令牌（旧对话接着聊会走现在这家）；官方登录时写成和 CC Switch 那张一样的官方登录表。只认 name 是这个值的表为自己的：每次先清掉再按需要重补，别人写的同名表不动，对话都删了表也跟着删。调用点：`writeCodex` 末尾（每次切换）和 `repairAgentConfigs`（启动时，只在 `store.owned.codex` 有值即 TokenPulse 管过 Codex 时）。启动时补了会出一条提示（`CODEX_LEGACY_FIX`，单独的文案）。
