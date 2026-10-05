@@ -2477,17 +2477,35 @@ class PrismPage:
                 raise RuntimeError("sandbox not ready: no cookie")
             self.boot(self.cookie)
         args = (input_items, model, effort, images, conversation_id, tool_names, previous_response_id, listen_snapshot)
-        try:
-            return self._chat_once(*args)
-        except RuntimeError as e:
-            # TokenPulse: Prism says so itself when its sandbox failed to sync before the turn began. Nothing
-            # was generated, and the same session keeps failing every time until it is rebuilt (seen 16 times
-            # in a row). Rebuild it and send the turn once more, as the bridge did before 1bd4b79.
-            if not any(mark in str(e) for mark in REBOOT_AND_RETRY_MARKS):
-                raise
-            print("[llm] start failed, re-boot and retry:", str(e)[:120], flush=True)
-            self.boot(self.cookie)
-            return self._chat_once(*args)
+        # TokenPulse: the two recoveries the bridge had before 1bd4b79, for failures where Prism itself says
+        # the turn was not carried out.
+        rebooted = False
+        waited, delay = 0, 20
+        while True:
+            try:
+                return self._chat_once(*args)
+            except RuntimeError as e:
+                msg = str(e)
+                if "403" in msg and "processing conversation" in msg.lower():
+                    # A rate limit ("Please submit prompt again"). Handing it straight back makes the client
+                    # retry every 2-3 seconds, each retry is refused too and seems to extend the refusal.
+                    # One attempt per wait, longer each time, inside the budget the worker already allows.
+                    if waited + delay > THROTTLE_WAIT_SEC:
+                        raise PrismTurnError(
+                            f"Prism is rate limiting this account (waited {waited}s): {msg[:160]}"
+                        ) from None
+                    print(f"[llm] Prism throttled the turn, waiting {delay}s ({waited}s so far)", flush=True)
+                    time.sleep(delay)
+                    waited += delay
+                    delay = min(delay + 20, 60)
+                    continue
+                # The sandbox failed to sync before the turn began: the same session keeps failing every
+                # time until it is rebuilt (seen 16 times in a row). Rebuild it and send the turn once more.
+                if rebooted or not any(mark in msg for mark in REBOOT_AND_RETRY_MARKS):
+                    raise
+                rebooted = True
+                print("[llm] start failed, re-boot and retry:", msg[:120], flush=True)
+                self.boot(self.cookie)
 
     def _chat_once(
         self,
@@ -2797,7 +2815,9 @@ class PrismPage:
             cid, prev, snapshot = result["cid"], result["rid"], result.get("snapshot")
             done += 1
             print(f"[relay] part {done}/{len(pieces)} delivered", flush=True)
-            remain = PART_GAP_SEC - (time.monotonic() - turn_started)
+            # TokenPulse: the full gap after every part, as before 1bd4b79. Crediting the time the part took
+            # sent 8 parts about 3 seconds apart and ran straight into Prism's rate limit.
+            remain = PART_GAP_SEC
             if remain > 0:
                 time.sleep(remain)
 

@@ -100,6 +100,8 @@
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
     "占用的内存少了约两成": "About a fifth less memory",
+    "修复：Prism 桥被限流后反复失败": "Fix: the Prism bridge kept failing after being rate limited",
+    "Codex 报「Error while processing conversation (403 Forbidden)」是 Prism 的限流，短时间内连发多轮就会触发。0.3.25 之后桥遇到它会马上把错误交回 Codex，Codex 每两三秒重试一次，越试限流越久。现在桥会自己等 20、40、60 秒再发同一轮（最多 4 分钟）。长对话拆成多段发送时，每段之间也恢复成固定隔 8 秒。": "When Codex reports \"Error while processing conversation (403 Forbidden)\", Prism is rate limiting you, which happens after several turns in quick succession. Since 0.3.25 the bridge handed the error straight back to Codex, which retried every two or three seconds and made the limit last longer. The bridge now waits 20, 40, then 60 seconds itself before sending the same turn again (up to 4 minutes). When a long conversation is sent in several parts, the parts are again a fixed 8 seconds apart.",
     "修复：Prism 桥报「项目文件同步超时」后一直失败": "Fix: the Prism bridge kept failing after a project file sync timeout",
     "Codex 报「Project file synchronization timed out while starting the response」之后，每一轮都等一分钟再报同样的错，要手动重启服务才恢复。这是 Prism 那边开始回答前同步文件超时，这一轮并没有开始。现在桥遇到它会自动重建会话再发一次（0.3.24 及以前就是这样，0.3.25 跟进上游时被去掉了）。": "After Codex reported \"Project file synchronization timed out while starting the response\", every turn waited about a minute and failed the same way until the service was restarted by hand. Prism timed out syncing files before answering, so the turn never started. The bridge now rebuilds the session and sends the turn once more (as it did up to 0.3.24; this was lost in 0.3.25 with the upstream update).",
     "修复：用了 TokenPulse 的供应商后，Codex 打不开以前的对话": "Fix: Codex could not open earlier chats after switching to a TokenPulse provider",

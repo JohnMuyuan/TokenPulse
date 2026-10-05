@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.27（2026-10-05 全面整理，已发布，工作区干净）
+# 当前接手入口 · 0.3.28（2026-10-05，已发布，工作区干净）
 
 ## 新对话先看这里
 
@@ -6,9 +6,14 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.27**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.27）。`package.json` 是 0.3.27。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `f2810c8 TokenPulse v0.3.27：…`（标签 `v0.3.27`）。接手时用 `git status`、`git log -3` 核对。
+- 最新版本 **0.3.28**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.28）。`package.json` 是 0.3.28。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.28：…`（标签 `v0.3.28`）。接手时用 `git status`、`git log -3` 核对。
 - **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。
+- **0.3.28 的修复（2026-10-05，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.28.md`）：Prism 桥限流（`Error while processing conversation (403 Forbidden). Please submit prompt again.`）后陷入反复失败。**
+  - 证据（用户朋友的 `Downloadsridge(2).log`，只读看过，09:42 到 10:11，当时是 0.3.25 / 0.3.26 的桥）：这是 Prism 的限流。① 一个约 97 万字节的长对话被压缩成 8 段重发，段与段之间只隔约 3 秒（上游 `1bd4b79` 把 8 秒间隔改成「扣掉这一段已花的时间」），发完紧接着的下一轮就 403。② 403 之后桥直接把错误交回 Codex，Codex 每 2 到 3 秒重试一次，日志里 09:46、10:03、10:11 各连续 5 到 6 次；10:11 那次每次重试还会从头重发整个 8 段的压缩历史。旧版桥（0.3.24 及以前）这里会打印 `Prism throttled the turn, waiting 20s` 并等 20 / 40 / 60 秒再发同一轮，朋友更早的日志里 10-05 01:16 就有一次。上游 README 自己也写了「密集重试会让它更久」。
+  - 改动（`vendor/prism-bridge/bridge.py`，第五、六处 `TokenPulse` 改动，`NOTICE.md` 已同步）：`PrismPage.chat` 的包装改成循环：错误含 `403` 和 `processing conversation` 时按 20 / 40 / 60 / 60… 秒等待后重发同一轮，累计超过 `THROTTLE_WAIT_SEC`（240）才报错（工作线程的超时预算里本来就留着这 240 秒）；重建会话那条照旧只做一次。多段发送每段之后固定等 `PART_GAP_SEC`（8 秒），不再扣时间。
+  - 测试：`scripts/test-prism-bridge.cjs` 那组加了限流的两种情况。`npm test` 退出 0。上游自带的 72 个测试有 1 个失败，是断言「间隔要扣掉已花时间」的那条，属于有意改回的行为；其余 71 个通过。没有跑 `test:ui`（没有改界面）。**没有在真实环境触发过限流**来验证。
+  - 给朋友的建议：这个对话已经长到每次都要 8 段重发，最好让 Codex 压缩（`/compact`）或开新对话；被限流后停几分钟再用。
 - 软件处于**预览版**阶段：用户说 0.x 都是预览版，正式版从 1.0 开始。软件里、README、每次的发布说明开头都写了这一点。
 - 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是 Claude 的工作）。
 - GitHub 上有一个知识库机器人，每天可能往 `main` 推一个 `知识库：自动更新到 …` 的提交（只改 `knowledge/models.json`）。推送前先 `git fetch`，有就 `git pull --ff-only` 再打包。
@@ -17,6 +22,7 @@
 
 | 版本 | 提交 | 内容 |
 |---|---|---|
+| 0.3.28 | 见 `git log` | 修：Prism 桥被限流（403）后反复失败（恢复限流等待和分段固定间隔） |
 | 0.3.27 | `f2810c8` | 修：Prism 桥报「Project file synchronization timed out」后一直失败（恢复自动重建会话） |
 | 0.3.26 | `df5bcc4` | 修：用了 TokenPulse 的供应商后，Codex 桌面端打不开以前的对话（Model provider 'custom' not found） |
 | 0.3.25 | `00a51ab` | Prism 桥跟进上游（长对话自动压缩、轮询提速、出错不盲目重发） |
@@ -47,6 +53,7 @@
 
 ### 仍然没有人验证过的
 
+- 0.3.28：限流等待在真实环境里的效果（没有真实触发过限流）；下次出现时日志里应该有 `Prism throttled the turn, waiting 20s`。
 - 0.3.27：自动重建会话在真实环境里的效果。这个错误是 Prism 服务端的状态，本机造不出来；下次出现时日志里应该有一行 `start failed, re-boot and retry`，然后这一轮正常继续。
 - 0.3.25：真的超长对话触发自动压缩的效果。
 - 0.3.22：隔 12 小时以上再启动不用重新登录（代码层面在用户机器上实测过 Cookie 注入，没有人等够 12 小时后回话）。
@@ -93,11 +100,13 @@ AGENTS.md 之外，对话里形成的；也记在 Claude 的 memory 里。
 - **它是什么**：第三方开源项目 Prism Bridge（https://github.com/yyyllllming/prism-bridge ，作者 yyyllllming，MIT）。`bridge.py` 用无头 Chromium 登录用户自己的 Prism（prism.openai.com）账号，在本机 `http://127.0.0.1:18765/v1` 开 OpenAI 兼容接口给 Codex 用。适合 ChatGPT 账号被「降智」的用户；界面、README、更新说明里都写了适合谁、正常账号没必要用、以及可能不符合 OpenAI 服务条款的风险。
 - **代码位置**：`vendor/prism-bridge/`（`bridge.py`、`LICENSE`、`NOTICE.md`、`collect_login.py`），随安装包打到 `resources/prism-bridge`。进程管理在 `src/core/prism-bridge.ts`，界面在 `renderer/agent-switch.js` 的 `prismSection()`（「本地路由」分组下的 `prism` 一节），样式在 `renderer/agent-switch.css` 末尾（`.pv-prism-*`）。
 - **上游版本**：当前这份对应上游提交 `1bd4b79`（2026-10-05）。
-- **TokenPulse 对 `bridge.py` 的四处改动**（代码里都带 `TokenPulse` 注释，`NOTICE.md` 里有清单；以后换新版要全部补回）：
+- **TokenPulse 对 `bridge.py` 的六处改动**（代码里都带 `TokenPulse` 注释，`NOTICE.md` 里有清单；以后换新版要全部补回）：
   1. `PRISM_PROXY` → `BROWSER_PROXY` / `PROXY_OPTION`：给浏览器当代理（服务、Playwright 登录窗口、上游拉起的系统浏览器登录窗口）。上游没有代理支持。
   2. `LOGIN_CHANNEL` 常量（环境变量 `PRISM_LOGIN_CHANNEL`）：只给 `collect_login.py` 用。
   3. `cookie_header_to_playwright` 跳过已过期的 `prism_session_token`（12 小时有效；不跳过的话登录 12 小时后再启动报 `401 Request verification failed`）。上游没有修。
   4. `PrismPage.chat`：错误含 `REBOOT_AND_RETRY_MARKS`（目前只有 `Project file synchronization timed out while starting the response`）时 `boot()` 重建会话再发一次。上游 `1bd4b79` 把旧版的重建逻辑整个去掉了。
+  5. `PrismPage.chat`：限流（错误含 `403` 和 `processing conversation`）时按 20 / 40 / 60… 秒等待后重发同一轮，累计不超过 `THROTTLE_WAIT_SEC`（240）。上游改成了直接把错误交回客户端。
+  6. 多段发送每段之后固定等 `PART_GAP_SEC`（8 秒），不扣掉这一段已花的时间。上游自带的测试里有 1 条断言「要扣时间」，对着我们的文件会失败，属于有意为之。
 - **更新上游的做法**（0.3.25 做过一遍）：克隆上游到 scratchpad → 用新版 `bridge.py` 覆盖 → 补回四处改动 → 上游自带的 `test_bridge_*.py`（不进我们的仓库）拷到临时目录，用 `~/.tokenpulse/prism-bridge/venv` 的 python 跑 `-m unittest` → `npm test` → 真实启动一次（用户的服务通常正在运行占着浏览器目录：把 `profile/auth.json` 拷到临时目录、另开端口、跑完删除）→ 更新 `NOTICE.md` 里的上游提交号。**特别检查上游有没有去掉我们依赖的恢复 / 重试行为**（0.3.27 就是这么来的）。
 - **登录**：TokenPulse 自己用正常方式启动系统的 Chrome / Edge（`--user-data-dir=login-profile`，不被程序控制），用户登录到看见 Prism 界面后自己关窗口，再跑 `collect_login.py` 从那份浏览器数据里读出 Cookie 存成 `profile/auth.json`。被 Playwright 控制的登录窗口过不了真人验证。找不到 Chrome / Edge 时才调 `bridge.py login`。上游后来也做了同样思路的登录，我们没有换过去。
 - **数据**都在 `~/.tokenpulse/prism-bridge/`：`config.json`（端口、随机密钥、是否跟着启动）、`venv/`、`deps.json`、`profile/`（服务的浏览器数据和 `auth.json`）、`login-profile/`、`bridge.log`（超过 1 MB 轮转成 `.1`）。Cookie 和密钥不出主进程。
