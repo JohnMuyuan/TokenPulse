@@ -21,6 +21,8 @@
   const HUES = ['#4f7fd9', '#d9774f', '#10a37f', '#8b5cf6', '#c9832f', '#e05a8a', '#0ea5a4', '#65a30d', '#7c8796'];
   const WINDOWS = [['five', '5 小时'], ['week', '周']];
   const SORTS = [['capacity', '参考量'], ['calls', '请求次数'], ['recent', '常用'], ['name', '名称']];
+  /* 0.3.24：估计值和实测值可以都显示，也可以只看其中一种。只看实测时没有实测的组合不列出。 */
+  const SHOWS = [['both', '都显示'], ['estimate', '只看估计'], ['measured', '只看实测']];
   const WEEKDAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const HOUR = 3600000, DAY = 86400000;
 
@@ -94,7 +96,7 @@
 
   /* ================= 额度详情：换一种模型，整窗能用多少 ================= */
 
-  const Q = { host: null, loader: null, report: null, snapshot: null, sort: 'capacity', level: 'all', animate: false, open: new Set() };
+  const Q = { host: null, loader: null, report: null, snapshot: null, sort: 'capacity', level: 'all', show: 'both', search: '', animate: false, open: new Set() };
 
   function quotaUpdate(snapshot, report) {
     Q.host ??= $('quota-model-study');
@@ -115,8 +117,8 @@
         el('p', { text: '如果整个 5 小时 / 周周期只用一种模型和思考等级，大约能用多少 Tokens、等价多少 API 费用。全部可用的模型和等级一次列出。' })
       ])]),
       el('div', { class: 'ms-head-actions' }, [
-        kind ? addModelButton() : null,
-        segment(SORTS, Q.sort, value => { Q.sort = value; drawQuota('resort'); }),
+        el('div', { class: 'ms-head-left' }, [kind ? addModelButton() : null, segment(SORTS, Q.sort, value => { Q.sort = value; drawQuota('resort'); })]),
+        el('span', { class: 'ms-show', title: '显示估计值、实测值，还是两个都显示' }, [segment(SHOWS, Q.show, value => { Q.show = value; drawQuota('resort'); })]),
       ]),
     ]);
   }
@@ -139,33 +141,50 @@
     const rows = combine(data);
     const levels = [...new Set(rows.map(r => r.effort))].sort((a, b) => levelRank(a) - levelRank(b));
     if (Q.level !== 'all' && !levels.includes(Q.level)) Q.level = 'all';
-    const shown = sortRows(merge(rows.filter(r => Q.level === 'all' || r.effort === Q.level)));
+    const needle = Q.search.trim().toLowerCase();
+    // 实测值单独成一行，和估计值的行一起排：能看出两个数差多远、中间隔着哪些组合
+    const measuredRows = rows.filter(r => r.five.estimatedTokens != null || r.week.estimatedTokens != null).map(r => ({ ...r, key: r.key + '|measured', measuredRow: true, five: measuredView(r.five), week: measuredView(r.week) }));
+    const inView = Q.show === 'measured' ? measuredRows : Q.show === 'estimate' ? rows : [...rows, ...measuredRows];
+    const shown = sortRows(merge(inView.filter(r => (Q.level === 'all' || r.effort === Q.level) && (!needle || r.model.toLowerCase().includes(needle)))));
     const list = el('div', { class: 'ms-rank', role: 'list' });
     const max = { five: Math.max(0, ...shown.map(r => r.five.capacityTokens || 0)), week: Math.max(0, ...shown.map(r => r.week.capacityTokens || 0)), relative: Math.max(0, ...shown.map(r => r.five.relative || 0)) };
     shown.forEach((row, i) => { const node = rankRow(row, i, max, data); list.append(node); if (Q.open.has(row.key)) { node.classList.add('open'); node.setAttribute('aria-expanded', 'true'); list.append(detailPanel(row, data)); } });
-    if (!shown.length) list.append(empty('没有符合条件的模型组合。'));
+    if (!shown.length) list.append(empty(Q.show === 'measured' && !inView.length ? '还没有实测值：要有足够多整段只用同一个模型和等级的时段才测得出来。' : '没有符合条件的模型组合。'));
     const unknown = data.five.capacities.find(c => c.effort === 'unknown');
     const noBudget = !data.five.budget.costUsd && !data.week.budget.costUsd;
-    const merged = shown.reduce((n, r) => n + r.efforts.length, 0);
+    const merged = shown.reduce((n, r) => n + (r.measuredRow ? 0 : r.efforts.length), 0), estimateRows = shown.filter(r => !r.measuredRow).length;
     host.replaceChildren(...[
       quotaHeading(),
       el('div', { class: 'ms-budgets' }, WINDOWS.map(([w, label]) => budgetTile(w, label, data[w]))),
       highlights(merge(rows), data),
       noBudget ? el('p', { class: 'ms-note', text: '最近 30 天里「额度上涨、同期本机有 Code 请求」的区间还不够多，暂不折算绝对 Token / 美元容量。下面的倍数仅比较 API 参考单价，不是官方额度倍数。' }) : null,
       el('div', { class: 'ms-toolbar' }, [
+        el('label', { class: 'search-field ms-search' }, [icon('search'), el('input', { type: 'search', value: Q.search, placeholder: '搜索模型…', 'aria-label': '搜索模型', autocomplete: 'off', spellcheck: 'false' })]),
         el('div', { class: 'ms-chips', role: 'group', 'aria-label': '按思考等级筛选' }, [['all', '全部等级'], ...levels.map(l => [l, levelName(l)])].map(([id, label]) =>
           el('button', { type: 'button', class: 'ms-chip' + (Q.level === id ? ' on' : ''), 'data-level': id, 'aria-pressed': String(Q.level === id), translate: id === 'all' ? null : 'no' }, [label, el('small', { text: String(id === 'all' ? rows.length : rows.filter(r => r.effort === id).length) })]))),
         el('div', { class: 'ms-legend' }, [el('span', {}, [el('i', { class: 'ms-key full' }), noBudget ? 'API 价格参考' : '按本机区间折算整窗']), el('span', {}, [el('i', { class: 'ms-key left' }), '按官方剩余比例估算'])])
       ]),
       el('div', { class: 'ms-rank-head', 'aria-hidden': 'true' }, [el('span'), el('span', { text: '模型 · 思考等级' }), el('span', { text: '5 小时整窗' }), el('span', { text: '周整窗' })]),
       list,
-      el('p', { class: 'ms-note' }, [`共 ${number(merged)} 个组合，全部列出${merged > shown.length ? `；同一模型里换算结果相同的等级合成一行（缺少等级专属数据时共享价格参考，不代表官方扣额相同）` : ''}。`, unknown?.recentCalls ? `另有 ${number(unknown.recentCalls)} 次调用没记录思考等级，不参与换算。` : '']),
+      el('p', { class: 'ms-note' }, [`共 ${number(merged)} 个组合，全部列出${merged > estimateRows ? `；同一模型里换算结果相同的等级合成一行（缺少等级专属数据时共享价格参考，不代表官方扣额相同）` : ''}。`, unknown?.recentCalls ? `另有 ${number(unknown.recentCalls)} 次调用没记录思考等级，不参与换算。` : '']),
       methodNote()
     ].filter(Boolean));
     host.querySelector('.ms-chips').addEventListener('click', e => { const b = e.target.closest('[data-level]'); if (b && b.dataset.level !== Q.level) { Q.level = b.dataset.level; drawQuota('resort'); } });
+    // 搜索：整块重画后把焦点和光标放回输入框；输入法组字期间不重画
+    const search = host.querySelector('.ms-search input');
+    if (Q.searchFocus) { search.focus(); try { search.setSelectionRange(Q.searchFocus[0], Q.searchFocus[1]); } catch { /* 忽略 */ } Q.searchFocus = null; }
+    const onSearch = e => { if (e.isComposing || search.value === Q.search) return; Q.search = search.value; Q.searchFocus = [search.selectionStart, search.selectionEnd]; drawQuota('search'); };
+    search.addEventListener('input', onSearch); search.addEventListener('compositionend', () => onSearch({}));
     syncSegs(host);
     if (mode === 'enter') playChart(list, true);
     if (before) flip(host, before);
+  }
+
+  /** 只看实测：主数字换成实测值，调用次数和还剩多少按同样的比例换；这个窗口没有实测就空着。 */
+  function measuredView(c) {
+    if (c.estimatedTokens == null) return { ...c, capacityTokens: null, callsPerWindow: null, remainingTokens: null, relative: null, capacityBasis: null, noMeasured: true };
+    const k = c.capacityTokens ? c.estimatedTokens / c.capacityTokens : null;
+    return { ...c, capacityTokens: c.estimatedTokens, capacityBasis: 'measured', callsPerWindow: c.tokensPerCall ? c.estimatedTokens / c.tokensPerCall : null, remainingTokens: c.remainingTokens != null && k != null ? c.remainingTokens * k : null };
   }
 
   /** 五小时、周两份排行按组合对齐成一行。未记录等级的没法「全用这一档」，不进排行。 */
@@ -180,7 +199,7 @@
   function merge(rows) {
     const groups = new Map();
     for (const r of rows) {
-      const own = r.five.tokensPerCall || r.five.capacityBasis === 'measured' || r.week.capacityBasis === 'measured';
+      const own = r.measuredRow || r.five.tokensPerCall || r.five.estimatedTokens != null || r.week.estimatedTokens != null;
       const sig = own ? r.key : ['same', r.model, Math.round(r.five.capacityTokens ?? -1), Math.round(r.week.capacityTokens ?? -1), (r.five.relative ?? -1).toFixed(4), r.five.priceBasis].join('|');
       const group = groups.get(sig);
       if (group) group.efforts.push(r.effort); else groups.set(sig, { ...r, key: sig, efforts: [r.effort] });
@@ -253,7 +272,8 @@
     const cell = el('div', { class: `ms-cap ${w}` });
     if (c.capacityTokens != null) {
       // 整窗的等价 API 费用对每个模型都一样（就是上面的整窗预算），不在格子里重复；下面一行写调用次数和还剩多少
-      cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: tokens(c.capacityTokens) })]));
+      const estimated = c.capacityBasis !== 'measured';
+      cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: tokens(c.capacityTokens) }), el('small', { class: 'ms-cap-kind', text: estimated ? '估计' : `实测 · ${c.confidence === 'medium' ? '样本较充分' : '初步参考'}` })]));
       const meter = el('div', { class: 'ms-meter' }, [paint(el('i', { class: 'full' }), { width: `${Math.max(1.5, c.capacityTokens / (max[w] || 1) * 100).toFixed(2)}%` })]);
       if (c.remainingTokens != null) meter.append(paint(el('i', { class: 'left' }), { width: `${Math.max(0, c.remainingTokens / (max[w] || 1) * 100).toFixed(2)}%` }));
       cell.append(meter);
@@ -262,6 +282,8 @@
       // 0.3.15：Tokens 里绝大部分是每次调用重读的缓存，容易让人以为能写这么多新内容。写明其中新内容大约多少
       const fresh = freshShare(c.priceMix);
       if (fresh && fresh.cacheRead >= .5) cell.append(el('small', { class: 'ms-cap-new', title: '每次调用都会把整段对话重新读一遍（命中缓存，很便宜），这部分也算在 Tokens 里。新内容 = 新输入 + 缓存写 + 输出。', text: `其中新内容约 ${tokens(c.capacityTokens * fresh.fresh)} · ${pct1(fresh.cacheRead)} 是重读缓存` }));
+    } else if (c.noMeasured) {
+      cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { class: 'muted', text: '—' }), el('small', { text: '这个窗口没有实测' })]), el('div', { class: 'ms-meter' }));
     } else if (c.relative != null) {
       cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { text: `×${c.relative.toFixed(2)}` }), el('small', { text: 'API 价格参考比' })]),
         el('div', { class: 'ms-meter' }, [paint(el('i', { class: 'full relative' }), { width: `${Math.max(1.5, c.relative / (max.relative || 1) * 100).toFixed(2)}%` })]));
@@ -280,7 +302,8 @@
   const pct1 = share => `${(share * 100).toFixed(share > .995 || share < .005 ? 2 : 1)}%`;
   function rankRow(row, i, max, data) {
     const c5 = row.five, cw = row.week;
-    const basis = cw.capacityBasis === 'measured' || c5.capacityBasis === 'measured' ? ['样本外推', 'measured'] : c5.priceBasis === 'price' ? ['价格表', 'price'] : c5.priceBasis ? ['按价模拟', 'cost'] : null;
+    const basis = c5.priceBasis === 'price' ? ['价格表', 'price'] : c5.priceBasis ? ['按价模拟', 'cost'] : null;
+    const hasMeasured = c5.estimatedTokens != null || cw.estimatedTokens != null;
     const lp = c5.listPrice;
     const meta = [
       lp ? `输入 ${price$(lp.input)} · 输出 ${price$(lp.output)} / 百万` : null,
@@ -288,13 +311,15 @@
       c5.tokensPerCall ? `单次调用${c5.tokensPerCallBasis === 'scaled' ? '≈' : '约'} ${tokens(c5.tokensPerCall)}` : null,
       c5.recentTokens ? `30 天用了 ${tokens(c5.recentTokens)}` : '30 天没用过'
     ].filter(Boolean);
-    const node = el('div', { class: 'ms-row' + (i < 3 && Q.sort !== 'name' ? ' top' : ''), role: 'listitem', tabindex: 0, 'data-key': row.key, 'data-model': row.model, 'data-effort': row.efforts.join(' ') }, [
+    const node = el('div', { class: 'ms-row' + (row.measuredRow ? ' measured' : '') + (i < 3 && Q.sort !== 'name' ? ' top' : ''), role: 'listitem', tabindex: 0, 'data-key': row.key, 'data-kind': row.measuredRow ? 'measured' : 'estimate', 'data-model': row.model, 'data-effort': row.efforts.join(' ') }, [
       el('span', { class: 'ms-no', text: String(i + 1).padStart(2, '0') }),
       el('div', { class: 'ms-name' }, [
         avatar(data.kind, 'ms-row-logo'),
         el('div', { class: 'ms-name-text' }, [
-          el('div', { class: 'ms-name-top' }, [el('b', { text: row.model, title: row.model, translate: 'no' }), ...row.efforts.map(levelBadge), basis ? el('span', { class: `ms-basis ${basis[1]}`, text: basis[0] }) : null,
-            c5.effortBasis ? el('span', { class: 'ms-basis effort ' + (c5.effortBasis === 'own' ? 'own' : 'ref'), text: c5.effortBasis === 'own' ? '等级实测' : '等级参考' }) : null,
+          el('div', { class: 'ms-name-top' }, [el('b', { class: row.measuredRow ? 'ms-measured-name' : null, text: row.model, title: row.model, translate: 'no' }), ...row.efforts.map(levelBadge), row.measuredRow ? el('span', { class: 'ms-measured-tag', text: '实测' }) : basis ? el('span', { class: `ms-basis ${basis[1]}`, text: basis[0] }) : null,
+            row.measuredRow ? infoTip([el('span', { text: '估计值：按 API 价格和你平时的用量结构统一换算，所有型号、所有等级用的是同一套算法，可以互相比较。' }), el('span', { text: '实测值：只在你整段时间都用这个组合时才有，按「额度涨 1 个百分点实际用掉多少 Tokens」折成整窗。' }), el('span', { text: '两个数不一样是正常的。实测值带着你用这个组合那段时间的习惯（会话长短、缓存命中多少、有没有同时在聊天），所以不同组合的实测值不能直接比，也不代表这个等级本身更省或更费；样本越少偏差越大。' })], '实测值和估计值为什么不一样', 'ms-measured-tip', 'help') : null,
+            !row.measuredRow && hasMeasured ? el('span', { class: 'ms-basis measured', text: '有实测' }) : null,
+            !row.measuredRow && c5.effortBasis ? el('span', { class: 'ms-basis effort ' + (c5.effortBasis === 'own' ? 'own' : 'ref'), text: c5.effortBasis === 'own' ? '等级实测' : '等级参考' }) : null,
             ...priceTags(c5.priceNotes),
             row.origins.includes('user') ? el('span', { class: 'ms-user-tag', text: '你添加的' }) : null,
             row.origins.includes('user') ? removeButton(row) : null]),
@@ -385,8 +410,8 @@
     node.append(el('summary', { text: '怎么换算的' }),
       el('ul', {}, [
         el('li', { text: '官方额度属于账号总池，可包含聊天、Code 和其他设备。0.3.9 仅使用用户前向确认的本机专用时段；前 10 分钟缓冲，有明显未匹配增长的校准段暂不采用。' }),
-        el('li', { text: '优先使用已确认的同模型/等级样本。没有合格专属样本时的「按价模拟」假设扣额与 API 参考费用成比例，此假设未被官方确认，不能当作真实额度或保证。' }),
-        el('li', { text: '标「样本外推」的组合：有足够多整段只用它的采样区间，直接按实测折算。即使数值接近，也不能证明官方按 API 单价扣额度。' }),
+        el('li', { text: '每一行的主数字都是估计值：整窗预算 ÷ 这个组合的综合单价。综合单价 = 价格表 × 你的用量结构；同一个型号的各个等级用同一份用量结构，只把输出部分按等级倍数换算。它假设扣额与 API 参考费用成比例，此假设未被官方确认，不能当作真实额度或保证。' }),
+        el('li', { text: '标「有实测」的组合：有足够多整段只用它的采样区间，另外单独列一行实测值（名字是绿色的），和估计值的行一起排序。实测值带着你当时的使用习惯，不同组合之间不能直接比；即使和估计值接近，也不能证明官方按 API 单价扣额度。' }),
         el('li', { text: '思考等级、上下文和缓存会改变请求构成；API 单价不代表官方扣额权重，不保证较高等级一定能调用更少次数。「≈ 次调用」按这个组合最近 30 天的平均算。' }),
         el('li', { text: '思考等级：等级越高推理 / 输出 token 越多。没用够的组合按你最常用那一档的实际用量，把输出部分乘上等级倍数推算；倍数优先用你自己的实测（同型号两档各 20 次调用以上），其次参考 Epoch AI 基准数据（DeepSWE / CursorBench，CC BY 4.0）的同型号数据或同家族平均，标「等级参考」。' }),
         el('li', { text: '其他设备的用量、长时间没有采样、跨重置卡、套餐变化都会让结果偏离；API 等价费用不是订阅余额。目录里的模型、以及你自己添加的模型，不保证这个账号都能用。' })

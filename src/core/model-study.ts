@@ -213,17 +213,20 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
   const shape = (m: Mix, basis: NonNullable<ModelCapacity["priceMix"]>["basis"], requests: number): ModelCapacity["priceMix"] =>
     m.input + m.output > 0 ? { fresh: Math.max(0, m.input - m.cacheRead - m.cacheWrite), cacheRead: m.cacheRead, cacheWrite: m.cacheWrite, output: m.output, basis, requests } : null;
   const unitCost = (model: string, key: string, effort: string): [number | null, ModelCapacity["priceBasis"], EffortRatio, ReturnType<typeof baseFor>, ModelCapacity["priceMix"]] => {
-    const base = baseFor(model), none: EffortRatio = { ratio: 1, basis: null, source: null };
-    const combo = pricedRows.filter(r => comboKey(r.model, r.effort) === key);
-    const own = combo.length >= MIN_COMBO_ROWS ? perToken(combo) : null;
-    if (own) return [own, "combo", none, base, shape(mixOf(combo), "combo", combo.length)];
+    /*
+     * 估计值对同一个型号的所有等级用同一个起点（用得最多那一档的用量结构），只把输出部分按等级倍数换算，
+     * 这样各等级、各型号之间可以直接比。某个组合自己的实际费用不拿来定价：它反映的是用这个组合那段时间的习惯
+     * （会话长短、缓存命中多少），会出现 low 比 high 还贵这种和等级无关的结果。实测值另外给（estimatedTokens）。
+     */
+    const base = baseFor(model);
     const er = effortRatio(model, base.anchor, effort);
     const modelRows = pricedRows.filter(r => r.model === model);
     if (er.ratio === 1) {
-      const sameModel = representative(modelRows) ? perToken(modelRows) : null;
-      if (sameModel) return [sameModel, "model", er, base, shape(mixOf(modelRows), "model", modelRows.length)];
-      const listed = mixTokens > 0 ? estimateCost(model, mix) / mixTokens : 0;
-      return [listed > 0 ? listed : null, listed > 0 ? "price" : null, er, base, listed > 0 ? shape(mix, mix === DEFAULT_MIX ? "default" : "account", mix === DEFAULT_MIX ? 0 : rows.length) : null];
+      const start = base.sameModel ? base.mix : mix, startTokens = start.input + start.output;
+      const listed = startTokens > 0 ? estimateCost(model, start) / startTokens : 0;
+      if (listed > 0) return [listed, "price", er, base, shape(start, base.sameModel ? "model" : start === DEFAULT_MIX ? "default" : "account", start === DEFAULT_MIX ? 0 : base.sameModel ? modelRows.length : rows.length)];
+      const sameModel = perToken(modelRows);
+      return [sameModel, sameModel ? "model" : null, er, base, sameModel ? shape(mixOf(modelRows), "model", modelRows.length) : null];
     }
     const scaled = { ...base.mix, output: base.mix.output * er.ratio };
     const scaledTokens = scaled.input + scaled.output;
@@ -250,9 +253,10 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     // 未知等级没法说「全用这一档」；不换算，只在时间轴和用量里出现。
     const [unit, priceBasis, effortInfo, base, priceMix] = entry.effort === "unknown" ? [null, null, { ratio: 1, basis: null, source: null } as EffortRatio, null, null] : unitCost(entry.model, key, entry.effort);
     const derivedTokens = budget.costUsd != null && unit ? budget.costUsd / unit : null;
-    // 有合格的同组合样本就优先用它；不能让混合 API 价格假设盖过真实百分点样本。
-    const measured = estimatedTokens != null;
-    const capacityTokens = measured ? estimatedTokens : derivedTokens;
+    // 排行统一用估计值（各行口径一致，可以互相比）；实测值在 estimatedTokens 里另外给，界面上两个都显示。
+    // 只有估计不出来（没有整窗预算或没有单价）时才退回实测。
+    const measured = derivedTokens == null && estimatedTokens != null;
+    const capacityTokens = derivedTokens ?? estimatedTokens;
     const recentCalls = sum(recent, r => r.calls), recentTokens = sum(recent, r => r.tokens);
     // 单次调用大小：自己用过就按自己的（实测优先）；没用过按起点那一档的每次调用，输出部分乘等级倍数
     const scaledPerCall = base && base.calls > 0 ? (base.mix.input + base.mix.output * effortInfo.ratio) / base.calls : null;

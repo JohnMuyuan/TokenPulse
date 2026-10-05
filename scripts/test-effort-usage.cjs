@@ -91,11 +91,11 @@ try {
     assert.ok(Math.abs(med.effortRatio - 1000 / 1500) < 1e-9, '本机实测倍数：' + med.effortRatio);
     assert.equal(med.tokensPerCallBasis, 'own', '单次调用也按自己的');
   });
-  check('有足够整段区间的组合仍按实测折算，不受等级倍数影响', () => {
+  check('有足够整段区间的组合：排行用估计值，实测值另外保留', () => {
     const pure = [row(1), row(2), row(3)];
     const x = analyzeModelStudy(query, samples, pure, catalog, now);
     const med = x.capacities.find(c => c.model === 'claude-qa' && c.effort === 'medium');
-    assert.equal(med.capacityBasis, 'measured');
+    assert.equal(med.capacityBasis, 'cost'); assert.ok(med.estimatedTokens > 0, '实测值还在'); assert.equal(med.capacityTokens, med.derivedTokens);
     assert.equal(med.effortBasis, null);
   });
   check('用户自己加的、从没用过的型号：按家族倍数也能分出等级', () => {

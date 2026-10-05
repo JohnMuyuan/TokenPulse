@@ -86,6 +86,11 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .ms-name-text { display: grid; gap: 5px; min-width: 0; }
 .ms-name-top { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px; min-width: 0; }
 .ms-name-top b { overflow: hidden; font-size: 13.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.ms-name-top b.ms-measured-name { color: var(--accent-strong); }
+.ms-toolbar .ms-search { flex: 0 1 240px; width: auto; min-width: 150px; }
+.ms-show { display: inline-flex; margin-left: auto; }
+.ms-row.measured { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.ms-name-top .ms-measured-tip { margin-left: -2px; }
 .ms-name small { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .ms-basis { padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .ms-basis.measured { border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent-strong); }
@@ -93,6 +98,11 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 .ms-cap-num { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .ms-cap-num b { font: 700 15px/1 var(--font-display); font-variant-numeric: tabular-nums; }
 .ms-cap-num small { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.ms-measured-tag { flex: none; padding: 0 6px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-strong); font-size: 11px; font-weight: 600; line-height: 1.6; }
+.ms-measured-tip { flex: none; margin-left: 0; }
+.ms-measured-tip .info-tip-btn { width: 18px; height: 18px; }
+.ms-measured-tip .info-tip-btn .icon { width: 15px; height: 15px; }
+.ms-measured-tip:hover .info-tip-btn, .ms-measured-tip .info-tip-btn:focus-visible { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .ms-meter { position: relative; height: 8px; overflow: hidden; border-radius: 99px; background: var(--tile-neutral); }
 .ms-meter i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; transform-origin: left center; }
 .five .ms-meter .full { background: color-mix(in srgb, var(--ring-five) 32%, var(--tile-neutral)); }
@@ -254,7 +264,8 @@ main.entering .ms-highlight, .chart-enter .ms-highlight { animation: fade-up .5s
 @media (prefers-reduced-motion: reduce) { .ms-off { transition: none; } }
 
 /* ---------------- 自己添加模型、思考等级依据（0.3.12） ---------------- */
-.ms-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.ms-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between; flex: 1 1 100%; }
+.ms-head-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ms-add-model { min-height: 32px; padding: 5px 12px; font-size: 12.5px; }
 .ms-basis.effort.own { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .ms-basis.effort.ref { color: var(--muted); background: var(--tile-neutral); }

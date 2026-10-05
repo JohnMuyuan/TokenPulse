@@ -37,6 +37,32 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   await evaluate("state.account='chatgpt:qa-study'; navigate('quota')");
   await until(`document.querySelector('${Q} .ms-row') && !document.querySelector('${Q}').hasAttribute('aria-busy')`);
   // 两个窗口一次列出，不用查询：5 小时按整窗预算换算出 Token；周窗口样本不足，只给相对容量
+  /*
+   * 0.3.24：实测值单独成行，和估计值的行一起排（能看出差多远、中间隔着谁）。
+   * 默认「都显示」：gpt-qa high 有实测 → 估计行 2 条 + 实测行 1 条。
+   */
+  const kinds = () => evaluate(`[...document.querySelectorAll('${Q} .ms-row')].map(r => [r.dataset.kind, r.dataset.effort, r.querySelector('.ms-cap.five .ms-cap-kind')?.textContent.split(' ')[0], r.querySelector('.ms-cap.five b').textContent, r.querySelector('.ms-name-top b').classList.contains('ms-measured-name'), r.querySelectorAll('.ms-measured-tag').length, r.querySelectorAll('.ms-basis.measured').length].join('|')).sort()`);
+  assert.deepEqual(await kinds(), ['estimate|high|估计|50.0K|false|0|1', 'estimate|low|估计|50.0K|false|0|0', 'measured|high|实测|50.0K|true|1|0']);
+  assert.equal(await count(`${Q} .ms-cap-measured`), 0, '实测值不再贴在估计值下面');
+  assert.equal(await text(`${Q} .ms-row[data-kind=measured] .ms-cap.week small`), '这个窗口没有实测');
+  assert.notEqual(await evaluate(`getComputedStyle(document.querySelector('${Q} .ms-row[data-kind=measured] .ms-name-top b')).color`), await evaluate(`getComputedStyle(document.querySelector('${Q} .ms-row[data-kind=estimate] .ms-name-top b')).color`), '实测行的名字是绿色的');
+  assert.equal(await evaluate(`(() => { const b = document.querySelector('${Q} .ms-row[data-kind=measured] .ms-measured-tip .info-tip-btn'); b.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); b.focus(); b.click(); const pop = document.querySelector('.info-tip-pop.open'); const out = [b.getAttribute('aria-label'), !!b.querySelector('use[href="#i-help"]'), pop ? pop.children.length : 0, /不能直接比/.test(pop?.textContent || ''), b.closest('.ms-row').getAttribute('aria-expanded')].join('|'); b.blur(); b.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true })); return out; })()`), '实测值和估计值为什么不一样|true|3|true|false', '问号：悬停出说明，点它不展开这一行');
+  // 头部：添加模型和排序靠左，显示切换靠右
+  assert.equal(await evaluate(`(() => { const a = document.querySelector('${Q} .ms-head-left').getBoundingClientRect(), b = document.querySelector('${Q} .ms-show').getBoundingClientRect(), h = document.querySelector('${Q} .ms-head-actions').getBoundingClientRect(); return Math.abs(a.left - h.left) < 2 && Math.abs(b.right - h.right) < 2 && a.right <= b.left; })()`), true);
+  const show = v => evaluate(`document.querySelector('${Q} .ms-show button[data-value=${v}]').click()`);
+  await show('measured');
+  assert.deepEqual(await kinds(), ['measured|high|实测|50.0K|true|1|0']);
+  // 搜索模型：边输入边筛，焦点留在输入框里；不分大小写
+  const type = v => evaluate(`(() => { const i = document.querySelector('${Q} .ms-search input'); i.focus(); i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await show('both');
+  await type('no-such-model');
+  assert.deepEqual(await evaluate(`[document.querySelectorAll('${Q} .ms-row').length, document.activeElement === document.querySelector('${Q} .ms-search input'), document.querySelector('${Q} .ms-search input').value]`), [0, true, 'no-such-model']);
+  await type('GPT');
+  assert.equal(await count(`${Q} .ms-row`), 3);
+  await type('');
+  // 后面的旧断言按「只看估计」跑：行数和以前一样
+  await show('estimate');
+  assert.deepEqual(await kinds(), ['estimate|high|估计|50.0K|false|0|1', 'estimate|low|估计|50.0K|false|0|0']);
   assert.equal(await text(`${Q} .ms-row[data-effort=high] .ms-cap.five b`), '50.0K');
   assert.equal(await text(`${Q} .ms-row[data-effort=low] .ms-cap.five b`), '50.0K', '没用过的等级也按同模型单价换算');
   assert.match(await text(`${Q} .ms-row[data-effort=high] .ms-cap.week b`), /^×/, '周窗口不能拿五小时的预算');

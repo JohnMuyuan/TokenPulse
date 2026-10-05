@@ -36,8 +36,8 @@ const local=rows.map((r,i)=>({...r,at:now-(51-i*5)*minute}));
   const study=analyzeModelStudy(q,history,local,catalog,now);
   assert.equal(study.selected.used,66,'官方已用保持真实值');
   assert.ok(Math.abs(study.budget.costUsd-.5)<1e-9,'只用本机区间：0.03 美元 ÷ 6 个点');
-  assert.ok(Math.abs(study.capacities[0].capacityTokens-50000)<1e-8);
-  assert.ok(Math.abs(study.capacities[0].remainingTokens-17000)<1e-8,'剩余预测用真实 34% 余量');
+  assert.ok(Math.abs(study.capacities[0].estimatedTokens-50000)<1e-8);
+  assert.ok(Math.abs(study.capacities[0].remainingTokens-study.capacities[0].capacityTokens*.34)<1e-8,'剩余预测用真实 34% 余量');
   assert.equal(study.offMachine.points,40,'后面两段本机没有请求的涨幅算作本机以外');
   assert.equal(study.offMachine.detected.length,1,'相邻的本机以外区间合成一段');
   // 紧挨着本机请求（5 分钟内）的涨幅说不清，不当成本机以外
@@ -47,7 +47,7 @@ const local=rows.map((r,i)=>({...r,at:now-(51-i*5)*minute}));
   const marked=analyzeModelStudy(q,history,local,catalog,now,[],false,[mark]);
   assert.equal(marked.offMachine.detected.length,0);
   assert.equal(marked.offMachine.marks[0].points,60);
-  assert.equal(marked.offMachine.marks[0].equivalentTokens,30000,'60 个点 × 整窗 50000 Tokens');
+  assert.ok(Math.abs(marked.offMachine.marks[0].equivalentTokens-marked.capacities[0].capacityTokens*.6)<1e-6,'60 个点 × 这个组合的整窗估计值');
   // 标注盖住有本机请求的区间：可能混用，这个区间不进折算
   const mixed=analyzeModelStudy(q,history,local,catalog,now,[],false,[{...mark,id:'m2',from:now-50*minute,to:now-46*minute}]);
   assert.equal(mixed.excluded.offMachine,1);assert.equal(mixed.budget.points,4);

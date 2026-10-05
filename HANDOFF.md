@@ -1,11 +1,20 @@
-# 当前接手入口 · 0.3.23（2026-10-05，已发布，工作区干净）
+# 当前接手入口 · 0.3.24（2026-10-05，已发布，工作区干净）
 
 ## 新对话先看这里（2026-10-04 整理）
 
 **现在的状态**
 - 最新版本 **0.3.21**，已提交、已打标签、已发布到 GitHub（Release 是正式版，releases/latest = v0.3.21）。`package.json` 是 0.3.21。
 - 本地 `main` 和 `origin/main` 一致。最后一个代码提交是 `bd6b6ef TokenPulse v0.3.21：…`（标签 `v0.3.21`），之后只有更新本文档的提交。工作区没有未提交的改动（接手时用 `git status`、`git log -3` 核对）。
-- 最新版本 **0.3.23**（用户指定），已提交、打标签、发布，内容是下面这一条修复。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.23-Setup.exe`（112,421,541）、`.blockmap`（119,562）、`Portable.exe`（112,164,391）、`latest.yml`（352）；asar 里的 `build/core/model-study.js` 与编译结果一致；`renderer/intro.js` 有 0.3.23 的 NOTES（i18n 已补）；发布说明草稿 `dist/release-0.3.23.md`。提交、标签 `v0.3.23`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.23 。没有会话链接。没有在本机安装。
+- 最新版本 **0.3.24**，用户看过三轮测试版后同意发布；已提交、打标签、发布，内容是下面这一条。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.24-Setup.exe`、`.blockmap`、`Portable.exe`、`latest.yml`；asar 里的 `renderer/model-study.js` 与源码一致；发布说明草稿 `dist/release-0.3.24.md`。提交、标签 `v0.3.24`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.24 。没有会话链接。没有在本机安装。
+- **0.3.24 的改动（2026-10-05，Claude）：「换一种模型，整窗能用多少」改成「所有行都显示估计值，有实测的另外并排显示实测值」。**
+  - 起因：用户发现 Opus 5.5 的 low 比 high 能用的还少。不是算错：low 那行是实测（用户用 low 的会话里缓存写入占 2.0%，medium 是 1.2%，每 Token 贵约一成），high 那行是从 medium 推算的，两种来源混在一列里比。用户要求：全部先按估计值展示，实测值插进去并存、标出来、带圆圈问号解释两者的差别；原来的「样本外推」标签看不懂也不显眼。
+  - `src/core/model-study.ts`：① `unitCost` 不再用「这个组合自己的实际费用」定价（`priceBasis` 不会再是 `combo`，类型里还留着）。同一型号的所有等级用同一个起点（`baseFor`：用得最多那一档的用量结构），只把输出按等级倍数换算；倍数为 1 时用 价格表 × 起点结构（`priceBasis = price`，`priceMix.basis` 为 `model` / `account` / `default`）。价格表里没有的型号仍用同模型实际费用。② `capacityTokens = derivedTokens ?? estimatedTokens`：排行、还剩多少、调用次数、本机以外标注的折算都统一用估计值；实测值仍在 `estimatedTokens`（字段名是历史遗留，它是实测）。`capacityBasis` 只有估计不出来时才是 `measured`。
+  - `renderer/model-study.js`：主数字后面标「估计」（`.ms-cap-kind`）；有实测时下面多一行 `.ms-cap-measured`：「实测」标签 + 数值 + 样本较充分 / 初步参考 + 圆圈问号（`infoTip(…, 'help')`，三段说明）。名字那行的「样本外推」换成「有实测」。合并同值行的判断改成看 `estimatedTokens`。「怎么换算的」里两条说明改写。样式在 `renderer/model-study.css`，i18n 已补。
+  - 用户真实数据上的结果（只读、只看汇总，五小时窗口）：Opus 5.5 估计值 medium 约 1.26 亿、low 约 1.26 亿、high 约 1.18 亿、xhigh 约 0.99 亿。low 和 medium 几乎一样是因为等级倍数用了用户自己的实测（low 每次调用的输出是 medium 的 1.03 倍，标「等级实测」），不是基准数据。
+  - **同一版追加（用户看过第一个测试版后提的）**：① 搜索模型：工具栏左边的 `.ms-search` 输入框，`Q.search`，不分大小写按型号名筛；整块重画后用 `Q.searchFocus` 把焦点和光标放回去，输入法组字期间不重画。② 有实测的组合名字变绿（`.ms-measured-name`，`--accent-strong`），「有实测」标签保留。③ 右上角 `.ms-show` 切换 `Q.show`：都显示（默认）/ 只看估计（不画实测那行）/ 只看实测（`measuredView`：只留有实测的组合，主数字换成实测值，调用次数和还剩多少按比例换，某个窗口没有实测显示「这个窗口没有实测」）。用户原话是两个选项（只显示估计 / 只显示实测）；「都显示」是我加的，因为上一轮用户要求两者并存，等用户看了决定留不留。`.ms-head-actions` 加了 `margin-left: auto`，换行后仍靠右。`scripts/test-model-study-ui.cjs` 加了对应断言。用演示数据截图看过排版（`capture-ui.cjs` 会覆盖 `artifacts/ui` 里 README 用的图，看完已 `git checkout -- artifacts/ui` 还原）。
+  - **第三轮（用户看了第二个测试版）**：① 头部按钮：「添加模型」+ 排序靠左（`.ms-head-left`），显示切换靠右（`.ms-head-actions` 占满一行，两端对齐）。② 实测值不再贴在估计值下面（`.ms-cap-measured` 已删），改成**单独一行**（`measuredRows`，key 加 `|measured`，`data-kind=measured`，名字绿色、「实测」色块标签 + 问号），和估计值的行一起排序，用户能看出两个数差多远、中间隔着哪些组合。估计行 `data-kind=estimate`，有实测的仍带「有实测」标签。「只看估计」只列估计行，「只看实测」只列实测行，「都显示」两种都列。底部「共 N 个组合」不把实测行算进去。上一条里「下面多一行」的描述以这条为准。
+  - 测试：`scripts/test-model-study.cjs`、`test-effort-usage.cjs`、`test-shared-quota.cjs` 改成新口径；`scripts/test-model-study-ui.cjs` 加了估计 / 实测两行、「有实测」标签、问号说明、点问号不展开行的断言。`npm test` 退出 0，`npm run test:ui` 退出 0（33 个 PASS）。**没有看过实际界面**（格子多了一行，窄窗口下的排版没验证）。没有留下进程，没有动 dist。
+- 上一版 **0.3.23**（用户指定），已提交、打标签、发布，内容是下面这一条修复。没有进行中的任务。发布记录：`npm test` 退出 0、`npm run test:ui` 退出 0（33 个 PASS）、`npm run dist` 退出 0；产物 `dist/TokenPulse-0.3.23-Setup.exe`（112,421,541）、`.blockmap`（119,562）、`Portable.exe`（112,164,391）、`latest.yml`（352）；asar 里的 `build/core/model-study.js` 与编译结果一致；`renderer/intro.js` 有 0.3.23 的 NOTES（i18n 已补）；发布说明草稿 `dist/release-0.3.23.md`。提交、标签 `v0.3.23`、Release 见 git log 和 https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.23 。没有会话链接。没有在本机安装。
 - **0.3.23 的修复（2026-10-05，Claude）：「换一种模型，整窗能用多少」里 Sonnet 5.5 能用的量比 Fable 5.1 还少。**
   - 价格表没有错（和 LiteLLM 一致：Sonnet 5.5 输入 2 / 输出 10 / 缓存读 0.2，Fable 5.1 是 10 / 50 / 0.25，美元每百万）。
   - 原因：用户这 30 天只用过 2 次 Sonnet 5.5，都是新会话的头一两句，token 里约三成是缓存写入。`src/core/model-study.ts` 的 `unitCost` 只要同型号有一条记录就按「同模型的实际费用」算单价，得到每百万约 1.10 美元；`baseFor` 也拿这 2 条当推算起点。Fable 5.1 一次没用过，按价格表 × 本账号用量结构（98.5% 缓存读）算，每百万约 0.54 美元。于是 Sonnet 反而「更贵」。单次调用大小同理（1 次调用就当成平均值，「能调用多少次」虚高）。
