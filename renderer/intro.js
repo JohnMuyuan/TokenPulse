@@ -14,6 +14,10 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.29': [
+      ['info', 'Grok 号池 / 供应商可以选思考等级', '用 Grok 号池时在 Grok 里 /effort 会提示「current model does not support reasoning effort」，请求里也不带思考等级。现在可以在 TokenPulse 里选：号池在「编辑号池 → 基本信息 → 思考等级」，普通的 Grok 供应商在「模型」那一行的默认思考等级。本地路由转发时替你加上，请求自己带了的不会改。'],
+      ['check', '修复：Prism 桥报「Unable to confirm the response started」后连续失败', '和 0.3.27 修的是同一类问题：Prism 那边的会话卡住了，重建一次就好。现在遇到这句话桥也会自动重建会话再发一次。更新后请把 Prism 桥的服务停止再启动一次。'],
+    ],
     '0.3.28': [
       ['check', '修复：Prism 桥被限流后反复失败', 'Codex 报「Error while processing conversation (403 Forbidden)」是 Prism 的限流，短时间内连发多轮就会触发。0.3.25 之后桥遇到它会马上把错误交回 Codex，Codex 每两三秒重试一次，越试限流越久。现在桥会自己等 20、40、60 秒再发同一轮（最多 4 分钟）。长对话拆成多段发送时，每段之间也恢复成固定隔 8 秒。'],
     ],

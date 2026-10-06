@@ -100,6 +100,12 @@
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
     "占用的内存少了约两成": "About a fifth less memory",
+    "Grok 号池 / 供应商可以选思考等级": "Grok pools and providers can set a reasoning effort",
+    "用 Grok 号池时在 Grok 里 /effort 会提示「current model does not support reasoning effort」，请求里也不带思考等级。现在可以在 TokenPulse 里选：号池在「编辑号池 → 基本信息 → 思考等级」，普通的 Grok 供应商在「模型」那一行的默认思考等级。本地路由转发时替你加上，请求自己带了的不会改。": "With a Grok pool, /effort inside Grok says \"current model does not support reasoning effort\" and requests carry no effort. You can now choose it in TokenPulse: for a pool under Edit pool → Basics → Reasoning effort, for an ordinary Grok provider in the default reasoning level of its Models row. The local route adds it when forwarding; requests that already carry one are left alone.",
+    "修复：Prism 桥报「Unable to confirm the response started」后连续失败": "Fix: the Prism bridge kept failing after \"Unable to confirm the response started\"",
+    "和 0.3.27 修的是同一类问题：Prism 那边的会话卡住了，重建一次就好。现在遇到这句话桥也会自动重建会话再发一次。更新后请把 Prism 桥的服务停止再启动一次。": "The same kind of problem fixed in 0.3.27: the session on Prism's side was stuck and a rebuild clears it. The bridge now rebuilds the session and sends the turn once more for this message too. After updating, stop and start the Prism bridge service once.",
+    "不指定（用模型的默认档）": "Not set (use the model's default)",
+    "Grok 里的 /effort 对号池不起作用（会提示 current model does not support reasoning effort）。在这里选一档，本地路由转发时替你加上。": "/effort inside Grok does not work for a pool (it says current model does not support reasoning effort). Pick a level here and the local route adds it when forwarding.",
     "修复：Prism 桥被限流后反复失败": "Fix: the Prism bridge kept failing after being rate limited",
     "Codex 报「Error while processing conversation (403 Forbidden)」是 Prism 的限流，短时间内连发多轮就会触发。0.3.25 之后桥遇到它会马上把错误交回 Codex，Codex 每两三秒重试一次，越试限流越久。现在桥会自己等 20、40、60 秒再发同一轮（最多 4 分钟）。长对话拆成多段发送时，每段之间也恢复成固定隔 8 秒。": "When Codex reports \"Error while processing conversation (403 Forbidden)\", Prism is rate limiting you, which happens after several turns in quick succession. Since 0.3.25 the bridge handed the error straight back to Codex, which retried every two or three seconds and made the limit last longer. The bridge now waits 20, 40, then 60 seconds itself before sending the same turn again (up to 4 minutes). When a long conversation is sent in several parts, the parts are again a fixed 8 seconds apart.",
     "修复：Prism 桥报「项目文件同步超时」后一直失败": "Fix: the Prism bridge kept failing after a project file sync timeout",

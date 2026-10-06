@@ -41,6 +41,11 @@ export type ProxyTarget = {
   requestHeaders?: Record<string, string>;
   requestBody?: Record<string, unknown>;
   /**
+   * Grok 专用（0.3.29）：请求里没带思考等级时，转发前补上这一档。Grok CLI 只认官方目录里的型号支持思考等级，
+   * 经 TokenPulse 的供应商 / 号池（配置里是自定义模型 tokenpulse_route）时 /effort 会说不支持，请求里也不带等级。
+   */
+  reasoningEffort?: string;
+  /**
    * 号池里的官方账号：用这个账号自己的登录凭据，直接转给官方接口（见 agent-proxy.ts 的 applyOfficialAuth）。
    * 请求本来就是真的 CLI 发出来的，只换掉认证：Claude 换成 Bearer + OAuth beta；Codex 走 ChatGPT 的 Codex 接口，
    * 带上工作区 id；Grok 走 CLI 登录用的 cli-chat-proxy。
@@ -55,7 +60,8 @@ export type ProxyTarget = {
 /** 号池：同一工具的多个官方账号 / API Key 供应商轮流用。 */
 export type PoolStrategy = "round-robin" | "fill-first";
 export type PoolMember = { type: "account" | "provider"; id: string };
-export type PoolConfig = { strategy: PoolStrategy; members: PoolMember[] };
+/** reasoningEffort：只有 Grok 的号池用，见 ProxyTarget.reasoningEffort。 */
+export type PoolConfig = { strategy: PoolStrategy; members: PoolMember[]; reasoningEffort?: string };
 
 /** 号池里官方账号走的接口。桌面端不支持号池（它用自己的网关配置）。 */
 export const POOL_OFFICIAL: Partial<Record<AgentApp, { kind: "claude" | "chatgpt" | "grok"; baseUrl: string; auth: NonNullable<ProxyTarget["auth"]> }>> = {

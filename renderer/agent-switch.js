@@ -824,6 +824,13 @@
       textArea('requestBody', '请求体覆盖（JSON）', jsonText(p.requestBody), '协议转换完成后合并；仅填写明确需要的字段。'),
     ]);
   }
+  /** Grok 号池的思考等级：Grok 自己的 /effort 对号池不可用，这里选了由本地路由转发时补上。 */
+  function poolEffortField() {
+    const select = el('select', { name: 'poolEffort', 'aria-label': '思考等级' }, [el('option', { value: '', text: '不指定（用模型的默认档）' }), ...['low', 'medium', 'high', 'xhigh'].map(level => el('option', { value: level, text: level, translate: 'no' }))]);
+    select.value = editor.pool.reasoningEffort || '';
+    select.addEventListener('change', () => { editor.pool.reasoningEffort = select.value; });
+    return el('label', { class: 'pv-field' }, [el('span', { text: '思考等级' }), select, el('small', { text: 'Grok 里的 /effort 对号池不起作用（会提示 current model does not support reasoning effort）。在这里选一档，本地路由转发时替你加上。' })]);
+  }
   function modelSection(app, provider) {
     const box = el('div', { class: 'pv-models' });
     const hint = app === 'codex'
@@ -1072,7 +1079,7 @@
     if (pending) return;
     const isPool = !!provider?.pool || newPool;
     editorPane = pane;
-    editor = { app, provider, pool: isPool ? { strategy: provider?.pool?.strategy || 'round-robin', members: (provider?.pool?.members || []).map(m => ({ type: m.type, id: m.id })) } : null, icon: provider?.icon || '', avatar: provider?.avatar || '', accounts: null, upstream: provider?.upstream || NATIVE[app], keyField: provider?.apiKeyField || 'ANTHROPIC_AUTH_TOKEN', desktopMode: provider?.desktopMode || (app === 'desktop' ? 'map' : 'direct'), contextWindow: provider?.contextWindow || (app === 'grok' ? contextPreset('grok') : null), codexContextWindow: provider?.codexContextWindow || null, codexAutoCompact: provider?.codexAutoCompact || null, thinking: { supportsThinking: !!provider?.thinking?.supportsThinking, supportsEffort: !!provider?.thinking?.supportsEffort }, slots: seedSlots(app, provider), fetched: [], fetching: false };
+    editor = { app, provider, pool: isPool ? { strategy: provider?.pool?.strategy || 'round-robin', members: (provider?.pool?.members || []).map(m => ({ type: m.type, id: m.id })), reasoningEffort: provider?.pool?.reasoningEffort || '' } : null, icon: provider?.icon || '', avatar: provider?.avatar || '', accounts: null, upstream: provider?.upstream || NATIVE[app], keyField: provider?.apiKeyField || 'ANTHROPIC_AUTH_TOKEN', desktopMode: provider?.desktopMode || (app === 'desktop' ? 'map' : 'direct'), contextWindow: provider?.contextWindow || (app === 'grok' ? contextPreset('grok') : null), codexContextWindow: provider?.codexContextWindow || null, codexAutoCompact: provider?.codexAutoCompact || null, thinking: { supportsThinking: !!provider?.thinking?.supportsThinking, supportsEffort: !!provider?.thinking?.supportsEffort }, slots: seedSlots(app, provider), fetched: [], fetching: false };
     render(true);
     editor.initial = editorFingerprint();
     showEditorPane(pane);
@@ -1193,6 +1200,7 @@
           avatarPicker(),
           nameInput,
           field('model', app === 'grok' ? '模型' : '默认模型（可选）', { value: provider?.model || '', translate: 'no', placeholder: app === 'grok' ? '例如 grok-4.7-build' : '留空就由工具自己选模型' }, app === 'grok' ? 'Grok CLI 的配置表必须写一个模型名。' : '留空时工具照常发自己选的模型，号池原样转给官方。'),
+          app === 'grok' ? poolEffortField() : null,
           notes,
         ),
         pane('members', poolMembers()),

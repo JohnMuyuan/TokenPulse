@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.28（2026-10-05，已发布，工作区干净）
+# 当前接手入口 · 0.3.29（2026-10-05，已发布，工作区干净）
 
 ## 新对话先看这里
 
@@ -6,9 +6,19 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.28**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.28）。`package.json` 是 0.3.28。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.28：…`（标签 `v0.3.28`）。接手时用 `git status`、`git log -3` 核对。
+- 最新版本 **0.3.29**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.29）。`package.json` 是 0.3.29。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.29：…`（标签 `v0.3.29`）。接手时用 `git status`、`git log -3` 核对。
 - **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。
+- **0.3.29（2026-10-05，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.29.md`）有两项，第一项：Grok 号池 / 供应商的思考等级。**
+  - 用户的问题：Grok 混合号池里 `/effort high` 提示 `current model does not support reasoning effort`。原因：Grok CLI 只认 xAI 下发的官方模型目录（`~/.grok/models_cache.json`，里面有 `supports_reasoning_effort`、`reasoning_efforts`）里的型号支持思考等级；TokenPulse 写的是自定义模型 `[model.tokenpulse_route]`，文档（`~/.grok/docs/user-guide/11-custom-models.md`）没有给自定义模型声明等级的写法。
+  - 用真实 Grok 1.0.46 试过、**都不生效**的办法（临时 `GROK_HOME` + 本机假接口，看请求体里有没有 `reasoning.effort`；没有登录）：自定义模型表里写 `supports_reasoning_effort = true`、`reasoning_efforts`（字符串数组和官方目录那种对象数组都试了）、`reasoning_effort = "high"`；把表名改成官方型号名 `"grok-4.6"`（带不带模型目录缓存都试了）。所有情况下 `grok -p hi --effort high` 发出的请求里只有 `reasoning.summary`，没有 `effort`。登录状态下会不会不同没有验证。
+  - 做法：本地路由转发时补。`ProxyTarget.reasoningEffort`；`agent-proxy.ts` 的 `applyReasoningEffort()` 只在 `app === "grok"` 且请求里没带等级时加（Responses 格式写进 `reasoning.effort` 并保留 `summary`，Chat 格式写 `reasoning_effort`），在 `requestBody` 覆盖之前。来源：号池是 `PoolConfig.reasoningEffort`（`poolOf` 只对 grok 接受 low / medium / high / xhigh；界面在「编辑号池 → 基本信息」的 `poolEffortField()`）；普通 Grok 供应商是模型那一行的 `defaultReasoningLevel`（`grokEffort()`）。号池里的成员是 API Key 供应商时用号池的设置。
+  - 测试：`scripts/test-agent-switch.cjs` 的号池那组加了 Grok 账号和一段（函数本身、保存和视图、经本地路由真实转发到假上游）。**没有对着 xAI 真实接口验证**：xAI 收到 `reasoning.effort` 后是否按这一档算、非法档位会不会报错都没有确认。号池编辑界面的那个下拉框没有界面测试，也没有截图看过。
+- **0.3.29 第二项：Prism 桥报 `Unable to confirm the response started.` 后连续失败。**
+  - 证据（用户朋友的 `Downloadsridge(3).log`，只读看过；这段日志里没有 `re-boot`、`throttled` 字样，说明当时跑的还是 0.3.25 / 0.3.26 的桥，不是 0.3.27 / 0.3.28）：10:30:21 到 10:31:44，一个新对话（约 13.5 万字节、单段）连发 6 次，每次约 11 秒后 Prism 返回 `completed` + 这句话、没有任何输出，Codex 随即重试。它发生在 10:11 那轮限流之后 19 分钟。旧版桥（0.3.24 及以前）遇到这句会 `start failed, re-boot and retry`：朋友第一份日志 10-05 00:12 有一次，重建后下一轮就正常了。
+  - 0.3.27 时没有把这句加进 `REBOOT_AND_RETRY_MARKS`，理由是「不确定这一轮有没有执行，怕重复执行」。这次的证据说明这个顾虑不成立：桥不重试，Codex 自己也会立刻把同一轮重发（日志里 6 次），所以不重试防不住重复，只是让会话一直坏着。
+  - 改动：`REBOOT_AND_RETRY_MARKS` 加上 `Unable to confirm the response started`（重建会话后再发一次，仍然只做一次）。`NOTICE.md`、`scripts/test-prism-bridge.cjs` 已同步。`npm test` 退出 0。没有在真实环境复现。「重建能恢复」的依据只有旧版日志里那一次。
+  - 还没加的：`Reconnecting to sandbox. Your request will resume automatically once the sandbox is ready.`（旧版也会重建；Prism 说会自己恢复，目前只在旧版日志里见过一次，没有见过它卡住）。
 - **0.3.28 的修复（2026-10-05，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.28.md`）：Prism 桥限流（`Error while processing conversation (403 Forbidden). Please submit prompt again.`）后陷入反复失败。**
   - 证据（用户朋友的 `Downloadsridge(2).log`，只读看过，09:42 到 10:11，当时是 0.3.25 / 0.3.26 的桥）：这是 Prism 的限流。① 一个约 97 万字节的长对话被压缩成 8 段重发，段与段之间只隔约 3 秒（上游 `1bd4b79` 把 8 秒间隔改成「扣掉这一段已花的时间」），发完紧接着的下一轮就 403。② 403 之后桥直接把错误交回 Codex，Codex 每 2 到 3 秒重试一次，日志里 09:46、10:03、10:11 各连续 5 到 6 次；10:11 那次每次重试还会从头重发整个 8 段的压缩历史。旧版桥（0.3.24 及以前）这里会打印 `Prism throttled the turn, waiting 20s` 并等 20 / 40 / 60 秒再发同一轮，朋友更早的日志里 10-05 01:16 就有一次。上游 README 自己也写了「密集重试会让它更久」。
   - 改动（`vendor/prism-bridge/bridge.py`，第五、六处 `TokenPulse` 改动，`NOTICE.md` 已同步）：`PrismPage.chat` 的包装改成循环：错误含 `403` 和 `processing conversation` 时按 20 / 40 / 60 / 60… 秒等待后重发同一轮，累计超过 `THROTTLE_WAIT_SEC`（240）才报错（工作线程的超时预算里本来就留着这 240 秒）；重建会话那条照旧只做一次。多段发送每段之后固定等 `PART_GAP_SEC`（8 秒），不再扣时间。
@@ -22,6 +32,7 @@
 
 | 版本 | 提交 | 内容 |
 |---|---|---|
+| 0.3.29 | 见 `git log` | Grok 号池 / 供应商可以选思考等级（本地路由转发时补上）；修：Prism 桥报「Unable to confirm the response started」后连续失败 |
 | 0.3.28 | 见 `git log` | 修：Prism 桥被限流（403）后反复失败（恢复限流等待和分段固定间隔） |
 | 0.3.27 | `f2810c8` | 修：Prism 桥报「Project file synchronization timed out」后一直失败（恢复自动重建会话） |
 | 0.3.26 | `df5bcc4` | 修：用了 TokenPulse 的供应商后，Codex 桌面端打不开以前的对话（Model provider 'custom' not found） |
@@ -53,6 +64,7 @@
 
 ### 仍然没有人验证过的
 
+- 0.3.29：Grok 思考等级对着 xAI 真实接口的效果；号池编辑界面里那个下拉框的样子；`Unable to confirm…` 自动重建在真实环境里的效果。
 - 0.3.28：限流等待在真实环境里的效果（没有真实触发过限流）；下次出现时日志里应该有 `Prism throttled the turn, waiting 20s`。
 - 0.3.27：自动重建会话在真实环境里的效果。这个错误是 Prism 服务端的状态，本机造不出来；下次出现时日志里应该有一行 `start failed, re-boot and retry`，然后这一轮正常继续。
 - 0.3.25：真的超长对话触发自动压缩的效果。
@@ -104,7 +116,7 @@ AGENTS.md 之外，对话里形成的；也记在 Claude 的 memory 里。
   1. `PRISM_PROXY` → `BROWSER_PROXY` / `PROXY_OPTION`：给浏览器当代理（服务、Playwright 登录窗口、上游拉起的系统浏览器登录窗口）。上游没有代理支持。
   2. `LOGIN_CHANNEL` 常量（环境变量 `PRISM_LOGIN_CHANNEL`）：只给 `collect_login.py` 用。
   3. `cookie_header_to_playwright` 跳过已过期的 `prism_session_token`（12 小时有效；不跳过的话登录 12 小时后再启动报 `401 Request verification failed`）。上游没有修。
-  4. `PrismPage.chat`：错误含 `REBOOT_AND_RETRY_MARKS`（目前只有 `Project file synchronization timed out while starting the response`）时 `boot()` 重建会话再发一次。上游 `1bd4b79` 把旧版的重建逻辑整个去掉了。
+  4. `PrismPage.chat`：错误含 `REBOOT_AND_RETRY_MARKS`（`Project file synchronization timed out while starting the response`、`Unable to confirm the response started`）时 `boot()` 重建会话再发一次。上游 `1bd4b79` 把旧版的重建逻辑整个去掉了。
   5. `PrismPage.chat`：限流（错误含 `403` 和 `processing conversation`）时按 20 / 40 / 60… 秒等待后重发同一轮，累计不超过 `THROTTLE_WAIT_SEC`（240）。上游改成了直接把错误交回客户端。
   6. 多段发送每段之后固定等 `PART_GAP_SEC`（8 秒），不扣掉这一段已花的时间。上游自带的测试里有 1 条断言「要扣时间」，对着我们的文件会失败，属于有意为之。
 - **更新上游的做法**（0.3.25 做过一遍）：克隆上游到 scratchpad → 用新版 `bridge.py` 覆盖 → 补回四处改动 → 上游自带的 `test_bridge_*.py`（不进我们的仓库）拷到临时目录，用 `~/.tokenpulse/prism-bridge/venv` 的 python 跑 `-m unittest` → `npm test` → 真实启动一次（用户的服务通常正在运行占着浏览器目录：把 `profile/auth.json` 拷到临时目录、另开端口、跑完删除）→ 更新 `NOTICE.md` 里的上游提交号。**特别检查上游有没有去掉我们依赖的恢复 / 重试行为**（0.3.27 就是这么来的）。

@@ -244,7 +244,7 @@ const grokFile = path.join(home, '.grok', 'config.toml');
     const account = (kind, ref, token, extra = {}) => ({ id: `${kind}:${ref}`, kind, ref, email: `${ref}@example.com`, label: ref, createdAt: now, lastSeenAt: now, credential: { token, expiresAt: now + 3_600_000, ...extra } });
     fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'official-accounts.json'), JSON.stringify({ version: 2, active: {}, accounts: [
       account('claude', 'qa-a', 'oauth-token-a'), account('claude', 'qa-b', 'oauth-token-b'), account('claude', 'qa-old', 'oauth-token-old', { expiresAt: now - 60_000 }),
-      account('chatgpt', 'qa-c', 'oauth-token-c', { accountId: 'ws-qa' }),
+      account('chatgpt', 'qa-c', 'oauth-token-c', { accountId: 'ws-qa' }), account('grok', 'qa-g', 'oauth-token-g'),
     ] }));
     const hits = [];
     const fake = await listen((req, res) => {
@@ -301,6 +301,26 @@ const grokFile = path.join(home, '.grok', 'config.toml');
       assert.equal(codexBody.stream, true); assert.equal(codexBody.store, false); assert.equal(codexBody.instructions, '');
       assert.equal('max_output_tokens' in codexBody || 'previous_response_id' in codexBody, false);
       assert.equal(read(codexFile).includes('oauth-token'), false);
+      // 0.3.29 Grok：Grok CLI 对号池（自定义模型）不让选思考等级，请求里也不带；号池里选的那一档由本地路由补上
+      {
+        const { applyReasoningEffort } = require('../build/core/agent-proxy');
+        const apply = (body, effort = 'high') => JSON.parse(applyReasoningEffort(Buffer.from(JSON.stringify(body)), effort).toString('utf8'));
+        assert.deepEqual(apply({ model: 'g', reasoning: { summary: 'concise' } }).reasoning, { summary: 'concise', effort: 'high' }, '保留 summary');
+        assert.deepEqual(apply({ model: 'g', reasoning: { effort: 'low' } }).reasoning, { effort: 'low' }, '请求自己带了就不动');
+        assert.equal(apply({ model: 'g', messages: [] }).reasoning_effort, 'high'); assert.equal('reasoning' in apply({ model: 'g', messages: [] }), false);
+        assert.deepEqual(apply({ input: 'no model' }), { input: 'no model' });
+        const grokPool = sw.saveProvider({ app: 'grok', name: 'Grok 号池', model: 'grok-qa', pool: { reasoningEffort: 'xhigh', members: [{ type: 'account', id: 'grok:qa-g' }] } });
+        assert.equal(sw.agentView().providers.find(item => item.id === grokPool).pool.reasoningEffort, 'xhigh');
+        assert.equal(sw.agentView().providers.find(item => item.id === codexPool).pool.reasoningEffort, undefined, '别的工具的号池没有这一项');
+        await sw.activateProvider(grokPool);
+        const sendGrok = async body => { hits.length = 0; await fetch(`http://127.0.0.1:${sw.agentView().proxy.port}/grok/v1/responses`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer PROXY_MANAGED' }, body: JSON.stringify(body) }); return JSON.parse(hits[0].body); };
+        assert.deepEqual((await sendGrok({ model: 'grok-qa', input: 'hi', reasoning: { summary: 'concise' } })).reasoning, { summary: 'concise', effort: 'xhigh' });
+        assert.equal(hits[0].auth, 'Bearer oauth-token-g');
+        assert.deepEqual((await sendGrok({ model: 'grok-qa', input: 'hi', reasoning: { effort: 'low' } })).reasoning, { effort: 'low' });
+        sw.saveProvider({ id: grokPool, app: 'grok', name: 'Grok 号池', model: 'grok-qa', pool: { reasoningEffort: 'bogus', members: [{ type: 'account', id: 'grok:qa-g' }] } });
+        assert.equal('reasoning' in (await sendGrok({ model: 'grok-qa', input: 'hi' })), false, '没选等级就原样转发');
+        console.log('PASS agent pool: Grok reasoning effort added by the local route when the request has none');
+      }
       console.log('PASS agent pool: round-robin, fill-first, expired accounts skipped, 401 moves on, Claude OAuth beta, Codex backend path/body/workspace, no credentials in config or view, validation');
     } finally {
       delete process.env.AGENT_SWITCH_POOL_BASE;

@@ -2118,8 +2118,14 @@ def extract_llm_text(payload: dict | None) -> tuple[str, str]:
 # Prism Core Page Controller
 # ---------------------------------------------------------------------------
 
-# TokenPulse: failures where Prism states the turn never started; see PrismPage.chat.
-REBOOT_AND_RETRY_MARKS = ("Project file synchronization timed out while starting the response",)
+# TokenPulse: failures at the start of a turn that a rebuilt session clears; see PrismPage.chat.
+# "Unable to confirm the response started" comes back about 11 seconds after the start with no output, and
+# repeats on every attempt until the session is rebuilt (seen 6 times in a row). The client resubmits the
+# turn itself anyway, so not retrying here prevents no duplicate, it only prevents the recovery.
+REBOOT_AND_RETRY_MARKS = (
+    "Project file synchronization timed out while starting the response",
+    "Unable to confirm the response started",
+)
 
 
 class PrismTurnError(RuntimeError):

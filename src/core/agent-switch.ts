@@ -126,9 +126,11 @@ const ADVANCED_DEFAULTS = { websiteUrl: "", category: "custom", icon: "", iconCo
 const AVATAR = /^data:image\/(png|jpeg|webp|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/;
 const AVATAR_MAX = 400_000;
 function avatarOf(value: unknown) { const text = typeof value === "string" ? value.trim() : ""; return text.length <= AVATAR_MAX && AVATAR.test(text) ? text : ""; }
+/** Grok 官方目录里出现过的思考等级。 */
+const GROK_EFFORTS = ["low", "medium", "high", "xhigh"];
 function poolOf(app: AgentApp, value: unknown): PoolConfig | null {
   if (!value || typeof value !== "object" || !POOL_OFFICIAL[app]) return null;
-  const raw = value as { strategy?: unknown; members?: unknown };
+  const raw = value as { strategy?: unknown; members?: unknown; reasoningEffort?: unknown };
   const seen = new Set<string>();
   const members = (Array.isArray(raw.members) ? raw.members : []).flatMap((item): PoolMember[] => {
     const member = item as { type?: unknown; id?: unknown };
@@ -138,7 +140,8 @@ function poolOf(app: AgentApp, value: unknown): PoolConfig | null {
     seen.add(key);
     return [{ type: member.type, id: member.id }];
   }).slice(0, 40);
-  return { strategy: raw.strategy === "fill-first" ? "fill-first" : "round-robin", members };
+  const effort = app === "grok" && typeof raw.reasoningEffort === "string" && GROK_EFFORTS.includes(raw.reasoningEffort) ? raw.reasoningEffort : "";
+  return { strategy: raw.strategy === "fill-first" ? "fill-first" : "round-robin", members, ...(effort ? { reasoningEffort: effort } : {}) };
 }
 /** 号池轮到第几个：每个号池一个游标，每来一个请求往后挪一格。 */
 const poolCursor = new Map<string, number>();
@@ -932,8 +935,14 @@ function targetsFor(app: AgentApp): ProxyTarget[] {
     return item.pool ? poolTargets(store, item) : [plainTarget(item)];
   }).filter((target) => !seen.has(target.id) && !!seen.add(target.id));
 }
+/** Grok 供应商：模型那一行选的默认思考等级，由本地路由在转发时补上。 */
+function grokEffort(item: Provider) {
+  if (item.app !== "grok") return {};
+  const effort = (item.slots.find((slot) => slot.model && slot.defaultReasoningLevel) || item.slots.find((slot) => slot.defaultReasoningLevel))?.defaultReasoningLevel || "";
+  return GROK_EFFORTS.includes(effort) ? { reasoningEffort: effort } : {};
+}
 function plainTarget(item: Provider): ProxyTarget {
-  return { id: item.id, name: item.name, upstream: item.endpoint!.upstream, baseUrl: item.endpoint!.baseUrl, apiKey: item.endpoint!.apiKey, model: item.endpoint!.model, modelMap: desktopModelMap(item.slots, item.desktopMode), requestHeaders: item.requestHeaders, requestBody: item.requestBody };
+  return { ...grokEffort(item), id: item.id, name: item.name, upstream: item.endpoint!.upstream, baseUrl: item.endpoint!.baseUrl, apiKey: item.endpoint!.apiKey, model: item.endpoint!.model, modelMap: desktopModelMap(item.slots, item.desktopMode), requestHeaders: item.requestHeaders, requestBody: item.requestBody };
 }
 /**
  * 号池展开成一串目标：轮询时每个请求从下一个成员开始，其余成员依次排在后面当作这次请求的备选；
@@ -949,7 +958,7 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
     if (member.type === "provider") {
       const item = byId(store, member.id);
       if (!item?.endpoint || item.official || item.locked || item.pool || item.app !== pool.app) return [];
-      return [{ ...plainTarget(item), id, name: `${pool.name} · ${item.name}`, pool: true }];
+      return [{ ...plainTarget(item), id, name: `${pool.name} · ${item.name}`, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}) }];
     }
     const account = accounts.find((row) => row.id === member.id && row.kind === spec.kind && !row.hidden);
     if (!account) return [];
@@ -958,7 +967,7 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
     return [{
       // AGENT_SWITCH_POOL_BASE 只给自动化测试用：把官方接口换成本机假上游
       id, name: `${pool.name} · ${account.alias || account.email || account.label}`, upstream: NATIVE_UPSTREAM[pool.app], baseUrl: process.env.AGENT_SWITCH_POOL_BASE ? `${process.env.AGENT_SWITCH_POOL_BASE}/${pool.app}` : spec.baseUrl, apiKey: credential.token,
-      model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, pool: true,
+      model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}),
     }];
   });
   if (!members.length || pool.pool.strategy === "fill-first") return members;

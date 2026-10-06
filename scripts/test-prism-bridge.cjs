@@ -52,12 +52,12 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-prism-'));
     '    return log + [out]',
     'sync = "Project file synchronization timed out while starting the response."',
     'limit = "Error while processing conversation (403 Forbidden). Please submit prompt again."',
-    'print(json.dumps([run([]), run([bridge.PrismTurnError(sync)]), run([bridge.PrismTurnError(sync), bridge.PrismTurnError(sync)]), run([bridge.PrismTurnError("llm start HTTP 403 x")]), run([bridge.PrismTurnError(limit), bridge.PrismTurnError(limit)]), run([bridge.PrismTurnError(limit)] * 99)[-2:], len(run([bridge.PrismTurnError(limit)] * 99))]))',
+    'print(json.dumps([run([]), run([bridge.PrismTurnError(sync)]), run([bridge.PrismTurnError(sync), bridge.PrismTurnError(sync)]), run([bridge.PrismTurnError("llm start HTTP 403 x")]), run([bridge.PrismTurnError(limit), bridge.PrismTurnError(limit)]), run([bridge.PrismTurnError("Unable to confirm the response started.")]), run([bridge.PrismTurnError(limit)] * 99)[-2:], len(run([bridge.PrismTurnError(limit)] * 99))]))',
   ].join('\n');
   const retried = execFileSync(python, ['-c', retry], { encoding: 'utf8', windowsHide: true, env: { ...process.env, PYTHONPATH: [path.dirname(stub), vendor].join(path.delimiter), PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' } });
   assert.deepEqual(JSON.parse(retried.trim().split(/\r?\n/).pop()), [['send', 'ok'], ['send', 'boot', 'send', 'ok'], ['send', 'boot', 'send', 'PrismTurnError'], ['send', 'PrismTurnError'],
     // 限流：等一会儿再发同一轮，不重建会话；等够 240 秒（20+40+60+60+60）还不行才报错
-    ['send', 'send', 'send', 'ok'], ['send', 'PrismTurnError'], 7]);
+    ['send', 'send', 'send', 'ok'], ['send', 'boot', 'send', 'ok'], ['send', 'PrismTurnError'], 7]);
   console.log('PASS prism bridge: a turn that never started because Prism failed to sync is retried once after a re-boot');
 }
 const fake = path.join(dir, 'bridge.py');

@@ -188,6 +188,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
     return { kind: "fail", status: 400, error: "供应商地址不是有效的网址" };
   }
   if (target.auth === "codex-oauth") payload = codexBackendBody(payload);
+  if (app === "grok" && target.reasoningEffort) payload = applyReasoningEffort(payload, target.reasoningEffort);
   payload = applyRequestBodyOverrides(payload, target.requestBody);
   const headers = forwardHeaders(req, target, payload.length);
   // 上游走代理（环境变量 / 系统代理，见 upstream-proxy.ts）。以前一律直连，需要代理的机器上每个成员都连接超时、记成 502
@@ -274,6 +275,25 @@ function rewriteModel(raw: string, model: string) {
   } catch {
     return raw;
   }
+}
+
+/**
+ * 请求里没带思考等级时补上（已经带了的不动）。Responses 格式是 reasoning.effort，保留里面别的键（如 summary）；
+ * Chat Completions 格式是 reasoning_effort。只处理带 model 的 JSON 请求。
+ */
+export function applyReasoningEffort(payload: Buffer, effort: string) {
+  if (!payload.length || !looksJson(payload)) return payload;
+  try {
+    const json = JSON.parse(payload.toString("utf8"));
+    if (!json || typeof json !== "object" || Array.isArray(json) || typeof json.model !== "string") return payload;
+    if (Array.isArray(json.messages)) { if (json.reasoning_effort != null) return payload; json.reasoning_effort = effort; }
+    else {
+      const reasoning = json.reasoning && typeof json.reasoning === "object" && !Array.isArray(json.reasoning) ? json.reasoning : {};
+      if (reasoning.effort != null) return payload;
+      json.reasoning = { ...reasoning, effort };
+    }
+    return Buffer.from(JSON.stringify(json));
+  } catch { return payload; }
 }
 
 function applyRequestBodyOverrides(payload: Buffer, overrides?: Record<string, unknown>) {
