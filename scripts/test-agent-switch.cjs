@@ -144,6 +144,14 @@ const grokFile = path.join(home, '.grok', 'config.toml');
     fs.rmSync(path.join(sessions, 'rollout-custom.jsonl'));
     assert.equal(sw.repairAgentConfigs().length, 1);
     assert.equal(table(read(codexFile), 'custom'), ''); assert.match(table(read(codexFile), '"old relay"'), /earlier chats/);
+    // 配置被别的工具换成了它自己的中转站（表名 custom）、TokenPulse 那张表没了：启动时照抄现在生效的那张表补回来
+    fs.writeFileSync(codexFile, ['model_provider = "custom"', 'model = "relay-model"', '', '[model_providers.custom]', 'name = "Relay"', 'base_url = "https://relay.example/v1"', 'wire_api = "responses"', 'experimental_bearer_token = "sk-relay"', ''].join(String.fromCharCode(10)));
+    fs.writeFileSync(path.join(sessions, 'rollout-custom.jsonl'), meta('custom'));
+    assert.equal(sw.repairAgentConfigs().length, 1);
+    now = read(codexFile);
+    assert.match(table(now, 'custom'), /name = "Relay"/, '别的工具写的表不动');
+    for (const name of ['tokenpulse_route', '"old relay"']) { assert.match(table(now, name), /name = "TokenPulse \(earlier chats\)"/, name); assert.match(table(now, name), /base_url = "https:\/\/relay\.example\/v1"/); assert.match(table(now, name), /experimental_bearer_token = "sk-relay"/); assert.doesNotMatch(table(now, name), /name = "Relay"/); }
+    assert.deepEqual(sw.repairAgentConfigs(), [], '补过就不再改');
     fs.rmSync(path.join(path.dirname(codexFile), 'sessions'), { recursive: true }); fs.rmSync(path.join(path.dirname(codexFile), 'archived_sessions'), { recursive: true });
     await sw.activateProvider(codex);
     assert.doesNotMatch(read(codexFile), /earlier chats/, '没有旧对话就一张都不留');

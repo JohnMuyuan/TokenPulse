@@ -627,11 +627,10 @@ export function repairAgentConfigs(): string[] {
     };
     if (dropLeftover(codexFile(), 'model_providers.tokenpulse_route', (blocks) => readKey(blocks[0].lines, 'model_provider') === 'tokenpulse_route')) fixed.push('Codex 配置里留下的空路由表');
     // 0.3.26：TokenPulse 在管 Codex 的配置时，把旧对话用到、配置里又没有的供应商表补上（见 syncCodexLegacyProviders）
-    if (load().owned.codex) {
-      const text = configRead(codexFile());
-      let blocks: Block[] | null = null;
-      try { blocks = text ? parseToml(text) : null; } catch { blocks = null; }
-      if (blocks && syncCodexLegacyProviders(blocks)) { writeText(codexFile(), stringifyToml(blocks)); fixed.push(CODEX_LEGACY_FIX); }
+    // 没在管 Codex 时也要补 TokenPulse 自己那张（tokenpulse_route）：用它聊过的对话是我们造成的，
+    // 之后换成别的工具配置、或者退出时把配置还原了，这些对话照样得能打开
+    if (load().owned.codex || codexSessionProviders().includes("tokenpulse_route")) {
+      if (ensureCodexLegacyProviders()) fixed.push(CODEX_LEGACY_FIX);
     }
     const catalogFile = path.join(path.dirname(codexFile()), 'tokenpulse-model-catalog.json');
     const catalogText = configRead(catalogFile);
@@ -1086,20 +1085,30 @@ function syncCodexLegacyProviders(blocks: Block[]) {
   const header = (name: string) => tableName("model_providers", name);
   for (const block of [...blocks]) {
     if (!block.header || !/^model_providers\./.test(headerName(block.header)) || readKey(block.lines, "name") !== CODEX_LEGACY_NAME) continue;
-    const name = headerName(block.header);
-    for (const key of CODEX_PROVIDER_KEYS) upsertKey(block.lines, key, null);
-    dropEmptyTable(blocks, name);
+    replaceTable(blocks, headerName(block.header), null);
   }
-  const route = readKey(blocks[0].lines, "model_provider") === "tokenpulse_route" ? blocks.find((block) => block.header && headerName(block.header) === header("tokenpulse_route")) : undefined;
-  const baseUrl = route ? readKey(route.lines, "base_url") : "", token = route ? readKey(route.lines, "experimental_bearer_token") : "";
+  // 照抄「现在生效的那张表」，不管它叫什么、是谁写的（TokenPulse 的 tokenpulse_route，或别的工具写的 custom）。
+  // 这样旧对话接着聊时走的就是现在这家。没有生效的表（官方登录）就补一张走官方登录的。
+  const activeName = readKey(blocks[0].lines, "model_provider");
+  const active = activeName ? blocks.find((block) => block.header && headerName(block.header) === header(activeName)) : undefined;
+  const copied = active && readKey(active.lines, "base_url")
+    ? active.lines.filter((line) => line.trim() && !line.trim().startsWith("#") && !/^name\s*=/.test(line.trim()))
+    : null;
   for (const name of codexSessionProviders()) {
     if (CODEX_BUILTIN_PROVIDERS.has(name) || blocks.some((block) => block.header && headerName(block.header) === header(name))) continue;
-    const keys: Record<string, string | boolean> = baseUrl
-      ? { name: CODEX_LEGACY_NAME, base_url: baseUrl, wire_api: "responses", experimental_bearer_token: token || "", requires_openai_auth: false }
-      : { name: CODEX_LEGACY_NAME, wire_api: "responses", requires_openai_auth: true };
-    for (const [key, value] of Object.entries(keys)) setTableKey(blocks, header(name), key, quote(value));
+    replaceTable(blocks, header(name), [`name = ${quote(CODEX_LEGACY_NAME)}`, ...(copied ?? ['wire_api = "responses"', "requires_openai_auth = true"])]);
   }
   return stringifyToml(blocks) !== before;
+}
+/** 读当前的 Codex 配置，补上 / 清理旧对话用的表；有改动才写。返回有没有写。 */
+function ensureCodexLegacyProviders() {
+  const text = configRead(codexFile());
+  if (!text) return false;
+  let blocks: Block[];
+  try { blocks = parseToml(text); } catch { return false; }
+  if (!syncCodexLegacyProviders(blocks)) return false;
+  writeText(codexFile(), stringifyToml(blocks));
+  return true;
 }
 
 function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: string, proxy: boolean) {
@@ -1503,6 +1512,7 @@ function restoreProxy(store: Store, app: AgentApp) {
   if (!proxyIsOurs(app)) {
     delete store.restore[app]; delete store.proxyWritten[app]; delete store.owned[app];
     store.proxy.apps[app] = false;
+    if (app === 'codex') ensureCodexLegacyProviders();
     configNotice = '连接已在外部修改，保留外部配置，未自动覆盖。'; return;
   }
   for (const file of filesForApp(app)) {
@@ -1521,6 +1531,8 @@ function restoreProxy(store: Store, app: AgentApp) {
       configWrite(file, JSON.stringify(meta, null, 2) + '\n');
     }
   }
+  // 还原之后 tokenpulse_route 那张表没了，用它聊过的对话在 Codex 桌面端会打不开，补上
+  if (app === 'codex') ensureCodexLegacyProviders();
   delete store.restore[app]; delete store.proxyWritten[app]; store.owned[app] = snapshotFiles(app);
 }
 

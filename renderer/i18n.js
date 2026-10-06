@@ -100,6 +100,8 @@
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
     "占用的内存少了约两成": "About a fifth less memory",
+    "修复：换成中转站或官方登录后，打不开用 Prism 桥聊过的对话": "Fix: chats made through the Prism bridge would not open after switching to a relay or the official sign-in",
+    "Codex 桌面端提示「Model provider tokenpulse_route not found」。0.3.26 修过反方向的同一个问题，这次补上了没覆盖到的情况：退出 TokenPulse 或关掉本地路由后配置被还原、用别的工具切换到中转站。现在这些情况下都会把旧对话用到的配置补回来，内容照抄现在生效的那一家。补完后请重新打开 Codex 桌面端。": "The Codex desktop app said \"Model provider tokenpulse_route not found\". 0.3.26 fixed the same problem in the other direction; this covers the cases it missed: the config being restored when TokenPulse quits or the local route is turned off, and another tool switching Codex to a relay. In all of these the config earlier chats rely on is now put back, copied from whichever provider is active. Reopen the Codex desktop app afterwards.",
     "修复：Prism 桥一直报「400 Bad Request」": "Fix: the Prism bridge kept returning \"400 Bad Request\"",
     "Prism 在 2026-10-05 把 6.1 Sol 和 6 Astra 从模型列表里拿掉了，请求它们一律被拒，而 TokenPulse 给 Codex 配的默认模型正好是 6.1 Sol。现在默认模型是 5.6 Sol。Codex 还在请求已下架的模型时，桥会改用 Prism 现在提供的模型来回答，并在 Prism 桥页面顶部提醒。": "On 2026-10-05 Prism removed 6.1 Sol and 6 Astra from its model list and now refuses every request for them, and 6.1 Sol was the default model TokenPulse set for Codex. The default is now 5.6 Sol. If Codex still asks for a removed model, the bridge answers with a model Prism currently offers and shows a notice at the top of the Prism bridge page.",
     "Prism 桥的模型列表跟着 Prism 走": "The Prism bridge's model list follows Prism",

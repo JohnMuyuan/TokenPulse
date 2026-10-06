@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.30（2026-10-05，已发布，工作区干净）
+# 当前接手入口 · 0.3.31（2026-10-06，已发布，工作区干净）
 
 ## 新对话先看这里
 
@@ -6,9 +6,15 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.30**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.30）。`package.json` 是 0.3.30。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.30：…`（标签 `v0.3.30`）。接手时用 `git status`、`git log -3` 核对。
+- 最新版本 **0.3.31**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.31）。`package.json` 是 0.3.31。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.31：…`（标签 `v0.3.31`）。接手时用 `git status`、`git log -3` 核对。
 - **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。
+- **0.3.31（2026-10-06，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.31.md`）：换成第三方中转站或官方直登后，Codex 桌面端打不开用 Prism 桥（`tokenpulse_route`）聊过的对话，报 `Model provider tokenpulse_route not found`。**（用户朋友反馈，是 0.3.26 那个问题反过来的方向）
+  - 0.3.26 只在两个时机补表：`writeCodex`（在 TokenPulse 里切换供应商）和启动修复（且要求 `store.owned.codex`）。漏掉的路径：① `restoreProxy`：关本地路由或**退出 TokenPulse** 时把 Codex 配置还原成接管前的样子，`tokenpulse_route` 整张表跟着没了，没有补；② 用别的工具把配置换成它自己的中转站（表名多半是 `custom`），TokenPulse 那张表被删，而且这时 `owned.codex` 可能已经没有了，启动修复直接跳过；③ 0.3.26 补的表只会照抄 `tokenpulse_route`，现在生效的是别的名字的表时，补的是「走官方登录」的表，没有 ChatGPT 登录的人接着聊会失败。朋友具体走的是哪条没有问到，三条都补了。
+  - 改动（`src/core/agent-switch.ts`）：`syncCodexLegacyProviders` 改成照抄「现在生效的那张表」（`model_provider` 指向的、有 `base_url` 的表，不管叫什么、是谁写的；去掉 `name` 行和注释），没有才补走官方登录的表；清理自己的表改用 `replaceTable`。新增 `ensureCodexLegacyProviders()`（读、补、有改动才写）。调用点多了 `restoreProxy` 的两个出口（正常还原、发现外部修改后放手）；启动修复的条件改成 `owned.codex` **或** 本机对话里出现过 `tokenpulse_route`。
+  - 仍然没覆盖的：TokenPulse 开着的时候别的工具改了配置，要等下次启动 TokenPulse、或在 TokenPulse 里切换一次才会补（`agentDrift()` 只读不写，没有往里加）。
+  - 测试：`scripts/test-agent-switch.cjs` 那组加了「配置被别的工具换成 custom 中转站 → 启动修复照抄它补回 `tokenpulse_route`」。`npm test` 退出 0。`restoreProxy` 那两处没有专门的断言（原有的「restore on quit」测试仍通过）。没有跑 `test:ui`（没有改界面）。桌面端的实际效果没有验证（这个报错在命令行复现不了，见下面「Codex 旧对话的供应商表」）。
+  - 朋友现在的临时办法：启动一次 TokenPulse 0.3.26 及以上并在里面切换一次 Codex 的供应商（切过去再切回来），或者手动在 `~/.codex/config.toml` 末尾加 `[model_providers.tokenpulse_route]`、`name = "TokenPulse (earlier chats)"`、`wire_api = "responses"`、`requires_openai_auth = true` 四行。
 - **0.3.30（2026-10-05，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.30.md`）：Prism 下架了 `gpt-6.1-sol`，Prism 桥一直报 `Error while processing conversation (400 Bad Request)`。**
   - 查证（用户账号，临时桥 + 临时浏览器目录，跑完已清理）：一句「回复 pong」，`gpt-6.1-sol`、`gpt-6-astra`、`auto` 都是 2 到 3 秒内 400；`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-luna` 正常。同样的请求当天 07:12 用 `gpt-6.1-sol` 还成功。Prism 页面加载时请求的 `/api/ff/initialize`（feature flag，JSON）里有一项 `"models":[{"label":"5.6 Sol","id":"gpt-5.6-sol"},{"label":"5.6 Terra","id":"gpt-5.6-terra"},{"label":"6 Luna","id":"gpt-6-luna"}]`，旁边还有 `free_model: gpt-5.6-terra`、`free_reasoning_effort: high`，`rule_id` 是 `default`（不像是只针对这个账号，但只查了这一个账号）。`/api/models` 之类的路径都是 404。
   - **400 这句话含义很多**：Prism 对「模型不存在」「会话 id 不存在（之后桥会改成整段重发）」都回 `400 Bad Request`，没有结构化的原因码。看日志时要结合上下文。
@@ -39,6 +45,7 @@
 
 | 版本 | 提交 | 内容 |
 |---|---|---|
+| 0.3.31 | 见 `git log` | 修：换成中转站 / 官方登录后 Codex 桌面端打不开用 Prism 桥聊过的对话（tokenpulse_route not found） |
 | 0.3.30 | 见 `git log` | Prism 下架 6.1 Sol 后桥一直 400：默认模型换成 5.6 Sol，模型列表从 Prism 读，已下架的模型自动改用可用的并提醒 |
 | 0.3.29 | 见 `git log` | Grok 号池 / 供应商可以选思考等级（本地路由转发时补上）；修：Prism 桥报「Unable to confirm the response started」后连续失败 |
 | 0.3.28 | 见 `git log` | 修：Prism 桥被限流（403）后反复失败（恢复限流等待和分段固定间隔） |
@@ -72,6 +79,7 @@
 
 ### 仍然没有人验证过的
 
+- 0.3.31：朋友那边桌面端能不能打开用 Prism 桥聊过的对话；退出还原那条路径没有专门的自动测试。
 - 0.3.30：Prism 桥页面顶部那条模型提醒的样子；别的账号看到的 Prism 模型列表是否相同。
 - 0.3.29：Grok 思考等级对着 xAI 真实接口的效果；号池编辑界面里那个下拉框的样子；`Unable to confirm…` 自动重建在真实环境里的效果。
 - 0.3.28：限流等待在真实环境里的效果（没有真实触发过限流）；下次出现时日志里应该有 `Prism throttled the turn, waiting 20s`。
@@ -153,8 +161,8 @@ AGENTS.md 之外，对话里形成的；也记在 Claude 的 memory 里。
 ### Codex 旧对话的供应商表（0.3.26 的结果）
 
 - Codex 每个对话的 `session_meta` 里记着创建时的 `model_provider`（`config.toml` 里那张表的名字）。**桌面端**打开旧对话时按这个名字找表，找不到就报「Model provider 'xxx' not found」；命令行的 `codex exec resume` 不检查，所以这个报错在命令行复现不了。
-- `src/core/agent-switch.ts` 的 `syncCodexLegacyProviders()`：把本机对话里出现过、不是内置（openai / ollama / lmstudio / oss）、配置里又没有的名字补成一张表，`name = "TokenPulse (earlier chats)"`。正在用 `tokenpulse_route` 时照抄它的地址和令牌；官方登录时写成走官方登录的表。只认这个 name 的表为自己的，每次先清再补；别人写的同名表不动。
-- 调用点：`writeCodex` 末尾（每次切换）和 `repairAgentConfigs`（启动时，只在 TokenPulse 管过 Codex 时）。
+- `src/core/agent-switch.ts` 的 `syncCodexLegacyProviders()`：把本机对话里出现过、不是内置（openai / ollama / lmstudio / oss）、配置里又没有的名字补成一张表，`name = "TokenPulse (earlier chats)"`。内容照抄现在生效的那张表（`model_provider` 指向的、有 `base_url` 的，不管叫什么、谁写的；0.3.31 起）；没有才写成走官方登录的表。只认这个 name 的表为自己的，每次先清再补；别人写的同名表不动。
+- 调用点（0.3.31 起）：`writeCodex` 末尾（每次切换）；`restoreProxy` 的两个出口（关本地路由 / 退出时还原配置之后）；`repairAgentConfigs`（启动时，条件是 TokenPulse 管过 Codex **或** 本机对话里出现过 `tokenpulse_route`）。TokenPulse 开着时别的工具改了配置不会马上补。
 
 ### 踩过的坑（省得再踩）
 
