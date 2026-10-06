@@ -52,13 +52,13 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.match(fit[1], /没必要.*正常/, '账号正常就没必要用');
     assert.match(fit[2], /服务条款.*风险/);
     assert.deepEqual(await evaluate(`[document.querySelector('${P} .pv-prism-hero b').textContent, document.querySelector('${P} .pv-prism-hero .btn-accent').textContent, document.querySelector('${P} .pv-prism-step.current').dataset.step, document.querySelectorAll('${P} .pv-prism-step.later').length, document.querySelector('${P} .pv-prism-logbox').open]`), ['还没有装运行环境', '安装运行环境', 'deps', 3, false], '总状态指出下一步，当前步骤高亮，日志平时收着');
-    assert.equal(await evaluate(`document.querySelectorAll('${P} .pv-prism-models .pv-member').length`), 4, '列出能用的模型');
+    assert.equal(await evaluate(`document.querySelectorAll('${P} .pv-prism-models .pv-member').length`), 3, '列出能用的模型');
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-prism-step')].map(s => [s.dataset.step, s.classList.contains('done'), [...s.querySelectorAll('button.btn')].map(b => b.disabled)])`), [['deps', false, [false]], ['login', false, [true]], ['service', false, [true]], ['provider', false, [false]]]);
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=prism] small').textContent`), '已停止');
     await evaluate(`document.querySelector('${P} [data-step=provider] button.btn').click()`);
     await until(`[...document.querySelectorAll('${P} [data-step=provider] button.btn')].map(b => b.textContent).join('|') === '更新供应商|在 Codex 里启用'`);
     const prismStore = JSON.parse(fs.readFileSync(path.join(root, 'data', 'agent-switch.json'), 'utf8')).providers.find(p => p.name === 'Prism 桥');
-    assert.deepEqual([prismStore.app, prismStore.endpoint.baseUrl, prismStore.endpoint.upstream, prismStore.endpoint.model, prismStore.slots.length], ['codex', 'http://127.0.0.1:18765/v1', 'openai-responses', 'gpt-6.1-sol', 4]);
+    assert.deepEqual([prismStore.app, prismStore.endpoint.baseUrl, prismStore.endpoint.upstream, prismStore.endpoint.model, prismStore.slots.length], ['codex', 'http://127.0.0.1:18765/v1', 'openai-responses', 'gpt-5.6-sol', 3]);
     assert.ok(prismStore.endpoint.apiKey.length >= 20 && !(await evaluate(`document.querySelector('${P}').innerHTML`)).includes(prismStore.endpoint.apiKey), '密钥不出现在页面上');
     // 0.3.21：常见问题四条（额度、用量、上下文、思考强度），平时收着
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-prism-faq details')].map(d => [d.open, /额度|用量|上下文|思考强度/.test(d.querySelector('summary').textContent), d.querySelector('p').textContent.length > 20])`), [[false, true, true], [false, true, true], [false, true, true], [false, true, true]]);

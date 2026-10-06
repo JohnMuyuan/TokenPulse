@@ -69,6 +69,30 @@ PRISM_MODEL_IDS = [
 PRISM_MODEL_UPSTREAM = {
     "gpt-6-sol": "gpt-6.1-sol",
 }
+# TokenPulse: the models Prism offers right now, read from the page's own configuration when it loads
+# (the "models" list in /api/ff/initialize). Prism changes this list without notice: gpt-6.1-sol and
+# gpt-6-astra were dropped on 2026-10-05, after which every turn asking for them (or for "auto") came back
+# as "Error while processing conversation (400 Bad Request)". Empty until a page load has been seen.
+AVAILABLE_MODELS: list[str] = []
+
+
+def note_available_models(text: str) -> None:
+    found = re.search(r'"models"\s*:\s*\[(.*?)\]', text or "", re.S)
+    ids = re.findall(r'"id"\s*:\s*"(gpt-[^"]{1,40})"', found.group(1)) if found else []
+    ids = list(dict.fromkeys(ids))
+    if ids and ids != AVAILABLE_MODELS:
+        AVAILABLE_MODELS[:] = ids
+        print("[init] Prism models: " + ", ".join(ids), flush=True)
+
+
+def available_model(model: str) -> str:
+    """The model to ask Prism for: the requested one while Prism still offers it, else the first it does."""
+    if not AVAILABLE_MODELS or PRISM_MODEL_UPSTREAM.get(model, model) in AVAILABLE_MODELS:
+        return model
+    print(f"[model] Prism no longer offers {model}; using {AVAILABLE_MODELS[0]} instead", flush=True)
+    return AVAILABLE_MODELS[0]
+
+
 # Total wait for one Prism turn. A timed-out or failed turn is reported, never resubmitted.
 TURN_TIMEOUT_SEC = int(os.environ.get("PRISM_TURN_TIMEOUT", "600"))
 # Prism answers "Error while processing conversation (403 Forbidden)" for a while after a burst of
@@ -2875,6 +2899,15 @@ class Worker:
                 elif cookies:
                     context.add_cookies(cookies)
                 page = context.pages[0] if context.pages else context.new_page()
+
+                def _note_models(response) -> None:  # TokenPulse
+                    try:
+                        if "/api/ff/initialize" in response.url and response.status == 200:
+                            note_available_models(response.text())
+                    except Exception:
+                        pass
+
+                page.on("response", _note_models)
                 print("[init] 正在连接 prism.openai.com 工作区...", flush=True)
                 for attempt in range(1, 4):
                     try:
@@ -3224,7 +3257,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/v1/models", "/models"):
             if self._reject_auth():
                 return
-            ids = list(PRISM_MODEL_IDS)
+            ids = list(AVAILABLE_MODELS) or list(PRISM_MODEL_IDS)  # TokenPulse
             self._send(
                 200,
                 {
@@ -3264,7 +3297,7 @@ class Handler(BaseHTTPRequestHandler):
             if not has_request_input(body):
                 self._send(400, {"error": {"message": "input (or messages) is required", "type": "invalid_request_error"}})
                 return
-            model = body.get("model") or "gpt-5.6-sol"
+            model = available_model(body.get("model") or "gpt-5.6-sol")  # TokenPulse
             effort = effort_of(body)
             want_stream = bool(body.get("stream")) and not path.endswith("chat/completions")
             chat_stream = bool(body.get("stream")) and path.endswith("chat/completions")

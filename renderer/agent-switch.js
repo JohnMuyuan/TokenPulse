@@ -540,6 +540,16 @@
     ]) : null;
 
     // 0.3.20：系统里设了代理、又没把本机地址排除时，Codex 发来的请求会被代理截走（Codex 报 502，这边日志里什么都没有）
+    // 0.3.30：Prism 下架了模型（2026-10-05 的 gpt-6.1-sol）。Codex 还在请求它时桥会改用可用的，这里提醒把供应商更新一下
+    const staleModels = s.providerStale || s.modelSwap ? el('section', { class: 'pv-prism-warn', role: 'alert', 'data-warn': 'models' }, [
+      icon('alert'),
+      el('div', {}, [
+        el('b', { text: s.modelSwap ? 'Prism 已经不提供 Codex 选的那个模型了' : 'Codex 里的模型列表和 Prism 现在提供的不一样' }),
+        s.modelSwap ? el('p', {}, ['Codex 请求的是 ', el('code', { text: s.modelSwap.from, translate: 'no' }), '，Prism 现在没有这个模型，桥已经改用 ', el('code', { text: s.modelSwap.to, translate: 'no' }), ' 来回答。']) : null,
+        el('p', { text: '点「更新供应商」把 Codex 里的模型列表换成 Prism 现在提供的，然后在 Codex 里重新选一下模型。' }),
+      ]),
+      act('更新供应商', addProvider, false, 'btn'),
+    ]) : null;
     const proxied = s.proxyIssue ? el('section', { class: 'pv-prism-warn', role: 'alert', 'data-warn': 'proxy' }, [
       icon('alert'),
       el('div', { class: 'pv-grow' }, [
@@ -643,7 +653,7 @@
         act('全部删除', removeAll, busy || s.phase === 'starting'),
       ])]);
     }
-    return [title, hero, proxied, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), faq, logBox, removal].filter(Boolean);
+    return [title, hero, proxied, staleModels, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), faq, logBox, removal].filter(Boolean);
   }
 
   /* ---------------- 导入 ---------------- */

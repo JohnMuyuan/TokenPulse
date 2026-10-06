@@ -26,7 +26,7 @@ import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, in
 import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
-import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, PRISM_MODELS, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
+import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
 import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
@@ -866,7 +866,9 @@ if (!app.requestSingleInstanceLock()) {
       const baseUrl = `http://127.0.0.1:${prismState().port}/v1`;
       return coreAgentView().providers.find((item) => item.app === "codex" && !item.official && !item.pool && (item.baseUrl === baseUrl || item.name === PRISM_PROVIDER_NAME));
     };
-    const prismView = () => ({ ...prismState(), provider: !!prismProvider(), models: PRISM_MODELS.map((item) => item[1]) });
+    /** Codex 里那家供应商的模型和 Prism 现在提供的对不上（比如还留着已经下架的 gpt-6.1-sol）。 */
+    const prismProviderStale = () => { const saved = prismProvider(); if (!saved) return false; const now = prismModels().map((item) => item[0]), had = saved.slots.map((slot) => slot.model).filter(Boolean); return !now.includes(saved.model) || had.some((model) => !now.includes(model)); };
+    const prismView = () => ({ ...prismState(), provider: !!prismProvider(), providerStale: prismProviderStale(), models: prismModels().map((item) => item[1]) });
     const prismCall = async (work: () => unknown) => {
       try { await work(); return { ok: true as const, state: prismView() }; }
       catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "操作失败", state: prismView() }; }
@@ -889,10 +891,10 @@ if (!app.requestSingleInstanceLock()) {
       name: PRISM_PROVIDER_NAME,
       ...prismEndpoint(),
       upstream: "openai-responses",
-      model: PRISM_MODELS[0][0],
+      model: prismModels()[0][0],
       websiteUrl: PRISM_ORIGIN,
       notes: "经 TokenPulse 的 Prism 桥访问你自己的 Prism 账号。要先在「Prism 桥」里启动服务。",
-      slots: PRISM_MODELS.map(([model, displayName]) => ({ role: "catalog", model, displayName, contextWindow: 128000, reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "high" })),
+      slots: prismModels().map(([model, displayName]) => ({ role: "catalog", model, displayName, contextWindow: 128000, reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "high" })),
     })));
     /*
      * 代理：让软件里所有往外发的请求走同一套规则（环境变量里的代理优先，没有就用系统代理）。

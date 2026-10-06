@@ -18,7 +18,23 @@ import { envProxyFor, proxyFor, upstreamRequest } from "./upstream-proxy";
 export const PRISM_ORIGIN = "https://prism.openai.com";
 export const PRISM_PROVIDER_NAME = "Prism 桥";
 /** bridge.py 认的模型（2026-10 的目录）。第一个是默认。 */
-export const PRISM_MODELS: [string, string][] = [["gpt-6.1-sol", "GPT-6.1 Sol"], ["gpt-5.6-sol", "GPT-5.6 Sol"], ["gpt-5.6-terra", "GPT-5.6 Terra"], ["gpt-6-luna", "GPT-6 Luna"]];
+/**
+ * 不知道 Prism 现在提供哪些模型时用的默认清单（2026-10-05 核对；这一天 Prism 下架了 gpt-6.1-sol 和 gpt-6-astra）。
+ * 服务启动后以桥从 Prism 页面读到的为准，见 prismModels()。
+ */
+export const PRISM_MODELS: [string, string][] = [["gpt-5.6-sol", "GPT-5.6 Sol"], ["gpt-5.6-terra", "GPT-5.6 Terra"], ["gpt-6-luna", "GPT-6 Luna"]];
+let liveModels: string[] = [];
+let modelSwap: { from: string; to: string } | null = null;
+const modelLabel = (id: string) => PRISM_MODELS.find((item) => item[0] === id)?.[1] || id.replace(/^gpt-/, "GPT-").replace(/-([a-z])([a-z]*)$/, (_m, a: string, b: string) => " " + a.toUpperCase() + b);
+/** 现在该给 Codex 的模型清单：[id, 显示名]。服务这次启动后读到过 Prism 的列表就用它。 */
+export function prismModels(): [string, string][] { return liveModels.length ? liveModels.map((id) => [id, modelLabel(id)]) : PRISM_MODELS; }
+/** 桥打印的两种行：现在提供的模型、把已下架的模型换成了哪个。 */
+function noteModelLine(line: string) {
+  const list = line.match(/\[init\] Prism models: (.+)$/);
+  if (list) { liveModels = list[1].split(",").map((id) => id.trim()).filter((id) => /^gpt-[\w.-]{1,40}$/.test(id)).slice(0, 20); return; }
+  const swap = line.match(/\[model\] Prism no longer offers (\S+); using (\S+) instead/);
+  if (swap) modelSwap = { from: swap[1], to: swap[2] };
+}
 const DEFAULT_PORT = 18765;
 const LOG_MAX = 300;
 const READY_MARK = "服务已就绪";
@@ -48,6 +64,8 @@ export type PrismState = {
    * certain：经那个代理实际试过，到不了本机的服务；false：代理类型试不了（比如 SOCKS），只是可能。
    */
   proxyIssue: { proxy: string; certain: boolean } | null;
+  /** 服务运行中：Codex 请求了 Prism 已经下架的模型，桥改用了另一个。 */
+  modelSwap: { from: string; to: string } | null;
 };
 
 type Config = { port: number; key: string; autoStart: boolean };
@@ -134,7 +152,7 @@ function loginInfo(): PrismState["login"] {
 
 export function prismState(): PrismState {
   const cfg = config(false);
-  return { available: !!scriptPath(), deps: depsReady(), login: loginInfo(), phase, task, port: cfg.port, autoStart: cfg.autoStart, error: lastError, logs: logs.slice(), installed: fs.existsSync(home()), proxyIssue };
+  return { available: !!scriptPath(), deps: depsReady(), login: loginInfo(), phase, task, port: cfg.port, autoStart: cfg.autoStart, error: lastError, logs: logs.slice(), installed: fs.existsSync(home()), proxyIssue, modelSwap: phase === "running" ? modelSwap : null };
 }
 
 /** 给 Codex 加供应商用的地址和密钥。密钥只在主进程里用，不交给界面。 */
@@ -191,7 +209,7 @@ function pipe(child: ChildProcess, onLine?: (line: string) => void) {
     stream.on("data", (chunk: string) => {
       const lines = (rest + chunk).split(/\r?\n|\r/);
       rest = lines.pop() || "";
-      for (const line of lines) { log(line); onLine?.(line); }
+      for (const line of lines) { noteModelLine(line); log(line); onLine?.(line); }
     });
     stream.on("end", () => { if (rest) { log(rest); onLine?.(rest); } });
   }
@@ -336,7 +354,7 @@ export async function startPrism() {
   if (login.expired) throw new Error("Prism 登录已经过期，请重新登录");
   const env = await childEnv();
   if (phase !== "stopped") return;
-  lastError = ""; stopping = false; phase = "starting"; emit();
+  lastError = ""; stopping = false; phase = "starting"; liveModels = []; modelSwap = null; emit();
   const child = spawn(python, ["-u", scriptPath(), "serve"], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   server = child;
   let reason = "";

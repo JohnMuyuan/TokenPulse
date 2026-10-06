@@ -14,6 +14,10 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.30': [
+      ['check', '修复：Prism 桥一直报「400 Bad Request」', 'Prism 在 2026-10-05 把 6.1 Sol 和 6 Astra 从模型列表里拿掉了，请求它们一律被拒，而 TokenPulse 给 Codex 配的默认模型正好是 6.1 Sol。现在默认模型是 5.6 Sol。Codex 还在请求已下架的模型时，桥会改用 Prism 现在提供的模型来回答，并在 Prism 桥页面顶部提醒。'],
+      ['info', 'Prism 桥的模型列表跟着 Prism 走', '服务启动时会从 Prism 自己的配置里读出现在提供的模型（目前是 5.6 Sol、5.6 Terra、6 Luna）。以后 Prism 再增减模型不用等新版。更新后请重启一次 Prism 桥服务，再在 Prism 桥页面点「更新供应商」，然后在 Codex 里重新选一下模型。'],
+    ],
     '0.3.29': [
       ['info', 'Grok 号池 / 供应商可以选思考等级', '用 Grok 号池时在 Grok 里 /effort 会提示「current model does not support reasoning effort」，请求里也不带思考等级。现在可以在 TokenPulse 里选：号池在「编辑号池 → 基本信息 → 思考等级」，普通的 Grok 供应商在「模型」那一行的默认思考等级。本地路由转发时替你加上，请求自己带了的不会改。'],
       ['check', '修复：Prism 桥报「Unable to confirm the response started」后连续失败', '和 0.3.27 修的是同一类问题：Prism 那边的会话卡住了，重建一次就好。现在遇到这句话桥也会自动重建会话再发一次。更新后请把 Prism 桥的服务停止再启动一次。'],

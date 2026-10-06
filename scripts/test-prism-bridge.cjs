@@ -59,6 +59,16 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-prism-'));
     // 限流：等一会儿再发同一轮，不重建会话；等够 240 秒（20+40+60+60+60）还不行才报错
     ['send', 'send', 'send', 'ok'], ['send', 'boot', 'send', 'ok'], ['send', 'PrismTurnError'], 7]);
   console.log('PASS prism bridge: a turn that never started because Prism failed to sync is retried once after a re-boot');
+  // 第三处：Prism 现在提供哪些模型从它页面的配置里读；请求的模型已经下架就改用列表里的第一个
+  const models = [
+    'import json, bridge',
+    'before = bridge.available_model("gpt-6.1-sol")',
+    'bridge.note_available_models(json.dumps({"x": {"value": {"free_model": "gpt-5.6-terra", "models": [{"label": "5.6 Sol", "id": "gpt-5.6-sol"}, {"id": "gpt-6-luna", "label": "6 Luna"}]}}}))',
+    'print(json.dumps([before, bridge.AVAILABLE_MODELS, bridge.available_model("gpt-6.1-sol"), bridge.available_model("gpt-6-sol"), bridge.available_model("gpt-6-luna"), bridge.available_model("auto")]))',
+  ].join(String.fromCharCode(10));
+  const listed = execFileSync(python, ['-c', models], { encoding: 'utf8', windowsHide: true, env: { ...process.env, PYTHONPATH: [path.dirname(stub), vendor].join(path.delimiter), PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8' } });
+  assert.deepEqual(JSON.parse(listed.trim().split(String.fromCharCode(10)).pop().trim()), ['gpt-6.1-sol', ['gpt-5.6-sol', 'gpt-6-luna'], 'gpt-5.6-sol', 'gpt-5.6-sol', 'gpt-6-luna', 'gpt-5.6-sol']);
+  console.log('PASS prism bridge: models come from the list Prism itself serves; a dropped model falls back to the first one offered');
 }
 const fake = path.join(dir, 'bridge.py');
 fs.writeFileSync(fake, `
@@ -76,7 +86,9 @@ elif cmd == "serve":
     if os.path.exists(os.path.join(prof, "fail")):
         print("[fatal] boom", flush=True)
         sys.exit(1)
+    print("[init] Prism models: gpt-5.6-sol, gpt-9-nova", flush=True)
     print("[Prism Bridge] 服务已就绪！", flush=True)
+    print("[model] Prism no longer offers gpt-6.1-sol; using gpt-5.6-sol instead", flush=True)
     time.sleep(600)
 `);
 process.env.TOKENPULSE_DATA_DIR = path.join(dir, 'data');
@@ -155,8 +167,15 @@ const home = path.join(process.env.TOKENPULSE_DATA_DIR, 'prism-bridge');
     } finally { bad.close(); good.close(); }
     console.log('PASS prism bridge: log file, proxy interception check and fix');
 
+    // Prism 现在提供的模型以桥读到的为准；Codex 请求了已下架的模型时，状态里说明换成了哪个
+    for (let i = 0; i < 40 && !prism.prismState().modelSwap; i++) await new Promise(r => setTimeout(r, 50));
+    assert.deepEqual(prism.prismModels(), [['gpt-5.6-sol', 'GPT-5.6 Sol'], ['gpt-9-nova', 'GPT-9 Nova']]);
+    assert.deepEqual(prism.prismState().modelSwap, { from: 'gpt-6.1-sol', to: 'gpt-5.6-sol' });
     await prism.stopPrism();
     assert.equal(prism.prismState().phase, 'stopped');
+    assert.equal(prism.prismState().modelSwap, null, '服务停了就不再提示');
+    assert.equal(prism.PRISM_MODELS[0][0], 'gpt-5.6-sol', '默认清单里没有已经下架的 gpt-6.1-sol');
+    assert.equal(prism.PRISM_MODELS.some(item => /6\.1-sol|astra/.test(item[0])), false);
     assert.equal(prism.prismState().error, '', '自己停的不算出错');
     console.log('PASS prism bridge: start and stop');
 

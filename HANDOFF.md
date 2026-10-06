@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.29（2026-10-05，已发布，工作区干净）
+# 当前接手入口 · 0.3.30（2026-10-05，已发布，工作区干净）
 
 ## 新对话先看这里
 
@@ -6,9 +6,16 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.29**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.29）。`package.json` 是 0.3.29。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.29：…`（标签 `v0.3.29`）。接手时用 `git status`、`git log -3` 核对。
+- 最新版本 **0.3.30**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.30）。`package.json` 是 0.3.30。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.30：…`（标签 `v0.3.30`）。接手时用 `git status`、`git log -3` 核对。
 - **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。
+- **0.3.30（2026-10-05，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.30.md`）：Prism 下架了 `gpt-6.1-sol`，Prism 桥一直报 `Error while processing conversation (400 Bad Request)`。**
+  - 查证（用户账号，临时桥 + 临时浏览器目录，跑完已清理）：一句「回复 pong」，`gpt-6.1-sol`、`gpt-6-astra`、`auto` 都是 2 到 3 秒内 400；`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-luna` 正常。同样的请求当天 07:12 用 `gpt-6.1-sol` 还成功。Prism 页面加载时请求的 `/api/ff/initialize`（feature flag，JSON）里有一项 `"models":[{"label":"5.6 Sol","id":"gpt-5.6-sol"},{"label":"5.6 Terra","id":"gpt-5.6-terra"},{"label":"6 Luna","id":"gpt-6-luna"}]`，旁边还有 `free_model: gpt-5.6-terra`、`free_reasoning_effort: high`，`rule_id` 是 `default`（不像是只针对这个账号，但只查了这一个账号）。`/api/models` 之类的路径都是 404。
+  - **400 这句话含义很多**：Prism 对「模型不存在」「会话 id 不存在（之后桥会改成整段重发）」都回 `400 Bad Request`，没有结构化的原因码。看日志时要结合上下文。
+  - `vendor/prism-bridge/bridge.py`（第七处 `TokenPulse` 改动，`NOTICE.md` 已同步）：`_run` 里给页面挂 `response` 监听，`/api/ff/initialize` 返回 200 时 `note_available_models()` 取出 `models` 里的 id 存进 `AVAILABLE_MODELS` 并打印 `[init] Prism models: …`；`/v1/models` 返回这份列表；`available_model()` 在请求的模型不在列表里时改用列表第一个，并打印 `[model] Prism no longer offers X; using Y instead`。列表没读到时行为和以前一样。
+  - `src/core/prism-bridge.ts`：`PRISM_MODELS` 默认清单改成三个（默认 `gpt-5.6-sol`）；`noteModelLine()` 解析上面两种日志行；`prismModels()` 返回现在该用的清单；`PrismState.modelSwap`（服务运行中才有）。`src/main/index.ts`：`prism:provider` 和 `prismView` 改用 `prismModels()`，多了 `providerStale`（Codex 里那家供应商的模型和现在的清单对不上）。`renderer/agent-switch.js`：`providerStale` 或 `modelSwap` 时顶部出 `.pv-prism-warn[data-warn=models]` 提醒 + 「更新供应商」。
+  - 这是自动换模型，和上游「不能悄悄换模型」的取向不同；选它是因为不换的话所有老用户更新后一上来就是 400。换了会在日志和页面上写明，返回里的 `model` 也是实际用的那个。
+  - 测试：`scripts/test-prism-bridge.cjs` 加了一组（真的 `bridge.py` 的两个函数）并扩了启动那组（假桥打印两种行）；`test-agent-switch-ui.cjs` 的默认模型和数量改成新值。**真实验证过**：新桥启动日志里有 `[init] Prism models: gpt-5.6-sol, gpt-5.6-terra, gpt-6-luna`，`/v1/models` 返回这三个，请求 `gpt-6.1-sol` 和 `auto` 都由 `gpt-5.6-sol` 正常回答。页面上那条提醒没有界面测试，也没截图看过。
 - **0.3.29（2026-10-05，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.29.md`）有两项，第一项：Grok 号池 / 供应商的思考等级。**
   - 用户的问题：Grok 混合号池里 `/effort high` 提示 `current model does not support reasoning effort`。原因：Grok CLI 只认 xAI 下发的官方模型目录（`~/.grok/models_cache.json`，里面有 `supports_reasoning_effort`、`reasoning_efforts`）里的型号支持思考等级；TokenPulse 写的是自定义模型 `[model.tokenpulse_route]`，文档（`~/.grok/docs/user-guide/11-custom-models.md`）没有给自定义模型声明等级的写法。
   - 用真实 Grok 1.0.46 试过、**都不生效**的办法（临时 `GROK_HOME` + 本机假接口，看请求体里有没有 `reasoning.effort`；没有登录）：自定义模型表里写 `supports_reasoning_effort = true`、`reasoning_efforts`（字符串数组和官方目录那种对象数组都试了）、`reasoning_effort = "high"`；把表名改成官方型号名 `"grok-4.6"`（带不带模型目录缓存都试了）。所有情况下 `grok -p hi --effort high` 发出的请求里只有 `reasoning.summary`，没有 `effort`。登录状态下会不会不同没有验证。
@@ -32,6 +39,7 @@
 
 | 版本 | 提交 | 内容 |
 |---|---|---|
+| 0.3.30 | 见 `git log` | Prism 下架 6.1 Sol 后桥一直 400：默认模型换成 5.6 Sol，模型列表从 Prism 读，已下架的模型自动改用可用的并提醒 |
 | 0.3.29 | 见 `git log` | Grok 号池 / 供应商可以选思考等级（本地路由转发时补上）；修：Prism 桥报「Unable to confirm the response started」后连续失败 |
 | 0.3.28 | 见 `git log` | 修：Prism 桥被限流（403）后反复失败（恢复限流等待和分段固定间隔） |
 | 0.3.27 | `f2810c8` | 修：Prism 桥报「Project file synchronization timed out」后一直失败（恢复自动重建会话） |
@@ -64,6 +72,7 @@
 
 ### 仍然没有人验证过的
 
+- 0.3.30：Prism 桥页面顶部那条模型提醒的样子；别的账号看到的 Prism 模型列表是否相同。
 - 0.3.29：Grok 思考等级对着 xAI 真实接口的效果；号池编辑界面里那个下拉框的样子；`Unable to confirm…` 自动重建在真实环境里的效果。
 - 0.3.28：限流等待在真实环境里的效果（没有真实触发过限流）；下次出现时日志里应该有 `Prism throttled the turn, waiting 20s`。
 - 0.3.27：自动重建会话在真实环境里的效果。这个错误是 Prism 服务端的状态，本机造不出来；下次出现时日志里应该有一行 `start failed, re-boot and retry`，然后这一轮正常继续。
@@ -112,7 +121,7 @@ AGENTS.md 之外，对话里形成的；也记在 Claude 的 memory 里。
 - **它是什么**：第三方开源项目 Prism Bridge（https://github.com/yyyllllming/prism-bridge ，作者 yyyllllming，MIT）。`bridge.py` 用无头 Chromium 登录用户自己的 Prism（prism.openai.com）账号，在本机 `http://127.0.0.1:18765/v1` 开 OpenAI 兼容接口给 Codex 用。适合 ChatGPT 账号被「降智」的用户；界面、README、更新说明里都写了适合谁、正常账号没必要用、以及可能不符合 OpenAI 服务条款的风险。
 - **代码位置**：`vendor/prism-bridge/`（`bridge.py`、`LICENSE`、`NOTICE.md`、`collect_login.py`），随安装包打到 `resources/prism-bridge`。进程管理在 `src/core/prism-bridge.ts`，界面在 `renderer/agent-switch.js` 的 `prismSection()`（「本地路由」分组下的 `prism` 一节），样式在 `renderer/agent-switch.css` 末尾（`.pv-prism-*`）。
 - **上游版本**：当前这份对应上游提交 `1bd4b79`（2026-10-05）。
-- **TokenPulse 对 `bridge.py` 的六处改动**（代码里都带 `TokenPulse` 注释，`NOTICE.md` 里有清单；以后换新版要全部补回）：
+- **TokenPulse 对 `bridge.py` 的七处改动**（第 7 处是模型列表，见上面 0.3.30）（代码里都带 `TokenPulse` 注释，`NOTICE.md` 里有清单；以后换新版要全部补回）：
   1. `PRISM_PROXY` → `BROWSER_PROXY` / `PROXY_OPTION`：给浏览器当代理（服务、Playwright 登录窗口、上游拉起的系统浏览器登录窗口）。上游没有代理支持。
   2. `LOGIN_CHANNEL` 常量（环境变量 `PRISM_LOGIN_CHANNEL`）：只给 `collect_login.py` 用。
   3. `cookie_header_to_playwright` 跳过已过期的 `prism_session_token`（12 小时有效；不跳过的话登录 12 小时后再启动报 `401 Request verification failed`）。上游没有修。
