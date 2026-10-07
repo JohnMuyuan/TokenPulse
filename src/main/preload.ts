@@ -44,6 +44,16 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
   /** 版本号从 package.json 来，界面上不再手写（以前每次发版都要记得改 index.html）。 */
   version: () => ipcRenderer.invoke("app:version"),
+  /* 托盘小面板（tray-panel.html） */
+  trayPanelData: () => ipcRenderer.invoke("tray-panel:data"),
+  trayPanelSize: (height: number) => ipcRenderer.send("tray-panel:size", height),
+  trayPanelAction: (action: "open" | "refresh" | "quit" | "close") => ipcRenderer.send("tray-panel:action", action),
+  trayPanelActivate: (id: string) => ipcRenderer.send("tray-panel:activate", id),
+  onTrayPanel: (handler: (data: unknown) => void) => {
+    const listener = (_event: unknown, data: unknown) => handler(data);
+    ipcRenderer.on("tray-panel", listener);
+    return () => ipcRenderer.off("tray-panel", listener);
+  },
   updateState: () => ipcRenderer.invoke("update:state"),
   checkForUpdates: () => ipcRenderer.invoke("update:check"),
   downloadUpdate: () => ipcRenderer.invoke("update:download"),

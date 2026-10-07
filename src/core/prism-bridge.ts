@@ -19,10 +19,11 @@ export const PRISM_ORIGIN = "https://prism.openai.com";
 export const PRISM_PROVIDER_NAME = "Prism 桥";
 /** bridge.py 认的模型（2026-10 的目录）。第一个是默认。 */
 /**
- * 不知道 Prism 现在提供哪些模型时用的默认清单（2026-10-05 核对；这一天 Prism 下架了 gpt-6.1-sol 和 gpt-6-astra）。
+ * 不知道 Prism 现在提供哪些模型时用的默认清单。Prism 在 2026-10-05 下架了 gpt-6.1-sol 和 gpt-6-astra，
+ * 10-07 核对时连 gpt-5.6-sol、gpt-5.6-terra 也没有了，只剩 gpt-6-luna（这个功能因此下线，见 renderer/agent-switch.js 的 prismShown）。
  * 服务启动后以桥从 Prism 页面读到的为准，见 prismModels()。
  */
-export const PRISM_MODELS: [string, string][] = [["gpt-5.6-sol", "GPT-5.6 Sol"], ["gpt-5.6-terra", "GPT-5.6 Terra"], ["gpt-6-luna", "GPT-6 Luna"]];
+export const PRISM_MODELS: [string, string][] = [["gpt-6-luna", "GPT-6 Luna"]];
 let liveModels: string[] = [];
 let modelSwap: { from: string; to: string } | null = null;
 const modelLabel = (id: string) => PRISM_MODELS.find((item) => item[0] === id)?.[1] || id.replace(/^gpt-/, "GPT-").replace(/-([a-z])([a-z]*)$/, (_m, a: string, b: string) => " " + a.toUpperCase() + b);

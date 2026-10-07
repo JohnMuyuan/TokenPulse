@@ -2,3 +2,8 @@ node_modules/
 build/
 dist/
 *.log
+
+# Python 缓存（跑桥的测试时会生成，不要进仓库和安装包）
+__pycache__/
+# 测试版的临时输出目录（dist 被正在运行的测试版占用时用）
+dist-test/

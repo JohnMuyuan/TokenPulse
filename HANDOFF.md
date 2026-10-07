@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.32（2026-10-06，已发布，工作区干净）
+# 当前接手入口 · 0.3.33（2026-10-07，已发布，工作区干净）
 
 ## 新对话先看这里
 
@@ -6,9 +6,24 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.32**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.32）。`package.json` 是 0.3.32。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.32：…`（标签 `v0.3.32`）。接手时用 `git status`、`git log -3` 核对。
-- **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。
+- 最新版本 **0.3.33**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.33）。`package.json` 是 0.3.33。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.33：…`（标签 `v0.3.33`）。接手时用 `git status`、`git log -3` 核对。
+- **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。0.3.33 有两项（下面两条），用户看过几轮测试版后说「升级一个版本号后就推送更新」；发布时 `npm test`、`npm run test:ui`（37 个 PASS）、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.33.md`。
+- **0.3.33 之二（2026-10-07，Claude）：Prism 桥下线。**
+  - 用户说 Prism 好像只剩 6 Luna，让求证，「如果是真的这个功能可以下线了」。**求证结果是真的**（用户账号、临时浏览器目录和临时桥，跑完已清理）：Prism 页面的 `/api/ff/initialize` 里 `models` 只有 `{"id":"gpt-6-luna","label":"6 Luna"}`，`free_model` 也变成了 `gpt-6-luna`；用关掉「自动换模型」的临时桥逐个发一句话，`gpt-6-luna` 正常，`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6.1-sol` 都是 400。两天前（10-05）还有 5.6 Sol、5.6 Terra。只查了这一个账号。
+  - 做法是**对新用户隐藏、对装过的人保留并标明下线**，没有删代码：`renderer/agent-switch.js` 的 `prismShown()`（`prism.installed || prism.provider`）为假时导航里没有「Prism 桥」、停在这一页的会回到概览；为真时页面最上面多一块 `.pv-prism-warn[data-warn=retired]` 的下线说明，「适合谁用」那块不再显示（`fit` 变量还在，只是不放进页面）。装过的人仍然可以启动服务（只有 6 Luna）和用「全部删除」；删完 `installed` 和 `provider` 都没了，这一页和入口自动消失。`src/core/prism-bridge.ts` 的默认清单 `PRISM_MODELS` 改成只有 `gpt-6-luna`。README 的 Prism 桥一节换成了简短的下线说明。
+  - 没有动的：`vendor/prism-bridge/`、主进程的 IPC、跟着启动、`extraResources`（安装包里仍然带着桥，约 200 KB）。如果用户以后要彻底删掉代码，要一起处理这些和 `test-prism-bridge.cjs`；如果 Prism 把模型放回来，只要改 `prismShown()` 就能恢复。
+  - 测试：`test-agent-switch-ui.cjs` 开头先建一个空的 `data/prism-bridge` 当作「装过」，断言下线说明、不再有「适合谁用」、删完后导航入口消失（导航项从 10 个变 9 个）；`test-prism-bridge.cjs` 的默认清单断言改了。`npm test` 退出 0，`npm run test:ui` 退出 0（37 个 PASS）。下线说明那一块没有截图看过。
+  - **打包被占用（2026-10-07）**：`npx electron-builder --win dir` 往 `dist/win-unpacked` 写的时候失败（退出 1），因为用户自己正开着上一版测试版（`dist\win-unpacked\TokenPulse.exe`，4 个进程，10-06 11:54 启动；是用户启动的，没有动它）。这一版测试版改成输出到 **`dist-test/win-unpacked/TokenPulse.exe`**（`-c.directories.output=dist-test`，已加进 `.gitignore`），asar 里的 `renderer/agent-switch.js` 与源码一致。`dist/win-unpacked` 里现在是**写了一半的状态，不要用**；等用户关掉那个测试版后要重新打一次，正式发布的 `npm run dist` 也要等它关掉。
+- **0.3.33 之一（2026-10-06，Claude）：在托盘图标上点右键，弹出额度小面板。**
+  - 起因：用户看到别的项目（Nowdex）右键托盘图标能显示一张额度卡片，想要类似的，并明确说「不要完全仿照，怕被说抄袭」。第一版做的是双圆环；用户看过后说想要对方那种一条直线的，更小巧，并要求把菜单里的供应商也整合进面板。**现在的样子（第二版）**：每个窗口一条细的直线进度条（实心的，不是对方那种分段刻度），写「已用」而不是「剩余」，颜色是主界面的 `--ring-five` / `--ring-week`，进度条上有一根小竖线表示「时间走到哪了」（`pace` = 已过时间 ÷ 窗口总时间，填充超过它就是用得比时间快；没有起止时间时不画），再加「按现在的速度约多久后用完」。面板宽 340。下面一块「供应商」：每个工具一行写着现在用的是哪家，点开（一次只展开一个）列出可以换的，点一个就 `tray-panel:activate` → 收起面板、打开主窗口、发 `agent-activate-request`（和托盘菜单一样要在主窗口里看过改动对比确认后才写；只读保护开着时不能点）。
+  - 文件：`src/main/tray-panel.ts`（新，窗口管理 + `trayPanelData()` 从快照里挑数据 + `panelBounds()` 算位置）、`renderer/tray-panel.html` / `.css` / `.js`、`renderer/tray-panel-theme.js`（第一帧之前按地址里的 `?theme=` 定主题）。`src/main/index.ts`：`initTray` 里 `tray.on("right-click", toggleTrayPanel)`，IPC `tray-panel:data` / `tray-panel:size` / `tray-panel:action`（open / refresh / menu / close）/ `tray-panel:activate`，`trayPanelView()` 把额度和供应商拼在一起，`publishAgent` 里也 `pushTrayPanel()`，`publishSnapshot` 里 `pushTrayPanel()`，退出时 `destroyTrayPanel()`。`src/main/preload.ts` 加了 `trayPanelData` / `trayPanelSize` / `trayPanelAction` / `onTrayPanel`。
+  - **右键菜单的变化（只在 Windows）**：Windows 上给托盘设了菜单就收不到 `right-click`，所以不再 `setContextMenu`（`setTrayMenu()` 在 Windows 上什么都不做）。**第三版起用户决定旧菜单整个不要了**：面板底部的「菜单」按钮已去掉，右上角是刷新和退出两个图标按钮（`tray-panel:action` 的 `quit`）；`buildTrayMenu()` / `agentTrayItems()` 只剩别的平台在用。菜单里原来的「开机自启」「打开数据目录」在主窗口的设置里都有，托盘上不再提供。左键 / 双击仍然是打开主窗口。README「安静地待在托盘」和「退出请用托盘右键菜单」两处已改。
+  - **第三版（用户嫌高）**：账号列表 `#tp-list` 只露出前 3 张卡的高度（`SHOWN`，画完量前三张的实际高度用 CSSOM 设 `max-height`），超过的在这一块里滚动；供应商挪到列表外面的 `#tp-agents`；各处间距收紧；顶上「今日」那句缩成 `今日 48.2M · $31.40`，完整说法在悬停提示里。`.tp` 的网格列要写 `minmax(0, 1fr)`，否则内容会把面板撑得比窗口宽、右边被裁掉（第三版踩过）。
+  - 行为：面板窗口第一次右键时才建（无边框、置顶、不进任务栏），高度由界面量出来通过 `tray-panel:size` 告诉主进程（画完直接量，不等 `requestAnimationFrame`：窗口被挡住或在屏幕外时下一帧可能不来）；位置贴着托盘图标、不超出屏幕可用区域（任务栏在上下左右都处理了）；失去焦点、Esc、再点一次右键都会收起；刚收起的 300 毫秒内的右键不重开（点图标会先让面板失焦收起）；收起两分钟后销毁窗口（省内存）。有新快照时面板开着就推送。主题用 `prefs.theme`（主窗口每次把解析后的 light / dark 写进去）。
+  - 界面文字：固定文字走 `i18n.js` 词典；带数字和时间的句子在 `tray-panel.js` 里用 `L(zh, en)` 直接按语言拼，节点标 `translate="no"`。面板页面复用 `app.css` 的颜色变量和 `.btn`，所以**不要在面板里用 `header` / `main` / `footer` 标签**（`app.css` 给这三个元素写了主界面用的样式）。
+  - 测试：`scripts/test-tray-panel.cjs`（进了 `npm test`：挑数据、算位置）；`scripts/test-tray-panel-ui.cjs`（进了 `npm run test:ui`：真的启动应用、抓住托盘对象 `emit('right-click')`；测试里用环境变量 `TOKENPULSE_TRAY_PANEL_OFFSCREEN` 把面板放到屏幕外面）。`npm test` 退出 0；`npm run test:ui` 退出 0，**PASS 总数从 33 变成 37**。用假数据截图看过浅色和深色。测试里**不断言 `isAlwaysOnTop()`**：同一台机器上它时真时假（取决于系统当时的状态），断言了会让整套 `test:ui` 偶尔失败。
+  - **没有验证**：真实任务栏上右键的手感（位置、失焦收起、在「隐藏的图标」溢出面板里时的位置）；多显示器 / 缩放比例不同的屏幕；英文界面的排版。
 - **0.3.32（2026-10-06，Claude；用户试用测试版后说「测试没问题」；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.32.md`）：Grok 号池可以设上下文窗口。**
   - 用户的问题：官方是 500K，换成号池只有 200K。原因：号池在 Grok 配置里是自定义模型 `[model.tokenpulse_route]`，不写 `context_window` 时 Grok 按 200K 算。`writeGrok` 本来就会在 `provider.contextWindow` 有值时写 `context_window`，`saveProvider` 的号池分支也收 `contextWindow`，只是**号池的编辑界面没有这个输入框**、保存时也没带上。普通的 Grok 供应商一直有（「模型」页的「上下文窗口」）。
   - 本机 `~/.grok/models_cache.json` 里官方型号（grok-4.5 / 4.6 / 4.7 / 4.7-build-fast）都是 `context_window: 256000`、`context_windows: [256000, 500000]`、`auto_compact_threshold_percent: 80`。
@@ -51,6 +66,7 @@
 
 | 版本 | 提交 | 内容 |
 |---|---|---|
+| 0.3.33 | 见 `git log` | 右键托盘图标弹出额度小面板（直线进度条 + 供应商切换，旧的右键菜单不要了）；Prism 桥下线（只对装过的人保留） |
 | 0.3.32 | 见 `git log` | Grok 号池可以设上下文窗口（256K / 500K） |
 | 0.3.31 | 见 `git log` | 修：换成中转站 / 官方登录后 Codex 桌面端打不开用 Prism 桥聊过的对话（tokenpulse_route not found） |
 | 0.3.30 | 见 `git log` | Prism 下架 6.1 Sol 后桥一直 400：默认模型换成 5.6 Sol，模型列表从 Prism 读，已下架的模型自动改用可用的并提醒 |
@@ -81,6 +97,7 @@
 - 0.3.21：界面里删除 Codex 对话「确实删除了」；降内存后「卡倒是不会卡」。
 - 0.3.24：三轮测试版看过界面，发布后「测试没问题」。
 - 0.3.25：试用测试版「没啥问题」。
+- 0.3.33：托盘小面板用户看了三轮测试版（圆环 → 直线 + 供应商 → 变矮、去掉菜单、加退出按钮），最后说「还不错」；Prism 桥下线的做法用户看过说明后同意发布。
 - 0.3.32：试用测试版「测试没问题」（Grok 号池的上下文窗口；超过 256K 的长对话有没有试到没有说）。
 - 0.3.26：用户的朋友确认修好了（桌面端能打开旧对话）。2026-10-05 用户转述。
 - 0.3.27：朋友手动停止再启动服务后恢复，印证了「重建会话能解决」。
@@ -119,7 +136,7 @@ AGENTS.md 之外，对话里形成的；也记在 Claude 的 memory 里。
 
 ### 发布流程
 
-1. `npm test`、`npm run test:ui` 都退出 0（`test:ui` 现在是 33 个 PASS）。
+1. `npm test`、`npm run test:ui` 都退出 0（`test:ui` 现在是 37 个 PASS（托盘小面板提交后；0.3.32 及以前是 33））。
 2. `npm version x.y.z --no-git-tag-version`；`renderer/intro.js` 的 NOTES 加这一版，`renderer/i18n.js` 补英文。**版本号升了而 NOTES 没有这一版，`test:ui` 会失败**（「较早版本按新到旧排」那组）。
 3. 发布说明写到 `dist/release-x.y.z.md`。
 4. `git fetch`；远端有机器人提交就 `git pull --ff-only`。

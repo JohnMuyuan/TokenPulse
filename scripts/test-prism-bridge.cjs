@@ -174,7 +174,7 @@ const home = path.join(process.env.TOKENPULSE_DATA_DIR, 'prism-bridge');
     await prism.stopPrism();
     assert.equal(prism.prismState().phase, 'stopped');
     assert.equal(prism.prismState().modelSwap, null, '服务停了就不再提示');
-    assert.equal(prism.PRISM_MODELS[0][0], 'gpt-5.6-sol', '默认清单里没有已经下架的 gpt-6.1-sol');
+    assert.deepEqual(prism.PRISM_MODELS.map(item => item[0]), ['gpt-6-luna'], '默认清单只剩 Prism 还提供的那一个');
     assert.equal(prism.PRISM_MODELS.some(item => /6\.1-sol|astra/.test(item[0])), false);
     assert.equal(prism.prismState().error, '', '自己停的不算出错');
     console.log('PASS prism bridge: start and stop');

@@ -1,6 +1,7 @@
 import { ExitMonitor } from "./egress-monitor";
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
+import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
@@ -206,7 +207,8 @@ function agentTrayItems() {
 }
 
 function publishAgent() {
-  tray?.setContextMenu(buildTrayMenu());
+  setTrayMenu();
+  pushTrayPanel();
   if (win && !win.isDestroyed()) win.webContents.send("agent-switch", agentView());
 }
 
@@ -306,10 +308,38 @@ function agentBackups() {
 function initTray() {
   tray = new Tray(trayIcon());
   tray.setToolTip("TokenPulse — Your AI usage, at a glance.");
-  tray.setContextMenu(buildTrayMenu());
+  setTrayMenu();
   tray.on("click", revealWindow);
   tray.on("double-click", revealWindow);
+  // 右键：额度小面板（见 tray-panel.ts）。用面板的平台不再有托盘菜单：切换供应商、刷新、退出都在面板里
+  if (TRAY_PANEL) {
+    setupTrayPanel({
+      tray: () => tray,
+      data: trayPanelView,
+      background: () => BACKGROUND[readPrefs().theme],
+      preload: path.join(__dirname, "preload.js"),
+    });
+    tray.on("right-click", toggleTrayPanel);
+  }
 }
+/*
+ * Windows 上给托盘设了菜单，右键就只弹菜单、收不到 right-click 事件，所以用面板的平台不设菜单
+ * （用户决定旧菜单整个不要了：开机自启、打开数据目录在主窗口的设置里）。别的平台保持原来的右键菜单。
+ */
+const TRAY_PANEL = process.platform === "win32";
+/** 面板要的全部数据：额度 + 各工具现在用的供应商。 */
+function trayPanelView() {
+  let agents: TrayPanelAgent[] = [];
+  try {
+    const view = agentView();
+    agents = AGENT_APPS.map((app) => {
+      const rows = view.providers.filter((item) => item.app === app && !item.locked);
+      return { app, label: AGENT_LABEL[app], current: rows.find((item) => item.active)?.name ?? "", readOnly: view.readOnly, providers: rows.map((item) => ({ id: item.id, name: item.name, active: !!item.active })) };
+    }).filter((item) => item.providers.length > 0);
+  } catch { /* 供应商读不出来：面板只显示额度 */ }
+  return trayPanelData(lastSnapshot, readPrefs().theme, accountTitle, agents);
+}
+function setTrayMenu() { if (!TRAY_PANEL) tray?.setContextMenu(buildTrayMenu()); }
 
 const KIND_NAMES: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
 
@@ -480,6 +510,7 @@ let initialSnapshot: Promise<Snapshot> | null = null;
 function publishSnapshot(snapshot: Snapshot): Snapshot {
   lastSnapshot = snapshot;
   updateTrayTip(snapshot);
+  pushTrayPanel();
   // 窗口收着的时候不往界面推（推了它就要把整页重画一遍，没人看）；再打开时补上最新的
   if (windowAway) snapshotHeld = true;
   else win?.webContents.send("snapshot", snapshot);
@@ -611,7 +642,7 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
       args: ["--hidden"],
     });
   }
-  tray?.setContextMenu(buildTrayMenu());
+  setTrayMenu();
   return next;
 }
 
@@ -818,6 +849,21 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("update:download", () => downloadUpdate());
     ipcMain.handle("update:install", () => installUpdate());
     ipcMain.handle("app:version", () => appVersion());
+    // 托盘小面板：取数据、报告内容高度、几个按钮
+    ipcMain.handle("tray-panel:data", () => trayPanelView());
+    // 面板里点了别的供应商：和托盘菜单一样，打开主窗口，在供应商页里看过改动对比、确认后才写
+    ipcMain.on("tray-panel:activate", (_event, id: unknown) => {
+      if (typeof id !== "string" || !id || id.length > 200) return;
+      hideTrayPanel(); revealWindow();
+      win?.webContents.send("agent-activate-request", id);
+    });
+    ipcMain.on("tray-panel:size", (_event, height: unknown) => resizeTrayPanel(Number(height)));
+    ipcMain.on("tray-panel:action", (_event, action: unknown) => {
+      if (action === "open") { hideTrayPanel(); revealWindow(); }
+      else if (action === "refresh") backgroundRefresh(true);
+      else if (action === "quit") { quitting = true; app.quit(); }
+      else if (action === "close") hideTrayPanel();
+    });
     ipcMain.handle("knowledge:state", () => knowledgeState());
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
@@ -992,6 +1038,7 @@ if (!app.requestSingleInstanceLock()) {
 
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
+    destroyTrayPanel();
     if (agentQuitReady) { quitting = true; exitMonitor.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;

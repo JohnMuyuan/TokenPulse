@@ -161,7 +161,7 @@
 
   function render(animate) {
     if (!view) return;
-    if (!SECTIONS.includes(section)) section = 'overview';
+    if (!SECTIONS.includes(section) || (section === 'prism' && !prismShown())) section = 'overview';
     const main = el('div', { class: 'pv-main', role: 'tabpanel', 'aria-label': editor ? '编辑供应商' : sectionTitle() });
     if (editor) main.append(editorForm());
     else {
@@ -207,7 +207,7 @@
       ['本地路由', [
         item('router', '路由服务', view.proxy.running ? `运行中 · ${routeOn} 家` : '已停止', lead('route'), el('i', { class: 'pv-dot ' + (view.proxy.running ? 'ok' : 'off') })),
         item('logs', '转发记录', null, lead('trace'), (view.logs || []).length ? el('span', { class: 'pv-nav-badge', text: String(view.logs.length) }) : null),
-        item('prism', 'Prism 桥', prism ? PRISM_PHASE[prism.phase] : null, lead('globe'), el('i', { class: 'pv-dot ' + (prism?.phase === 'running' ? 'ok' : prism?.phase === 'starting' ? 'degraded' : 'off') })),
+        prismShown() ? item('prism', 'Prism 桥', PRISM_PHASE[prism.phase], lead('globe'), el('i', { class: 'pv-dot ' + (prism?.phase === 'running' ? 'ok' : prism?.phase === 'starting' ? 'degraded' : 'off') })) : null,
       ]],
       ['管理', [item('import', '导入供应商', null, lead('download')), item('safety', '配置保护', null, lead('lock'), view.readOnly ? el('span', { class: 'pv-nav-badge guard', text: '只读' }) : null)]],
     ];
@@ -471,6 +471,11 @@
   const PRISM_PHASE = { running: '运行中', starting: '启动中', stopped: '已停止' };
   let prism = null, prismLogOpen = null, prismUsage = null, prismUsageLoading = false;
   const prismKey = s => JSON.stringify([s.available, s.deps, s.login, s.phase, s.task, s.port, s.autoStart, s.error, s.provider, s.installed, s.proxyIssue]);
+  /*
+   * Prism 桥下线。Prism 把能用的模型一个个撤掉，2026-10-07 只剩 6 Luna，这个功能解决不了「降智」了。
+   * 没装过的人看不到这一页；装过的（数据目录还在，或者 Codex 里还留着那家供应商）还能看到，用来继续用 6 Luna 或一键删除。
+   */
+  const prismShown = () => !!prism && (prism.installed || prism.provider);
   const prismVisible = () => section === 'prism' && !editor && !dragging && !pending && document.body.dataset.page === 'providers';
   /** 占了多少空间：打开这一页时量一次，装完 / 删完之后重新量。 */
   function loadPrismUsage() {
@@ -653,7 +658,11 @@
         act('全部删除', removeAll, busy || s.phase === 'starting'),
       ])]);
     }
-    return [title, hero, proxied, staleModels, broken, fit, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), faq, logBox, removal].filter(Boolean);
+    const retired = el('section', { class: 'pv-prism-warn', role: 'note', 'data-warn': 'retired' }, [
+      icon('info'),
+      el('div', {}, [el('b', { text: 'Prism 桥已经下线' }), el('p', { text: 'Prism 在 2026 年 10 月初陆续下架了 6.1 Sol、5.6 Sol 和 5.6 Terra，现在只剩 6 Luna 一个模型，已经解决不了账号被「降智」的问题。新用户不再提供这个功能。' }), el('p', { text: '你以前装过，所以这一页还在：服务仍然可以启动，只是只有 6 Luna 可用。不想留着的话，用页面最下面的「全部删除」把运行环境、浏览器和登录信息一次清掉，这一页也会跟着消失。' })]),
+    ]);
+    return [title, retired, hero, proxied, staleModels, broken, el('div', { class: 'pv-prism-steps' }, [env, login, service, provider]), faq, logBox, removal].filter(Boolean);
   }
 
   /* ---------------- 导入 ---------------- */

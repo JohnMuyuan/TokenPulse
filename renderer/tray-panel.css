@@ -1,0 +1,71 @@
+/* 托盘小面板：窗口本身就是这张卡片，宽度固定，高度跟着内容走（由 tray-panel.js 量出来告诉主进程）。 */
+html.tp-html, body.tp-body { height: auto; min-height: 0; overflow: hidden; margin: 0; background: var(--surface); }
+body.tp-body { display: block; font-family: var(--font); color: var(--text); -webkit-user-select: none; user-select: none; }
+.tp { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 10px 11px 10px; }
+
+.tp-head { display: flex; align-items: center; gap: 9px; }
+.tp-mark { flex: none; width: 28px; height: 28px; border-radius: 8px; }
+.tp-mark svg { width: 18px; height: 18px; }
+.tp-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
+.tp-title b { flex: none; font: 700 13.5px/1.2 var(--font-display); }
+.tp-title small { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.tp-icon-btn { display: inline-grid; place-items: center; flex: none; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+.tp-icon-btn:hover, .tp-icon-btn:focus-visible { color: var(--accent-strong); border-color: var(--line-strong); background: var(--surface-2); outline: none; }
+.tp-icon-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tp-icon-btn.spin svg { animation: tp-spin .9s linear infinite; }
+@keyframes tp-spin { to { transform: rotate(360deg); } }
+
+.tp-list { display: grid; gap: 6px; overflow-y: auto; }
+.tp-list.scroll { margin-right: -7px; padding-right: 3px; }
+.tp-list::-webkit-scrollbar { width: 4px; }
+.tp-list::-webkit-scrollbar-thumb { border-radius: 2px; background: var(--line-strong); }
+#tp-agents:empty { display: none; }
+.tp-icon-btn.quit:hover, .tp-icon-btn.quit:focus-visible { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: var(--danger-soft); }
+.tp-card { display: grid; gap: 3px; padding: 6px 10px 7px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.tp-card.stale { opacity: .72; }
+
+.tp-name { display: flex; align-items: center; gap: 6px; min-width: 0; margin-bottom: 1px; }
+.tp-avatar { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 5px; background: var(--tile-neutral, var(--surface)); color: var(--text); }
+.tp-avatar svg { width: 12px; height: 12px; fill: currentColor; }
+.tp-avatar.claude { color: var(--claude); background: var(--claude-soft); }
+.tp-name b { overflow: hidden; font-size: 12.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.tp-plan { flex: none; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 10px; line-height: 1.55; letter-spacing: .02em; text-transform: uppercase; }
+
+/* 一条额度：名字 · 细进度条 · 已用 · 重置时间。颜色和主界面的圆环是同一套 */
+.tp-line { display: grid; grid-template-columns: 34px minmax(40px, 1fr) 32px auto; gap: 7px; align-items: center; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tp-label { color: var(--muted); white-space: nowrap; }
+.tp-line b { font-weight: 650; text-align: right; }
+.tp-line small { min-width: 96px; overflow: hidden; color: var(--muted); font-size: 11px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.tp-bar { display: block; width: 100%; height: 8px; overflow: visible; }
+.tp-bar .track { fill: var(--line-strong); opacity: .6; }
+.tp-bar .fill.five { fill: var(--ring-five); }
+.tp-bar .fill.week { fill: var(--ring-week); }
+.tp-bar .fill.hot { fill: var(--warn); }
+.tp-bar .fill.full { fill: var(--danger); }
+.tp-bar .pace { fill: var(--text); opacity: .55; }
+.tp-warn { color: var(--warn); font-size: 11px; }
+.tp-empty { padding: 14px 10px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--muted); font-size: 12px; line-height: 1.7; text-align: center; }
+
+/* 供应商：每个工具一行，点开列出可以换的 */
+.tp-agents { display: grid; gap: 1px; padding: 5px 4px 3px; border: 1px solid var(--line); border-radius: 10px; }
+.tp-section { padding: 0 6px 3px; color: var(--muted); font-size: 10.5px; letter-spacing: .04em; }
+.tp-agent { display: grid; grid-template-columns: 18px auto minmax(0, 1fr) 10px; gap: 7px; align-items: center; width: 100%; height: 24px; padding: 0 6px; border: 0; border-radius: 7px; background: transparent; font-size: 12px; text-align: left; cursor: pointer; transition: background .15s; }
+.tp-agent:hover, .tp-agent:focus-visible, .tp-agent.open { background: var(--surface-2); outline: none; }
+.tp-agent-app { color: var(--muted); white-space: nowrap; }
+.tp-agent b { overflow: hidden; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.tp-caret { width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+.tp-agent.open .tp-caret { transform: rotate(45deg); }
+.tp-options { display: grid; gap: 1px; padding: 2px 0 4px 25px; }
+.tp-option { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 6px; align-items: center; width: 100%; height: 24px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); font-size: 11.5px; text-align: left; cursor: pointer; }
+.tp-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-option:hover:not(:disabled), .tp-option:focus-visible { background: var(--accent-soft); color: var(--accent-strong); outline: none; }
+.tp-option:disabled { opacity: 1; cursor: default; }
+.tp-option:disabled:not(.on) { opacity: .5; }
+.tp-option.on { color: var(--text); font-weight: 600; }
+.tp-check { width: 9px; height: 5px; border-left: 1.8px solid transparent; border-bottom: 1.8px solid transparent; transform: rotate(-45deg) translateY(-1px); }
+.tp-option.on .tp-check { border-color: var(--accent); }
+
+.tp-foot { display: flex; gap: 7px; }
+.tp-foot .btn { flex: 1; height: 28px; font-size: 12.5px; justify-content: center; }
+
+@media (prefers-reduced-motion: reduce) { .tp-icon-btn, .tp-agent, .tp-caret { transition: none; } .tp-icon-btn.spin svg { animation: none; } }
