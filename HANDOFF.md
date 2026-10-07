@@ -1,17 +1,19 @@
-# 当前接手入口 · 0.3.37（2026-10-07，正式发布进行中）
+# 当前接手入口 · 0.3.37（2026-10-07，已正式发布）
 
 ## 新对话先看这里
 
-这一节最初于 2026-10-05 重写，最新核对为 2026-10-07 六项问题修复测试版，以它为准。再往下是各版本的详细记录，都是**按当时的状态**写的，和这一节冲突时听这一节的。
+这一节最初于 2026-10-05 重写，最新核对为 2026-10-07 的 0.3.37 正式发布，以它为准。再往下是各版本的详细记录，都是**按当时的状态**写的，和这一节冲突时听这一节的。
 
 ### 现在的状态
 
-- **2026-10-07 发布 0.3.37 进行中**：用户已明确授权构建安装包并发布 GitHub，要求模仿此前 Release 说明、及时更新交接。最新线上版本已通过 gh 核对为 v0.3.36，远端 main 为 a62df09；为使已安装用户收到修复更新，本轮按下一补丁版本 0.3.37 发布，不覆盖旧标签。已更新 package.json / package-lock.json 版本、renderer/intro.js 的新版本说明，发布正文准备于 dist/release-0.3.37.md，风格参照 0.3.35 / 0.3.36。
+- **2026-10-07 发布 0.3.37 已完成**：用户明确授权构建安装包并发布 GitHub，要求模仿此前 Release 说明、及时更新交接。此前线上版本为 v0.3.36；为使已安装用户收到修复更新，本轮按下一补丁版本 0.3.37 发布，保留旧标签。package.json / package-lock.json 均为 0.3.37，renderer/intro.js 已加入新版本说明。发布正文 dist/release-0.3.37.md 参照 0.3.35 / 0.3.36 的中文格式、修复说明和下载表。
   - 工程修复和完整测试结果见下面 0.3.36 测试阶段记录；本轮业务代码未再改动。`npm run compile && electron scripts/test-intro-ui.cjs` 退出 0；直接设置 TOKENPULSE_TEST_APP 为 dist/win-unpacked/resources/app.asar 后运行同一 UI 测试也退出 0，包内更新说明 / 升级一次性弹窗 / 引导 DOM 检查通过，未截图；`git diff --check` 通过；`git fetch origin` 成功，远端没有新增提交。
   - **构建与校验完成**：`npm run dist` 退出 0。包内版本为 0.3.37，9 个修改的运行时文件逐字节与当前 build / renderer 一致；latest.yml 的 version / 安装包路径 / 大小 / SHA512 均核验通过。Setup.exe 为 112411787 字节，blockmap 为 119593 字节，Portable.exe 为 112154626 字节，latest.yml 为 352 字节；四个附件 SHA256 清单保存于 dist/release-0.3.37-assets.json，待发布后与 GitHub digest 比较。两种 exe 的 Authenticode 状态均为 NotSigned，发布说明沿用此前的下载提示。
   - **资源已收尾**：源码和包内 UI 测试、构建进程均退出；只读 CIM 查询未发现本轮 test / electron-builder / dist 运行进程，未关闭用户软件。win-unpacked/TokenPulse.exe、resources/app.asar 与四个发布附件均成功 FileShare.None 只读打开并立即 Dispose。工作目录留在项目根目录，仅检查这些关键文件及相关进程。
-  - 最新产物：dist/TokenPulse-0.3.37-Setup.exe、.blockmap、TokenPulse-0.3.37-Portable.exe、latest.yml，以及 dist/win-unpacked/TokenPulse.exe。未本机安装、未验证真实 API 或真实自动升级，未查看图片 / 截图。尚待提交 / 标签 / 推送、正式 Release 创建与远端附件核验，无当前阻塞；尚未发布。
-- **发布前的 Git 状态**：线上已有 v0.3.36；本地 main 与 fetch 后的 origin/main 一致（a62df09）。工作区包含本轮修复、回归测试、README / HANDOFF、版本和新版本提示的未提交改动，新增 scripts/test-routing-regressions.cjs。
+  - **最新产物**：D:\CodePorject\Tools\TokenPulse\dist\TokenPulse-0.3.37-Setup.exe、同目录 .blockmap / TokenPulse-0.3.37-Portable.exe / latest.yml，以及 dist/win-unpacked/TokenPulse.exe。已有 0.3.36 安装包为历史产物，不包含这些修复。未本机安装、未验证真实 API 或真实自动升级，未查看图片 / 截图；未再重复业务全套测试（修复阶段已通过，发布准备只改版本 / 更新说明）。已知限制仍是 Grok 缺共同响应 ID 时不能可靠归给号池账号，详见下面修复记录与发布说明。
+  - **Git / Release**：代码提交 fdff3f9，标签 v0.3.37 已通过 git push --atomic 同 main 推送成功。先创建草稿上传四个附件，逐项核验远端 state=uploaded、大小 / SHA256 与本地一致，正文与 notes-file 一致；再正式发布并设为最新。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.37，publishedAt=2026-10-07T15:25:04Z；gh 再查 isDraft=false / isPrerelease=false，releases/latest=v0.3.37。没有会话链接。Git 的文档收尾提交与代码标签分开，接手用 git status / git log -2 / origin/main 核对。
+  - **发布后资源复查**：上传进程已退出，重复检查未发现本轮测试 / 打包 / dist 进程；上述六个关键文件再次成功独占只读打开并立即释放。没有通过删除目录或关闭用户软件解除占用。无当前失败 / 阻塞，下一步等待用户后续反馈。
+- **Git 基线说明**：审查前 main=origin/main=a62df09，本轮修复与发布改动已提交为 fdff3f9（v0.3.37）；main 在该代码提交之后保留交接收尾文档提交，标签不移动。此前的「未提交 / 待验收」仅描述下面 0.3.36 测试阶段。
 - **2026-10-07 六项审查问题修复完成（0.3.36 测试阶段的历史记录，最新发布状态以上面 0.3.37 为准）**：该阶段用户只授权编译测试版，版本保持 0.3.36、没有提交。随后用户已授权正式发布为 0.3.37。改动涉及 `agent-proxy.ts`（响应中断收尾、压缩正文保留编码及旁路解压、错误状态、日志只记受控错误摘要）、`route-ledger.ts`（响应 ID 精确归属、永久日志历史恢复、UUID / 文件位置分页）、`agent-switch.ts` / `login-timeline.ts` / `usage-scan.ts` / `request-log.ts`（精确归属与旧猜测失效、账本结构 10 重算）、IPC 和供应商页分页、README 的归属范围说明。
   - 新增 `scripts/test-routing-regressions.cjs`：原代码上 0/7 通过（七组失败分别锁定六项问题），改动后 7/7 通过；增加压缩协议转换 / 客户端取消、永久日志精确恢复、响应 ID 歧义、旧猜测归属 / v9 账本重算后，最新为 **9/9 通过**。额外压缩转换测试曾暴露完整回复被记成 499，已用 `res.writableEnded` 区分正常关闭和取消并重新通过。旧 HTTP / WS 测试曾因仍断言日志保存上游错误正文而失败，已同步受控摘要的预期并重新通过。
   - `npm test` 与 `npm run test:ui` 第一轮全套均退出 0；UI 的同毫秒 130 条旧记录已验证分页与去重。修复上面的 499 收尾、增加两组回归后，最终 `npm test` 全套再次退出 0（9/9 新回归通过），受影响的 `electron scripts/test-agent-switch-ui.cjs` 再次退出 0。`npm run icons && npm run compile` 退出 0。`git diff --check` 通过。
