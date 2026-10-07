@@ -75,7 +75,7 @@ const send = (port, { method = "POST", url, headers = {}, body }) => new Promise
     assert.deepEqual([failed.status, failed.headers["retry-after"], failed.headers["x-upstream"], JSON.parse(failed.body).error.message], [429, "7", "yes", "slow down"]);
     assert.equal(hits.filter((item) => item.url.startsWith("/v1/fail")).length, 1, "不重试");
     await delay(30);
-    assert.deepEqual([logs[1].status, logs[1].tokensPerSec ?? null, /slow down/.test(logs[1].error)], [429, null, true]);
+    assert.deepEqual([logs[1].status, logs[1].tokensPerSec ?? null, logs[1].error], [429, null, 'HTTP 429']);
     // 没压缩的普通回复也能读到用量；输出太少不算速度
     const plain = await send(port, { url: "/pass/claude/v1/plain", headers, body });
     assert.equal(plain.headers["request-id"], "req_plain"); await delay(30);

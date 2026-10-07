@@ -514,17 +514,18 @@
    * 最新的几十条来自主进程推过来的 view.logs（实时），更早的从文件里按页读（logOlder）。
    */
   const LOG_PAGE = 100;
-  let logOlder = [], logMore = null, logLoading = false;
-  const logKey = item => `${item.at}|${item.providerId}|${item.attempt ?? ''}|${item.status}`;
+  let logOlder = [], logMore = null, logLoading = false, logCursor = null;
+  const logKey = item => item.id || `${item.at}|${item.providerId}|${item.attempt ?? ''}|${item.status}`;
   async function loadOlderLogs() {
     if (logLoading || logMore === false) return;
     logLoading = true;
     const shown = [...(view.logs || []), ...logOlder];
     try {
-      const page = await api.agentRouteLog({ limit: LOG_PAGE, before: shown.length ? Math.min(...shown.map(item => item.at)) + (logOlder.length ? 0 : 1) : undefined });
+      const page = await api.agentRouteLog({ limit: LOG_PAGE, cursor: logCursor || undefined });
       const have = new Set(shown.map(logKey));
       logOlder = [...logOlder, ...(page?.rows || []).filter(item => !have.has(logKey(item)))];
       logMore = !!page?.more;
+      logCursor = page?.nextCursor || null;
     } catch { logMore = false; }
     finally { logLoading = false; if (section === 'logs' && !editor && !pending) render(false); }
   }
@@ -532,8 +533,7 @@
     // 第一次进这一页：把保存的记录接在后面（刚启动时 view.logs 是空的，也能看到以前的）
     if (logMore === null && !logLoading) loadOlderLogs();
     const recent = view.logs || [];
-    const oldest = recent.length ? Math.min(...recent.map(item => item.at)) : Infinity;
-    const list = [...recent, ...logOlder.filter(item => item.at <= oldest && !recent.some(r => logKey(r) === logKey(item)))];
+    const list = [...recent, ...logOlder.filter(item => !recent.some(r => logKey(r) === logKey(item)))].sort((a, b) => b.at - a.at);
     const locale = window.PulseI18n?.lang() === 'en' ? 'en-US' : 'zh-CN';
     const today = new Date().toDateString();
     const table = list.length ? el('div', { class: 'pv-log' }, list.map((item, i) => paint(el('div', { class: 'pv-log-row' + (item.status >= 400 || item.error ? ' bad' : '') }, [

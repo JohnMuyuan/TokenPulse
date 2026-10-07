@@ -120,7 +120,7 @@ function connect(port, url, headers) {
     // 第二次请求走同一条连接；这次官方报错
     client.send(frame(request("second", "gpt-qa-mini"), { mask: true }));
     await until(() => up.received.length === client.sent.length, "官方收到第二次请求");
-    up.send(frame(JSON.stringify({ type: "error", status: 429, error: { type: "usage_limit_reached", message: "limit reached" } })));
+    up.send(frame(JSON.stringify({ type: "error", status: 429, error: { type: "usage_limit_reached", message: "limit reached synthetic-private-echo Bearer synthetic-test-token" } })));
     await until(() => logs.length === 2 && client.received.length === up.sent.length, "第二次请求的记录");
     assert.ok(up.received.equals(client.sent), "工具发的字节原样到官方（帧没有解开、没有重组）");
     assert.ok(client.received.equals(up.sent), "官方发的字节原样到工具");
@@ -134,7 +134,8 @@ function connect(port, url, headers) {
     assert.ok(Math.abs(one.tokensPerSec - expected) / expected < 0.25, `速度 = 输出 ÷ 出字用的时间：${one.tokensPerSec} / ${expected.toFixed(1)}`);
     assert.ok(one.requestBytes === first.length && one.responseBytes > 100);
     assert.deepEqual([one.responseId, one.returnedModel, one.requestModel, two.responseId ?? null], ["resp_0a1b2c3d4e5f", "gpt-qa-model-2026-01-01", "gpt-qa-model", null], "响应 ID 和上游实际用的型号（型号核验用）");
-    assert.deepEqual([two.status, two.model, two.error, two.tokensPerSec ?? null], [429, "gpt-qa-mini", "limit reached", null]);
+    assert.deepEqual([two.status, two.model, two.error, two.tokensPerSec ?? null], [429, "gpt-qa-mini", "HTTP 429 · error", null]);
+    assert.equal(/synthetic-private-echo|synthetic-test-token/.test(JSON.stringify(logs)), false, "WebSocket 错误正文的敏感回显不进入日志");
     assert.deepEqual([one.tier, two.tier ?? null], ["priority", null], "快速模式（service_tier）记下来，默认档不记");
     assert.equal(/TESTJWT|acct-test|secret-text|reply-text|second/.test(JSON.stringify(logs)), false, "记录里没有凭据、请求内容和回复内容");
     console.log("PASS pass-through socket: handshake and every byte carried as they are in both directions; model, tokens, delays and speed read on the side for each request on the connection");
@@ -178,7 +179,7 @@ function connect(port, url, headers) {
     await until(() => refused.closed && logs.length === 1, "被拒绝的握手");
     assert.match(refused.head, /^HTTP\/1\.1 401 Unauthorized\r\nContent-Type: application\/json\r\nX-Up: no\r\nContent-Length: 27\r\nconnection: close$/);
     assert.equal(refused.received.toString(), '{"error":"token_expired!!"}');
-    assert.deepEqual([logs[0].status, /token_expired/.test(logs[0].error)], [401, true]);
+    assert.deepEqual([logs[0].status, logs[0].error], [401, 'HTTP 401']);
     closed.close();
     target = null;
     const off = await connect(port, "/pass/codex/responses", headers);

@@ -18,7 +18,7 @@ fs.mkdirSync(path.join(root, 'data'), { recursive: true });
 fs.mkdirSync(path.join(root, 'data', 'prism-bridge'), { recursive: true });
 // 以前保存下来的转发记录（上个月 130 条）：转发记录页要能翻到它们
 fs.mkdirSync(path.join(root, 'data', 'route-log'), { recursive: true });
-fs.writeFileSync(path.join(root, 'data', 'route-log', '2026-09.jsonl'), Array.from({ length: 130 }, (_, i) => JSON.stringify({ at: Date.UTC(2026, 8, 10) + i * 60000, app: 'grok', providerId: 'old-' + (i % 3), provider: 'Old pool · ' + (i % 3), model: 'grok-qa', status: i === 129 ? 502 : 200, ms: 100 + i, attempt: 1, input: 1000 + i, output: 10, ...(i === 129 ? { error: 'boom' } : {}) })).join('\n') + '\n');
+fs.writeFileSync(path.join(root, 'data', 'route-log', '2026-09.jsonl'), Array.from({ length: 130 }, (_, i) => JSON.stringify({ at: Date.UTC(2026, 8, 10), app: 'grok', providerId: 'old-' + (i % 3), provider: 'Old pool · ' + (i % 3), model: 'grok-qa', status: i === 129 ? 502 : 200, ms: 100 + i, attempt: 1, input: 1000 + i, output: 10, ...(i === 129 ? { error: 'boom' } : {}) })).join('\n') + '\n');
 fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { keep: true }, env: { DISABLE_TELEMETRY: '1' } }));
 fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' }));
 app.setPath('userData', path.join(root, 'electron'));
@@ -58,6 +58,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(await evaluate(`document.querySelector('${P} [data-action=older-logs]').textContent`), '再看更早的');
     await evaluate(`document.querySelector('${P} [data-action=older-logs]').click()`);
     await until(`document.querySelectorAll('${P} .pv-log-row').length === 130 && !document.querySelector('${P} [data-action=older-logs]')`);
+    assert.equal(await evaluate(`new Set([...document.querySelectorAll('${P} .pv-log-tokens')].map(e => e.textContent)).size`), 130, '同毫秒、同供应商的旧记录不漏页，也不被去重丢掉');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-log-end').textContent`), '已经是最早的一条了。');
     assert.equal(await evaluate(`[...document.querySelectorAll('${P} .pv-log-row .pv-log-ms')].at(-1).textContent`), '100 ms', '最下面是最早的那条');
     // 透明转发（0.3.35）：说明做什么 / 不做什么，Claude Code 和 Codex 各一个开关，默认关；下面是量到的速度

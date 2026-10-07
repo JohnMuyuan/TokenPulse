@@ -852,7 +852,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("update:install", () => installUpdate());
     ipcMain.handle("app:version", () => appVersion());
     // 转发记录的文件夹（route-log/，见 route-ledger.ts）。还没有转发过就先建出来，免得打开一个不存在的目录
-    ipcMain.handle("agent:route-log", (_event, query: unknown) => { const q = (query && typeof query === "object" ? query : {}) as { limit?: unknown; before?: unknown }; return readRouteLog({ limit: Number(q.limit) || 100, before: Number(q.before) || undefined }); });
+    ipcMain.handle("agent:route-log", (_event, query: unknown) => { const q = (query && typeof query === "object" ? query : {}) as { limit?: unknown; before?: unknown; cursor?: unknown }; return readRouteLog({ limit: Number(q.limit) || 100, before: Number(q.before) || undefined, cursor: typeof q.cursor === "string" ? q.cursor : undefined }); });
     ipcMain.handle("agent:open-route-log", async () => { await fs.mkdir(routeLogDir(), { recursive: true }); return shell.openPath(routeLogDir()); });
     // 托盘小面板：取数据、报告内容高度、几个按钮
     ipcMain.handle("tray-panel:data", () => trayPanelView());

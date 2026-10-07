@@ -163,8 +163,9 @@ export type UsageRollups = {
  * 8：Codex 旧版本（0.149–0.155 一带）只写 event_msg / token_count、不写 token_usage_record，以前整份漏算
  *    （实测 27 个会话、约 1.07 亿 Token）。Codex 文件整份重算；其他来源没有变化，不重读。
  * 9：补记「压缩上下文」那一次模型调用（见 compactionRow 一节）。三家都整份重算。
+ * 10：号池归属只使用共同响应 ID；重算清掉旧的时间猜测造成的账号小时账。
  */
-const STATE_VERSION = 9;
+const STATE_VERSION = 10;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -700,7 +701,7 @@ function scanFile(
   };
   if (state.v !== STATE_VERSION) {
     state.v = STATE_VERSION;
-    // 9 给三家都补了压缩上下文的用量：旧账里没有这几笔，整份重算（重读的流水扫完会整理去重）。
+    // 结构升级整份重算，同时清掉旧账号归属（重读的流水扫完会整理去重）。
     reset();
   }
   // 变小了 = 被重写/截断过，之前记的账对不上了：整份清掉重读。
@@ -859,7 +860,7 @@ function scanFile(
       if (!row.compaction && model !== "未知模型") state.lastModel = model;
       if (kind === "grok-build" && !row.compaction && row.usage.input) state.cacheRatio = Math.min(1, row.usage.cacheRead / row.usage.input);
       // 经 TokenPulse 号池发出去的：配置里填的是本地路由，文件整体被当成「不是官方」，但这一条实际用的是号池里的官方账号
-      const routed = routedAccount(KIND_OF_SOURCE[source], row.at, accountContext.labels);
+      const routed = !row.compaction ? routedAccount(KIND_OF_SOURCE[source], row.at, accountContext.labels, row.responseId) : null;
       if (!metadataOnly) {
         addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
         const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
@@ -904,7 +905,7 @@ function scanFile(
         calls: row.usage.requests,
         accountRef: state.accountRef,
         accountEmail: state.accountEmail,
-        ...(routed ? { routedAccount: routed.id } : {}),
+        ...(routed ? { routedAccount: routed.id, routedAccountBasis: "response-id" as const } : {}),
         ...(row.compaction ? { compaction: true } : {}),
       });
       touched = true;

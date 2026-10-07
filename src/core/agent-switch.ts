@@ -1116,8 +1116,9 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
 }
 
 function pushLog(entry: ProxyLog) {
+  entry.id = crypto.randomUUID();
   // 号池成功交给了某个官方账号：记进路由账本，统计用量时归到这个账号名下（见 route-ledger.ts）
-  if (entry.account && !entry.error && entry.status < 400 && POOL_OFFICIAL[entry.app]) appendRoute({ at: entry.at, kind: POOL_OFFICIAL[entry.app]!.kind, account: entry.account });
+  if (entry.account && !entry.error && entry.status < 400 && POOL_OFFICIAL[entry.app]) appendRoute({ at: entry.at, kind: POOL_OFFICIAL[entry.app]!.kind, account: entry.account, responseId: entry.responseId });
   // 每一次转发都永久记下来（按月分文件，见 route-ledger.ts）：以后能回头看当时是怎么转发的
   appendRouteLog(entry);
   const stats = memberStats.get(entry.providerId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };

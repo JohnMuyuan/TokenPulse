@@ -101,8 +101,8 @@ export function accountLabels(): AccountLabels {
  * 号池把这次请求交给了哪个官方账号。有的话它比会话里记的、时间线上的都准：
  * 会话里记的是 CLI 自己登录的那个账号，请求实际上被路由换成了号池成员的登录。
  */
-export function routedAccount(kind: OfficialAccountKind | undefined, at: number, labels: AccountLabels): RequestAccount | null {
-  const id = routeAccount(kind, at);
+export function routedAccount(kind: OfficialAccountKind | undefined, at: number, labels: AccountLabels, responseId?: string): RequestAccount | null {
+  const id = routeAccount(kind, at, responseId);
   return id ? { id, label: labels.get(id) ?? id, basis: "route" } : null;
 }
 

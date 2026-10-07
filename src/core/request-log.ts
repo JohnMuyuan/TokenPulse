@@ -62,6 +62,8 @@ export type RequestRecord = {
   accountEmail?: string;
   /** 经 TokenPulse 号池发出去的：扫描时按路由账本对上的号池成员（官方账号 id）。记在流水里，账本过期清掉之后仍然知道。 */
   routedAccount?: string;
+  /** 新归属已用共同响应 ID 核验；旧的时间猜测不能继续当成确证。 */
+  routedAccountBasis?: "response-id";
   /** 压缩上下文那一次调用：CLI 没写 usage，按压缩前的上下文和摘要长度估的（见 usage-scan.ts）。 */
   compaction?: boolean;
   /** 查询时附上的：同一次请求在代理里的记录——TokenPulse 自己转发时读到的（见 withRoute），或 CC Switch 代理的（见 matchProxy）。不落盘。 */
@@ -345,8 +347,8 @@ const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，�
 function toRow(record: RequestRecord, fileOfficial: boolean | undefined, accounts: AccountContext = accountContext()): RequestRow {
   // 经 TokenPulse 号池发出去的（0.3.34）：这一条实际用的是号池里的官方账号，按路由账本归到它名下、算官方用量
   const routed: RequestAccount | null = record.kind === "cc-switch" ? null
-    : record.routedAccount ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route" }
-    : routedAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, accounts.labels);
+    : record.routedAccount && record.routedAccountBasis === "response-id" && record.responseId ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route" }
+    : routedAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, accounts.labels, record.responseId);
   const official = routed ? true : fileOfficial;
   // 走中转 / API Key 的不是官方账号发的；CC Switch 导入的走它代理的也一样
   const account = routed ? routed :

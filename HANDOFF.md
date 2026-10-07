@@ -1,15 +1,40 @@
-# 当前接手入口 · 0.3.36（2026-10-07，已发布）
+# 当前接手入口 · 0.3.37（2026-10-07，正式发布进行中）
 
 ## 新对话先看这里
 
-这一节是 2026-10-05 按实际代码和 Git 状态重写的，以它为准。再往下是各版本的详细记录，都是**按当时的状态**写的，和这一节冲突时听这一节的。
+这一节最初于 2026-10-05 重写，最新核对为 2026-10-07 六项问题修复测试版，以它为准。再往下是各版本的详细记录，都是**按当时的状态**写的，和这一节冲突时听这一节的。
 
 ### 现在的状态
 
-- 最新版本 **0.3.36**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.36）。`package.json` 是 0.3.36。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `5e62a21 TokenPulse v0.3.36：…`（标签 `v0.3.36`）。接手时用 `git status`、`git log -3` 核对。
-- **没有进行中的任务，也没有等用户回答的问题。** 下一个版本号由用户指定。用户说过「以后再说」的：Grok 的透明转发（有副作用，见下面 0.3.35 的探测记录）、分享图（四种样张都不满意；以后要做先重新出风格）。
-- **0.3.36 发布状态（2026-10-07 收尾核对）**：GitHub Release v0.3.36 是正式版（非草稿、非 prerelease），附件 `TokenPulse-0.3.36-Setup.exe`（112409058 字节，和 `latest.yml` 一致）、`.blockmap`、`Portable.exe`、`latest.yml`；发布说明 `dist/release-0.3.36.md`。`dist` 里只留 0.3.36 的安装包和各版发布说明，0.3.35 的安装包和 `dist\win-unpacked` 已删（用户不要旧安装包留在本地）。收尾时没有从 `dist` 运行的进程、没有遗留的 Electron；用户自己的已安装版（`AppData\Local\Programs\TokenPulse`）在跑，没有动。
+- **2026-10-07 发布 0.3.37 进行中**：用户已明确授权构建安装包并发布 GitHub，要求模仿此前 Release 说明、及时更新交接。最新线上版本已通过 gh 核对为 v0.3.36，远端 main 为 a62df09；为使已安装用户收到修复更新，本轮按下一补丁版本 0.3.37 发布，不覆盖旧标签。已更新 package.json / package-lock.json 版本、renderer/intro.js 的新版本说明，发布正文准备于 dist/release-0.3.37.md，风格参照 0.3.35 / 0.3.36。
+  - 工程修复和完整测试结果见下面 0.3.36 测试阶段记录；本轮业务代码未再改动。`npm run compile && electron scripts/test-intro-ui.cjs` 退出 0；直接设置 TOKENPULSE_TEST_APP 为 dist/win-unpacked/resources/app.asar 后运行同一 UI 测试也退出 0，包内更新说明 / 升级一次性弹窗 / 引导 DOM 检查通过，未截图；`git diff --check` 通过；`git fetch origin` 成功，远端没有新增提交。
+  - **构建与校验完成**：`npm run dist` 退出 0。包内版本为 0.3.37，9 个修改的运行时文件逐字节与当前 build / renderer 一致；latest.yml 的 version / 安装包路径 / 大小 / SHA512 均核验通过。Setup.exe 为 112411787 字节，blockmap 为 119593 字节，Portable.exe 为 112154626 字节，latest.yml 为 352 字节；四个附件 SHA256 清单保存于 dist/release-0.3.37-assets.json，待发布后与 GitHub digest 比较。两种 exe 的 Authenticode 状态均为 NotSigned，发布说明沿用此前的下载提示。
+  - **资源已收尾**：源码和包内 UI 测试、构建进程均退出；只读 CIM 查询未发现本轮 test / electron-builder / dist 运行进程，未关闭用户软件。win-unpacked/TokenPulse.exe、resources/app.asar 与四个发布附件均成功 FileShare.None 只读打开并立即 Dispose。工作目录留在项目根目录，仅检查这些关键文件及相关进程。
+  - 最新产物：dist/TokenPulse-0.3.37-Setup.exe、.blockmap、TokenPulse-0.3.37-Portable.exe、latest.yml，以及 dist/win-unpacked/TokenPulse.exe。未本机安装、未验证真实 API 或真实自动升级，未查看图片 / 截图。尚待提交 / 标签 / 推送、正式 Release 创建与远端附件核验，无当前阻塞；尚未发布。
+- **发布前的 Git 状态**：线上已有 v0.3.36；本地 main 与 fetch 后的 origin/main 一致（a62df09）。工作区包含本轮修复、回归测试、README / HANDOFF、版本和新版本提示的未提交改动，新增 scripts/test-routing-regressions.cjs。
+- **2026-10-07 六项审查问题修复完成（0.3.36 测试阶段的历史记录，最新发布状态以上面 0.3.37 为准）**：该阶段用户只授权编译测试版，版本保持 0.3.36、没有提交。随后用户已授权正式发布为 0.3.37。改动涉及 `agent-proxy.ts`（响应中断收尾、压缩正文保留编码及旁路解压、错误状态、日志只记受控错误摘要）、`route-ledger.ts`（响应 ID 精确归属、永久日志历史恢复、UUID / 文件位置分页）、`agent-switch.ts` / `login-timeline.ts` / `usage-scan.ts` / `request-log.ts`（精确归属与旧猜测失效、账本结构 10 重算）、IPC 和供应商页分页、README 的归属范围说明。
+  - 新增 `scripts/test-routing-regressions.cjs`：原代码上 0/7 通过（七组失败分别锁定六项问题），改动后 7/7 通过；增加压缩协议转换 / 客户端取消、永久日志精确恢复、响应 ID 歧义、旧猜测归属 / v9 账本重算后，最新为 **9/9 通过**。额外压缩转换测试曾暴露完整回复被记成 499，已用 `res.writableEnded` 区分正常关闭和取消并重新通过。旧 HTTP / WS 测试曾因仍断言日志保存上游错误正文而失败，已同步受控摘要的预期并重新通过。
+  - `npm test` 与 `npm run test:ui` 第一轮全套均退出 0；UI 的同毫秒 130 条旧记录已验证分页与去重。修复上面的 499 收尾、增加两组回归后，最终 `npm test` 全套再次退出 0（9/9 新回归通过），受影响的 `electron scripts/test-agent-switch-ui.cjs` 再次退出 0。`npm run icons && npm run compile` 退出 0。`git diff --check` 通过。
+  - **当时测试产物（本轮 0.3.37 构建会覆盖此目录）**：`D:\CodePorject\Tools\TokenPulse\dist\win-unpacked\TokenPulse.exe`，同目录资源必须一起保留。执行 `npx electron-builder --win dir --publish never` 已生成完整免安装目录，打包日志完成 asar 完整性更新与签名，相关进程已退出（工具会话未保留最终退出码，未把它记为退出 0）。只读 asar API 校验退出 0：包内版本 0.3.36，8 个修改的运行时文件逐字节等于当时 build / renderer 文件；exe ProductVersion 为 0.3.36.0。首次核验因 Windows asar 路径分隔符用错报文件找不到，改用 `path.normalize` 后通过，未向项目根目录提取文件。当时已有 Setup / Portable / latest.yml 仍是此前正式版，不能拿它们验证本轮修复。
+  - 限制：Grok 现有日志是整轮汇总，没有与上游共同的响应 ID，暂不再按时间猜测归到号池账号；转发记录和账号速度仍有明确转发成员。旧日志没有共同响应 ID 时也不能可靠找回账号。未清理或改写用户历史错误日志、真实工具配置；未跑真实官方 API。
+  - **未执行**：未启动免安装程序连接真实官方 API，未改真实账号 / 工具配置，未进行安装、视觉验收、截图或图片查看。用户可退出正在使用的正式软件后运行测试版验收；不要擅自关闭用户软件。
+  - **资源收尾**：本轮测试命令已结束，测试中的本机假上游 / 路由及临时合成目录按 finally 清理。只读 CIM 查询未发现本轮测试、electron-builder 或从 `dist/win-unpacked` 运行的相关 Node / Electron / TokenPulse / 签名进程，未关闭用户正式软件。测试版 exe / app.asar 及已有 latest.yml / Setup.exe / blockmap / Portable.exe 均成功 FileShare.None 只读打开并立即 Dispose；工作目录为项目根目录。仅检查这些关键文件及相关进程，不声称系统范围所有句柄均无占用。
+  - **下一步**：等待用户测试反馈及后续指示；本轮无工程阻塞，不自动升版本、提交、生成安装包或发布。
+- **2026-10-07 修复前审查记录（下面是当时的状态，修复进度以上一条为准）**：最初用户要求只审查、暂不修复；该审查已完成。下一个版本号由用户指定。用户说过「以后再说」的：Grok 的透明转发（有副作用，见下面 0.3.35 的探测记录）、分享图（四种样张都不满意；以后要做先重新出风格）。
+  - 已读当前接手入口、README、核心转发 / WebSocket 旁路解析、配置事务 / 恢复、路由账本与账号归属、速度汇总、主进程与会话 / 账号 / 更新相关代码及测试。审查重点是转发与统计；不是全部功能的完整验收。
+  - **修复前确认的问题**：
+    1. **P1 本地路由上游中途断开后请求悬挂**：`src/core/agent-proxy.ts:333-357` 的同协议分支只处理回复 data/end，缺少回复 error/aborted 的收尾；上游请求 close 时又摘掉下游 close 回调。本机假上游先回一段 SSE 再断开，500ms 后下游没有结束；客户端随后也断开，`stats.active` 仍为 1，没有转发记录。未复现进程崩溃，不能把它写成崩溃问题。
+    2. **P1 本地路由压缩回复无法正确解码**：`agent-proxy.ts:330-339` 保留 gzip 字节，却只回 content-type，没有 content-encoding；请求仍会转发 accept-encoding（`forwardHeaders`）。合成 gzip SSE 核验：下游收到原始压缩字节、压缩头丢失。同分支的旁路用量解析也直接把压缩字节当 UTF-8。
+    3. **P1 错误日志可能保存敏感回显**：`agent-proxy.ts:464`（透明转发）、`:321`（本地路由重试错误）、`:515`（WebSocket 握手拒绝）会将错误正文截断后作为 error，而 `agent-switch.ts:1122` 原样写入永久转发记录。用只含合成提示词 / 合成 token 的 429 回复复现：二者进入 route-log 文件；没有使用或输出真实凭据。和界面 / README 的“不记内容和密钥”承诺不一致。
+    4. **P2 流式协议转换把上游 400 回成 HTTP 200**：`agent-proxy.ts:714-726` 在读取 / 检查错误正文前发 200，并将结束结果归为 done。Anthropic 客户端 → Chat 上游的假服务回 400，客户端收到 200，原始错误说明丢失；日志 status=400 但没有 error，`stats.ok` 加 1，也会走 succeed 而非 fail。
+    5. **P2 号池归属会污染未经过号池的请求**：`route-ledger.ts:76` 只按工具类别 + 前后 30 秒的最近时间匹配，没有请求 ID / 会话 / 通道约束；`usage-scan.ts:862`、`request-log.ts:349` 无条件使用它。端到端合成 Grok 第三方日志：请求发生在号池 A 成功后 5 秒，被错误标为官方、归给 A；这个误归属会存进请求流水。并发号池请求也可能配错成员。
+    6. **P2 转发记录同毫秒分页漏项**：`route-ledger.ts:123` 排除 at >= before，界面 `renderer/agent-switch.js:524` 只用毫秒时间作游标。同毫秒 101 条 + 更早 1 条，以 100 条翻页，102 条只读回 101 条。界面的 logKey（`:518`）也没有唯一请求标识，同成员同毫秒同状态还可能被去重。
+  - **实际验证**：首次普通沙箱 `npm test` 退出 1，`scripts/test-sessions.cjs:181` 的 stdout 未定义；最小核验确认 `spawnSync powershell.exe EPERM`，属于运行权限限制。允许本地测试子进程后重新 `npm test`，全套退出 0（包含 TypeScript 编译、真实 Codex 配置兼容检查及透明转发 / 号池等已有测试）。四个定点已有测试 `test-pass-through.cjs`、`test-pass-socket.cjs`、`test-pass-speed.cjs`、`test-route-ledger.cjs` 各自退出 0。
+  - 新问题用 PowerShell here-string → `node` 的一次性脚本、本机假上游和临时合成日志验证，没有新增仓库测试文件。第一次脚本误假设断开会抛未捕获异常，断言失败；只按父进程命令行、路径、启动时间核验后停止了本轮 Node PID 25936。第二次转换验证的假上游路径未适配转换后的 URL，断言失败但 finally 清理完成；调整合成服务路径后，转换 / 归属 / 分页三项断言退出 0；断开悬挂另已复现。两项先行复现（压缩 / 隐私）也已通过断言。
+  - **未执行**：`npm run test:ui`、截图 / 图片查看、打包、安装、发布、真实官方 API 请求或真实故障复现；已有测试全绿不代表这些新边界情况已覆盖。
+  - **资源 / 产物 / Git 收尾**：本轮所有命令均已结束，临时假上游 / 路由监听关闭、合成数据目录删除；只读进程查询未找到本轮测试或 dist 进程，PID 25936 已不存在。`dist/latest.yml`、`TokenPulse-0.3.36-Setup.exe`、`.blockmap`、`TokenPulse-0.3.36-Portable.exe` 均成功以 FileShare.None 只读打开并立即 Dispose；`dist/win-unpacked` 不存在。只核验这些文件与相关进程，未声称系统范围所有句柄均无占用。产物仍是此前的 0.3.36，无新产物、提交、标签、安装或发布；正式软件未关闭。
+  - **下一步**：等待用户指示后才着手修复；建议先处理三项 P1，并用本轮边界复现建立回归验证，再处理转换、归属与分页。当前没有工程阻塞，只是尚未获修复指示。
+- **0.3.36 原正式版发布状态（2026-10-07 修复前收尾核对，历史记录）**：GitHub Release v0.3.36 是正式版（非草稿、非 prerelease），附件 `TokenPulse-0.3.36-Setup.exe`（112409058 字节，和 `latest.yml` 一致）、`.blockmap`、`Portable.exe`、`latest.yml`；发布说明 `dist/release-0.3.36.md`。当时 `dist` 里只留 0.3.36 的安装包和各版发布说明，0.3.35 的安装包和 `dist\win-unpacked` 已删（用户不要旧安装包留在本地）；本轮修复重新生成了 win-unpacked，见上面的最新产物。此前收尾时没有从 `dist` 运行的进程、没有遗留的 Electron；用户自己的已安装版（`AppData\Local\Programs\TokenPulse`）在跑，没有动。
 - **给下一位的要点（这两天新加的东西在哪）**：
   - 透明转发：`src/core/agent-proxy.ts`（`forwardPass` / `tunnelPass`）、`src/core/ws-sniff.ts`（WebSocket 帧旁路解析、`Grab` 读响应 ID / 返回型号 / 用量）、`src/core/agent-switch.ts`（`setAppPass` 一组，状态 `store.pass`）。界面在供应商页「透明转发」（`renderer/agent-switch.js` 的 `passSection`）。只支持 Claude Code、Codex。
   - 速度：每次转发记在永久的 `route-log/`（`ProxyLog.firstByteMs / firstTokenMs / tokensPerSec / tier`）；汇总 `route-ledger.ts` 的 `passSpeed()`（供应商页）和 `src/core/pass-speed.ts` 的 `accountSpeed()`（额度详情「模型速度」，`renderer/app.js` 的 `speedPanel` / `drawSpeed`）。图的设计是一个模型一行、走势每行自己的刻度、右边对比条共用刻度——用户认可了，改之前先问。

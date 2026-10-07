@@ -9,6 +9,7 @@ import http from "http";
 import https from "https";
 import zlib from "zlib";
 import { URL } from "url";
+import { StringDecoder } from "string_decoder";
 import type { Duplex } from "stream";
 import { clientError, convertJsonResponse, convertRequest, StreamBridge } from "./agent-convert";
 import { NATIVE_UPSTREAM, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
@@ -16,6 +17,7 @@ import { describeNetError, proxyFor, upstreamRequest } from "./upstream-proxy";
 import { Grab, WsReader } from "./ws-sniff";
 
 export type ProxyLog = {
+  id?: string;
   at: number;
   app: AgentApp;
   providerId: string;
@@ -216,6 +218,7 @@ export function startAgentProxy(options: Options) {
         options.fail(target.id);
         last = outcome.error;
         options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, error: outcome.error, ...detail(target) });
+        if (outcome.terminal || res.headersSent || res.destroyed) return;
       }
       if (!res.headersSent) sendError(res, client, 502, last);
     } finally {
@@ -267,7 +270,7 @@ function sendError(res: http.ServerResponse, client: Upstream, status: number, m
 }
 
 type Timing = { firstByteMs?: number; firstTokenMs?: number; tokensPerSec?: number };
-type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string; timing?: Timing } | { kind: "fail"; status: number; error: string };
+type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string; timing?: Timing } | { kind: "fail"; status: number; error: string; terminal?: boolean };
 
 async function forward(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, client: Upstream, target: ProxyTarget, body: Buffer): Promise<Outcome> {
   const same = client === target.upstream;
@@ -289,7 +292,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       if (stream) converted.json.stream = true;
       payload = Buffer.from(JSON.stringify(converted.json));
     } catch (error) {
-      return { kind: "fail", status: 400, error: error instanceof Error ? error.message : "无法转换请求" };
+      return { kind: "fail", status: 400, error: "无法转换请求" };
     }
   } else if (same && body.length && looksJson(body) && (target.model || target.modelMap)) {
     payload = Buffer.from(rewriteModel(body.toString("utf8"), resolvedModel(body, target)));
@@ -308,51 +311,69 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
   const proxy = await proxyFor(upstream);
   const watch = stopwatch();
   return new Promise((resolve) => {
+    let done = false;
+    let observer: ReturnType<typeof bodyObserver> | null = null;
+    const finish = (outcome: Outcome) => {
+      if (done) return;
+      done = true;
+      res.off('close', clientClosed);
+      observer?.destroy();
+      resolve(outcome);
+    };
+    const incomplete = (status: number, error: string) => {
+      finish({ kind: "fail", status, error, terminal: res.headersSent });
+      if (res.headersSent && !res.writableEnded) res.destroy();
+    };
+    const clientClosed = () => {
+      // 转换 / 解压的完成回调可能晚于 res.end() 触发的正常 close。
+      if (res.writableEnded) return;
+      finish({ kind: 'fail', status: 499, error: '客户端连接已关闭', terminal: true });
+      upstreamReq.destroy();
+    };
     const upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers, timeout: 120_000 }, (upstreamRes) => {
       const status = upstreamRes.statusCode || 502;
+      upstreamRes.once("aborted", () => incomplete(502, "回复中途断开"));
+      upstreamRes.on("error", () => incomplete(502, "回复中途断开"));
       // 号池成员：401 / 403 多半是这个账号的登录失效或没权限，换下一个成员
       if (status === 429 || status >= 500 || (target.pool && (status === 401 || status === 403))) {
-        const chunks: Buffer[] = [];
-        upstreamRes.on("data", (chunk) => {
-          if (chunks.reduce((sum, item) => sum + item.length, 0) < 8000) chunks.push(Buffer.from(chunk));
-        });
-        upstreamRes.on("end", () => {
-          const detail = chunks.join("") || `HTTP ${status}`;
-          resolve({ kind: "fail", status, error: detail.slice(0, 300) });
-        });
+        // 错误正文可能回显提示词 / 凭据，不进日志，也不用为了重试保存在内存。
+        upstreamRes.resume();
+        upstreamRes.on("end", () => finish({ kind: "fail", status, error: `HTTP ${status}` }));
         return;
       }
       const contentType = String(upstreamRes.headers["content-type"] || "");
       if (!same && (stream || contentType.includes("text/event-stream") || contentType.includes("application/json"))) {
-        void pipeConverted(upstreamRes, res, client, target, stream || contentType.includes("event-stream"), watch).then(resolve);
+        void pipeConverted(upstreamRes, res, client, target, stream || contentType.includes("event-stream"), watch).then(finish).catch(() => incomplete(502, "无法转换响应"));
         return;
       }
-      res.writeHead(status, { "content-type": contentType || "application/json" });
+      const out: http.OutgoingHttpHeaders = {};
+      for (const [key, value] of Object.entries(upstreamRes.headers)) if (value != null && !PASS_HOP.has(key.toLowerCase())) out[key] = value;
+      out["content-type"] = contentType || "application/json";
+      res.writeHead(status, out);
       const seen = { head: "", tail: "" };
       const grab = new Grab();
+      observer = bodyObserver(String(upstreamRes.headers["content-encoding"] || ""), (text) => {
+        watch.see(text); keepEdges(seen, text); grab.feed(text);
+      });
       upstreamRes.on("data", (chunk) => {
-        const text = chunk.toString("utf8");
-        watch.see(text);
-        keepEdges(seen, text);
-        grab.feed(text);
+        observer?.write(chunk);
         res.write(chunk);
       });
       upstreamRes.on("end", () => {
+        res.off('close', clientClosed);
         res.end();
-        const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
-        resolve({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}), timing: watch.result(usage.output, status) });
+        observer!.end(() => {
+          if (status >= 400) { finish({ kind: "fail", status, error: `HTTP ${status}`, terminal: true }); return; }
+          const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
+          finish({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}), timing: watch.result(usage.output, status) });
+        });
       });
     });
-    const clientClosed = () => {
-      upstreamReq.destroy();
-      resolve({ kind: 'fail', status: 499, error: '客户端连接已关闭' });
-    };
     res.once('close', clientClosed);
-    upstreamReq.once('close', () => res.off('close', clientClosed));
-    upstreamReq.on("error", (error) => resolve({ kind: "fail", status: 502, error: describeNetError(error, Boolean(proxy)) }));
+    upstreamReq.on("error", (error) => incomplete(502, describeNetError(error, Boolean(proxy))));
     upstreamReq.on("timeout", () => {
+      incomplete(504, "上游超时");
       upstreamReq.destroy();
-      resolve({ kind: "fail", status: 504, error: "上游超时" });
     });
     if (payload.length && req.method !== "GET" && req.method !== "HEAD") upstreamReq.write(payload);
     upstreamReq.end();
@@ -413,6 +434,36 @@ function passDecoder(encoding: string): zlib.Gunzip | null {
   } catch { /* 这个运行环境不支持：读不到用量，转发不受影响 */ }
   return null;
 }
+/** 解压只用于旁路统计；结束 / 失败 / 取消都释放解压器和超时句柄。 */
+function bodyObserver(encoding: string, look: (text: string) => void) {
+  const decoder = passDecoder(encoding.trim().toLowerCase());
+  const utf8 = new StringDecoder("utf8");
+  const plain = !encoding;
+  let failed = false, settled = false;
+  let timer: NodeJS.Timeout | null = null;
+  let callback: (() => void) | null = null;
+  const settle = () => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    timer = null;
+    look(utf8.end());
+    callback?.();
+  };
+  decoder?.on("data", (chunk: Buffer) => look(utf8.write(chunk)));
+  decoder?.on("error", () => { failed = true; if (callback) settle(); });
+  return {
+    write(chunk: Buffer) { if (plain) look(utf8.write(chunk)); else if (!failed) decoder?.write(chunk); },
+    end(done: () => void) {
+      callback = done;
+      if (!decoder || failed) { settle(); return; }
+      decoder.once("end", settle);
+      timer = setTimeout(settle, 1000);
+      decoder.end();
+    },
+    destroy() { if (timer) clearTimeout(timer); timer = null; decoder?.destroy(); callback = null; },
+  };
+}
 export async function forwardPass(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, base: string, body: Buffer): Promise<ProxyLog> {
   const started = Date.now();
   const facts = requestFacts(body);
@@ -429,7 +480,8 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
   const proxy = await proxyFor(upstream);
   return new Promise((resolve) => {
     let done = false;
-    const finish = (extra: Partial<ProxyLog>) => { if (done) return; done = true; resolve(entry(extra)); };
+    let observer: ReturnType<typeof bodyObserver> | null = null;
+    const finish = (extra: Partial<ProxyLog>) => { if (done) return; done = true; res.off("close", clientClosed); observer?.destroy(); resolve(entry(extra)); };
     const clientClosed = () => { upstreamReq.destroy(); finish({ status: 499, error: "客户端连接已关闭" }); };
     res.once("close", clientClosed);
     const upstreamReq: http.ClientRequest = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers: headers as http.OutgoingHttpHeaders, timeout: 600_000 }, (upstreamRes) => {
@@ -441,15 +493,12 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
       const seen = { head: "", tail: "" };
       const grab = new Grab();
       const look = (text: string) => { grab.feed(text); if (!genAt && GEN_START.test(text)) genAt = Date.now(); if (!firstTokenAt && FIRST_TOKEN.test(text)) firstTokenAt = Date.now(); keepEdges(seen, text); };
-      const decoder = passDecoder(String(upstreamRes.headers["content-encoding"] || "").trim().toLowerCase());
-      decoder?.on("data", (chunk: Buffer) => look(chunk.toString("utf8")));
-      decoder?.on("error", () => undefined);
-      const plain = !upstreamRes.headers["content-encoding"];
+      observer = bodyObserver(String(upstreamRes.headers["content-encoding"] || ""), look);
       upstreamRes.on("data", (chunk: Buffer) => {
         if (!firstAt) firstAt = Date.now();
         bytes += chunk.length;
         res.write(chunk);
-        if (plain) look(chunk.toString("utf8")); else decoder?.write(chunk);
+        observer?.write(chunk);
       });
       upstreamRes.on("end", () => {
         // 回复已经完整送回去了：这之后工具关连接是正常收尾，不算「客户端中途关闭」
@@ -461,14 +510,13 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
           const writing = firstAt ? endAt - (genAt || firstAt) : 0;
           finish({ status, responseBytes: bytes, ...(firstAt ? { firstByteMs: firstAt - started } : {}), ...(firstTokenAt ? { firstTokenMs: firstTokenAt - started } : {}), input: usage.input, output: usage.output, ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}),
             ...(status < 400 ? { ...speedOf(usage.output, writing), ...returnedOf(grab) } : {}),
-            ...(status >= 400 ? { error: (seen.head || `HTTP ${status}`).slice(0, 300) } : {}) });
+            ...(status >= 400 ? { error: `HTTP ${status}` } : {}) });
         };
-        if (decoder && !plain) { decoder.once("end", settle); decoder.once("error", settle); decoder.end(); setTimeout(settle, 1000); } else settle();
+        observer!.end(settle);
       });
       upstreamRes.on("error", () => { res.destroy(); finish({ status: 502, error: "回复中途断开", responseBytes: bytes, ...(firstAt ? { firstByteMs: firstAt - started } : {}) }); });
     });
 
-    upstreamReq.once("close", () => res.off("close", clientClosed));
     const fail = (status: number, message: string) => {
       if (!res.headersSent) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "TokenPulse pass-through: " + message } })); }
       else res.destroy();
@@ -509,10 +557,9 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
   upstreamReq.on("response", (res) => {
     settled = true;
     const status = res.statusCode || 502;
-    let seen = "";
     socket.write(rawHead(res, new Set(["transfer-encoding", "connection", "keep-alive"])) + "connection: close\r\n\r\n");
-    res.on("data", (chunk: Buffer) => { if (seen.length < 300 && !res.headers["content-encoding"]) seen += chunk.toString("utf8"); socket.write(chunk); });
-    res.on("end", () => { socket.end(); log(entry({ status, ms: Date.now() - opened, ...(status >= 400 ? { error: (seen || `HTTP ${status}`).slice(0, 300) } : {}) })); });
+    res.on("data", (chunk: Buffer) => socket.write(chunk));
+    res.on("end", () => { socket.end(); log(entry({ status, ms: Date.now() - opened, ...(status >= 400 ? { error: `HTTP ${status}` } : {}) })); });
     res.on("error", () => socket.destroy());
   });
   upstreamReq.on("upgrade", (res, up, upHead) => {
@@ -555,7 +602,10 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
       const text = whole(message), usage = message.usage ?? sniffUsage(text);
       const counts = { input: usage.input, output: usage.output, ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}) };
       if (type === "response.completed") closeTurn(200, message.endAt, { ...counts, ...speedOf(usage.output, message.endAt - (current.genAt || current.firstAt)) });
-      else closeTurn(Number(/"status"\s*:\s*([45]\d\d)\b/.exec(text)?.[1]) || 500, message.endAt, { ...counts, error: (jsonField(text, "message") || type).slice(0, 300) });
+      else {
+        const status = Number(/"status"\s*:\s*([45]\d\d)\b/.exec(text)?.[1]) || 500;
+        closeTurn(status, message.endAt, { ...counts, error: `HTTP ${status} · ${type}` });
+      }
     }, true);
     if (head.length) { up.write(head); fromClient.push(head); }
     if (upHead.length) { socket.write(upHead); fromServer.push(upHead); }
@@ -710,20 +760,51 @@ export function codexBackendBody(payload: Buffer) {
 function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse, client: Upstream, target: ProxyTarget, stream: boolean, watch: ReturnType<typeof stopwatch>) {
   return new Promise<Outcome>((resolve) => {
     const chunks: Buffer[] = [];
+    const status = upstream.statusCode || 502;
+    const encoding = String(upstream.headers["content-encoding"] || "").trim().toLowerCase();
+    const decoder = passDecoder(encoding);
+    const input = decoder || upstream;
+    let done = false;
+    const finish = (outcome: Outcome) => { if (done) return; done = true; decoder?.destroy(); resolve(outcome); };
+    const failed = () => {
+      if (!res.headersSent) sendError(res, client, 502, "上游回复中途断开或无法解压"); else res.destroy();
+      finish({ kind: "fail", status: 502, error: "上游回复中途断开或无法解压", terminal: true });
+    };
+    upstream.once("aborted", failed);
+    upstream.on("error", failed);
+    if (decoder) { decoder.on("error", failed); upstream.pipe(decoder); }
+    else if (encoding) { upstream.resume(); failed(); return; }
+    // 流式客户端也可能收到 JSON 错误，必须先按原状态发错误，而不是无条件开始 200 SSE。
+    if (status >= 400) {
+      let size = 0;
+      input.on("data", (chunk: Buffer) => { if (size < 8000) { const part = chunk.subarray(0, 8000 - size); chunks.push(part); size += part.length; } });
+      input.on("end", () => {
+        let message = `HTTP ${status}`;
+        try { const json = JSON.parse(Buffer.concat(chunks).toString("utf8")); if (typeof json?.error?.message === "string") message = json.error.message; } catch { /* 非 JSON 错误只显示状态 */ }
+        // 详细错误只送回发请求的工具；日志里只保留状态，防止错误回显包含内容 / 凭据。
+        if (!res.headersSent && !res.destroyed) sendError(res, client, status, message);
+        finish({ kind: "fail", status, error: `HTTP ${status}`, terminal: true });
+      });
+      return;
+    }
     const bridge = stream ? new StreamBridge(target.upstream, client, target.model || "model") : null;
-    if (stream) res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" });
-    upstream.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
+    const utf8 = new StringDecoder("utf8");
+    if (stream) res.writeHead(status, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" });
+    input.on("data", (chunk) => {
+      if (done || res.destroyed) return;
+      const text = utf8.write(chunk);
       watch.see(text);
       if (bridge) res.write(bridge.push(text));
       else chunks.push(Buffer.from(chunk));
     });
-    upstream.on("end", () => {
+    input.on("end", () => {
+      if (done || res.destroyed) return;
       if (bridge) {
+        res.write(bridge.push(utf8.end()));
         res.write(bridge.end());
         res.end();
         const usage = bridge.usage();
-        resolve({ kind: "done", status: upstream.statusCode || 200, input: usage.input, output: usage.output, timing: watch.result(usage.output, upstream.statusCode || 200) });
+        finish({ kind: "done", status, input: usage.input, output: usage.output, timing: watch.result(usage.output, status) });
         return;
       }
       try {
@@ -733,18 +814,13 @@ function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse,
         res.writeHead(upstream.statusCode || 200, { "content-type": "application/json; charset=utf-8" });
         res.end(encoded);
         const usage = sniffUsage(encoded);
-        resolve({ kind: "done", status: upstream.statusCode || 200, input: usage.input, output: usage.output });
+        finish({ kind: "done", status, input: usage.input, output: usage.output });
       } catch (error) {
-        const message = error instanceof Error ? error.message : "无法转换响应";
+        const message = "无法转换响应";
         if (!res.headersSent) sendError(res, client, 502, message);
         else res.end();
-        resolve({ kind: "done", status: 502 });
+        finish({ kind: "fail", status: 502, error: message, terminal: true });
       }
-    });
-    upstream.on("error", (error) => {
-      if (!res.headersSent) sendError(res, client, 502, error.message);
-      else res.end();
-      resolve({ kind: "done", status: 502 });
     });
   });
 }

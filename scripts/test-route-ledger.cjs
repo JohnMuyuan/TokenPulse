@@ -22,41 +22,39 @@ const write = (file, rows) => { fs.mkdirSync(path.dirname(file), { recursive: tr
 try {
   const base = Date.UTC(2026, 9, 6, 2, 0);
   /* ---------------- 账本本身 ---------------- */
-  ledger.appendRoute({ at: base + 600_400, kind: "grok", account: "grok:acc-a" });
-  ledger.appendRoute({ at: base + 900_000, kind: "grok", account: "grok:acc-b" });
-  ledger.appendRoute({ at: base + 900_000, kind: "claude", account: "claude:acc-c" });
+  ledger.appendRoute({ at: base + 600_400, kind: "grok", account: "grok:acc-a", responseId: 'resp_grok_a' });
+  ledger.appendRoute({ at: base + 900_000, kind: "grok", account: "grok:acc-b", responseId: 'resp_grok_b' });
+  ledger.appendRoute({ at: base + 900_000, kind: "claude", account: "claude:acc-c", responseId: 'msg_claude_c' });
   ledger.appendRoute({ at: base, kind: "grok", account: "claude:wrong-kind" }); // 账号不是这一家的：不记
   ledger.appendRoute({ at: base, kind: "grok", account: "" });
   assert.equal(fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, "route-ledger.jsonl"), "utf8").trim().split("\n").length, 3);
-  assert.equal(ledger.routeAccount("grok", base + 600_000), "grok:acc-a", "差 0.4 秒：对上");
-  assert.equal(ledger.routeAccount("grok", base + 629_000), "grok:acc-a", "30 秒以内都算");
-  assert.equal(ledger.routeAccount("grok", base + 660_000), null, "差一分钟：不是同一次请求");
-  assert.equal(ledger.routeAccount("grok", base + 890_000), "grok:acc-b", "取时间最近的那条");
-  assert.equal(ledger.routeAccount("claude", base + 900_000), "claude:acc-c"); assert.equal(ledger.routeAccount("chatgpt", base + 900_000), null, "各家分开");
+  assert.equal(ledger.routeAccount("grok", base + 600_000, 'resp_grok_a'), "grok:acc-a", "响应 ID 一致才对上");
+  assert.equal(ledger.routeAccount("grok", base + 629_000), null, "没有共同 ID 不猜");
+  assert.equal(ledger.routeAccount("grok", base + 660_000, 'missing'), null, "不同 ID 不匹配");
+  assert.equal(ledger.routeAccount("grok", base + 890_000, 'resp_grok_b'), "grok:acc-b");
+  assert.equal(ledger.routeAccount("claude", base + 900_000, 'msg_claude_c'), "claude:acc-c"); assert.equal(ledger.routeAccount("chatgpt", base + 900_000, 'msg_claude_c'), null, "各家分开");
   assert.equal(ledger.routeAccount(undefined, base), null);
-  console.log("PASS route ledger: append, nearest match within 30 s, per vendor, bad entries ignored");
+  console.log("PASS route ledger: exact response identity, per vendor, unidentified and unrelated entries ignored");
 
   /* ---------------- 用量和请求记录 ---------------- */
-  // 用号池时 Grok 的配置里填的是本地路由的地址：整份日志会被当成第三方中转站
-  write(path.join(process.env.HOME, ".grok", "config.toml"), []);
-  fs.writeFileSync(path.join(process.env.HOME, ".grok", "config.toml"), '[models]\ndefault = "tokenpulse_route"\n\n[model.tokenpulse_route]\nname = "TokenPulse · pool"\nmodel = "grok-4.6"\nbase_url = "http://127.0.0.1:17621/grok/v1"\napi_key = "PROXY_MANAGED"\n');
-  const session = path.join(process.env.HOME, ".grok", "sessions", encodeURIComponent("D:\\work\\grok"), "01a0-session");
-  const turn = (seconds, prompt) => [
-    { method: "session/update", params: { update: { sessionUpdate: "user_message_chunk", _meta: { modelId: "grok-4.6" } } } },
-    { method: "_x.ai/session/update", timestamp: base / 1000 + seconds, params: { update: { sessionUpdate: "turn_completed", prompt_id: prompt, usage: { modelUsage: { "grok-4.6-build": { inputTokens: 1000, outputTokens: 100, modelCalls: 1 } } } } } },
-  ];
-  write(path.join(session, "updates.jsonl"), [...turn(600, "p1"), ...turn(1800, "p2")]);
+  // Claude 与 Codex 会话记录响应 ID；Grok 只有整轮汇总，不能用它测试精确匹配的成功路径。
+  write(path.join(process.env.HOME, '.claude', 'settings.json'), []);
+  fs.writeFileSync(path.join(process.env.HOME, '.claude', 'settings.json'), JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:17621/claude', ANTHROPIC_AUTH_TOKEN: 'PROXY_MANAGED' } }));
+  ledger.appendRoute({ at: base + 600_400, kind: 'claude', account: 'claude:acc-a', responseId: 'msg_pool_first' });
+  const session = path.join(process.env.HOME, '.claude', 'projects', 'qa');
+  const turn = (seconds, id) => ({ type: 'assistant', timestamp: new Date(base + seconds * 1000).toISOString(), requestId: 'req_' + id, message: { id, model: 'claude-qa', usage: { input_tokens: 1000, output_tokens: 100 } } });
+  write(path.join(session, 'session.jsonl'), [turn(600, 'msg_pool_first'), turn(1800, 'msg_not_pooled')]);
   const scan = scanLocalUsage();
   assert.equal(scan.records.length, 2);
   const rows = queryRequests({ from: "2026-01-01", to: "2026-12-31", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 50, all: true }).rows.sort((a, b) => a.at - b.at);
-  assert.deepEqual(rows.map((row) => [row.official, row.account?.id ?? null, row.account?.basis ?? null]), [[true, "grok:acc-a", "route"], [false, null, null]], "经号池发的那条归到号池成员名下、算官方用量；没经号池的那条还是中转");
+  assert.deepEqual(rows.map((row) => [row.official, row.account?.id ?? null, row.account?.basis ?? null]), [[true, "claude:acc-a", "route"], [false, null, null]], "经号池发的那条归到号池成员名下、算官方用量；没经号池的那条还是中转");
   const only = (query) => queryRequests({ from: "2026-01-01", to: "2026-12-31", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 50, all: true, ...query }).rows.length;
-  assert.deepEqual([only({ channel: "official" }), only({ channel: "api" }), only({ account: "grok:acc-a" })], [1, 1, 1], "筛选跟着走");
+  assert.deepEqual([only({ channel: "official" }), only({ channel: "api" }), only({ account: "claude:acc-a" })], [1, 1, 1], "筛选跟着走");
   // 按账号的小时账（额度折算、本机以外的判断用的）：只有经号池的那条
-  const state = Object.values(readRollups().files).find((item) => item.kind === "grok-build");
+  const state = Object.values(readRollups().files).find((item) => item.kind === "claude-code");
   assert.equal(state.official, false, "文件整体仍然记成不是官方（配置里是本地路由）");
-  assert.deepEqual(Object.keys(state.accountHours || {}), ["grok:acc-a"]);
-  const hours = Object.values(state.accountHours["grok:acc-a"]);
+  assert.deepEqual(Object.keys(state.accountHours || {}), ["claude:acc-a"]);
+  const hours = Object.values(state.accountHours["claude:acc-a"]);
   assert.equal(hours.length, 1); assert.equal(Object.values(hours[0])[0].input, 1000);
   console.log("PASS route ledger: pool traffic counted as official under the member account in request rows, filters and per-account hours; other traffic untouched");
 
@@ -65,7 +63,7 @@ try {
   ledger.resetRouteLedgerCache();
   assert.equal(ledger.routeAccount("grok", base + 600_000), null);
   const later = queryRequests({ from: "2026-01-01", to: "2026-12-31", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 50, all: true }).rows.sort((a, b) => a.at - b.at);
-  assert.deepEqual(later.map((row) => [row.official, row.account?.id ?? null, row.account?.basis ?? null]), [[true, "grok:acc-a", "route"], [false, null, null]]);
+  assert.deepEqual(later.map((row) => [row.official, row.account?.id ?? null, row.account?.basis ?? null]), [[true, "claude:acc-a", "route"], [false, null, null]]);
   console.log("PASS route ledger: the matched account is stored with the request record, so it survives the ledger being pruned");
 
   /* ---------------- 永久保存的转发记录 ---------------- */
@@ -78,9 +76,9 @@ try {
   // 往回翻：新的在前，按页读，跨月份文件接着读
   const first = ledger.readRouteLog({ limit: 2 });
   assert.deepEqual([first.rows.map((row) => row.provider), first.more], [["relay", "pool · b"], true]);
-  const second = ledger.readRouteLog({ limit: 2, before: first.rows.at(-1).at });
+  const second = ledger.readRouteLog({ limit: 2, cursor: first.nextCursor });
   assert.deepEqual([second.rows.map((row) => row.provider), second.more], [["pool · a"], false]);
-  assert.deepEqual(ledger.readRouteLog({ limit: 10, before: 1 }), { rows: [], more: false });
+  assert.deepEqual(ledger.readRouteLog({ limit: 10, before: 1 }), { rows: [], more: false, nextCursor: null });
   console.log("PASS route log: every forwarded request appended to a monthly file, kept for good, and read back newest first in pages");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

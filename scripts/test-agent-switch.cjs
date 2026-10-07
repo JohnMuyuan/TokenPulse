@@ -335,7 +335,7 @@ const grokFile = path.join(home, '.grok', 'config.toml');
         assert.equal('reasoning' in (await sendGrok({ model: 'grok-qa', input: 'hi' })), false, '没选等级就原样转发');
         // 0.3.34 路由账本：号池成功交给了哪个官方账号都记下来（统计用量时归到它名下）；失败的、换下一个成员之前的那次不记
         const ledger = fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'route-ledger.jsonl'), 'utf8').trim().split(String.fromCharCode(10)).map(line => line.split(String.fromCharCode(9)));
-        assert.ok(ledger.every(row => row.length === 3 && Number(row[0]) > Date.now() - 600000 && row[2].startsWith(row[1] + ':')), '每行：时间、哪家、账号 id');
+        assert.ok(ledger.every(row => (row.length === 3 || row.length === 4) && Number(row[0]) > Date.now() - 600000 && row[2].startsWith(row[1] + ':')), '每行：时间、哪家、账号 id、可选的响应 id');
         const byAccount = ledger.reduce((map, row) => ({ ...map, [row[2]]: (map[row[2]] || 0) + 1 }), {});
         assert.equal(byAccount['grok:qa-g'], 3, 'Grok 号池的三次请求');
         assert.equal(byAccount['chatgpt:qa-c'], 1); assert.ok(byAccount['claude:qa-b'] >= 2 && byAccount['claude:qa-a'] >= 1);

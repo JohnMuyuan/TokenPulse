@@ -3,22 +3,21 @@
  *
  * 用量是从各家 CLI 自己写的日志里读的，那里只知道「这是 Grok / Claude / Codex 发的」，不知道号池把它转给了哪个账号；
  * 而且用号池时工具的配置里填的是本地路由的地址，这些用量会被当成第三方中转站，不归到任何官方账号名下。
- * 本地路由转发成功时在这里记一笔（时间、哪家、哪个账号），统计用量时按时间对上：
+ * 本地路由转发成功时在这里记一笔（时间、哪家、哪个账号、响应 ID），统计用量时按共同响应 ID 对上：
  * - usage-scan.ts 算「按账号的小时账」（额度折算、本机以外的判断都靠它）；
  * - request-log.ts 给请求记录、用量明细、按项目配上账号。
  *
- * 只记账号 id 和时间，不记请求内容、不记凭据。一行一条，追加写；超过 RETAIN_DAYS 的在追加时顺手清掉。
+ * 不记请求内容、不记凭据。一行一条，追加写；超过 RETAIN_DAYS 的在追加时顺手清掉。
  * 统计在另一个线程里跑，所以靠文件传，不靠内存。
  */
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { dataFile } from "./paths";
 import type { OfficialAccountKind } from "./credentials";
 
-export type RouteEntry = { at: number; kind: OfficialAccountKind; account: string };
+export type RouteEntry = { at: number; kind: OfficialAccountKind; account: string; responseId?: string };
 
-/** CLI 日志里那条用量的时间和路由记下的时间差多少以内算同一次请求。 */
-const MATCH_MS = 30_000;
 const RETAIN_DAYS = 45;
 const DAY_MS = 86_400_000;
 const PRUNE_EVERY = 500;
@@ -29,7 +28,8 @@ let appended = 0;
 export function appendRoute(entry: RouteEntry) {
   if (!entry.account || !entry.account.startsWith(entry.kind + ":") || !Number.isFinite(entry.at)) return;
   try {
-    fs.appendFileSync(file(), `${Math.round(entry.at)}\t${entry.kind}\t${entry.account}\n`);
+    const responseId = entry.responseId && /^[A-Za-z0-9_-]{1,160}$/.test(entry.responseId) ? entry.responseId : "";
+    fs.appendFileSync(file(), `${Math.round(entry.at)}\t${entry.kind}\t${entry.account}${responseId ? "\t" + responseId : ""}\n`);
     cache = null;
     if (++appended % PRUNE_EVERY === 0) prune();
   } catch { /* 账本写不了：这次请求照常转发，只是统计时对不上账号 */ }
@@ -46,7 +46,7 @@ function prune() {
   } catch { /* 清不掉就下次再清 */ }
 }
 
-type Index = Partial<Record<OfficialAccountKind, { at: number[]; account: string[] }>>;
+type Index = Partial<Record<OfficialAccountKind, Map<string, string | null>>>;
 let cache: { size: number; mtimeMs: number; index: Index } | null = null;
 
 function load(): Index {
@@ -56,36 +56,63 @@ function load(): Index {
   const rows: RouteEntry[] = [];
   try {
     for (const line of fs.readFileSync(file(), "utf8").split("\n")) {
-      const [at, kind, account] = line.split("\t");
+      const [at, kind, account, responseId] = line.split("\t");
       const time = Number(at);
       if (!account || !Number.isFinite(time) || (kind !== "claude" && kind !== "chatgpt" && kind !== "grok")) continue;
-      rows.push({ at: time, kind, account });
+      rows.push({ at: time, kind, account, responseId });
     }
   } catch { return {}; }
   rows.sort((a, b) => a.at - b.at);
   const index: Index = {};
-  for (const row of rows) { const list = (index[row.kind] ??= { at: [], account: [] }); list.at.push(row.at); list.account.push(row.account); }
+  for (const row of rows) {
+    if (!row.responseId) continue;
+    const list = (index[row.kind] ??= new Map());
+    // 响应 ID 若被不同账号复用，归属存在歧义，不猜。
+    if (list.has(row.responseId) && list.get(row.responseId) !== row.account) list.set(row.responseId, null);
+    else if (!list.has(row.responseId)) list.set(row.responseId, row.account);
+  }
   cache = { size: stat.size, mtimeMs: stat.mtimeMs, index };
   return index;
 }
 
 /**
- * 这一刻（CLI 日志里那条用量的时间）前后，号池把请求交给了哪个账号。对不上返回 null。
- * 取时间最近的一条；几个请求同时在跑时可能对到相邻的那个成员，它们本来就是同一个号池里轮着用的。
+ * 只凭 CLI 和上游共同记录的响应 ID 归属。不再用时间邻近猜测：并发与直连请求会被配错。
+ * 旧三列账本、Grok 整轮汇总和没有响应 ID 的记录返回 null。
  */
-export function routeAccount(kind: OfficialAccountKind | undefined, at: number): string | null {
-  if (!kind) return null;
-  const list = load()[kind];
-  if (!list || !list.at.length) return null;
-  let low = 0, high = list.at.length;
-  while (low < high) { const mid = (low + high) >> 1; if (list.at[mid] < at) low = mid + 1; else high = mid; }
-  let best = -1, gap = MATCH_MS + 1;
-  for (const index of [low - 1, low]) {
-    if (index < 0 || index >= list.at.length) continue;
-    const distance = Math.abs(list.at[index] - at);
-    if (distance < gap) { gap = distance; best = index; }
+export function routeAccount(kind: OfficialAccountKind | undefined, at: number, responseId?: string): string | null {
+  if (!kind || !responseId) return null;
+  const recent = load()[kind];
+  if (recent?.has(responseId)) return recent.get(responseId) ?? null;
+  // 旧三列账本没有 ID；永久日志若留有共同 ID 和账号，仍可精确找回历史归属。
+  for (const shift of [0, -1, 1]) {
+    const hit = accountIndex(monthName(at, shift)).get(kind + "\n" + responseId);
+    if (hit !== undefined) return hit;
   }
-  return best >= 0 ? list.account[best] : null;
+  return null;
+}
+
+const accountCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, string | null> }>();
+function accountIndex(name: string): Map<string, string | null> {
+  const file = path.join(routeLogDir(), name);
+  let stat: fs.Stats;
+  try { stat = fs.statSync(file); } catch { return new Map(); }
+  const cached = accountCache.get(file);
+  if (cached?.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.index;
+  const index = new Map<string, string | null>();
+  try {
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+      if (!line.includes('"account"') || !line.includes('"responseId"')) continue;
+      let row: Record<string, unknown>;
+      try { row = JSON.parse(line); } catch { continue; }
+      const kind = row.app === "codex" ? "chatgpt" : row.app === "claude" ? "claude" : row.app === "grok" ? "grok" : "";
+      if (!kind || !(Number(row.status) < 400) || row.error || typeof row.account !== "string" || !row.account.startsWith(kind + ":") || typeof row.responseId !== "string") continue;
+      const key = kind + "\n" + row.responseId;
+      if (index.has(key) && index.get(key) !== row.account) index.set(key, null);
+      else if (!index.has(key)) index.set(key, row.account);
+    }
+  } catch { return new Map(); }
+  accountCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, index });
+  return index;
 }
 
 /*
@@ -99,33 +126,40 @@ export function appendRouteLog(entry: object & { at: number }) {
     const day = new Date(entry.at);
     const dir = routeLogDir();
     fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(path.join(dir, `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}.jsonl`), JSON.stringify(entry) + "\n");
+    fs.appendFileSync(path.join(dir, `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}.jsonl`), JSON.stringify({ id: crypto.randomUUID(), ...entry }) + "\n");
   } catch { /* 记不下来就算了 */ }
 }
 
 /**
- * 从保存的转发记录里往回读：时间早于 before 的最新 limit 条，新的在前。more 表示更早的还有。
+ * 初次读取可按 before 限定时间；后续以月份文件 + 行位置作为游标，同毫秒的记录也能完整翻页。
  * 按月份文件从新到旧读，读够就停。
  */
-export function readRouteLog(options: { limit?: number; before?: number } = {}): { rows: Record<string, unknown>[]; more: boolean } {
+export function readRouteLog(options: { limit?: number; before?: number; cursor?: string } = {}): { rows: Record<string, unknown>[]; more: boolean; nextCursor: string | null } {
   const limit = Math.max(1, Math.min(500, Math.round(options.limit ?? 100)));
   const before = Number.isFinite(options.before) ? Number(options.before) : Infinity;
   const rows: Record<string, unknown>[] = [];
+  let nextCursor: string | null = null;
+  const cursor = options.cursor ? /^(\d{4}-\d{2}\.jsonl):(\d+)$/.exec(options.cursor) : null;
+  if (options.cursor && !cursor) throw new Error("转发记录分页游标无效");
   let files: string[];
-  try { files = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)).sort().reverse(); } catch { return { rows, more: false }; }
+  try { files = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)).sort().reverse(); } catch { return { rows, more: false, nextCursor }; }
   for (const name of files) {
+    if (cursor && name > cursor[1]) continue;
     let lines: string[];
     try { lines = fs.readFileSync(path.join(routeLogDir(), name), "utf8").split("\n"); } catch { continue; }
     for (let index = lines.length - 1; index >= 0; index--) {
+      if (cursor && name === cursor[1] && index >= Number(cursor[2])) continue;
       if (!lines[index]) continue;
       let row: Record<string, unknown>;
       try { row = JSON.parse(lines[index]); } catch { continue; }
-      if (typeof row?.at !== "number" || row.at >= before) continue;
-      if (rows.length >= limit) return { rows, more: true };
-      rows.push(row);
+      if (typeof row?.at !== "number" || (!cursor && row.at >= before)) continue;
+      if (rows.length >= limit) return { rows, more: true, nextCursor };
+      // 旧记录没有 UUID，文件位置提供稳定且唯一的身份，不改写历史文件。
+      rows.push({ ...row, id: typeof row.id === "string" && row.id ? row.id : `legacy:${name}:${index}` });
+      nextCursor = `${name}:${index}`;
     }
   }
-  return { rows, more: false };
+  return { rows, more: false, nextCursor };
 }
 
 /*
@@ -208,4 +242,4 @@ export function routeReturned(responseId: string | undefined, at: number): Route
 }
 
 /** 测试用：丢掉内存里的缓存。 */
-export function resetRouteLedgerCache() { cache = null; appended = 0; returnedCache.clear(); }
+export function resetRouteLedgerCache() { cache = null; appended = 0; returnedCache.clear(); accountCache.clear(); }
