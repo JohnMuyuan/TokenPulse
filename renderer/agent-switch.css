@@ -517,3 +517,6 @@
 .pv-prism-remove { margin-top: 8px; border-style: dashed; background: transparent; }
 .pv-prism-remove .btn.confirm { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 @media (prefers-reduced-motion: reduce) { .pv-prism-step, .pv-prism-logbox > summary::before, .pv-prism-faq summary::before { transition: none; } .pv-prism-hero.busy .pv-pulse::after { animation: none; } }
+
+.pv-context-quick { display: flex; gap: 6px; flex-wrap: wrap; }
+.pv-context-quick .btn { padding: 2px 10px; font-size: 12px; }

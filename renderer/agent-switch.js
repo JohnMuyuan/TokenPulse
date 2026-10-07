@@ -834,6 +834,19 @@
       textArea('requestBody', '请求体覆盖（JSON）', jsonText(p.requestBody), '协议转换完成后合并；仅填写明确需要的字段。'),
     ]);
   }
+  /**
+   * Grok 号池的上下文窗口。号池在 Grok 配置里是自定义模型，不写 context_window 的话 Grok 按 200K 算（到 200K 就自动压缩）；
+   * 官方型号是 256K，可选 500K。新建的号池默认填 256000；已有的号池没填过就空着，保持原来的行为。
+   */
+  function poolContextField(provider) {
+    editor.contextWindow = provider ? provider.contextWindow || null : 256000;
+    const input = el('input', { type: 'number', min: '1', name: 'poolContext', value: editor.contextWindow || '', placeholder: '不填就是 Grok 的默认值 200000', 'aria-label': '上下文窗口' });
+    input.addEventListener('input', () => { editor.contextWindow = Number(input.value) > 0 ? Math.round(Number(input.value)) : null; });
+    const pick = value => el('button', { type: 'button', class: 'btn', 'data-context': String(value), text: value / 1000 + 'K', translate: 'no' });
+    const quick = el('div', { class: 'pv-context-quick' }, [pick(256000), pick(500000)]);
+    quick.addEventListener('click', e => { const b = e.target.closest('[data-context]'); if (!b) return; input.value = b.dataset.context; editor.contextWindow = Number(b.dataset.context); });
+    return el('label', { class: 'pv-field' }, [el('span', { text: '上下文窗口' }), input, quick, el('small', { text: 'Grok 用到这个数的大约八成就会自动压缩对话。官方型号默认 256K，可以选 500K；不填时 Grok 把号池当成 200K。' })]);
+  }
   /** Grok 号池的思考等级：Grok 自己的 /effort 对号池不可用，这里选了由本地路由转发时补上。 */
   function poolEffortField() {
     const select = el('select', { name: 'poolEffort', 'aria-label': '思考等级' }, [el('option', { value: '', text: '不指定（用模型的默认档）' }), ...['low', 'medium', 'high', 'xhigh'].map(level => el('option', { value: level, text: level, translate: 'no' }))]);
@@ -1210,6 +1223,7 @@
           avatarPicker(),
           nameInput,
           field('model', app === 'grok' ? '模型' : '默认模型（可选）', { value: provider?.model || '', translate: 'no', placeholder: app === 'grok' ? '例如 grok-4.7-build' : '留空就由工具自己选模型' }, app === 'grok' ? 'Grok CLI 的配置表必须写一个模型名。' : '留空时工具照常发自己选的模型，号池原样转给官方。'),
+          app === 'grok' ? poolContextField(provider) : null,
           app === 'grok' ? poolEffortField() : null,
           notes,
         ),
@@ -1255,7 +1269,7 @@
         if (!data.name) { showFeedback('请填写号池名称。', 'error'); showEditorPane('basic'); return; }
         if (app === 'grok' && !data.model) { showFeedback('Grok 号池要填一个模型名。', 'error'); showEditorPane('basic'); return; }
         if (!editor.pool.members.length) { showFeedback('号池至少要选一个成员。', 'error'); showEditorPane('members'); return; }
-        const poolInput = { app, name: data.name, notes: data.notes, model: data.model, icon: editor.icon, avatar: editor.avatar, iconColor: provider?.iconColor || '', pool: editor.pool, ...(provider ? { id: provider.id } : {}) };
+        const poolInput = { app, name: data.name, notes: data.notes, model: data.model, ...(app === 'grok' ? { contextWindow: editor.contextWindow } : {}), icon: editor.icon, avatar: editor.avatar, iconColor: provider?.iconColor || '', pool: editor.pool, ...(provider ? { id: provider.id } : {}) };
         saving = true;
         const draft = editor;
         try {

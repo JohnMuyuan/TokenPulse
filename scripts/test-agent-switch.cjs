@@ -321,6 +321,12 @@ const grokFile = path.join(home, '.grok', 'config.toml');
         assert.equal(sw.agentView().providers.find(item => item.id === grokPool).pool.reasoningEffort, 'xhigh');
         assert.equal(sw.agentView().providers.find(item => item.id === codexPool).pool.reasoningEffort, undefined, '别的工具的号池没有这一项');
         await sw.activateProvider(grokPool);
+        // 号池的上下文窗口：没填就不写 context_window（Grok 按 200K 算），填了就写进 Grok 的配置
+        assert.doesNotMatch(read(grokFile), /context_window/);
+        sw.saveProvider({ id: grokPool, app: 'grok', name: 'Grok 号池', model: 'grok-qa', contextWindow: 500000, pool: { reasoningEffort: 'xhigh', members: [{ type: 'account', id: 'grok:qa-g' }] } });
+        assert.equal(sw.agentView().providers.find(item => item.id === grokPool).contextWindow, 500000);
+        await sw.activateProvider(grokPool);
+        assert.match(read(grokFile), /context_window = 500000/);
         const sendGrok = async body => { hits.length = 0; await fetch(`http://127.0.0.1:${sw.agentView().proxy.port}/grok/v1/responses`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer PROXY_MANAGED' }, body: JSON.stringify(body) }); return JSON.parse(hits[0].body); };
         assert.deepEqual((await sendGrok({ model: 'grok-qa', input: 'hi', reasoning: { summary: 'concise' } })).reasoning, { summary: 'concise', effort: 'xhigh' });
         assert.equal(hits[0].auth, 'Bearer oauth-token-g');

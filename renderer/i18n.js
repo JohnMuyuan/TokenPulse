@@ -100,6 +100,10 @@
     // Prism 桥（0.3.19）
     "Prism 桥": "Prism bridge",
     "占用的内存少了约两成": "About a fifth less memory",
+    "Grok 号池可以设上下文窗口": "Grok pools can set a context window",
+    "直接用 Grok 官方登录时上下文可以到 500K，换成号池后只有 200K：号池在 Grok 里是自定义模型，没写上下文大小时按 200K 算。现在可以在「编辑号池 → 基本信息 → 上下文窗口」里填，旁边有 256K、500K 两个快捷按钮。已有的号池要自己改一下，保存后重新启用。": "With the official Grok sign-in the context can reach 500K, but a pool only got 200K: a pool is a custom model to Grok, which assumes 200K when no size is given. You can now set it under Edit pool → Basics → Context window, with 256K and 500K shortcuts next to it. Existing pools need to be changed by hand, then saved and enabled again.",
+    "不填就是 Grok 的默认值 200000": "Leave empty for Grok's default of 200000",
+    "Grok 用到这个数的大约八成就会自动压缩对话。官方型号默认 256K，可以选 500K；不填时 Grok 把号池当成 200K。": "Grok compacts the conversation automatically at about 80% of this number. Official models default to 256K and can use 500K; left empty, Grok treats a pool as 200K.",
     "修复：换成中转站或官方登录后，打不开用 Prism 桥聊过的对话": "Fix: chats made through the Prism bridge would not open after switching to a relay or the official sign-in",
     "Codex 桌面端提示「Model provider tokenpulse_route not found」。0.3.26 修过反方向的同一个问题，这次补上了没覆盖到的情况：退出 TokenPulse 或关掉本地路由后配置被还原、用别的工具切换到中转站。现在这些情况下都会把旧对话用到的配置补回来，内容照抄现在生效的那一家。补完后请重新打开 Codex 桌面端。": "The Codex desktop app said \"Model provider tokenpulse_route not found\". 0.3.26 fixed the same problem in the other direction; this covers the cases it missed: the config being restored when TokenPulse quits or the local route is turned off, and another tool switching Codex to a relay. In all of these the config earlier chats rely on is now put back, copied from whichever provider is active. Reopen the Codex desktop app afterwards.",
     "修复：Prism 桥一直报「400 Bad Request」": "Fix: the Prism bridge kept returning \"400 Bad Request\"",

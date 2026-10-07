@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.31（2026-10-06，已发布，工作区干净）
+# 当前接手入口 · 0.3.32（2026-10-06，已发布，工作区干净）
 
 ## 新对话先看这里
 
@@ -6,9 +6,15 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.31**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.31）。`package.json` 是 0.3.31。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.31：…`（标签 `v0.3.31`）。接手时用 `git status`、`git log -3` 核对。
+- 最新版本 **0.3.32**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.32）。`package.json` 是 0.3.32。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.32：…`（标签 `v0.3.32`）。接手时用 `git status`、`git log -3` 核对。
 - **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。
+- **0.3.32（2026-10-06，Claude；用户试用测试版后说「测试没问题」；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.32.md`）：Grok 号池可以设上下文窗口。**
+  - 用户的问题：官方是 500K，换成号池只有 200K。原因：号池在 Grok 配置里是自定义模型 `[model.tokenpulse_route]`，不写 `context_window` 时 Grok 按 200K 算。`writeGrok` 本来就会在 `provider.contextWindow` 有值时写 `context_window`，`saveProvider` 的号池分支也收 `contextWindow`，只是**号池的编辑界面没有这个输入框**、保存时也没带上。普通的 Grok 供应商一直有（「模型」页的「上下文窗口」）。
+  - 本机 `~/.grok/models_cache.json` 里官方型号（grok-4.5 / 4.6 / 4.7 / 4.7-build-fast）都是 `context_window: 256000`、`context_windows: [256000, 500000]`、`auto_compact_threshold_percent: 80`。
+  - 改动：`renderer/agent-switch.js` 的 `poolContextField()`（Grok 号池「基本信息」里，数字输入 + 256K / 500K 两个快捷按钮；新建默认 256000，已有的号池没填过就空着不改行为），`poolInput` 带上 `contextWindow`；样式两行在 `agent-switch.css` 末尾；i18n 已补。核心代码没有改。
+  - 测试：`scripts/test-agent-switch.cjs` 号池那组加了「没填不写 `context_window`、填 500000 后写进 Grok 配置」。`npm test`、`npm run test:ui` 退出 0。输入框本身没有界面测试，也没截图看过。
+  - **没有验证**：经号池（官方接口 `cli-chat-proxy.grok.com`）实际用到 256K 以上时 xAI 会不会接受。官方客户端选 500K 时请求里有没有额外的标记没有查过；如果有，光改 `context_window` 只会让 Grok 晚一点压缩，超过 256K 后请求可能被拒。
 - **0.3.31（2026-10-06，Claude；发布时 `npm test`、`npm run test:ui`、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.31.md`）：换成第三方中转站或官方直登后，Codex 桌面端打不开用 Prism 桥（`tokenpulse_route`）聊过的对话，报 `Model provider tokenpulse_route not found`。**（用户朋友反馈，是 0.3.26 那个问题反过来的方向）
   - 0.3.26 只在两个时机补表：`writeCodex`（在 TokenPulse 里切换供应商）和启动修复（且要求 `store.owned.codex`）。漏掉的路径：① `restoreProxy`：关本地路由或**退出 TokenPulse** 时把 Codex 配置还原成接管前的样子，`tokenpulse_route` 整张表跟着没了，没有补；② 用别的工具把配置换成它自己的中转站（表名多半是 `custom`），TokenPulse 那张表被删，而且这时 `owned.codex` 可能已经没有了，启动修复直接跳过；③ 0.3.26 补的表只会照抄 `tokenpulse_route`，现在生效的是别的名字的表时，补的是「走官方登录」的表，没有 ChatGPT 登录的人接着聊会失败。朋友具体走的是哪条没有问到，三条都补了。
   - 改动（`src/core/agent-switch.ts`）：`syncCodexLegacyProviders` 改成照抄「现在生效的那张表」（`model_provider` 指向的、有 `base_url` 的表，不管叫什么、是谁写的；去掉 `name` 行和注释），没有才补走官方登录的表；清理自己的表改用 `replaceTable`。新增 `ensureCodexLegacyProviders()`（读、补、有改动才写）。调用点多了 `restoreProxy` 的两个出口（正常还原、发现外部修改后放手）；启动修复的条件改成 `owned.codex` **或** 本机对话里出现过 `tokenpulse_route`。
@@ -45,6 +51,7 @@
 
 | 版本 | 提交 | 内容 |
 |---|---|---|
+| 0.3.32 | 见 `git log` | Grok 号池可以设上下文窗口（256K / 500K） |
 | 0.3.31 | 见 `git log` | 修：换成中转站 / 官方登录后 Codex 桌面端打不开用 Prism 桥聊过的对话（tokenpulse_route not found） |
 | 0.3.30 | 见 `git log` | Prism 下架 6.1 Sol 后桥一直 400：默认模型换成 5.6 Sol，模型列表从 Prism 读，已下架的模型自动改用可用的并提醒 |
 | 0.3.29 | 见 `git log` | Grok 号池 / 供应商可以选思考等级（本地路由转发时补上）；修：Prism 桥报「Unable to confirm the response started」后连续失败 |
@@ -74,6 +81,7 @@
 - 0.3.21：界面里删除 Codex 对话「确实删除了」；降内存后「卡倒是不会卡」。
 - 0.3.24：三轮测试版看过界面，发布后「测试没问题」。
 - 0.3.25：试用测试版「没啥问题」。
+- 0.3.32：试用测试版「测试没问题」（Grok 号池的上下文窗口；超过 256K 的长对话有没有试到没有说）。
 - 0.3.26：用户的朋友确认修好了（桌面端能打开旧对话）。2026-10-05 用户转述。
 - 0.3.27：朋友手动停止再启动服务后恢复，印证了「重建会话能解决」。
 
