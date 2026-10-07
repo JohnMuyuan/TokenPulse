@@ -227,10 +227,18 @@ export function openTerminal(kind: AgentKind, id: string | null, cwd?: string, g
   const encoded = Buffer.from(terminalScript(kind, id, cwd, fallbackExe, guard), "utf16le").toString("base64");
   const child = spawn("cmd.exe", ["/d", "/c", "start", '""', "powershell.exe", "-NoExit", "-NoProfile", "-EncodedCommand", encoded], {
     env: cleanAgentEnv(),
+    // 不指定的话终端继承 TokenPulse 自己的工作目录（安装目录 / 打包目录），窗口开着那个目录就删不掉、改不了名：
+    // 脚本里的 Set-Location 只改 PowerShell 自己的位置，不改进程的工作目录
+    cwd: terminalHome(cwd),
     stdio: "ignore",
     windowsHide: true,
   });
   child.unref();
+}
+/** 新终端进程的工作目录：会话的项目目录还在就用它，否则用用户的主目录。 */
+export function terminalHome(cwd?: string) {
+  try { if (cwd && fs.statSync(cwd).isDirectory()) return cwd; } catch { /* 目录没了 */ }
+  return os.homedir();
 }
 
 /** 命令行参数（不含提示词本身）。单独导出给测试。 */

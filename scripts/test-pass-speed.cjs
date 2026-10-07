@@ -33,10 +33,13 @@ try {
   // 20 天前（那时登录的是账号 one）：gpt-a 一次；上个月也有一次
   add(now - 20 * DAY, { tokensPerSec: 90 });
   add(now - 40 * DAY, { tokensPerSec: 10 });
+  // 0.3.36：号池交给官方账号的请求也量了速度，记录里写着账号——直接归到那个账号，不看当时 CLI 登录的是谁
+  add(now - 4 * HOUR, { pass: undefined, provider: "pool · three", account: "chatgpt:three", model: "gpt-pool", requestModel: "gpt-pool", tokensPerSec: 88 });
+  add(now - 4 * HOUR + 1000, { pass: undefined, provider: "pool · three", account: "chatgpt:three", model: "gpt-pool", requestModel: "gpt-pool", tokensPerSec: 92 });
   // 不该算进来的：报错的、没量到速度的、不是透明转发的、别的工具的
   add(now - 5000, { status: 500, error: "boom", tokensPerSec: 999 });
   add(now - 5000, { tokensPerSec: undefined });
-  add(now - 5000, { pass: undefined, tokensPerSec: 999 });
+  add(now - 5000, { pass: undefined, provider: "Relay", tokensPerSec: 999 });
   add(now - 5000, { app: "claude", model: "claude-x", requestModel: "claude-x", tokensPerSec: 77 });
   fs.mkdirSync(routeLogDir(), { recursive: true });
   const byFile = new Map();
@@ -63,14 +66,25 @@ try {
   const one = accountSpeed("chatgpt", "chatgpt:one", 0, now);
   assert.deepEqual([one.total, one.bucketMs, one.models[0].buckets.map((bucket) => bucket.median)], [2, DAY, [10, 90]], "换账号之前的归到当时登录的那个账号");
   assert.deepEqual(accountSpeed("chatgpt", "chatgpt:one", 30, now).models[0].buckets.map((bucket) => bucket.median), [90]);
-  // 不分账号 = 这一家全部；别的家互不相干
-  assert.equal(accountSpeed("chatgpt", "", 0, now).total, 13);
+  // 号池成员：按记录里的账号归属；别的账号看不到它
+  assert.deepEqual(accountSpeed("chatgpt", "chatgpt:three", 7, now).models.map((model) => [model.model, model.count, model.tokensPerSec]), [["gpt-pool", 2, 90]]);
+  assert.equal(week.models.some((model) => model.model === "gpt-pool"), false);
+  // 不分账号 = 这一家全部（经本地路由转给第三方供应商的不是官方账号的，不算）；别的家互不相干
+  assert.equal(accountSpeed("chatgpt", "", 0, now).total, 15);
   assert.deepEqual(accountSpeed("claude", "", 7, now).models.map((model) => [model.model, model.tokensPerSec]), [["claude-x", 77]]);
   assert.deepEqual(accountSpeed("grok", "", 7, now).models, []);
   // 很久以前的记录也在：一年的跨度按周看
   fs.appendFileSync(monthFile(now - 300 * DAY), JSON.stringify({ at: now - 300 * DAY, app: "codex", pass: true, status: 200, requestModel: "gpt-a", tokensPerSec: 20 }) + "\n");
   const all = accountSpeed("chatgpt", "", 0, now);
-  assert.deepEqual([all.bucketMs, all.total, new Date(all.models[0].buckets[0].at).getDay()], [7 * DAY, 14, 1], "一周一个点，从周一开始");
+  assert.deepEqual([all.bucketMs, all.total, new Date(all.models[0].buckets[0].at).getDay()], [7 * DAY, 16, 1], "一周一个点，从周一开始");
+  // 供应商页的汇总：透明转发和本地路由的都在，同一个型号经不同的供应商分开
+  const { passSpeed } = require(path.join(__dirname, "..", "build", "core", "route-ledger.js"));
+  const real = Date.now;
+  Date.now = () => now;
+  try {
+    const summary = passSpeed(7).filter((row) => row.app === "codex");
+    assert.deepEqual(summary.map((row) => [row.model, row.via, row.count]), [["gpt-a", "", 8], ["gpt-a · 快速", "", 2], ["gpt-pool", "pool · three", 2], ["gpt-a", "Relay", 1], ["gpt-b", "", 1]]);
+  } finally { Date.now = real; }
   console.log("PASS pass speed: per-account, per-model speed trend from the permanent forwarding log (median and quartiles per hour / day / week, attributed by the CLI login at the time)");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

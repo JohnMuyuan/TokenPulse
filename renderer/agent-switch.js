@@ -490,19 +490,19 @@
       el('div', { class: 'pv-speed-row head' }, [el('span'), el('span', { text: '型号' }), el('span', { text: '速度（中位）' }), el('span', { text: '首字延迟（中位）' }), el('span', { text: '最慢 – 最快' }), el('span', { text: '次数' })]),
       ...speed.map((item, i) => paint(el('div', { class: 'pv-speed-row' }, [
         appMark(item.app, 'pv-log-avatar'),
-        el('b', { translate: 'no', text: item.model }),
+        el('div', { class: 'pv-speed-model' }, [el('b', { translate: 'no', text: item.model, title: item.model }), el('small', { translate: item.via ? 'no' : null, text: item.via || '官方登录（透明转发）', title: item.via || null })]),
         el('strong', { translate: 'no', text: `${item.tokensPerSec} Token/秒` }),
         el('span', { translate: 'no', text: item.firstTokenMs == null ? '—' : seconds(item.firstTokenMs) }),
         el('span', { class: 'muted', translate: 'no', text: `${Math.round(item.slowest)} – ${Math.round(item.fastest)}` }),
         el('span', { class: 'muted', translate: 'no', text: String(item.count) }),
       ]), { '--i': Math.min(i, 16) })),
-    ]) : el('div', { class: 'pv-empty' }, [el('p', { text: passSpeed === null ? '正在读取…' : '还没有量到速度。打开上面的开关，重新打开工具用一会儿，这里就会有数字。' })]);
+    ]) : el('div', { class: 'pv-empty' }, [el('p', { text: passSpeed === null ? '正在读取…' : '还没有量到速度。打开上面的开关，重新打开工具用一会儿，这里就会有数字；走本地路由（第三方供应商、号池）的请求也会量到。' })]);
     return [
       head('透明转发', '想知道模型有多快？让官方登录的请求在本机过一道：原样转发、计时、读回复里的 Token 数。默认关闭，按工具分别打开。'),
       what,
-      el('div', { class: 'pv-list-head' }, [el('h3', { text: '各工具' }), el('small', { text: '只对工具自己的官方登录有效；用第三方供应商或号池时不能开。' })]),
+      el('div', { class: 'pv-list-head' }, [el('h3', { text: '各工具' }), el('small', { text: '只对工具自己的官方登录有效。用第三方供应商或号池时不用开：那些请求本来就经过本地路由，速度照样会量。' })]),
       el('div', { class: 'pv-route-list' }, rows),
-      el('div', { class: 'pv-list-head' }, [el('h3', { text: '模型速度 · 最近 7 天' }), el('small', { text: '速度 = 输出 Token ÷ 出字用的时间（含思考）。每一次请求的数字在「转发记录」里。' })]),
+      el('div', { class: 'pv-list-head' }, [el('h3', { text: '模型速度 · 最近 7 天' }), el('small', { text: '透明转发和本地路由量到的都在这里，同一个型号经不同的供应商分开算。速度 = 输出 Token ÷ 出字用的时间（含思考）。每一次请求的数字在「转发记录」里。' })]),
       table,
     ];
   }
@@ -542,7 +542,7 @@
       el('b', { translate: 'no', text: item.provider }),
       el('span', { class: 'pv-log-model', translate: 'no', title: item.tier ? `服务档位：${item.tier}` : null, text: (item.model || '—') + (item.tier === 'priority' || item.tier === 'fast' ? ' ⚡' : '') }),
       el('span', { class: 'pv-log-status', translate: 'no', text: `HTTP ${item.status}` }),
-      el('span', { class: 'pv-log-ms', translate: 'no', title: item.pass ? '首字延迟 · 总耗时' : null, text: item.pass && (item.firstTokenMs ?? item.firstByteMs) != null ? `${seconds(item.firstTokenMs ?? item.firstByteMs)} · ${seconds(item.ms)}` : `${item.ms} ms` }),
+      el('span', { class: 'pv-log-ms', translate: 'no', title: (item.firstTokenMs ?? item.firstByteMs) != null ? '首字延迟 · 总耗时' : null, text: (item.firstTokenMs ?? item.firstByteMs) != null ? `${seconds(item.firstTokenMs ?? item.firstByteMs)} · ${seconds(item.ms)}` : `${item.ms} ms` }),
       el('span', { class: 'pv-log-tokens', translate: 'no', title: '输入 / 输出 Token（从回复里读到的）', text: item.input != null || item.output != null ? `${item.input ?? '—'} / ${item.output ?? '—'}` : '' }),
       item.tokensPerSec ? el('small', { class: 'pv-log-speed', translate: 'no', text: `${item.tokensPerSec} Token/秒` }) : null,
       item.error ? el('small', { class: 'pv-log-error', text: item.error, translate: 'no' }) : null,

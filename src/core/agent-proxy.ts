@@ -47,11 +47,14 @@ export type ProxyLog = {
   cacheRead?: number;
   /** 透明转发（见 forwardPass）：这一条是原样转给官方的，没有选供应商、没有换凭据。 */
   pass?: boolean;
-  /** 透明转发才有：从发出请求到收到回复第一个字节用了多久。 */
+  /*
+   * 速度（0.3.35 透明转发先有，0.3.36 起本地路由——第三方供应商、号池——也量：这些请求本来就经过 TokenPulse）。
+   * firstByteMs：从把请求发给上游到收到回复第一个字节；firstTokenMs：到回复里第一段内容（文字、思考或工具调用的增量）出现；
+   * tokensPerSec：输出 Token ÷ 出字用的时间，每秒多少 Token，输出太少或读不到用量时没有。
+   * 本地路由里一个请求换了几个成员时，每次尝试各算各的（从这次尝试发出去算起）。
+   */
   firstByteMs?: number;
-  /** 透明转发才有：从发出请求到回复里第一段内容（文字、思考或工具调用的增量）出现用了多久。 */
   firstTokenMs?: number;
-  /** 透明转发才有：输出 Token ÷ 出字用的时间（结束 − 第一个字节），每秒多少 Token。输出太少或读不到用量时没有。 */
   tokensPerSec?: number;
   responseBytes?: number;
   /*
@@ -207,7 +210,7 @@ export function startAgentProxy(options: Options) {
         if (outcome.kind === "done") {
           options.succeed(target.id);
           stats.ok += 1;
-          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel }), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
+          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel }), ...(outcome.timing ?? {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
           return;
         }
         options.fail(target.id);
@@ -263,7 +266,8 @@ function sendError(res: http.ServerResponse, client: Upstream, status: number, m
   res.end(JSON.stringify(clientError(client, message)));
 }
 
-type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string } | { kind: "fail"; status: number; error: string };
+type Timing = { firstByteMs?: number; firstTokenMs?: number; tokensPerSec?: number };
+type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string; timing?: Timing } | { kind: "fail"; status: number; error: string };
 
 async function forward(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, client: Upstream, target: ProxyTarget, body: Buffer): Promise<Outcome> {
   const same = client === target.upstream;
@@ -302,6 +306,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
   const headers = forwardHeaders(req, target, payload.length);
   // 上游走代理（环境变量 / 系统代理，见 upstream-proxy.ts）。以前一律直连，需要代理的机器上每个成员都连接超时、记成 502
   const proxy = await proxyFor(upstream);
+  const watch = stopwatch();
   return new Promise((resolve) => {
     const upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers, timeout: 120_000 }, (upstreamRes) => {
       const status = upstreamRes.statusCode || 502;
@@ -319,7 +324,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       }
       const contentType = String(upstreamRes.headers["content-type"] || "");
       if (!same && (stream || contentType.includes("text/event-stream") || contentType.includes("application/json"))) {
-        void pipeConverted(upstreamRes, res, client, target, stream || contentType.includes("event-stream")).then(resolve);
+        void pipeConverted(upstreamRes, res, client, target, stream || contentType.includes("event-stream"), watch).then(resolve);
         return;
       }
       res.writeHead(status, { "content-type": contentType || "application/json" });
@@ -327,6 +332,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       const grab = new Grab();
       upstreamRes.on("data", (chunk) => {
         const text = chunk.toString("utf8");
+        watch.see(text);
         keepEdges(seen, text);
         grab.feed(text);
         res.write(chunk);
@@ -334,7 +340,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       upstreamRes.on("end", () => {
         res.end();
         const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
-        resolve({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}) });
+        resolve({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}), timing: watch.result(usage.output, status) });
       });
     });
     const clientClosed = () => {
@@ -367,7 +373,7 @@ const PASS_PATH = /^\/pass\/(claude|codex|grok)(\/.*)?$/;
 const PASS_NAME = "官方登录（透明转发）";
 const SPEED_MIN_OUTPUT = 20;
 /** 回复里第一段内容：Claude 的 content_block_delta，OpenAI Responses 的 response.….delta。 */
-const FIRST_TOKEN = /content_block_delta|"response\.[a-z_.]+\.delta"/;
+const FIRST_TOKEN = /content_block_delta|"response\.[a-z_.]+\.delta"|"delta"\s*:\s*\{/;
 /*
  * 模型从什么时候开始出字：
  * - Claude：回复的第一个字节（message_start）就是，官方处理完输入才会发它；
@@ -376,6 +382,23 @@ const FIRST_TOKEN = /content_block_delta|"response\.[a-z_.]+\.delta"/;
  * 所以回复里出现过 output_item.added 就从它算起，没有就从第一个字节算起。
  */
 const GEN_START = /"response\.output_item\.added"/;
+/** 一次转发的计时：从现在（请求马上要发给上游）算起，每收到一段回复看一眼。本地路由用；透明转发的两条路各自内联了同样的逻辑。 */
+function stopwatch() {
+  const started = Date.now();
+  let firstAt = 0, genAt = 0, firstTokenAt = 0;
+  return {
+    see(text: string) {
+      const now = Date.now();
+      if (!firstAt) firstAt = now;
+      if (!genAt && GEN_START.test(text)) genAt = now;
+      if (!firstTokenAt && FIRST_TOKEN.test(text)) firstTokenAt = now;
+    },
+    result(output: number | undefined, status: number): Timing {
+      const end = Date.now();
+      return { ...(firstAt ? { firstByteMs: firstAt - started } : {}), ...(firstTokenAt ? { firstTokenMs: firstTokenAt - started } : {}), ...(firstAt && status < 400 ? speedOf(output, end - (genAt || firstAt)) : {}) };
+    },
+  };
+}
 /** 速度 = 输出 Token ÷ 出字用的时间。输出太少或时间太短时算出来的数没有意义，不算。 */
 function speedOf(output: number | undefined, writingMs: number) {
   return output != null && output >= SPEED_MIN_OUTPUT && writingMs >= 200 ? { tokensPerSec: Math.round(output / (writingMs / 1000) * 10) / 10 } : {};
@@ -684,13 +707,14 @@ export function codexBackendBody(payload: Buffer) {
   }
 }
 
-function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse, client: Upstream, target: ProxyTarget, stream: boolean) {
+function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse, client: Upstream, target: ProxyTarget, stream: boolean, watch: ReturnType<typeof stopwatch>) {
   return new Promise<Outcome>((resolve) => {
     const chunks: Buffer[] = [];
     const bridge = stream ? new StreamBridge(target.upstream, client, target.model || "model") : null;
     if (stream) res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" });
     upstream.on("data", (chunk) => {
       const text = chunk.toString("utf8");
+      watch.see(text);
       if (bridge) res.write(bridge.push(text));
       else chunks.push(Buffer.from(chunk));
     });
@@ -699,7 +723,7 @@ function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse,
         res.write(bridge.end());
         res.end();
         const usage = bridge.usage();
-        resolve({ kind: "done", status: upstream.statusCode || 200, input: usage.input, output: usage.output });
+        resolve({ kind: "done", status: upstream.statusCode || 200, input: usage.input, output: usage.output, timing: watch.result(usage.output, upstream.statusCode || 200) });
         return;
       }
       try {

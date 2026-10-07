@@ -87,5 +87,32 @@ const send = (port, { method = "POST", url, headers = {}, body }) => new Promise
     assert.equal((await send(port, { url: "/pass/claude/v1/messages", headers, body })).status, 404);
     assert.equal(hits.length, before);
     console.log("PASS pass-through: upstream errors returned as they are without retrying, plain replies read too, off means 404");
+
+    // 0.3.36：本地路由（第三方供应商、号池）的请求本来就经过这里，同样量首字延迟和速度
+    const routed = [];
+    const relay = await listen(async (req, res) => {
+      req.resume();
+      await delay(250);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('data: {"type":"message_start","message":{"model":"claude-relay","id":"msg_01RELAYrelayRELAYrelayRE","usage":{"input_tokens":70,"output_tokens":1}}}\n\n');
+      await delay(120);
+      res.write('data: {"type":"content_block_delta","delta":{"text":"hi"}}\n\n');
+      await delay(300);
+      res.end('data: {"type":"message_delta","usage":{"output_tokens":120}}\n\n');
+    });
+    const route = startAgentProxy({ host: "127.0.0.1", port: 0, log: (entry) => routed.push(entry), fail: () => {}, succeed: () => {}, open: () => false,
+      targets: () => [{ id: "relay-1", name: "Relay", upstream: "anthropic", baseUrl: `http://127.0.0.1:${relay.address().port}`, apiKey: "sk-relay", model: "" }] });
+    const routePort = await route.listen();
+    try {
+      const got = await send(routePort, { url: "/claude/v1/messages", headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ model: "claude-qa", stream: true, messages: [] })) });
+      assert.equal(got.status, 200);
+      await delay(40);
+      const entry = routed[0];
+      assert.deepEqual([entry.pass ?? null, entry.provider, entry.status, entry.output, entry.returnedModel], [null, "Relay", 200, 120, "claude-relay"]);
+      assert.ok(entry.firstByteMs >= 230 && entry.firstTokenMs >= entry.firstByteMs + 100, `本地路由也有首字延迟：${entry.firstByteMs} / ${entry.firstTokenMs}`);
+      const speed = 120 / ((entry.ms - entry.firstByteMs) / 1000);
+      assert.ok(Math.abs(entry.tokensPerSec - speed) / speed < 0.3, `本地路由也有速度：${entry.tokensPerSec} / ${speed.toFixed(1)}`);
+    } finally { await route.close(); relay.close(); relay.closeAllConnections?.(); }
+    console.log("PASS local routing measures first-content delay and tokens per second too");
   } finally { await proxy.close(); upstream.close(); upstream.closeAllConnections?.(); }
 })().catch((error) => { console.error(error); process.exit(1); });

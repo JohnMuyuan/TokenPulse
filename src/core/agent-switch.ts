@@ -653,7 +653,7 @@ function passRaw(app: PassApp) {
 function passIsOurs(app: PassApp) { return normalizeUrl(passRaw(app)) === normalizeUrl(passBase(app, runtimePort || load().proxy.port)); }
 /** 现在为什么不能开（能开返回空）：透明转发只对官方登录有意义。 */
 function passBlocked(store: Store, app: PassApp) {
-  if (store.proxy.apps[app]) return `${AGENT_LABEL[app]} 现在走的是本地路由（第三方供应商或号池）。透明转发只对官方登录有效，请先切回官方登录。`;
+  if (store.proxy.apps[app]) return `${AGENT_LABEL[app]} 现在走的是本地路由（第三方供应商或号池），请求已经经过 TokenPulse，速度照样会量，不用再开透明转发。`;
   if (app === "claude") {
     const env = asObj(readObject(claudeFile()).env);
     const set = (key: string) => str(env[key]).trim();

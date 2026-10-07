@@ -82,7 +82,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     fs.writeFileSync(speedFile, [[80, 1200], [100, 1500], [120, 2400]].map(([speed, first], i) => JSON.stringify({ at: Date.now() - 60000 * (i + 1), app: 'claude', providerId: 'pass-claude', provider: '官方登录（透明转发）', model: 'claude-qa-5', requestModel: 'claude-qa-5', status: 200, ms: 9000, pass: true, firstByteMs: 900, firstTokenMs: first, tokensPerSec: speed, input: 100, output: 700 })).join('\n') + '\n');
     await nav('overview'); await nav('pass');
     await until(`document.querySelectorAll('${P} .pv-speed-row:not(.head)').length === 1`);
-    assert.deepEqual(await evaluate(`[...document.querySelector('${P} .pv-speed-row:not(.head)').children].slice(1).map(c => c.textContent)`), ['claude-qa-5', '100 Token/秒', '1.5 秒', '80 – 120', '3']);
+    assert.deepEqual(await evaluate(`[...document.querySelector('${P} .pv-speed-row:not(.head)').children].slice(1).map(c => c.textContent)`), ['claude-qa-5官方登录（透明转发）', '100 Token/秒', '1.5 秒', '80 – 120', '3']);
     // 真的转发一次（官方接口换成本机假上游）：转发记录里这一行带首字延迟和速度
     const fakeOfficial = http.createServer((req, res) => { req.resume(); req.on('end', () => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });

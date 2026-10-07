@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.35（2026-10-07，已发布）
+# 当前接手入口 · 0.3.36（2026-10-07，已发布）
 
 ## 新对话先看这里
 
@@ -6,11 +6,17 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.35**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.35）。`package.json` 是 0.3.35。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.35：…`（标签 `v0.3.35`）。接手时用 `git status`、`git log -3` 核对。
+- 最新版本 **0.3.36**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.36）。`package.json` 是 0.3.36。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.36：…`（标签 `v0.3.36`）。接手时用 `git status`、`git log -3` 核对。
+- **0.3.36 的内容（2026-10-07，用户说两样都「算作 0.3.36」并发布）**：
+  - **本地路由也量速度**：用户指出号池本来就是 TokenPulse 自己路由的，应该也能测速。`agent-proxy.ts` 加了 `stopwatch()`，`forward()`（同格式）和 `pipeConverted()`（格式转换）每收到一段上游回复看一眼，成功的转发在 `Outcome.timing` 里带回 `firstByteMs` / `firstTokenMs` / `tokensPerSec`，写进转发记录。计时从这次尝试把请求发给上游算起（号池换成员时每次尝试各算各的）。`FIRST_TOKEN` 多认了 Chat 格式的 `"delta":{`。汇总：`pass-speed.ts` 的 `accountSpeed()` 除了透明转发的（按登录时间线归属），还收号池交给官方账号的（记录里有 `account`，直接用），所以额度详情的「模型速度」对号池成员、对 Grok 账号也有了（`speedPanel()` 不再限定 Claude / ChatGPT；Grok 没数据时的提示单独写）；经本地路由转给第三方供应商的不算在账号下面。`route-ledger.ts` 的 `passSpeed()` 不再只收 `pass`，按「工具 + 型号 + 经谁转的」分组（`via`：透明转发是空的，本地路由是供应商 / 号池成员的名字），供应商页的表里型号下面一行小字写是谁。转发记录里所有带首字延迟的行都显示「首字延迟 · 总耗时」。文案：透明转发页写明用第三方供应商或号池时不用开、速度照样量；`passBlocked()` 的本地路由那句同样改了。
+  - **用户问本地路由和透明转发会不会冲突**：不会。同一个工具同一时间只走一条：开本地路由（`enableProxy`）或切到第三方（`applyDirect`）时自动关掉透明转发，本地路由开着时透明转发开不了；两者共用同一个本机监听、路径不同（`/<工具>/…` 和 `/pass/<工具>/…`）。`test-pass-switch.cjs` 有这几种情况。
+  - **终端占着文件夹的修复**（下一条）并进了这一版。
+  - 测试：`test-pass-through.cjs` 加了本地路由测速，`test-pass-speed.cjs` 加了号池归属和 `passSpeed()` 的 `via`。`npm test` 退出 0；`npm run test:ui` **第一次在 test-ui.cjs 里超时**（「exhausted quota」之后，`FAIL UI timed out`），单独重跑 test-ui.cjs 通过、整套重跑也通过（39 个 PASS），当作偶发，原因没查。`npm run dist` 退出 0（`dist` 已经不占用了）。没有真机验证号池的测速（用户的 Grok 号池更新后用一会儿就能在转发记录里看到）。
+- **0.3.35 之后查到的：`dist\win-unpacked` 占用的原因，和根源的修复（已并进 0.3.36）。** 占用者是一个 PowerShell 终端（当时的 PID 11948，05:34 启动），它是用户从**当时那个测试版**（从 `dist\win-unpacked` 运行的）的「会话管理 → 继续会话」打开的，里面跑的正是和我对话的这个 Claude Code 会话，所以不能关（关了对话就断了）。根源是 `src/main/session-reply.ts` 的 `openTerminal()` 启动终端时没有指定工作目录，终端继承了 TokenPulse 自己的工作目录；脚本里的 `Set-Location` 只改 PowerShell 的位置，不改进程的工作目录，于是那个目录在终端关掉之前删不掉、改不了名。对已安装版来说就是安装目录被占着（文件能替换，自动更新不受影响，但目录本身删不掉）。**修法（0.3.36）**：`spawn` 加 `cwd: terminalHome(cwd)`——项目目录还在就用它，否则用主目录。`npm run compile` 通过，`node scripts/test-sessions.cjs` 退出 0；没有加专门的测试，也没有真机开终端验证。用户重开对话（关掉了那个终端）之后复查：没有进程的工作目录在 `dist` 里了，`dist\win-unpacked` 和 `dist\win-unpacked.tmp` 已删掉，占用解除。查占用用的两个只读脚本在 scratchpad：`wholocks.ps1`（Restart Manager 查文件）、`whocwd.ps1`（读各进程的工作目录）。
 - **没有进行中的任务。** 下一个版本号由用户指定。待用户以后决定的：Grok 的透明转发（用户说先不做）、分享图（看了样张不满意，以后再说）。
 - **0.3.35 的发布（2026-10-07）**：用户试了几轮测试版后说「算作 0.3.35，编译并发布」。`npm test`、`npm run test:ui`（39 个 PASS）退出 0。`renderer/intro.js` 的 NOTES 加了 0.3.35 四条，README 的「供应商切换与本地路由」加了「透明转发」一条、型号核验那段加了一句，发布说明 `dist/release-0.3.35.md`。
-  - **打包时的占用**：`npm run dist` 失败，`EBUSY: resource busy or locked, rmdir 'D:\CodePorject\Tools\TokenPulse\dist\win-unpacked'`（和前面测试版遇到的是同一个，占用者没找到，没有强行解锁）。改用 `npx electron-builder --publish never -c.directories.output=dist-test` 打出安装包，退出 0，再把 `TokenPulse-0.3.35-Setup.exe` / `.blockmap` / `Portable.exe` / `latest.yml` 挪进 `dist`；`dist` 里 0.3.34 的安装包按用户的习惯删掉了。**`dist\win-unpacked`（修 Token 读取之前的旧测试版）和 `dist\win-unpacked.tmp` 还留着、占用没解除**，下次打包如果还是 EBUSY 就继续用 `dist-test`，或者请用户关掉开着那个文件夹的窗口后删掉这两个目录。
+  - **打包时的占用**：`npm run dist` 失败，`EBUSY: resource busy or locked, rmdir 'D:\CodePorject\Tools\TokenPulse\dist\win-unpacked'`（和前面测试版遇到的是同一个，占用者没找到，没有强行解锁）。改用 `npx electron-builder --publish never -c.directories.output=dist-test` 打出安装包，退出 0，再把 `TokenPulse-0.3.35-Setup.exe` / `.blockmap` / `Portable.exe` / `latest.yml` 挪进 `dist`；`dist` 里 0.3.34 的安装包按用户的习惯删掉了。当时 `dist\win-unpacked` 和 `dist\win-unpacked.tmp` 删不掉，后来查到占用者并已删除（见上一条），`npm run dist` 可以照常用了。
   - **我犯的一个错**：核对包里的版本时用 `asar extract-file … package.json`，它把文件解到当前目录，覆盖了项目的 `package.json`（那时安装包已经打完，没有影响产物）。已经 `git checkout` 恢复并重新改回版本号和四个测试脚本，`npm test` 重跑退出 0。**以后用 asar 解文件要先切到临时目录。**
 - **0.3.35 的内容：「透明转发」和连带的几样（下面是做的过程中的检查点，保留作记录）。**
   - **用户要什么**：想更准确地了解自己用的模型（速度：每秒输出多少 Token、首字延迟）。方案是让官方 CLI 的请求经 TokenPulse 本机转一道：**原样转发、计时、读回复里的 Token 数；不保存凭据，不改请求头和内容，只监听本机**（用户原话认可的范围，「我也不是想修改什么来获取便利，只是想更加了解我使用的模型的情况」）。我的建议（用户同意）：做成按工具单独打开的开关，默认关，退出 / 关掉时还原成直连。和号池（保存凭据、换登录、带官方客户端标识）是两回事。

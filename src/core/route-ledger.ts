@@ -129,13 +129,13 @@ export function readRouteLog(options: { limit?: number; before?: number } = {}):
 }
 
 /*
- * 透明转发量到的模型速度（0.3.35）：从保存的转发记录里取最近 days 天、带速度的那些（pass = true、成功、量到了每秒 Token 数），
- * 按「工具 + 型号」汇总。用中位数：个别特别慢或特别快的请求（排队、只回了一两句）不会把数字带偏。
+ * 量到的模型速度（0.3.35 透明转发，0.3.36 起本地路由也量）：从保存的转发记录里取最近 days 天、成功并且量到了每秒 Token 数的，
+ * 按「工具 + 型号 + 经谁转的」汇总：透明转发是官方登录；本地路由的写供应商 / 号池成员的名字——同一个型号在不同的中转站速度不一样，不能混着算。用中位数：个别特别慢或特别快的请求（排队、只回了一两句）不会把数字带偏。
  */
-export type PassSpeedRow = { app: string; model: string; count: number; tokensPerSec: number; fastest: number; slowest: number; firstTokenMs: number | null; output: number; lastAt: number };
+export type PassSpeedRow = { app: string; model: string; /** 经谁转的：透明转发是空的，本地路由是供应商 / 号池成员的名字。 */ via: string; count: number; tokensPerSec: number; fastest: number; slowest: number; firstTokenMs: number | null; output: number; lastAt: number };
 export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
   const since = now - Math.max(1, Math.min(90, days)) * DAY_MS;
-  const groups = new Map<string, { app: string; model: string; speeds: number[]; firsts: number[]; output: number; lastAt: number }>();
+  const groups = new Map<string, { app: string; model: string; via: string; speeds: number[]; firsts: number[]; output: number; lastAt: number }>();
   let files: string[];
   try { files = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)).sort().reverse(); } catch { return []; }
   const oldest = new Date(since), oldestName = `${oldest.getFullYear()}-${String(oldest.getMonth() + 1).padStart(2, "0")}.jsonl`;
@@ -148,22 +148,23 @@ export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
       let row: Record<string, unknown>;
       try { row = JSON.parse(line); } catch { continue; }
       const at = Number(row.at), speed = Number(row.tokensPerSec);
-      if (row.pass !== true || !(at >= since) || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
+      if (!(at >= since) || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
+      const via = row.pass === true ? "" : String(row.provider || "").slice(0, 80);
       const app = String(row.app || ""), plain = String(row.requestModel || row.model || "");
       if (!plain) continue;
       // 快速模式（Codex 的 priority / fast、Claude 的 fast）单独算，不和普通模式混在一起
       const model = plain + (row.tier === "priority" || row.tier === "fast" ? " · 快速" : "");
-      const group = groups.get(app + "\n" + model) ?? { app, model, speeds: [], firsts: [], output: 0, lastAt: 0 };
+      const group = groups.get(app + "\n" + model + "\n" + via) ?? { app, model, via, speeds: [], firsts: [], output: 0, lastAt: 0 };
       group.speeds.push(speed);
       const first = Number(row.firstTokenMs ?? row.firstByteMs);
       if (first > 0) group.firsts.push(first);
       group.output += Number(row.output) || 0;
       group.lastAt = Math.max(group.lastAt, at);
-      groups.set(app + "\n" + model, group);
+      groups.set(app + "\n" + model + "\n" + via, group);
     }
   }
   const median = (values: number[]) => { const sorted = values.slice().sort((a, b) => a - b), mid = sorted.length >> 1; return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2; };
-  return [...groups.values()].map((group) => ({ app: group.app, model: group.model, count: group.speeds.length, tokensPerSec: Math.round(median(group.speeds) * 10) / 10,
+  return [...groups.values()].map((group) => ({ app: group.app, model: group.model, via: group.via, count: group.speeds.length, tokensPerSec: Math.round(median(group.speeds) * 10) / 10,
     fastest: Math.max(...group.speeds), slowest: Math.min(...group.speeds), firstTokenMs: group.firsts.length ? Math.round(median(group.firsts)) : null, output: group.output, lastAt: group.lastAt }))
     .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
 }

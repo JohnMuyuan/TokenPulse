@@ -1381,7 +1381,8 @@ function renderQuota() {
 /* ---------------- 模型速度（额度详情，0.3.35） ---------------- */
 
 /*
- * 这个账号各个模型的输出速度走势，数据是透明转发量到的（供应商页 → 透明转发），转发记录永久保存，所以能一直往回看。
+ * 这个账号各个模型的输出速度走势。数据是请求经过 TokenPulse 时量到的：官方登录开着透明转发（供应商页 → 透明转发），
+ * 或者这个账号在号池里（号池本来就走本地路由，0.3.36 起也量）。转发记录永久保存，所以能一直往回看。
  * 一个账号会用好几个模型，画法是「一个模型一行」，所有行共用同一条时间轴。两件事分开画：
  * - 模型之间比快慢：右边的数字（整段时间的中位数）和一条**按同一刻度**画的对比条；
  * - 一个模型自己是变快还是变慢：中间的走势线，**用这一行自己的刻度**（左边标着上下限）。
@@ -1404,23 +1405,22 @@ function speedBucketLabel(at, bucketMs) {
   return bucketMs > 86400000 ? `${text} 起的一周` : text;
 }
 function speedPanel(account, kind) {
-  if (kind !== 'claude' && kind !== 'chatgpt') return null; // 透明转发目前只接了 Claude Code 和 Codex
   state.speedRange ??= 30;
   const panel = el('article', { class: 'panel speed-panel' });
   const body = el('div', { class: 'speed-body' });
   const seg = el('div', { class: 'seg compact', 'aria-label': '时间范围' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),
     ...SPEED_RANGES.map(([days, label]) => el('button', { type: 'button', 'data-speed-range': String(days), class: state.speedRange === days ? 'on' : null, text: label }))]);
   panel.append(el('div', { class: 'panel-heading capacity-heading' }, [
-    el('div', {}, [el('h2', {}, ['模型速度 ', el('span', { class: 'section-tag', text: account.accountLabel || META[kind].name + ' 账号' })]), el('p', { text: '每个模型每秒输出多少 Token，由「透明转发」量出来，按 CLI 当时登录的账号归属。记录永久保存。' })]),
+    el('div', {}, [el('h2', {}, ['模型速度 ', el('span', { class: 'section-tag', text: account.accountLabel || META[kind].name + ' 账号' })]), el('p', { text: '每个模型每秒输出多少 Token。请求经过 TokenPulse 时量出来：开着「透明转发」，或者这个账号在号池里。记录永久保存。' })]),
     seg,
   ]), body);
   const load = () => {
     const key = [kind, account.accountId || '', state.speedRange].join('|');
-    if (speedCache.has(key)) drawSpeed(body, speedCache.get(key)); else body.replaceChildren(empty('正在读取…'));
+    if (speedCache.has(key)) drawSpeed(body, speedCache.get(key), kind); else body.replaceChildren(empty('正在读取…'));
     Promise.resolve(api.passSpeedAccount?.(kind, account.accountId || '', state.speedRange)).then(data => {
       speedCache.set(key, data || null);
       if (speedCache.size > 24) speedCache.delete(speedCache.keys().next().value);
-      if (panel.isConnected && key === [kind, account.accountId || '', state.speedRange].join('|')) keepScroll(() => drawSpeed(body, data));
+      if (panel.isConnected && key === [kind, account.accountId || '', state.speedRange].join('|')) keepScroll(() => drawSpeed(body, data, kind));
     }).catch(() => { if (panel.isConnected) body.replaceChildren(empty('速度记录读取失败，请重试。')); });
   };
   seg.addEventListener('click', event => {
@@ -1434,11 +1434,13 @@ function speedPanel(account, kind) {
   load();
   return panel;
 }
-function drawSpeed(body, data) {
+function drawSpeed(body, data, kind) {
   if (!data || !data.models.length) {
-    const open = el('button', { type: 'button', class: 'btn', text: '去打开透明转发' });
-    open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open('pass'); });
-    body.replaceChildren(el('div', { class: 'empty speed-empty' }, [el('p', { text: '这段时间还没有量到这个账号的速度。在供应商页打开「透明转发」，重新打开工具用一会儿，这里就会有走势。' }), open]));
+    // Grok 没有透明转发：只有放进号池（走本地路由）才量得到
+    const grok = kind === 'grok';
+    const open = el('button', { type: 'button', class: 'btn', text: grok ? '去供应商页' : '去打开透明转发' });
+    open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open(grok ? 'grok' : 'pass'); });
+    body.replaceChildren(el('div', { class: 'empty speed-empty' }, [el('p', { text: grok ? '这段时间还没有量到这个账号的速度。Grok 暂时没有透明转发；把这个账号放进号池使用时，请求经过本地路由，这里就会有走势。' : '这段时间还没有量到这个账号的速度。在供应商页打开「透明转发」，重新打开工具用一会儿，这里就会有走势；这个账号在号池里使用时也会量到。' }), open]));
     return;
   }
   const max = speedCeil(data.max), bucketMs = data.bucketMs;

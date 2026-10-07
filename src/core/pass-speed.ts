@@ -1,8 +1,10 @@
 /*
  * 某个官方账号、各个模型的速度走势（0.3.35，额度详情里那张图用）。
  *
- * 数据来自永久保存的转发记录（route-log/，见 route-ledger.ts）：透明转发的每次请求都记了型号和每秒 Token 数。
- * 记录里没有账号——转发时不读登录凭据——所以和请求记录一样，按「CLI 当时登录的是哪个账号」归属（login-timeline.ts）。
+ * 数据来自永久保存的转发记录（route-log/，见 route-ledger.ts），两种请求都记了型号和每秒 Token 数：
+ * - 透明转发的：记录里没有账号（转发时不读登录凭据），和请求记录一样按「CLI 当时登录的是哪个账号」归属（login-timeline.ts）；
+ * - 号池交给官方账号的（0.3.36）：记录里就写着交给了哪个账号，直接用。
+ * 经本地路由转给第三方供应商的不是官方账号的用量，不算在这里（供应商页的汇总里有）。
  * 转发记录不清理，所以走势想看多久以前的都行。
  *
  * 按时间分桶（一小时 / 一天 / 一周，看选的范围有多长），每个桶取中位数和四分位——
@@ -63,11 +65,13 @@ export function accountSpeed(kind: OfficialAccountKind, account: string, days: n
       let row: Record<string, unknown>;
       try { row = JSON.parse(line); } catch { continue; }
       const at = Number(row.at), speed = Number(row.tokensPerSec);
-      if (row.pass !== true || !(at >= since) || at > now + 60_000 || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
+      if (!(at >= since) || at > now + 60_000 || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
       if (KIND_OF_APP[String(row.app)] !== kind) continue;
+      const pooled = typeof row.account === "string" && row.account.startsWith(kind + ":") ? row.account : "";
+      if (row.pass !== true && !pooled) continue;
       const model = String(row.requestModel || row.model || "");
       if (!model) continue;
-      if (account && resolveAccount(kind, at, {}, timeline, labels)?.id !== account) continue;
+      if (account && (pooled || resolveAccount(kind, at, {}, timeline, labels)?.id) !== account) continue;
       rows.push({ at, model, fast: isFastTier(row.tier), speed, first: Number(row.firstTokenMs ?? row.firstByteMs) || 0, output: Number(row.output) || 0 });
     }
   }
