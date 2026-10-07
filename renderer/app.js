@@ -1597,7 +1597,8 @@ const ACCOUNT_BASIS = { session: '会话记录', timeline: '登录时间线', in
 const ACCOUNT_BASIS_HINT = {
   session: '会话文件里直接记下了这个账号',
   timeline: '按请求时间，对上当时 CLI 登录的账号',
-  inferred: 'TokenPulse 开始记录登录之前的请求，按最早记下的账号推断'
+  inferred: 'TokenPulse 开始记录登录之前的请求，按最早记下的账号推断',
+  route: '经 TokenPulse 的号池发出，按本地路由的记录对上号池里的这个账号'
 };
 /** 项目和账号放一格：上面项目，下面是发出这次请求的账号。 */
 function projectAccountCell(row) {

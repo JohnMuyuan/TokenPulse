@@ -446,19 +446,51 @@
 
   /* ---------------- 转发记录 ---------------- */
 
+  /*
+   * 转发记录是永久保存的（数据目录的 route-log/）。这一页先列最近的，往下可以一直翻更早的：
+   * 最新的几十条来自主进程推过来的 view.logs（实时），更早的从文件里按页读（logOlder）。
+   */
+  const LOG_PAGE = 100;
+  let logOlder = [], logMore = null, logLoading = false;
+  const logKey = item => `${item.at}|${item.providerId}|${item.attempt ?? ''}|${item.status}`;
+  async function loadOlderLogs() {
+    if (logLoading || logMore === false) return;
+    logLoading = true;
+    const shown = [...(view.logs || []), ...logOlder];
+    try {
+      const page = await api.agentRouteLog({ limit: LOG_PAGE, before: shown.length ? Math.min(...shown.map(item => item.at)) + (logOlder.length ? 0 : 1) : undefined });
+      const have = new Set(shown.map(logKey));
+      logOlder = [...logOlder, ...(page?.rows || []).filter(item => !have.has(logKey(item)))];
+      logMore = !!page?.more;
+    } catch { logMore = false; }
+    finally { logLoading = false; if (section === 'logs' && !editor && !pending) render(false); }
+  }
   function logs() {
-    const list = view.logs || [];
+    // 第一次进这一页：把保存的记录接在后面（刚启动时 view.logs 是空的，也能看到以前的）
+    if (logMore === null && !logLoading) loadOlderLogs();
+    const recent = view.logs || [];
+    const oldest = recent.length ? Math.min(...recent.map(item => item.at)) : Infinity;
+    const list = [...recent, ...logOlder.filter(item => item.at <= oldest && !recent.some(r => logKey(r) === logKey(item)))];
     const locale = window.PulseI18n?.lang() === 'en' ? 'en-US' : 'zh-CN';
+    const today = new Date().toDateString();
     const table = list.length ? el('div', { class: 'pv-log' }, list.map((item, i) => paint(el('div', { class: 'pv-log-row' + (item.status >= 400 || item.error ? ' bad' : '') }, [
       appMark(item.app, 'pv-log-avatar'),
-      el('span', { class: 'pv-log-time', translate: 'no', text: new Date(item.at).toLocaleTimeString(locale, { hour12: false }) }),
+      el('span', { class: 'pv-log-time', translate: 'no', title: new Date(item.at).toLocaleString(locale, { hour12: false }), text: new Date(item.at).toDateString() === today ? new Date(item.at).toLocaleTimeString(locale, { hour12: false }) : new Date(item.at).toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) }),
       el('b', { translate: 'no', text: item.provider }),
       el('span', { class: 'pv-log-model', translate: 'no', text: item.model || '—' }),
       el('span', { class: 'pv-log-status', translate: 'no', text: `HTTP ${item.status}` }),
       el('span', { class: 'pv-log-ms', translate: 'no', text: `${item.ms} ms` }),
+      el('span', { class: 'pv-log-tokens', translate: 'no', title: '输入 / 输出 Token（从回复里读到的）', text: item.input != null || item.output != null ? `${item.input ?? '—'} / ${item.output ?? '—'}` : '' }),
       item.error ? el('small', { class: 'pv-log-error', text: item.error, translate: 'no' }) : null,
     ]), { '--i': Math.min(i, 16) }))) : el('div', { class: 'pv-empty' }, [el('p', { text: '还没有经过本地路由的请求。打开某一家的本地路由后，这里会列出最近的转发。' })]);
-    return [head('转发记录', '最近经过本地路由的请求（最多 30 条）。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), table];
+    const keep = el('section', { class: 'pv-card pv-log-keep' }, [
+      el('div', { class: 'pv-grow' }, [el('b', { text: '全部转发记录都保存在本机' }), el('small', { text: '每一次转发记一行：时间、交给了哪家 / 号池里的哪个账号、型号、状态、耗时、大小和 Token 数，按月一个文件，不会自动清理。不记请求和回复的内容，也不记密钥。' })]),
+      el('button', { type: 'button', class: 'btn', 'data-action': 'open-route-log' }, [icon('folder'), el('span', { text: '打开记录文件夹' })]),
+    ]);
+    keep.querySelector('button').addEventListener('click', () => api.agentOpenRouteLog?.());
+    const older = logMore || logLoading ? el('div', { class: 'pv-log-more' }, [el('button', { type: 'button', class: 'btn', 'data-action': 'older-logs', disabled: logLoading ? '' : null }, [el('span', { text: logLoading ? '正在读取…' : '再看更早的' })])]) : list.length ? el('p', { class: 'pv-log-end', text: '已经是最早的一条了。' }) : null;
+    older?.querySelector('button')?.addEventListener('click', loadOlderLogs);
+    return [head('转发记录', '经过本地路由的每一次转发，最新的在最上面，往下可以一直翻到最早的。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), keep, table, older].filter(Boolean);
   }
 
   /* ---------------- Prism 桥（0.3.19） ---------------- */

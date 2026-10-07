@@ -4,7 +4,7 @@ import { estimateCost, priceOf } from "./model-pricing";
 import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
 import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-switch";
-import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, type LoginTimeline, type RequestAccount } from "./login-timeline";
+import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline, type RequestAccount } from "./login-timeline";
 import { quotaAttribution } from "./quota-attribution";
 import { readQuotaHistory } from "./quota-history";
 import { windowSegments } from "./quota-monitor";
@@ -59,6 +59,8 @@ export type RequestRecord = {
   /** 会话里直接记下的账号（Claude Code 部分会话有）。 */
   accountRef?: string;
   accountEmail?: string;
+  /** 经 TokenPulse 号池发出去的：扫描时按路由账本对上的号池成员（官方账号 id）。记在流水里，账本过期清掉之后仍然知道。 */
+  routedAccount?: string;
   /** 压缩上下文那一次调用：CLI 没写 usage，按压缩前的上下文和摘要长度估的（见 usage-scan.ts）。 */
   compaction?: boolean;
   /** 查询时附上的：同一次请求在 CC Switch 代理里的记录（见 matchProxy）。不落盘。 */
@@ -339,9 +341,14 @@ function accountContext(): AccountContext {
 
 const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，按压缩前的上下文大小和摘要长度估算";
 
-function toRow(record: RequestRecord, official: boolean | undefined, accounts: AccountContext = accountContext()): RequestRow {
+function toRow(record: RequestRecord, fileOfficial: boolean | undefined, accounts: AccountContext = accountContext()): RequestRow {
+  // 经 TokenPulse 号池发出去的（0.3.34）：这一条实际用的是号池里的官方账号，按路由账本归到它名下、算官方用量
+  const routed: RequestAccount | null = record.kind === "cc-switch" ? null
+    : record.routedAccount ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route" }
+    : routedAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, accounts.labels);
+  const official = routed ? true : fileOfficial;
   // 走中转 / API Key 的不是官方账号发的；CC Switch 导入的走它代理的也一样
-  const account =
+  const account = routed ? routed :
     official === false || (record.kind === "cc-switch" && record.viaProxy)
       ? null
       : resolveAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail }, accounts.timeline, accounts.labels);

@@ -1,4 +1,4 @@
-# 当前接手入口 · 0.3.33（2026-10-07，已发布，工作区干净）
+# 当前接手入口 · 0.3.34（2026-10-07，已发布，工作区干净）
 
 ## 新对话先看这里
 
@@ -6,9 +6,22 @@
 
 ### 现在的状态
 
-- 最新版本 **0.3.33**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.33）。`package.json` 是 0.3.33。
-- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.33：…`（标签 `v0.3.33`）。接手时用 `git status`、`git log -3` 核对。
-- **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。0.3.33 有两项（下面两条），用户看过几轮测试版后说「升级一个版本号后就推送更新」；发布时 `npm test`、`npm run test:ui`（37 个 PASS）、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.33.md`。
+- 最新版本 **0.3.34**：已提交、打标签、发布到 GitHub（正式 Release，不是草稿也不是 prerelease，`releases/latest` = v0.3.34）。`package.json` 是 0.3.34。
+- 本地 `main` 和 `origin/main` 一致，工作区没有未提交的改动。最后一个代码提交是 `TokenPulse v0.3.34：…`（标签 `v0.3.34`）。接手时用 `git status`、`git log -3` 核对。
+- **没有进行中的任务，没有等用户决定的事。** 下一个版本号由用户指定。0.3.34（下面这一条）用户试过几轮测试版后说「应该没啥问题了，你发布吧」；发布时 `npm test`、`npm run test:ui`（37 个 PASS）、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.34.md`；发布后按用户的习惯删掉了 `dist` 里上一版（0.3.33）的安装包。
+- **0.3.34 的改动（2026-10-07，Claude）：经号池发出的请求没有记到账号名下。**
+  - 用户的问题：多个 Grok 账号组成号池，账号下面没有请求记录也没有 Token 用量。原因：用量是从各家 CLI 自己的日志里读的，「算不算官方账号的」对 Grok / Claude 是看工具配置里有没有填地址（`usage-scan.ts` 的 `configOfficial()`，按文件整体定），对 Codex 是看 `model_provider`；用号池时配置里填的是本地路由，于是全被当成第三方中转站，`account` 是空的。本地路由其实知道每个请求交给了哪个成员，但只留最近 80 条（`agent-switch-log.json`），只用来显示成员健康状态。连带的偏差：官方额度照常上涨而看不到本机请求，会被 `quota-offmachine` 判成「本机以外」。
+  - 用户本机的佐证（只读、只看计数）：路由日志里 28 条 Grok 请求均匀分给 6 个成员、全部 200；同一时段 CLI 日志里的 3 条 Grok 用量记录，和最近一条路由记录的时间差是 0.1 到 0.7 秒。一次 Grok 回合会对应多条路由请求，所以路由请求数比用量记录多得多是正常的。
+  - 做法：新文件 `src/core/route-ledger.ts`（路由账本）。`pushLog` 里，号池成功（状态 < 400）交给官方账号成员时 `appendRoute({ at, kind, account })`，追加写 `route-ledger.jsonl`（一行 `时间\t哪家\t账号 id`，不记内容和凭据，保留 45 天，每 500 次追加清一次）。`ProxyTarget.officialAccount`、`ProxyLog.account` 是为它加的。账本只是给统计按时间对账号用的索引，完整的转发记录是下面追加的那份 `route-log/`。`routeAccount(kind, at)` 取时间最近、相差 30 秒以内的一条。`login-timeline.ts` 多了 `routedAccount()` 和账号依据 `"route"`。两个使用点：`usage-scan.ts` 算按账号的小时账时，对得上账本的记录即使文件整体不是官方也记到那个账号名下；`request-log.ts` 的 `toRow` 对得上的行 `official = true`、`account` 是号池成员。**对得上账本的优先于会话里记的账号**（Claude 的会话里记的是 CLI 自己登录的那个账号，请求实际被路由换成了成员的登录）。统计在另一个线程里跑，所以账本走文件。
+  - **同一版追加（用户：转发记录也永久保存，每条写详细一点，方便以后看使用情况和查 bug）**：
+    - `route-ledger.ts` 的 `appendRouteLog()`：`pushLog` 里每一次转发（成功、失败、失败后换成员的每一次尝试）追加一行 JSON 到数据目录的 `route-log/YYYY-MM.jsonl`（按本地时间分月），**不清理**。字段是 `ProxyLog` 的全部：`at`、`app`、`providerId`、`provider`（号池成员的名字里可能有邮箱或别名，和主界面显示的一样）、`model`、`status`、`ms`、`input` / `output` / `cacheRead`（从回复里读到的 Token 数）、`error`（上游报错正文的前 300 个字符）、`account`，以及这次新加的 `method`、`path`、`attempt`、`pool`、`client` / `upstream`（接口格式）、`host`、`stream`、`requestModel`、`effort`、`requestBytes`。不记请求和回复的内容，不记密钥和登录凭据（测试里断言过）。
+    - `agent-proxy.ts`：`sniffUsage` 改成取最后一次出现的数字（流式回复的用量在最后），原样转发时只留回复的开头和结尾各 20000 个字符来找（`keepEdges`）；之前只看开头，流式的基本读不到（用户本机 28 条里只有 8 条有数）。转换格式的那条路径（`pipeConverted`）没有动。
+    - 请求流水里多了 `routedAccount`（`usage-scan.ts` 扫描时写进去，`request-log.ts` 的 `toRow` 优先用它）：路由账本只留 45 天，记在流水里之后账本被清掉也还知道这条是哪个成员的。
+    - 界面：「供应商 → 转发记录」顶上多一张说明卡 `.pv-log-keep` 和「打开记录文件夹」（IPC `agent:open-route-log`），列表每行多一列输入 / 输出 Token（`.pv-log-tokens`，窄窗口下隐藏）。**列表能一直往回翻**（用户指出「最多 30 条」的说法过时后加的）：最新的来自 `view.logs`（实时，30 条），更早的用 IPC `agent:route-log` → `readRouteLog({ limit, before })` 从文件里按页读（每页 100 条，`logOlder` / `logMore`），底部是「再看更早的」，翻到头显示「已经是最早的一条了」；刚启动、还没有新转发时也能看到以前的。不是今天的记录时间列带日期。没有做按账号 / 状态筛选。测试版里出过一个 bug：没有任何记录时 `logs()` 返回的数组里有个 `null`，页面上显示出「null」；已加 `.filter(Boolean)`，`test-provider-pool-ui.cjs` 里加了空状态的断言（页面上不能出现 null / undefined）。**这类「返回一组节点」的函数，末尾有可能为空的项就要 `.filter(Boolean)`。**
+    - 测试：`test-route-ledger.cjs` 加了两组（账本删掉后账号还在；转发记录按月追加）；`test-agent-switch.cjs` 加了一组（真实转发后记录里的细节字段、失败那次也记、没有内容和凭据）。`test-agent-switch-ui.cjs` 加了转发记录页的断言（预先放 130 条旧记录：先出 100 条、点「再看更早的」到 130 条、说明卡、Token 列、旧说法「最多 30 条」不能出现）。没有截图看过。
+  - 没有做的：回补历史（账本从这一版才开始记，之前的请求轮到了谁无从知道）；文件级的 `state.official` 没有改（仍是 false，只在逐条上覆盖）。几个请求同时在跑时可能对到相邻的那个成员。成员是 API Key 供应商的号池不记账本。
+  - 测试：新增 `scripts/test-route-ledger.cjs`（已进 `npm test`：账本读写和匹配；真实走一遍扫描 + 查询，经号池的那条归到成员名下并算官方、另一条不变、筛选和按账号的小时账跟着对）；`test-agent-switch.cjs` 号池那组加了「每次成功转发都写进账本、没有凭据」。`npm test` 退出 0，`npm run test:ui` 退出 0（37 个 PASS）；测试版 `npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0，asar 里的 `build/core/route-ledger.js` 与编译结果一致，没有留下进程。**没有用真实号池发请求验证**，界面上账号名下是否出现记录要用户看。
+- 上一版 **0.3.33** 有两项（下面两条），用户看过几轮测试版后说「升级一个版本号后就推送更新」；发布时 `npm test`、`npm run test:ui`（37 个 PASS）、`npm run dist` 都退出 0，发布说明 `dist/release-0.3.33.md`。
 - **0.3.33 之二（2026-10-07，Claude）：Prism 桥下线。**
   - 用户说 Prism 好像只剩 6 Luna，让求证，「如果是真的这个功能可以下线了」。**求证结果是真的**（用户账号、临时浏览器目录和临时桥，跑完已清理）：Prism 页面的 `/api/ff/initialize` 里 `models` 只有 `{"id":"gpt-6-luna","label":"6 Luna"}`，`free_model` 也变成了 `gpt-6-luna`；用关掉「自动换模型」的临时桥逐个发一句话，`gpt-6-luna` 正常，`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6.1-sol` 都是 400。两天前（10-05）还有 5.6 Sol、5.6 Terra。只查了这一个账号。
   - 做法是**对新用户隐藏、对装过的人保留并标明下线**，没有删代码：`renderer/agent-switch.js` 的 `prismShown()`（`prism.installed || prism.provider`）为假时导航里没有「Prism 桥」、停在这一页的会回到概览；为真时页面最上面多一块 `.pv-prism-warn[data-warn=retired]` 的下线说明，「适合谁用」那块不再显示（`fit` 变量还在，只是不放进页面）。装过的人仍然可以启动服务（只有 6 Luna）和用「全部删除」；删完 `installed` 和 `provider` 都没了，这一页和入口自动消失。`src/core/prism-bridge.ts` 的默认清单 `PRISM_MODELS` 改成只有 `gpt-6-luna`。README 的 Prism 桥一节换成了简短的下线说明。
@@ -66,6 +79,7 @@
 
 | 版本 | 提交 | 内容 |
 |---|---|---|
+| 0.3.34 | 见 `git log` | 修：经号池发出的请求没有记到账号名下（路由账本）；转发记录永久保存、记得更细、能在软件里往回翻 |
 | 0.3.33 | 见 `git log` | 右键托盘图标弹出额度小面板（直线进度条 + 供应商切换，旧的右键菜单不要了）；Prism 桥下线（只对装过的人保留） |
 | 0.3.32 | 见 `git log` | Grok 号池可以设上下文窗口（256K / 500K） |
 | 0.3.31 | 见 `git log` | 修：换成中转站 / 官方登录后 Codex 桌面端打不开用 Prism 桥聊过的对话（tokenpulse_route not found） |
@@ -97,6 +111,7 @@
 - 0.3.21：界面里删除 Codex 对话「确实删除了」；降内存后「卡倒是不会卡」。
 - 0.3.24：三轮测试版看过界面，发布后「测试没问题」。
 - 0.3.25：试用测试版「没啥问题」。
+- 0.3.34：用户试过测试版（发现并让我修了转发记录页的文案和空状态显示 null），说「应该没啥问题了」。真实号池下账号名下是否出现记录，用户没有单独回话。
 - 0.3.33：托盘小面板用户看了三轮测试版（圆环 → 直线 + 供应商 → 变矮、去掉菜单、加退出按钮），最后说「还不错」；Prism 桥下线的做法用户看过说明后同意发布。
 - 0.3.32：试用测试版「测试没问题」（Grok 号池的上下文窗口；超过 256K 的长对话有没有试到没有说）。
 - 0.3.26：用户的朋友确认修好了（桌面端能打开旧对话）。2026-10-05 用户转述。

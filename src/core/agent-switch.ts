@@ -10,6 +10,7 @@ import { configureConfigFiles, configRead, configWrite, configTransaction, recov
 import { listOriginals, readHistory } from "./agent-history";
 import { catalogVerdict, probeCodexCatalog } from "./codex-probe";
 import { parseToml, stringifyToml, headerName, tableName, upsertKey, readKey, readValue, replaceTable, setTableKey, quote, unquote, restoreToml, dropEmptyTable, type Block } from "./agent-toml";
+import { appendRoute, appendRouteLog } from "./route-ledger";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -966,7 +967,7 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
     return [{
       // AGENT_SWITCH_POOL_BASE 只给自动化测试用：把官方接口换成本机假上游
       id, name: `${pool.name} · ${account.alias || account.email || account.label}`, upstream: NATIVE_UPSTREAM[pool.app], baseUrl: process.env.AGENT_SWITCH_POOL_BASE ? `${process.env.AGENT_SWITCH_POOL_BASE}/${pool.app}` : spec.baseUrl, apiKey: credential.token,
-      model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}),
+      model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, officialAccount: account.id, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}),
     }];
   });
   if (!members.length || pool.pool.strategy === "fill-first") return members;
@@ -976,6 +977,10 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
 }
 
 function pushLog(entry: ProxyLog) {
+  // 号池成功交给了某个官方账号：记进路由账本，统计用量时归到这个账号名下（见 route-ledger.ts）
+  if (entry.account && !entry.error && entry.status < 400 && POOL_OFFICIAL[entry.app]) appendRoute({ at: entry.at, kind: POOL_OFFICIAL[entry.app]!.kind, account: entry.account });
+  // 每一次转发都永久记下来（按月分文件，见 route-ledger.ts）：以后能回头看当时是怎么转发的
+  appendRouteLog(entry);
   const stats = memberStats.get(entry.providerId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };
   stats.requests += 1; if (!entry.error) stats.ok += 1; stats.lastAt = entry.at; stats.lastStatus = entry.status;
   memberStats.set(entry.providerId, stats);

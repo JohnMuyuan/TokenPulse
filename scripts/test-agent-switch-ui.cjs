@@ -16,6 +16,9 @@ fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
 fs.mkdirSync(path.join(root, 'data'), { recursive: true });
 // Prism 桥已下线，只有装过的人（数据目录还在）才看得到那一页：这里放一个空的数据目录当作「装过」
 fs.mkdirSync(path.join(root, 'data', 'prism-bridge'), { recursive: true });
+// 以前保存下来的转发记录（上个月 130 条）：转发记录页要能翻到它们
+fs.mkdirSync(path.join(root, 'data', 'route-log'), { recursive: true });
+fs.writeFileSync(path.join(root, 'data', 'route-log', '2026-09.jsonl'), Array.from({ length: 130 }, (_, i) => JSON.stringify({ at: Date.UTC(2026, 8, 10) + i * 60000, app: 'grok', providerId: 'old-' + (i % 3), provider: 'Old pool · ' + (i % 3), model: 'grok-qa', status: i === 129 ? 502 : 200, ms: 100 + i, attempt: 1, input: 1000 + i, output: 10, ...(i === 129 ? { error: 'boom' } : {}) })).join('\n') + '\n');
 fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { keep: true }, env: { DISABLE_TELEMETRY: '1' } }));
 fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' }));
 app.setPath('userData', path.join(root, 'electron'));
@@ -45,6 +48,18 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 10 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
     assert.equal(await evaluate(`document.querySelector('${P}').innerText.includes('Gemini')`), false, '页面上不能再有 Gemini');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'overview');
+    // 转发记录（0.3.34）：永久保存，先列最近 100 条，往下可以翻到最早的；说明卡里能打开记录文件夹
+    await nav('logs');
+    await until(`document.querySelectorAll('${P} .pv-log-row').length === 100`);
+    assert.match(await evaluate(`document.querySelector('${P} .pv-head p, ${P} .pv-head small')?.textContent || document.querySelector('${P}').textContent`), /往下可以一直翻到最早的/);
+    assert.equal((await evaluate(`document.querySelector('${P}').textContent`)).includes('最多 30 条'), false, '旧说法不能留着');
+    assert.match(await evaluate(`document.querySelector('${P} .pv-log-keep').textContent`), /保存在本机.*不会自动清理.*不记请求和回复的内容.*打开记录文件夹/);
+    assert.deepEqual(await evaluate(`(() => { const r = document.querySelector('${P} .pv-log-row'); return [r.classList.contains('bad'), r.querySelector('b').textContent, r.querySelector('.pv-log-tokens').textContent, r.querySelector('.pv-log-error').textContent]; })()`), [true, 'Old pool · 0', '1129 / 10', 'boom'], '最新的在最上面，带 Token 数和报错');
+    assert.equal(await evaluate(`document.querySelector('${P} [data-action=older-logs]').textContent`), '再看更早的');
+    await evaluate(`document.querySelector('${P} [data-action=older-logs]').click()`);
+    await until(`document.querySelectorAll('${P} .pv-log-row').length === 130 && !document.querySelector('${P} [data-action=older-logs]')`);
+    assert.equal(await evaluate(`document.querySelector('${P} .pv-log-end').textContent`), '已经是最早的一条了。');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${P} .pv-log-row .pv-log-ms')].at(-1).textContent`), '100 ms', '最下面是最早的那条');
     // Prism 桥（0.3.19）：全新环境下四步都没做，只有「安装运行环境」和「添加到 Codex 供应商」能点；先写明风险
     await nav('prism');
     await until(`document.querySelectorAll('${P} .pv-prism-step').length === 4`);

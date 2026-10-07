@@ -23,6 +23,25 @@ export type ProxyLog = {
   input?: number;
   output?: number;
   error?: string;
+  /** 号池把这次请求交给了哪个官方账号（只有成功的、成员是官方账号的才有）。 */
+  account?: string;
+  /*
+   * 下面是给永久保存的转发记录用的细节（0.3.34，见 route-ledger.ts 的 appendRouteLog）。都不含请求 / 回复的内容和任何凭据。
+   * attempt：这个请求的第几次尝试（前面的成员失败了才会有第 2、3 次）；requestModel：工具请求里写的型号；
+   * client / upstream：工具用的接口格式和上游的接口格式（不一样就是做了转换）；effort：转发出去的请求里的思考等级。
+   */
+  method?: string;
+  path?: string;
+  attempt?: number;
+  pool?: boolean;
+  requestModel?: string;
+  client?: string;
+  upstream?: string;
+  host?: string;
+  stream?: boolean;
+  effort?: string;
+  requestBytes?: number;
+  cacheRead?: number;
 };
 
 type Options = {
@@ -65,10 +84,29 @@ export function joinUpstream(base: string, pathAndQuery: string) {
   return root;
 }
 
+/** 从回复里读 Token 数。流式回复的用量在最后才出现，所以取最后一次出现的。 */
 function sniffUsage(text: string) {
-  const input = /"(?:input_tokens|prompt_tokens|promptTokenCount)"\s*:\s*(\d+)/.exec(text);
-  const output = /"(?:output_tokens|completion_tokens|candidatesTokenCount)"\s*:\s*(\d+)/.exec(text);
-  return { input: input ? Number(input[1]) : undefined, output: output ? Number(output[1]) : undefined };
+  const last = (pattern: RegExp) => { let found: string | undefined; for (const match of text.matchAll(pattern)) found = match[1]; return found ? Number(found) : undefined; };
+  return {
+    input: last(/"(?:input_tokens|prompt_tokens|promptTokenCount)"\s*:\s*(\d+)/g),
+    output: last(/"(?:output_tokens|completion_tokens|candidatesTokenCount)"\s*:\s*(\d+)/g),
+    cacheRead: last(/"(?:cached_tokens|cache_read_input_tokens|cached_input_tokens)"\s*:\s*(\d+)/g),
+  };
+}
+/** 回复可能很长：只留开头和结尾各一段给 sniffUsage（用量不在开头就在结尾）。 */
+const SNIFF_EDGE = 20000;
+function keepEdges(seen: { head: string; tail: string }, text: string) {
+  if (seen.head.length < SNIFF_EDGE) seen.head += text.slice(0, SNIFF_EDGE - seen.head.length);
+  seen.tail = (seen.tail + text).slice(-SNIFF_EDGE);
+}
+/** 请求里写的型号和思考等级（只为了写进转发记录；读不出来就算了）。 */
+function requestFacts(body: Buffer): { model?: string; effort?: string } {
+  if (!body.length || !looksJson(body)) return {};
+  try {
+    const json = JSON.parse(body.toString("utf8")) as { model?: unknown; reasoning?: { effort?: unknown }; reasoning_effort?: unknown };
+    const effort = json?.reasoning?.effort ?? json?.reasoning_effort;
+    return { ...(typeof json?.model === "string" ? { model: json.model.slice(0, 120) } : {}), ...(typeof effort === "string" ? { effort: effort.slice(0, 20) } : {}) };
+  } catch { return {}; }
 }
 
 export function startAgentProxy(options: Options) {
@@ -108,19 +146,29 @@ export function startAgentProxy(options: Options) {
     stats.active += 1;
     stats.requests += 1;
     let last = "上游没有响应";
+    // 转发记录里的细节：这一个请求里各次尝试共用的部分只算一次
+    const facts = requestFacts(body);
+    let attempt = 0;
+    const detail = (target: ProxyTarget) => {
+      let host = "";
+      try { host = new URL(target.baseUrl).host; } catch { /* 地址不合法：下面转发时会报错 */ }
+      return { method: req.method || "POST", path: routed.rest.slice(0, 200), attempt, pool: !!target.pool, client, upstream: target.upstream, host, stream: wantsStream(body, routed.rest), requestBytes: body.length,
+        ...(facts.model ? { requestModel: facts.model } : {}), ...(target.reasoningEffort && routed.app === "grok" && !facts.effort ? { effort: target.reasoningEffort } : facts.effort ? { effort: facts.effort } : {}) };
+    };
     try {
       for (const target of targets) {
+        attempt += 1;
         if (res.destroyed) return;
         const outcome = await forward(req, res, routed.app, routed.rest + url.search, client, target, body);
         if (outcome.kind === "done") {
           options.succeed(target.id);
           stats.ok += 1;
-          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, input: outcome.input, output: outcome.output });
+          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
           return;
         }
         options.fail(target.id);
         last = outcome.error;
-        options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, error: outcome.error });
+        options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, error: outcome.error, ...detail(target) });
       }
       if (!res.headersSent) sendError(res, client, 502, last);
     } finally {
@@ -154,7 +202,7 @@ function sendError(res: http.ServerResponse, client: Upstream, status: number, m
   res.end(JSON.stringify(clientError(client, message)));
 }
 
-type Outcome = { kind: "done"; status: number; input?: number; output?: number } | { kind: "fail"; status: number; error: string };
+type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number } | { kind: "fail"; status: number; error: string };
 
 async function forward(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, client: Upstream, target: ProxyTarget, body: Buffer): Promise<Outcome> {
   const same = client === target.upstream;
@@ -214,16 +262,15 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
         return;
       }
       res.writeHead(status, { "content-type": contentType || "application/json" });
-      let seen = "";
+      const seen = { head: "", tail: "" };
       upstreamRes.on("data", (chunk) => {
-        const text = chunk.toString("utf8");
-        if (seen.length < 20000) seen += text;
+        keepEdges(seen, chunk.toString("utf8"));
         res.write(chunk);
       });
       upstreamRes.on("end", () => {
         res.end();
-        const usage = sniffUsage(seen);
-        resolve({ kind: "done", status, input: usage.input, output: usage.output });
+        const usage = sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
+        resolve({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead });
       });
     });
     const clientClosed = () => {

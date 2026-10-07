@@ -1,3 +1,4 @@
+import { routeAccount } from "./route-ledger";
 import { accountIdOf, readOfficialAccountStore } from "./accounts";
 import { OFFICIAL_KINDS, readCliAccounts, type OfficialAccountKind } from "./credentials";
 import { dataFile, readJson, writeJson } from "./paths";
@@ -20,7 +21,8 @@ export type LoginSpan = { from: number; id: string; email: string; label: string
 export type LoginTimeline = { version: 1; kinds: Partial<Record<OfficialAccountKind, LoginSpan[]>> };
 
 /** 依据：会话里直接写了 / 按登录时间线 / 时间线开始前的推断。 */
-export type AccountBasis = "session" | "timeline" | "inferred";
+/** route：经 TokenPulse 的号池发出去的，路由记下了交给哪个账号（见 route-ledger.ts）。 */
+export type AccountBasis = "session" | "timeline" | "inferred" | "route";
 export type RequestAccount = { id: string; label: string; basis: AccountBasis };
 
 function file() {
@@ -95,6 +97,15 @@ export function accountLabels(): AccountLabels {
  * 把一次请求对到账号上。
  * evidence：会话里直接记下的（Claude 的 accountUuid / 邮箱），有就以它为准。
  */
+/**
+ * 号池把这次请求交给了哪个官方账号。有的话它比会话里记的、时间线上的都准：
+ * 会话里记的是 CLI 自己登录的那个账号，请求实际上被路由换成了号池成员的登录。
+ */
+export function routedAccount(kind: OfficialAccountKind | undefined, at: number, labels: AccountLabels): RequestAccount | null {
+  const id = routeAccount(kind, at);
+  return id ? { id, label: labels.get(id) ?? id, basis: "route" } : null;
+}
+
 export function resolveAccount(
   kind: OfficialAccountKind | undefined,
   at: number,

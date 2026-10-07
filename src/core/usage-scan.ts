@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 import { dataFile, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
-import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, type LoginTimeline } from "./login-timeline";
+import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline } from "./login-timeline";
 
 /**
  * 统计**这台电脑上所有** AI CLI 的 token 消耗 —— 不管那一轮是在终端里跑的、
@@ -856,12 +856,14 @@ function scanFile(
       }
       if (!row.compaction && model !== "未知模型") state.lastModel = model;
       if (kind === "grok-build" && !row.compaction && row.usage.input) state.cacheRatio = Math.min(1, row.usage.cacheRead / row.usage.input);
+      // 经 TokenPulse 号池发出去的：配置里填的是本地路由，文件整体被当成「不是官方」，但这一条实际用的是号池里的官方账号
+      const routed = routedAccount(KIND_OF_SOURCE[source], row.at, accountContext.labels);
       if (!metadataOnly) {
         addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
         const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
         addUsage((byModel[model] ??= emptyBucket()), row.usage);
-        if (state.official === true) {
-          const account = resolveAccount(
+        if (routed || state.official === true) {
+          const account = routed ?? resolveAccount(
             KIND_OF_SOURCE[source],
             row.at,
             { ref: state.accountRef, email: state.accountEmail },
@@ -900,6 +902,7 @@ function scanFile(
         calls: row.usage.requests,
         accountRef: state.accountRef,
         accountEmail: state.accountEmail,
+        ...(routed ? { routedAccount: routed.id } : {}),
         ...(row.compaction ? { compaction: true } : {}),
       });
       touched = true;

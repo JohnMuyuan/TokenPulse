@@ -1,6 +1,7 @@
 import { ExitMonitor } from "./egress-monitor";
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
+import { readRouteLog, routeLogDir } from "../core/route-ledger";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import fsSync from "fs";
 import fs from "fs/promises";
@@ -849,6 +850,9 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("update:download", () => downloadUpdate());
     ipcMain.handle("update:install", () => installUpdate());
     ipcMain.handle("app:version", () => appVersion());
+    // 转发记录的文件夹（route-log/，见 route-ledger.ts）。还没有转发过就先建出来，免得打开一个不存在的目录
+    ipcMain.handle("agent:route-log", (_event, query: unknown) => { const q = (query && typeof query === "object" ? query : {}) as { limit?: unknown; before?: unknown }; return readRouteLog({ limit: Number(q.limit) || 100, before: Number(q.before) || undefined }); });
+    ipcMain.handle("agent:open-route-log", async () => { await fs.mkdir(routeLogDir(), { recursive: true }); return shell.openPath(routeLogDir()); });
     // 托盘小面板：取数据、报告内容高度、几个按钮
     ipcMain.handle("tray-panel:data", () => trayPanelView());
     // 面板里点了别的供应商：和托盘菜单一样，打开主窗口，在供应商页里看过改动对比、确认后才写

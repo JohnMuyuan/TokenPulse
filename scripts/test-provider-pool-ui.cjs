@@ -121,6 +121,13 @@ app.on('web-contents-created', (_e, contents) => contents.once('did-finish-load'
     assert.equal(await ev(`document.querySelector('${P}').scrollWidth <= document.querySelector('${P}').clientWidth + 1`), true);
     await ev(`document.querySelector('${P} [data-section=edit-back]').click()`);
     await ev(`window.tokenpulse.agentProxy('claude', false).then(r => r.confirm ? window.tokenpulse.agentConfirm(r.confirm.token) : r)`);
+    // 转发记录页在一条记录都没有时：只有说明卡和空状态，不能把空的那一块显示成「null」（0.3.34 测试版里出过）
+    await ev(`document.querySelector('${P} .pv-nav [data-section=logs]').click()`);
+    await until(`document.querySelector('${P} .pv-log-keep') && document.querySelector('${P} .pv-empty')`);
+    await delay(300);
+    assert.equal(await ev(`document.querySelectorAll('${P} .pv-log-row').length`), 0);
+    assert.equal(await ev(`/null|undefined/.test(document.querySelector('${P}').textContent)`), false, '页面上不能出现 null / undefined');
+    assert.equal(await ev(`!!document.querySelector('${P} [data-action=older-logs], ${P} .pv-log-end')`), false, '没有记录就没有「再看更早的」');
     console.log('PASS provider avatars and pools: auto-match, preset pick, upload downscale, dark inversion, pool steps, member order, fill-first, preview without secrets, enable via local route, preview shortcuts, no-account hint, dark/900px');
     clearTimeout(watchdog); app.exit(0);
   } catch (e) { console.error('FAIL', e.stack || e.message); clearTimeout(watchdog); app.exit(1); }

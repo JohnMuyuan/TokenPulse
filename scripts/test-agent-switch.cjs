@@ -333,6 +333,30 @@ const grokFile = path.join(home, '.grok', 'config.toml');
         assert.deepEqual((await sendGrok({ model: 'grok-qa', input: 'hi', reasoning: { effort: 'low' } })).reasoning, { effort: 'low' });
         sw.saveProvider({ id: grokPool, app: 'grok', name: 'Grok 号池', model: 'grok-qa', pool: { reasoningEffort: 'bogus', members: [{ type: 'account', id: 'grok:qa-g' }] } });
         assert.equal('reasoning' in (await sendGrok({ model: 'grok-qa', input: 'hi' })), false, '没选等级就原样转发');
+        // 0.3.34 路由账本：号池成功交给了哪个官方账号都记下来（统计用量时归到它名下）；失败的、换下一个成员之前的那次不记
+        const ledger = fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'route-ledger.jsonl'), 'utf8').trim().split(String.fromCharCode(10)).map(line => line.split(String.fromCharCode(9)));
+        assert.ok(ledger.every(row => row.length === 3 && Number(row[0]) > Date.now() - 600000 && row[2].startsWith(row[1] + ':')), '每行：时间、哪家、账号 id');
+        const byAccount = ledger.reduce((map, row) => ({ ...map, [row[2]]: (map[row[2]] || 0) + 1 }), {});
+        assert.equal(byAccount['grok:qa-g'], 3, 'Grok 号池的三次请求');
+        assert.equal(byAccount['chatgpt:qa-c'], 1); assert.ok(byAccount['claude:qa-b'] >= 2 && byAccount['claude:qa-a'] >= 1);
+        assert.equal(Object.keys(byAccount).some(id => id.includes('qa-old')), false, '登录过期的成员没有被用到');
+        assert.equal(fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'route-ledger.jsonl'), 'utf8').includes('oauth-token'), false, '账本里没有凭据');
+        // 永久保存的转发记录：每一次转发（包括失败后换下一个成员的那次）一行，带转发的细节，不带内容和凭据
+        const logDir = path.join(process.env.TOKENPULSE_DATA_DIR, 'route-log');
+        const logText = fs.readdirSync(logDir).map(name => fs.readFileSync(path.join(logDir, name), 'utf8')).join('');
+        const routeLog = logText.trim().split(String.fromCharCode(10)).map(line => JSON.parse(line));
+        assert.equal(logText.includes('oauth-token') || logText.includes('PROXY_MANAGED') || logText.includes('"hi"'), false, '记录里没有凭据，也没有请求内容');
+        const grokLog = routeLog.filter(row => row.app === 'grok');
+        assert.equal(grokLog.length, 3);
+        assert.deepEqual(Object.fromEntries(['method', 'path', 'attempt', 'pool', 'client', 'upstream', 'stream', 'requestModel', 'effort', 'status', 'account'].map(key => [key, grokLog[0][key]])),
+          { method: 'POST', path: '/v1/responses', attempt: 1, pool: true, client: 'openai-responses', upstream: 'openai-responses', stream: false, requestModel: 'grok-qa', effort: 'xhigh', status: 200, account: 'grok:qa-g' }, '第一条：号池替它补上了 xhigh');
+        assert.equal(grokLog[1].effort, 'low', '请求自己带的等级照实记'); assert.equal(grokLog[2].effort, undefined);
+        assert.ok(grokLog.every(row => row.host && row.requestBytes > 0 && row.ms >= 0 && row.at > Date.now() - 600000 && row.providerId && row.provider));
+        const retried = routeLog.filter(row => row.app === 'claude' && row.status === 401);
+        assert.ok(retried.length >= 1 && retried.every(row => row.attempt === 1 && row.error && !row.account), '失败的那次也记，写明是第几次尝试和报错');
+        assert.ok(routeLog.some(row => row.app === 'claude' && row.attempt === 2 && row.status === 200), '换到下一个成员成功的那次是第 2 次尝试');
+        console.log('PASS agent pool: the permanent route log has one detailed line per attempt (member, model, effort, status, timing, sizes) and no content or credentials');
+        console.log('PASS agent pool: every request a pool hands to an official account is written to the route ledger, without credentials');
         console.log('PASS agent pool: Grok reasoning effort added by the local route when the request has none');
       }
       console.log('PASS agent pool: round-robin, fill-first, expired accounts skipped, 401 moves on, Claude OAuth beta, Codex backend path/body/workspace, no credentials in config or view, validation');

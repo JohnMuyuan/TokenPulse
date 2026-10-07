@@ -51,6 +51,8 @@ export type ProxyTarget = {
    * 带上工作区 id；Grok 走 CLI 登录用的 cli-chat-proxy。
    */
   auth?: "claude-oauth" | "codex-oauth" | "grok-oauth";
+  /** 号池里的官方账号在 TokenPulse 里的 id（如 grok:xxxx）。转发成功后记进路由账本，统计用量时归到这个账号名下。 */
+  officialAccount?: string;
   /** ChatGPT 工作区 id（Chatgpt-Account-Id）。 */
   accountId?: string;
   /** 号池成员：401 / 403 也换下一个（别的账号可能还能用）。 */
