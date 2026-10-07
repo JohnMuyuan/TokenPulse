@@ -59,7 +59,7 @@
   - 测试：`scripts/test-prism-bridge.cjs` 那组加了限流的两种情况。`npm test` 退出 0。上游自带的 72 个测试有 1 个失败，是断言「间隔要扣掉已花时间」的那条，属于有意改回的行为；其余 71 个通过。没有跑 `test:ui`（没有改界面）。**没有在真实环境触发过限流**来验证。
   - 给朋友的建议：这个对话已经长到每次都要 8 段重发，最好让 Codex 压缩（`/compact`）或开新对话；被限流后停几分钟再用。
 - 软件处于**预览版**阶段：用户说 0.x 都是预览版，正式版从 1.0 开始。软件里、README、每次的发布说明开头都写了这一点。
-- 未跟踪、**不要提交也不要删**的目录和文件：`.tmp-037-*.png`、`.tmp-grok-home-test/`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`（来源不是 Claude 的工作）。
+- **2026-10-07 按用户要求清理过本地的构建产物**（用户：「安装包啥的都上传到 github 了，放在本地纯占我空间」）：删了 `dist` 里 0.1.0 到 0.3.32 的全部安装包（Setup / Portable / blockmap，都在 GitHub Releases 上）、`dist/0.3.7-motion`、`dist-preview/`、`dist-egress-preview/`、`dist-next/`、`dist-test/`、`.tmp-037-*.png`、`.tmp-grok-home-test/`，共约 9.1 GB。以前这里写的「这几个目录不要提交也不要删」已经不适用。现在 `dist` 里只有最新一版的四个发布文件、`win-unpacked`、各版的 `release-*.md`。项目根目录还有一批 `.tmp-03*-*.log`（被 `.gitignore` 忽略的旧日志，很小），用户没有说要删，留着。以后发新版时可以顺手把上一版的安装包删掉，用户不想在本地留旧安装包。
 - GitHub 上有一个知识库机器人，每天可能往 `main` 推一个 `知识库：自动更新到 …` 的提交（只改 `knowledge/models.json`）。推送前先 `git fetch`，有就 `git pull --ff-only` 再打包。
 
 ### 最近发布的版本（从新到旧）
