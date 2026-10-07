@@ -48,6 +48,15 @@ fs.writeFileSync(path.join(dataPath, 'requests', `${requestMonth}.jsonl`), [
   qaRequest('qa-2', 2, { model: 'claude-QA-opus', requested: 'claude-QA-opus[1m]', returned: 'claude-QA-opus', responseId: 'msg_01' + 'C'.repeat(22), requestId: 'req_011C' + 'D'.repeat(20) }),
   qaRequest('qa-3', 1, { kind: 'codex', file: 'ui-test-codex', model: 'gpt-QA', requested: 'gpt-QA', responseId: 'resp_' + 'e'.repeat(50) })
 ].map(row => JSON.stringify(row)).join('\n') + '\n');
+// 透明转发量到的速度（0.3.35）：两个模型，QA-speed-a 今天和三天前各有几次，QA-speed-b 今天一次。额度详情的「模型速度」读它
+fs.mkdirSync(path.join(dataPath, 'route-log'), { recursive: true });
+{
+  const speedRow = (at, model, tokensPerSec, firstTokenMs) => ({ at, app: 'codex', providerId: 'pass-codex', provider: '官方登录（透明转发）', model, requestModel: model, status: 200, ms: 6000, pass: true, firstByteMs: 400, firstTokenMs, tokensPerSec, input: 1000, output: 300 });
+  const speedRows = [speedRow(fixtureNow - 3 * 24 * hour, 'QA-speed-a', 40, 2000), speedRow(fixtureNow - 3 * 24 * hour + 1000, 'QA-speed-a', 44, 2400), speedRow(fixtureNow - 120000, 'QA-speed-a', 60, 1800), speedRow(fixtureNow - 60000, 'QA-speed-a', 64, 2200), speedRow(fixtureNow - 30000, 'QA-speed-b', 150, 700)];
+  const byMonth = {};
+  for (const row of speedRows) { const d = new Date(row.at); (byMonth[`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`] ??= []).push(row); }
+  for (const [month, list] of Object.entries(byMonth)) fs.writeFileSync(path.join(dataPath, 'route-log', month + '.jsonl'), list.map(row => JSON.stringify(row)).join('\n') + '\n');
+}
 const exportPath = path.join(temp, 'export.csv');
 dialog.showSaveDialog = async () => ({ canceled: false, filePath: exportPath });
 let finishQuota;
@@ -189,6 +198,30 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("document.querySelectorAll('.quota-window-grid .panel').length"), 2);
       assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /122.0%/);
       assert.equal(await evaluate("document.querySelectorAll('#quota-detail rect.col').length"), 24);
+      // 0.3.35：「模型与思考等级 · 时间线」紧跟在「最近 24 小时」和「本周额度采样」下面，不用滑到页面最底；后面是模型速度、这个账号的请求
+      assert.deepEqual(await evaluate("[...document.getElementById('quota-detail').children].map(n => n.id || n.classList[n.classList.length - 1]).slice(-4)"), ['quota-history-grid', 'quota-model-timeline', 'speed-panel', 'account-requests']);
+      assert.match(await evaluate("document.querySelector('#quota-model-timeline h2').textContent"), /模型与思考等级 · 时间线/);
+      // 模型速度：一个模型一行（共用时间轴），左边型号和次数、中间走势、右边中位数和对比条；默认看 30 天
+      await until("document.querySelectorAll('.speed-panel .speed-row:not(.speed-axis)').length === 2");
+      assert.equal(await evaluate("document.querySelector('.speed-panel [data-speed-range].on').textContent"), '30 天');
+      assert.deepEqual(await evaluate("[...document.querySelectorAll('.speed-panel .speed-row:not(.speed-axis)')].map(r => [r.querySelector('.speed-name b').textContent, r.querySelector('.speed-name small').textContent, r.querySelector('.speed-value strong').textContent, r.querySelectorAll('.speed-dot').length, r.querySelectorAll('.speed-whisker').length, !!r.querySelector('.speed-line')])"),
+        [['QA-speed-a', '4 次 · 首字 2.1 秒', '52', 2, 2, true], ['QA-speed-b', '1 次 · 首字 0.7 秒', '150', 1, 1, false]], '请求多的排前面；一天一个点，只有一个点时不连线');
+      // 对比条按同一刻度画：150 的那条明显比 52 的长；走势的刻度每行自己的（左边标着上下限）
+      const speedBars = await evaluate("[...document.querySelectorAll('.speed-panel .speed-bar i')].map(i => i.getBoundingClientRect().width)");
+      assert.ok(speedBars[1] > speedBars[0] * 2.5 && speedBars[1] < speedBars[0] * 3.2, '对比条的长度按速度成比例：' + speedBars.join(' / '));
+      assert.deepEqual(await evaluate("[...document.querySelectorAll('.speed-panel .speed-scale')].map(s => [...s.children].map(c => Number(c.textContent)))").then(list => list.map(([top, bottom]) => top > bottom && bottom >= 0)), [true, true]);
+      assert.match(await evaluate("document.querySelector('.speed-panel .sample-caption').textContent"), /一天.*中位数.*自己的刻度.*下面的条都按 0 – 200 Token\/秒画/);
+      // 悬停看某一天的数字
+      const speedBox = await evaluate("(() => { const r = document.querySelector('.speed-panel .speed-plot').getBoundingClientRect(); return { x: Math.round(r.right - 8), y: Math.round(r.top + r.height / 2) }; })()");
+      await evaluate(`document.querySelector('.speed-panel .speed-plot').dispatchEvent(new MouseEvent('mousemove', { clientX: ${speedBox.x}, clientY: ${speedBox.y}, bubbles: true }))`);
+      assert.match(await evaluate("document.querySelector('.speed-panel .speed-tip').textContent"), /QA-speed-a · [\s\S]*中位 62 Token\/秒[\s\S]*中间一半 61 – 63[\s\S]*2 次请求[\s\S]*首字 2 秒/);
+      // 换成 24 小时：只剩今天的，按小时一个点
+      await evaluate("document.querySelector('.speed-panel [data-speed-range=\"1\"]').click()");
+      await until("document.querySelector('.speed-panel .speed-name small')?.textContent.startsWith('2 次')");
+      assert.match(await evaluate("document.querySelector('.speed-panel .sample-caption').textContent"), /一小时/);
+      await evaluate("document.querySelector('.speed-panel [data-speed-range=\"30\"]').click()");
+      await until("document.querySelector('.speed-panel .speed-name small')?.textContent.startsWith('4 次')");
+      console.log('PASS quota detail: the timeline sits right under the two history charts; model speed draws one row per model on a shared time axis with a common-scale bar');
       // Token / 费用预测：剩余可用、重置时预计用量、整窗容量都换算成 Token 和费用
       assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /剩余可用（估算）[\s\S]*整窗容量折算/);
       assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /重置时预计用量/);

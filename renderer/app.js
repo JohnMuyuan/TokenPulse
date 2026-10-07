@@ -1320,7 +1320,10 @@ async function saveQuotaTabOrder(kind, visibleIds) {
     if (current) renderQuota();
   }
 }
+/** 「模型与思考等级 · 时间线」那一节。它本来排在整页最下面，要滑很久才看得到（0.3.35 挪进账号详情里）。 */
+let quotaTimelineNode = null;
 function renderQuota() {
+  quotaTimelineNode ??= $('quota-model-timeline');
   const host = $('quota-detail'); host.replaceChildren();
   const slots = quotaSlots();
   // state.account 可能是账号 id，也可能是家名（首页「详情」、老的默认值）：对不上账号就取这一家的第一个
@@ -1348,7 +1351,9 @@ function renderQuota() {
     host.querySelector('.quota-context h2')?.append(infoTip([el('span', { text: '官方已用是整个账号的（含网页聊天、其他设备）。额度上涨时本机没有 Code 请求的时段会被识别为「本机以外」，不计入容量折算；可以在下方时间线里标注这些时段用了什么模型。' }), toSettings], '共享额度说明', 'quota-scope-tip'));
   }
   if (!account) {
-    host.append(el('article', { class: 'panel empty large' }, [el('h3', { text: '暂时还没有这个账号的额度数据' }), el('p', { text: `确认 ${meta.source} 已登录官方账号，然后点击「刷新数据」。` }), el('p', { text: '凭据过期或网络错误也可能导致采样失败；这不会影响本机用量统计。' })])); return;
+    host.append(el('article', { class: 'panel empty large' }, [el('h3', { text: '暂时还没有这个账号的额度数据' }), el('p', { text: `确认 ${meta.source} 已登录官方账号，然后点击「刷新数据」。` }), el('p', { text: '凭据过期或网络错误也可能导致采样失败；这不会影响本机用量统计。' })]));
+    if (quotaTimelineNode) host.append(quotaTimelineNode);
+    return;
   }
   const blocked = blockNote(kind, true);
   if (blocked) host.append(blocked);
@@ -1361,12 +1366,139 @@ function renderQuota() {
   const trend = el('div', { class: 'chart quota-trend' });
   const trendPanel = el('article', { class: 'panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '本周额度采样' })]), trend, el('p', { class: 'sample-caption', text: `手动重置次数：${account.resetCredits ?? '接口未提供'} · 活跃时间占比：${account.week?.activeShare == null ? '样本不足' : percent(account.week.activeShare * 100)}` })]);
   host.append(el('div', { class: 'quota-history-grid' }, [history, trendPanel]));
+  // 时间线紧跟在这两张图下面
+  if (quotaTimelineNode) host.append(quotaTimelineNode);
+  const speed = speedPanel(account, kind);
+  if (speed) host.append(speed);
   host.append(accountRequestsPanel(account, meta));
   const animate = entering();
   chart(hourly, account.hourly, 'tokens', true, animate);
   trendChart(trend, account.trend, animate);
   capacity.draw(animate);
   syncSegs();
+}
+
+/* ---------------- 模型速度（额度详情，0.3.35） ---------------- */
+
+/*
+ * 这个账号各个模型的输出速度走势，数据是透明转发量到的（供应商页 → 透明转发），转发记录永久保存，所以能一直往回看。
+ * 一个账号会用好几个模型，画法是「一个模型一行」，所有行共用同一条时间轴。两件事分开画：
+ * - 模型之间比快慢：右边的数字（整段时间的中位数）和一条**按同一刻度**画的对比条；
+ * - 一个模型自己是变快还是变慢：中间的走势线，**用这一行自己的刻度**（左边标着上下限）。
+ *   走势要是也用同一刻度，慢的模型会被快的压成贴底的一条平线，什么都看不出来。
+ * 点 = 那段时间的中位数，竖线 = 中间一半请求的范围。模型再多也只是多几行，不用靠颜色分辨。
+ */
+const SPEED_RANGES = [[1, '24 小时'], [7, '7 天'], [30, '30 天'], [0, '全部']];
+const speedCache = new Map();
+function speedSeconds(ms) { return (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' 秒'; }
+/** 刻度上限取个整：12 → 15，37 → 40，68 → 80，140 → 150。 */
+function speedCeil(value) {
+  if (!(value > 0)) return 10;
+  const base = 10 ** Math.floor(Math.log10(value));
+  return [1, 1.5, 2, 3, 4, 5, 6, 8, 10].map(step => step * base).find(step => step >= value * 1.05) || 10 * base;
+}
+function speedBucketLabel(at, bucketMs) {
+  const day = new Date(at), locale = dateLocale();
+  if (bucketMs <= 3600000) return day.toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  const text = day.toLocaleDateString(locale, { year: day.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', month: 'numeric', day: 'numeric' });
+  return bucketMs > 86400000 ? `${text} 起的一周` : text;
+}
+function speedPanel(account, kind) {
+  if (kind !== 'claude' && kind !== 'chatgpt') return null; // 透明转发目前只接了 Claude Code 和 Codex
+  state.speedRange ??= 30;
+  const panel = el('article', { class: 'panel speed-panel' });
+  const body = el('div', { class: 'speed-body' });
+  const seg = el('div', { class: 'seg compact', 'aria-label': '时间范围' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),
+    ...SPEED_RANGES.map(([days, label]) => el('button', { type: 'button', 'data-speed-range': String(days), class: state.speedRange === days ? 'on' : null, text: label }))]);
+  panel.append(el('div', { class: 'panel-heading capacity-heading' }, [
+    el('div', {}, [el('h2', {}, ['模型速度 ', el('span', { class: 'section-tag', text: account.accountLabel || META[kind].name + ' 账号' })]), el('p', { text: '每个模型每秒输出多少 Token，由「透明转发」量出来，按 CLI 当时登录的账号归属。记录永久保存。' })]),
+    seg,
+  ]), body);
+  const load = () => {
+    const key = [kind, account.accountId || '', state.speedRange].join('|');
+    if (speedCache.has(key)) drawSpeed(body, speedCache.get(key)); else body.replaceChildren(empty('正在读取…'));
+    Promise.resolve(api.passSpeedAccount?.(kind, account.accountId || '', state.speedRange)).then(data => {
+      speedCache.set(key, data || null);
+      if (speedCache.size > 24) speedCache.delete(speedCache.keys().next().value);
+      if (panel.isConnected && key === [kind, account.accountId || '', state.speedRange].join('|')) keepScroll(() => drawSpeed(body, data));
+    }).catch(() => { if (panel.isConnected) body.replaceChildren(empty('速度记录读取失败，请重试。')); });
+  };
+  seg.addEventListener('click', event => {
+    const button = event.target.closest('[data-speed-range]');
+    if (!button) return;
+    state.speedRange = Number(button.dataset.speedRange);
+    for (const item of seg.querySelectorAll('button')) item.classList.toggle('on', item === button);
+    syncSeg(seg);
+    load();
+  });
+  load();
+  return panel;
+}
+function drawSpeed(body, data) {
+  if (!data || !data.models.length) {
+    const open = el('button', { type: 'button', class: 'btn', text: '去打开透明转发' });
+    open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open('pass'); });
+    body.replaceChildren(el('div', { class: 'empty speed-empty' }, [el('p', { text: '这段时间还没有量到这个账号的速度。在供应商页打开「透明转发」，重新打开工具用一会儿，这里就会有走势。' }), open]));
+    return;
+  }
+  const max = speedCeil(data.max), bucketMs = data.bucketMs;
+  const end = data.from + Math.max(1, Math.ceil((data.to - data.from) / bucketMs)) * bucketMs, span = end - data.from;
+  const xOf = bucket => Math.min(100, Math.max(0, (bucket.at + bucketMs / 2 - data.from) / span * 100));
+  const tip = el('div', { class: 'tooltip speed-tip', hidden: '' });
+  const rows = data.models.map((model, index) => {
+    const plot = el('div', { class: 'speed-plot' });
+    // 这一行自己的刻度：上下各留一点空，取整
+    const lowest = Math.min(...model.buckets.map(bucket => bucket.low)), highest = Math.max(...model.buckets.map(bucket => bucket.high));
+    const pad = Math.max((highest - lowest) * 0.18, highest * 0.06, 1);
+    const floor = Math.max(0, Math.floor(lowest - pad)), ceil = Math.ceil(highest + pad);
+    const yOf = value => 100 - Math.min(100, Math.max(0, (value - floor) / (ceil - floor) * 100));
+    const frame = svg('svg', { viewBox: '0 0 100 100', preserveAspectRatio: 'none', 'aria-hidden': 'true' });
+    frame.append(svg('line', { class: 'speed-grid', x1: 0, x2: 100, y1: 50, y2: 50 }), svg('line', { class: 'speed-grid base', x1: 0, x2: 100, y1: 100, y2: 100 }));
+    const points = model.buckets.map(bucket => [xOf(bucket), yOf(bucket.median), bucket]);
+    if (points.length > 1) {
+      // 点太少时那片范围只是个歪三角，不画（竖线已经标了范围）
+      if (points.length >= 6) frame.append(svg('polygon', { class: 'speed-band', points: [...model.buckets.map(bucket => `${xOf(bucket).toFixed(2)},${yOf(bucket.high).toFixed(2)}`), ...model.buckets.slice().reverse().map(bucket => `${xOf(bucket).toFixed(2)},${yOf(bucket.low).toFixed(2)}`)].join(' ') }));
+      frame.append(svg('polyline', { class: 'speed-line', points: points.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join(' ') }));
+    }
+    plot.append(frame);
+    // 点和竖线用普通元素按百分比摆：图拉宽了它们也不变形。点多了就画小一点，只有最新的那个是大的
+    const dense = points.length > 62;
+    plot.classList.toggle('many', points.length > 12);
+    const marks = points.map(([x, y, bucket]) => {
+      const whisker = el('i', { class: 'speed-whisker' }), dot = el('i', { class: 'speed-dot' });
+      whisker.style.left = dot.style.left = x + '%';
+      whisker.style.top = yOf(bucket.high) + '%'; whisker.style.height = Math.max(0, yOf(bucket.low) - yOf(bucket.high)) + '%';
+      dot.style.top = y + '%';
+      if (!dense) plot.append(whisker);
+      if (bucket === model.buckets.at(-1)) dot.classList.add('last');
+      if (!dense || bucket === model.buckets.at(-1)) plot.append(dot);
+      return dot;
+    });
+    const showTip = event => {
+      const box = plot.getBoundingClientRect(), at = (event.clientX - box.left) / box.width * 100;
+      let nearest = 0;
+      points.forEach(([x], i) => { if (Math.abs(x - at) < Math.abs(points[nearest][0] - at)) nearest = i; });
+      const bucket = points[nearest][2];
+      marks.forEach((dot, i) => dot.classList.toggle('on', i === nearest));
+      tip.textContent = [`${model.model}${model.fast ? '（快速）' : ''} · ${speedBucketLabel(bucket.at, bucketMs)}`, `中位 ${bucket.median} Token/秒`, bucket.count > 1 ? `中间一半 ${bucket.low} – ${bucket.high}` : '', `${number(bucket.count)} 次请求`, bucket.firstTokenMs == null ? '' : `首字 ${speedSeconds(bucket.firstTokenMs)}`].filter(Boolean).join(String.fromCharCode(10));
+      tip.hidden = false;
+      const wide = tip.offsetWidth, left = Math.min(window.innerWidth - wide - 12, Math.max(12, event.clientX + 14));
+      tip.style.left = left + 'px'; tip.style.top = Math.max(12, event.clientY - tip.offsetHeight - 12) + 'px';
+    };
+    plot.addEventListener('mousemove', showTip);
+    plot.addEventListener('mouseleave', () => { tip.hidden = true; marks.forEach(dot => dot.classList.remove('on')); });
+    const fill = el('i');
+    fill.style.width = Math.max(2, Math.min(100, model.tokensPerSec / max * 100)) + '%';
+    return stagger(el('div', { class: 'speed-row', role: 'row' }, [
+      el('div', { class: 'speed-name', role: 'cell' }, [el('b', { title: model.model }, [el('span', { text: model.model, translate: 'no' }), model.fast ? el('span', { class: 'section-tag speed-fast', text: '快速', title: '快速模式的请求（Codex 的 Fast / priority，Claude Code 的 /fast）单独一行，不和普通模式混着算' }) : null]), el('small', { text: `${number(model.count)} 次${model.firstTokenMs == null ? '' : ` · 首字 ${speedSeconds(model.firstTokenMs)}`}` })]),
+      el('div', { class: 'speed-scale', 'aria-hidden': 'true', title: `这一行走势的刻度：${floor} – ${ceil} Token/秒` }, [el('span', { text: String(ceil), translate: 'no' }), el('span', { text: String(floor), translate: 'no' })]),
+      plot,
+      el('div', { class: 'speed-value', role: 'cell', title: model.count > 1 ? `中间一半请求在 ${model.low} – ${model.high} Token/秒` : null }, [el('span', {}, [el('strong', { text: String(model.tokensPerSec), translate: 'no' }), el('small', { text: 'Token/秒' })]), el('div', { class: 'speed-bar' }, [fill])]),
+    ]), index);
+  });
+  const axis = el('div', { class: 'speed-row speed-axis', 'aria-hidden': 'true' }, [el('span'), el('span'), el('div', { class: 'speed-axis-labels' }, [el('span', { text: speedBucketLabel(data.from, bucketMs === 3600000 ? bucketMs : 86400000) }), el('span', { text: '现在' })]), el('span')]);
+  body.replaceChildren(el('div', { class: 'speed-rows', role: 'table', 'aria-label': '各模型的速度走势' }, [...rows, axis]), tip,
+    el('p', { class: 'sample-caption', text: `点是那段时间（${bucketMs <= 3600000 ? '一小时' : bucketMs > 86400000 ? '一周' : '一天'}）的中位数，竖线是中间一半请求的范围。走势线每一行用自己的刻度（左边标着上下限），看的是这个模型自己变快还是变慢；模型之间比快慢看右边：数字是整段时间的中位数，下面的条都按 0 – ${max} Token/秒画。速度 = 输出 Token ÷ 出字用的时间（含思考）。` }));
 }
 
 /* ---------------- 用量明细 ---------------- */

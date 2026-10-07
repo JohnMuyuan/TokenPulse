@@ -242,8 +242,10 @@ function configOfficial(): Record<Kind, boolean | undefined> {
       env?: Record<string, unknown>;
     };
     const env = settings.env ?? {};
+    // 0.3.35：地址指着 TokenPulse 的透明转发（原样转给官方）时，用的还是官方登录
+    const passThrough = (value: string) => /^http:\/\/127\.0\.0\.1:\d+\/pass\/claude\/?$/.test(value);
     claude = !["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"].some(
-      (key) => typeof env[key] === "string" && String(env[key]).trim(),
+      (key) => typeof env[key] === "string" && String(env[key]).trim() && !(key === "ANTHROPIC_BASE_URL" && passThrough(String(env[key]).trim())),
     );
   } catch {
     // 没有 settings.json 就是默认的官方登录

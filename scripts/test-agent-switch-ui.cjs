@@ -45,7 +45,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until("document.querySelector('[data-page=providers]')");
     await evaluate("navigate('providers')");
     // 概览：二级菜单 + 三家工具卡，没有 Gemini
-    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 10 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
+    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 11 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
     assert.equal(await evaluate(`document.querySelector('${P}').innerText.includes('Gemini')`), false, '页面上不能再有 Gemini');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'overview');
     // 转发记录（0.3.34）：永久保存，先列最近 100 条，往下可以翻到最早的；说明卡里能打开记录文件夹
@@ -60,6 +60,56 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until(`document.querySelectorAll('${P} .pv-log-row').length === 130 && !document.querySelector('${P} [data-action=older-logs]')`);
     assert.equal(await evaluate(`document.querySelector('${P} .pv-log-end').textContent`), '已经是最早的一条了。');
     assert.equal(await evaluate(`[...document.querySelectorAll('${P} .pv-log-row .pv-log-ms')].at(-1).textContent`), '100 ms', '最下面是最早的那条');
+    // 透明转发（0.3.35）：说明做什么 / 不做什么，Claude Code 和 Codex 各一个开关，默认关；下面是量到的速度
+    await nav('pass');
+    await until(`document.querySelectorAll('${P} .pv-route-row .pv-switch').length === 2 && /还没有量到速度/.test(document.querySelector('${P} .pv-empty')?.textContent || '')`);
+    assert.match(await evaluate(`document.querySelector('${P} .pv-pass-what').textContent`), /一个字节都不动.*型号核验.*不保存、不读取登录凭据.*不保存请求和回复的内容.*只在本机.*恢复直连/);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-route-row')].map(r => [r.querySelector('b').textContent, r.querySelector('.pv-switch').getAttribute('aria-checked'), r.querySelector('.pv-switch').disabled, r.querySelector('small').textContent])`), [['Claude Code', 'false', false, '直连官方，没有测速。'], ['Codex', 'false', false, '直连官方，没有测速。']]);
+    assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=pass] small').textContent`), '已关闭');
+    // 换一个空闲端口：默认端口可能正被这台机器上在用的 TokenPulse 占着
+    const passPort = await new Promise(resolve => { const s = http.createServer(); s.listen(0, '127.0.0.1', () => { const v = s.address().port; s.close(() => resolve(v)); }); });
+    await evaluate(`window.tokenpulse.agentPort(${passPort})`);
+    await evaluate(`document.querySelector('${P} .pv-route-row .pv-switch').click()`);
+    await until(`document.querySelector('${P} .pv-route-row .pv-switch').getAttribute('aria-checked') === 'true'`);
+    assert.match(settings().env.ANTHROPIC_BASE_URL, /^http:\/\/127\.0\.0\.1:\d+\/pass\/claude$/, '只加了接口地址');
+    assert.deepEqual([settings().hooks, settings().env.DISABLE_TELEMETRY], [{ keep: true }, '1'], '别的设置不动');
+    assert.match(await evaluate(`document.querySelector('${P} .pv-route-row small').textContent`), /已打开：Claude Code 连 http:\/\/127\.0\.0\.1:\d+\/pass\/claude，原样转给官方/);
+    assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=pass] small').textContent`), '测速中 · 1 家');
+    // 仍然算官方登录：Claude Code 那一页的当前供应商是官方
+    assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=claude] small').textContent`), 'Claude 官方');
+    // 量到的速度来自保存的转发记录：放三条进去，回到这一页就能看到（按型号取中位数）
+    const month = new Date(), speedFile = path.join(root, 'data', 'route-log', `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}.jsonl`);
+    fs.writeFileSync(speedFile, [[80, 1200], [100, 1500], [120, 2400]].map(([speed, first], i) => JSON.stringify({ at: Date.now() - 60000 * (i + 1), app: 'claude', providerId: 'pass-claude', provider: '官方登录（透明转发）', model: 'claude-qa-5', requestModel: 'claude-qa-5', status: 200, ms: 9000, pass: true, firstByteMs: 900, firstTokenMs: first, tokensPerSec: speed, input: 100, output: 700 })).join('\n') + '\n');
+    await nav('overview'); await nav('pass');
+    await until(`document.querySelectorAll('${P} .pv-speed-row:not(.head)').length === 1`);
+    assert.deepEqual(await evaluate(`[...document.querySelector('${P} .pv-speed-row:not(.head)').children].slice(1).map(c => c.textContent)`), ['claude-qa-5', '100 Token/秒', '1.5 秒', '80 – 120', '3']);
+    // 真的转发一次（官方接口换成本机假上游）：转发记录里这一行带首字延迟和速度
+    const fakeOfficial = http.createServer((req, res) => { req.resume(); req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"type":"message_start","message":{"usage":{"input_tokens":50,"output_tokens":1}}}\n\n');
+      setTimeout(() => { res.write('data: {"type":"content_block_delta","delta":{"text":"hi"}}\n\n'); }, 60);
+      setTimeout(() => res.end('data: {"type":"message_delta","usage":{"output_tokens":90}}\n\n'), 400);
+    }); });
+    await new Promise(resolve => fakeOfficial.listen(0, '127.0.0.1', resolve));
+    process.env.AGENT_SWITCH_PASS_BASE = `http://127.0.0.1:${fakeOfficial.address().port}`;
+    try {
+      const status = await new Promise((resolve, reject) => { const req = http.request({ host: '127.0.0.1', port: passPort, method: 'POST', path: '/pass/claude/v1/messages', headers: { 'content-type': 'application/json' } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); }); req.on('error', reject); req.end(JSON.stringify({ model: 'claude-live-5', stream: true })); });
+      assert.equal(status, 200);
+    } finally { delete process.env.AGENT_SWITCH_PASS_BASE; fakeOfficial.close(); fakeOfficial.closeAllConnections?.(); }
+    await nav('logs');
+    await evaluate('window.PulseProviders.show()');
+    await until(`document.querySelector('${P} .pv-log-row .pv-log-speed')`);
+    const liveRow = await evaluate(`(() => { const r = document.querySelector('${P} .pv-log-row'); return [r.querySelector('b').textContent, r.querySelector('.pv-log-model').textContent, r.querySelector('.pv-log-ms').textContent, r.querySelector('.pv-log-tokens').textContent, r.querySelector('.pv-log-speed').textContent]; })()`);
+    assert.deepEqual(liveRow.slice(0, 2).concat(liveRow[3]), ['官方登录（透明转发）', 'claude-live-5', '50 / 90']);
+    assert.match(liveRow[2], /^[\d.]+ 秒 · [\d.]+ 秒$/, '首字延迟 · 总耗时');
+    assert.match(liveRow[4], /^[\d.]+ Token\/秒$/);
+    // 关掉：配置回到原样
+    fs.unlinkSync(speedFile);
+    await nav('pass');
+    await evaluate(`document.querySelector('${P} .pv-route-row .pv-switch').click()`);
+    await until(`document.querySelector('${P} .pv-route-row .pv-switch').getAttribute('aria-checked') === 'false'`);
+    assert.deepEqual(settings(), { hooks: { keep: true }, env: { DISABLE_TELEMETRY: '1' } }, '关闭后恢复直连');
+    console.log('PASS agent switch UI: pass-through page explains what it does, switches per tool, shows measured speed per model, and the forwarding log shows delay and speed');
     // Prism 桥（0.3.19）：全新环境下四步都没做，只有「安装运行环境」和「添加到 Codex 供应商」能点；先写明风险
     await nav('prism');
     await until(`document.querySelectorAll('${P} .pv-prism-step').length === 4`);
@@ -88,7 +138,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), true);
     await evaluate(`${removeButton}.click()`);
     // 删完之后这一页和导航里的入口都没了，回到概览
-    await until(`!document.querySelector('${P} .pv-nav [data-section=prism]') && !document.querySelector('${P} .pv-prism-remove') && document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 9`);
+    await until(`!document.querySelector('${P} .pv-nav [data-section=prism]') && !document.querySelector('${P} .pv-prism-remove') && document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 10`);
     assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), false, '数据目录里的 prism-bridge 整个删掉');
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'data', 'agent-switch.json'), 'utf8')).providers.some(p => p.name === 'Prism 桥'), false, 'Codex 里的供应商也去掉');
     await nav('desktop');

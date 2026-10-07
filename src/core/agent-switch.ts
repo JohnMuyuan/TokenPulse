@@ -72,8 +72,11 @@ type Store = {
   route: Partial<Record<AgentApp, string>>;
   exclusive: Partial<Record<AgentApp, Record<string, string | number | boolean>>>;
   proxy: { port: number; apps: Record<AgentApp, boolean> };
+  /** 透明转发（见下面 setAppPass）：哪些工具开着；before / written 是开之前和我们写完之后那一个配置文件的内容，关的时候原样放回去。 */
+  pass: { apps: Partial<Record<AgentApp, boolean>>; before: Partial<Record<AgentApp, string | null>>; written: Partial<Record<AgentApp, string | null>> };
 };
 
+export type PassView = { on: boolean; connected: boolean; blocked: string };
 export type ProviderView = {
   id: string;
   app: AgentApp;
@@ -112,6 +115,8 @@ export type AgentView = {
   proxy: { running: boolean; port: number; host: string; apps: Record<AgentApp, boolean>; requests: number; ok: number; active: number; startedAt: number };
   health: Record<string, "ok" | "degraded" | "open">;
   logs: ProxyLog[];
+  /** 透明转发：on = 开关开着；connected = 工具配置现在确实指着本机；blocked = 现在不能开的原因（能开是空的）。 */
+  pass: Record<PassApp, PassView>;
 };
 
 const CLAUDE_TOP = ["apiKeyHelper", "apiBaseUrl", "primaryModel", "smallFastModel", "apiKey", "model", "fallbackModel", "modelOverrides", "advisorModel", "awsAuthRefresh", "awsCredentialExport", "gcpAuthRefresh"];
@@ -174,6 +179,7 @@ function emptyStore(): Store {
     route: {},
     exclusive: {},
     proxy: { port: 17621, apps: { claude: false, desktop: false, codex: false, grok: false } },
+    pass: { apps: {}, before: {}, written: {} },
   };
 }
 
@@ -200,6 +206,11 @@ function normalize(raw: Store): Store {
   store.exclusive = known(raw.exclusive);
   store.proxy.port = Number(raw.proxy?.port) || 17621;
   for (const app of AGENT_APPS) store.proxy.apps[app] = raw.proxy?.apps?.[app] === true;
+  for (const app of PASS_APPS) {
+    if (raw.pass?.apps?.[app] !== true) continue;
+    store.pass.apps[app] = true;
+    for (const part of ["before", "written"] as const) { const kept = raw.pass?.[part]; if (kept && Object.hasOwn(kept, app) && (kept[app] === null || typeof kept[app] === "string")) store.pass[part][app] = kept[app]; }
+  }
   seedOfficials(store);
   return store;
 }
@@ -318,6 +329,12 @@ export function agentView(): AgentView {
     },
     health: Object.fromEntries(store.providers.map((provider) => [provider.id, healthOf(provider.id)])),
     logs: logs.slice(0, 30),
+    pass: Object.fromEntries(PASS_APPS.map((app) => {
+      const on = store.pass.apps[app] === true;
+      let connected = false, blocked = "";
+      try { connected = on && passIsOurs(app); blocked = on ? "" : passBlocked(store, app); } catch (error) { blocked = error instanceof Error ? error.message : "读不了工具配置"; }
+      return [app, { on, connected, blocked }];
+    })) as Record<PassApp, PassView>,
   };
 }
 
@@ -583,13 +600,15 @@ async function enableProxy(app: AgentApp, selected?: string, explicit = false) {
   try {
     configTransaction(() => {
       const store = load();
+      // 本地路由（第三方供应商 / 号池）和透明转发不能同时开：先把透明转发写的那一行拿掉，再记接管快照
+      if (isPassApp(app) && store.pass.apps[app]) { removePass(store, app); store.pass.apps[app] = false; save(store); }
       if (!store.proxy.apps[app] || !store.restore[app]) {
         if (proxyIsOurs(app)) throw new Error('当前是缺少接管快照的旧路由配置，请先关闭旧路由再重新启用');
         captureDirect(store, app); store.restore[app] = snapshotFiles(app);
       }
       store.route[app] = id; store.proxy.apps[app] = true; save(store); applyProxy(app);
     });
-  } catch (error) { if (!AGENT_APPS.some(app => load().proxy.apps[app])) await stopProxy(); throw error; }
+  } catch (error) { if (routeIdle()) await stopProxy(); throw error; }
 }
 export async function setAppProxy(app: AgentApp, on: boolean) {
   return asyncMutation(async () => {
@@ -597,8 +616,109 @@ export async function setAppProxy(app: AgentApp, on: boolean) {
     configAllowRestore(() => configTransaction(() => {
       const store = load(); restoreProxy(store, app); store.proxy.apps[app] = false; save(store);
     }));
-    if (!AGENT_APPS.some(app => load().proxy.apps[app])) await stopProxy();
+    if (routeIdle()) await stopProxy();
   });
+}
+/** 本地路由和透明转发都没有工具在用：可以停掉本机的监听。 */
+function routeIdle() {
+  const store = load();
+  return !AGENT_APPS.some((app) => store.proxy.apps[app]) && !PASS_APPS.some((app) => store.pass.apps[app]);
+}
+
+/*
+ * 透明转发（0.3.35）。用户想知道模型有多快，所以让官方 CLI 的请求在本机过一道：原样转发、计时、读回复里的 Token 数
+ * （转发本身见 agent-proxy.ts 的 forwardPass / tunnelPass）。这里管开关和工具配置：
+ * - 只在工具用它自己的官方登录时能开；按工具分别开，默认关。
+ * - 开：只在工具配置里加一行「接口地址 = 本机」，别的一个字不动。
+ *   Claude Code：settings.json 的 env.ANTHROPIC_BASE_URL；Codex：config.toml 顶层的 openai_base_url（内置的 openai 供应商不变，
+ *   所以对话记录里的供应商名字、登录方式都和直连时一样）。凭据还是工具自己带、自己续期，TokenPulse 不读不存。
+ * - 关 / 退出：把那一行拿掉。配置在这期间没被别人动过就整个文件原样放回去。退出时开关留着，下次启动接着开。
+ * - 和本地路由（第三方供应商 / 号池）互斥：切到那些时自动关掉。
+ * 状态单独放在 store.pass，不混进本地路由的接管快照。
+ */
+export type PassApp = "claude" | "codex";
+export const PASS_APPS: PassApp[] = ["claude", "codex"];
+const isPassApp = (app: unknown): app is PassApp => app === "claude" || app === "codex";
+const PASS_URL = /^http:\/\/127\.0\.0\.1:\d+\/pass\/(claude|codex|grok)\/?$/;
+const isPassUrl = (value: string) => PASS_URL.test(value.trim());
+/** 指着透明转发的地址不算「配了第三方地址」：工具还是在用官方登录。 */
+const notPass = (value: string) => (isPassUrl(value) ? "" : value);
+function passBase(app: PassApp, port: number) { return `http://127.0.0.1:${port}/pass/${app}`; }
+function passFile(app: PassApp) { return app === "claude" ? claudeFile() : codexFile(); }
+/** 工具配置里透明转发会写的那个键现在的值。 */
+function passRaw(app: PassApp) {
+  if (app === "claude") return str(asObj(readObject(claudeFile()).env).ANTHROPIC_BASE_URL);
+  return readKey(parseToml(readText(codexFile()))[0].lines, "openai_base_url") || "";
+}
+function passIsOurs(app: PassApp) { return normalizeUrl(passRaw(app)) === normalizeUrl(passBase(app, runtimePort || load().proxy.port)); }
+/** 现在为什么不能开（能开返回空）：透明转发只对官方登录有意义。 */
+function passBlocked(store: Store, app: PassApp) {
+  if (store.proxy.apps[app]) return `${AGENT_LABEL[app]} 现在走的是本地路由（第三方供应商或号池）。透明转发只对官方登录有效，请先切回官方登录。`;
+  if (app === "claude") {
+    const env = asObj(readObject(claudeFile()).env);
+    const set = (key: string) => str(env[key]).trim();
+    if (notPass(set("ANTHROPIC_BASE_URL")) || set("ANTHROPIC_AUTH_TOKEN") || set("ANTHROPIC_API_KEY") || [...CLAUDE_PROTOCOL].some(set)) return "Claude Code 现在不是用官方登录（配置里有第三方地址或密钥）。透明转发只对官方登录有效，请先切回官方登录。";
+    return "";
+  }
+  const top = parseToml(readText(codexFile()))[0].lines;
+  const provider = readKey(top, "model_provider") || "";
+  if ((provider && provider !== "openai") || notPass(readKey(top, "openai_base_url") || "")) return "Codex 现在不是用官方登录（配置里选了别的供应商或地址）。透明转发只对官方登录有效，请先切回官方登录。";
+  return "";
+}
+function writePass(app: PassApp, url: string | null) {
+  if (app === "claude") {
+    const file = claudeFile(), doc = readObject(file);
+    if (doc.env !== undefined && (!doc.env || typeof doc.env !== "object" || Array.isArray(doc.env))) throw new Error("Claude env 格式不正确，已停止写入");
+    const env = asObj(doc.env);
+    if (url) env.ANTHROPIC_BASE_URL = url; else delete env.ANTHROPIC_BASE_URL;
+    doc.env = env;
+    writeObject(file, doc);
+    return;
+  }
+  const blocks = parseToml(readText(codexFile()));
+  upsertKey(blocks[0].lines, "openai_base_url", url ? quote(url) : null);
+  writeText(codexFile(), stringifyToml(blocks));
+}
+function applyPass(store: Store, app: PassApp) {
+  const url = passBase(app, runtimePort || store.proxy.port);
+  if (normalizeUrl(passRaw(app)) === normalizeUrl(url) && Object.hasOwn(store.pass.written, app)) return;
+  // 配置里留着上次（别的端口）写的地址时，「开之前的样子」沿用上次记的
+  if (!isPassUrl(passRaw(app)) || !Object.hasOwn(store.pass.before, app)) store.pass.before[app] = configRead(passFile(app));
+  writePass(app, url);
+  store.pass.written[app] = configRead(passFile(app));
+}
+function removePass(store: Store, app: PassApp) {
+  if (isPassUrl(passRaw(app))) {
+    const file = passFile(app);
+    // 开着的这段时间配置没被别人动过：整个文件原样放回去；动过就只拿掉我们加的那一行
+    if (Object.hasOwn(store.pass.written, app) && Object.hasOwn(store.pass.before, app) && configRead(file) === store.pass.written[app]) configWrite(file, store.pass.before[app] ?? null);
+    else writePass(app, null);
+  }
+  delete store.pass.before[app]; delete store.pass.written[app];
+}
+export async function setAppPass(app: AgentApp, on: boolean) {
+  return asyncMutation(async () => {
+    if (!isPassApp(app)) throw new Error("这个工具还不支持透明转发");
+    if (!on) {
+      configAllowRestore(() => configTransaction(() => { const store = load(); removePass(store, app); store.pass.apps[app] = false; save(store); }));
+      if (routeIdle()) await stopProxy();
+      return { message: `${AGENT_LABEL[app]} 的透明转发已关闭，恢复直连。已经开着的会话要重新打开才生效。`, restart: true };
+    }
+    const blocked = passBlocked(load(), app);
+    if (blocked) throw new Error(blocked);
+    await ensureProxy();
+    try { configTransaction(() => { const store = load(); applyPass(store, app); store.pass.apps[app] = true; save(store); }); }
+    catch (error) { if (routeIdle()) await stopProxy(); throw error; }
+    return { message: `${AGENT_LABEL[app]} 的透明转发已打开。重新打开 ${AGENT_LABEL[app]} 的会话后生效。`, restart: true };
+  });
+}
+/** 透明转发把请求转给哪个官方地址；没开返回 null。请求头只用来分辨 Codex 是 ChatGPT 登录还是 API Key。 */
+function passUpstream(app: AgentApp, headers: Record<string, unknown>) {
+  if (!isPassApp(app) || !load().pass.apps[app]) return null;
+  // AGENT_SWITCH_PASS_BASE 只给自动化测试用：把官方接口换成本机假上游
+  if (process.env.AGENT_SWITCH_PASS_BASE) return `${process.env.AGENT_SWITCH_PASS_BASE}/${app}`;
+  if (app === "claude") return "https://api.anthropic.com";
+  return headers["chatgpt-account-id"] ? "https://chatgpt.com/backend-api/codex" : "https://api.openai.com/v1";
 }
 export async function setProxyPort(port: number) {
   return syncMutation(() => {
@@ -678,6 +798,21 @@ export async function resumeAgentProxy() {
       }
       await enableProxy(app);
     }
+    // 透明转发：上次退出时把那一行拿掉了，开关还开着的接着开；工具已经不是官方登录了就关掉
+    for (const app of PASS_APPS) {
+      const store = load();
+      if (!store.pass.apps[app]) continue;
+      try {
+        const blocked = passBlocked(store, app);
+        if (blocked) throw new Error(blocked);
+        await ensureProxy();
+        configTransaction(() => { const current = load(); applyPass(current, app); save(current); });
+      } catch (error) {
+        try { configAllowRestore(() => configTransaction(() => { const current = load(); removePass(current, app); current.pass.apps[app] = false; save(current); })); } catch { /* 连开关都写不了：下次启动再试 */ }
+        configNotice = [configNotice, `${AGENT_LABEL[app]} 的透明转发没有恢复，已关闭：${error instanceof Error ? error.message : String(error)}`].filter(Boolean).join(' ');
+      }
+    }
+    if (routeIdle()) await stopProxy();
     // 修复说明别被后面的提示盖掉
     if (repairNote && !configNotice.includes(repairNote)) configNotice = [repairNote, configNotice].filter(Boolean).join(' ');
   });
@@ -687,6 +822,8 @@ export function releaseAgentSwitch() {
   configAllowRestore(() => configTransaction(() => {
     const store = load();
     for (const app of AGENT_APPS) if (store.proxy.apps[app]) restoreProxy(store, app);
+    // 透明转发：退出后本机没人接了，把那一行拿掉让工具直连；开关留着，下次启动接着开（见 resumeAgentProxy）
+    for (const app of PASS_APPS) if (store.pass.apps[app]) removePass(store, app);
     save(store);
   }));
   if (runtime) {
@@ -718,6 +855,7 @@ export function restoreConfigBackup(kind: 'history' | 'original', id: string) {
       const app = AGENT_APPS.find((item) => filesForApp(item).some((file) => path.resolve(file) === path.resolve(target.file)));
       if (!app) throw new Error('这份备份的文件不在当前的工具配置位置，不能自动还原：' + target.file);
       if (store.proxy.apps[app]) throw new Error(AGENT_LABEL[app] + ' 的本地路由正开着，请先关闭路由再还原');
+      if (store.pass.apps[app]) throw new Error(AGENT_LABEL[app] + ' 的透明转发正开着，请先关闭透明转发再还原');
     }
     for (const target of targets) configWrite(target.file, target.content);
     configNotice = '已还原。TokenPulse 会把还原后的配置当作外部修改，不会自动覆盖；需要切换时请明确点击启用。';
@@ -905,6 +1043,7 @@ async function ensureProxy() {
     },
     succeed: (id) => circuits.set(id, { fails: 0, until: 0 }),
     open: (id) => (circuits.get(id)?.until || 0) > Date.now(),
+    pass: passUpstream,
   });
   try {
     runtimePort = await started.listen();
@@ -1017,6 +1156,11 @@ function applyDirect(provider: Provider) {
   else if (provider.app === "desktop") writeDesktop(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "codex") writeCodex(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else writeGrok(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
+  // 透明转发开着：切到第三方供应商就关掉；重新写了一遍官方登录的配置（把那一行也清掉了）就再加回去
+  if (isPassApp(provider.app) && store.pass.apps[provider.app]) {
+    delete store.pass.before[provider.app]; delete store.pass.written[provider.app];
+    if (provider.official) applyPass(store, provider.app); else store.pass.apps[provider.app] = false;
+  }
   store.owned[provider.app] = snapshotFiles(provider.app);
   save(store);
 }
@@ -1366,11 +1510,11 @@ function endpointFromLive(app: AgentApp): Endpoint | null {
   if (app === "desktop") return null;
   if (app === "claude") {
     const env = asObj(readObject(claudeFile()).env);
-    return { baseUrl: str(env.ANTHROPIC_BASE_URL), apiKey: str(env.ANTHROPIC_AUTH_TOKEN) || str(env.ANTHROPIC_API_KEY), model: str(env.ANTHROPIC_MODEL) || str(readObject(claudeFile()).model) || str(env.ANTHROPIC_DEFAULT_SONNET_MODEL), upstream: "anthropic" };
+    return { baseUrl: notPass(str(env.ANTHROPIC_BASE_URL)), apiKey: str(env.ANTHROPIC_AUTH_TOKEN) || str(env.ANTHROPIC_API_KEY), model: str(env.ANTHROPIC_MODEL) || str(readObject(claudeFile()).model) || str(env.ANTHROPIC_DEFAULT_SONNET_MODEL), upstream: "anthropic" };
   }
   const file = app === "codex" ? codexFile() : grokFile();
   const read = readRoute(readText(file), app);
-  return { baseUrl: read.baseUrl, apiKey: read.apiKey, model: read.model, upstream: read.wire === "chat" ? "openai-chat" : NATIVE_UPSTREAM[app] };
+  return { baseUrl: notPass(read.baseUrl), apiKey: read.apiKey, model: read.model, upstream: read.wire === "chat" ? "openai-chat" : NATIVE_UPSTREAM[app] };
 }
 
 function liveMarker(app: AgentApp) {

@@ -6,7 +6,8 @@
  * 1. **请求型号 vs 返回型号**：
  *    - Claude Code：请求型号在 `attachment.identity.modelId`（`claude-opus-5[1m]`），返回型号是响应里的 `message.model`；
  *    - Grok Build：请求型号在用户消息的 `_meta.modelId`，返回型号是 `turn_completed` 里 `modelUsage` 的键；
- *    - Codex：会话文件**不记返回型号**（`token_usage_record` 只有 response_id），只能核对响应格式。
+ *    - Codex：会话文件**不记返回型号**（`token_usage_record` 只有 response_id），只能核对响应格式；
+ *      经 TokenPulse 转发（本地路由 / 透明转发，0.3.35）或 CC Switch 代理的，用转发时从上游回复里读到的型号。
  * 2. **响应特征**（参考中转站检测的通行做法）：Anthropic 官方的响应 ID 是 `msg_` + 24 位、
  *    请求 ID 是 `req_011…`（本机实测 11559 条全部如此）；经 Bedrock 是 `msg_bdrk_…`、Vertex 是 `msg_vrtx_…`。
  *    号称 Claude、ID 却是 `resp_…`（OpenAI Responses）、`chatcmpl-…` 或一串 UUID，就是被别家接口转换过来的。
@@ -33,8 +34,8 @@ export type VerifyInput = {
   official?: boolean;
   /** cc-switch：是不是走它本地代理的请求。 */
   viaProxy?: boolean;
-  /** 同一次请求在 CC Switch 代理里的记录：它从上游响应里读到的型号。 */
-  proxy?: { requested?: string; returned: string };
+  /** 同一次请求在代理里的记录：它从上游响应里读到的型号。via = "tokenpulse" 是 TokenPulse 自己转发时读到的，没写是 CC Switch 代理。 */
+  proxy?: { requested?: string; returned: string; via?: "tokenpulse" };
 };
 
 export type VerifyResult = {
@@ -92,6 +93,7 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
   // Codex 的会话文件不记返回型号；同一次请求经过 CC Switch 代理的话，用代理从上游响应里读到的
   const requested = input.requested ?? proxy?.requested;
   const returned = input.returned ?? proxy?.returned;
+  const proxyName = proxy?.via === "tokenpulse" ? "TokenPulse 转发时" : "CC Switch 代理";
   const channel = kind === "cc-switch" ? (input.viaProxy ? "CC Switch 代理" : "CC Switch 导入") : channelOf(kind, responseId);
   const problems: string[] = [];
   const notes: string[] = [];
@@ -104,7 +106,7 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
   // 会话文件和代理记录都有返回型号、却对不上：CLI 记的是它以为的，代理看到的才是上游真回的
   if (!mismatch && proxy && input.returned && normalizeModel(proxy.returned) !== normalizeModel(input.returned)) {
     mismatch = true;
-    problems.push(`会话文件记的返回型号是 ${input.returned}，CC Switch 代理从上游响应里读到的是 ${proxy.returned}`);
+    problems.push(`会话文件记的返回型号是 ${input.returned}，${proxyName}从上游响应里读到的是 ${proxy.returned}`);
   }
 
   if (kind === "claude-code") {
@@ -131,8 +133,9 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
         : "来自 CC Switch 的导入（TokenPulse 这天没有这个工具的记录）",
     );
   } else if (kind === "codex") {
-    if (proxy) notes.push("经 CC Switch 代理：返回型号是代理从上游响应里读到的");
-    else notes.push("Codex 会话文件不记录上游返回的型号，只能核对响应格式");
+    if (proxy?.via === "tokenpulse") notes.push("经 TokenPulse 转发：返回型号是转发时从上游响应里读到的");
+    else if (proxy) notes.push("经 CC Switch 代理：返回型号是代理从上游响应里读到的");
+    else notes.push("Codex 会话文件不记录上游返回的型号，只能核对响应格式", "想核验 Codex 的返回型号：打开供应商页的「透明转发」（官方登录）或走本地路由，之后的请求就能核验");
     if (responseId && !OPENAI_RESPONSE.test(responseId)) {
       problems.push(`响应 ID 是 ${channel}（${idShape(responseId)}），不是 OpenAI 的 resp_ + 十六进制`);
     }

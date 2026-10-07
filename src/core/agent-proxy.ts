@@ -7,10 +7,13 @@
  */
 import http from "http";
 import https from "https";
+import zlib from "zlib";
 import { URL } from "url";
+import type { Duplex } from "stream";
 import { clientError, convertJsonResponse, convertRequest, StreamBridge } from "./agent-convert";
 import { NATIVE_UPSTREAM, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
 import { describeNetError, proxyFor, upstreamRequest } from "./upstream-proxy";
+import { Grab, WsReader } from "./ws-sniff";
 
 export type ProxyLog = {
   at: number;
@@ -42,7 +45,35 @@ export type ProxyLog = {
   effort?: string;
   requestBytes?: number;
   cacheRead?: number;
+  /** 透明转发（见 forwardPass）：这一条是原样转给官方的，没有选供应商、没有换凭据。 */
+  pass?: boolean;
+  /** 透明转发才有：从发出请求到收到回复第一个字节用了多久。 */
+  firstByteMs?: number;
+  /** 透明转发才有：从发出请求到回复里第一段内容（文字、思考或工具调用的增量）出现用了多久。 */
+  firstTokenMs?: number;
+  /** 透明转发才有：输出 Token ÷ 出字用的时间（结束 − 第一个字节），每秒多少 Token。输出太少或读不到用量时没有。 */
+  tokensPerSec?: number;
+  responseBytes?: number;
+  /*
+   * 型号核验用（0.3.35）：从上游回复里读到的响应 ID 和它实际用的型号。
+   * 请求记录靠响应 ID 把 CLI 会话里的那次请求和这一条对上（见 route-ledger.ts 的 routeReturned）——
+   * Codex 的会话文件不记返回型号，只有这里能补上。接口格式转换过的转发没有（工具收到的 ID 不是上游的）。
+   */
+  responseId?: string;
+  returnedModel?: string;
+  /*
+   * 请求里要的服务档位（0.3.35）：Codex 的「快速模式」是 service_tier = "priority"（配置里写 fast），Claude 的是 speed = "fast"。
+   * 快速模式出字明显更快，和普通模式混在一起算速度没有意义，所以记下来、汇总时分开。默认档（default / auto / 没写）不记。
+   */
+  tier?: string;
 };
+/** 请求里的服务档位：只留不是默认的。 */
+function tierOf(value: unknown) {
+  const tier = typeof value === "string" ? value.trim().toLowerCase().slice(0, 20) : "";
+  return tier && tier !== "default" && tier !== "auto" && tier !== "standard" ? tier : "";
+}
+/** 回复里读到了响应 ID 才算数：没有 ID 的（模型列表之类）里面的 model 不是「返回型号」。 */
+const returnedOf = (grab: { responseId?: string; model?: string }) => (grab.responseId ? { responseId: grab.responseId, ...(grab.model ? { returnedModel: grab.model.slice(0, 120) } : {}) } : {});
 
 type Options = {
   host: string;
@@ -52,6 +83,8 @@ type Options = {
   fail: (id: string) => void;
   succeed: (id: string) => void;
   open: (id: string) => boolean;
+  /** 透明转发：这个工具开着的话，返回官方接口的地址；没开返回 null（这时 /pass/… 一律 404）。请求头只用来分辨该去哪个官方地址。 */
+  pass?: (app: AgentApp, headers: http.IncomingHttpHeaders) => string | null;
 };
 
 const HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"]);
@@ -100,12 +133,13 @@ function keepEdges(seen: { head: string; tail: string }, text: string) {
   seen.tail = (seen.tail + text).slice(-SNIFF_EDGE);
 }
 /** 请求里写的型号和思考等级（只为了写进转发记录；读不出来就算了）。 */
-function requestFacts(body: Buffer): { model?: string; effort?: string } {
+function requestFacts(body: Buffer): { model?: string; effort?: string; tier?: string } {
   if (!body.length || !looksJson(body)) return {};
   try {
-    const json = JSON.parse(body.toString("utf8")) as { model?: unknown; reasoning?: { effort?: unknown }; reasoning_effort?: unknown };
+    const json = JSON.parse(body.toString("utf8")) as { model?: unknown; reasoning?: { effort?: unknown }; reasoning_effort?: unknown; service_tier?: unknown; speed?: unknown };
     const effort = json?.reasoning?.effort ?? json?.reasoning_effort;
-    return { ...(typeof json?.model === "string" ? { model: json.model.slice(0, 120) } : {}), ...(typeof effort === "string" ? { effort: effort.slice(0, 20) } : {}) };
+    const tier = tierOf(json?.service_tier) || tierOf(json?.speed);
+    return { ...(typeof json?.model === "string" ? { model: json.model.slice(0, 120) } : {}), ...(typeof effort === "string" ? { effort: effort.slice(0, 20) } : {}), ...(tier ? { tier } : {}) };
   } catch { return {}; }
 }
 
@@ -127,6 +161,16 @@ export function startAgentProxy(options: Options) {
     if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, service: "tokenpulse-route" }));
+      return;
+    }
+    // 透明转发：/pass/<工具>/… 原样转给官方，不选供应商、不换凭据（见 forwardPass）
+    const passed = PASS_PATH.exec(url.pathname);
+    if (passed) {
+      const app = passed[1] as AgentApp, base = options.pass?.(app, req.headers) ?? null;
+      if (!base) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "TokenPulse pass-through is off for this tool" } })); return; }
+      stats.active += 1; stats.requests += 1;
+      try { const entry = await forwardPass(req, res, app, (passed[2] || "/") + url.search, base, await readBody(req)); if (entry.status < 400 && !entry.error) stats.ok += 1; options.log(entry); }
+      finally { stats.active = Math.max(0, stats.active - 1); }
       return;
     }
     const routed = appOfPath(url.pathname);
@@ -153,7 +197,7 @@ export function startAgentProxy(options: Options) {
       let host = "";
       try { host = new URL(target.baseUrl).host; } catch { /* 地址不合法：下面转发时会报错 */ }
       return { method: req.method || "POST", path: routed.rest.slice(0, 200), attempt, pool: !!target.pool, client, upstream: target.upstream, host, stream: wantsStream(body, routed.rest), requestBytes: body.length,
-        ...(facts.model ? { requestModel: facts.model } : {}), ...(target.reasoningEffort && routed.app === "grok" && !facts.effort ? { effort: target.reasoningEffort } : facts.effort ? { effort: facts.effort } : {}) };
+        ...(facts.model ? { requestModel: facts.model } : {}), ...(facts.tier ? { tier: facts.tier } : {}), ...(target.reasoningEffort && routed.app === "grok" && !facts.effort ? { effort: target.reasoningEffort } : facts.effort ? { effort: facts.effort } : {}) };
     };
     try {
       for (const target of targets) {
@@ -163,7 +207,7 @@ export function startAgentProxy(options: Options) {
         if (outcome.kind === "done") {
           options.succeed(target.id);
           stats.ok += 1;
-          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
+          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel }), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
           return;
         }
         options.fail(target.id);
@@ -175,6 +219,22 @@ export function startAgentProxy(options: Options) {
       stats.active = Math.max(0, stats.active - 1);
     }
   }
+
+  // 透明转发的长连接（Codex 用官方登录时走 WebSocket）：两头之间原样搬运字节，见 tunnelPass
+  const tunnels = new Set<Duplex>();
+  server.on("upgrade", (req, socket, head) => {
+    const url = new URL(req.url || "/", "http://127.0.0.1");
+    const passed = PASS_PATH.exec(url.pathname);
+    const app = passed ? passed[1] as AgentApp : null, base = app ? options.pass?.(app, req.headers) ?? null : null;
+    if (!app || !base) { socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"); return; }
+    tunnels.add(socket);
+    socket.once("close", () => tunnels.delete(socket));
+    socket.on("error", () => undefined);
+    void tunnelPass(req, socket, head, app, (passed![2] || "/") + url.search, base, (entry) => {
+      stats.requests += 1; if (entry.status < 400 && !entry.error) stats.ok += 1;
+      options.log(entry);
+    }).catch(() => socket.destroy());
+  });
 
   function listen() {
     return new Promise<number>((resolve, reject) => {
@@ -193,6 +253,7 @@ export function startAgentProxy(options: Options) {
     close: () => new Promise<void>((resolve) => {
       server.close(() => resolve());
       server.closeAllConnections();
+      for (const socket of tunnels) socket.destroy();
     }),
   };
 }
@@ -202,7 +263,7 @@ function sendError(res: http.ServerResponse, client: Upstream, status: number, m
   res.end(JSON.stringify(clientError(client, message)));
 }
 
-type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number } | { kind: "fail"; status: number; error: string };
+type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string } | { kind: "fail"; status: number; error: string };
 
 async function forward(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, client: Upstream, target: ProxyTarget, body: Buffer): Promise<Outcome> {
   const same = client === target.upstream;
@@ -263,14 +324,17 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       }
       res.writeHead(status, { "content-type": contentType || "application/json" });
       const seen = { head: "", tail: "" };
+      const grab = new Grab();
       upstreamRes.on("data", (chunk) => {
-        keepEdges(seen, chunk.toString("utf8"));
+        const text = chunk.toString("utf8");
+        keepEdges(seen, text);
+        grab.feed(text);
         res.write(chunk);
       });
       upstreamRes.on("end", () => {
         res.end();
-        const usage = sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
-        resolve({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead });
+        const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
+        resolve({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}) });
       });
     });
     const clientClosed = () => {
@@ -287,6 +351,215 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
     if (payload.length && req.method !== "GET" && req.method !== "HEAD") upstreamReq.write(payload);
     upstreamReq.end();
   });
+}
+
+/*
+ * 透明转发（0.3.35）：用户想知道模型有多快（首字延迟、每秒输出多少 Token），所以让官方 CLI 的请求在本机过一道。
+ * 这里只做三件事：原样转发、计时、读回复里的 Token 数。
+ * - 请求头原样带过去，只去掉逐跳的那几个（connection、host、content-length 之类，转发时本来就要重新生成）；
+ *   凭据就是工具自己带的那份，这里不读、不存、不换；请求正文一个字节都不动。
+ * - 回复的状态码、头、正文原样送回工具（压缩的也不解开）。另外旁路解压一份，只用来找用量数字，不落盘。
+ * - 不重试、不换成员：上游报什么错就把什么错还给工具。
+ * 和号池 / 供应商转发（forward）是两条路，互不影响。
+ */
+const PASS_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding", "upgrade", "host", "content-length"]);
+const PASS_PATH = /^\/pass\/(claude|codex|grok)(\/.*)?$/;
+const PASS_NAME = "官方登录（透明转发）";
+const SPEED_MIN_OUTPUT = 20;
+/** 回复里第一段内容：Claude 的 content_block_delta，OpenAI Responses 的 response.….delta。 */
+const FIRST_TOKEN = /content_block_delta|"response\.[a-z_.]+\.delta"/;
+/*
+ * 模型从什么时候开始出字：
+ * - Claude：回复的第一个字节（message_start）就是，官方处理完输入才会发它；
+ * - OpenAI Responses（Codex）：response.created 一收到请求就发，这时还没开始算；第一个 response.output_item.added 才是开始出字
+ *   （真机量过：created 在 0.4 秒，output_item.added 和第一段文字在 1.9 秒）。
+ * 所以回复里出现过 output_item.added 就从它算起，没有就从第一个字节算起。
+ */
+const GEN_START = /"response\.output_item\.added"/;
+/** 速度 = 输出 Token ÷ 出字用的时间。输出太少或时间太短时算出来的数没有意义，不算。 */
+function speedOf(output: number | undefined, writingMs: number) {
+  return output != null && output >= SPEED_MIN_OUTPUT && writingMs >= 200 ? { tokensPerSec: Math.round(output / (writingMs / 1000) * 10) / 10 } : {};
+}
+function passDecoder(encoding: string): zlib.Gunzip | null {
+  const maker = (zlib as unknown as Record<string, (() => zlib.Gunzip) | undefined>);
+  try {
+    if (encoding === "gzip" || encoding === "x-gzip") return zlib.createGunzip();
+    if (encoding === "deflate") return zlib.createInflate();
+    if (encoding === "br") return zlib.createBrotliDecompress();
+    if (encoding === "zstd" && maker.createZstdDecompress) return maker.createZstdDecompress();
+  } catch { /* 这个运行环境不支持：读不到用量，转发不受影响 */ }
+  return null;
+}
+export async function forwardPass(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, base: string, body: Buffer): Promise<ProxyLog> {
+  const started = Date.now();
+  const facts = requestFacts(body);
+  let host = "";
+  const entry = (extra: Partial<ProxyLog>): ProxyLog => ({ at: Date.now(), app, providerId: "pass-" + app, provider: PASS_NAME, model: facts.model || "", status: 0, ms: Date.now() - started, pass: true,
+    method: req.method || "POST", path: rest.split("?")[0].slice(0, 200), attempt: 1, pool: false, host, stream: wantsStream(body, rest), requestBytes: body.length,
+    ...(facts.model ? { requestModel: facts.model } : {}), ...(facts.effort ? { effort: facts.effort } : {}), ...(facts.tier ? { tier: facts.tier } : {}), ...extra });
+  let upstream: URL;
+  try { upstream = joinUpstream(base, rest); host = upstream.host; }
+  catch { res.writeHead(502, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "TokenPulse pass-through: bad upstream address" } })); return entry({ status: 502, error: "官方接口地址无效" }); }
+  const headers: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(req.headers)) if (value != null && !PASS_HOP.has(key.toLowerCase())) headers[key] = value;
+  if (body.length || !["GET", "HEAD"].includes(req.method || "")) headers["content-length"] = String(body.length);
+  const proxy = await proxyFor(upstream);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (extra: Partial<ProxyLog>) => { if (done) return; done = true; resolve(entry(extra)); };
+    const clientClosed = () => { upstreamReq.destroy(); finish({ status: 499, error: "客户端连接已关闭" }); };
+    res.once("close", clientClosed);
+    const upstreamReq: http.ClientRequest = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers: headers as http.OutgoingHttpHeaders, timeout: 600_000 }, (upstreamRes) => {
+      const status = upstreamRes.statusCode || 502;
+      const out: http.OutgoingHttpHeaders = {};
+      for (const [key, value] of Object.entries(upstreamRes.headers)) if (value != null && !PASS_HOP.has(key.toLowerCase())) out[key] = value;
+      res.writeHead(status, out);
+      let firstAt = 0, firstTokenAt = 0, genAt = 0, bytes = 0;
+      const seen = { head: "", tail: "" };
+      const grab = new Grab();
+      const look = (text: string) => { grab.feed(text); if (!genAt && GEN_START.test(text)) genAt = Date.now(); if (!firstTokenAt && FIRST_TOKEN.test(text)) firstTokenAt = Date.now(); keepEdges(seen, text); };
+      const decoder = passDecoder(String(upstreamRes.headers["content-encoding"] || "").trim().toLowerCase());
+      decoder?.on("data", (chunk: Buffer) => look(chunk.toString("utf8")));
+      decoder?.on("error", () => undefined);
+      const plain = !upstreamRes.headers["content-encoding"];
+      upstreamRes.on("data", (chunk: Buffer) => {
+        if (!firstAt) firstAt = Date.now();
+        bytes += chunk.length;
+        res.write(chunk);
+        if (plain) look(chunk.toString("utf8")); else decoder?.write(chunk);
+      });
+      upstreamRes.on("end", () => {
+        // 回复已经完整送回去了：这之后工具关连接是正常收尾，不算「客户端中途关闭」
+        res.off("close", clientClosed);
+        res.end();
+        const endAt = Date.now();
+        const settle = () => {
+          const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
+          const writing = firstAt ? endAt - (genAt || firstAt) : 0;
+          finish({ status, responseBytes: bytes, ...(firstAt ? { firstByteMs: firstAt - started } : {}), ...(firstTokenAt ? { firstTokenMs: firstTokenAt - started } : {}), input: usage.input, output: usage.output, ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}),
+            ...(status < 400 ? { ...speedOf(usage.output, writing), ...returnedOf(grab) } : {}),
+            ...(status >= 400 ? { error: (seen.head || `HTTP ${status}`).slice(0, 300) } : {}) });
+        };
+        if (decoder && !plain) { decoder.once("end", settle); decoder.once("error", settle); decoder.end(); setTimeout(settle, 1000); } else settle();
+      });
+      upstreamRes.on("error", () => { res.destroy(); finish({ status: 502, error: "回复中途断开", responseBytes: bytes, ...(firstAt ? { firstByteMs: firstAt - started } : {}) }); });
+    });
+
+    upstreamReq.once("close", () => res.off("close", clientClosed));
+    const fail = (status: number, message: string) => {
+      if (!res.headersSent) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "TokenPulse pass-through: " + message } })); }
+      else res.destroy();
+      finish({ status, error: message });
+    };
+    upstreamReq.on("error", (error) => fail(502, describeNetError(error, Boolean(proxy))));
+    upstreamReq.on("timeout", () => { upstreamReq.destroy(); fail(504, "上游超时"); });
+    upstreamReq.end(body.length ? body : undefined);
+  });
+}
+
+/*
+ * 透明转发的长连接。Codex 用官方登录时，对话走一条 WebSocket：握手请求原样转给官方（头一个不少，只有 host 换成官方的），
+ * 官方的握手回复原样还给工具，之后两头的字节原样对搬——帧不解开、不重组、不改。
+ * 旁路用 WsReader 看一眼搬过去的帧：工具发 response.create 算一次请求的开始，官方回 response.completed 算结束，
+ * 从里面读型号、用量，记首字延迟和速度。一条连接上可以先后有很多次请求，每次记一条。
+ */
+const TUNNEL_DROP = new Set(["host", "content-length", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding"]);
+const jsonField = (text: string, key: string) => new RegExp(`"${key}"\\s*:\\s*"([^"\\\\]{1,200})"`).exec(text)?.[1] || "";
+export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head: Buffer, app: AgentApp, rest: string, base: string, log: (entry: ProxyLog) => void) {
+  const refuse = (status: number, text: string) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${text}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`); };
+  let upstream: URL;
+  try { upstream = joinUpstream(base, rest); } catch { refuse(502, "Bad Gateway"); return; }
+  const path = rest.split("?")[0].slice(0, 200);
+  const entry = (extra: Partial<ProxyLog>): ProxyLog => ({ at: Date.now(), app, providerId: "pass-" + app, provider: PASS_NAME, model: "", status: 0, ms: 0, pass: true, method: "WS", path, attempt: 1, pool: false, host: upstream.host, stream: true, ...extra });
+  const headers: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(req.headers)) if (value != null && !TUNNEL_DROP.has(key.toLowerCase())) headers[key] = value;
+  const proxy = await proxyFor(upstream);
+  const opened = Date.now();
+  let settled = false;
+  const upstreamReq = upstreamRequest(upstream, proxy, { method: "GET", headers: headers as http.OutgoingHttpHeaders, timeout: 30_000 });
+  const rawHead = (res: http.IncomingMessage, drop?: Set<string>) => {
+    let text = `HTTP/1.1 ${res.statusCode} ${res.statusMessage || ""}\r\n`;
+    for (let index = 0; index + 1 < res.rawHeaders.length; index += 2) if (!drop?.has(res.rawHeaders[index].toLowerCase())) text += `${res.rawHeaders[index]}: ${res.rawHeaders[index + 1]}\r\n`;
+    return text;
+  };
+  // 官方没有同意升级（没登录、限流……）：把它的回复原样还给工具
+  upstreamReq.on("response", (res) => {
+    settled = true;
+    const status = res.statusCode || 502;
+    let seen = "";
+    socket.write(rawHead(res, new Set(["transfer-encoding", "connection", "keep-alive"])) + "connection: close\r\n\r\n");
+    res.on("data", (chunk: Buffer) => { if (seen.length < 300 && !res.headers["content-encoding"]) seen += chunk.toString("utf8"); socket.write(chunk); });
+    res.on("end", () => { socket.end(); log(entry({ status, ms: Date.now() - opened, ...(status >= 400 ? { error: (seen || `HTTP ${status}`).slice(0, 300) } : {}) })); });
+    res.on("error", () => socket.destroy());
+  });
+  upstreamReq.on("upgrade", (res, up, upHead) => {
+    settled = true;
+    up.setTimeout(0);
+    up.setNoDelay?.(true);
+    (socket as Duplex & { setNoDelay?: (on: boolean) => void }).setNoDelay?.(true);
+    socket.write(rawHead(res) + "\r\n");
+    const deflate = /permessage-deflate/i.test(String(res.headers["sec-websocket-extensions"] || ""));
+    type Turn = { started: number; requestBytes: number; model: string; effort: string; firstAt: number; firstTokenAt: number; genAt: number; bytes: number; responseId: string; returned: string; tier: string };
+    let turn: Turn | null = null;
+    const whole = (message: { head: string; tail: string }) => (message.head.length < SNIFF_EDGE ? message.head : message.head + "\n" + message.tail);
+    const fromClient = new WsReader(deflate, (message) => {
+      if (!message.text) return;
+      const text = whole(message);
+      if (!/"type"\s*:\s*"response\.create"/.test(text)) return;
+      turn = { started: message.endAt, requestBytes: message.bytes, model: jsonField(text, "model").slice(0, 120), effort: jsonField(text, "effort").slice(0, 20), firstAt: 0, firstTokenAt: 0, genAt: 0, bytes: 0, responseId: "", returned: "", tier: tierOf(jsonField(text, "service_tier")) };
+    });
+    const closeTurn = (status: number, endAt: number, extra: Partial<ProxyLog>) => {
+      const current = turn;
+      if (!current) return;
+      turn = null;
+      log(entry({ at: endAt, model: current.model, status, ms: endAt - current.started, requestBytes: current.requestBytes, responseBytes: current.bytes,
+        ...(current.model ? { requestModel: current.model } : {}), ...(current.effort ? { effort: current.effort } : {}), ...(current.tier ? { tier: current.tier } : {}),
+        ...(current.firstAt ? { firstByteMs: current.firstAt - current.started } : {}), ...(current.firstTokenAt ? { firstTokenMs: current.firstTokenAt - current.started } : {}), ...returnedOf({ responseId: current.responseId, model: current.returned }), ...extra }));
+    };
+    const fromServer = new WsReader(deflate, (message) => {
+      const current = turn;
+      if (!current) return;
+      current.bytes += message.bytes;
+      if (!current.firstAt) current.firstAt = message.startAt;
+      if (!message.text) return;
+      const type = /"type"\s*:\s*"([A-Za-z_.]+)"/.exec(message.head.slice(0, 400))?.[1] || "";
+      // 响应 ID 和实际用的型号：response.created / response.completed 里都带着整个 response 对象
+      if (!current.responseId && message.responseId && /^response\.(created|in_progress|completed|failed|incomplete)$/.test(type)) { current.responseId = message.responseId; current.returned = message.model || ""; }
+      if (!current.genAt && type === "response.output_item.added") current.genAt = message.startAt;
+      if (!current.firstTokenAt && /\.delta$/.test(type)) current.firstTokenAt = message.startAt;
+      if (!/^(response\.(completed|failed|incomplete)|error)$/.test(type)) return;
+      // 用量优先用边收边找到的那一整段（见 ws-sniff.ts 的 Grab）；没有再退回到从开头结尾那一截里找
+      const text = whole(message), usage = message.usage ?? sniffUsage(text);
+      const counts = { input: usage.input, output: usage.output, ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}) };
+      if (type === "response.completed") closeTurn(200, message.endAt, { ...counts, ...speedOf(usage.output, message.endAt - (current.genAt || current.firstAt)) });
+      else closeTurn(Number(/"status"\s*:\s*([45]\d\d)\b/.exec(text)?.[1]) || 500, message.endAt, { ...counts, error: (jsonField(text, "message") || type).slice(0, 300) });
+    }, true);
+    if (head.length) { up.write(head); fromClient.push(head); }
+    if (upHead.length) { socket.write(upHead); fromServer.push(upHead); }
+    socket.on("data", (chunk: Buffer) => fromClient.push(chunk));
+    up.on("data", (chunk: Buffer) => fromServer.push(chunk));
+    socket.pipe(up);
+    up.pipe(socket);
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      // 让已经到了、还在解压的最后一条消息有机会记下来
+      setTimeout(() => { closeTurn(499, Date.now(), { error: "连接在回复完成前关闭" }); fromClient.stop(); fromServer.stop(); }, 200);
+      up.destroy(); socket.destroy();
+    };
+    for (const side of [socket, up]) { side.on("close", close); side.on("error", close); }
+  });
+  const fail = (status: number, message: string) => {
+    if (settled) return;
+    settled = true;
+    refuse(status, status === 504 ? "Gateway Timeout" : "Bad Gateway");
+    log(entry({ status, ms: Date.now() - opened, error: message }));
+  };
+  upstreamReq.on("error", (error) => fail(502, describeNetError(error, Boolean(proxy))));
+  upstreamReq.on("timeout", () => { if (!settled) { upstreamReq.destroy(); fail(504, "上游超时"); } });
+  socket.once("close", () => { if (!settled) upstreamReq.destroy(); });
+  upstreamReq.end();
 }
 
 function wantsStream(body: Buffer, rest: string) {

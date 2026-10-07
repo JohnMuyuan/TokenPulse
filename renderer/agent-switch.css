@@ -162,6 +162,19 @@
 .pv-log-keep small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .pv-log-row b, .pv-log-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pv-log-row.bad .pv-log-status { color: var(--danger); font-weight: 600; }
+.pv-log-speed { grid-column: 3 / -1; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* 透明转发 */
+.pv-pass-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.pv-pass-cols b { font-size: 13px; }
+.pv-pass-cols ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 5px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+.pv-switch:disabled { opacity: .45; cursor: not-allowed; }
+.pv-speed-row { display: grid; grid-template-columns: 26px minmax(120px, 1.4fr) minmax(96px, 1fr) minmax(96px, 1fr) minmax(80px, .8fr) 48px; gap: 10px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.pv-speed-row:last-child { border-bottom: 0; }
+.pv-speed-row.head { color: var(--muted); font-size: 12px; }
+.pv-speed-row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-speed-row .muted { color: var(--muted); }
+.pv-speed-row > :last-child { text-align: right; }
+@media (max-width: 760px) { .pv-pass-cols { grid-template-columns: minmax(0, 1fr); } .pv-speed-row { grid-template-columns: 26px minmax(0, 1fr) 96px 48px; } .pv-speed-row > :nth-child(4), .pv-speed-row > :nth-child(5) { display: none; } }
 .pv-log-error { grid-column: 3 / -1; color: var(--danger); overflow-wrap: anywhere; }
 
 /* ---------------- 导入 ---------------- */

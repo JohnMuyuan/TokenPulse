@@ -124,6 +124,22 @@ try {
   check("Claude 思考等级来自每响应的结构化字段", page.rows.filter(row => row.source === "Claude Code").every(row => row.effort === "medium"));
   check("Codex：请求型号来自 turn_context、工作目录来自 session_meta", codexRow?.requested === "gpt-6-astra" && codexRow?.cwd === "D:\\work\\codex" && codexRow.status === "unverified");
   check("核验计数", page.counts.mismatch === 2 && page.counts.suspect === 1, JSON.stringify(page.counts));
+  {
+    // 0.3.35：这次请求经 TokenPulse 转发过（透明转发 / 本地路由）→ 用转发时从上游回复里读到的型号核验，靠响应 ID 对应
+    const ledger = require(path.join(__dirname, "..", "build", "core", "route-ledger.js"));
+    const logFile = path.join(ledger.routeLogDir(), "2026-09.jsonl");
+    const codexId = "resp_" + "c".repeat(50);
+    const forwarded = (returnedModel, responseId = codexId) => { fs.mkdirSync(ledger.routeLogDir(), { recursive: true }); fs.writeFileSync(logFile, JSON.stringify({ at: base, app: "codex", pass: true, status: 200, requestModel: "gpt-6-astra", responseId, returnedModel }) + "\n"); ledger.resetRouteLedgerCache(); };
+    const codexNow = () => all().rows.find((row) => row.source === "Codex CLI");
+    forwarded("gpt-6-astra-2026-09-01");
+    check("Codex 经 TokenPulse 转发：返回型号对得上 → 型号一致", codexNow()?.status === "match" && codexNow()?.returned === "gpt-6-astra-2026-09-01" && codexNow()?.reasons.some((text) => text.includes("经 TokenPulse 转发")), JSON.stringify(codexNow()?.reasons));
+    forwarded("gpt-6-mini");
+    check("Codex 经 TokenPulse 转发：上游回的是别的型号 → 型号不一致", codexNow()?.status === "mismatch" && codexNow()?.reasons[0] === "请求的是 gpt-6-astra，上游返回的是 gpt-6-mini", codexNow()?.reasons[0]);
+    check("新请求提醒也用得上", recentAlerts(scan.records, base + 60_000, 3_600_000).some((row) => row.source === "Codex CLI" && row.status === "mismatch"));
+    forwarded("gpt-6-mini", "resp_" + "d".repeat(50));
+    check("响应 ID 对不上的不算同一次请求", codexNow()?.status === "unverified" && codexNow()?.reasons.some((text) => text.includes("透明转发")));
+    fs.rmSync(ledger.routeLogDir(), { recursive: true, force: true }); ledger.resetRouteLedgerCache();
+  }
 
   /* ---------------- 查询 ---------------- */
   check("按核验结论筛选，顶部计数不受影响", all({ status: "mismatch" }).rows.length === 2 && all({ status: "mismatch" }).counts.all === page.counts.all);

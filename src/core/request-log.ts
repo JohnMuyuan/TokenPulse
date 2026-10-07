@@ -4,6 +4,7 @@ import { estimateCost, priceOf } from "./model-pricing";
 import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
 import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-switch";
+import { routeReturned } from "./route-ledger";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline, type RequestAccount } from "./login-timeline";
 import { quotaAttribution } from "./quota-attribution";
 import { readQuotaHistory } from "./quota-history";
@@ -63,8 +64,8 @@ export type RequestRecord = {
   routedAccount?: string;
   /** 压缩上下文那一次调用：CLI 没写 usage，按压缩前的上下文和摘要长度估的（见 usage-scan.ts）。 */
   compaction?: boolean;
-  /** 查询时附上的：同一次请求在 CC Switch 代理里的记录（见 matchProxy）。不落盘。 */
-  proxy?: { requested?: string; returned: string };
+  /** 查询时附上的：同一次请求在代理里的记录——TokenPulse 自己转发时读到的（见 withRoute），或 CC Switch 代理的（见 matchProxy）。不落盘。 */
+  proxy?: { requested?: string; returned: string; via?: "tokenpulse" };
 };
 
 const SOURCE_NAMES: Record<RequestKind, string> = { "claude-code": "Claude Code", codex: "Codex CLI", "grok-build": "Grok Build", "cc-switch": "CC Switch" };
@@ -464,6 +465,16 @@ function ccSwitchRecords(covered: Set<string>) {
   return { own, matchProxy };
 }
 
+/**
+ * 这次请求经 TokenPulse 转发过（本地路由 / 透明转发）的话，附上转发时从上游回复里读到的型号（0.3.35）。
+ * 靠响应 ID 对应，是同一次请求才对得上；没对上返回 null，再去试 CC Switch 的代理记录。
+ */
+function withRoute(record: RequestRecord): RequestRecord | null {
+  if (record.kind === "cc-switch" || !record.responseId) return null;
+  const hit = routeReturned(record.responseId, record.at);
+  return hit ? { ...record, proxy: { ...hit, via: "tokenpulse" } } : null;
+}
+
 export function queryRequests(query: RequestQuery): RequestPage {
   const fromMonth = query.from.slice(0, 7);
   const toMonth = query.to.slice(0, 7);
@@ -579,7 +590,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.since != null && raw.at < query.since) continue;
       if (query.until != null && raw.at > query.until) continue;
       if (query.source !== "all" && sourceOf(raw) !== query.source) continue;
-      const record = raw.kind === "cc-switch" ? raw : cc.matchProxy(raw);
+      const record = raw.kind === "cc-switch" ? raw : withRoute(raw) ?? cc.matchProxy(raw);
       const row = toRow(record, official.get(record.file), accountCtx);
       facets.models.add(row.model);
       facets.projects.add(row.cwd || "");
@@ -666,5 +677,5 @@ export function recentAlerts(records: RequestRecord[], now = Date.now(), windowM
   if (!fresh.length) return [];
   const official = attribution();
   const accounts = accountContext();
-  return fresh.map((record) => toRow(record, official.get(record.file), accounts)).filter((row) => row.status === "mismatch" || row.status === "suspect");
+  return fresh.map((record) => toRow(withRoute(record) ?? record, official.get(record.file), accounts)).filter((row) => row.status === "mismatch" || row.status === "suspect");
 }

@@ -128,5 +128,83 @@ export function readRouteLog(options: { limit?: number; before?: number } = {}):
   return { rows, more: false };
 }
 
+/*
+ * 透明转发量到的模型速度（0.3.35）：从保存的转发记录里取最近 days 天、带速度的那些（pass = true、成功、量到了每秒 Token 数），
+ * 按「工具 + 型号」汇总。用中位数：个别特别慢或特别快的请求（排队、只回了一两句）不会把数字带偏。
+ */
+export type PassSpeedRow = { app: string; model: string; count: number; tokensPerSec: number; fastest: number; slowest: number; firstTokenMs: number | null; output: number; lastAt: number };
+export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
+  const since = now - Math.max(1, Math.min(90, days)) * DAY_MS;
+  const groups = new Map<string, { app: string; model: string; speeds: number[]; firsts: number[]; output: number; lastAt: number }>();
+  let files: string[];
+  try { files = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)).sort().reverse(); } catch { return []; }
+  const oldest = new Date(since), oldestName = `${oldest.getFullYear()}-${String(oldest.getMonth() + 1).padStart(2, "0")}.jsonl`;
+  for (const name of files) {
+    if (name < oldestName) break;
+    let lines: string[];
+    try { lines = fs.readFileSync(path.join(routeLogDir(), name), "utf8").split("\n"); } catch { continue; }
+    for (const line of lines) {
+      if (!line || !line.includes('"tokensPerSec"')) continue;
+      let row: Record<string, unknown>;
+      try { row = JSON.parse(line); } catch { continue; }
+      const at = Number(row.at), speed = Number(row.tokensPerSec);
+      if (row.pass !== true || !(at >= since) || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
+      const app = String(row.app || ""), plain = String(row.requestModel || row.model || "");
+      if (!plain) continue;
+      // 快速模式（Codex 的 priority / fast、Claude 的 fast）单独算，不和普通模式混在一起
+      const model = plain + (row.tier === "priority" || row.tier === "fast" ? " · 快速" : "");
+      const group = groups.get(app + "\n" + model) ?? { app, model, speeds: [], firsts: [], output: 0, lastAt: 0 };
+      group.speeds.push(speed);
+      const first = Number(row.firstTokenMs ?? row.firstByteMs);
+      if (first > 0) group.firsts.push(first);
+      group.output += Number(row.output) || 0;
+      group.lastAt = Math.max(group.lastAt, at);
+      groups.set(app + "\n" + model, group);
+    }
+  }
+  const median = (values: number[]) => { const sorted = values.slice().sort((a, b) => a - b), mid = sorted.length >> 1; return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2; };
+  return [...groups.values()].map((group) => ({ app: group.app, model: group.model, count: group.speeds.length, tokensPerSec: Math.round(median(group.speeds) * 10) / 10,
+    fastest: Math.max(...group.speeds), slowest: Math.min(...group.speeds), firstTokenMs: group.firsts.length ? Math.round(median(group.firsts)) : null, output: group.output, lastAt: group.lastAt }))
+    .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
+}
+
+/*
+ * 型号核验用（0.3.35）：经 TokenPulse 转发（本地路由 / 透明转发）的请求，转发时从上游回复里读到了响应 ID 和实际用的型号，
+ * 记在转发记录里。请求记录那边拿 CLI 会话文件里的响应 ID 来这里查，对上了就知道上游真回的是哪个型号——
+ * Codex 的会话文件不记返回型号，只有这样能核验。
+ * 按月份文件建索引（响应 ID → 请求的型号、返回的型号），文件没变就用缓存；查的时候看请求所在的那个月和前后各一个月。
+ */
+export type RouteReturned = { requested?: string; returned: string };
+const returnedCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, RouteReturned> }>();
+function returnedIndex(name: string): Map<string, RouteReturned> | null {
+  const file = path.join(routeLogDir(), name);
+  let stat: fs.Stats;
+  try { stat = fs.statSync(file); } catch { return null; }
+  const cached = returnedCache.get(name);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.index;
+  const index = new Map<string, RouteReturned>();
+  try {
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+      if (!line.includes('"returnedModel"')) continue;
+      let row: Record<string, unknown>;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (typeof row.responseId !== "string" || typeof row.returnedModel !== "string" || !row.returnedModel) continue;
+      index.set(row.responseId, { ...(typeof row.requestModel === "string" && row.requestModel ? { requested: row.requestModel } : {}), returned: row.returnedModel });
+    }
+  } catch { return null; }
+  returnedCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, index });
+  return index;
+}
+const monthName = (at: number, shift: number) => { const day = new Date(at); const moved = new Date(day.getFullYear(), day.getMonth() + shift, 1); return `${moved.getFullYear()}-${String(moved.getMonth() + 1).padStart(2, "0")}.jsonl`; };
+/** 这个响应 ID 的请求，转发时从上游回复里读到的型号。没经过 TokenPulse 转发、或者没读到，返回 null。 */
+export function routeReturned(responseId: string | undefined, at: number): RouteReturned | null {
+  if (!responseId) return null;
+  for (const shift of [0, -1, 1]) {
+    const hit = returnedIndex(monthName(at, shift))?.get(responseId);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 /** 测试用：丢掉内存里的缓存。 */
-export function resetRouteLedgerCache() { cache = null; appended = 0; }
+export function resetRouteLedgerCache() { cache = null; appended = 0; returnedCache.clear(); }

@@ -32,7 +32,7 @@
   const HUES = ['#4f7fd9', '#d9774f', '#10a37f', '#8b5cf6', '#c9832f', '#e05a8a', '#0ea5a4', '#65a30d'];
   const SECTION_KEY = 'tokenpulse-providers-section';
 
-  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'router', 'logs', 'prism', 'import', 'safety'];
+  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'router', 'pass', 'logs', 'prism', 'import', 'safety'];
   /** 能建号池的工具（桌面端用自己的网关配置，不支持）。 */
   const POOL_APPS = ['claude', 'codex', 'grok'];
   let view = null, signature = '', section = 'overview', editor = null, editorPane = 'basic', dragging = null, entered = false;
@@ -154,7 +154,7 @@
     }
   }
   function sig(data) {
-    return JSON.stringify([data.readOnly, data.providers.map(p => [p.id, p.name, p.active, p.direct, p.failover, p.baseUrl, p.model, p.upstream, p.keyHint, p.notes, p.sort, p.slots, p.desktopMode, p.contextWindow, p.codexContextWindow, p.codexAutoCompact, p.thinking, p.icon, p.avatar ? p.avatar.length : 0, p.pool]), data.proxy.apps, data.proxy.running, data.proxy.port, data.health, (data.logs || []).length && data.logs[0]?.at]);
+    return JSON.stringify([data.readOnly, data.providers.map(p => [p.id, p.name, p.active, p.direct, p.failover, p.baseUrl, p.model, p.upstream, p.keyHint, p.notes, p.sort, p.slots, p.desktopMode, p.contextWindow, p.codexContextWindow, p.codexAutoCompact, p.thinking, p.icon, p.avatar ? p.avatar.length : 0, p.pool]), data.proxy.apps, data.proxy.running, data.proxy.port, data.health, (data.logs || []).length && data.logs[0]?.at, data.pass]);
   }
 
   /* ---------------- 整体结构 ---------------- */
@@ -165,7 +165,7 @@
     const main = el('div', { class: 'pv-main', role: 'tabpanel', 'aria-label': editor ? '编辑供应商' : sectionTitle() });
     if (editor) main.append(editorForm());
     else {
-      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), router, logs, prism: prismSection, import: importSection, safety: safetySection }[section]();
+      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), router, pass: passSection, logs, prism: prismSection, import: importSection, safety: safetySection }[section]();
       main.append(...[].concat(body));
     }
     const layout = el('div', { class: 'pv' }, [editor ? editorNav() : nav(), main]);
@@ -176,12 +176,13 @@
     if (pending) return;
     if (next === section) return;
     section = next;
+    if (next === 'pass') passSpeedStale = true; // 每次进这一页重新读一次速度汇总
     try { localStorage.setItem(SECTION_KEY, next); } catch { /* 记不住就算了 */ }
     render(true);
     root.querySelector(`.pv-nav [data-section="${next}"]`)?.focus();
   }
   function sectionTitle() {
-    return { overview: '概览', router: '本地路由', logs: '转发记录', prism: 'Prism 桥', import: '导入供应商', safety: '配置保护' }[section] || appOf(section)?.name || '';
+    return { overview: '概览', router: '本地路由', pass: '透明转发', logs: '转发记录', prism: 'Prism 桥', import: '导入供应商', safety: '配置保护' }[section] || appOf(section)?.name || '';
   }
 
   /** 二级菜单：概览 / 四家工具 / 路由 / 导入。每项带一句当前状态，不用点进去也知道现在是什么情况。 */
@@ -206,6 +207,7 @@
       })],
       ['本地路由', [
         item('router', '路由服务', view.proxy.running ? `运行中 · ${routeOn} 家` : '已停止', lead('route'), el('i', { class: 'pv-dot ' + (view.proxy.running ? 'ok' : 'off') })),
+        item('pass', '透明转发', passOn().length ? `测速中 · ${passOn().length} 家` : '已关闭', lead('globe'), el('i', { class: 'pv-dot ' + (passOn().length ? 'ok' : 'off') })),
         item('logs', '转发记录', null, lead('trace'), (view.logs || []).length ? el('span', { class: 'pv-nav-badge', text: String(view.logs.length) }) : null),
         prismShown() ? item('prism', 'Prism 桥', PRISM_PHASE[prism.phase], lead('globe'), el('i', { class: 'pv-dot ' + (prism?.phase === 'running' ? 'ok' : prism?.phase === 'starting' ? 'degraded' : 'off') })) : null,
       ]],
@@ -444,6 +446,67 @@
     ];
   }
 
+  /* ---------------- 透明转发 ---------------- */
+
+  /*
+   * 透明转发（0.3.35）：官方登录的请求在本机过一道，原样转给官方，只为了量速度。
+   * 这一页：说明它做什么、不做什么；每个工具一个开关；下面是量到的各模型速度（来自保存的转发记录）。
+   */
+  const PASS_TOOLS = ['claude', 'codex'];
+  function passOn() { return PASS_TOOLS.filter(app => view.pass?.[app]?.on); }
+  let passSpeed = null, passSpeedLoading = false, passSpeedAt = 0, passSpeedStale = false;
+  async function loadPassSpeed() {
+    if (passSpeedLoading) return;
+    passSpeedLoading = true;
+    try { passSpeed = await api.agentPassSpeed?.(7) || []; } catch { passSpeed = []; }
+    finally { passSpeedLoading = false; passSpeedAt = Date.now(); if (section === 'pass' && !editor && !pending) render(false); }
+  }
+  const seconds = ms => (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' 秒';
+  async function togglePass(app, on) {
+    await run(() => api.agentPass(app, on), r => r.result?.message || (on ? '透明转发已打开' : '透明转发已关闭'), on ? '正在打开透明转发…' : '正在关闭透明转发，恢复直连…');
+  }
+  function passSection() {
+    // 进这一页、或者有新的转发之后，重新读一次汇总
+    if (!passSpeedLoading && (passSpeed === null || passSpeedStale || (view.logs || []).some(item => item.pass && item.at > passSpeedAt))) { passSpeedStale = false; loadPassSpeed(); }
+    const point = text => el('li', { text });
+    const what = el('section', { class: 'pv-card pv-pass-what' }, [
+      el('div', { class: 'pv-pass-cols' }, [
+        el('div', {}, [el('b', { text: '它做的' }), el('ul', {}, [point('把工具发给官方的请求原样转过去：请求头、登录凭据、内容一个字节都不动。'), point('把官方的回复原样还给工具。'), point('记下时间：多久收到第一段内容、每秒输出多少 Token。'), point('从回复里读 Token 数，和上游实际用的型号（给请求记录里的「型号核验」用，Codex 自己不记这个）。')])]),
+        el('div', {}, [el('b', { text: '它不做的' }), el('ul', {}, [point('不保存、不读取登录凭据。凭据还是工具自己带、自己续期。'), point('不保存请求和回复的内容。'), point('不换账号、不重试、不改型号和思考等级。'), point('只在本机（127.0.0.1）监听，别的电脑连不上。')])]),
+      ]),
+      el('small', { class: 'pv-hint', text: '打开后只在工具配置里加一行「接口地址 = 本机」；关闭或退出 TokenPulse 时拿掉这一行，恢复直连。开关之后，以及退出 TokenPulse 之后，已经开着的会话要重新打开才生效。请求从 TokenPulse 发往官方，所以走的是 TokenPulse 的网络（系统代理 / 环境变量里的代理）。' }),
+    ]);
+    const rows = PASS_TOOLS.map((id, i) => {
+      const a = appOf(id), state = view.pass?.[id] || { on: false, connected: false, blocked: '' };
+      const toggle = el('button', { type: 'button', class: 'pv-switch' + (state.on ? ' on' : ''), role: 'switch', 'aria-checked': String(state.on), 'aria-label': `${a.name} 透明转发`, disabled: !state.on && state.blocked ? '' : null }, [el('i')]);
+      toggle.addEventListener('click', () => togglePass(id, !state.on));
+      const note = state.on
+        ? state.connected ? `已打开：${a.name} 连 http://${view.proxy.host}:${view.proxy.port}/pass/${id}，原样转给官方。` : '开关开着，但工具配置里那一行不在了（可能被别的程序改掉）。关掉再打开可以重新接上。'
+        : state.blocked || '直连官方，没有测速。';
+      return paint(el('div', { class: 'pv-route-row' + (state.on ? ' on' : '') }, [appMark(id), el('div', { class: 'pv-grow' }, [el('b', { text: a.name }), el('small', { text: note, translate: state.on && state.connected ? 'no' : null })]), toggle]), { '--i': i });
+    });
+    const speed = passSpeed || [];
+    const table = speed.length ? el('div', { class: 'pv-log pv-speed' }, [
+      el('div', { class: 'pv-speed-row head' }, [el('span'), el('span', { text: '型号' }), el('span', { text: '速度（中位）' }), el('span', { text: '首字延迟（中位）' }), el('span', { text: '最慢 – 最快' }), el('span', { text: '次数' })]),
+      ...speed.map((item, i) => paint(el('div', { class: 'pv-speed-row' }, [
+        appMark(item.app, 'pv-log-avatar'),
+        el('b', { translate: 'no', text: item.model }),
+        el('strong', { translate: 'no', text: `${item.tokensPerSec} Token/秒` }),
+        el('span', { translate: 'no', text: item.firstTokenMs == null ? '—' : seconds(item.firstTokenMs) }),
+        el('span', { class: 'muted', translate: 'no', text: `${Math.round(item.slowest)} – ${Math.round(item.fastest)}` }),
+        el('span', { class: 'muted', translate: 'no', text: String(item.count) }),
+      ]), { '--i': Math.min(i, 16) })),
+    ]) : el('div', { class: 'pv-empty' }, [el('p', { text: passSpeed === null ? '正在读取…' : '还没有量到速度。打开上面的开关，重新打开工具用一会儿，这里就会有数字。' })]);
+    return [
+      head('透明转发', '想知道模型有多快？让官方登录的请求在本机过一道：原样转发、计时、读回复里的 Token 数。默认关闭，按工具分别打开。'),
+      what,
+      el('div', { class: 'pv-list-head' }, [el('h3', { text: '各工具' }), el('small', { text: '只对工具自己的官方登录有效；用第三方供应商或号池时不能开。' })]),
+      el('div', { class: 'pv-route-list' }, rows),
+      el('div', { class: 'pv-list-head' }, [el('h3', { text: '模型速度 · 最近 7 天' }), el('small', { text: '速度 = 输出 Token ÷ 出字用的时间（含思考）。每一次请求的数字在「转发记录」里。' })]),
+      table,
+    ];
+  }
+
   /* ---------------- 转发记录 ---------------- */
 
   /*
@@ -477,12 +540,13 @@
       appMark(item.app, 'pv-log-avatar'),
       el('span', { class: 'pv-log-time', translate: 'no', title: new Date(item.at).toLocaleString(locale, { hour12: false }), text: new Date(item.at).toDateString() === today ? new Date(item.at).toLocaleTimeString(locale, { hour12: false }) : new Date(item.at).toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) }),
       el('b', { translate: 'no', text: item.provider }),
-      el('span', { class: 'pv-log-model', translate: 'no', text: item.model || '—' }),
+      el('span', { class: 'pv-log-model', translate: 'no', title: item.tier ? `服务档位：${item.tier}` : null, text: (item.model || '—') + (item.tier === 'priority' || item.tier === 'fast' ? ' ⚡' : '') }),
       el('span', { class: 'pv-log-status', translate: 'no', text: `HTTP ${item.status}` }),
-      el('span', { class: 'pv-log-ms', translate: 'no', text: `${item.ms} ms` }),
+      el('span', { class: 'pv-log-ms', translate: 'no', title: item.pass ? '首字延迟 · 总耗时' : null, text: item.pass && (item.firstTokenMs ?? item.firstByteMs) != null ? `${seconds(item.firstTokenMs ?? item.firstByteMs)} · ${seconds(item.ms)}` : `${item.ms} ms` }),
       el('span', { class: 'pv-log-tokens', translate: 'no', title: '输入 / 输出 Token（从回复里读到的）', text: item.input != null || item.output != null ? `${item.input ?? '—'} / ${item.output ?? '—'}` : '' }),
+      item.tokensPerSec ? el('small', { class: 'pv-log-speed', translate: 'no', text: `${item.tokensPerSec} Token/秒` }) : null,
       item.error ? el('small', { class: 'pv-log-error', text: item.error, translate: 'no' }) : null,
-    ]), { '--i': Math.min(i, 16) }))) : el('div', { class: 'pv-empty' }, [el('p', { text: '还没有经过本地路由的请求。打开某一家的本地路由后，这里会列出最近的转发。' })]);
+    ]), { '--i': Math.min(i, 16) }))) : el('div', { class: 'pv-empty' }, [el('p', { text: '还没有经过本地路由或透明转发的请求。打开某一家的本地路由或透明转发后，这里会列出最近的转发。' })]);
     const keep = el('section', { class: 'pv-card pv-log-keep' }, [
       el('div', { class: 'pv-grow' }, [el('b', { text: '全部转发记录都保存在本机' }), el('small', { text: '每一次转发记一行：时间、交给了哪家 / 号池里的哪个账号、型号、状态、耗时、大小和 Token 数，按月一个文件，不会自动清理。不记请求和回复的内容，也不记密钥。' })]),
       el('button', { type: 'button', class: 'btn', 'data-action': 'open-route-log' }, [icon('folder'), el('span', { text: '打开记录文件夹' })]),
@@ -490,7 +554,7 @@
     keep.querySelector('button').addEventListener('click', () => api.agentOpenRouteLog?.());
     const older = logMore || logLoading ? el('div', { class: 'pv-log-more' }, [el('button', { type: 'button', class: 'btn', 'data-action': 'older-logs', disabled: logLoading ? '' : null }, [el('span', { text: logLoading ? '正在读取…' : '再看更早的' })])]) : list.length ? el('p', { class: 'pv-log-end', text: '已经是最早的一条了。' }) : null;
     older?.querySelector('button')?.addEventListener('click', loadOlderLogs);
-    return [head('转发记录', '经过本地路由的每一次转发，最新的在最上面，往下可以一直翻到最早的。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), keep, table, older].filter(Boolean);
+    return [head('转发记录', '经过本地路由和透明转发的每一次转发，最新的在最上面，往下可以一直翻到最早的。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), keep, table, older].filter(Boolean);
   }
 
   /* ---------------- Prism 桥（0.3.19） ---------------- */
@@ -1548,5 +1612,6 @@
   });
   api.prismState?.().then(setPrism).catch(() => {});
   api.onPrism?.(setPrism);
-  window.PulseProviders = { show };
+  // open：别的页面（额度详情的「模型速度」）直接跳到这里的某一节
+  window.PulseProviders = { show, open: next => { if (SECTIONS.includes(next)) { section = next; try { localStorage.setItem(SECTION_KEY, next); } catch { /* 记不住就算了 */ } if (view && !editor && !pending) render(true); } } };
 })();

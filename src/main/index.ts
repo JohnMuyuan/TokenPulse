@@ -1,7 +1,8 @@
 import { ExitMonitor } from "./egress-monitor";
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
-import { readRouteLog, routeLogDir } from "../core/route-ledger";
+import { passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
+import { accountSpeed } from "../core/pass-speed";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import fsSync from "fs";
 import fs from "fs/promises";
@@ -29,7 +30,7 @@ import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOffi
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
-import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
 import { randomUUID } from "crypto";
@@ -880,6 +881,16 @@ if (!app.requestSingleInstanceLock()) {
       if (!isAgentApp(app)) throw new Error("不认识这个工具");
       return setAppProxy(app, on === true);
     }, on !== true));
+    ipcMain.handle("agent:pass", (_event, app: unknown, on: unknown) => agentWrite(`${on === true ? "打开" : "关闭"}透明转发（${isAgentApp(app) ? AGENT_LABEL[app] : ""}）`, () => {
+      if (!isAgentApp(app)) throw new Error("不认识这个工具");
+      return setAppPass(app, on === true);
+    }, on !== true));
+    ipcMain.handle("agent:pass-speed", (_event, days: unknown) => { try { return passSpeed(Number(days) || 7); } catch { return []; } });
+    // 额度详情里「模型速度」那张图：某个官方账号各模型的速度走势（透明转发量到的，来自永久保存的转发记录）
+    ipcMain.handle("pass-speed:account", (_event, kind: unknown, account: unknown, days: unknown) => {
+      if (kind !== "claude" && kind !== "chatgpt" && kind !== "grok") return null;
+      try { return accountSpeed(kind, typeof account === "string" ? account.slice(0, 200) : "", Math.max(0, Math.min(3650, Number(days) || 0))); } catch { return null; }
+    });
     ipcMain.handle("agent:port", (_event, port: unknown) => agentWrite("修改本地路由端口", () => setProxyPort(Number(port))));
     ipcMain.handle("agent:failover", (_event, id: unknown, on: unknown) => agentWrite("修改备用队列", () => setFailover(String(id || ""), on === true)));
     ipcMain.handle("agent:reorder", (_event, app: unknown, ids: unknown) => agentWrite("调整供应商顺序", () => {
@@ -961,7 +972,7 @@ if (!app.requestSingleInstanceLock()) {
     let startupNotice = "";
     const resumed = resumeAgentProxy().finally(() => configReason("")).then(() => {
       const notice = agentView().notice || "";
-      if (/已自动修复|发现需要修复/.test(notice)) startupNotice = notice;
+      if (/已自动修复|发现需要修复|透明转发没有恢复/.test(notice)) startupNotice = notice;
       publishAgent();
     }).catch((error) => console.error("[TokenPulse] 本地路由没有恢复", error));
     ipcMain.handle("agent:startup-notice", async () => { await resumed; const notice = startupNotice; startupNotice = ""; return notice; });
