@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.10.05",
-  "updatedAt": "2026-10-05T07:12:58.854Z",
+  "version": "2026.10.08",
+  "updatedAt": "2026-10-08T07:33:28.341Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。 labels：给型号打标签（promo 优惠价、until 到期日 YYYY-MM-DD、note 说明），到期自动去掉；pinned 规则也可以带 until。",
   "prices": [
     {
@@ -641,18 +641,17 @@
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-sonnet-5-5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
       "input": 2,
       "output": 10,
-      "cacheRead": 0.2,
+      "cacheRead": 0.1,
       "cacheWrite": 2.5,
       "note": "自动：claude-sonnet-5-5（LiteLLM）",
       "auto": "claude-sonnet-5-5",
-      "changedAt": "2026-09-30",
+      "changedAt": "2026-10-08",
       "previous": {
-        "input": 3,
-        "output": 15,
-        "cacheRead": 0.3,
-        "cacheWrite": 3.75
-      },
-      "previousFallback": true
+        "input": 2,
+        "output": 10,
+        "cacheRead": 0.2,
+        "cacheWrite": 2.5
+      }
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-3\\.5-turbo-16k(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -729,6 +728,23 @@
         "output": 15,
         "cacheRead": 0.3,
         "cacheWrite": 3.75
+      },
+      "previousFallback": true
+    },
+    {
+      "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?claude-haiku-5-5(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
+      "input": 0.1,
+      "output": 0.5,
+      "cacheRead": 0.01,
+      "cacheWrite": 0.125,
+      "note": "自动：claude-haiku-5-5（LiteLLM）",
+      "auto": "claude-haiku-5-5",
+      "changedAt": "2026-10-08",
+      "previous": {
+        "input": 1,
+        "output": 5,
+        "cacheRead": 0.1,
+        "cacheWrite": 1.25
       },
       "previousFallback": true
     },
