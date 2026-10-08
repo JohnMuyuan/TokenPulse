@@ -6,6 +6,8 @@
 
 ### 现在的状态
 
+- 为避免Google账号受到风控，暂不支持Antigravity。
+
 - **2026-10-07 发布 0.3.37 已完成**：用户明确授权构建安装包并发布 GitHub，要求模仿此前 Release 说明、及时更新交接。此前线上版本为 v0.3.36；为使已安装用户收到修复更新，本轮按下一补丁版本 0.3.37 发布，保留旧标签。package.json / package-lock.json 均为 0.3.37，renderer/intro.js 已加入新版本说明。发布正文 dist/release-0.3.37.md 参照 0.3.35 / 0.3.36 的中文格式、修复说明和下载表。
   - 工程修复和完整测试结果见下面 0.3.36 测试阶段记录；本轮业务代码未再改动。`npm run compile && electron scripts/test-intro-ui.cjs` 退出 0；直接设置 TOKENPULSE_TEST_APP 为 dist/win-unpacked/resources/app.asar 后运行同一 UI 测试也退出 0，包内更新说明 / 升级一次性弹窗 / 引导 DOM 检查通过，未截图；`git diff --check` 通过；`git fetch origin` 成功，远端没有新增提交。
   - **构建与校验完成**：`npm run dist` 退出 0。包内版本为 0.3.37，9 个修改的运行时文件逐字节与当前 build / renderer 一致；latest.yml 的 version / 安装包路径 / 大小 / SHA512 均核验通过。Setup.exe 为 112411787 字节，blockmap 为 119593 字节，Portable.exe 为 112154626 字节，latest.yml 为 352 字节；四个附件 SHA256 清单保存于 dist/release-0.3.37-assets.json，待发布后与 GitHub digest 比较。两种 exe 的 Authenticode 状态均为 NotSigned，发布说明沿用此前的下载提示。
