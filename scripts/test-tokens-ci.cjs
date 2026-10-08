@@ -134,6 +134,34 @@ const until = async (check, ms = 10000) => { const end = Date.now() + ms; while 
     delete process.env.FAKE_TOKENS_LOGIN_MS;
     pass('a login waiting for the browser can be cancelled, and its process is ended');
 
+    // Environment checks own every runner, including the later version query.
+    for (const stage of ['where', 'version', 'before-env']) {
+      let handles = [], kills = 0;
+      const probe = new TokensUploader({ runner: line => {
+        let resolve; const done = new Promise(r => { resolve = r; });
+        const handle = { line, done, resolve, kill: () => { kills++; resolve({ code: null, output: '', timedOut: false }); } };
+        handles.push(handle); return handle;
+      } });
+      const pending = probe.check();
+      if (stage === 'before-env') probe.stop();
+      else {
+        await until(() => handles.length === 2);
+        if (stage === 'version') {
+          handles.forEach(h => h.resolve({ code: 0, output: 'synthetic path', timedOut: false }));
+          await until(() => handles.length === 3);
+          probe.stop();
+        } else probe.cancelJob();
+      }
+      try {
+        assert.equal(kills, stage === 'where' ? 2 : stage === 'version' ? 1 : 0, 'all active checks are killed');
+      } finally { handles.forEach(h => h.resolve({ code: 1, output: '', timedOut: false })); }
+      await pending;
+      assert.equal(handles.length, stage === 'before-env' ? 0 : stage === 'where' ? 2 : 3, 'no work spawned after cancellation');
+      assert.equal(probe.state().running, null);
+      probe.stop();
+    }
+    pass('check cancellation/stop kills every active child and stops before spawning later stages');
+
     // 重新启动：设置和上次结果还在；打开了「启动时上传」就先传一次
     uploader.stop();
     const reopened = new TokensUploader({ now: () => now, launchDelayMs: 10, tickMs: 60_000 });

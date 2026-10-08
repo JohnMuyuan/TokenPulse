@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-agent-ui-'));
 const home = path.join(root, 'home');
@@ -26,7 +26,7 @@ app.commandLine.appendSwitch('lang', 'zh-CN');
 const watchdog = setTimeout(() => { console.error('FAIL agent switch UI timed out'); app.exit(1); }, 40000);
 app.whenReady().then(() => {});
 app.on('web-contents-created', (_event, contents) => contents.once('did-finish-load', async () => {
-  const evaluate = code => contents.executeJavaScript(code);
+  const evaluate = code => contents.executeJavaScript(code).catch(error => { throw new Error(error.message + ' ← ' + String(code).slice(0, 200)); });
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async code => {
     const end = Date.now() + 10000;
@@ -48,23 +48,41 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 11 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
     assert.equal(await evaluate(`document.querySelector('${P}').innerText.includes('Gemini')`), false, '页面上不能再有 Gemini');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'overview');
-    // 转发记录（0.3.34）：永久保存，说明卡里能打开记录文件夹；0.3.38 起一页 20 条，翻到还没读的页再去读更早的
+    // 转发记录（0.3.34）：永久保存，说明卡里能打开记录文件夹；0.3.38 起一页 20 条，翻到还没读的页再去读更早的；0.3.39 起有页码、能直接跳页
     await nav('logs');
-    const pagerText = () => evaluate(`document.querySelector('${P} .pv-log-pager > span').textContent`);
+    const pagerText = () => evaluate(`document.querySelector('${P} .pv-log-label').textContent`);
     const pageTokens = () => evaluate(`[...document.querySelectorAll('${P} .pv-log-tokens')].map(e => e.textContent)`);
-    const pagerState = () => evaluate(`[...document.querySelectorAll('${P} .pv-log-pager button')].map(b => b.disabled)`);
+    const pagerState = () => evaluate(`[...document.querySelectorAll('${P} [data-action=logs-prev], ${P} [data-action=logs-next]')].map(b => b.disabled)`);
+    const pageNumbers = () => evaluate(`[...document.querySelectorAll('${P} .pv-log-pages > *')].map(e => e.classList.contains('on') ? '[' + e.textContent + ']' : e.textContent).join(' ')`);
+    const atPage = (page, rows = 20) => until(`(document.querySelector('${P} .pv-log-label')?.textContent || '').startsWith('第 ${page} /') && document.querySelectorAll('${P} .pv-log-row').length === ${rows}`);
     await until(`document.querySelectorAll('${P} .pv-log-row').length === 20`);
-    assert.equal(await pagerText(), '第 1 页 · 已读取 100 条 · 更早的还没读完');
+    // 第一批就数好了一共多少条：一开始就知道共几页
+    assert.equal(await pagerText(), '第 1 / 7 页 · 共 130 条转发');
     assert.deepEqual(await pagerState(), [true, false], '第一页：不能往前，可以往后');
+    assert.equal(await pageNumbers(), '[1] 2 3 … 7');
     assert.match(await evaluate(`document.querySelector('${P} .pv-head p, ${P} .pv-head small')?.textContent || document.querySelector('${P}').textContent`), /一页 20 条，可以一直往前翻到最早的/);
     assert.equal((await evaluate(`document.querySelector('${P}').textContent`)).includes('最多 30 条'), false, '旧说法不能留着');
     assert.match(await evaluate(`document.querySelector('${P} .pv-log-keep').textContent`), /保存在本机.*不会自动清理.*不记请求和回复的内容.*打开记录文件夹/);
     assert.deepEqual(await evaluate(`(() => { const r = document.querySelector('${P} .pv-log-row'); return [r.classList.contains('bad'), r.querySelector('b').textContent, r.querySelector('.pv-log-tokens').textContent, r.querySelector('.pv-log-error').textContent]; })()`), [true, 'Old pool · 0', '1129 / 10', 'boom'], '最新的在最上面，带 Token 数和报错');
     const seenTokens = await pageTokens();
-    // 一页 20 条：先读的 100 条是 5 页，翻到第 5 页时去读更早的那一批，读完就知道一共 7 页
+    // 直接跳到第 6 页：已读的只有 5 页，跳过去时接着读，读到了就显示
+    await evaluate(`(() => { const input = document.querySelector('${P} .pv-log-jump-input'); input.value = '6'; input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+    await atPage(6);
+    assert.equal(await pageNumbers(), '1 … 4 5 [6] 7');
+    // 点页码
+    await evaluate(`document.querySelector('${P} .pv-log-num[data-page="4"]').click()`);
+    await atPage(4);
+    await evaluate(`document.querySelector('${P} .pv-log-num[data-page="1"]').click()`);
+    await atPage(1);
+    // 跳的页数超出范围：落到最后一页
+    await evaluate(`(() => { const input = document.querySelector('${P} .pv-log-jump-input'); input.value = '99'; document.querySelector('${P} [data-action=logs-jump]').click(); })()`);
+    await atPage(7, 10);
+    await evaluate(`document.querySelector('${P} .pv-log-num[data-page="1"]').click()`);
+    await atPage(1);
+    // 下一页一页页翻到底：130 条不漏不重
     for (let page = 2; page <= 7; page++) {
       await evaluate(`document.querySelector('${P} [data-action=logs-next]').click()`);
-      await until(`/^第 ${page} /.test(document.querySelector('${P} .pv-log-pager > span')?.textContent || '') && document.querySelectorAll('${P} .pv-log-row').length === ${page === 7 ? 10 : 20}`);
+      await atPage(page, page === 7 ? 10 : 20);
       seenTokens.push(...await pageTokens());
     }
     assert.equal(await pagerText(), '第 7 / 7 页 · 共 130 条转发');
@@ -72,11 +90,11 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(new Set(seenTokens).size, 130, '同毫秒、同供应商的旧记录不漏页，也不被去重丢掉');
     assert.equal(await evaluate(`[...document.querySelectorAll('${P} .pv-log-row .pv-log-ms')].at(-1).textContent`), '100 ms', '最后一页最下面是最早的那条');
     await evaluate(`document.querySelector('${P} [data-action=logs-prev]').click()`);
-    await until(`document.querySelectorAll('${P} .pv-log-row').length === 20`);
+    await atPage(6);
     assert.equal(await pagerText(), '第 6 / 7 页 · 共 130 条转发');
     // 透明转发（0.3.35）：说明做什么 / 不做什么，Claude Code 和 Codex 各一个开关，默认关；下面是量到的速度
     await nav('pass');
-    await until(`document.querySelectorAll('${P} .pv-route-row .pv-switch').length === 3 && /还没有量到速度/.test(document.querySelector('${P} .pv-empty')?.textContent || '')`);
+    await until(`document.querySelectorAll('${P} .pv-route-row .pv-switch').length === 3 && document.querySelector('${P} [data-action=open-speed]')`);
     assert.match(await evaluate(`document.querySelector('${P} .pv-pass-what').textContent`), /一个字节都不动.*型号核验.*不保存、不读取登录凭据.*不保存请求和回复的内容.*只在本机.*恢复直连/);
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-route-row')].map(r => [r.querySelector('b').textContent, r.querySelector('.pv-switch').getAttribute('aria-checked'), r.querySelector('.pv-switch').disabled, r.querySelector('small').textContent])`), [['Claude Code', 'false', false, '直连官方，没有测速。'], ['Codex', 'false', false, '直连官方，没有测速。'], ['Grok CLI', 'false', false, '直连官方，没有测速。']]);
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-route-row')].map(r => /Remote Control/.test(r.querySelector('.pv-pass-warn')?.textContent || ''))`), [true, false, false], '只在 Claude Code 那一行提醒 Remote Control 用不了');
@@ -92,12 +110,78 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=pass] small').textContent`), '测速中 · 1 家');
     // 仍然算官方登录：Claude Code 那一页的当前供应商是官方
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=claude] small').textContent`), 'Claude 官方');
-    // 量到的速度来自保存的转发记录：放三条进去，回到这一页就能看到（按型号取中位数）
+    // 量到的速度来自保存的转发记录（0.3.39 起在额度详情「全部模型的速度」）：放几条进去，按型号 × 思考等级取中位数
     const month = new Date(), speedFile = path.join(root, 'data', 'route-log', `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}.jsonl`);
-    fs.writeFileSync(speedFile, [[80, 1200], [100, 1500], [120, 2400]].map(([speed, first], i) => JSON.stringify({ at: Date.now() - 60000 * (i + 1), app: 'claude', providerId: 'pass-claude', provider: '官方登录（透明转发）', model: 'claude-qa-5', requestModel: 'claude-qa-5', status: 200, ms: 9000, pass: true, firstByteMs: 900, firstTokenMs: first, tokensPerSec: speed, input: 100, output: 700 })).join('\n') + '\n');
-    await nav('overview'); await nav('pass');
-    await until(`document.querySelectorAll('${P} .pv-speed-row:not(.head)').length === 1`);
-    assert.deepEqual(await evaluate(`[...document.querySelector('${P} .pv-speed-row:not(.head)').children].slice(1).map(c => c.textContent)`), ['claude-qa-5官方登录（透明转发）', '100 Token/秒', '1.5 秒', '80 – 120', '3']);
+    const speedRow = (speed, first, i, extra = {}) => JSON.stringify({ at: Date.now() - 60000 * (i + 1), app: 'claude', providerId: 'pass-claude', provider: '官方登录（透明转发）', model: 'claude-qa-5', requestModel: 'claude-qa-5', status: 200, ms: 9000, pass: true, firstByteMs: 900, firstTokenMs: first, tokensPerSec: speed, input: 100, output: 700, ...extra });
+    fs.writeFileSync(speedFile, [...[[80, 1200], [100, 1500], [120, 2400]].map(([speed, first], i) => speedRow(speed, first, i)), speedRow(98, 6000, 5, { effort: 'max' }), speedRow(undefined, 800, 6, { model: 'short-only', requestModel: 'short-only', output: 5 })].join('\n') + '\n');
+    // 透明转发页只留一句话和按钮，点了去用量明细的「模型速度走势」折线图
+    assert.equal(await evaluate(`document.querySelector('${P} .pv-speed')`), null, '透明转发页不再放速度表');
+    assert.match(await evaluate(`document.querySelector('${P} [data-action=open-speed]').closest('section').textContent`), /量到的速度在「用量明细」里.*思考等级分开一条线.*永久保存/);
+    await evaluate(`document.querySelector('${P} [data-action=open-speed]').click()`);
+    const SPEED = '.speed-lines-panel';
+    await until(`state.page === 'usage' && document.querySelectorAll('${SPEED} .speed-lines-chip').length === 2`);
+    const chips = () => evaluate(`[...document.querySelectorAll('${SPEED} .speed-lines-chip')].map(c => [c.querySelector('.speed-lines-name').textContent, c.querySelector('small').textContent, c.querySelector('b').textContent, c.getAttribute('aria-pressed')])`);
+    assert.deepEqual(await chips(), [['claude-qa-5', '官方登录（透明转发）', '100', 'true'], ['claude-qa-5 · max', '官方登录（透明转发）', '98', 'true']], '思考等级分开一条线，图例写整段时间的中位速度');
+    assert.equal(await evaluate(`document.querySelector('${SPEED} [data-speed-range].on').dataset.speedRange`), '0', '默认看全部');
+    assert.ok(await evaluate(`document.querySelectorAll('${SPEED} .speed-lines-dot').length >= 2`), '每条线至少一个点');
+    // 换成首字：图例里的数字跟着换
+    await evaluate(`document.querySelector('${SPEED} [data-speed-metric=first]').click()`);
+    await until(`document.querySelector('${SPEED} .speed-lines-chip b').textContent === '1.5 秒'`);
+    assert.deepEqual((await chips()).map(c => c[2]), ['1.5 秒', '6 秒', '0.8 秒'], '首字独立纳入没有速度的短回复');
+    assert.equal((await chips())[2][0], 'short-only');
+    // 点图例关掉一条线
+    await evaluate(`document.querySelectorAll('${SPEED} .speed-lines-chip')[1].click()`);
+    await until(`document.querySelectorAll('${SPEED} .speed-lines-chip')[1].getAttribute('aria-pressed') === 'false'`);
+    assert.match(await evaluate(`document.querySelector('${SPEED} .speed-lines-bar').textContent`), /2 \/ 3 条线/);
+    await evaluate(`document.querySelectorAll('${SPEED} .speed-lines-chip')[1].click()`);
+    await evaluate(`document.querySelector('${SPEED} [data-speed-metric=speed]').click()`);
+    assert.equal((await chips()).length, 2, '速度图不把缺失速度显示成零');
+    // 旧范围 IPC 故意延迟：新请求先返回、旧请求再返回，DOM 必须始终属于选中的 7 天。
+    const ranges = [];
+    let finishOld, failRange = true;
+    const sample = model => { const now = Date.now(), at = now - 3600000; return { from: at, to: now, bucketMs: 3600000, total: 1, lines: [{ app: 'claude', model, via: '', effort: '', fast: false, count: 1, speedCount: 1, firstCount: 1, tokensPerSec: 42, firstTokenMs: 900, lastAt: now, buckets: [{ at, count: 1, speedCount: 1, firstCount: 1, tokensPerSec: 42, firstTokenMs: 900 }] }] }; };
+    ipcMain.removeHandler('pass-speed:series');
+    ipcMain.handle('pass-speed:series', (_event, days) => {
+      ranges.push(days);
+      if (days === 30) return new Promise(resolve => { finishOld = () => resolve(sample('ONLY_30_DAY_DATA')); });
+      if (days === 1 && failRange) return null;
+      return sample('ONLY_7_DAY_DATA');
+    });
+    try {
+      await evaluate(`window.speedBeforeRange = document.querySelector('${SPEED} .speed-lines-chart svg'); window.speedHeightBefore = document.querySelector('${SPEED} .speed-lines-body').getBoundingClientRect().height`);
+      await evaluate(`document.querySelector('${SPEED} [data-speed-range="30"]').click()`);
+      while (!finishOld) { await delay(10); assert.ok(ranges.length <= 1); }
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-chart svg') === window.speedBeforeRange`), true, '等待新范围时保留原图，不能闪成加载占位');
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-body').getBoundingClientRect().height === window.speedHeightBefore`), true, '等待范围时面板高度不跳动');
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-body').getAttribute('aria-busy')`), 'true');
+      assert.match(await evaluate(`document.querySelector('${SPEED} .speed-lines-status').textContent`), /暂显示上次结果/);
+      await evaluate(`document.querySelector('${SPEED} [data-speed-range="7"]').click()`);
+      await until(`document.querySelector('${SPEED} .speed-lines-name')?.textContent === 'ONLY_7_DAY_DATA'`);
+      finishOld();
+      // IPC ordering barrier: resolving this invoke follows delivery of the old response to this renderer.
+      await evaluate('window.tokenpulse.passSpeedSeries(7)');
+      await delay(80);
+      assert.deepEqual(ranges.slice(0, 2), [30, 7], '新范围没有被 loading 丢弃');
+      assert.equal(await evaluate(`document.querySelector('${SPEED} [data-speed-range].on').dataset.speedRange`), '7');
+      assert.equal((await chips())[0][0], 'ONLY_7_DAY_DATA', '旧范围结果不能覆盖新范围');
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-body').getAttribute('aria-busy')`), 'false');
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-status span').textContent`), '');
+      await evaluate(`window.speedBeforeFailure = document.querySelector('${SPEED} .speed-lines-chart svg'); document.querySelector('${SPEED} [data-speed-range="1"]').click()`);
+      await until(`document.querySelector('${SPEED} .speed-lines-status').textContent.includes('失败')`);
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-chart svg') === window.speedBeforeFailure`), true, '范围读取失败保留原图');
+      assert.equal((await chips())[0][0], 'ONLY_7_DAY_DATA');
+      failRange = false;
+      await evaluate(`document.querySelector('${SPEED} [data-action=speed-lines-retry]').click()`);
+      await until(`document.querySelector('${SPEED} .speed-lines-status span').textContent === '' && document.querySelector('${SPEED} [data-action=speed-lines-retry]').hidden`);
+      console.log('PASS speed graph DOM: short replies appear in first-token mode; delayed old ranges cannot replace the selected range');
+    } finally {
+      finishOld?.();
+      ipcMain.removeHandler('pass-speed:series');
+      ipcMain.handle('pass-speed:series', (_event, days) => require('../build/core/pass-speed').speedSeries(Math.max(0, Math.min(3650, Number(days) || 0))));
+    }
+    await evaluate(`document.querySelector('${SPEED} [data-speed-range="0"]').click()`);
+    await until(`document.querySelectorAll('${SPEED} .speed-lines-chip').length === 2`);
+    await evaluate("navigate('providers')"); await nav('pass');
     // 真的转发一次（官方接口换成本机假上游）：转发记录里这一行带首字延迟和速度
     const fakeOfficial = http.createServer((req, res) => { req.resume(); req.on('end', () => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -332,6 +416,29 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until("!document.querySelector('#page-providers .pv-editor')");
     assert.equal(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'), external);
     await until("document.body.innerText.includes('未覆盖')");
+    // 主导航：默认窄窗口图标栏，手动展开 / 收起、图标导航及刷新记忆。
+    const sidebarWidth = () => evaluate("document.querySelector('.sidebar').getBoundingClientRect().width");
+    assert.equal(await sidebarWidth(), 76);
+    assert.equal(await evaluate("document.querySelector('#sidebar-toggle').getAttribute('aria-expanded')"), 'false');
+    await evaluate("document.querySelector('#sidebar-toggle').click()");
+    assert.equal(await sidebarWidth(), 236, '窄窗口也能手动展开');
+    assert.equal(await evaluate("document.querySelector('#sidebar-toggle').getAttribute('aria-expanded')"), 'true');
+    win.setSize(1380, 920); await delay(80);
+    await evaluate("document.querySelector('#sidebar-toggle').click()");
+    assert.equal(await sidebarWidth(), 76, '宽窗口也能手动收起');
+    assert.equal(await evaluate("localStorage.getItem('tokenpulse-sidebar')"), 'collapsed');
+    assert.equal(await evaluate("[...document.querySelectorAll('#nav .nav-item')].every(b => b.offsetWidth > 0 && b.getAttribute('title') && getComputedStyle(b.querySelector('.nav-label')).display === 'none')"), true, '保留可操作且有名称的图标');
+    await evaluate("document.querySelector('#nav [data-page=usage]').click()");
+    await until("state.page === 'usage'");
+    await new Promise(resolve => { contents.once('did-finish-load', resolve); contents.reload(); });
+    await until("document.querySelector('#sidebar-toggle')?.getAttribute('aria-expanded') === 'false' && current");
+    assert.equal(await sidebarWidth(), 76, '刷新后仍记住收起');
+    await evaluate("setThemeMode('dark')");
+    await evaluate("document.querySelector('#sidebar-toggle').focus(); document.querySelector('#sidebar-toggle').click()");
+    assert.equal(await sidebarWidth(), 236);
+    assert.equal(await evaluate("document.activeElement.id"), 'sidebar-toggle', '切换保留键盘焦点');
+    assert.equal(await evaluate("document.querySelector('#sidebar-toggle').title"), '收起侧栏');
+    console.log('PASS sidebar: icon navigation, wide collapse, narrow expansion, reload persistence, dark theme and focus');
     // Failure to restore must cancel application quit, not leave a dead proxy address.
     const backend = require('../build/core/agent-switch');
     const { dialog } = require('electron');

@@ -83,7 +83,24 @@ try {
   Date.now = () => now;
   try {
     const summary = passSpeed(7).filter((row) => row.app === "codex");
-    assert.deepEqual(summary.map((row) => [row.model, row.via, row.count]), [["gpt-a", "", 8], ["gpt-a · 快速", "", 2], ["gpt-pool", "pool · three", 2], ["gpt-a", "Relay", 1], ["gpt-b", "", 1]]);
+    assert.deepEqual(summary.map((row) => [row.model, row.fast, row.via, row.count]), [["gpt-a", false, "", 8], ["gpt-a", true, "", 2], ["gpt-pool", false, "pool · three", 2], ["gpt-a", false, "Relay", 1], ["gpt-b", false, "", 1]]);
+    // 0.3.39：0 = 全部（记录永久保存，300 天前那条也算进来）；思考等级分开一行，四分位
+    const plainA = (days) => passSpeed(days).filter((row) => row.app === "codex" && row.model === "gpt-a" && !row.fast && !row.via).reduce((sum, row) => sum + row.count, 0);
+    assert.ok(plainA(0) > plainA(7) && plainA(7) === 8, `全部比最近 7 天多（含 300 天前那条）：${plainA(0)} / ${plainA(7)}`);
+    fs.appendFileSync(monthFile(now - 1000), [[30, 3000], [32, 3400], [34, 3800]].map(([speed, first], i) => JSON.stringify({ at: now - 1000 - i, app: "codex", pass: true, status: 200, requestModel: "gpt-e", effort: "high", tokensPerSec: speed, firstTokenMs: first, output: 300 })).join("\n") + "\n"
+      + JSON.stringify({ at: now - 900, app: "codex", pass: true, status: 200, requestModel: "gpt-e", effort: "low", tokensPerSec: 33, firstTokenMs: 900, output: 300 }) + "\n");
+    const efforts = passSpeed(7).filter((row) => row.model === "gpt-e").map((row) => [row.effort, row.count, row.tokensPerSec, row.low, row.high, row.firstTokenMs]);
+    assert.deepEqual(efforts, [["high", 3, 32, 31, 33, 3400], ["low", 1, 33, 33, 33, 900]], "同一个型号不同思考等级分开：速度差不多，首字差很多");
+    // 用量明细的折线图（0.3.39）：一条线 = 工具 + 型号 + 快速 + 思考等级 + 经由，按时间分桶取中位数；0 = 全部
+    const { speedSeries } = require(path.join(__dirname, "..", "build", "core", "pass-speed.js"));
+    const week = speedSeries(7, now);
+    assert.equal(week.bucketMs, DAY, "7 天按天");
+    const lineE = week.lines.filter((line) => line.model === "gpt-e").map((line) => [line.effort, line.count, line.tokensPerSec, line.firstTokenMs, line.buckets.length, line.buckets.at(-1).tokensPerSec]);
+    assert.deepEqual(lineE, [["high", 3, 32, 3400, 1, 32], ["low", 1, 33, 900, 1, 33]]);
+    assert.ok(week.lines.some((line) => line.model === "gpt-a" && line.fast) && week.lines.some((line) => line.via === "Relay"), "快速模式和第三方供应商各自一条线");
+    const ever = speedSeries(0, now);
+    assert.deepEqual([ever.bucketMs, ever.total > week.total], [7 * DAY, true], "全部：跨度长就按周，300 天前的也在");
+    assert.deepEqual(speedSeries(7, now - 400 * DAY).lines, [], "那时还没有记录");
   } finally { Date.now = real; }
   console.log("PASS pass speed: per-account, per-model speed trend from the permanent forwarding log (median and quartiles per hour / day / week, attributed by the CLI login at the time)");
 } finally {

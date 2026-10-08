@@ -97,3 +97,27 @@
 .year-foot .insight-summary { flex: 1; }
 .year-scale { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
 .year-scale span { margin: 0 3px; }
+
+/* 模型速度走势（0.3.39）：折线图 + 可以开关的图例 */
+.speed-lines-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 18px; flex-wrap: wrap; }
+.speed-lines-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.speed-lines-status { display: flex; align-items: center; gap: 10px; min-height: 24px; margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.speed-lines-chart { height: 280px; }
+.speed-lines-chart svg { display: block; width: 100%; height: 100%; }
+.speed-lines-line { fill: none; stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
+.speed-lines-dot { stroke: var(--surface); stroke-width: 1.5; pointer-events: none; }
+.speed-lines-cursor { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.speed-lines-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px 0 10px; }
+.speed-lines-bar .muted { font-size: 12.5px; }
+.speed-lines-bar .text-btn { margin-left: auto; }
+.speed-lines-app { height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.speed-lines-legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px 10px; }
+.speed-lines-chip { display: grid; grid-template-columns: 10px 18px minmax(0, 1fr) auto; grid-template-rows: auto auto; column-gap: 8px; align-items: center; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; opacity: .55; transition: opacity .15s, border-color .15s, background .15s; }
+.speed-lines-chip.on { opacity: 1; border-color: var(--line-strong); }
+.speed-lines-chip:hover { opacity: 1; }
+.speed-lines-swatch { grid-row: 1 / 3; width: 10px; height: 10px; border-radius: 3px; }
+.speed-lines-chip.on .speed-lines-swatch { box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px currentColor; color: var(--line-strong); }
+.speed-lines-chip .mini-logo, .speed-lines-chip > svg, .speed-lines-chip > img { grid-row: 1 / 3; }
+.speed-lines-name { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speed-lines-chip small { grid-column: 3; font-size: 11.5px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.speed-lines-chip b { grid-column: 4; grid-row: 1 / 3; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }

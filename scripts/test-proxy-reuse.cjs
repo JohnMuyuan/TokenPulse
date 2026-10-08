@@ -1,8 +1,8 @@
 /*
  * 经代理连 https 上游时复用连接（0.3.38，src/core/upstream-proxy.ts）。
  * 起因：以前每个请求都重新 CONNECT + TLS 握手，经代理连官方每次约 0.6 秒，算进了透明转发的首字和总耗时。
- * 覆盖：透明转发和本地路由连续几个请求只建一条隧道、只握手一次；复用的连接刚好被关掉时换条新连接重发一次，
- * 不报 502、不算成员失败；总耗时不小于首字节。
+ * 覆盖：透明转发和本地路由复用隧道；GET 的失效连接可重试，POST 传输结果不明时不重发、不换成员；
+ * 总耗时不小于首字节。特别模拟上游完整接收 POST 后、发响应头前断开。
  * 全部用本机起的假代理和假上游（测试专用的自签证书），不联网。
  */
 const assert = require('node:assert/strict');
@@ -47,11 +47,12 @@ const close = server => new Promise(resolve => { server.closeAllConnections?.();
 
 (async () => {
   // 假上游：https，数一共握手了几次
-  let handshakes = 0, served = 0;
+  let handshakes = 0, served = 0, dropAccepted = false;
   const upstream = https.createServer({ key: KEY, cert: CERT }, (req, res) => {
     req.resume();
     req.on('end', () => {
       served++;
+      if (dropAccepted) { dropAccepted = false; req.socket.destroy(); return; }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(req.url.endsWith('/responses')
         ? JSON.stringify({ id: 'resp_1', object: 'response', model: 'gpt-qa', output: [], usage: { input_tokens: 3, output_tokens: 2 } })
@@ -84,24 +85,32 @@ const close = server => new Promise(resolve => { server.closeAllConnections?.();
   process.env.HTTPS_PROXY = `http://127.0.0.1:${proxyPort}`;
 
   const logs = [], failed = [];
+  let secondTarget = false;
+  const target = { id: 'pool:a', name: '号池 · A', upstream: 'openai-responses', baseUrl: 'https://route.upstream.test/v1', apiKey: 'token-a', model: '', pool: true };
   const route = startAgentProxy({ host: '127.0.0.1', port: 0, log: entry => logs.push(entry), fail: id => failed.push(id), succeed: () => {}, open: () => false,
-    targets: () => [{ id: 'pool:a', name: '号池 · A', upstream: 'openai-responses', baseUrl: 'https://route.upstream.test/v1', apiKey: 'token-a', model: '', pool: true }],
+    targets: () => secondTarget ? [target, { ...target, id: 'pool:b', name: '号池 · B' }] : [target],
     pass: app => (app === 'claude' ? 'https://pass.upstream.test' : null) });
   const routePort = await route.listen();
-  const call = (urlPath, body) => new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port: routePort, method: 'POST', path: urlPath, agent: false, headers: { 'content-type': 'application/json', authorization: 'Bearer client-key' } }, res => {
+  const call = (urlPath, body, method = 'POST') => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: routePort, method, path: urlPath, agent: false, headers: { 'content-type': 'application/json', authorization: 'Bearer client-key' } }, res => {
       const c = []; res.on('data', d => c.push(d)); res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(c).toString() }));
     });
-    req.on('error', reject); req.end(JSON.stringify(body));
+    req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
   const passCall = () => call('/pass/claude/v1/messages', { model: 'claude-qa', max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] });
   const routeCall = () => call('/grok/v1/responses', { model: 'grok-qa', input: 'hi' });
 
   try {
-    assert.equal(up.staleReuse({ reusedSocket: true }, Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })), true);
-    assert.equal(up.staleReuse({ reusedSocket: false }, Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })), false, '新连接上的错误照常报');
-    assert.equal(up.staleReuse({ reusedSocket: true }, Object.assign(new Error('x'), { code: 'ETIMEDOUT' })), false, '超时不重发');
-    pass('staleReuse: only a reset on a reused connection counts as stale');
+    const reset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    for (const method of ['GET', 'HEAD']) assert.equal(up.staleReuse({ method, reusedSocket: true }, reset), true);
+    for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) {
+      assert.equal(up.staleReuse({ method, reusedSocket: true }, reset), false, method + ' is never automatically resent');
+      assert.equal(up.uncertainDelivery({ method }, reset), true);
+    }
+    assert.equal(up.staleReuse({ method: 'GET', reusedSocket: false }, reset), false, '新连接上的错误照常报');
+    assert.equal(up.staleReuse({ method: 'GET', reusedSocket: true }, Object.assign(new Error('x'), { code: 'ETIMEDOUT' })), false, '超时不重发');
+    assert.equal(up.uncertainDelivery({ method: 'POST' }, { code: 'ECONNREFUSED' }), false, '连接被拒绝时没有发送');
+    pass('staleReuse: only GET/HEAD resets on reused sockets may be retried');
 
     /* ---------- 透明转发 ---------- */
     for (let i = 0; i < 3; i++) {
@@ -113,25 +122,38 @@ const close = server => new Promise(resolve => { server.closeAllConnections?.();
     for (const entry of logs) { assert.equal(entry.status, 200); assert.ok(entry.ms >= (entry.firstByteMs || 0), '总耗时不小于首字节'); }
     pass('pass-through via proxy: three requests share one CONNECT tunnel and one TLS handshake');
 
+    const acceptedBefore = served;
+    dropAccepted = true;
+    const uncertain = await passCall();
+    assert.equal(served - acceptedBefore, 1, 'POST accepted by upstream must not be delivered twice');
+    assert.equal(uncertain.status, 502, 'unknown delivery is returned as failure');
+    assert.equal(logs.at(-1).status, 502);
+    assert.equal((await passCall()).status, 200, 'next request uses a fresh connection');
+    pass('pass-through POST: upstream accepts once then disconnects; no duplicate delivery');
+
+    const beforeGet = connects.length;
     killNext = true;
-    let result = await passCall();
+    let result = await call('/pass/claude/v1/models', undefined, 'GET');
     assert.equal(result.status, 200, '复用的连接被掐断：换条新连接重发，工具拿到正常回复 ' + result.body);
     assert.equal(killNext, false, '确实掐断了一次');
-    assert.equal(connects.length, 2, '重发时新建了一条隧道');
+    assert.equal(connects.length, beforeGet + 1, '重发时新建了一条隧道');
     assert.equal(logs.at(-1).status, 200); assert.equal(logs.at(-1).error, undefined);
-    pass('pass-through: a reused connection that was just closed is resent once on a new one');
+    pass('pass-through GET: stale socket is retried once on a new connection');
 
     /* ---------- 本地路由 ---------- */
     const before = connects.length;
     for (let i = 0; i < 2; i++) { result = await routeCall(); assert.equal(result.status, 200, result.body); }
     assert.equal(connects.length, before + 1, '本地路由两个请求也只建一条隧道');
-    killNext = true;
+    secondTarget = true;
+    const beforeRoute = served;
+    dropAccepted = true;
     result = await routeCall();
-    assert.equal(result.status, 200, result.body);
-    assert.equal(killNext, false);
-    assert.deepEqual(failed, [], '重发成功，不算成员失败');
-    assert.equal(logs.at(-1).status, 200); assert.equal(logs.at(-1).attempt, 1, '还是第一次尝试，没有换成员');
-    pass('local route via proxy: connections are reused, and a stale one is resent without failing the member');
+    assert.equal(result.status, 502, result.body);
+    assert.equal(served - beforeRoute, 1, 'POST was accepted once; must not resend or try member B');
+    assert.deepEqual(failed, ['pool:a']);
+    assert.equal(logs.at(-1).status, 502); assert.equal(logs.at(-1).attempt, 1, '没有换成员');
+    assert.equal((await routeCall()).status, 200, 'new independent request still succeeds');
+    pass('local route POST: reused connection is kept; ambiguous reset stops before member B');
 
     console.log(`${checks}/${checks} proxy reuse checks passed`);
   } catch (error) {

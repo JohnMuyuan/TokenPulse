@@ -13,7 +13,7 @@ import { StringDecoder } from "string_decoder";
 import type { Duplex } from "stream";
 import { clientError, convertJsonResponse, convertRequest, StreamBridge } from "./agent-convert";
 import { NATIVE_UPSTREAM, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
-import { describeNetError, proxyFor, staleReuse, upstreamRequest } from "./upstream-proxy";
+import { describeNetError, proxyFor, staleReuse, uncertainDelivery, upstreamRequest } from "./upstream-proxy";
 import { Grab, WsReader } from "./ws-sniff";
 
 export type ProxyLog = {
@@ -141,8 +141,9 @@ function keepEdges(seen: { head: string; tail: string }, text: string) {
 function requestFacts(body: Buffer): { model?: string; effort?: string; tier?: string } {
   if (!body.length || !looksJson(body)) return {};
   try {
-    const json = JSON.parse(body.toString("utf8")) as { model?: unknown; reasoning?: { effort?: unknown }; reasoning_effort?: unknown; service_tier?: unknown; speed?: unknown };
-    const effort = json?.reasoning?.effort ?? json?.reasoning_effort;
+    const json = JSON.parse(body.toString("utf8")) as { model?: unknown; reasoning?: { effort?: unknown }; reasoning_effort?: unknown; output_config?: { effort?: unknown }; service_tier?: unknown; speed?: unknown };
+    // OpenAI 的 reasoning.effort / reasoning_effort；Anthropic Messages 的 output_config.effort（Claude Code 的 /effort）
+    const effort = json?.reasoning?.effort ?? json?.reasoning_effort ?? json?.output_config?.effort;
     const tier = tierOf(json?.service_tier) || tierOf(json?.speed);
     return { ...(typeof json?.model === "string" ? { model: json.model.slice(0, 120) } : {}), ...(typeof effort === "string" ? { effort: effort.slice(0, 20) } : {}), ...(tier ? { tier } : {}) };
   } catch { return {}; }
@@ -224,7 +225,10 @@ export function startAgentProxy(options: Options) {
         options.fail(target.id);
         last = outcome.error;
         options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, error: outcome.error, ...detail(target) });
-        if (outcome.terminal || res.headersSent || res.destroyed) return;
+        if (outcome.terminal || res.headersSent || res.destroyed) {
+          if (!res.headersSent && !res.destroyed) sendError(res, client, outcome.status, outcome.error);
+          return;
+        }
       }
       if (!res.headersSent) sendError(res, client, 502, last);
     } finally {
@@ -326,8 +330,8 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       observer?.destroy();
       resolve(outcome);
     };
-    const incomplete = (status: number, error: string) => {
-      finish({ kind: "fail", status, error, terminal: res.headersSent });
+    const incomplete = (status: number, error: string, uncertain = false) => {
+      finish({ kind: "fail", status, error, terminal: uncertain || res.headersSent });
       if (res.headersSent && !res.writableEnded) res.destroy();
     };
     const clientClosed = () => {
@@ -384,10 +388,10 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       sent.on("error", (error) => {
         // 复用的连接已经被关掉：换条新连接再发一次（见 staleReuse）
         if (!resent && !responded && !done && staleReuse(sent, error)) { resent = true; send(); return; }
-        incomplete(502, describeNetError(error, Boolean(proxy)));
+        incomplete(502, describeNetError(error, Boolean(proxy)), uncertainDelivery(sent, error));
       });
       sent.on("timeout", () => {
-        incomplete(504, "上游超时");
+        incomplete(504, "上游超时", sent.method !== "GET" && sent.method !== "HEAD");
         sent.destroy();
       });
       if (payload.length && req.method !== "GET" && req.method !== "HEAD") sent.write(payload);
@@ -542,7 +546,7 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
       else res.destroy();
       finish({ status, error: message });
     };
-    // 「不重试」指上游回了错误不重发；复用的连接已经被关掉、请求根本没送到时，换条新连接再发一次（见 staleReuse）
+    // 仅 GET / HEAD 的失效复用连接可重发；POST 的交付状态未知，照常返回错误。
     const send = () => {
       const sent = upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers: headers as http.OutgoingHttpHeaders, timeout: 600_000 }, onResponse);
       sent.on("error", (error) => {

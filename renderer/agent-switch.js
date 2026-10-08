@@ -176,7 +176,6 @@
     if (pending) return;
     if (next === section) return;
     section = next;
-    if (next === 'pass') passSpeedStale = true; // 每次进这一页重新读一次速度汇总
     if (next === 'logs') logPage = 0; // 转发记录每次从最新的第一页看起
     try { localStorage.setItem(SECTION_KEY, next); } catch { /* 记不住就算了 */ }
     render(true);
@@ -455,20 +454,11 @@
    */
   const PASS_TOOLS = ['claude', 'codex', 'grok'];
   function passOn() { return PASS_TOOLS.filter(app => view.pass?.[app]?.on); }
-  let passSpeed = null, passSpeedLoading = false, passSpeedAt = 0, passSpeedStale = false;
-  async function loadPassSpeed() {
-    if (passSpeedLoading) return;
-    passSpeedLoading = true;
-    try { passSpeed = await api.agentPassSpeed?.(7) || []; } catch { passSpeed = []; }
-    finally { passSpeedLoading = false; passSpeedAt = Date.now(); if (section === 'pass' && !editor && !pending) render(false); }
-  }
   const seconds = ms => (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' 秒';
   async function togglePass(app, on) {
     await run(() => api.agentPass(app, on), r => r.result?.message || (on ? '透明转发已打开' : '透明转发已关闭'), on ? '正在打开透明转发…' : '正在关闭透明转发，恢复直连…');
   }
   function passSection() {
-    // 进这一页、或者有新的转发之后，重新读一次汇总
-    if (!passSpeedLoading && (passSpeed === null || passSpeedStale || (view.logs || []).some(item => item.pass && item.at > passSpeedAt))) { passSpeedStale = false; loadPassSpeed(); }
     const point = text => el('li', { text });
     const what = el('section', { class: 'pv-card pv-pass-what' }, [
       el('div', { class: 'pv-pass-cols' }, [
@@ -486,25 +476,25 @@
         : state.blocked || '直连官方，没有测速。';
       return paint(el('div', { class: 'pv-route-row' + (state.on ? ' on' : '') }, [appMark(id), el('div', { class: 'pv-grow' }, [el('b', { text: a.name }), el('small', { text: note, translate: state.on && state.connected ? 'no' : null }), id === 'claude' ? el('small', { class: 'pv-pass-warn', text: '打开期间 Claude Code 的 Remote Control（远程控制）用不了：Claude Code 只在接口地址是官方的 api.anthropic.com 时才允许它。要用 Remote Control 时先关掉这个开关，再重开 Claude Code。' }) : null]), toggle]), { '--i': i });
     });
-    const speed = passSpeed || [];
-    const table = speed.length ? el('div', { class: 'pv-log pv-speed' }, [
-      el('div', { class: 'pv-speed-row head' }, [el('span'), el('span', { text: '型号' }), el('span', { text: '速度（中位）' }), el('span', { text: '首字延迟（中位）' }), el('span', { text: '最慢 – 最快' }), el('span', { text: '次数' })]),
-      ...speed.map((item, i) => paint(el('div', { class: 'pv-speed-row' }, [
-        appMark(item.app, 'pv-log-avatar'),
-        el('div', { class: 'pv-speed-model' }, [el('b', { translate: 'no', text: item.model, title: item.model }), el('small', { translate: item.via ? 'no' : null, text: item.via || '官方登录（透明转发）', title: item.via || null })]),
-        el('strong', { translate: 'no', text: `${item.tokensPerSec} Token/秒` }),
-        el('span', { translate: 'no', text: item.firstTokenMs == null ? '—' : seconds(item.firstTokenMs) }),
-        el('span', { class: 'muted', translate: 'no', text: `${Math.round(item.slowest)} – ${Math.round(item.fastest)}` }),
-        el('span', { class: 'muted', translate: 'no', text: String(item.count) }),
-      ]), { '--i': Math.min(i, 16) })),
-    ]) : el('div', { class: 'pv-empty' }, [el('p', { text: passSpeed === null ? '正在读取…' : '还没有量到速度。打开上面的开关，重新打开工具用一会儿，这里就会有数字；走本地路由（第三方供应商、号池）的请求也会量到。' })]);
+    // 量到的速度（0.3.39 起）在「用量明细 → 模型速度走势」：折线图，记录永久保存，思考等级分开一条线
+    const toSpeed = el('button', { type: 'button', class: 'btn', 'data-action': 'open-speed' }, [el('span', { text: '去用量明细看模型速度' })]);
+    toSpeed.addEventListener('click', () => {
+      window.navigate?.('usage');
+      // 用量分析是读完统计才画的：等那张图出来再滚过去
+      let tries = 0;
+      const reveal = () => { const panel = document.querySelector('.speed-lines-panel'); if (panel) panel.scrollIntoView({ block: 'start', behavior: 'smooth' }); else if (++tries < 40) setTimeout(reveal, 100); };
+      reveal();
+    });
+    const speedNote = el('section', { class: 'pv-card pv-log-keep' }, [
+      el('div', { class: 'pv-grow' }, [el('b', { text: '量到的速度在「用量明细」里' }), el('small', { text: '「模型速度走势」那张折线图：透明转发和本地路由量到的都在，同一个型号经不同的供应商、用不同的思考等级分开一条线，记录永久保存。每一次请求的数字在「转发记录」里。' })]),
+      toSpeed,
+    ]);
     return [
       head('透明转发', '想知道模型有多快？让官方登录的请求在本机过一道：原样转发、计时、读回复里的 Token 数。默认关闭，按工具分别打开。'),
       what,
       el('div', { class: 'pv-list-head' }, [el('h3', { text: '各工具' }), el('small', { text: '只对工具自己的官方登录有效。用第三方供应商或号池时不用开：那些请求本来就经过本地路由，速度照样会量。' })]),
       el('div', { class: 'pv-route-list' }, rows),
-      el('div', { class: 'pv-list-head' }, [el('h3', { text: '模型速度 · 最近 7 天' }), el('small', { text: '透明转发和本地路由量到的都在这里，同一个型号经不同的供应商分开算。速度 = 输出 Token ÷ 出字用的时间（含思考）。每一次请求的数字在「转发记录」里。' })]),
-      table,
+      speedNote,
     ];
   }
 
@@ -514,19 +504,24 @@
    * 转发记录是永久保存的（数据目录的 route-log/）。按页看，一页 LOG_PER 条（0.3.38，以前是一直往下接，太长）：
    * 最新的几十条来自主进程推过来的 view.logs（实时），更早的从文件里按批读（logOlder），翻到还没读的页再去读。
    */
-  const LOG_PAGE = 100, LOG_PER = 20;
+  const LOG_PAGE = 100, LOG_MAX_BATCH = 500, LOG_PER = 20;
   let logOlder = [], logMore = null, logLoading = false, logCursor = null, logPage = 0;
+  /** 文件里一共多少条（0.3.39，显示「共几页」、能直接跳页用）；logTotalAt 之后新来的实时记录另外加上。 */
+  let logTotal = null, logTotalAt = 0;
   const logKey = item => item.id || `${item.at}|${item.providerId}|${item.attempt ?? ''}|${item.status}`;
-  async function loadOlderLogs() {
+  async function loadOlderLogs(want = LOG_PAGE) {
     if (logLoading || logMore === false) return;
     logLoading = true;
     const shown = [...(view.logs || []), ...logOlder];
     try {
-      const page = await api.agentRouteLog({ limit: LOG_PAGE, cursor: logCursor || undefined });
+      // 第一批顺便数一下总数；直接跳到很后面的页时一次多读一些，少跑几趟
+      const asked = Date.now();
+      const page = await api.agentRouteLog({ limit: Math.max(LOG_PAGE, Math.min(LOG_MAX_BATCH, want)), cursor: logCursor || undefined, ...(logTotal === null ? { total: true } : {}) });
       const have = new Set(shown.map(logKey));
       logOlder = [...logOlder, ...(page?.rows || []).filter(item => !have.has(logKey(item)))];
       logMore = !!page?.more;
       logCursor = page?.nextCursor || null;
+      if (typeof page?.total === 'number') { logTotal = page.total; logTotalAt = asked; }
     } catch { logMore = false; }
     finally { logLoading = false; if (section === 'logs' && !editor && !pending) render(false); }
   }
@@ -539,7 +534,7 @@
     const loaded = Math.max(1, Math.ceil(list.length / LOG_PER));
     if (logMore === false && logPage > loaded - 1) logPage = loaded - 1;
     // 这一页（以及判断有没有下一页）要的条数还没读到：接着读，读完会重画
-    if (logMore && !logLoading && (logPage + 1) * LOG_PER >= list.length) loadOlderLogs();
+    if (logMore && !logLoading && (logPage + 1) * LOG_PER >= list.length) loadOlderLogs((logPage + 1) * LOG_PER - list.length + LOG_PER);
     const rows = list.slice(logPage * LOG_PER, (logPage + 1) * LOG_PER);
     const locale = window.PulseI18n?.lang() === 'en' ? 'en-US' : 'zh-CN';
     const today = new Date().toDateString();
@@ -559,10 +554,17 @@
       el('button', { type: 'button', class: 'btn', 'data-action': 'open-route-log' }, [icon('folder'), el('span', { text: '打开记录文件夹' })]),
     ]);
     keep.querySelector('button').addEventListener('click', () => api.agentOpenRouteLog?.());
-    const pages = Math.max(loaded, logPage + 1);
-    const hasNext = logPage < loaded - 1 || !!logMore;
-    const turn = (step) => {
-      logPage = Math.max(0, logPage + step);
+    // 一共几页：文件里数到的总数，加上数完之后新来的实时记录；还没数到时按已经读到的算
+    const fresh = recent.filter(item => item.at > logTotalAt).length;
+    // 全读完了就以读到的为准（数行和逐条解析的口径可能差一两条）
+    const total = logMore === false ? list.length : logTotal === null ? null : Math.max(list.length, logTotal + fresh);
+    const pages = total === null ? Math.max(loaded, logPage + 1) : Math.max(1, Math.ceil(total / LOG_PER));
+    if (logPage > pages - 1) logPage = pages - 1;
+    const hasNext = logPage < pages - 1 || (total === null && !!logMore);
+    const goto = (index) => {
+      const next = Math.max(0, Math.min(pages - 1, index));
+      if (next === logPage) return;
+      logPage = next;
       render(false);
       // 翻页后从这一页的第一条看起
       root.querySelector('.pv-main')?.scrollIntoView({ block: 'start' });
@@ -570,13 +572,34 @@
     const pageButton = (step, label, glyph) => {
       const button = el('button', { type: 'button', class: 'btn icon-btn', 'data-action': step < 0 ? 'logs-prev' : 'logs-next', 'aria-label': label, disabled: (step < 0 ? logPage === 0 : !hasNext) ? '' : null },
         step < 0 ? [icon(glyph), el('span', { text: label })] : [el('span', { text: label }), icon(glyph)]);
-      button.addEventListener('click', () => turn(step));
+      button.addEventListener('click', () => goto(logPage + step));
       return button;
     };
-    const label = logMore || logLoading
-      ? `第 ${logPage + 1} 页 · 已读取 ${list.length} 条 · 更早的还没读完`
-      : `第 ${logPage + 1} / ${pages} 页 · 共 ${list.length} 条转发`;
-    const pager = list.length ? el('div', { class: 'table-footer pv-log-pager' }, [el('span', { text: label }), el('div', { class: 'pager' }, [pageButton(-1, '上一页', 'left'), pageButton(1, '下一页', 'right')])]) : null;
+    // 页码：第一页、最后一页、当前页前后各两页，中间用「…」
+    const numbers = [];
+    for (let i = 0; i < pages; i++) {
+      if (i === 0 || i === pages - 1 || Math.abs(i - logPage) <= 2) numbers.push(i);
+      else if (numbers.at(-1) !== '…') numbers.push('…');
+    }
+    const numberButtons = el('div', { class: 'pv-log-pages', role: 'group', 'aria-label': '页码' }, numbers.map(i => {
+      if (i === '…') return el('span', { class: 'pv-log-gap', 'aria-hidden': 'true', text: '…' });
+      const button = el('button', { type: 'button', class: 'pv-log-num' + (i === logPage ? ' on' : ''), 'data-page': String(i + 1), 'aria-current': i === logPage ? 'page' : null, 'aria-label': `第 ${i + 1} 页`, translate: 'no', text: String(i + 1) });
+      button.addEventListener('click', () => goto(i));
+      return button;
+    }));
+    const jumpInput = el('input', { type: 'number', class: 'pv-log-jump-input', min: '1', max: String(pages), step: '1', inputmode: 'numeric', placeholder: String(logPage + 1), 'aria-label': '跳到第几页' });
+    const jump = () => { const n = Math.round(Number(jumpInput.value)); if (n >= 1) goto(n - 1); else jumpInput.value = ''; };
+    jumpInput.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); jump(); } });
+    const jumpButton = el('button', { type: 'button', class: 'btn', 'data-action': 'logs-jump', text: '跳转' });
+    jumpButton.addEventListener('click', jump);
+    const label = total === null
+      ? (logMore || logLoading ? `第 ${logPage + 1} 页 · 已读取 ${list.length} 条 · 更早的还没读完` : `第 ${logPage + 1} / ${pages} 页 · 共 ${list.length} 条转发`)
+      : `第 ${logPage + 1} / ${pages} 页 · 共 ${total} 条转发`;
+    const pager = list.length ? el('div', { class: 'table-footer pv-log-pager' }, [
+      el('span', { class: 'pv-log-label', text: label }),
+      el('div', { class: 'pager' }, [pageButton(-1, '上一页', 'left'), numberButtons, pageButton(1, '下一页', 'right'),
+        el('label', { class: 'pv-log-jump' }, [el('span', { text: '跳到' }), jumpInput, el('span', { text: '页' }), jumpButton])]),
+    ]) : null;
     return [head('转发记录', '经过本地路由和透明转发的每一次转发，最新的在最上面，一页 20 条，可以一直往前翻到最早的。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), keep, table, pager].filter(Boolean);
   }
 

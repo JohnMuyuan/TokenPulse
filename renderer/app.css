@@ -1294,18 +1294,29 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
   .breakdown-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
-/* 窄窗口：侧栏收成图标栏，把宽度让给内容。 */
+/* 手动收起仍保留图标和展开入口；未选择时沿用窄窗口自动收起。 */
+:root[data-sidebar="collapsed"] { --sidebar-w: 76px; }
+:root[data-sidebar="collapsed"] .sidebar { padding: 22px 12px 16px; }
+:root[data-sidebar="collapsed"] .titlebar { padding-left: 29px; }
+:root[data-sidebar="collapsed"] .titlebar-name { display: none; }
+:root[data-sidebar="collapsed"] .brand { justify-content: center; margin: 0 0 30px; }
+:root[data-sidebar="collapsed"] :is(.brand-text, .nav-caption, .nav-label, .version) { display: none; }
+:root[data-sidebar="collapsed"] .nav-item { justify-content: center; padding: 0; }
+:root[data-sidebar="collapsed"] .nav-indicator::before { left: -12px; }
+:root[data-sidebar="collapsed"] .nav-alert { position: absolute; top: 5px; right: 7px; min-width: 17px; height: 17px; padding: 0 4px; font-size: 10.5px; }
+
+/* 首次脚本运行前的窄窗口布局。手动展开时保留完整侧栏。 */
 @media (max-width: 1100px) {
-  .sidebar { padding: 22px 12px 16px; }
-  :root { --sidebar-w: 76px; }
+  :root:not([data-sidebar="expanded"]) .sidebar { padding: 22px 12px 16px; }
+  :root:not([data-sidebar="expanded"]) { --sidebar-w: 76px; }
   /* 侧栏收成图标栏时，标题栏左边只留图标，名字会压到分隔线上 */
-  .titlebar { padding-left: 29px; }
-  .titlebar-name { display: none; }
-  .brand { justify-content: center; margin: 0 0 30px; }
-  .brand-text, .nav-caption, .nav-label, .version { display: none; }
-  .nav-item { justify-content: center; padding: 0; }
-  .nav-indicator::before { left: -12px; }
-  .nav-alert { position: absolute; top: 5px; right: 7px; min-width: 17px; height: 17px; padding: 0 4px; font-size: 10.5px; }
+  :root:not([data-sidebar="expanded"]) .titlebar { padding-left: 29px; }
+  :root:not([data-sidebar="expanded"]) .titlebar-name { display: none; }
+  :root:not([data-sidebar="expanded"]) .brand { justify-content: center; margin: 0 0 30px; }
+  :root:not([data-sidebar="expanded"]) :is(.brand-text, .nav-caption, .nav-label, .version) { display: none; }
+  :root:not([data-sidebar="expanded"]) .nav-item { justify-content: center; padding: 0; }
+  :root:not([data-sidebar="expanded"]) .nav-indicator::before { left: -12px; }
+  :root:not([data-sidebar="expanded"]) .nav-alert { position: absolute; top: 5px; right: 7px; min-width: 17px; height: 17px; padding: 0 4px; font-size: 10.5px; }
   main { padding: 28px 24px 24px; }
   .topbar { padding: 0 24px; }
   .quota-grid { gap: 14px; }

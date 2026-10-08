@@ -65,7 +65,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   /** 版本号从 package.json 来，界面上不再手写（以前每次发版都要记得改 index.html）。 */
   version: () => ipcRenderer.invoke("app:version"),
   agentOpenRouteLog: () => ipcRenderer.invoke("agent:open-route-log"),
-  agentRouteLog: (query: { limit?: number; before?: number }) => ipcRenderer.invoke("agent:route-log", query),
+  agentRouteLog: (query: { limit?: number; before?: number; cursor?: string; total?: boolean }) => ipcRenderer.invoke("agent:route-log", query),
   /* 托盘小面板（tray-panel.html） */
   trayPanelData: () => ipcRenderer.invoke("tray-panel:data"),
   trayPanelSize: (height: number) => ipcRenderer.send("tray-panel:size", height),
@@ -154,6 +154,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   agentPass: (app: string, on: boolean) => ipcRenderer.invoke("agent:pass", app, on),
   agentPassSpeed: (days?: number) => ipcRenderer.invoke("agent:pass-speed", days),
   passSpeedAccount: (kind: string, account: string, days: number) => ipcRenderer.invoke("pass-speed:account", kind, account, days),
+  passSpeedSeries: (days: number) => ipcRenderer.invoke("pass-speed:series", days),
   agentPort: (port: number) => ipcRenderer.invoke("agent:port", port),
   agentFailover: (id: string, on: boolean) => ipcRenderer.invoke("agent:failover", id, on),
   agentReorder: (app: string, ids: string[]) => ipcRenderer.invoke("agent:reorder", app, ids),

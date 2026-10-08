@@ -211,7 +211,7 @@
       ...options.map(([id, label]) => el('button', { type: 'button', [`data-${attr}`]: id, class: value === id ? 'on' : null, 'aria-pressed': String(value === id), text: label }))]);
     // data-insight-sort 在 dataset 里叫 insightSort
     const prop = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-    group.addEventListener('click', event => { const b = event.target.closest(`[data-${attr}]`); if (b && b.dataset[prop] !== value) onPick(b.dataset[prop]); });
+    group.addEventListener('click', event => { const b = event.target.closest(`[data-${attr}]`); if (b && b.dataset[prop] !== value) { value = b.dataset[prop]; onPick(value); } });
     return group;
   }
 
@@ -362,6 +362,194 @@
     ]);
   }
 
+  /*
+   * 模型速度走势（0.3.39）：经过 TokenPulse 的请求（透明转发、本地路由的号池和第三方供应商）量到的每秒 Token 数 / 首字延迟，画成折线。
+   * 一条线 = 工具 + 型号 + 快速模式 + 思考等级 + 经由：同一个型号不同思考等级每秒 Token 数差不多、首字差很多，不同中转站也不一样。
+   * 记录永久保存；不跟页面上面的时间范围走，自己选 24 小时 / 7 天 / 30 天 / 全部。线多了默认只画次数最多的 6 条，点图例开关。
+   */
+  const SPEED_RANGES = [['1', '24 小时'], ['7', '7 天'], ['30', '30 天'], ['0', '全部']];
+  const SPEED_METRICS = [['speed', '速度'], ['first', '首字']];
+  const LINE_COLORS = ['#2f7de1', '#e0683a', '#14a37f', '#9b5de5', '#d19a00', '#e0457b', '#0ea5a4', '#7a9a2e', '#8d6e63', '#5c6bc0', '#c2185b', '#00838f'];
+  const APP_SOURCE = { claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok Build' };
+  const DEFAULT_LINES = 6;
+  const speedView = { range: '0', metric: 'speed', app: 'all', hidden: new Set(), picked: new Set(), data: null, key: '', at: 0, loading: false, error: false };
+  const lineKey = line => [line.app, line.model, line.fast ? 'fast' : '', line.effort, line.via].join('|');
+  const lineName = line => line.model + (line.fast ? ' · 快速' : '') + (line.effort ? ` · ${line.effort}` : '');
+  const lineVia = line => line.via || '官方登录（透明转发）';
+  const secondsText = ms => (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' 秒';
+  let speedBody = null;
+  let speedRequest = 0;
+  function loadSpeedLines(force = false) {
+    if ((!force && speedView.loading && speedView.loadingRange === speedView.range) || (!force && speedView.key === speedView.range && Date.now() - speedView.at < 60_000)) return;
+    const request = ++speedRequest;
+    speedView.loading = true;
+    const range = speedView.range;
+    speedView.loadingRange = range;
+    speedView.error = false;
+    syncSpeedState();
+    Promise.resolve(api.passSpeedSeries?.(Number(range))).then(data => { if (request !== speedRequest) return; if (data) speedView.data = data; speedView.error = !data; })
+      .catch(() => { if (request === speedRequest) speedView.error = true; })
+      .finally(() => {
+        if (request !== speedRequest) return;
+        speedView.loading = false; speedView.key = range; speedView.at = Date.now();
+        // 请求失败时仍保留原图；成功时一次换上新图，不经过加载占位。
+        const draw = () => speedView.error && speedView.data ? syncSpeedState() : fillSpeed();
+        typeof keepScroll === "function" ? keepScroll(draw) : draw();
+      });
+  }
+  function speedPanel() {
+    speedBody = el('div', { class: 'speed-lines-body' });
+    const metricSeg = seg(SPEED_METRICS, speedView.metric, 'speed-metric', value => { speedView.metric = value; fillSpeed(true); });
+    const rangeSeg = seg(SPEED_RANGES, speedView.range, 'speed-range', value => { speedView.range = value; loadSpeedLines(true); syncSpeedState(true); });
+    const retry = el('button', { type: 'button', class: 'text-btn', 'data-action': 'speed-lines-retry', text: '重试', hidden: '' });
+    retry.addEventListener('click', () => loadSpeedLines(true));
+    const panel = el('article', { class: 'panel insight-panel speed-lines-panel' }, [
+      el('div', { class: 'panel-heading' }, [
+        el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度。同一个型号用不同的思考等级、经不同的供应商分开一条线；记录永久保存，不跟上面的时间范围走。' })]),
+        el('div', { class: 'speed-lines-tools' }, [metricSeg, rangeSeg]),
+      ]),
+      el('div', { class: 'speed-lines-status', role: 'status' }, [el('span'), retry]),
+      speedBody,
+    ]);
+    loadSpeedLines();
+    // 有缓存就当场画好再交出去：不然每次整页重画时这一块先缩成「正在读取…」，下面的内容会跳一下
+    fillSpeed(false, true);
+    // 折线按画的那一刻的宽度算坐标：窗口宽度变了重画一次，不然会被等比缩小、两边留白
+    const body = speedBody;
+    let drawnWidth = 0;
+    const resize = new ResizeObserver(() => {
+      if (!body.isConnected) { resize.disconnect(); return; }
+      const width = body.clientWidth;
+      if (width && Math.abs(width - drawnWidth) > 2) { drawnWidth = width; speedView.width = width; fillSpeed(); }
+    });
+    resize.observe(body);
+    return panel;
+  }
+  function syncSpeedState(resync = false) {
+    const body = speedBody, panel = body?.closest('.speed-lines-panel');
+    if (!panel) return;
+    if (resync) for (const group of panel.querySelectorAll('.seg')) { for (const b of group.querySelectorAll('button')) { const on = b.dataset.speedMetric === speedView.metric || b.dataset.speedRange === speedView.range; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); } syncSeg(group); }
+    body.setAttribute('aria-busy', String(speedView.loading));
+    panel.querySelector('.speed-lines-status span').textContent = speedView.loading && speedView.data ? '正在读取所选范围，暂显示上次结果。' : speedView.error && speedView.data ? '读取所选范围失败，仍显示上次结果。' : '';
+    panel.querySelector('[data-action=speed-lines-retry]').hidden = !speedView.error;
+  }
+  function fillSpeed(resync = false, detached = false) {
+    const body = speedBody;
+    if (!body || (!detached && !body.isConnected)) return;
+    syncSpeedState(resync);
+    const data = speedView.data;
+    if (!data) { body.replaceChildren(empty(speedView.error ? '速度记录读取失败，请重试。' : '正在读取…')); return; }
+    const apps = [...new Set(data.lines.map(line => line.app))];
+    if (speedView.app !== 'all' && !apps.includes(speedView.app)) speedView.app = 'all';
+    const first = speedView.metric === 'first';
+    const sampleCount = item => (first ? item.firstCount : item.speedCount) ?? item.count;
+    const all = data.lines.filter(line => (speedView.app === 'all' || line.app === speedView.app) && (first ? line.firstTokenMs != null : line.tokensPerSec != null)).sort((a, b) => sampleCount(b) - sampleCount(a) || b.lastAt - a.lastAt);
+    if (!all.length) {
+      const open = el('button', { type: 'button', class: 'btn', text: '去打开透明转发' });
+      open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open('pass'); });
+      body.replaceChildren(el('div', { class: 'empty speed-empty' }, [el('p', { text: '这段时间还没有量到速度。在供应商页打开「透明转发」，或者用本地路由（号池、第三方供应商），用一会儿这里就有走势。' }), open]));
+      return;
+    }
+    // 显示哪几条：用户点过的按用户的；没点过的，次数最多的前几条
+    const visible = all.filter((line, i) => !speedView.hidden.has(lineKey(line)) && (i < DEFAULT_LINES || speedView.picked.has(lineKey(line))));
+    const colorOfLine = new Map(all.map((line, i) => [lineKey(line), LINE_COLORS[i % LINE_COLORS.length]]));
+    const valueOf = bucket => first ? (bucket.firstTokenMs == null ? null : bucket.firstTokenMs / 1000) : bucket.tokensPerSec;
+    const unitText = value => first ? secondsText(value * 1000) : `${value} Token/秒`;
+
+    // 折线
+    const chartHost = el('div', { class: 'chart speed-lines-chart' });
+    const w = Math.max(360, body.clientWidth || speedView.width || 800), h = 280, left = 58, right = 16, top = 14, bottom = 30;
+    const end = data.from + Math.max(1, Math.ceil((data.to - data.from) / data.bucketMs)) * data.bucketMs;
+    const xOf = at => left + Math.min(1, Math.max(0, (at + data.bucketMs / 2 - data.from) / (end - data.from))) * (w - left - right);
+    const peak = visible.reduce((max, line) => line.buckets.reduce((value, bucket) => Math.max(value, valueOf(bucket) ?? 0), max), 0);
+    const max = niceCeil(peak * 1.08);
+    const yOf = value => top + (1 - value / max) * (h - top - bottom);
+    const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': first ? '各模型的首字延迟走势' : '各模型的速度走势' });
+    for (const g of [0, 0.25, 0.5, 0.75, 1]) {
+      const yy = yOf(max * g);
+      node.append(svg('line', { class: 'grid', x1: left, x2: w - right, y1: yy, y2: yy }));
+      const label = svg('text', { class: 'axis', x: left - 8, y: yy + 4, 'text-anchor': 'end' });
+      label.textContent = first ? `${Math.round(max * g * 10) / 10}s` : String(Math.round(max * g));
+      node.append(label);
+    }
+    const stamp = at => {
+      const day = new Date(at), locale = dateLocale();
+      if (data.bucketMs <= 3600000) return day.toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+      const text = day.toLocaleDateString(locale, { year: day.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', month: 'numeric', day: 'numeric' });
+      return data.bucketMs > 86400000 ? `${text} 起的一周` : text;
+    };
+    // 横轴：开头、中间、结尾几个日期
+    const ticks = 5;
+    for (let i = 0; i < ticks; i++) {
+      const at = data.from + (end - data.from) * i / (ticks - 1) - data.bucketMs / 2;
+      const t = svg('text', { class: 'axis', x: xOf(at), y: h - 8, 'text-anchor': i === 0 ? 'start' : i === ticks - 1 ? 'end' : 'middle' });
+      t.textContent = i === ticks - 1 ? '现在' : stamp(Math.max(data.from, at));
+      node.append(t);
+    }
+    for (const line of visible) {
+      const color = colorOfLine.get(lineKey(line));
+      const points = line.buckets.map(bucket => [bucket, valueOf(bucket)]).filter(([, v]) => v != null).map(([bucket, v]) => [xOf(bucket.at), yOf(v)]);
+      if (points.length > 1) node.append(paint(svg('polyline', { class: 'speed-lines-line', points: points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ') }), { stroke: color }));
+      if (points.length <= 60) for (const [x, y] of points) node.append(paint(svg('circle', { class: 'speed-lines-dot', cx: x.toFixed(1), cy: y.toFixed(1), r: 3 }), { fill: color }));
+      else node.append(paint(svg('circle', { class: 'speed-lines-dot', cx: points.at(-1)[0].toFixed(1), cy: points.at(-1)[1].toFixed(1), r: 3 }), { fill: color }));
+    }
+    // 悬停：最近的那个时间点，列出每条线在那时的数字
+    const cursor = svg('line', { class: 'speed-lines-cursor', x1: 0, x2: 0, y1: top, y2: h - bottom, visibility: 'hidden' });
+    const hit = svg('rect', { class: 'insight-hit', x: left, y: top, width: w - left - right, height: h - top - bottom });
+    const times = [...new Set(visible.flatMap(line => line.buckets.filter(bucket => valueOf(bucket) != null).map(bucket => bucket.at)))].sort((a, b) => a - b);
+    hit.addEventListener('pointermove', event => {
+      if (!times.length) return;
+      const box = node.getBoundingClientRect(), x = (event.clientX - box.left) / box.width * w;
+      let at = times[0];
+      for (const t of times) if (Math.abs(xOf(t) - x) < Math.abs(xOf(at) - x)) at = t;
+      cursor.setAttribute('x1', xOf(at)); cursor.setAttribute('x2', xOf(at)); cursor.setAttribute('visibility', 'visible');
+      const rows = visible.map(line => [line, line.buckets.find(bucket => bucket.at === at)]).filter(([, bucket]) => bucket && valueOf(bucket) != null)
+        .sort((a, b) => valueOf(b[1]) - valueOf(a[1]));
+      tipAt([stamp(at), ...rows.map(([line, bucket]) => `${lineName(line)} · ${lineVia(line)}：${unitText(valueOf(bucket))} · ${number(sampleCount(bucket))} 次`)].join('\n'), event.clientX, event.clientY);
+    });
+    hit.addEventListener('pointerleave', () => { $('tip').hidden = true; cursor.setAttribute('visibility', 'hidden'); });
+    node.append(cursor, hit);
+    chartHost.append(node);
+
+    // 图例：每条线一个开关，带整段时间的中位数
+    const legendNode = el('div', { class: 'speed-lines-legend', role: 'group', 'aria-label': '显示哪些线' }, all.map(line => {
+      const key = lineKey(line), on = visible.includes(line);
+      const chip = el('button', { type: 'button', class: 'speed-lines-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), 'data-line': key, title: `${lineVia(line)} · ${number(sampleCount(line))} 次` }, [
+        paint(el('i', { class: 'speed-lines-swatch' }), { background: colorOfLine.get(key) }),
+        miniLogo(APP_SOURCE[line.app] || line.app),
+        el('span', { class: 'speed-lines-name', translate: 'no', text: lineName(line) }),
+        el('small', { translate: line.via ? 'no' : null, text: lineVia(line) }),
+        el('b', { translate: 'no', text: first ? (line.firstTokenMs == null ? '—' : secondsText(line.firstTokenMs)) : String(line.tokensPerSec) }),
+      ]);
+      chip.addEventListener('click', () => {
+        if (on) { speedView.hidden.add(key); speedView.picked.delete(key); } else { speedView.hidden.delete(key); speedView.picked.add(key); }
+        fillSpeed();
+      });
+      return chip;
+    }));
+    const appSelect = el('select', { class: 'speed-lines-app', 'aria-label': '只看哪个工具' }, [
+      el('option', { value: 'all', text: '全部工具', selected: speedView.app === 'all' ? '' : null }),
+      ...apps.map(app => el('option', { value: app, text: APP_SOURCE[app] || app, selected: speedView.app === app ? '' : null })),
+    ]);
+    appSelect.addEventListener('change', () => { speedView.app = appSelect.value; fillSpeed(); });
+    const showAll = el('button', { type: 'button', class: 'text-btn', 'data-action': 'speed-lines-all', text: visible.length < all.length ? `全部显示（${all.length} 条）` : `只看前 ${Math.min(DEFAULT_LINES, all.length)} 条` });
+    showAll.addEventListener('click', () => {
+      speedView.hidden.clear(); speedView.picked.clear();
+      if (visible.length < all.length) for (const line of all) speedView.picked.add(lineKey(line));
+      fillSpeed();
+    });
+    body.replaceChildren(chartHost,
+      el('div', { class: 'speed-lines-bar' }, [appSelect, el('span', { class: 'muted', text: `${number(visible.length)} / ${number(all.length)} 条线 · 图例里的数字是整段时间的中位数` }), showAll]),
+      legendNode,
+      el('p', { class: 'sample-caption', text: `${first ? '首字 = 从请求发出到回复里第一段内容（文字、思考或工具调用）出现。' : '速度 = 输出 Token ÷ 出字用的时间（含思考）。'}每个点是那段时间（${data.bucketMs <= 3600000 ? '一小时' : data.bucketMs > 86400000 ? '一周' : '一天'}）的中位数。思考等级高的，每秒 Token 数差不多，首字会慢很多。` }));
+  }
+  /** 纵轴上限取个整：37 → 40，140 → 150。 */
+  function niceCeil(value) {
+    if (!(value > 0)) return 1;
+    const base = 10 ** Math.floor(Math.log10(value));
+    return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(step => step * base).find(step => step >= value) || 10 * base;
+  }
+
   let host = null, lastAnalysis = null;
   function draw(analysis, animate) {
     lastAnalysis = analysis;
@@ -421,7 +609,7 @@
       modelTable(models, total)
     ]);
 
-    host.replaceChildren(yearPanel(), trendPanel, el('div', { class: 'insight-grid' }, [toolPanel, distPanel]), modelPanel);
+    host.replaceChildren(yearPanel(), trendPanel, el('div', { class: 'insight-grid' }, [toolPanel, distPanel]), modelPanel, speedPanel());
     for (const group of host.querySelectorAll('.seg')) syncSeg(group);
     trendChart(trendHost, trend, order, view.metric, animate);
     if (hourData.loading) { hodHost.append(empty('正在读取逐条请求记录…')); distNote.textContent = ''; }
@@ -435,4 +623,6 @@
     }
   }
   window.PulseInsights = { render: draw };
+  // 速度记录先在后台读好：打开用量明细时折线图直接画出来，不会读完才把下面的内容往下推
+  setTimeout(() => loadSpeedLines(), 1500);
 })();

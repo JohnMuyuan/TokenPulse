@@ -41,7 +41,7 @@ const send = (port, { method = "POST", url, headers = {}, body }) => new Promise
     pass: (app) => (on && app === "claude" ? `http://127.0.0.1:${upstream.address().port}` : null) });
   const port = await proxy.listen();
   try {
-    const body = Buffer.from(JSON.stringify({ model: "claude-qa", stream: true, speed: "fast", thinking: { type: "enabled" }, messages: [{ role: "user", content: "秘密内容 secret-text" }] }));
+    const body = Buffer.from(JSON.stringify({ model: "claude-qa", stream: true, speed: "fast", thinking: { type: "adaptive" }, output_config: { effort: "xhigh" }, messages: [{ role: "user", content: "秘密内容 secret-text" }] }));
     const headers = { authorization: "Bearer sk-ant-oat-TESTTOKEN", "anthropic-beta": "oauth-2025-04-20,x", "anthropic-version": "2023-06-01", "user-agent": "claude-cli/9.9 (external, cli)", "x-app": "cli", "x-custom-thing": "kept", "accept-encoding": "gzip, br", "content-type": "application/json", "content-length": String(body.length) };
     const reply = await send(port, { url: "/pass/claude/v1/messages?beta=true", headers, body });
 
@@ -64,6 +64,7 @@ const send = (port, { method = "POST", url, headers = {}, body }) => new Promise
     assert.ok(log.ms >= log.firstByteMs + 250, "总耗时比首字延迟长");
     // 型号核验用：回复里的响应 ID 和上游实际用的型号
     assert.equal(log.tier, "fast", "快速模式记下来");
+    assert.equal(log.effort, "xhigh", "Claude Code 的思考等级在 output_config.effort 里（0.3.39）");
     assert.deepEqual([log.responseId, log.returnedModel], ["msg_01QAqaQAqaQAqaQAqaQAqaQA", "claude-qa-20260101"]);
     const expected = 240 / ((log.ms - log.firstByteMs) / 1000);
     assert.ok(Math.abs(log.tokensPerSec - expected) / expected < 0.25, `速度 = 输出 ÷ 出字用的时间：${log.tokensPerSec} / ${expected.toFixed(1)}`);

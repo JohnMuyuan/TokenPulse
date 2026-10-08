@@ -30,6 +30,21 @@ const THEME_KEY = 'tokenpulse-theme';
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
 let themeMode = 'light';
 try { const stored = localStorage.getItem(THEME_KEY); if (['light', 'dark', 'system'].includes(stored)) themeMode = stored; } catch {}
+const SIDEBAR_KEY = 'tokenpulse-sidebar';
+const narrowSidebar = window.matchMedia('(max-width: 1100px)');
+let sidebarMode = '';
+try { const stored = localStorage.getItem(SIDEBAR_KEY); if (['collapsed', 'expanded'].includes(stored)) sidebarMode = stored; } catch {}
+function applySidebar() {
+  const collapsed = sidebarMode ? sidebarMode === 'collapsed' : narrowSidebar.matches;
+  document.documentElement.dataset.sidebar = collapsed ? 'collapsed' : 'expanded';
+  const button = $('sidebar-toggle'), label = collapsed ? '展开侧栏' : '收起侧栏';
+  button.setAttribute('aria-expanded', String(!collapsed));
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  button.querySelector('.nav-label').textContent = label;
+  button.querySelector('use').setAttribute('href', collapsed ? '#i-sidebar-expand' : '#i-sidebar-collapse');
+  requestAnimationFrame(() => { moveIndicator(); syncSegs(); layoutAccountTabBar(); });
+}
 
 /* ---------------- DOM 小工具 ---------------- */
 
@@ -2407,6 +2422,13 @@ async function openSettings(tab = 'general') {
 
 for (const slot of document.querySelectorAll('[data-brand]')) slot.append(brandSvg(slot.dataset.brand));
 applyTheme();
+applySidebar();
+$('sidebar-toggle').addEventListener('click', () => {
+  sidebarMode = document.documentElement.dataset.sidebar === 'collapsed' ? 'expanded' : 'collapsed';
+  try { localStorage.setItem(SIDEBAR_KEY, sidebarMode); } catch {}
+  keepScroll(applySidebar);
+});
+narrowSidebar.addEventListener('change', () => { if (!sidebarMode) keepScroll(applySidebar); });
 darkQuery.addEventListener('change', () => { if (themeMode === 'system') applyTheme(true); });
 moveIndicator();
 api.version?.().then(version => {

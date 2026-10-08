@@ -126,20 +126,32 @@ export class TokensUploader {
 
   /** 设置流程第一步：有没有 npx / 本机装好的 tokens，tokens-cli 现在最新是哪个版本。 */
   async check() {
-    if (this.job) return this.state();
-    this.job = { kind: "check", kill: () => undefined };
+    if (this.job || this.stopped) return this.state();
+    let cancelled = false;
+    const active = new Set<ReturnType<Runner>>();
+    const job = { kind: "check" as const, kill: () => { cancelled = true; for (const handle of active) handle.kill(); } };
+    this.job = job;
+    const cancelledState = () => { if (this.job === job) this.job = null; return this.state(); };
+    const execute = (line: string, env: NodeJS.ProcessEnv, timeoutMs: number) => {
+      const handle = this.runner(line, { env, timeoutMs });
+      active.add(handle);
+      return handle.done.finally(() => active.delete(handle));
+    };
     this.publish();
     try {
       const env = await this.env();
+      if (cancelled || this.stopped) return cancelledState();
       const where = process.platform === "win32" ? "where" : "command -v";
       const [npx, installed] = await Promise.all([
-        this.runner(`${where} npx`, { env, timeoutMs: 10_000 }).done,
-        this.runner(`${where} tokens`, { env, timeoutMs: 10_000 }).done,
+        execute(`${where} npx`, env, 10_000),
+        execute(`${where} tokens`, env, 10_000),
       ]);
+      if (cancelled || this.stopped) return cancelledState();
       const hasNpx = npx.code === 0 || Boolean(env.TOKENPULSE_TOKENS_CLI);
       let latest = "", error = "";
       if (hasNpx) {
-        const view = env.TOKENPULSE_TOKENS_CLI ? await this.runner(commandLine(this.settings, ["version"]), { env, timeoutMs: CHECK_TIMEOUT_MS }).done : await this.runner("npm view tokens-cli version", { env, timeoutMs: CHECK_TIMEOUT_MS }).done;
+        const view = await execute(env.TOKENPULSE_TOKENS_CLI ? commandLine(this.settings, ["version"]) : "npm view tokens-cli version", env, CHECK_TIMEOUT_MS);
+        if (cancelled || this.stopped) return cancelledState();
         latest = plain(view.output).split(/\s+/).find(validVersion) || "";
         if (!latest) error = view.timedOut ? "查询 tokens-cli 的版本超时（可能需要代理）" : "查不到 tokens-cli 的版本（npm 连不上？）";
       } else error = "这台电脑上没有 npx：需要先安装 Node.js";
@@ -147,7 +159,9 @@ export class TokensUploader {
       if (latest && !this.settings.version) this.settings = { ...this.settings, version: latest };
       this.persist();
     } finally {
-      this.job = null;
+      for (const handle of active) handle.kill();
+      await Promise.allSettled([...active].map(handle => handle.done));
+      if (this.job === job) this.job = null;
       this.publish();
     }
     return this.state();

@@ -1,8 +1,8 @@
 import { ExitMonitor } from "./egress-monitor";
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
-import { passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
-import { accountSpeed } from "../core/pass-speed";
+import { countRouteLog, passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
+import { accountSpeed, speedSeries } from "../core/pass-speed";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import fsSync from "fs";
 import fs from "fs/promises";
@@ -868,7 +868,8 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("update:install", () => installUpdate());
     ipcMain.handle("app:version", () => appVersion());
     // 转发记录的文件夹（route-log/，见 route-ledger.ts）。还没有转发过就先建出来，免得打开一个不存在的目录
-    ipcMain.handle("agent:route-log", (_event, query: unknown) => { const q = (query && typeof query === "object" ? query : {}) as { limit?: unknown; before?: unknown; cursor?: unknown }; return readRouteLog({ limit: Number(q.limit) || 100, before: Number(q.before) || undefined, cursor: typeof q.cursor === "string" ? q.cursor : undefined }); });
+    // total：顺便数一下一共多少条（翻页显示共几页，0.3.39）
+    ipcMain.handle("agent:route-log", (_event, query: unknown) => { const q = (query && typeof query === "object" ? query : {}) as { limit?: unknown; before?: unknown; cursor?: unknown; total?: unknown }; return { ...readRouteLog({ limit: Number(q.limit) || 100, before: Number(q.before) || undefined, cursor: typeof q.cursor === "string" ? q.cursor : undefined }), ...(q.total === true ? { total: countRouteLog() } : {}) }; });
     ipcMain.handle("agent:open-route-log", async () => { await fs.mkdir(routeLogDir(), { recursive: true }); return shell.openPath(routeLogDir()); });
     // 托盘小面板：取数据、报告内容高度、几个按钮
     ipcMain.handle("tray-panel:data", () => trayPanelView());
@@ -901,12 +902,15 @@ if (!app.requestSingleInstanceLock()) {
       if (!isAgentApp(app)) throw new Error("不认识这个工具");
       return setAppPass(app, on === true);
     }, on !== true));
-    ipcMain.handle("agent:pass-speed", (_event, days: unknown) => { try { return passSpeed(Number(days) || 7); } catch { return []; } });
+    // days：最近多少天，0 = 全部（转发记录永久保存）
+    ipcMain.handle("agent:pass-speed", (_event, days: unknown) => { try { const n = Number(days); return passSpeed(Number.isFinite(n) && n >= 0 ? n : 7); } catch { return []; } });
     // 额度详情里「模型速度」那张图：某个官方账号各模型的速度走势（透明转发量到的，来自永久保存的转发记录）
     ipcMain.handle("pass-speed:account", (_event, kind: unknown, account: unknown, days: unknown) => {
       if (kind !== "claude" && kind !== "chatgpt" && kind !== "grok") return null;
       try { return accountSpeed(kind, typeof account === "string" ? account.slice(0, 200) : "", Math.max(0, Math.min(3650, Number(days) || 0))); } catch { return null; }
     });
+    // 全部模型的速度走势（用量明细的折线图，0.3.39）；days：0 = 全部
+    ipcMain.handle("pass-speed:series", (_event, days: unknown) => { try { return speedSeries(Math.max(0, Math.min(3650, Number(days) || 0))); } catch { return null; } });
     ipcMain.handle("agent:port", (_event, port: unknown) => agentWrite("修改本地路由端口", () => setProxyPort(Number(port))));
     ipcMain.handle("agent:failover", (_event, id: unknown, on: unknown) => agentWrite("修改备用队列", () => setFailover(String(id || ""), on === true)));
     ipcMain.handle("agent:reorder", (_event, app: unknown, ids: unknown) => agentWrite("调整供应商顺序", () => {

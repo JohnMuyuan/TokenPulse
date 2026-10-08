@@ -145,12 +145,18 @@ function tunnelAgent(proxy: UpstreamProxy) {
 }
 
 /**
- * 复用的连接可能刚好被上游或代理关掉了：请求一发出去就 ECONNRESET / socket hang up，上游根本没收到。
- * 这种情况换条新连接再发一次是安全的（Node 文档推荐的做法），不算上游出错。
+ * 连接重置不能证明上游没有处理请求；只自动重发 GET / HEAD。
+ * 推理 POST 即使尚未收到响应头，也可能已经开始执行或计费。
  */
 export function staleReuse(req: http.ClientRequest, error: unknown) {
   const code = (error as { code?: string } | null)?.code || "";
-  return Boolean(req.reusedSocket) && (code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED");
+  return (req.method === "GET" || req.method === "HEAD") && Boolean(req.reusedSocket) && (code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED");
+}
+
+/** 非幂等请求遇到断线时交付状态未知，不能再交给下一个号池成员。 */
+export function uncertainDelivery(req: http.ClientRequest, error: unknown) {
+  const code = (error as { code?: string } | null)?.code || "";
+  return req.method !== "GET" && req.method !== "HEAD" && ["ECONNRESET", "EPIPE", "ECONNABORTED"].includes(code);
 }
 
 /**

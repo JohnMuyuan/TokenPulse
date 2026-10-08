@@ -151,6 +151,16 @@ export function appendRouteLog(entry: object & { at: number }) {
   } catch { /* 记不下来就算了 */ }
 }
 
+/** 转发记录一共有多少条（0.3.39，翻页时显示「第几页 / 共几页」用）。只数行，不解析。 */
+export function countRouteLog(): number {
+  let files: string[], total = 0;
+  try { files = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)); } catch { return 0; }
+  for (const name of files) {
+    try { total += fs.readFileSync(path.join(routeLogDir(), name), "utf8").split("\n").filter((line) => line.includes('"at":')).length; } catch { /* 读不了的月份不算 */ }
+  }
+  return total;
+}
+
 /**
  * 初次读取可按 before 限定时间；后续以月份文件 + 行位置作为游标，同毫秒的记录也能完整翻页。
  * 按月份文件从新到旧读，读够就停。
@@ -184,16 +194,22 @@ export function readRouteLog(options: { limit?: number; before?: number; cursor?
 }
 
 /*
- * 量到的模型速度（0.3.35 透明转发，0.3.36 起本地路由也量）：从保存的转发记录里取最近 days 天、成功并且量到了每秒 Token 数的，
- * 按「工具 + 型号 + 经谁转的」汇总：透明转发是官方登录；本地路由的写供应商 / 号池成员的名字——同一个型号在不同的中转站速度不一样，不能混着算。用中位数：个别特别慢或特别快的请求（排队、只回了一两句）不会把数字带偏。
+ * 量到的模型速度（0.3.35 透明转发，0.3.36 起本地路由也量）：从保存的转发记录里取最近 days 天（0 = 全部，记录永久保存）、成功并且量到了每秒 Token 数的，
+ * 按「工具 + 型号 + 快速模式 + 思考等级 + 经谁转的」汇总：透明转发是官方登录；本地路由的写供应商 / 号池成员的名字——同一个型号在不同的中转站速度不一样，不能混着算。
+ * 思考等级（0.3.39）单独分开：真机记录里同一个型号不同等级的每秒 Token 数差不多，但首字延迟差很多（想得越久，第一段内容出来得越晚），混在一起中位数就看不出来了。
+ * 用中位数和四分位：个别特别慢或特别快的请求（排队、只回了一两句）不会把数字带偏。
  */
-export type PassSpeedRow = { app: string; model: string; /** 经谁转的：透明转发是空的，本地路由是供应商 / 号池成员的名字。 */ via: string; count: number; tokensPerSec: number; fastest: number; slowest: number; firstTokenMs: number | null; output: number; lastAt: number };
+export type PassSpeedRow = {
+  app: string; model: string; fast: boolean; /** 请求里带的思考等级，没带是空的。 */ effort: string;
+  /** 经谁转的：透明转发是空的，本地路由是供应商 / 号池成员的名字。 */ via: string;
+  count: number; tokensPerSec: number; low: number; high: number; fastest: number; slowest: number; firstTokenMs: number | null; output: number; lastAt: number;
+};
 export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
-  const since = now - Math.max(1, Math.min(90, days)) * DAY_MS;
-  const groups = new Map<string, { app: string; model: string; via: string; speeds: number[]; firsts: number[]; output: number; lastAt: number }>();
+  const since = days > 0 ? now - days * DAY_MS : 0;
+  const groups = new Map<string, { app: string; model: string; fast: boolean; effort: string; via: string; speeds: number[]; firsts: number[]; output: number; lastAt: number }>();
   let files: string[];
   try { files = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)).sort().reverse(); } catch { return []; }
-  const oldest = new Date(since), oldestName = `${oldest.getFullYear()}-${String(oldest.getMonth() + 1).padStart(2, "0")}.jsonl`;
+  const oldest = new Date(since), oldestName = since ? `${oldest.getFullYear()}-${String(oldest.getMonth() + 1).padStart(2, "0")}.jsonl` : "";
   for (const name of files) {
     if (name < oldestName) break;
     let lines: string[];
@@ -203,24 +219,28 @@ export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
       let row: Record<string, unknown>;
       try { row = JSON.parse(line); } catch { continue; }
       const at = Number(row.at), speed = Number(row.tokensPerSec);
-      if (!(at >= since) || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
+      if (!(at >= since) || at > now + 60_000 || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
       const via = row.pass === true ? "" : String(row.provider || "").slice(0, 80);
-      const app = String(row.app || ""), plain = String(row.requestModel || row.model || "");
-      if (!plain) continue;
+      const app = String(row.app || ""), model = String(row.requestModel || row.model || "").slice(0, 120);
+      if (!model) continue;
       // 快速模式（Codex 的 priority / fast、Claude 的 fast）单独算，不和普通模式混在一起
-      const model = plain + (row.tier === "priority" || row.tier === "fast" ? " · 快速" : "");
-      const group = groups.get(app + "\n" + model + "\n" + via) ?? { app, model, via, speeds: [], firsts: [], output: 0, lastAt: 0 };
+      const fast = row.tier === "priority" || row.tier === "fast";
+      const effort = typeof row.effort === "string" ? row.effort.slice(0, 20) : "";
+      const key = [app, model, fast ? "fast" : "", effort, via].join("\n");
+      const group = groups.get(key) ?? { app, model, fast, effort, via, speeds: [], firsts: [], output: 0, lastAt: 0 };
       group.speeds.push(speed);
       const first = Number(row.firstTokenMs ?? row.firstByteMs);
       if (first > 0) group.firsts.push(first);
       group.output += Number(row.output) || 0;
       group.lastAt = Math.max(group.lastAt, at);
-      groups.set(app + "\n" + model + "\n" + via, group);
+      groups.set(key, group);
     }
   }
-  const median = (values: number[]) => { const sorted = values.slice().sort((a, b) => a - b), mid = sorted.length >> 1; return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2; };
-  return [...groups.values()].map((group) => ({ app: group.app, model: group.model, via: group.via, count: group.speeds.length, tokensPerSec: Math.round(median(group.speeds) * 10) / 10,
-    fastest: Math.max(...group.speeds), slowest: Math.min(...group.speeds), firstTokenMs: group.firsts.length ? Math.round(median(group.firsts)) : null, output: group.output, lastAt: group.lastAt }))
+  const quantile = (values: number[], q: number) => { const sorted = values.slice().sort((a, b) => a - b), at = (sorted.length - 1) * q, lo = Math.floor(at), hi = Math.ceil(at); return sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo); };
+  const round1 = (value: number) => Math.round(value * 10) / 10;
+  return [...groups.values()].map((group) => ({ app: group.app, model: group.model, fast: group.fast, effort: group.effort, via: group.via, count: group.speeds.length,
+    tokensPerSec: round1(quantile(group.speeds, 0.5)), low: round1(quantile(group.speeds, 0.25)), high: round1(quantile(group.speeds, 0.75)),
+    fastest: group.speeds.reduce((value, speed) => Math.max(value, speed), 0), slowest: group.speeds.reduce((value, speed) => Math.min(value, speed), Infinity), firstTokenMs: group.firsts.length ? Math.round(quantile(group.firsts, 0.5)) : null, output: group.output, lastAt: group.lastAt }))
     .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
 }
 
