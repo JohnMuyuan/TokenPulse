@@ -108,9 +108,14 @@ export async function curlProxyArgs(url: string): Promise<string[]> {
   return proxy ? ["--proxy", `http://${proxy.host}:${proxy.port}`] : [];
 }
 
-/** 经 HTTP 代理的 CONNECT 隧道连 https 上游。每个请求一条连接（不复用），和原来直连时的行为一致。 */
+/*
+ * 经 HTTP 代理的 CONNECT 隧道连 https 上游。连接用完留着给下一个请求（0.3.38）：
+ * 以前每个请求都重新 CONNECT + TLS 握手，经代理连官方实测每次约 0.6 秒，既拖慢请求，也算进了首字和总耗时。
+ * 直连时 Node 自带的连接池本来就复用。空闲 30 秒的连接关掉；同一个代理共用一个连接池。
+ */
+const TUNNEL_IDLE_MS = 30_000;
 class TunnelAgent extends https.Agent {
-  constructor(private readonly proxy: UpstreamProxy) { super({ keepAlive: false }); }
+  constructor(private readonly proxy: UpstreamProxy) { super({ keepAlive: true, timeout: TUNNEL_IDLE_MS }); }
   createConnection(options: { host?: string | null; port?: number | string | null; servername?: string }, callback?: (error: Error | null, socket: Duplex) => void): Duplex | null | undefined {
     const host = String(options.host || ""), authority = `${host}:${options.port || 443}`;
     const done = callback as (error: Error | null, socket?: Duplex) => void;
@@ -127,12 +132,33 @@ class TunnelAgent extends https.Agent {
   }
 }
 
+const tunnelAgents = new Map<string, TunnelAgent>();
+function tunnelAgent(proxy: UpstreamProxy) {
+  const key = `${proxy.host}:${proxy.port}:${proxy.auth || ""}`;
+  let agent = tunnelAgents.get(key);
+  if (!agent) {
+    if (tunnelAgents.size >= 8) { for (const old of tunnelAgents.values()) old.destroy(); tunnelAgents.clear(); }
+    agent = new TunnelAgent(proxy);
+    tunnelAgents.set(key, agent);
+  }
+  return agent;
+}
+
+/**
+ * 复用的连接可能刚好被上游或代理关掉了：请求一发出去就 ECONNRESET / socket hang up，上游根本没收到。
+ * 这种情况换条新连接再发一次是安全的（Node 文档推荐的做法），不算上游出错。
+ */
+export function staleReuse(req: http.ClientRequest, error: unknown) {
+  const code = (error as { code?: string } | null)?.code || "";
+  return Boolean(req.reusedSocket) && (code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED");
+}
+
 /**
  * 发上游请求：有代理就走代理，没有就直连。用法和 http(s).request(url, options, callback) 一样。
  */
 export function upstreamRequest(target: URL, proxy: UpstreamProxy | null, options: http.RequestOptions, callback?: (res: http.IncomingMessage) => void): http.ClientRequest {
   if (!proxy) return (target.protocol === "https:" ? https : http).request(target, options, callback);
-  if (target.protocol === "https:") return https.request(target, { ...options, agent: new TunnelAgent(proxy) }, callback);
+  if (target.protocol === "https:") return https.request(target, { ...options, agent: tunnelAgent(proxy) }, callback);
   // 明文 http 上游：把完整地址交给代理
   return http.request({ ...options, host: proxy.host, port: proxy.port, path: target.href, headers: { ...(options.headers as http.OutgoingHttpHeaders), host: target.host, ...(proxy.auth ? { "proxy-authorization": proxy.auth } : {}) } }, callback);
 }

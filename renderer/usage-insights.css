@@ -66,3 +66,34 @@
 
 @media (max-width: 1100px) { .insight-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .insight-bar i { transition: none; } }
+
+/* 全年活跃度（0.3.38）：一格一天、一列一周。格子固定大小，宽窗口不撑大，窄窗口横向滚动。 */
+.year-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.year-panel h2 { display: flex; align-items: center; gap: 10px; }
+.year-select { height: 30px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text-2); font: inherit; font-size: 13px; font-weight: 500; }
+.year-head-side { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-left: auto; }
+.year-count { display: grid; justify-items: end; gap: 2px; }
+.year-count b { font-size: 15px; font-weight: 650; }
+.year-count small { color: var(--muted); font-size: 12px; }
+.year-scroll { overflow-x: auto; padding-bottom: 4px; }
+
+.year-body { display: grid; row-gap: 6px; min-width: 620px; max-width: 1150px; }
+.year-months, .year-grid { display: grid; grid-template-columns: 34px repeat(var(--weeks), minmax(8px, 1fr)); column-gap: 3px; }
+.year-months span { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.year-grid { grid-template-rows: repeat(7, auto); grid-auto-flow: column; row-gap: 3px; align-items: center; }
+.year-day { color: var(--muted); font-size: 11px; line-height: 1; white-space: nowrap; }
+.year-cell { display: block; aspect-ratio: 1; border-radius: 3px; background: var(--tile-neutral); }
+.year-scale .year-cell { width: 12px; }
+.year-cell.out { visibility: hidden; }
+.year-cell.l1 { background: color-mix(in srgb, var(--accent) 32%, var(--tile-neutral)); }
+.year-cell.l2 { background: color-mix(in srgb, var(--accent) 56%, var(--tile-neutral)); }
+.year-cell.l3 { background: color-mix(in srgb, var(--accent) 78%, var(--tile-neutral)); }
+.year-cell.l4 { background: var(--accent); }
+.year-grid .year-cell:not(.l0):not(.out) { cursor: pointer; }
+.year-grid .year-cell:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
+.year-cell.today { box-shadow: inset 0 0 0 1px var(--text-2); }
+.year-cell.picked { outline: 2px solid var(--text); outline-offset: 1px; }
+.year-foot { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.year-foot .insight-summary { flex: 1; }
+.year-scale { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+.year-scale span { margin: 0 3px; }

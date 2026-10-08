@@ -35,6 +35,7 @@ import { configExpect, configPreview, configReason, configureReadOnly } from "..
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
 import { randomUUID } from "crypto";
 import { readFileSync } from "fs";
+import { TokensUploader } from "./tokens-ci";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 /**
@@ -68,6 +69,8 @@ const exitMonitor = new ExitMonitor({
     notification.show();
   },
 });
+/** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
+const tokensUploader = new TokensUploader({ publish: state => { if (win && !win.isDestroyed()) win.webContents.send("tokens-ci-state", state); } });
 /** 「账号:窗口」→ 已经提醒过的那个窗口的重置时间。同一个窗口只提醒一次。 */
 const notified = new Map<string, number>();
 /** 两次重置时间差不到这么多，就当是同一个窗口（接口返回的时间有抖动，见 maybeNotify）。 */
@@ -802,6 +805,19 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("egress:clear", () => exitMonitor.clearHistory());
     ipcMain.handle("egress:intel", (_event, ip: unknown) => exitMonitor.refreshIntel(ip));
     exitMonitor.start();
+    ipcMain.handle("tokens-ci:state", () => tokensUploader.state());
+    ipcMain.handle("tokens-ci:save", (_event, value: unknown) => tokensUploader.save(value));
+    ipcMain.handle("tokens-ci:check", () => tokensUploader.check());
+    ipcMain.handle("tokens-ci:use-latest", () => tokensUploader.useLatestVersion());
+    ipcMain.handle("tokens-ci:upload", () => tokensUploader.upload("manual"));
+    ipcMain.handle("tokens-ci:preview", () => tokensUploader.dryRun());
+    ipcMain.handle("tokens-ci:login", (_event, privacy: unknown) => tokensUploader.login(privacy));
+    ipcMain.handle("tokens-ci:cancel", () => tokensUploader.cancelJob());
+    ipcMain.handle("tokens-ci:clear-login", () => tokensUploader.clearLogin());
+    ipcMain.handle("tokens-ci:clear-preview", () => tokensUploader.clearPreview());
+    ipcMain.handle("tokens-ci:resume", () => tokensUploader.resume());
+    ipcMain.handle("tokens-ci:open", (_event, url: unknown) => { if (typeof url === "string" && /^https:\/\/[^\s]+$/i.test(url)) void shell.openExternal(url); });
+    tokensUploader.start();
     ipcMain.handle("snapshot", () => getInitialSnapshot());
     ipcMain.handle("refresh", async () => refresh(true));
     ipcMain.handle("prefs:read", () => readPrefs());
@@ -1054,7 +1070,7 @@ if (!app.requestSingleInstanceLock()) {
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
     destroyTrayPanel();
-    if (agentQuitReady) { quitting = true; exitMonitor.stop(); stopAllReplies(); releasePrism(); return; }
+    if (agentQuitReady) { quitting = true; exitMonitor.stop(); tokensUploader.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

@@ -4,7 +4,7 @@ import { estimateCost, priceOf } from "./model-pricing";
 import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
 import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-switch";
-import { routeReturned } from "./route-ledger";
+import { routeReturned, type RouteTiming } from "./route-ledger";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline, type RequestAccount } from "./login-timeline";
 import { quotaAttribution } from "./quota-attribution";
 import { readQuotaHistory } from "./quota-history";
@@ -68,6 +68,8 @@ export type RequestRecord = {
   compaction?: boolean;
   /** 查询时附上的：同一次请求在代理里的记录——TokenPulse 自己转发时读到的（见 withRoute），或 CC Switch 代理的（见 matchProxy）。不落盘。 */
   proxy?: { requested?: string; returned: string; via?: "tokenpulse" };
+  /** 查询时附上的：经 TokenPulse 转发时量到的延迟和速度（见 withRoute）。不落盘。 */
+  timing?: RouteTiming;
 };
 
 const SOURCE_NAMES: Record<RequestKind, string> = { "claude-code": "Claude Code", codex: "Codex CLI", "grok-build": "Grok Build", "cc-switch": "CC Switch" };
@@ -302,6 +304,8 @@ export type RequestRow = {
   channel: string;
   /** 压缩上下文的估算行。 */
   compaction?: boolean;
+  /** 经 TokenPulse 转发（透明转发 / 本地路由）时量到的延迟和速度；没经过的没有。 */
+  timing?: RouteTiming;
 };
 
 export type RequestPage = {
@@ -394,6 +398,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     reasons: verdict.reasons,
     channel: verdict.channel,
     ...(record.compaction ? { compaction: true } : {}),
+    ...(record.timing ? { timing: record.timing } : {}),
   };
 }
 
@@ -474,7 +479,7 @@ function ccSwitchRecords(covered: Set<string>) {
 function withRoute(record: RequestRecord): RequestRecord | null {
   if (record.kind === "cc-switch" || !record.responseId) return null;
   const hit = routeReturned(record.responseId, record.at);
-  return hit ? { ...record, proxy: { ...hit, via: "tokenpulse" } } : null;
+  return hit ? { ...record, proxy: { ...(hit.requested ? { requested: hit.requested } : {}), returned: hit.returned, via: "tokenpulse" }, ...(hit.timing ? { timing: hit.timing } : {}) } : null;
 }
 
 export function queryRequests(query: RequestQuery): RequestPage {

@@ -13,7 +13,7 @@ import { StringDecoder } from "string_decoder";
 import type { Duplex } from "stream";
 import { clientError, convertJsonResponse, convertRequest, StreamBridge } from "./agent-convert";
 import { NATIVE_UPSTREAM, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
-import { describeNetError, proxyFor, upstreamRequest } from "./upstream-proxy";
+import { describeNetError, proxyFor, staleReuse, upstreamRequest } from "./upstream-proxy";
 import { Grab, WsReader } from "./ws-sniff";
 
 export type ProxyLog = {
@@ -174,7 +174,13 @@ export function startAgentProxy(options: Options) {
       const app = passed[1] as AgentApp, base = options.pass?.(app, req.headers) ?? null;
       if (!base) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "TokenPulse pass-through is off for this tool" } })); return; }
       stats.active += 1; stats.requests += 1;
-      try { const entry = await forwardPass(req, res, app, (passed[2] || "/") + url.search, base, await readBody(req)); if (entry.status < 400 && !entry.error) stats.ok += 1; options.log(entry); }
+      try {
+        const entry = await forwardPass(req, res, app, (passed[2] || "/") + url.search, base, await readBody(req));
+        const ok = entry.status < 400 && !entry.error;
+        if (ok) stats.ok += 1;
+        // Grok 每轮还有十几个附带请求（/storage、/signals、/settings…），成功的不记，免得淹没对话请求
+        if (!ok || app !== "grok" || GROK_INFERENCE.test(entry.path || "")) options.log(entry);
+      }
       finally { stats.active = Math.max(0, stats.active - 1); }
       return;
     }
@@ -212,7 +218,7 @@ export function startAgentProxy(options: Options) {
         if (outcome.kind === "done") {
           options.succeed(target.id);
           stats.ok += 1;
-          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel }), ...(outcome.timing ?? {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
+          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: (outcome.endAt ?? Date.now()) - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel }), ...(outcome.timing ?? {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
           return;
         }
         options.fail(target.id);
@@ -270,7 +276,7 @@ function sendError(res: http.ServerResponse, client: Upstream, status: number, m
 }
 
 type Timing = { firstByteMs?: number; firstTokenMs?: number; tokensPerSec?: number };
-type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string; timing?: Timing } | { kind: "fail"; status: number; error: string; terminal?: boolean };
+type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string; timing?: Timing; endAt?: number } | { kind: "fail"; status: number; error: string; terminal?: boolean };
 
 async function forward(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, client: Upstream, target: ProxyTarget, body: Buffer): Promise<Outcome> {
   const same = client === target.upstream;
@@ -330,7 +336,9 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       finish({ kind: 'fail', status: 499, error: '客户端连接已关闭', terminal: true });
       upstreamReq.destroy();
     };
-    const upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers, timeout: 120_000 }, (upstreamRes) => {
+    let upstreamReq: http.ClientRequest, responded = false, resent = false;
+    const onResponse = (upstreamRes: http.IncomingMessage) => {
+      responded = true;
       const status = upstreamRes.statusCode || 502;
       upstreamRes.once("aborted", () => incomplete(502, "回复中途断开"));
       upstreamRes.on("error", () => incomplete(502, "回复中途断开"));
@@ -362,21 +370,31 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       upstreamRes.on("end", () => {
         res.off('close', clientClosed);
         res.end();
+        // 总耗时到回复收完为止，不含旁路解压收尾的时间
+        const endAt = Date.now();
         observer!.end(() => {
           if (status >= 400) { finish({ kind: "fail", status, error: `HTTP ${status}`, terminal: true }); return; }
           const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
-          finish({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}), timing: watch.result(usage.output, status) });
+          finish({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}), timing: watch.result(usage.output, status, endAt), endAt });
         });
       });
-    });
+    };
+    const send = () => {
+      const sent = upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers, timeout: 120_000 }, onResponse);
+      sent.on("error", (error) => {
+        // 复用的连接已经被关掉：换条新连接再发一次（见 staleReuse）
+        if (!resent && !responded && !done && staleReuse(sent, error)) { resent = true; send(); return; }
+        incomplete(502, describeNetError(error, Boolean(proxy)));
+      });
+      sent.on("timeout", () => {
+        incomplete(504, "上游超时");
+        sent.destroy();
+      });
+      if (payload.length && req.method !== "GET" && req.method !== "HEAD") sent.write(payload);
+      sent.end();
+    };
     res.once('close', clientClosed);
-    upstreamReq.on("error", (error) => incomplete(502, describeNetError(error, Boolean(proxy))));
-    upstreamReq.on("timeout", () => {
-      incomplete(504, "上游超时");
-      upstreamReq.destroy();
-    });
-    if (payload.length && req.method !== "GET" && req.method !== "HEAD") upstreamReq.write(payload);
-    upstreamReq.end();
+    send();
   });
 }
 
@@ -391,6 +409,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
  */
 const PASS_HOP = new Set(["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding", "upgrade", "host", "content-length"]);
 const PASS_PATH = /^\/pass\/(claude|codex|grok)(\/.*)?$/;
+const GROK_INFERENCE = /\/(responses|chat\/completions|messages)$/;
 const PASS_NAME = "官方登录（透明转发）";
 const SPEED_MIN_OUTPUT = 20;
 /** 回复里第一段内容：Claude 的 content_block_delta，OpenAI Responses 的 response.….delta。 */
@@ -414,8 +433,7 @@ function stopwatch() {
       if (!genAt && GEN_START.test(text)) genAt = now;
       if (!firstTokenAt && FIRST_TOKEN.test(text)) firstTokenAt = now;
     },
-    result(output: number | undefined, status: number): Timing {
-      const end = Date.now();
+    result(output: number | undefined, status: number, end = Date.now()): Timing {
       return { ...(firstAt ? { firstByteMs: firstAt - started } : {}), ...(firstTokenAt ? { firstTokenMs: firstTokenAt - started } : {}), ...(firstAt && status < 400 ? speedOf(output, end - (genAt || firstAt)) : {}) };
     },
   };
@@ -484,7 +502,9 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
     const finish = (extra: Partial<ProxyLog>) => { if (done) return; done = true; res.off("close", clientClosed); observer?.destroy(); resolve(entry(extra)); };
     const clientClosed = () => { upstreamReq.destroy(); finish({ status: 499, error: "客户端连接已关闭" }); };
     res.once("close", clientClosed);
-    const upstreamReq: http.ClientRequest = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers: headers as http.OutgoingHttpHeaders, timeout: 600_000 }, (upstreamRes) => {
+    let upstreamReq: http.ClientRequest, responded = false, resent = false;
+    const onResponse = (upstreamRes: http.IncomingMessage) => {
+      responded = true;
       const status = upstreamRes.statusCode || 502;
       const out: http.OutgoingHttpHeaders = {};
       for (const [key, value] of Object.entries(upstreamRes.headers)) if (value != null && !PASS_HOP.has(key.toLowerCase())) out[key] = value;
@@ -508,23 +528,31 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
         const settle = () => {
           const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
           const writing = firstAt ? endAt - (genAt || firstAt) : 0;
-          finish({ status, responseBytes: bytes, ...(firstAt ? { firstByteMs: firstAt - started } : {}), ...(firstTokenAt ? { firstTokenMs: firstTokenAt - started } : {}), input: usage.input, output: usage.output, ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}),
+          finish({ status, ms: endAt - started, responseBytes: bytes, ...(firstAt ? { firstByteMs: firstAt - started } : {}), ...(firstTokenAt ? { firstTokenMs: firstTokenAt - started } : {}), input: usage.input, output: usage.output, ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}),
             ...(status < 400 ? { ...speedOf(usage.output, writing), ...returnedOf(grab) } : {}),
             ...(status >= 400 ? { error: `HTTP ${status}` } : {}) });
         };
         observer!.end(settle);
       });
       upstreamRes.on("error", () => { res.destroy(); finish({ status: 502, error: "回复中途断开", responseBytes: bytes, ...(firstAt ? { firstByteMs: firstAt - started } : {}) }); });
-    });
+    };
 
     const fail = (status: number, message: string) => {
       if (!res.headersSent) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "TokenPulse pass-through: " + message } })); }
       else res.destroy();
       finish({ status, error: message });
     };
-    upstreamReq.on("error", (error) => fail(502, describeNetError(error, Boolean(proxy))));
-    upstreamReq.on("timeout", () => { upstreamReq.destroy(); fail(504, "上游超时"); });
-    upstreamReq.end(body.length ? body : undefined);
+    // 「不重试」指上游回了错误不重发；复用的连接已经被关掉、请求根本没送到时，换条新连接再发一次（见 staleReuse）
+    const send = () => {
+      const sent = upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers: headers as http.OutgoingHttpHeaders, timeout: 600_000 }, onResponse);
+      sent.on("error", (error) => {
+        if (!resent && !responded && !done && staleReuse(sent, error)) { resent = true; send(); return; }
+        fail(502, describeNetError(error, Boolean(proxy)));
+      });
+      sent.on("timeout", () => { sent.destroy(); fail(504, "上游超时"); });
+      sent.end(body.length ? body : undefined);
+    };
+    send();
   });
 }
 

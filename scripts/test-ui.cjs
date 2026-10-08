@@ -83,7 +83,11 @@ app.on('web-contents-created', (_, contents) => {
           await delay(50);
         }
       };
+      // 启动页（0.3.38）：数据到之前盖住标题栏以下，只有图标和「正在扫描中…」；数据一到就收起来
+      const boot = await evaluate("(() => { const b = document.getElementById('boot'); if (!b || b.classList.contains('done')) return null; const s = getComputedStyle(b); return [b.querySelector('.boot-mark svg') !== null, b.querySelector('.boot-text').textContent, +s.zIndex > +getComputedStyle(document.querySelector('.sidebar')).zIndex, s.top, document.getElementById('app-status').hidden]; })()");
+      if (boot) assert.deepEqual(boot, [true, '正在扫描中…', true, '44px', true], '启动页：图标、文字、盖住侧栏、标题栏露在外面，右上角不再另弹「正在读取」');
       await until("document.querySelectorAll('#tiles .stat').length === 4");
+      await until("!document.getElementById('boot')");
       assert.equal(pendingQuota, true, 'Local statistics must render before quota completes');
       console.log('PASS local statistics render while quota is pending');
       assert.match(await evaluate("document.getElementById('quota-cards').textContent"), /50.0/);
@@ -312,6 +316,17 @@ app.on('web-contents-created', (_, contents) => {
       }
       await evaluate("document.getElementById('request-search').value='QA-model'; document.getElementById('request-search').dispatchEvent(new Event('input'))");
       await until("!analysis.loading && filteredRecords.length === 22");
+      // 全年活跃度（0.3.38）：一年 365 格，只有今天有用量 → 今天是最深的一档；点它整页切到那一天，再换回原来的范围
+      await until("document.querySelector('.year-panel .year-grid')");
+      const year = await evaluate("(() => { const today = PulseData.dayKey(current.now); const cell = document.querySelector(`.year-cell[data-day=\"${today}\"]`); return [document.querySelectorAll('.year-grid .year-cell:not(.out)').length, document.querySelector('.year-count b').textContent, cell?.classList.contains('l4'), document.querySelectorAll('.year-grid .year-cell.l0').length, /最长连续 1 天/.test(document.querySelector('.year-panel .insight-summary').textContent)]; })()");
+      assert.deepEqual(year, [365, '1 天有用量', true, 364, true]);
+      const daysBefore = await evaluate('JSON.stringify(state.days)');
+      await evaluate("document.querySelector(`.year-cell[data-day=\"${PulseData.dayKey(current.now)}\"]`).click()");
+      assert.deepEqual(await evaluate("[state.days, state.from === state.to && state.from === PulseData.dayKey(current.now)]"), ['custom', true]);
+      await until("document.querySelector('.year-cell.picked')");
+      await evaluate(`applyRange(${daysBefore})`);
+      await until("!analysis.loading && filteredRecords.length === 22");
+      console.log('PASS 0.3.38 year activity: one cell per day for the recent year, quartile shades, longest streak, click a day to view just that day');
       assert.equal(await evaluate("document.querySelectorAll('#records tr').length"), 15);
       assert.match(await evaluate("document.getElementById('record-count').textContent"), /22/);
       await evaluate("document.getElementById('next-page').click()");

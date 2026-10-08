@@ -36,6 +36,7 @@
 .pv-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pv-grow { display: grid; flex: 1; gap: 2px; min-width: 0; }
 .pv-grow small, .pv-hint { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.pv-grow small.pv-pass-warn { display: block; margin-top: 2px; color: var(--warn); }
 .pv-card { display: grid; gap: 12px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .pv-card-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .pv-empty { display: grid; justify-items: center; gap: 10px; padding: 28px 16px; border: 1px dashed var(--line-strong); border-radius: 12px; color: var(--muted); font-size: 13px; text-align: center; }
@@ -156,7 +157,7 @@
 .pv-log-avatar { width: 24px; height: 24px; border-radius: 7px; }
 .pv-log-avatar .brand-svg { width: 14px; height: 14px; }
 .pv-log-time, .pv-log-model, .pv-log-ms, .pv-log-tokens { color: var(--muted); }
-.pv-log-more, .pv-log-end { margin: 12px 0 0; text-align: center; color: var(--muted); font-size: 12.5px; }
+.pv-log-pager { padding: 14px 2px 0; }
 .pv-log-tokens { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pv-log-keep { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; padding: 12px 14px; }
 .pv-log-keep small { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.6; }

@@ -60,7 +60,7 @@ const rejects = async (work, pattern, message) => { let error; try { await work(
     const claudeBefore = ['{', '    "permissions": { "allow": ["Bash(ls:*)"] },', '    "env": { "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000" },', '    "theme": "dark"', '}', ''].join(NL);
     const codexBefore = ['# my codex config', 'model = "gpt-5.5"', 'model_reasoning_effort = "high"   # keep', '', '[projects."D:\\\\work"]', 'trust_level = "trusted"', '', '[mcp_servers.demo]', 'command = "node"', ''].join(NL);
     fs.writeFileSync(claudeFile, claudeBefore); fs.writeFileSync(codexFile, codexBefore);
-    assert.deepEqual(sw.agentView().pass, { claude: { on: false, connected: false, blocked: '' }, codex: { on: false, connected: false, blocked: '' } });
+    assert.deepEqual(sw.agentView().pass, { claude: { on: false, connected: false, blocked: '' }, codex: { on: false, connected: false, blocked: '' }, grok: { on: false, connected: false, blocked: '' } });
 
     /* ---------- Claude Code：打开只加一行 ---------- */
     const opened = await sw.setAppPass('claude', true);
@@ -139,7 +139,7 @@ const rejects = async (work, pattern, message) => { let error; try { await work(
     assert.match(view.notice, /Codex 的透明转发没有恢复，已关闭/);
     assert.match(view.pass.codex.blocked, /不是用官方登录/);
     await rejects(() => sw.setAppPass('codex', true), /不是用官方登录/, '用第三方供应商时不能开');
-    await rejects(() => sw.setAppPass('grok', true), /还不支持/, 'Grok 还不支持');
+    await rejects(() => sw.setAppPass('desktop', true), /还不支持/, 'Claude 桌面端还不支持');
     fs.writeFileSync(codexFile, codexBefore);
     console.log('PASS pass-through switch: quitting restores the direct connection and the next start turns it back on; a tool that moved to a third party is left alone');
 

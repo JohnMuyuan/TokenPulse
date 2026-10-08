@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="usage-insights.css">
 <link rel="stylesheet" href="usage-projects.css">
 <link rel="stylesheet" href="agent-switch.css">
+<link rel="stylesheet" href="tokens-ci.css">
 <link rel="stylesheet" href="intro.css">
 </head>
 <body>
@@ -82,6 +83,11 @@
   </div>
 </header>
 
+<div id="boot" class="boot" role="status" aria-live="polite" aria-busy="true">
+  <span class="brand-mark boot-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle class="brand-track" cx="12" cy="12" r="7.5"/><g class="boot-spin"><path class="brand-progress" d="M7.9 5.7A7.5 7.5 0 0 1 17.6 17"/><circle class="brand-node" cx="17.6" cy="17" r="1.5"/></g><rect class="brand-bar" x="7.8" y="13.2" width="2" height="3.8" rx="1"/><rect class="brand-bar" x="11" y="10.8" width="2" height="6.2" rx="1"/><rect class="brand-bar" x="14.2" y="8" width="2" height="9" rx="1"/></svg></span>
+  <p class="boot-text">正在扫描中…</p>
+</div>
+
 <aside class="sidebar">
   <a class="brand" href="#overview" aria-label="TokenPulse 总览">
     <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle class="brand-track" cx="12" cy="12" r="7.5"/><path class="brand-progress" d="M7.9 5.7A7.5 7.5 0 0 1 17.6 17"/><rect class="brand-bar" x="7.8" y="13.2" width="2" height="3.8" rx="1"/><rect class="brand-bar" x="11" y="10.8" width="2" height="6.2" rx="1"/><rect class="brand-bar" x="14.2" y="8" width="2" height="9" rx="1"/><circle class="brand-node" cx="17.6" cy="17" r="1.5"/></svg></span>
@@ -115,7 +121,7 @@
   </header>
 
   <main id="main">
-    <div id="app-status" class="status-message" role="status">正在读取本地用量…</div>
+    <div id="app-status" class="status-message" role="status" hidden>正在读取本地用量…</div>
 
     <section class="page-heading">
       <div>
@@ -240,6 +246,8 @@
       </article>
       <!-- 用量分析：分工具趋势、工具 / 模型完整排行、使用时段分布（renderer/usage-insights.js） -->
       <div id="usage-insights" class="usage-insights"></div>
+      <!-- tokens.ci 自动上传的状态栏 / 介绍卡（renderer/tokens-ci.js） -->
+      <section id="tokens-ci" class="panel tokens-ci" aria-label="tokens.ci 上传" hidden></section>
       <article class="panel records-panel usage-records">
         <div class="panel-heading">
           <div>
@@ -279,7 +287,7 @@
           </div>
           <div class="table-scroll">
             <table class="request-table">
-              <thead><tr><th>时间 / 工具</th><th>项目 / 账号</th><th>型号</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取</th><th class="n">额度占用</th><th class="n">参考费用</th><th>核验</th></tr></thead>
+              <thead><tr><th>时间 / 工具</th><th>项目 / 账号</th><th>型号</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取</th><th class="n">额度占用</th><th class="n">参考费用</th><th>延迟</th><th>核验</th></tr></thead>
               <tbody id="request-rows"></tbody>
             </table>
           </div>
@@ -371,6 +379,11 @@
           <button id="open-data" class="btn"><svg class="icon"><use href="#i-folder"/></svg>打开数据目录</button>
         </div>
         <div class="setting-block">
+          <div class="setting-title">tokens.ci 自动上传</div>
+          <p class="setting-hint">按你设的间隔，由 TokenPulse 运行 tokens.ci 的官方工具，把用量上传到 tokens.ci 排行榜。上传的数据由那个工具自己扫描，只有 Token 数、型号和时间；TokenPulse 自己的账本仍然只在本机。</p>
+          <button id="open-tokens-ci" class="btn" type="button"><svg class="icon"><use href="#i-up"/></svg>设置 tokens.ci 上传</button>
+        </div>
+        <div class="setting-block">
           <div class="setting-title">供应商配置备份</div>
           <p class="setting-hint">TokenPulse 每次改动 Claude / Codex / Grok 的配置文件前都会先让你确认，并自动留一份备份；接管前的原件也单独保存。可以在这里一键还原，或打开只读保护。</p>
           <button id="open-config-backups" class="btn" type="button"><svg class="icon"><use href="#i-lock"/></svg>打开配置保护</button>
@@ -448,6 +461,7 @@
 <script src="usage-projects.js"></script>
 <script src="provider-avatars.js"></script>
 <script src="agent-switch.js"></script>
+<script src="tokens-ci.js"></script>
 <script src="intro.js"></script>
 </body>
 </html>

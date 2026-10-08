@@ -80,6 +80,21 @@ try {
   assert.deepEqual([second.rows.map((row) => row.provider), second.more], [["pool · a"], false]);
   assert.deepEqual(ledger.readRouteLog({ limit: 10, before: 1 }), { rows: [], more: false, nextCursor: null });
   console.log("PASS route log: every forwarded request appended to a monthly file, kept for good, and read back newest first in pages");
+
+  /* ---------------- 查得多也不反复看文件（0.3.38） ---------------- */
+  // 统计时每条请求都来查一次：以前每次都 stat 好几个文件，几万条请求要两三秒，打开软件时干等
+  const realStat = fs.statSync;
+  let stats = 0;
+  fs.statSync = (...args) => { stats++; return realStat(...args); };
+  try {
+    ledger.resetRouteLedgerCache();
+    for (let i = 0; i < 5000; i++) { ledger.routeReturned("resp_missing_" + i, base); ledger.routeAccount("chatgpt", base, "resp_missing_" + i); }
+  } finally { fs.statSync = realStat; }
+  assert.ok(stats <= 12, `5000 次查询只看了 ${stats} 次文件`);
+  // 本进程写了转发记录，马上就能查到，不用等
+  ledger.appendRouteLog({ at: base + 1000, app: "codex", provider: "relay", status: 200, ms: 5, responseId: "resp_fresh_1", returnedModel: "gpt-fresh" });
+  assert.equal(ledger.routeReturned("resp_fresh_1", base + 1000)?.returned, "gpt-fresh");
+  console.log("PASS ledger lookups: files are checked at most once a second, and own writes are visible at once");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

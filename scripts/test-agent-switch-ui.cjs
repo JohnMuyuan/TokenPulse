@@ -48,24 +48,38 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 11 && document.querySelectorAll('${P} .pv-app-card').length === 4`);
     assert.equal(await evaluate(`document.querySelector('${P}').innerText.includes('Gemini')`), false, '页面上不能再有 Gemini');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'overview');
-    // 转发记录（0.3.34）：永久保存，先列最近 100 条，往下可以翻到最早的；说明卡里能打开记录文件夹
+    // 转发记录（0.3.34）：永久保存，说明卡里能打开记录文件夹；0.3.38 起一页 20 条，翻到还没读的页再去读更早的
     await nav('logs');
-    await until(`document.querySelectorAll('${P} .pv-log-row').length === 100`);
-    assert.match(await evaluate(`document.querySelector('${P} .pv-head p, ${P} .pv-head small')?.textContent || document.querySelector('${P}').textContent`), /往下可以一直翻到最早的/);
+    const pagerText = () => evaluate(`document.querySelector('${P} .pv-log-pager > span').textContent`);
+    const pageTokens = () => evaluate(`[...document.querySelectorAll('${P} .pv-log-tokens')].map(e => e.textContent)`);
+    const pagerState = () => evaluate(`[...document.querySelectorAll('${P} .pv-log-pager button')].map(b => b.disabled)`);
+    await until(`document.querySelectorAll('${P} .pv-log-row').length === 20`);
+    assert.equal(await pagerText(), '第 1 页 · 已读取 100 条 · 更早的还没读完');
+    assert.deepEqual(await pagerState(), [true, false], '第一页：不能往前，可以往后');
+    assert.match(await evaluate(`document.querySelector('${P} .pv-head p, ${P} .pv-head small')?.textContent || document.querySelector('${P}').textContent`), /一页 20 条，可以一直往前翻到最早的/);
     assert.equal((await evaluate(`document.querySelector('${P}').textContent`)).includes('最多 30 条'), false, '旧说法不能留着');
     assert.match(await evaluate(`document.querySelector('${P} .pv-log-keep').textContent`), /保存在本机.*不会自动清理.*不记请求和回复的内容.*打开记录文件夹/);
     assert.deepEqual(await evaluate(`(() => { const r = document.querySelector('${P} .pv-log-row'); return [r.classList.contains('bad'), r.querySelector('b').textContent, r.querySelector('.pv-log-tokens').textContent, r.querySelector('.pv-log-error').textContent]; })()`), [true, 'Old pool · 0', '1129 / 10', 'boom'], '最新的在最上面，带 Token 数和报错');
-    assert.equal(await evaluate(`document.querySelector('${P} [data-action=older-logs]').textContent`), '再看更早的');
-    await evaluate(`document.querySelector('${P} [data-action=older-logs]').click()`);
-    await until(`document.querySelectorAll('${P} .pv-log-row').length === 130 && !document.querySelector('${P} [data-action=older-logs]')`);
-    assert.equal(await evaluate(`new Set([...document.querySelectorAll('${P} .pv-log-tokens')].map(e => e.textContent)).size`), 130, '同毫秒、同供应商的旧记录不漏页，也不被去重丢掉');
-    assert.equal(await evaluate(`document.querySelector('${P} .pv-log-end').textContent`), '已经是最早的一条了。');
-    assert.equal(await evaluate(`[...document.querySelectorAll('${P} .pv-log-row .pv-log-ms')].at(-1).textContent`), '100 ms', '最下面是最早的那条');
+    const seenTokens = await pageTokens();
+    // 一页 20 条：先读的 100 条是 5 页，翻到第 5 页时去读更早的那一批，读完就知道一共 7 页
+    for (let page = 2; page <= 7; page++) {
+      await evaluate(`document.querySelector('${P} [data-action=logs-next]').click()`);
+      await until(`/^第 ${page} /.test(document.querySelector('${P} .pv-log-pager > span')?.textContent || '') && document.querySelectorAll('${P} .pv-log-row').length === ${page === 7 ? 10 : 20}`);
+      seenTokens.push(...await pageTokens());
+    }
+    assert.equal(await pagerText(), '第 7 / 7 页 · 共 130 条转发');
+    assert.deepEqual(await pagerState(), [false, true], '最后一页：不能再往后');
+    assert.equal(new Set(seenTokens).size, 130, '同毫秒、同供应商的旧记录不漏页，也不被去重丢掉');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${P} .pv-log-row .pv-log-ms')].at(-1).textContent`), '100 ms', '最后一页最下面是最早的那条');
+    await evaluate(`document.querySelector('${P} [data-action=logs-prev]').click()`);
+    await until(`document.querySelectorAll('${P} .pv-log-row').length === 20`);
+    assert.equal(await pagerText(), '第 6 / 7 页 · 共 130 条转发');
     // 透明转发（0.3.35）：说明做什么 / 不做什么，Claude Code 和 Codex 各一个开关，默认关；下面是量到的速度
     await nav('pass');
-    await until(`document.querySelectorAll('${P} .pv-route-row .pv-switch').length === 2 && /还没有量到速度/.test(document.querySelector('${P} .pv-empty')?.textContent || '')`);
+    await until(`document.querySelectorAll('${P} .pv-route-row .pv-switch').length === 3 && /还没有量到速度/.test(document.querySelector('${P} .pv-empty')?.textContent || '')`);
     assert.match(await evaluate(`document.querySelector('${P} .pv-pass-what').textContent`), /一个字节都不动.*型号核验.*不保存、不读取登录凭据.*不保存请求和回复的内容.*只在本机.*恢复直连/);
-    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-route-row')].map(r => [r.querySelector('b').textContent, r.querySelector('.pv-switch').getAttribute('aria-checked'), r.querySelector('.pv-switch').disabled, r.querySelector('small').textContent])`), [['Claude Code', 'false', false, '直连官方，没有测速。'], ['Codex', 'false', false, '直连官方，没有测速。']]);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-route-row')].map(r => [r.querySelector('b').textContent, r.querySelector('.pv-switch').getAttribute('aria-checked'), r.querySelector('.pv-switch').disabled, r.querySelector('small').textContent])`), [['Claude Code', 'false', false, '直连官方，没有测速。'], ['Codex', 'false', false, '直连官方，没有测速。'], ['Grok CLI', 'false', false, '直连官方，没有测速。']]);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-route-row')].map(r => /Remote Control/.test(r.querySelector('.pv-pass-warn')?.textContent || ''))`), [true, false, false], '只在 Claude Code 那一行提醒 Remote Control 用不了');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=pass] small').textContent`), '已关闭');
     // 换一个空闲端口：默认端口可能正被这台机器上在用的 TokenPulse 占着
     const passPort = await new Promise(resolve => { const s = http.createServer(); s.listen(0, '127.0.0.1', () => { const v = s.address().port; s.close(() => resolve(v)); }); });

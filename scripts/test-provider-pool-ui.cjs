@@ -127,7 +127,7 @@ app.on('web-contents-created', (_e, contents) => contents.once('did-finish-load'
     await delay(300);
     assert.equal(await ev(`document.querySelectorAll('${P} .pv-log-row').length`), 0);
     assert.equal(await ev(`/null|undefined/.test(document.querySelector('${P}').textContent)`), false, '页面上不能出现 null / undefined');
-    assert.equal(await ev(`!!document.querySelector('${P} [data-action=older-logs], ${P} .pv-log-end')`), false, '没有记录就没有「再看更早的」');
+    assert.equal(await ev(`!!document.querySelector('${P} .pv-log-pager')`), false, '没有记录就没有翻页');
     console.log('PASS provider avatars and pools: auto-match, preset pick, upload downscale, dark inversion, pool steps, member order, fill-first, preview without secrets, enable via local route, preview shortcuts, no-account hint, dark/900px');
     clearTimeout(watchdog); app.exit(0);
   } catch (e) { console.error('FAIL', e.stack || e.message); clearTimeout(watchdog); app.exit(1); }

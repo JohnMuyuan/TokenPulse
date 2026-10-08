@@ -177,6 +177,7 @@
     if (next === section) return;
     section = next;
     if (next === 'pass') passSpeedStale = true; // 每次进这一页重新读一次速度汇总
+    if (next === 'logs') logPage = 0; // 转发记录每次从最新的第一页看起
     try { localStorage.setItem(SECTION_KEY, next); } catch { /* 记不住就算了 */ }
     render(true);
     root.querySelector(`.pv-nav [data-section="${next}"]`)?.focus();
@@ -452,7 +453,7 @@
    * 透明转发（0.3.35）：官方登录的请求在本机过一道，原样转给官方，只为了量速度。
    * 这一页：说明它做什么、不做什么；每个工具一个开关；下面是量到的各模型速度（来自保存的转发记录）。
    */
-  const PASS_TOOLS = ['claude', 'codex'];
+  const PASS_TOOLS = ['claude', 'codex', 'grok'];
   function passOn() { return PASS_TOOLS.filter(app => view.pass?.[app]?.on); }
   let passSpeed = null, passSpeedLoading = false, passSpeedAt = 0, passSpeedStale = false;
   async function loadPassSpeed() {
@@ -474,7 +475,7 @@
         el('div', {}, [el('b', { text: '它做的' }), el('ul', {}, [point('把工具发给官方的请求原样转过去：请求头、登录凭据、内容一个字节都不动。'), point('把官方的回复原样还给工具。'), point('记下时间：多久收到第一段内容、每秒输出多少 Token。'), point('从回复里读 Token 数，和上游实际用的型号（给请求记录里的「型号核验」用，Codex 自己不记这个）。')])]),
         el('div', {}, [el('b', { text: '它不做的' }), el('ul', {}, [point('不保存、不读取登录凭据。凭据还是工具自己带、自己续期。'), point('不保存请求和回复的内容。'), point('不换账号、不重试、不改型号和思考等级。'), point('只在本机（127.0.0.1）监听，别的电脑连不上。')])]),
       ]),
-      el('small', { class: 'pv-hint', text: '打开后只在工具配置里加一行「接口地址 = 本机」；关闭或退出 TokenPulse 时拿掉这一行，恢复直连。开关之后，以及退出 TokenPulse 之后，已经开着的会话要重新打开才生效。请求从 TokenPulse 发往官方，所以走的是 TokenPulse 的网络（系统代理 / 环境变量里的代理）。' }),
+      el('small', { class: 'pv-hint', text: '打开后只在工具配置里加「接口地址 = 本机」（Claude Code、Codex 是一行；Grok 的对话地址按型号分开写，每个官方型号各一行）；关闭或退出 TokenPulse 时拿掉这些行，恢复直连。开关之后，以及退出 TokenPulse 之后，已经开着的会话要重新打开才生效。请求从 TokenPulse 发往官方，所以走的是 TokenPulse 的网络（系统代理 / 环境变量里的代理）。' }),
     ]);
     const rows = PASS_TOOLS.map((id, i) => {
       const a = appOf(id), state = view.pass?.[id] || { on: false, connected: false, blocked: '' };
@@ -483,7 +484,7 @@
       const note = state.on
         ? state.connected ? `已打开：${a.name} 连 http://${view.proxy.host}:${view.proxy.port}/pass/${id}，原样转给官方。` : '开关开着，但工具配置里那一行不在了（可能被别的程序改掉）。关掉再打开可以重新接上。'
         : state.blocked || '直连官方，没有测速。';
-      return paint(el('div', { class: 'pv-route-row' + (state.on ? ' on' : '') }, [appMark(id), el('div', { class: 'pv-grow' }, [el('b', { text: a.name }), el('small', { text: note, translate: state.on && state.connected ? 'no' : null })]), toggle]), { '--i': i });
+      return paint(el('div', { class: 'pv-route-row' + (state.on ? ' on' : '') }, [appMark(id), el('div', { class: 'pv-grow' }, [el('b', { text: a.name }), el('small', { text: note, translate: state.on && state.connected ? 'no' : null }), id === 'claude' ? el('small', { class: 'pv-pass-warn', text: '打开期间 Claude Code 的 Remote Control（远程控制）用不了：Claude Code 只在接口地址是官方的 api.anthropic.com 时才允许它。要用 Remote Control 时先关掉这个开关，再重开 Claude Code。' }) : null]), toggle]), { '--i': i });
     });
     const speed = passSpeed || [];
     const table = speed.length ? el('div', { class: 'pv-log pv-speed' }, [
@@ -510,11 +511,11 @@
   /* ---------------- 转发记录 ---------------- */
 
   /*
-   * 转发记录是永久保存的（数据目录的 route-log/）。这一页先列最近的，往下可以一直翻更早的：
-   * 最新的几十条来自主进程推过来的 view.logs（实时），更早的从文件里按页读（logOlder）。
+   * 转发记录是永久保存的（数据目录的 route-log/）。按页看，一页 LOG_PER 条（0.3.38，以前是一直往下接，太长）：
+   * 最新的几十条来自主进程推过来的 view.logs（实时），更早的从文件里按批读（logOlder），翻到还没读的页再去读。
    */
-  const LOG_PAGE = 100;
-  let logOlder = [], logMore = null, logLoading = false, logCursor = null;
+  const LOG_PAGE = 100, LOG_PER = 20;
+  let logOlder = [], logMore = null, logLoading = false, logCursor = null, logPage = 0;
   const logKey = item => item.id || `${item.at}|${item.providerId}|${item.attempt ?? ''}|${item.status}`;
   async function loadOlderLogs() {
     if (logLoading || logMore === false) return;
@@ -533,10 +534,16 @@
     // 第一次进这一页：把保存的记录接在后面（刚启动时 view.logs 是空的，也能看到以前的）
     if (logMore === null && !logLoading) loadOlderLogs();
     const recent = view.logs || [];
-    const list = [...recent, ...logOlder.filter(item => !recent.some(r => logKey(r) === logKey(item)))].sort((a, b) => b.at - a.at);
+    const recentKeys = new Set(recent.map(logKey));
+    const list = [...recent, ...logOlder.filter(item => !recentKeys.has(logKey(item)))].sort((a, b) => b.at - a.at);
+    const loaded = Math.max(1, Math.ceil(list.length / LOG_PER));
+    if (logMore === false && logPage > loaded - 1) logPage = loaded - 1;
+    // 这一页（以及判断有没有下一页）要的条数还没读到：接着读，读完会重画
+    if (logMore && !logLoading && (logPage + 1) * LOG_PER >= list.length) loadOlderLogs();
+    const rows = list.slice(logPage * LOG_PER, (logPage + 1) * LOG_PER);
     const locale = window.PulseI18n?.lang() === 'en' ? 'en-US' : 'zh-CN';
     const today = new Date().toDateString();
-    const table = list.length ? el('div', { class: 'pv-log' }, list.map((item, i) => paint(el('div', { class: 'pv-log-row' + (item.status >= 400 || item.error ? ' bad' : '') }, [
+    const table = !rows.length && list.length ? el('div', { class: 'pv-empty' }, [el('p', { text: '正在读取…' })]) : rows.length ? el('div', { class: 'pv-log' }, rows.map((item, i) => paint(el('div', { class: 'pv-log-row' + (item.status >= 400 || item.error ? ' bad' : '') }, [
       appMark(item.app, 'pv-log-avatar'),
       el('span', { class: 'pv-log-time', translate: 'no', title: new Date(item.at).toLocaleString(locale, { hour12: false }), text: new Date(item.at).toDateString() === today ? new Date(item.at).toLocaleTimeString(locale, { hour12: false }) : new Date(item.at).toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) }),
       el('b', { translate: 'no', text: item.provider }),
@@ -552,9 +559,25 @@
       el('button', { type: 'button', class: 'btn', 'data-action': 'open-route-log' }, [icon('folder'), el('span', { text: '打开记录文件夹' })]),
     ]);
     keep.querySelector('button').addEventListener('click', () => api.agentOpenRouteLog?.());
-    const older = logMore || logLoading ? el('div', { class: 'pv-log-more' }, [el('button', { type: 'button', class: 'btn', 'data-action': 'older-logs', disabled: logLoading ? '' : null }, [el('span', { text: logLoading ? '正在读取…' : '再看更早的' })])]) : list.length ? el('p', { class: 'pv-log-end', text: '已经是最早的一条了。' }) : null;
-    older?.querySelector('button')?.addEventListener('click', loadOlderLogs);
-    return [head('转发记录', '经过本地路由和透明转发的每一次转发，最新的在最上面，往下可以一直翻到最早的。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), keep, table, older].filter(Boolean);
+    const pages = Math.max(loaded, logPage + 1);
+    const hasNext = logPage < loaded - 1 || !!logMore;
+    const turn = (step) => {
+      logPage = Math.max(0, logPage + step);
+      render(false);
+      // 翻页后从这一页的第一条看起
+      root.querySelector('.pv-main')?.scrollIntoView({ block: 'start' });
+    };
+    const pageButton = (step, label, glyph) => {
+      const button = el('button', { type: 'button', class: 'btn icon-btn', 'data-action': step < 0 ? 'logs-prev' : 'logs-next', 'aria-label': label, disabled: (step < 0 ? logPage === 0 : !hasNext) ? '' : null },
+        step < 0 ? [icon(glyph), el('span', { text: label })] : [el('span', { text: label }), icon(glyph)]);
+      button.addEventListener('click', () => turn(step));
+      return button;
+    };
+    const label = logMore || logLoading
+      ? `第 ${logPage + 1} 页 · 已读取 ${list.length} 条 · 更早的还没读完`
+      : `第 ${logPage + 1} / ${pages} 页 · 共 ${list.length} 条转发`;
+    const pager = list.length ? el('div', { class: 'table-footer pv-log-pager' }, [el('span', { text: label }), el('div', { class: 'pager' }, [pageButton(-1, '上一页', 'left'), pageButton(1, '下一页', 'right')])]) : null;
+    return [head('转发记录', '经过本地路由和透明转发的每一次转发，最新的在最上面，一页 20 条，可以一直往前翻到最早的。用量统计仍按各工具自己的日志记账，不会因为转发重复计算。'), keep, table, pager].filter(Boolean);
   }
 
   /* ---------------- Prism 桥（0.3.19） ---------------- */

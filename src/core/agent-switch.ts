@@ -635,20 +635,50 @@ function routeIdle() {
  * - 关 / 退出：把那一行拿掉。配置在这期间没被别人动过就整个文件原样放回去。退出时开关留着，下次启动接着开。
  * - 和本地路由（第三方供应商 / 号池）互斥：切到那些时自动关掉。
  * 状态单独放在 store.pass，不混进本地路由的接管快照。
+ *
+ * Grok（0.3.38）：会话服务的地址是 `[endpoints] cli_chat_proxy_base_url`，但对话请求的地址来自官方 /models 回复里每个型号的
+ * base_url（完整的官方地址），只改前者对话还是直连。所以另外给每个官方型号加一行 `[model."<id>"] base_url = 本机`
+ * （Grok 文档：覆盖内置型号时只改写了的字段，别的照官方默认）。型号 id 来自 Grok 自己的 models_cache.json；
+ * 用户已经给某个型号配了别的地址（第三方）就不动它，那个型号不经过这里。真机核对过：思考等级、用量照常。
  */
-export type PassApp = "claude" | "codex";
-export const PASS_APPS: PassApp[] = ["claude", "codex"];
-const isPassApp = (app: unknown): app is PassApp => app === "claude" || app === "codex";
+export type PassApp = "claude" | "codex" | "grok";
+export const PASS_APPS: PassApp[] = ["claude", "codex", "grok"];
+const isPassApp = (app: unknown): app is PassApp => app === "claude" || app === "codex" || app === "grok";
 const PASS_URL = /^http:\/\/127\.0\.0\.1:\d+\/pass\/(claude|codex|grok)\/?$/;
 const isPassUrl = (value: string) => PASS_URL.test(value.trim());
 /** 指着透明转发的地址不算「配了第三方地址」：工具还是在用官方登录。 */
 const notPass = (value: string) => (isPassUrl(value) ? "" : value);
 function passBase(app: PassApp, port: number) { return `http://127.0.0.1:${port}/pass/${app}`; }
-function passFile(app: PassApp) { return app === "claude" ? claudeFile() : codexFile(); }
+function passFile(app: PassApp) { return app === "claude" ? claudeFile() : app === "codex" ? codexFile() : grokFile(); }
 /** 工具配置里透明转发会写的那个键现在的值。 */
 function passRaw(app: PassApp) {
   if (app === "claude") return str(asObj(readObject(claudeFile()).env).ANTHROPIC_BASE_URL);
+  if (app === "grok") return grokEndpoint(parseToml(readText(grokFile())));
   return readKey(parseToml(readText(codexFile()))[0].lines, "openai_base_url") || "";
+}
+const GROK_PASS_MODELS = ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"];
+function grokEndpoint(blocks: Block[]) {
+  const table = blocks.find((block) => block.header && headerName(block.header) === "endpoints");
+  return (table && readKey(table.lines, "cli_chat_proxy_base_url")) || "";
+}
+/** Grok 的官方型号：读它自己缓存的 /models 结果；读不到用一份已知的。 */
+function grokOfficialModels() {
+  try {
+    const cache = asObj(JSON.parse(fs.readFileSync(path.join(path.dirname(grokFile()), "models_cache.json"), "utf8")));
+    const ids = (Array.isArray(cache.models) ? cache.models.map((item) => str(asObj(item).id)) : Object.keys(asObj(cache.models))).filter((id) => /^[A-Za-z0-9._-]{1,80}$/.test(id));
+    if (ids.length) return ids;
+  } catch { /* 没有缓存或格式变了 */ }
+  return GROK_PASS_MODELS;
+}
+/** 型号表现在的 base_url：没有这张表 / 没写是 null。 */
+function grokModelBase(blocks: Block[], id: string) {
+  const table = blocks.find((block) => block.header && headerName(block.header) === tableName("model", id));
+  return table ? readKey(table.lines, "base_url") : null;
+}
+/** 每个官方型号都已经指着这个地址（或者用户给它配了别的地址，不归我们管）。 */
+function grokPassCovered(url: string) {
+  const blocks = parseToml(readText(grokFile()));
+  return grokOfficialModels().every((id) => { const base = grokModelBase(blocks, id); return base ? !isPassUrl(base) || normalizeUrl(base) === normalizeUrl(url) : false; });
 }
 function passIsOurs(app: PassApp) { return normalizeUrl(passRaw(app)) === normalizeUrl(passBase(app, runtimePort || load().proxy.port)); }
 /** 现在为什么不能开（能开返回空）：透明转发只对官方登录有意义。 */
@@ -658,6 +688,12 @@ function passBlocked(store: Store, app: PassApp) {
     const env = asObj(readObject(claudeFile()).env);
     const set = (key: string) => str(env[key]).trim();
     if (notPass(set("ANTHROPIC_BASE_URL")) || set("ANTHROPIC_AUTH_TOKEN") || set("ANTHROPIC_API_KEY") || [...CLAUDE_PROTOCOL].some(set)) return "Claude Code 现在不是用官方登录（配置里有第三方地址或密钥）。透明转发只对官方登录有效，请先切回官方登录。";
+    return "";
+  }
+  if (app === "grok") {
+    const text = readText(grokFile());
+    if (notPass(process.env.GROK_CLI_CHAT_PROXY_BASE_URL || "") || notPass(grokEndpoint(parseToml(text)))) return "Grok 已经指定了别的会话服务地址（config.toml 的 [endpoints] cli_chat_proxy_base_url 或环境变量 GROK_CLI_CHAT_PROXY_BASE_URL）。透明转发只对直连官方有效。";
+    if (notPass(readRoute(text, "grok").baseUrl)) return "Grok 现在的默认型号用的是第三方地址。透明转发只对官方登录有效，请先切回官方登录。";
     return "";
   }
   const top = parseToml(readText(codexFile()))[0].lines;
@@ -675,20 +711,43 @@ function writePass(app: PassApp, url: string | null) {
     writeObject(file, doc);
     return;
   }
+  if (app === "grok") {
+    const blocks = parseToml(readText(grokFile()));
+    setTableKey(blocks, "endpoints", "cli_chat_proxy_base_url", url ? quote(url) : null);
+    dropEmptyTable(blocks, "endpoints");
+    if (url) {
+      for (const id of grokOfficialModels()) {
+        const base = grokModelBase(blocks, id);
+        if (!base || isPassUrl(base)) setTableKey(blocks, tableName("model", id), "base_url", quote(url));
+      }
+    } else {
+      // 只拿掉我们写的那些行；表里只剩我们那一行的，整张表一起删
+      for (const block of [...blocks]) {
+        const name = block.header ? headerName(block.header) : "";
+        if (!name.startsWith("model.") || !isPassUrl(readKey(block.lines, "base_url") || "")) continue;
+        upsertKey(block.lines, "base_url", null);
+        dropEmptyTable(blocks, name);
+      }
+    }
+    writeText(grokFile(), stringifyToml(blocks));
+    return;
+  }
   const blocks = parseToml(readText(codexFile()));
   upsertKey(blocks[0].lines, "openai_base_url", url ? quote(url) : null);
   writeText(codexFile(), stringifyToml(blocks));
 }
 function applyPass(store: Store, app: PassApp) {
   const url = passBase(app, runtimePort || store.proxy.port);
-  if (normalizeUrl(passRaw(app)) === normalizeUrl(url) && Object.hasOwn(store.pass.written, app)) return;
+  // Grok：之后官方新出的型号还没指过来的，启动时补上
+  if (normalizeUrl(passRaw(app)) === normalizeUrl(url) && Object.hasOwn(store.pass.written, app) && (app !== "grok" || grokPassCovered(url))) return;
   // 配置里留着上次（别的端口）写的地址时，「开之前的样子」沿用上次记的
   if (!isPassUrl(passRaw(app)) || !Object.hasOwn(store.pass.before, app)) store.pass.before[app] = configRead(passFile(app));
   writePass(app, url);
   store.pass.written[app] = configRead(passFile(app));
 }
 function removePass(store: Store, app: PassApp) {
-  if (isPassUrl(passRaw(app))) {
+  const grokLeft = app === "grok" && parseToml(readText(grokFile())).some((block) => block.header && headerName(block.header).startsWith("model.") && isPassUrl(readKey(block.lines, "base_url") || ""));
+  if (isPassUrl(passRaw(app)) || grokLeft) {
     const file = passFile(app);
     // 开着的这段时间配置没被别人动过：整个文件原样放回去；动过就只拿掉我们加的那一行
     if (Object.hasOwn(store.pass.written, app) && Object.hasOwn(store.pass.before, app) && configRead(file) === store.pass.written[app]) configWrite(file, store.pass.before[app] ?? null);
@@ -718,6 +777,7 @@ function passUpstream(app: AgentApp, headers: Record<string, unknown>) {
   // AGENT_SWITCH_PASS_BASE 只给自动化测试用：把官方接口换成本机假上游
   if (process.env.AGENT_SWITCH_PASS_BASE) return `${process.env.AGENT_SWITCH_PASS_BASE}/${app}`;
   if (app === "claude") return "https://api.anthropic.com";
+  if (app === "grok") return "https://cli-chat-proxy.grok.com/v1";
   return headers["chatgpt-account-id"] ? "https://chatgpt.com/backend-api/codex" : "https://api.openai.com/v1";
 }
 export async function setProxyPort(port: number) {
@@ -1153,6 +1213,8 @@ function applyDirect(provider: Provider) {
   // 号池没有自己的地址和密钥，绝不能直连写进工具配置
   if (provider.pool) throw new Error("号池只能经本地路由使用");
   const store = load();
+  // Grok 透明转发写的那几行 writeGrok 不会清，先拿掉（是官方登录的话下面会再加回去）
+  if (provider.app === "grok" && store.pass.apps.grok) writePass("grok", null);
   if (provider.app === "claude") writeClaude(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "desktop") writeDesktop(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "codex") writeCodex(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);

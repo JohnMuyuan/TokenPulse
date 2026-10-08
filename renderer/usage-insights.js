@@ -15,7 +15,7 @@
   const D = window.PulseData;
   const METRICS = [['tokens', 'Tokens'], ['costUsd', '费用'], ['requests', '请求']];
   const MODEL_SORT = [['tokens', 'Tokens'], ['costUsd', '费用'], ['requests', '请求']];
-  const view = { metric: 'tokens', modelSort: 'tokens' };
+  const view = { metric: 'tokens', modelSort: 'tokens', year: 'recent', yearMetric: 'tokens' };
   // 工具的颜色：三家官方用品牌色，其余（CC Switch 导入的 OpenCode 等）按出现顺序轮流取
   const BRAND = { 'Claude Code': 'var(--claude)', 'Codex CLI': 'var(--openai)', 'Grok Build': 'var(--grok)' };
   const PALETTE = ['#6d7fd6', '#c9832f', '#8b5cf6', '#0ea5a4', '#e05a8a', '#65a30d', '#d946ef'];
@@ -258,8 +258,113 @@
     ])]);
   }
 
-  let host = null;
+  /*
+   * 全年活跃度（0.3.38，仿 tokens.ci / GitHub 的贡献图）：一格一天、一列一周（周一在上），颜色越深用得越多。
+   * 不跟页面的时间范围走——就是要看一整年里哪天最努力；工具筛选照样生效。数据是快照里按天的全部账（current.usage）。
+   * 深浅分五档：没用是空格，有用量的日子按四分位分四档，个别特别多的日子不会把其余的都压成最浅。
+   * 点某一天，整页的时间范围就切到那一天。
+   */
+  const YEAR_METRICS = [['tokens', 'Tokens'], ['costUsd', '费用'], ['requests', '请求']];
+  const DAY_MS = 86_400_000;
+  function yearPanel() {
+    const rows = (current?.usage || []).filter(row => state.source === 'all' || row.source === state.source);
+    const byDay = new Map();
+    for (const row of rows) {
+      const day = byDay.get(row.day) ?? { tokens: 0, costUsd: 0, requests: 0, sources: {} };
+      day.tokens += row.tokens || 0; day.costUsd += row.costUsd || 0; day.requests += row.requests || 0;
+      day.sources[row.source] = (day.sources[row.source] || 0) + (row.tokens || 0);
+      byDay.set(row.day, day);
+    }
+    const today = D.dayKey(current?.now || Date.now());
+    const years = [...new Set([...byDay.keys()].map(day => day.slice(0, 4)))].sort().reverse();
+    if (view.year !== 'recent' && !years.includes(view.year)) view.year = 'recent';
+    // 范围：最近一年 = 今天往前 52 周（从那周的周一开始）；选了某一年 = 那年 1 月 1 日到 12 月 31 日（今年到今天为止）
+    const at = key => new Date(key + 'T00:00:00');
+    let start, end;
+    if (view.year === 'recent') { end = at(today); start = new Date(end); start.setDate(start.getDate() - 364); }
+    else { start = at(`${view.year}-01-01`); end = view.year === today.slice(0, 4) ? at(today) : at(`${view.year}-12-31`); }
+    const first = new Date(start); first.setDate(first.getDate() - ((first.getDay() + 6) % 7));
+    const metric = view.yearMetric, f = fmt(metric);
+    const days = [];
+    for (let d = new Date(first); d <= end; d.setDate(d.getDate() + 1)) {
+      const key = D.dayKey(d.getTime());
+      days.push({ key, inRange: d >= start, ...(byDay.get(key) ?? { tokens: 0, costUsd: 0, requests: 0, sources: {} }) });
+    }
+    const shown = days.filter(d => d.inRange);
+    const active = shown.filter(d => d[metric] > 0);
+    const sorted = active.map(d => d[metric]).sort((a, b) => a - b);
+    const cut = q => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * q))] : 0;
+    const steps = [cut(0.25), cut(0.5), cut(0.75)];
+    const level = value => !value ? 0 : value >= sorted.at(-1) ? 4 : value <= steps[0] ? 1 : value <= steps[1] ? 2 : value <= steps[2] ? 3 : 4;
+    const best = active.reduce((top, d) => (!top || d[metric] > top[metric] ? d : top), null);
+    let streak = 0, run = 0;
+    for (const d of shown) { run = d.requests > 0 || d.tokens > 0 ? run + 1 : 0; streak = Math.max(streak, run); }
+    const total = shown.reduce((sum, d) => sum + d[metric], 0);
+    const longDate = key => at(key).toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+    const picked = state.days === 'custom' && state.from && state.from === state.to ? state.from : '';
+
+    // 格子：按列（一周一列）排，月份标在这个月第一天所在的那一列上
+    const grid = el('div', { class: 'year-grid', role: 'img', 'aria-label': `${view.year === 'recent' ? '最近一年' : view.year + ' 年'}每天的用量：${number(active.length)} 天有用量` });
+    const months = el('div', { class: 'year-months', 'aria-hidden': 'true' });
+    // 第一列是星期（按列排，前 7 个正好填满第一列），月份那行也空出这一列，格子才对得齐
+    grid.append(...WEEK.map((name, i) => el('span', { class: 'year-day', 'aria-hidden': 'true', text: i % 2 === 0 ? name : '' })));
+    months.append(el('span'));
+    const weeks = Math.ceil(days.length / 7);
+    paint(grid, { '--weeks': String(weeks) }); paint(months, { '--weeks': String(weeks) });
+    // 月份：每月 1 号所在的列，加上范围开头那个不完整的月；开头那个离下个月太近（不到 3 列）就不写，免得叠在一起
+    const labels = [];
+    days.forEach((d, i) => { if (d.inRange && (d.key.endsWith('-01') || !labels.length)) labels.push({ column: Math.floor(i / 7) + 1, key: d.key }); });
+    if (labels.length > 1 && labels[1].column - labels[0].column < 3) labels.shift();
+    for (const { column, key } of labels) months.append(paint(el('span', { text: at(key).toLocaleDateString(dateLocale(), { month: 'short' }) }), { gridColumn: `${column + 1} / span 3` }));
+    days.forEach(d => {
+      if (!d.inRange) { grid.append(el('i', { class: 'year-cell out', 'aria-hidden': 'true' })); return; }
+      const cell = el('i', { class: `year-cell l${level(d[metric])}` + (d.key === picked ? ' picked' : '') + (d.key === today ? ' today' : ''), 'data-day': d.key });
+      const top = Object.entries(d.sources).sort((a, b) => b[1] - a[1])[0];
+      const text = d.requests || d.tokens
+        ? `${longDate(d.key)}\n${tokens(d.tokens)} Tokens · ${money(d.costUsd)} · ${number(d.requests)} 次请求${top && Object.keys(d.sources).length > 1 ? `\n用得最多：${top[0]}` : ''}\n点一下只看这一天`
+        : `${longDate(d.key)}\n没有用量`;
+      cell.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
+      cell.addEventListener('pointerleave', () => { $('tip').hidden = true; });
+      if (d.requests || d.tokens) cell.addEventListener('click', () => { $('tip').hidden = true; applyRange('custom', d.key, d.key); });
+      grid.append(cell);
+    });
+    const yearSelect = el('select', { class: 'year-select', 'aria-label': '看哪一年' }, [
+      el('option', { value: 'recent', text: '最近一年', selected: view.year === 'recent' ? '' : null }),
+      ...years.map(y => el('option', { value: y, text: `${y} 年`, selected: view.year === y ? '' : null })),
+    ]);
+    yearSelect.addEventListener('change', () => { view.year = yearSelect.value; draw(lastAnalysis, false); });
+    const scale = el('div', { class: 'year-scale', 'aria-hidden': 'true' }, [el('span', { text: '少' }), ...[0, 1, 2, 3, 4].map(l => el('i', { class: `year-cell l${l}` })), el('span', { text: '多' })]);
+    const plainDate = d => d.toLocaleDateString(dateLocale(), { year: 'numeric', month: 'short', day: 'numeric' });
+    const range = `${plainDate(start)} – ${plainDate(end)}`;
+    return el('article', { class: 'panel insight-panel year-panel' }, [
+      el('div', { class: 'panel-heading' }, [
+        el('div', {}, [
+          el('h2', {}, ['全年活跃度 ', yearSelect]),
+          el('p', { text: '每一格是一天，颜色越深用得越多。不跟上面选的时间范围走，工具筛选照样生效；点某一天，整页就只看那一天。' }),
+        ]),
+        el('div', { class: 'year-head-side' }, [
+          seg(YEAR_METRICS, metric, 'year-metric', value => { view.yearMetric = value; draw(lastAnalysis, false); }),
+          el('div', { class: 'year-count' }, [el('b', { text: `${number(active.length)} 天有用量` }), el('small', { text: range })]),
+        ]),
+      ]),
+      el('div', { class: 'year-scroll' }, [el('div', { class: 'year-body' }, [
+        months,
+        grid,
+      ])]),
+      el('div', { class: 'year-foot' }, [
+        el('div', { class: 'insight-summary' }, [
+          el('span', {}, ['合计 ', el('b', { text: f(total) })]),
+          el('span', {}, ['最努力的一天 ', el('b', { text: best ? `${best.key} · ${f(best[metric])}` : '—' })]),
+          el('span', {}, ['最长连续 ', el('b', { text: `${number(streak)} 天` })]),
+        ]),
+        scale,
+      ]),
+    ]);
+  }
+
+  let host = null, lastAnalysis = null;
   function draw(analysis, animate) {
+    lastAnalysis = analysis;
     host ??= document.getElementById('usage-insights');
     if (!host) return;
     if (analysis.loading || analysis.error) {
@@ -316,7 +421,7 @@
       modelTable(models, total)
     ]);
 
-    host.replaceChildren(trendPanel, el('div', { class: 'insight-grid' }, [toolPanel, distPanel]), modelPanel);
+    host.replaceChildren(yearPanel(), trendPanel, el('div', { class: 'insight-grid' }, [toolPanel, distPanel]), modelPanel);
     for (const group of host.querySelectorAll('.seg')) syncSeg(group);
     trendChart(trendHost, trend, order, view.metric, animate);
     if (hourData.loading) { hodHost.append(empty('正在读取逐条请求记录…')); distNote.textContent = ''; }

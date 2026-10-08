@@ -18,6 +18,26 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return on ? ipcRenderer.invoke("demo:snapshot") : ipcRenderer.invoke("demo:end");
   },
   isDemo: () => demo,
+  /** tokens.ci 自动上传（0.3.38）。演示模式下会改东西的操作一律拒绝。 */
+  tokensCi: {
+    state: () => ipcRenderer.invoke("tokens-ci:state"),
+    save: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:save", value)),
+    check: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:check")),
+    useLatest: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:use-latest")),
+    upload: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:upload")),
+    preview: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:preview")),
+    login: (privacy: string) => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:login", privacy)),
+    cancel: () => ipcRenderer.invoke("tokens-ci:cancel"),
+    clearLogin: () => ipcRenderer.invoke("tokens-ci:clear-login"),
+    clearPreview: () => ipcRenderer.invoke("tokens-ci:clear-preview"),
+    resume: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:resume")),
+    open: (url: string) => ipcRenderer.invoke("tokens-ci:open", url),
+    onState: (handler: (state: unknown) => void) => {
+      const listener = (_event: unknown, state: unknown) => handler(state);
+      ipcRenderer.on("tokens-ci-state", listener);
+      return () => ipcRenderer.off("tokens-ci-state", listener);
+    },
+  },
   egressState: () => ipcRenderer.invoke("egress:state"),
   saveEgress: (config: unknown) => ipcRenderer.invoke("egress:save", config),
   checkEgress: () => ipcRenderer.invoke("egress:check"),

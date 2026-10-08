@@ -155,6 +155,23 @@ export function writeDemoData(dataDir: string, now = Date.now()) {
   const months = new Map<string, string[]>();
   for (const r of rows) { const m = localDay(r.at).slice(0, 7); if (!months.has(m)) months.set(m, []); months.get(m)!.push(JSON.stringify(r)); }
   for (const [m, lines] of months) write(path.join(dataDir, "requests", m + ".jsonl"), lines.join("\n") + "\n");
+  // 最近三天的请求大部分开着透明转发：有首字延迟、总耗时和速度（用量明细的「延迟」一列）。数字按序号推出来，不动上面的随机序列
+  const routeLogs = new Map<string, string[]>();
+  for (const [m, lines] of months) {
+    const month = lines.map((line) => JSON.parse(line) as typeof rows[number] & { responseId?: string; requestId?: string; returned?: string });
+    month.forEach((r) => {
+      const n = Number(r.id.slice(5));
+      if (now - r.at > 3 * 86400000 || n % 4 === 0) return;
+      r.responseId = "msg_01" + ("Demo" + n.toString(36)).padStart(22, "A"); r.requestId = "req_011" + ("Demo" + n.toString(36)).padStart(21, "A"); r.returned = r.model;
+      const speed = /haiku/.test(r.model) ? 150 + (n * 37) % 60 : /opus/.test(r.model) ? 48 + (n * 13) % 30 : 70 + (n * 29) % 40;
+      const firstByteMs = 700 + (n * 211) % 1800, firstTokenMs = firstByteMs + ((n * 97) % 23 === 0 ? 14000 : (n * 53) % 2400), ms = firstTokenMs + Math.round(r.output / speed * 1000);
+      const log = routeLogs.get(m) ?? []; routeLogs.set(m, log);
+      log.push(JSON.stringify({ at: r.at, app: "claude", providerId: "pass-claude", provider: "官方登录（透明转发）", model: r.model, requestModel: r.model, status: 200, ms, pass: true, method: "POST", path: "/v1/messages", stream: true,
+        firstByteMs, firstTokenMs, tokensPerSec: speed, input: r.input, output: r.output, responseId: r.responseId, returnedModel: r.model, ...(r.effort ? { effort: r.effort } : {}) }));
+    });
+    write(path.join(dataDir, "requests", m + ".jsonl"), month.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  }
+  for (const [m, lines] of routeLogs) write(path.join(dataDir, "route-log", m + ".jsonl"), lines.join("\n") + "\n");
   write(path.join(dataDir, "usage-rollups.json"), { version: 1, files, requestsCompacted: 1 });
   return { rows: rows.length, samples: samples.length, chats: chats.length, marks: marks.length };
 }

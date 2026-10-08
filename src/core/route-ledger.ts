@@ -31,6 +31,7 @@ export function appendRoute(entry: RouteEntry) {
     const responseId = entry.responseId && /^[A-Za-z0-9_-]{1,160}$/.test(entry.responseId) ? entry.responseId : "";
     fs.appendFileSync(file(), `${Math.round(entry.at)}\t${entry.kind}\t${entry.account}${responseId ? "\t" + responseId : ""}\n`);
     cache = null;
+    seen.clear();
     if (++appended % PRUNE_EVERY === 0) prune();
   } catch { /* 账本写不了：这次请求照常转发，只是统计时对不上账号 */ }
 }
@@ -43,15 +44,35 @@ function prune() {
     fs.writeFileSync(temp, lines.length ? lines.join("\n") + "\n" : "");
     fs.renameSync(temp, file());
     cache = null;
+    seen.clear();
   } catch { /* 清不掉就下次再清 */ }
+}
+
+/*
+ * 文件变没变：同一个文件 1 秒内只看一次（0.3.38）。
+ * 统计时每条请求都要来这里查账本和转发记录，以前每查一次都 stat 好几个文件（还有不存在的月份），
+ * 几万条请求光这一项就要两三秒，打开软件时要干等。本进程自己写文件时会立刻作废，不用等 1 秒。
+ */
+const CHECK_MS = 1000;
+type Seen = { size: number; mtimeMs: number } | null;
+const seen = new Map<string, { at: number; stat: Seen }>();
+/** key 是文件的简称；完整路径要拼，拼路径本身在这里也算贵的，所以只在真去看文件时才拼。 */
+function peek(key: string, where: () => string): Seen {
+  const now = Date.now(), hit = seen.get(key);
+  if (hit && now - hit.at < CHECK_MS) return hit.stat;
+  let stat: Seen = null;
+  try { const info = fs.statSync(where()); stat = { size: info.size, mtimeMs: info.mtimeMs }; } catch { stat = null; }
+  if (seen.size > 256) seen.clear();
+  seen.set(key, { at: now, stat });
+  return stat;
 }
 
 type Index = Partial<Record<OfficialAccountKind, Map<string, string | null>>>;
 let cache: { size: number; mtimeMs: number; index: Index } | null = null;
 
 function load(): Index {
-  let stat: fs.Stats;
-  try { stat = fs.statSync(file()); } catch { return {}; }
+  const stat = peek("ledger", file);
+  if (!stat) return {};
   if (cache && cache.size === stat.size && cache.mtimeMs === stat.mtimeMs) return cache.index;
   const rows: RouteEntry[] = [];
   try {
@@ -93,14 +114,13 @@ export function routeAccount(kind: OfficialAccountKind | undefined, at: number, 
 
 const accountCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, string | null> }>();
 function accountIndex(name: string): Map<string, string | null> {
-  const file = path.join(routeLogDir(), name);
-  let stat: fs.Stats;
-  try { stat = fs.statSync(file); } catch { return new Map(); }
-  const cached = accountCache.get(file);
+  const stat = peek("log:" + name, () => path.join(routeLogDir(), name));
+  if (!stat) return new Map();
+  const cached = accountCache.get(name);
   if (cached?.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.index;
   const index = new Map<string, string | null>();
   try {
-    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    for (const line of fs.readFileSync(path.join(routeLogDir(), name), "utf8").split("\n")) {
       if (!line.includes('"account"') || !line.includes('"responseId"')) continue;
       let row: Record<string, unknown>;
       try { row = JSON.parse(line); } catch { continue; }
@@ -111,7 +131,7 @@ function accountIndex(name: string): Map<string, string | null> {
       else if (!index.has(key)) index.set(key, row.account);
     }
   } catch { return new Map(); }
-  accountCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, index });
+  accountCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, index });
   return index;
 }
 
@@ -127,6 +147,7 @@ export function appendRouteLog(entry: object & { at: number }) {
     const dir = routeLogDir();
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(path.join(dir, `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}.jsonl`), JSON.stringify({ id: crypto.randomUUID(), ...entry }) + "\n");
+    seen.clear();
   } catch { /* 记不下来就算了 */ }
 }
 
@@ -209,22 +230,27 @@ export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
  * Codex 的会话文件不记返回型号，只有这样能核验。
  * 按月份文件建索引（响应 ID → 请求的型号、返回的型号），文件没变就用缓存；查的时候看请求所在的那个月和前后各一个月。
  */
-export type RouteReturned = { requested?: string; returned: string };
+/** 转发时量到的：首字延迟、总耗时、速度，以及这一次是怎么转的。用量明细里每条请求旁边显示（0.3.38）。 */
+export type RouteTiming = { ms?: number; firstByteMs?: number; firstTokenMs?: number; tokensPerSec?: number; stream?: boolean; path?: string; pass?: boolean; provider?: string; fast?: boolean };
+export type RouteReturned = { requested?: string; returned: string; timing?: RouteTiming };
 const returnedCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, RouteReturned> }>();
 function returnedIndex(name: string): Map<string, RouteReturned> | null {
-  const file = path.join(routeLogDir(), name);
-  let stat: fs.Stats;
-  try { stat = fs.statSync(file); } catch { return null; }
+  const stat = peek("log:" + name, () => path.join(routeLogDir(), name));
+  if (!stat) return null;
   const cached = returnedCache.get(name);
   if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.index;
   const index = new Map<string, RouteReturned>();
   try {
-    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    for (const line of fs.readFileSync(path.join(routeLogDir(), name), "utf8").split("\n")) {
       if (!line.includes('"returnedModel"')) continue;
       let row: Record<string, unknown>;
       try { row = JSON.parse(line); } catch { continue; }
       if (typeof row.responseId !== "string" || typeof row.returnedModel !== "string" || !row.returnedModel) continue;
-      index.set(row.responseId, { ...(typeof row.requestModel === "string" && row.requestModel ? { requested: row.requestModel } : {}), returned: row.returnedModel });
+      const num = (key: string) => (typeof row[key] === "number" && Number.isFinite(row[key] as number) && (row[key] as number) >= 0 ? { [key]: row[key] as number } : {});
+      const timing: RouteTiming = { ...num("ms"), ...num("firstByteMs"), ...num("firstTokenMs"), ...num("tokensPerSec"), ...(typeof row.stream === "boolean" ? { stream: row.stream } : {}),
+        ...(typeof row.path === "string" ? { path: row.path.slice(0, 200) } : {}), ...(row.pass === true ? { pass: true } : {}), ...(typeof row.provider === "string" ? { provider: row.provider.slice(0, 120) } : {}),
+        ...(row.tier === "priority" || row.tier === "fast" ? { fast: true } : {}) };
+      index.set(row.responseId, { ...(typeof row.requestModel === "string" && row.requestModel ? { requested: row.requestModel } : {}), returned: row.returnedModel, timing });
     }
   } catch { return null; }
   returnedCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, index });
@@ -242,4 +268,4 @@ export function routeReturned(responseId: string | undefined, at: number): Route
 }
 
 /** 测试用：丢掉内存里的缓存。 */
-export function resetRouteLedgerCache() { cache = null; appended = 0; returnedCache.clear(); accountCache.clear(); }
+export function resetRouteLedgerCache() { cache = null; appended = 0; returnedCache.clear(); accountCache.clear(); seen.clear(); }

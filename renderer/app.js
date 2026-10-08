@@ -1436,11 +1436,9 @@ function speedPanel(account, kind) {
 }
 function drawSpeed(body, data, kind) {
   if (!data || !data.models.length) {
-    // Grok 没有透明转发：只有放进号池（走本地路由）才量得到
-    const grok = kind === 'grok';
-    const open = el('button', { type: 'button', class: 'btn', text: grok ? '去供应商页' : '去打开透明转发' });
-    open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open(grok ? 'grok' : 'pass'); });
-    body.replaceChildren(el('div', { class: 'empty speed-empty' }, [el('p', { text: grok ? '这段时间还没有量到这个账号的速度。Grok 暂时没有透明转发；把这个账号放进号池使用时，请求经过本地路由，这里就会有走势。' : '这段时间还没有量到这个账号的速度。在供应商页打开「透明转发」，重新打开工具用一会儿，这里就会有走势；这个账号在号池里使用时也会量到。' }), open]));
+    const open = el('button', { type: 'button', class: 'btn', text: '去打开透明转发' });
+    open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open('pass'); });
+    body.replaceChildren(el('div', { class: 'empty speed-empty' }, [el('p', { text: '这段时间还没有量到这个账号的速度。在供应商页打开「透明转发」，重新打开工具用一会儿，这里就会有走势；这个账号在号池里使用时也会量到。' }), open]));
     return;
   }
   const max = speedCeil(data.max), bucketMs = data.bucketMs;
@@ -1627,7 +1625,7 @@ function drawAccountRequests(panel, account, meta, data) {
 /* ---------------- 请求记录与型号核验 ---------------- */
 
 const VERIFY_TONE = { match: 'good', mismatch: 'critical', suspect: 'warning', unverified: 'neutral' };
-const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话']];
+const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话'], ['firstTokenMs', '首字延迟（毫秒）'], ['totalMs', '总耗时（毫秒）'], ['tokensPerSec', '输出速度（Token/秒）'], ['routeVia', '经由']];
 let requestPage = null, requestSeq = 0, requestKey = '', requestError = false;
 const openRequests = new Set();
 function projectOf(cwd) { return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd : '—'; }
@@ -1689,7 +1687,7 @@ async function loadRequests() {
   requestPage = null;
   $('export-requests').disabled = true;
   const seq = ++requestSeq;
-  if (!requestPage) $('request-rows').replaceChildren(el('tr', {}, [el('td', { colspan: 9, class: 'empty', text: '正在读取请求记录…' })]));
+  if (!requestPage) $('request-rows').replaceChildren(el('tr', {}, [el('td', { colspan: 10, class: 'empty', text: '正在读取请求记录…' })]));
   try {
     const page = await api.requests(query);
     if (seq !== requestSeq) return;
@@ -1701,7 +1699,7 @@ async function loadRequests() {
   } catch {
     if (seq === requestSeq) {
       requestError = true;
-      $('request-rows').replaceChildren(el('tr', {}, [el('td', { colspan: 9, class: 'empty', text: '请求记录读取失败，请重试。' })]));
+      $('request-rows').replaceChildren(el('tr', {}, [el('td', { colspan: 10, class: 'empty', text: '请求记录读取失败，请重试。' })]));
       $('retry-detail-query').hidden = false;
       showStatus('请求记录读取失败，请重试。', true);
     }
@@ -1716,6 +1714,20 @@ function verifyChip(status, label, value, extra = '') {
     el('span', { text: label }), el('b', { text: number(value) }), extra ? el('small', { text: extra }) : null
   ]);
 }
+/* 延迟：经 TokenPulse 转发（透明转发 / 本地路由）的请求才量得到 */
+const secs = ms => { const total = Math.round(ms / 1000); return ms >= 59500 ? `${Math.floor(total / 60)}m ${total % 60}s` : `${(ms / 1000).toFixed(2)}s`; };
+function latencyTone(timing) {
+  const first = timing.firstTokenMs ?? timing.firstByteMs;
+  return first == null ? 'none' : first < 5000 ? 'fast' : first < 15000 ? 'mid' : 'slow';
+}
+function latencyCell(row) {
+  const t = row.timing;
+  if (!t || (t.ms == null && t.firstByteMs == null)) return el('td', { class: 'request-latency empty', title: '这次请求没有经过 TokenPulse 转发，量不到延迟。打开「供应商 → 透明转发」，或者走本地路由（第三方供应商、号池）的请求会有。', text: '—' });
+  const first = t.firstTokenMs ?? t.firstByteMs;
+  const line = (label, value) => el('span', {}, [el('small', { text: label }), el('b', { translate: 'no', text: value })]);
+  return el('td', { class: 'request-latency ' + latencyTone(t), title: `${t.pass ? '透明转发' : '本地路由'}${t.stream === false ? ' · 非流式' : ' · 流式'}` }, [el('div', {}, [
+    line('首字', first == null ? '—' : secs(first)), line('总耗时', t.ms == null ? '—' : secs(t.ms)), line('速度', t.tokensPerSec == null ? '—' : `${t.tokensPerSec} t/s`)])]);
+}
 function modelCell(row) {
   const main = row.returned || row.requested || row.model;
   let sub = null;
@@ -1724,7 +1736,8 @@ function modelCell(row) {
   else if (!row.requested) sub = ['请求型号未记录'];
   // [1m] 只是 Claude Code 标的 1M 上下文，响应里本来就没有，不值得单独写一行
   else if (row.requested.replace(/\[[^\]]*\]$/, '') !== row.returned) sub = [`请求 ${row.requested}`];
-  return el('td', { class: 'request-model' }, [el('b', { text: main, title: main }), sub ? el('small', {}, sub) : null].filter(Boolean));
+  const tags = [row.effort ? el('span', { class: 'request-tag', translate: 'no', title: '思考等级', text: row.effort }) : null, row.timing?.fast ? el('span', { class: 'request-tag', title: '快速模式', text: '快速' }) : null].filter(Boolean);
+  return el('td', { class: 'request-model' }, [el('b', { text: main, title: main }), sub ? el('small', {}, sub) : null, tags.length ? el('div', { class: 'request-tags' }, tags) : null].filter(Boolean));
 }
 /* 账号 */
 const ACCOUNT_BASIS = { session: '会话记录', timeline: '登录时间线', inferred: '推断' };
@@ -1798,9 +1811,13 @@ function requestDetail(row) {
     ['Tokens', number(row.tokens)],
     ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.session, true],
     ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)], ['推理 Tokens', number(row.reasoning)],
-    ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : [])
+    ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : []),
+    ...(row.effort ? [['思考等级', row.effort]] : []),
+    ...(row.timing ? [['经由', row.timing.pass ? '透明转发（原样转给官方）' : `本地路由 · ${row.timing.provider || '供应商'}`], ['接口', row.timing.path || '—', true], ['类型', row.timing.stream === false ? '非流式' : '流式'],
+      ['首字节', row.timing.firstByteMs == null ? '—' : secs(row.timing.firstByteMs)], ['首段内容', row.timing.firstTokenMs == null ? '—' : secs(row.timing.firstTokenMs)], ['总耗时', row.timing.ms == null ? '—' : secs(row.timing.ms)],
+      ['输出速度', row.timing.tokensPerSec == null ? '—（输出太少，不算）' : `${row.timing.tokensPerSec} Token/秒`]] : [])
   ];
-  return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 9 }, [
+  return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 10 }, [
     el('div', { class: 'detail-grid' }, fields.map(([label, value, mono]) => el('div', {}, [el('small', { text: label }), el('span', { class: mono ? 'mono' : '', text: value, title: value })]))),
     row.reasons.length ? el('div', { class: 'detail-reasons' }, row.reasons.map(reason => {
       const problem = (row.status === 'mismatch' || row.status === 'suspect') && !NOTE_PREFIX.test(reason);
@@ -1835,11 +1852,12 @@ function drawRequests() {
       el('td', { class: 'n', title: number(row.cacheRead) }, qty(row.cacheRead)),
       quotaCell(row),
       el('td', { class: 'n', text: row.priced ? money(row.costUsd) : '未定价' }),
+      latencyCell(row),
       el('td', {}, [el('span', { class: 'badge ' + VERIFY_TONE[row.status], text: row.statusLabel, title: row.reasons[0] || '' })])
     ]), i));
     if (open) rows.push(requestDetail(row));
   });
-  if (!rows.length) rows.push(el('tr', {}, [el('td', { colspan: 9, class: 'empty', text: c.all ? '这个核验结论下没有请求，换一个试试。' : '所选时间和工具下没有请求记录。' })]));
+  if (!rows.length) rows.push(el('tr', {}, [el('td', { colspan: 10, class: 'empty', text: c.all ? '这个核验结论下没有请求，换一个试试。' : '所选时间和工具下没有请求记录。' })]));
   $('request-rows').replaceChildren(...rows);
   $('request-pagination').textContent = `第 ${page.page + 1} / ${page.pages} 页 · 共 ${number(page.total)} 次请求`;
   $('request-prev').disabled = page.page === 0; $('request-next').disabled = page.page >= page.pages - 1;
@@ -1871,6 +1889,8 @@ function render(snapshot) {
    * 看起来就是「一刷新就被拉回最上面」。重建期间锁住主区高度，重建完还原滚动位置。
    */
   keepScroll(() => renderPage(snapshot));
+  // tokens.ci 状态栏：进出演示模式时跟着显示 / 隐藏
+  window.PulseTokensCi?.refresh();
 }
 /** 重建期间锁住主区高度，重建完还原滚动位置。 */
 /** 滚动的是工作区，不是整个窗口（标题栏下面那块，见 app.css 的 .workspace）。 */
@@ -2662,7 +2682,7 @@ $('export-requests').addEventListener('click', async () => {
   const button = $('export-requests'); button.disabled = true;
   try {
     const page = await api.requests(requestQuery({ all: true }));
-    const rows = page.rows.map(row => ({ ...row, time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
+    const rows = page.rows.map(row => ({ ...row, firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing?.tokensPerSec ?? '', routeVia: row.timing ? (row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
     if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
   } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
   finally { button.disabled = !requestPage?.total; }
@@ -2876,7 +2896,32 @@ new ResizeObserver(() => {
   if (next && Math.abs(next - width) > 2 && analysis && state.page === 'overview') { width = next; dailyChart(entering()); }
 }).observe($('daily-chart'));
 window.addEventListener('resize', () => { moveIndicator(); syncSegs(); layoutAccountTabBar(); closeOptionMenu(); });
-api.onSnapshot(render);
+/*
+ * 启动页（0.3.38）：第一份能看的数据到之前，窗口里只有图标和「正在扫描中…」，不露出一片空白的界面。
+ * 能看 = 扫过一轮（scannedAt）或者已经有统计；第一次用、或者账本重建时，要等这一轮扫描完。
+ * 读取 / 扫描出错也收起来，让报错和「刷新数据」露出来。
+ */
+let booting = true, bootHeld = null;
+function finishBoot() {
+  if (!booting) return;
+  booting = false;
+  const boot = $('boot');
+  if (!boot) return;
+  boot.setAttribute('aria-busy', 'false');
+  boot.classList.add('done');
+  setTimeout(() => boot.remove(), 400);
+}
+function receive(snapshot) {
+  if (booting && !snapshot?.scannedAt && !snapshot?.usage?.length) { bootHeld = snapshot; return; }
+  finishBoot();
+  render(snapshot);
+}
+function bootFailed() {
+  if (!booting) return;
+  finishBoot();
+  if (!current && bootHeld) render(bootHeld);
+}
+api.onSnapshot(receive);
 /*
  * 额度查询被出口 IP 白名单拦下来的那几家（egress-monitor.ts 的 gateQuota）。出口监控每 5 秒推一次状态，
  * 只有拦截情况真的变了才重画，免得首页每 5 秒闪一下。
@@ -2894,6 +2939,6 @@ api.onOpenPage?.(target => {
   if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
   navigate(target?.page || 'overview');
 });
-api.onError(message => showStatus(message, true));
-api.snapshot().then(render).catch(() => showStatus('本地数据读取失败，请点击刷新重试。', true));
+api.onError(message => { bootFailed(); showStatus(message, true); });
+api.snapshot().then(receive).catch(() => { bootFailed(); showStatus('本地数据读取失败，请点击刷新重试。', true); });
 setInterval(() => { if (current && !document.hidden) render({ ...current, now: Date.now() }); }, 30000);
