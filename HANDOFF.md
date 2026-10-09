@@ -1,6 +1,24 @@
-# Current handoff · 0.3.40 published (2026-10-09)
+# Current handoff · 0.3.40 published / 0.3.41 local test ready (2026-10-09)
 
 ## 新对话先看这里
+
+**0.3.41 进行中（2026-10-09，测试版已打，未提交、未发布）：返回型号以回复结束时报的为准。**
+
+- 起因：用户的 Codex 账号被官方降级，用量明细却显示「型号一致」。参考项目 `D:\CodePorject\Exmaple\sub2api-production` 的「使用记录」能标出上游响应模型不匹配，做法在 `backend/internal/service/upstream_response_model.go`：一次回复里型号会报两次（`response.created` 和 `response.completed` 等结束事件），以结束事件为准。TokenPulse 原来只读第一次出现的（`Grab` 里 `if (!this.model)`）。用户确认按此修，归 0.3.41。
+- 改动：`ws-sniff.ts` 的 `Grab` 新增 `first` / `final`，`model` 改为取值器（结束时报的优先），`declared` 在两者不同时给出开头报的；结束事件靠 `GRAB_TERMINAL` 标记定位，之后第一处 `"model"` 即 `response.model`，用绝对偏移处理分段。`agent-proxy.ts` 日志多一个 `declaredModel`（`returnedOf`、本地路由的 Outcome）；`route-ledger.ts` 的 `RouteReturned.declared`；`request-log.ts` / `request-verify.ts` 的 `proxy.declared`，不一致时原因里多一条「上游回复开头报的是 A，结束时报的是 B」。HTTP 透明转发、本地路由直通、WebSocket 都用同一个 `Grab`；接口格式转换过的转发本来就不读返回型号，没变。
+- 版本和说明：package.json / package-lock.json 已是 0.3.41；`intro.js` 加了 0.3.41 一条，`i18n.js` 补英文和新原因的句式。
+- 测试：新 `scripts/test-final-model.cjs`（已加入 npm test）：Grab 各种分段、无结束事件、提示词里带同名键、透明转发记下两个型号、索引和核验标成不一致。`npm test` 退出 0，`npm run test:ui` 退出 0（47 PASS）。
+- 测试版：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，89 个运行时文件与源码一致，包内 0.3.41；exe / asar 未占用。dist 里的 0.3.40 四个发布附件没动。
+- **没有实证**：没见过用户被降级时的真实回复，「开头报原名、结束报真名」是照参考项目推断的。若官方两次都报原名，此修法抓不到，备选是参考项目的门票探测（`openai_codex_state_probe.go`，主动发两个小请求看 `x-codex-turn-state` 是否被换，会花额度、有指纹风险，用户未要求）。只对更新后、经 TokenPulse 转发的请求有效，旧记录补不了。
+- **实证结果（同日）**：用户开着 0.3.41 测试版跑 Codex，自己确认 gpt-6.1-sol high 被降智；转发记录里那 10 条请求的 `requestModel` / `returnedModel` 都是 gpt-6.1-sol，没有 `declaredModel`。即官方降智时开头和结束报的都是原名，型号名判据（包括参考项目的「使用记录」）对这种情况无效。上面的改动保留（无害，官方哪天在结束时报真名就能抓到）。
+- **新增：Codex 降智检测，只做手动（用户同意：会花一点额度、有指纹风险，不做自动）。**
+  - 判据照参考项目 `openai_codex_state_probe.go`：第一发不带门票，取响应头 `x-codex-turn-state` 和 `__cflb` / `__oailb` 两枚 Cookie；第二发带上它们；回了不同的新门票 = 降智，没回或回原票 = 正常；两发都必须 200 且回复正常结束，否则「无法判断」。参考项目只在门票长度 780 上验证过。
+  - 代码：`src/core/codex-state-probe.ts`（`probeCodexState`，用 Node 的 `upstreamRequest`，走系统 / 环境代理；身份头 `originator: codex_cli_rs`、`version` / UA 写的是 0.162.0；每发 45 秒超时、回复上限 1 MiB；结果不含门票、Cookie、凭据；`TOKENPULSE_CODEX_PROBE_BASE` 给测试换上游）。`src/main/codex-state-probe.ts`（`runProbe`：按账号 id 找凭据，没给 id 用 Codex CLI 当前登录；同账号同时只跑一个；型号取 `~/.codex/config.toml` 的 model，其次最近成功的转发，再次内置 gpt-6.1-sol；上次结果存 `codex-state-probe.json`）。IPC `codex-probe:run` / `codex-probe:last`，preload `codexProbe`（演示模式拒绝）/ `codexProbeLast`。界面在额度详情 ChatGPT 账号的两个窗口卡下面：`probePanel`（`.probe-panel`，按钮 `data-action=codex-probe`，结论徽标、事实、原因、门票长度不是 780 的提醒、三条代价说明）。i18n、更新说明已补。
+  - **踩坑**：`src/core/codex-probe.ts` 是已有文件（「写给 Codex 的配置先让 Codex 试读」功能），我新建时把它覆盖了，编译报错才发现，已用 `git checkout` 原样恢复（无 diff），新模块改名为 `codex-state-probe`。
+  - 测试：`scripts/test-codex-state-probe.cjs`（假上游：两发的形状、正常 / 原票 / 降智、401 / 429 / 没门票 / 回复失败 / 网络错误都判无法判断、结果不含敏感内容），已加入 npm test；`test-ui.cjs` 加了面板的检查（主进程的 `runProbe` 换成假的），并把「刷新后滚动位置不变」放宽到 1 像素以内（页面高度带小数时还原会差 0.67px，不是跳）。`npm test` 退出 0，`npm run test:ui` 退出 0（48 PASS）。
+  - 测试版已重打：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，91 个运行时文件与源码一致，包内 0.3.41，exe / asar 未占用。
+  - **没做**：没有用真实账号跑过探测（会动用户凭据和额度，留给用户自己点）。它在 TokenPulse 里到底准不准，要等用户在确认降智的账号上点一次才知道。
+- 下一步：等用户实测探测结果；发布时按老流程（dist、提交、标签、Release、HANDOFF 单独提交）。
 
 **0.3.40 已正式发布（2026-10-09）。以这一段为准；下面「0.3.40 local / uncommitted / unpublished / awaiting acceptance」等说法都是发布前的历史。用户说明聊天回复用中文。**
 

@@ -1436,6 +1436,7 @@ function renderQuota() {
   if (blocked) host.append(blocked);
   if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `最后一次成功查询是 ${date(checkedAt(account), true)}，已超过 15 分钟（可能是网络不通或凭据过期）。以下是历史记录，当前剩余额度需刷新确认。`]));
   host.append(el('div', { class: 'quota-window-grid' }, [windowPanel('5 小时窗口', account.five, account), windowPanel('周额度窗口', account.week, account)]));
+  if (kind === 'chatgpt') host.append(probePanel(account));
   const capacity = capacityPanel(account);
   host.append(capacity);
   const hourly = el('div', { class: 'chart' });
@@ -1453,6 +1454,61 @@ function renderQuota() {
   trendChart(trend, account.trend, animate);
   capacity.draw(animate);
   syncSegs();
+}
+
+/* ---------------- Codex 降智检测（额度详情，0.3.41） ---------------- */
+
+/*
+ * ChatGPT 账号被官方降到更低的模型时，回复里报的型号名不变，型号核验查不出来。
+ * 这里放一个手动的检测：点一下，用这个账号发两个极小的请求，看官方会不会换「门票」（判据见 src/core/codex-state-probe.ts）。
+ * 只在点了的时候跑，不自动；说明里把代价和局限写清楚。上次的结论存在本机，重新打开还看得到。
+ */
+const PROBE_LABEL = { healthy: '没有降智的迹象', degraded: '很可能已降智', inconclusive: '无法判断' };
+const PROBE_TONE = { healthy: 'good', degraded: 'critical', inconclusive: 'neutral' };
+let probeLast = null;
+const probeRunning = new Set();
+function probePanel(account) {
+  // 没有账号 id 的（只有 CLI 当前登录的那一个、还没登记）交给主进程用 CLI 的登录来测，结果记在 cli 名下
+  const target = account.accountId || '', id = target || 'cli';
+  const body = el('div', { class: 'probe-result', role: 'status' });
+  const run = el('button', { type: 'button', class: 'btn btn-accent', 'data-action': 'codex-probe' }, [icon('trace'), el('span', { text: '检测一次' })]);
+  const draw = () => {
+    const result = probeLast?.[id], running = probeRunning.has(id);
+    run.disabled = running;
+    run.lastChild.textContent = running ? '正在检测…' : result ? '再测一次' : '检测一次';
+    if (running) { body.replaceChildren(el('p', { class: 'muted', text: '正在发两个极小的请求，一般十几秒到一分钟…' })); return; }
+    if (!result) { body.replaceChildren(el('p', { class: 'muted', text: '还没有检测过。' })); return; }
+    const facts = [`${date(result.at, true)}`, `用 ${result.model} 测的`, result.reportedModel ? `官方报的型号 ${result.reportedModel}（不作判据）` : null, result.ticketLength ? `门票长度 ${result.ticketLength}` : null].filter(Boolean);
+    body.replaceChildren(
+      el('div', { class: 'probe-verdict' }, [el('span', { class: 'badge ' + PROBE_TONE[result.verdict], text: PROBE_LABEL[result.verdict] }), el('span', { class: 'probe-facts', translate: 'no', text: facts.join(' · ') })]),
+      el('p', { class: 'probe-reason', text: result.reason }),
+      result.verdict !== 'inconclusive' && result.ticketLength !== 780 ? el('p', { class: 'probe-note', text: '这次的门票长度不是 780：这个判据只在长度 780 的门票上验证过，结论要打折扣。' }) : null,
+    );
+  };
+  run.addEventListener('click', async () => {
+    if (probeRunning.has(id)) return;
+    probeRunning.add(id); draw();
+    try { const result = await api.codexProbe(target); probeLast = { ...(probeLast || {}), [id]: result }; }
+    catch (error) { toast(cleanRemoteError(error, '检测没有跑起来，请重试'), { kind: 'error' }); }
+    finally { probeRunning.delete(id); if (body.isConnected) keepScroll(draw); }
+  });
+  if (probeLast) draw();
+  else { draw(); Promise.resolve(api.codexProbeLast?.()).then(last => { probeLast = last || {}; if (body.isConnected) keepScroll(draw); }).catch(() => { probeLast = {}; }); }
+  return el('article', { class: 'panel probe-panel' }, [
+    el('div', { class: 'panel-heading capacity-heading' }, [
+      el('div', {}, [
+        el('h2', {}, ['降智检测 ', el('span', { class: 'section-tag', text: '手动' })]),
+        el('p', { text: '官方把账号降到更低的模型时，回复里报的型号名不会变，型号核验查不出来。这里换一个办法：用这个账号发两个极小的请求，看官方会不会给第二个请求换一张新的「门票」，换了就很可能是降智。' }),
+      ]),
+      run,
+    ]),
+    body,
+    el('ul', { class: 'probe-caveats' }, [
+      el('li', { text: '只在你点的时候测，不会自动跑。每测一次是两个「回复 OK」级别的真实请求，会用掉一点点额度。' }),
+      el('li', { text: '请求由 TokenPulse 用这个账号的登录凭据发出，网络特征和真的 Codex 不完全一样；不保证官方不在意，也可能影响结论。' }),
+      el('li', { text: '这是别人实测总结的经验规律，不是官方公开的规则，官方一改就可能失效。单次结果会受当时波动影响，拿不准就隔一会儿再测一次。' }),
+    ]),
+  ]);
 }
 
 /* ---------------- 模型速度（额度详情，0.3.35） ---------------- */

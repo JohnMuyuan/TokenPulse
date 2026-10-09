@@ -38,6 +38,12 @@ export type GrabUsage = { input: number; output: number; cacheRead?: number };
 const GRAB_ID = /"id"\s*:\s*"((?:resp|msg|chatcmpl)[_-][A-Za-z0-9_-]{8,120})"/;
 const GRAB_MODEL = /"model"\s*:\s*"([^"\\]{1,120})"/;
 /*
+ * 一次回复里型号会报不止一次（0.3.41）：开头的 response.created 报一次，结束的 response.completed 再报一次。
+ * 开头那次可能只是把请求的型号原样报回来；上游中途换了型号（账号被降级）时，结束那次才是实际用的。
+ * 所以以结束事件里的为准，没有结束事件（Anthropic、Chat Completions）才用第一次出现的。
+ */
+const GRAB_TERMINAL = /(?:"type"\s*:\s*"|event:\s*)response\.(?:completed|done|failed|incomplete|cancelled|canceled)\b/;
+/*
  * OpenAI Responses 的用量：{"input_tokens":N,"input_tokens_details":{…"cached_tokens":M},"output_tokens":K,…}。
  * 不能靠「消息的开头和结尾各留一截」来找：response.completed 里前面有一段 tool_usage.image_gen（同样的键，全是 0），
  * 真正的用量在整个 response 对象的后部，它后面还可以跟别的字段——留的那一截里没有它时，读到的就是前面那段 0
@@ -48,14 +54,30 @@ const GRAB_USAGE = /"input_tokens"\s*:\s*(\d+)\s*,\s*"input_tokens_details"\s*:\
 const CARRY = 600;
 export class Grab {
   responseId = "";
-  model = "";
+  /** 第一次出现的型号（开头报的）。 */
+  first = "";
+  /** 结束事件里报的型号；没有结束事件是空的。 */
+  final = "";
   usage: GrabUsage | null = null;
   private carry = "";
+  /** 已经处理过多少字符、结束事件的标记在第几个字符之后（-1 = 还没见到）。 */
+  private total = 0;
+  private terminalAt = -1;
+  /** 上游实际用的型号：结束时报的优先。 */
+  get model() { return this.final || this.first; }
+  /** 开头报的和结束时报的不一样时，开头报的那个；一样或只有一个时是空的。 */
+  get declared() { return this.final && this.first && this.final.toLowerCase() !== this.first.toLowerCase() ? this.first : ""; }
   feed(text: string) {
     if (!text) return;
     const joined = this.carry + text;
     if (!this.responseId) this.responseId = GRAB_ID.exec(joined)?.[1] || "";
-    if (!this.model) this.model = GRAB_MODEL.exec(joined)?.[1] || "";
+    if (!this.first) this.first = GRAB_MODEL.exec(joined)?.[1] || "";
+    if (!this.final) {
+      const base = this.total - this.carry.length;
+      if (this.terminalAt < 0) { const mark = GRAB_TERMINAL.exec(joined); if (mark) this.terminalAt = base + mark.index + mark[0].length; }
+      if (this.terminalAt >= 0) this.final = GRAB_MODEL.exec(joined.slice(Math.max(0, this.terminalAt - base)))?.[1] || "";
+    }
+    this.total += text.length;
     if (joined.includes('"input_tokens_details"')) {
       for (const match of joined.matchAll(GRAB_USAGE)) {
         const cached = /"cached_tokens"\s*:\s*(\d+)/.exec(match[2])?.[1];

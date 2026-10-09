@@ -1455,6 +1455,18 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 
 /* ---------------- 模型速度（额度详情，0.3.35） ---------------- */
 
+/* Codex 降智检测（0.3.41） */
+.probe-panel { margin-top: 18px; }
+.probe-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 18px; flex-wrap: wrap; }
+.probe-panel .panel-heading > div { flex: 1 1 420px; min-width: 0; }
+.probe-result { padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
+.probe-result p { margin: 0; }
+.probe-verdict { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.probe-verdict .badge { margin: 0; font-size: 13px; }
+.probe-facts { font-size: 12.5px; color: var(--muted); }
+.probe-reason { margin-top: 8px !important; font-size: 13.5px; line-height: 1.6; }
+.probe-note { margin-top: 6px !important; font-size: 12.5px; color: var(--warn); }
+.probe-caveats { margin: 12px 0 0; padding-left: 18px; display: grid; gap: 4px; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 /* 一个模型一行，所有行共用同一条时间轴和同一个速度刻度：名字 | 走势 | 数字 + 对比条 */
 .speed-panel { margin-top: 18px; }
 .speed-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 18px; flex-wrap: wrap; }

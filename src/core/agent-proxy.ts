@@ -70,6 +70,8 @@ export type ProxyLog = {
    */
   responseId?: string;
   returnedModel?: string;
+  /** 回复开头报的型号，和结束时报的（returnedModel）不一样才有（0.3.41）。 */
+  declaredModel?: string;
   /*
    * 请求里要的服务档位（0.3.35）：Codex 的「快速模式」是 service_tier = "priority"（配置里写 fast），Claude 的是 speed = "fast"。
    * 快速模式出字明显更快，和普通模式混在一起算速度没有意义，所以记下来、汇总时分开。默认档（default / auto / 没写）不记。
@@ -82,7 +84,7 @@ function tierOf(value: unknown) {
   return tier && tier !== "default" && tier !== "auto" && tier !== "standard" ? tier : "";
 }
 /** 回复里读到了响应 ID 才算数：没有 ID 的（模型列表之类）里面的 model 不是「返回型号」。 */
-const returnedOf = (grab: { responseId?: string; model?: string }) => (grab.responseId ? { responseId: grab.responseId, ...(grab.model ? { returnedModel: grab.model.slice(0, 120) } : {}) } : {});
+const returnedOf = (grab: { responseId?: string; model?: string; declared?: string }) => (grab.responseId ? { responseId: grab.responseId, ...(grab.model ? { returnedModel: grab.model.slice(0, 120) } : {}), ...(grab.declared ? { declaredModel: grab.declared.slice(0, 120) } : {}) } : {});
 
 type Options = {
   host: string;
@@ -244,7 +246,7 @@ export function startAgentProxy(options: Options) {
         if (outcome.kind === "done") {
           options.succeed(target.id);
           stats.ok += 1;
-          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: (outcome.endAt ?? Date.now()) - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel }), ...(outcome.timing ?? {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
+          options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: (outcome.endAt ?? Date.now()) - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel, declared: outcome.declaredModel }), ...(outcome.timing ?? {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
           return;
         }
         options.fail(target.id);
@@ -307,7 +309,7 @@ function sendError(res: http.ServerResponse, client: Upstream, status: number, m
 }
 
 type Timing = { firstByteMs?: number; firstTokenMs?: number; tokensPerSec?: number };
-type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string; timing?: Timing; endAt?: number } | { kind: "fail"; status: number; error: string; terminal?: boolean };
+type Outcome = { kind: "done"; status: number; input?: number; output?: number; cacheRead?: number; responseId?: string; returnedModel?: string; declaredModel?: string; timing?: Timing; endAt?: number } | { kind: "fail"; status: number; error: string; terminal?: boolean };
 
 async function forward(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, client: Upstream, target: ProxyTarget, body: Buffer): Promise<Outcome> {
   const same = client === target.upstream;
@@ -407,7 +409,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
         observer!.end(() => {
           if (status >= 400) { finish({ kind: "fail", status, error: `HTTP ${status}`, terminal: true }); return; }
           const usage = grab.usage ?? sniffUsage(seen.head.length < SNIFF_EDGE ? seen.head : seen.head + "\n" + seen.tail);
-          finish({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined } : {}), timing: watch.result(usage.output, status, endAt), endAt });
+          finish({ kind: "done", status, input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(grab.responseId ? { responseId: grab.responseId, returnedModel: grab.model || undefined, declaredModel: grab.declared || undefined } : {}), timing: watch.result(usage.output, status, endAt), endAt });
         });
       });
     };

@@ -35,7 +35,7 @@ export type VerifyInput = {
   /** cc-switch：是不是走它本地代理的请求。 */
   viaProxy?: boolean;
   /** 同一次请求在代理里的记录：它从上游响应里读到的型号。via = "tokenpulse" 是 TokenPulse 自己转发时读到的，没写是 CC Switch 代理。 */
-  proxy?: { requested?: string; returned: string; via?: "tokenpulse" };
+  proxy?: { requested?: string; returned: string; /** 回复开头报的型号，和结束时报的（returned）不一样才有。 */ declared?: string; via?: "tokenpulse" };
 };
 
 export type VerifyResult = {
@@ -103,6 +103,8 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
     mismatch = true;
     problems.push(`请求的是 ${requested}，上游返回的是 ${returned}`);
   }
+  // 上游在一次回复里前后报了两个型号（0.3.41）：开头报的多半是照着请求回显的，结束时报的才是实际用的
+  if (proxy?.declared) problems.push(`上游回复开头报的是 ${proxy.declared}，结束时报的是 ${proxy.returned}`);
   // 会话文件和代理记录都有返回型号、却对不上：CLI 记的是它以为的，代理看到的才是上游真回的
   if (!mismatch && proxy && input.returned && normalizeModel(proxy.returned) !== normalizeModel(input.returned)) {
     mismatch = true;

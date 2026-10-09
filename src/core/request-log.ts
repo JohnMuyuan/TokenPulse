@@ -67,7 +67,7 @@ export type RequestRecord = {
   /** 压缩上下文那一次调用：CLI 没写 usage，按压缩前的上下文和摘要长度估的（见 usage-scan.ts）。 */
   compaction?: boolean;
   /** 查询时附上的：同一次请求在代理里的记录——TokenPulse 自己转发时读到的（见 withRoute），或 CC Switch 代理的（见 matchProxy）。不落盘。 */
-  proxy?: { requested?: string; returned: string; via?: "tokenpulse" };
+  proxy?: { requested?: string; returned: string; declared?: string; via?: "tokenpulse" };
   /** 查询时附上的：经 TokenPulse 转发时量到的延迟和速度（见 withRoute）。不落盘。 */
   timing?: RouteTiming;
 };
@@ -479,7 +479,7 @@ function ccSwitchRecords(covered: Set<string>) {
 function withRoute(record: RequestRecord): RequestRecord | null {
   if (record.kind === "cc-switch" || !record.responseId) return null;
   const hit = routeReturned(record.responseId, record.at);
-  return hit ? { ...record, proxy: { ...(hit.requested ? { requested: hit.requested } : {}), returned: hit.returned, via: "tokenpulse" }, ...(hit.timing ? { timing: hit.timing } : {}) } : null;
+  return hit ? { ...record, proxy: { ...(hit.requested ? { requested: hit.requested } : {}), returned: hit.returned, ...(hit.declared ? { declared: hit.declared } : {}), via: "tokenpulse" }, ...(hit.timing ? { timing: hit.timing } : {}) } : null;
 }
 
 export function queryRequests(query: RequestQuery): RequestPage {

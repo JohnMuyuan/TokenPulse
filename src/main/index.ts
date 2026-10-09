@@ -6,6 +6,7 @@ import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
 import { countRouteLog, passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
 import { accountSpeed, speedSeries } from "../core/pass-speed";
+import { lastProbes, runProbe } from "./codex-state-probe";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import fsSync from "fs";
 import fs from "fs/promises";
@@ -945,6 +946,9 @@ if (!app.requestSingleInstanceLock()) {
     });
     // 全部模型的速度走势（用量明细的折线图，0.3.39）；days：0 = 全部
     ipcMain.handle("pass-speed:series", (_event, days: unknown) => { try { return speedSeries(Math.max(0, Math.min(3650, Number(days) || 0))); } catch { return null; } });
+    // Codex 降智检测（0.3.41）：只在用户点了才跑，见 codex-state-probe.ts
+    ipcMain.handle("codex-probe:run", (_event, accountId: unknown) => runProbe(accountId));
+    ipcMain.handle("codex-probe:last", () => lastProbes());
     ipcMain.handle("agent:port", (_event, port: unknown) => agentWrite("修改本地路由端口", () => setProxyPort(Number(port))));
     ipcMain.handle("agent:failover", (_event, id: unknown, on: unknown) => agentWrite("修改备用队列", () => setFailover(String(id || ""), on === true)));
     ipcMain.handle("agent:reorder", (_event, app: unknown, ids: unknown) => agentWrite("调整供应商顺序", () => {

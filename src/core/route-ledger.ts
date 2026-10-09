@@ -252,7 +252,7 @@ export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
  */
 /** 转发时量到的：首字延迟、总耗时、速度，以及这一次是怎么转的。用量明细里每条请求旁边显示（0.3.38）。 */
 export type RouteTiming = { ms?: number; firstByteMs?: number; firstTokenMs?: number; tokensPerSec?: number; stream?: boolean; path?: string; pass?: boolean; provider?: string; fast?: boolean };
-export type RouteReturned = { requested?: string; returned: string; timing?: RouteTiming };
+export type RouteReturned = { requested?: string; returned: string; /** 回复开头报的型号，和结束时报的不一样才有（0.3.41）。 */ declared?: string; timing?: RouteTiming };
 const returnedCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, RouteReturned> }>();
 function returnedIndex(name: string): Map<string, RouteReturned> | null {
   const stat = peek("log:" + name, () => path.join(routeLogDir(), name));
@@ -270,7 +270,7 @@ function returnedIndex(name: string): Map<string, RouteReturned> | null {
       const timing: RouteTiming = { ...num("ms"), ...num("firstByteMs"), ...num("firstTokenMs"), ...num("tokensPerSec"), ...(typeof row.stream === "boolean" ? { stream: row.stream } : {}),
         ...(typeof row.path === "string" ? { path: row.path.slice(0, 200) } : {}), ...(row.pass === true ? { pass: true } : {}), ...(typeof row.provider === "string" ? { provider: row.provider.slice(0, 120) } : {}),
         ...(row.tier === "priority" || row.tier === "fast" ? { fast: true } : {}) };
-      index.set(row.responseId, { ...(typeof row.requestModel === "string" && row.requestModel ? { requested: row.requestModel } : {}), returned: row.returnedModel, timing });
+      index.set(row.responseId, { ...(typeof row.requestModel === "string" && row.requestModel ? { requested: row.requestModel } : {}), returned: row.returnedModel, ...(typeof row.declaredModel === "string" && row.declaredModel ? { declared: row.declaredModel.slice(0, 120) } : {}), timing });
     }
   } catch { return null; }
   returnedCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, index });

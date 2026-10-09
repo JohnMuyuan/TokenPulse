@@ -165,6 +165,9 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   agentPassSpeed: (days?: number) => ipcRenderer.invoke("agent:pass-speed", days),
   passSpeedAccount: (kind: string, account: string, days: number) => ipcRenderer.invoke("pass-speed:account", kind, account, days),
   passSpeedSeries: (days: number) => ipcRenderer.invoke("pass-speed:series", days),
+  /** Codex 降智检测（0.3.41）：会用这个账号发两个极小的真实请求，演示模式下不让跑。 */
+  codexProbe: (accountId: string) => (demo ? blocked() : ipcRenderer.invoke("codex-probe:run", accountId)),
+  codexProbeLast: () => ipcRenderer.invoke("codex-probe:last"),
   agentPort: (port: number) => ipcRenderer.invoke("agent:port", port),
   agentFailover: (id: string, on: boolean) => ipcRenderer.invoke("agent:failover", id, on),
   agentReorder: (app: string, ids: string[]) => ipcRenderer.invoke("agent:reorder", app, ids),
