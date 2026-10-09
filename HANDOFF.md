@@ -9,7 +9,7 @@
 - 打包：`npm run dist` 退出 0（当时 dist/win-unpacked 没有进程占用，只有用户安装版在运行，未动）。asar 里 90 个运行时文件（renderer、build/core、build/main、knowledge/models.json）与源码逐字节一致，包内版本 0.3.40，测试 fixtures 不在包里。
 - Git：发布提交 `622115f`，标签 `v0.3.40`，均已推送；本条交接为其后的单独提交。提交和发布说明里不放会话链接（用户规定）。
 - Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.40 ，非草稿非预发布；Setup.exe 112489979、blockmap 119674、Portable.exe 112232834、latest.yml 352，大小与本地一致，下载的 latest.yml 与本地逐字节一致，releases/latest 指向 v0.3.40。发布说明在 `dist/release-0.3.40.md`。
-- 收尾：四个附件和 dist/win-unpacked 的 exe / app.asar 均能 FileShare.None 打开；没有残留的打包 / 测试进程。0.3.39 的三个安装文件和 `dist/test-0.3.40/` 测试目录还留在 dist，没清理。
+- 收尾：四个附件和 dist/win-unpacked 的 exe / app.asar 均能 FileShare.None 打开；没有残留的打包 / 测试进程。用户随后要求清理：已删除 dist 里 0.3.39 的 Setup.exe / blockmap / Portable.exe 和 `dist/test-0.3.40/` 测试目录（约 600 MB；删前确认没有进程从 dist 运行）。dist 现在只剩 0.3.40 四个附件、win-unpacked、builder-debug.yml 和历史发布说明。
 - 没做：实际安装和自动更新、真实账号推理、真实 Windows 通知点击、直接从安装包跑整套 UI 测试。已知限制同下文（只监控经 TokenPulse 的流量；没写满的一分钟历史在异常退出时会丢）。
 
 （以下为发布前的记录）Before publication, the published release was 0.3.39. Local 0.3.40 concurrency monitoring and sidebar animation are implemented, tested, uncommitted and unpublished. Latest test app is dist/test-0.3.40/win-unpacked/TokenPulse.exe; keep that entire directory. At the last build, the older dist/win-unpacked was occupied by an existing user app; it is not the 0.3.40 artifact. Recheck live process state before any build. Read this entry before historical notes and verify actual version/Git/artifact state.
