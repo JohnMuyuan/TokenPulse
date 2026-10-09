@@ -1,6 +1,17 @@
-# Current handoff · 0.3.40 published / 0.3.41 local test ready (2026-10-09)
+# Current handoff · 0.3.41 published (2026-10-09)
 
 ## 新对话先看这里
+
+**0.3.41 已正式发布（2026-10-09）。以这一段为准，下面「0.3.41 进行中 / 未发布」是发布前的记录。**
+
+- 内容：Codex 手动降智检测；返回型号以回复结束时报的为准。
+- 用户实测：在自己确认降智的账号上点了一次，结果「很可能已降智」（gpt-6.1-sol，两发都 200，门票 780 → 换成另一张 780，26 秒）。只有这一个样本，**还没有在确定正常的账号上测过，不知道会不会误报**；已建议用户有正常账号或账号恢复后再测。
+- 验证：发布的就是备份提交的代码（工作区干净，远端无新提交）。`npm test` 发布前重跑退出 0；`npm run test:ui` 用的是这份代码此前的结果（48 PASS），发布前没有重跑。
+- 打包：`npm run dist` 退出 0；asar 里 92 个运行时文件（renderer、build/core、build/main、knowledge/models.json）与源码逐字节一致，包内 0.3.41，测试 fixtures 不在包里。
+- Git：标签 `v0.3.41` 打在 `d798e6e`（代码提交是 `84bf3b8`），已推送；本条交接是其后的单独提交。
+- Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.41 ，非草稿非预发布；Setup.exe 112494747、blockmap 119618、Portable.exe 112237529、latest.yml 352，大小与本地一致，下载的 latest.yml 与本地逐字节一致，releases/latest 指向 v0.3.41。发布说明在 `dist/release-0.3.41.md`。
+- 收尾：四个附件和 win-unpacked 的 exe / app.asar 能独占打开；用户的安装版在运行，未动。dist 里 0.3.40 的三个安装文件还在，没清理。
+- 没做：实际安装和自动更新；探测在正常账号上的表现。
 
 **0.3.41 进行中（2026-10-09，测试版已打，未发布）：返回型号以回复结束时报的为准 + Codex 手动降智检测。**
 
