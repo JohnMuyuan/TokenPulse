@@ -143,6 +143,8 @@ function tunnelAgent(proxy: UpstreamProxy) {
   }
   return agent;
 }
+/** WebSocket upgrades use the same CONNECT agent as HTTP forwarding. */
+export function websocketAgent(proxy: UpstreamProxy) { return tunnelAgent(proxy); }
 
 /**
  * 连接重置不能证明上游没有处理请求；只自动重发 GET / HEAD。

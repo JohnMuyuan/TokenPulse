@@ -1,0 +1,98 @@
+/* 并发监控页（0.3.40）。卡片、面板沿用 app.css 的 .panel，这里只管这一页自己的东西。 */
+.cm-panel { margin-bottom: 18px; }
+.cm-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px 20px; flex-wrap: wrap; }
+.cm-heading h2 { font-size: 17px; margin: 0; }
+.cm-help { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0; }
+
+/* 监控范围 */
+.cm-intro { display: flex; align-items: center; justify-content: space-between; gap: 14px 24px; flex-wrap: wrap; padding: 16px 20px; }
+.cm-intro-text { flex: 1 1 380px; min-width: 0; display: grid; gap: 4px; }
+.cm-intro-text b { font-size: 14px; font-weight: 650; }
+.cm-coverage { display: flex; flex-wrap: wrap; gap: 8px; }
+.cm-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px 6px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); font-size: 12.5px; color: var(--muted); }
+.cm-chip b { font-weight: 600; color: var(--text-2); }
+.cm-chip-state::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: var(--faint); vertical-align: 1px; }
+.cm-chip.on { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: var(--accent-soft); color: var(--accent); }
+.cm-chip.on b { color: var(--text); }
+.cm-chip.on .cm-chip-state::before { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+/* 实时计数 */
+.cm-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+.cm-card { padding: 18px 20px; display: grid; gap: 6px; align-content: start; }
+.cm-card-head { display: flex; align-items: center; gap: 10px; font-size: 13.5px; font-weight: 600; color: var(--text-2); }
+.cm-card-icon { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.cm-card-icon .icon { width: 17px; height: 17px; }
+.cm-card strong { display: block; font: 650 34px/1.15 var(--font-display, var(--font)); letter-spacing: -.01em; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.cm-card small { color: var(--muted); font-size: 12.5px; }
+.cm-card-note { margin: 2px 0 0; color: var(--faint); font-size: 12px; line-height: 1.5; }
+.cm-card[data-tone="near"] strong { color: var(--warn); }
+.cm-card[data-tone="full"] strong, .cm-card[data-tone="over"] strong { color: var(--danger); }
+.cm-card[data-tone="full"], .cm-card[data-tone="over"] { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
+.cm-meter { height: 6px; border-radius: 3px; background: var(--tile-neutral); overflow: hidden; }
+.cm-meter[hidden] { display: none; }
+.cm-meter i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s var(--ease); }
+.cm-meter.near i { background: var(--warn); }
+.cm-meter.full i, .cm-meter.over i { background: var(--danger); }
+.cm-meter.small { height: 3px; width: 56px; margin: 5px 0 0 auto; }
+
+/* 提醒 */
+.cm-alerts:empty { display: none; }
+.cm-alerts { display: grid; gap: 8px; margin-bottom: 18px; }
+.cm-alert { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: 12px; background: var(--warn-soft); color: var(--text); font-size: 13.5px; }
+.cm-alert .icon { width: 17px; height: 17px; flex: none; color: var(--warn); }
+
+/* 历史 */
+.cm-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.cm-field { display: grid; gap: 6px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+.cm-toolbar select.cm-native, .cm-fields select.cm-native { position: absolute; width: 1px; min-width: 0; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+.cm-field { position: relative; }
+.cm-select { width: 100%; min-width: 150px; height: 36px; border-radius: 10px; color: var(--text); font-size: 13.5px; cursor: pointer; }
+.cm-toolbar .cm-select { min-width: 170px; }
+.cm-toolbar select, .cm-fields input, .cm-fields select { height: 36px; padding: 0 11px; background: var(--surface); color: var(--text); border: 1px solid var(--line-strong); border-radius: 10px; font: inherit; font-size: 13.5px; max-width: 100%; min-width: 110px; }
+.cm-fields input:disabled { background: var(--surface-2); color: var(--faint); cursor: not-allowed; }
+.cm-status { min-height: 24px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; }
+.cm-chart { height: 260px; overflow: hidden; }
+.cm-chart svg { width: 100%; height: 100%; display: block; }
+.cm-chart .cm-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.cm-chart .cm-area { fill: var(--accent); opacity: .1; }
+.cm-chart .cm-axis { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 5; }
+.cm-chart .cm-axis.base { stroke-dasharray: none; }
+.cm-chart .cm-limit { stroke: var(--danger); stroke-width: 1.2; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; }
+.cm-chart text { fill: var(--muted); font-size: 12px; }
+.cm-chart .cm-limit-label { fill: var(--danger); font-size: 11.5px; }
+
+/* 明细表 */
+.cm-breakdown { padding-bottom: 8px; }
+.cm-breakdown { --pad: 24px; }
+.cm-breakdown .table-scroll { margin: 0 calc(-1 * var(--pad)); overflow-y: hidden; }
+.cm-table { min-width: 560px; }
+.cm-table th, .cm-table td { padding-left: 10px; padding-right: 10px; }
+.cm-scope-text { min-width: 0; display: grid; }
+.cm-table th:first-child, .cm-table td:first-child { padding-left: var(--pad); }
+.cm-table th:last-child, .cm-table td:last-child { padding-right: var(--pad); }
+.cm-table td { vertical-align: middle; font-variant-numeric: tabular-nums; }
+.cm-table tbody tr:last-child td { border-bottom: 0; }
+.cm-table tr.cm-total td { background: var(--surface-2); font-weight: 600; }
+.cm-scope { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.cm-scope-name { min-width: 0; max-width: 260px; white-space: normal; overflow-wrap: anywhere; }
+.cm-kind { flex: none; margin: 0; }
+.cm-kind.global { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.cm-kind.unattributed, .cm-kind.shared { color: var(--faint); }
+.cm-count b { font-weight: 650; font-size: 14px; }
+.cm-count > span { color: var(--muted); }
+.cm-count.near b { color: var(--warn); }
+.cm-count.full b, .cm-count.over b { color: var(--danger); }
+.cm-uncertain { display: block; color: var(--faint); font-size: 11.5px; }
+.cm-zero { color: var(--faint); }
+.cm-rejected { color: var(--danger); font-weight: 650; }
+.cm-table button { white-space: nowrap; height: 30px; padding: 0 12px; font-size: 12.5px; }
+
+/* 设置 */
+.cm-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.cm-fields select, .cm-fields input { width: 100%; }
+.cm-settings-foot { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 18px; }
+.cm-link { margin-bottom: 14px; }
+
+@media (max-width: 1100px) { .cm-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cm-breakdown { --pad: 20px; } }
+@media (max-width: 760px) { .cm-cards, .cm-fields { grid-template-columns: 1fr; } .cm-toolbar { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .cm-meter i { transition: none; } }

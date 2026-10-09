@@ -1,0 +1,180 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), http = require('node:http');
+const { EventEmitter } = require('node:events');
+const { WebSocket, WebSocketServer } = require('ws');
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-concurrency-'));
+process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
+process.env.AGENT_SWITCH_HOME = process.env.HOME = process.env.USERPROFILE = path.join(root, 'home');
+for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'GROK_HOME']) delete process.env[key];
+const { ConcurrencyMonitor, concurrencyMonitor: monitor, providerScopes, transparentScopes, validateConcurrencySettings } = require('../build/core/concurrency');
+const { startAgentProxy } = require('../build/core/agent-proxy');
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const until = async fn => { const end = Date.now() + 5000; while (!fn()) { assert.ok(Date.now() < end, 'Timed out'); await delay(10); } };
+const row = (m, id = 'global') => m.snapshot().rows.find(row => row.id === id);
+const scope = id => ({ id: 'provider:' + id, label: id, kind: 'provider' });
+const settings = rules => ({ retention: 30, rules });
+function attribution() {
+  require('../build/core/agent-switch');
+  const { rememberOfficialAccount } = require('../build/core/accounts');
+  const account = { kind: 'chatgpt', ref: 'qa-user@qa-workspace', email: 'qa@invalid', label: 'QA Account', credential: { token: 'synthetic-identity', accountId: 'qa-workspace' } };
+  const id = rememberOfficialAccount(account, true);
+  assert.equal(transparentScopes('codex', { authorization: 'Bearer synthetic-identity', 'chatgpt-account-id': 'qa-workspace' })[1].id, 'account:' + id);
+  assert.equal(transparentScopes('codex', { authorization: 'Bearer synthetic-identity', 'chatgpt-account-id': 'other-workspace' })[1].kind, 'unattributed');
+  assert.equal(transparentScopes('claude', { authorization: 'Bearer synthetic-identity' })[1].kind, 'unattributed');
+  assert.equal(transparentScopes('codex', { authorization: 'Bearer unknown' })[1].kind, 'unattributed');
+  const pool = providerScopes('codex', { id: 'synthetic-member', name: 'Member', officialAccount: id, concurrencyProviderId: 'pool', concurrencyProviderName: 'Pool' });
+  assert.deepEqual(pool.map(scope => scope.id), ['provider:pool', 'account:' + id]);
+  assert.ok(!JSON.stringify(pool).includes('synthetic-identity'));
+  console.log('PASS concurrency attribution: exact account token/workspace/tool identity, safe unknown fallback and stable pool member scopes');
+}
+async function unit() {
+  let at = 1000; const m = new ConcurrencyMonitor(() => at), notifications = [], buckets = [];
+  m.attach(bucket => buckets.push(bucket), alerts => notifications.push(...alerts));
+  m.configure(settings({ global: { requests: 1, action: 'reject' } }));
+  const first = m.admit([scope('one')]); assert.ok(first.release);
+  assert.equal(row(m).requests, 1); assert.equal(row(m, 'provider:one').requests, 1);
+  assert.ok(m.admit([scope('two')]).error); assert.equal(row(m).requests, 1); assert.equal(notifications.length, 1);
+  assert.ok(m.admit([scope('two')]).error); assert.equal(notifications.length, 1);
+  first.release(); first.release(); assert.equal(row(m).requests, 0);
+  at += 5001; m.tick(); assert.equal(m.snapshot().alerts.length, 0);
+  const second = m.admit([]); assert.ok(m.admit([]).error); assert.equal(notifications.length, 1, 'notification cooldown'); second.release();
+  at += 60001; m.tick(); const third = m.admit([]); m.admit([]); assert.equal(notifications.length, 2); third.release();
+  m.configure(settings({ global: { requests: 1, action: 'warn' } }));
+  const admitted = [m.admit([]), m.admit([]), m.admit([])]; assert.equal(row(m).requests, 3);
+  m.configure(settings({ global: { requests: 1, action: 'reject' } })); assert.equal(row(m).requests, 3, 'lowering limit keeps existing requests');
+  admitted.forEach(item => item.release());
+  const parent = m.admit([]), member = m.admit([scope('one')], false);
+  assert.equal(row(m).requests, 1, 'member reservation does not duplicate global'); assert.equal(row(m, 'provider:one').requests, 1); member.release(); parent.release();
+  const account = { id: 'account:qa', label: 'QA Account', kind: 'account' };
+  m.configure(settings({ global: { requests: 9, action: 'warn' }, 'provider:one': { requests: 5, action: 'warn' }, 'account:qa': { requests: 1, action: 'reject' } }));
+  const scoped = m.admit([scope('one'), account]); assert.equal(m.admit([scope('one'), account]).error.scope, account.id);
+  assert.ok(m.admit([scope('two')]).release, 'independent rules do not restrict unrelated provider'); scoped.release(); m.clear();
+  m.configure(settings({ global: { clients: 1, action: 'reject' } }));
+  const warningSockets = [new EventEmitter(), new EventEmitter()]; warningSockets.forEach(socket => { socket.destroyed = false; m.trackSocket(socket, 'clients', []); });
+  assert.ok(m.snapshot().alerts.some(alert => alert.metric === 'clients'), 'connection limits remain warnings');
+  warningSockets[0].emit('close'); at += 5001; m.tick(); assert.ok(!m.snapshot().alerts.some(alert => alert.metric === 'clients'), 'warn recovery includes equality'); warningSockets[1].emit('close');
+  m.configure(settings({}));
+  const socket = new EventEmitter(); socket.destroyed = false;
+  m.trackSocket(socket, 'clients', [scope('one')]); m.trackSocket(socket, 'clients', [scope('one')]); assert.equal(row(m).clients, 1, 'upgrade/reuse deduplicated');
+  m.trackSocket(socket, 'clients', [scope('two')]); assert.equal(row(m).clients, 1); assert.equal(row(m, 'shared').clients, 1); assert.equal(row(m, 'provider:one').supported.clients, 0);
+  socket.emit('close'); assert.equal(row(m).clients, 0);
+  assert.ok(buckets.some(bucket => bucket.rows.global.max.requests >= 1));
+  assert.ok(m.currentBucket().rows.global.max.requests >= 3, 'sub-minute spike preserved');
+  at += 60001; m.tick(); assert.equal(m.currentBucket().rows.global.rejected, 0, 'rejection totals do not accumulate across minutes');
+  for (const value of [0, -1, 1.5, NaN, Infinity]) assert.throws(() => validateConcurrencySettings(settings({ global: { requests: value, action: 'warn' } })));
+  assert.throws(() => validateConcurrencySettings(settings({ 'unattributed:x': { requests: 1, action: 'reject' } })));
+  assert.equal(/Bearer|token|requestBody/.test(JSON.stringify(m.snapshot())), false);
+  m.clear(); m.flush();
+  console.log('PASS concurrency tracker: atomic limits, release, pool reservations, shared sockets, alerts/recovery/cooldown, peaks and validation');
+}
+async function network() {
+  monitor.configure(settings({})); monitor.clear();
+  const held = [], messages = []; let received = 0, remotePeer;
+  const upstream = http.createServer((req, res) => {
+    req.resume(); req.on('end', () => { received++; if (req.method === 'GET') { res.end('{}'); return; } held.push({ req, res }); });
+  });
+  const wsServer = new WebSocketServer({ server: upstream, perMessageDeflate: true });
+  wsServer.on('connection', peer => { remotePeer = peer; peer.on('message', data => messages.push(JSON.parse(data.toString()))); });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${upstream.address().port}`;
+  const targets = [{ id: 'first', name: 'First', baseUrl: base, apiKey: 'synthetic-secret', model: 'qa', upstream: 'openai-responses', pool: true }, { id: 'second', name: 'Second', baseUrl: base, apiKey: 'synthetic-secret', model: 'qa', upstream: 'openai-responses', pool: true }];
+  let failures = 0; const proxy = startAgentProxy({ host: '127.0.0.1', port: 0, targets: () => targets, pass: () => base, log: () => {}, fail: () => failures++, succeed: () => {}, open: () => false });
+  const port = await proxy.listen(), agent = new http.Agent({ keepAlive: true });
+  const send = (url, method = 'POST') => {
+    let request; const promise = new Promise((resolve, reject) => { request = http.request({ host: '127.0.0.1', port, path: url, method, agent }, res => { let body = ''; res.on('data', data => body += data); res.on('end', () => resolve({ status: res.statusCode, body })); }); request.on('error', reject); request.end(method === 'POST' ? JSON.stringify({ model: 'qa', input: 'synthetic' }) : undefined); });
+    return { promise, abort: () => request.destroy() };
+  };
+  let client;
+  try {
+    monitor.configure(settings({ global: { requests: 1, action: 'reject' } }));
+    const first = send('/pass/codex/responses'); await until(() => held.length === 1); assert.equal(row(monitor).requests, 1);
+    const responses = await Promise.all(Array.from({ length: 8 }, () => send('/pass/codex/responses').promise));
+    assert.ok(responses.every(result => result.status === 429)); assert.equal(held.length, 1, 'rejected HTTP requests never reach upstream');
+    assert.equal((await send('/pass/codex/models', 'GET').promise).status, 200); assert.equal(row(monitor).requests, 1, 'discovery excluded');
+    held[0].res.end(JSON.stringify({ output: [], usage: { input_tokens: 1, output_tokens: 1 } })); await first.promise; await until(() => row(monitor).requests === 0);
+    assert.equal(row(monitor).clients, 9, 'each parallel/reused physical client connection counted once');
+    assert.equal(row(monitor).upstream, 2, 'inference and overlapping discovery create two physical connections');
+    await send('/pass/codex/models', 'GET').promise; assert.equal(row(monitor).upstream, 2, 'reused idle connection is not duplicated');
+    const beforeConnect = row(monitor).clients, raw = require('node:net').connect(port, '127.0.0.1');
+    await until(() => row(monitor).clients === beforeConnect + 1); raw.destroy(); await until(() => row(monitor).clients === beforeConnect);
+    monitor.configure(settings({ 'provider:first': { requests: 1, action: 'reject' } }));
+    const occupied = monitor.admit(providerScopes('codex', targets[0]));
+    const pooled = send('/codex/responses'); await until(() => held.length === 2);
+    assert.equal(row(monitor, 'provider:second').requests, 1); assert.equal(row(monitor).requests, 2); assert.equal(failures, 0);
+    assert.equal(row(monitor, 'provider:first').rejected, 0, 'successful pool fallback does not record local rejection');
+    held[1].res.end('{}'); await pooled.promise; occupied.release();
+    monitor.configure(settings({ 'provider:first': { requests: 1, action: 'reject' }, 'provider:second': { requests: 1, action: 'reject' } }));
+    const allOccupied = targets.map(target => monitor.admit(providerScopes('codex', target)));
+    const previousReceived = received, previousRejected = row(monitor).rejected;
+    assert.equal((await send('/codex/responses').promise).status, 429); assert.equal(received, previousReceived);
+    assert.equal(row(monitor).requests, 2); assert.equal(row(monitor).rejected, previousRejected + 1, 'all saturated pool records one local rejection'); assert.equal(failures, 0);
+    allOccupied.forEach(request => request.release()); monitor.configure(settings({}));
+    const aborted = send('/pass/codex/responses'); aborted.promise.catch(() => {}); await until(() => held.length === 3); aborted.abort(); await until(() => row(monitor).requests === 0);
+    monitor.configure(settings({ global: { requests: 2, action: 'reject' } }));
+    client = new WebSocket(`ws://127.0.0.1:${port}/pass/codex/responses`, { perMessageDeflate: true });
+    const events = []; client.on('message', data => events.push(JSON.parse(data.toString()))); client.on('error', () => {});
+    await new Promise((resolve, reject) => { client.once('open', resolve); client.once('error', reject); });
+    client.send(JSON.stringify({ type: 'response.create', generate: false, model: 'qa' })); await until(() => messages.length === 1); assert.equal(row(monitor).requests, 0);
+    const payload = lane => JSON.stringify({ type: 'response.create', stream_id: lane, model: 'qa', input: 'same-context '.repeat(2000) });
+    client.send(payload('one').slice(0, 1000), { fin: false }); client.ping('check'); client.send(payload('one').slice(1000), { fin: true });
+    client.send(payload('two')); await until(() => messages.length === 3); assert.equal(row(monitor).requests, 2);
+    client.send(payload('rejected')); await until(() => events.some(event => event.error?.code === 'tokenpulse_concurrency_limit'));
+    assert.equal(messages.length, 3); assert.equal(row(monitor).requests, 2); assert.equal(client.readyState, WebSocket.OPEN);
+    const event = (type, lane, id) => remotePeer.send(JSON.stringify({ type, stream_id: lane, response: { id, model: 'qa', usage: { input_tokens: 2, input_tokens_details: {}, output_tokens: 3 } } }));
+    event('response.created', 'one', 'resp_11111111'); event('response.created', 'two', 'resp_22222222'); event('response.completed', 'two', 'resp_22222222');
+    await until(() => row(monitor).requests === 1); client.send(payload('after-reject')); await until(() => messages.length === 4); assert.equal(messages[3].stream_id, 'after-reject', 'compression context survives a dropped turn');
+    event('response.completed', 'one', 'resp_11111111'); event('response.cancelled', 'after-reject', 'resp_33333333'); await until(() => row(monitor).requests === 0);
+    assert.deepEqual(messages[1], JSON.parse(payload('one')), 'fragmentation/compression preserves full application payload');
+    // A warm-up and queued inference on the same lane must not release each other.
+    const count = messages.length;
+    client.send(JSON.stringify({ type: 'response.create', generate: false, stream_id: 'ordered', model: 'qa' })); client.send(payload('ordered'));
+    await until(() => messages.length === count + 2); assert.equal(row(monitor).requests, 1);
+    event('response.created', 'ordered', 'resp_warmup00'); event('response.completed', 'ordered', 'resp_warmup00'); await delay(40); assert.equal(row(monitor).requests, 1);
+    event('response.created', 'ordered', 'resp_real0000'); event('response.failed', 'ordered', 'resp_real0000'); await until(() => row(monitor).requests === 0);
+    client.send(payload('error')); client.send(payload('survivor')); await until(() => row(monitor).requests === 2);
+    remotePeer.send(JSON.stringify({ type: 'error', stream_id: 'error', status: 400, error: { code: 'synthetic_error', message: 'synthetic-private-text' } })); await until(() => row(monitor).requests === 1);
+    event('response.completed', 'survivor', 'resp_survivor'); await until(() => row(monitor).requests === 0);
+    client.send(payload('unfinished')); await until(() => row(monitor).requests === 1); client.terminate(); await until(() => row(monitor).requests === 0);
+    monitor.configure(settings({}));
+    const streaming = send('/pass/codex/responses'); await until(() => held.length === 4); held[3].res.writeHead(200, { 'content-type': 'text/event-stream' }); held[3].res.write('data: {"type":"response.output_text.delta","delta":"qa"}\n\n');
+    await delay(40); assert.equal(row(monitor).requests, 1, 'stream stays active until completion'); held[3].res.end('data: [DONE]\n\n'); await streaming.promise; await until(() => row(monitor).requests === 0);
+    const failure = send('/pass/codex/responses'); await until(() => held.length === 5); held[4].res.writeHead(500); held[4].res.end('{}'); assert.equal((await failure.promise).status, 500); await until(() => row(monitor).requests === 0);
+    const fallback = send('/codex/responses'); await until(() => held.length === 6); assert.equal(row(monitor).requests, 1); held[5].res.writeHead(500); held[5].res.end('{}');
+    await until(() => held.length === 7); assert.equal(row(monitor).requests, 1, 'upstream fallback attempts count globally once'); assert.equal(row(monitor, 'provider:first').requests, 0); assert.equal(row(monitor, 'provider:second').requests, 1); held[6].res.end('{}'); await fallback.promise; await until(() => row(monitor).requests === 0); assert.equal(failures, 1);
+    const shutdown = send('/pass/codex/responses'); shutdown.promise.catch(() => {}); await until(() => held.length === 8); await proxy.close(); await until(() => row(monitor).requests === 0 && row(monitor).clients === 0 && row(monitor).upstream === 0);
+    console.log('PASS concurrency network: HTTP rejection/no delivery, discovery, idle sockets, pool skip, abort, compressed fragmented WebSockets, interleaved lanes, warm-up, cancellation and continued traffic');
+  } finally {
+    client?.terminate(); remotePeer?.terminate(); agent.destroy();
+    for (const item of held) item.res.destroy();
+    await proxy.close(); wsServer.close(); await new Promise(resolve => { upstream.close(resolve); upstream.closeAllConnections(); }); monitor.configure(settings({}));
+  }
+}
+async function persistence() {
+  const { ConcurrencyService } = require('../build/main/concurrency-monitor');
+  const published = [], notified = [];
+  const service = new ConcurrencyService({ publish: () => published.push(Date.now()), notify: alerts => notified.push(alerts) });
+  try {
+    service.start(); service.save({ retention: 0, rules: { global: { requests: 4, action: 'warn' } } });
+    const held = monitor.admit([]); held.release(); monitor.flush();
+    const dir = path.join(process.env.TOKENPULSE_DATA_DIR, 'concurrency-history'), now = Date.now();
+    const point = (from, session) => ({ from, observedFrom: from + 1000, until: from + 2000, session, rows: { global: { min: { requests: 0 }, max: { requests: 5 }, last: { requests: 0 }, rejected: 2 } } });
+    const old = now - 40 * 86400000;
+    const oldFile = path.join(dir, new Date(old).toISOString().slice(0, 10) + '.jsonl'); fs.writeFileSync(oldFile, JSON.stringify(point(old, 'old')) + '\n');
+    fs.appendFileSync(path.join(dir, new Date(now).toISOString().slice(0, 10) + '.jsonl'), [point(now - 300000, 'same'), point(now - 120000, 'same'), point(now - 60000, 'restart')].map(JSON.stringify).join('\n') + '\n');
+    const history = await service.history({ days: 0, scope: 'global', metric: 'requests' });
+    assert.ok(history.points.some(point => point.max === 5)); assert.ok(new Set(history.points.filter(point => point.session.startsWith('same')).map(point => point.session)).size === 2, 'pause gap remains explicit');
+    service.save({ retention: 7, rules: {} }); assert.equal(fs.existsSync(oldFile), false);
+    const files = fs.readdirSync(dir).map(name => fs.readFileSync(path.join(dir, name), 'utf8')).join(''); assert.equal(/synthetic-secret|Bearer|input_text/.test(files), false);
+    assert.throws(() => service.save({ retention: 8, rules: {} }));
+    service.save(settings({ 'provider:notification-a': { requests: 1, action: 'warn' }, 'provider:notification-b': { requests: 1, action: 'warn' } }));
+    const scopes = [scope('notification-a'), scope('notification-b')];
+    const requests = [monitor.admit(scopes), monitor.admit(scopes)];
+    for (let i = 0; i < 30; i++) { const request = monitor.admit([]); request.release(); }
+    await delay(600); assert.equal(notified.length, 1, 'simultaneous rule alerts merge into one notification'); assert.equal(notified[0].length, 2);
+    assert.ok(published.every((time, index) => !index || time - published[index - 1] >= 245), 'live publishing is throttled to 4 Hz'); requests.forEach(request => request.release());
+    monitor.setAvailable(false); monitor.tick(); const disabled = monitor.currentBucket(); assert.equal(disabled.available, false); monitor.flush();
+    assert.ok(!(await service.history({ days: 1, scope: 'global', metric: 'requests' })).points.some(point => point.session.startsWith(disabled.session)), 'unmonitored interval is a gap'); monitor.setAvailable(true);
+    console.log('PASS concurrency persistence: peaks, permanent retention, finite pruning, pause/restart gaps, validated settings and privacy');
+  } finally { service.stop(); }
+}
+(async () => { try { attribution(); await unit(); await network(); await persistence(); } finally { monitor.closeSockets(); monitor.clear(); assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep)); fs.rmSync(root, { recursive: true, force: true }); } })().catch(error => { console.error(error); process.exitCode = 1; });

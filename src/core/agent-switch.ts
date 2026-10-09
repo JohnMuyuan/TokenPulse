@@ -19,6 +19,28 @@ import { fetchUpstreamModels, probeUrl, startAgentProxy, type ProxyLog } from ".
 import { canonicalLevels, claudeRoleEnv, desktopModelMap, desktopProfile, desktopRouteModels, DESKTOP_PROFILE_ID, DESKTOP_PROFILE_NAME, emptySlot, loadCodexTemplate, parseSlots, codexCatalogEntry, patchCodexCatalog, type DesktopMode, type ModelSlot, type ThinkingFlags } from "./agent-models";
 import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, POOL_KEY, POOL_OFFICIAL, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type PoolConfig, type PoolMember, type ProxyTarget, type Upstream } from "./agent-types";
 import { readOfficialAccountStore, resolveAccountCredential } from "./accounts";
+import { setConcurrencyIdentityResolver, type ConcurrencyScope } from './concurrency';
+
+// Credential fingerprints are ephemeral and never enter monitor state/history.
+let concurrencyIdentitiesAt = 0;
+let concurrencyIdentities = new Map<string, { scope: ConcurrencyScope; workspace?: string; app: string }[]>();
+setConcurrencyIdentityResolver((app, headers) => {
+  if (Date.now() - concurrencyIdentitiesAt > 5000) {
+    concurrencyIdentitiesAt = Date.now(); concurrencyIdentities = new Map();
+    for (const account of readOfficialAccountStore().accounts.filter(account => !account.hidden)) {
+      const { credential } = resolveAccountCredential(account);
+      if (!credential?.token) continue;
+      const hash = crypto.createHash('sha256').update(credential.token).digest('hex');
+      const list = concurrencyIdentities.get(hash) || [];
+      list.push({ scope: { id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' }, workspace: credential.accountId, app: account.kind === 'chatgpt' ? 'codex' : account.kind });
+      concurrencyIdentities.set(hash, list);
+    }
+  }
+  const token = typeof headers.authorization === 'string' ? headers.authorization.replace(/^Bearer\s+/i, '') : typeof headers['x-api-key'] === 'string' ? headers['x-api-key'] : '';
+  if (!token) return null;
+  const matches = (concurrencyIdentities.get(crypto.createHash('sha256').update(token).digest('hex')) || []).filter(item => item.app === app && (!headers['chatgpt-account-id'] || item.workspace === headers['chatgpt-account-id']));
+  return matches.length === 1 ? matches[0].scope : null;
+});
 import { dataDir, dataFile, readJson, writeJson } from "./paths";
 
 type Endpoint = { baseUrl: string; apiKey: string; model: string; upstream: Upstream };
@@ -1157,7 +1179,7 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
     if (member.type === "provider") {
       const item = byId(store, member.id);
       if (!item?.endpoint || item.official || item.locked || item.pool || item.app !== pool.app) return [];
-      return [{ ...plainTarget(item), id, name: `${pool.name} · ${item.name}`, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}) }];
+      return [{ ...plainTarget(item), id, concurrencyProviderId: item.id, concurrencyProviderName: item.name, concurrencyPoolId: pool.id, concurrencyPoolName: pool.name, name: `${pool.name} · ${item.name}`, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}) }];
     }
     const account = accounts.find((row) => row.id === member.id && row.kind === spec.kind && !row.hidden);
     if (!account) return [];
@@ -1165,7 +1187,7 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
     if (!credential?.token || expired) return [];
     return [{
       // AGENT_SWITCH_POOL_BASE 只给自动化测试用：把官方接口换成本机假上游
-      id, name: `${pool.name} · ${account.alias || account.email || account.label}`, upstream: NATIVE_UPSTREAM[pool.app], baseUrl: process.env.AGENT_SWITCH_POOL_BASE ? `${process.env.AGENT_SWITCH_POOL_BASE}/${pool.app}` : spec.baseUrl, apiKey: credential.token,
+      id, concurrencyProviderId: pool.id, concurrencyProviderName: pool.name, name: `${pool.name} · ${account.alias || account.email || account.label}`, upstream: NATIVE_UPSTREAM[pool.app], baseUrl: process.env.AGENT_SWITCH_POOL_BASE ? `${process.env.AGENT_SWITCH_POOL_BASE}/${pool.app}` : spec.baseUrl, apiKey: credential.token,
       model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, officialAccount: account.id, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}),
     }];
   });

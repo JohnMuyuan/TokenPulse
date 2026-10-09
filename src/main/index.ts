@@ -1,4 +1,7 @@
 import { ExitMonitor } from "./egress-monitor";
+import { ConcurrencyService } from './concurrency-monitor';
+import { concurrencyMonitor, providerScopes, type ConcurrencyLiveState } from '../core/concurrency';
+import { readOfficialAccountStore } from '../core/accounts';
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
 import { countRouteLog, passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
@@ -71,6 +74,30 @@ const exitMonitor = new ExitMonitor({
 });
 /** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
 const tokensUploader = new TokensUploader({ publish: state => { if (win && !win.isDestroyed()) win.webContents.send("tokens-ci-state", state); } });
+let concurrencyCatalogAt = 0;
+let concurrencyCoverage: { app: string; monitored: boolean }[] = [];
+function concurrencyState(): ConcurrencyLiveState {
+  if (Date.now() - concurrencyCatalogAt > 5000) {
+    concurrencyCatalogAt = Date.now();
+    const view = coreAgentView();
+    concurrencyMonitor.register(view.providers.map(provider => ({ id: 'provider:' + provider.id, label: provider.name, kind: 'provider' as const })));
+    concurrencyMonitor.register(readOfficialAccountStore().accounts.filter(account => !account.hidden).map(account => ({ id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' as const })));
+    concurrencyMonitor.register(['claude', 'codex', 'grok'].flatMap(app => providerScopes(app)));
+    concurrencyCoverage = Object.keys(view.proxy.apps).map(app => ({ app, monitored: view.proxy.running && (view.proxy.apps[app as keyof typeof view.proxy.apps] || (view.pass[app as keyof typeof view.pass]?.on && view.pass[app as keyof typeof view.pass]?.connected) || false) }));
+    concurrencyMonitor.setAvailable(concurrencyCoverage.some(item => item.monitored));
+  }
+  return { ...concurrencyService.state(), coverage: concurrencyCoverage };
+}
+const concurrencyService = new ConcurrencyService({
+  publish: () => { if (win && !win.isDestroyed()) win.webContents.send('concurrency-state', concurrencyState()); },
+  notify: alerts => {
+    if (!Notification.isSupported() || !alerts.length) return;
+    const names = { requests: '活跃 AI 请求', clients: '客户端连接', upstream: '上游连接' };
+    const body = alerts.map(alert => `${tr(alert.label)} · ${tr(names[alert.metric])}: ${alert.count} / ${alert.limit}${alert.rejected ? ' · ' + tr('已拒绝新请求') : ''}`).join('\n');
+    const note = new Notification({ title: tr('并发监控'), body, icon: windowIcon() });
+    note.on('click', () => { revealWindow(); win?.webContents.send('open-page', { page: 'concurrency' }); }); note.show();
+  }
+});
 /** 「账号:窗口」→ 已经提醒过的那个窗口的重置时间。同一个窗口只提醒一次。 */
 const notified = new Map<string, number>();
 /** 两次重置时间差不到这么多，就当是同一个窗口（接口返回的时间有抖动，见 maybeNotify）。 */
@@ -212,6 +239,8 @@ function agentTrayItems() {
 }
 
 function publishAgent() {
+  concurrencyCatalogAt = 0;
+  concurrencyState();
   setTrayMenu();
   pushTrayPanel();
   if (win && !win.isDestroyed()) win.webContents.send("agent-switch", agentView());
@@ -805,6 +834,11 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("egress:clear", () => exitMonitor.clearHistory());
     ipcMain.handle("egress:intel", (_event, ip: unknown) => exitMonitor.refreshIntel(ip));
     exitMonitor.start();
+    ipcMain.handle('concurrency:state', () => concurrencyState());
+    ipcMain.handle('concurrency:save', (_event, value: unknown) => concurrencyService.save(value));
+    ipcMain.handle('concurrency:history', (_event, query: unknown) => concurrencyService.history(query));
+    concurrencyState();
+    concurrencyService.start();
     ipcMain.handle("tokens-ci:state", () => tokensUploader.state());
     ipcMain.handle("tokens-ci:save", (_event, value: unknown) => tokensUploader.save(value));
     ipcMain.handle("tokens-ci:check", () => tokensUploader.check());
@@ -1074,7 +1108,7 @@ if (!app.requestSingleInstanceLock()) {
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
     destroyTrayPanel();
-    if (agentQuitReady) { quitting = true; exitMonitor.stop(); tokensUploader.stop(); stopAllReplies(); releasePrism(); return; }
+    if (agentQuitReady) { quitting = true; concurrencyService.stop(); exitMonitor.stop(); tokensUploader.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

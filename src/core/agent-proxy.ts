@@ -14,7 +14,11 @@ import type { Duplex } from "stream";
 import { clientError, convertJsonResponse, convertRequest, StreamBridge } from "./agent-convert";
 import { NATIVE_UPSTREAM, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
 import { describeNetError, proxyFor, staleReuse, uncertainDelivery, upstreamRequest } from "./upstream-proxy";
-import { Grab, WsReader } from "./ws-sniff";
+import { Grab } from "./ws-sniff";
+import { concurrencyMonitor, isInference, providerScopes, transparentScopes } from './concurrency';
+import WebSocket, { WebSocketServer } from 'ws';
+import { websocketAgent } from './upstream-proxy';
+import type { Socket } from 'net';
 
 export type ProxyLog = {
   id?: string;
@@ -161,6 +165,9 @@ export function startAgentProxy(options: Options) {
       res.end(JSON.stringify({ error: { message: error instanceof Error ? error.message : "proxy failed" } }));
     });
   });
+  // Count physical client connections from accept, before a request body or
+  // WebSocket upgrade arrives. Later request attribution reuses this entry.
+  server.on('connection', socket => concurrencyMonitor.trackSocket(socket, 'clients', []));
 
   async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -174,6 +181,7 @@ export function startAgentProxy(options: Options) {
     if (passed) {
       const app = passed[1] as AgentApp, base = options.pass?.(app, req.headers) ?? null;
       if (!base) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "TokenPulse pass-through is off for this tool" } })); return; }
+      concurrencyMonitor.trackSocket(req.socket, 'clients', transparentScopes(app, req.headers));
       stats.active += 1; stats.requests += 1;
       try {
         const entry = await forwardPass(req, res, app, (passed[2] || "/") + url.search, base, await readBody(req));
@@ -197,11 +205,19 @@ export function startAgentProxy(options: Options) {
       sendError(res, client, 503, "这一家还没有可转发的供应商");
       return;
     }
+    concurrencyMonitor.trackSocket(req.socket, 'clients', []);
     const body = await readBody(req);
+    if (res.destroyed) return;
+    const inference = isInference(req.method, routed.rest);
+    const admission = inference ? concurrencyMonitor.admit([]) : null;
+    if (admission && 'error' in admission) { sendError(res, client, 429, `TokenPulse concurrency limit: ${admission.error.label} (${admission.error.limit})`); return; }
+    const releaseGlobal = () => admission && 'release' in admission && admission.release();
+    res.once('close', releaseGlobal);
     const started = Date.now();
     stats.active += 1;
     stats.requests += 1;
     let last = "上游没有响应";
+    let limiting: import('./concurrency').ConcurrencyAlert | undefined;
     // 转发记录里的细节：这一个请求里各次尝试共用的部分只算一次
     const facts = requestFacts(body);
     let attempt = 0;
@@ -213,9 +229,18 @@ export function startAgentProxy(options: Options) {
     };
     try {
       for (const target of targets) {
-        attempt += 1;
         if (res.destroyed) return;
-        const outcome = await forward(req, res, routed.app, routed.rest + url.search, client, target, body);
+        const scopes = providerScopes(routed.app, target);
+        const member = inference ? concurrencyMonitor.admit(scopes, false, false) : null;
+        if (member && 'error' in member) { limiting = member.error; last = `TokenPulse concurrency limit: ${member.error.label} (${member.error.limit})`; continue; }
+        limiting = undefined;
+        concurrencyMonitor.trackSocket(req.socket, 'clients', scopes);
+        const releaseMember = () => member && 'release' in member && member.release();
+        res.once('close', releaseMember);
+        attempt += 1;
+        let outcome: Outcome;
+        try { outcome = await forward(req, res, routed.app, routed.rest + url.search, client, target, body); }
+        finally { res.off('close', releaseMember); releaseMember(); }
         if (outcome.kind === "done") {
           options.succeed(target.id);
           stats.ok += 1;
@@ -230,13 +255,14 @@ export function startAgentProxy(options: Options) {
           return;
         }
       }
-      if (!res.headersSent) sendError(res, client, 502, last);
+      if (!res.headersSent && !res.destroyed) { if (limiting) concurrencyMonitor.recordRejectedRequest(limiting); sendError(res, client, limiting ? 429 : 502, last); }
     } finally {
+      res.off('close', releaseGlobal); releaseGlobal();
       stats.active = Math.max(0, stats.active - 1);
     }
   }
 
-  // 透明转发的长连接（Codex 用官方登录时走 WebSocket）：两头之间原样搬运字节，见 tunnelPass
+  // Message-aware transparent relay; authentication and application payloads are preserved.
   const tunnels = new Set<Duplex>();
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -267,7 +293,8 @@ export function startAgentProxy(options: Options) {
     listen,
     stats: () => ({ ...stats }),
     close: () => new Promise<void>((resolve) => {
-      server.close(() => resolve());
+      concurrencyMonitor.closeSockets();
+      server.close(() => { concurrencyMonitor.clear(); resolve(); });
       server.closeAllConnections();
       for (const socket of tunnels) socket.destroy();
     }),
@@ -319,6 +346,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
   const headers = forwardHeaders(req, target, payload.length);
   // 上游走代理（环境变量 / 系统代理，见 upstream-proxy.ts）。以前一律直连，需要代理的机器上每个成员都连接超时、记成 502
   const proxy = await proxyFor(upstream);
+  if (res.destroyed) return { kind: 'fail', status: 499, error: '客户端连接已关闭', terminal: true };
   const watch = stopwatch();
   return new Promise((resolve) => {
     let done = false;
@@ -385,6 +413,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
     };
     const send = () => {
       const sent = upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers, timeout: 120_000 }, onResponse);
+      concurrencyMonitor.observeRequest(sent, providerScopes(app, target));
       sent.on("error", (error) => {
         // 复用的连接已经被关掉：换条新连接再发一次（见 staleReuse）
         if (!resent && !responded && !done && staleReuse(sent, error)) { resent = true; send(); return; }
@@ -487,6 +516,20 @@ function bodyObserver(encoding: string, look: (text: string) => void) {
   };
 }
 export async function forwardPass(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, base: string, body: Buffer): Promise<ProxyLog> {
+  const scopes = transparentScopes(app, req.headers);
+  concurrencyMonitor.trackSocket(req.socket, 'clients', scopes);
+  const admission = isInference(req.method, rest) ? concurrencyMonitor.admit(scopes) : null;
+  if (admission && 'error' in admission) {
+    const message = `TokenPulse concurrency limit: ${admission.error.label} (${admission.error.limit})`;
+    res.writeHead(429, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'concurrency_limit', message } }));
+    return { at: Date.now(), app, providerId: 'pass-' + app, provider: '透明转发', model: '', status: 429, ms: 0, pass: true, error: message };
+  }
+  const release = () => admission && 'release' in admission && admission.release();
+  res.once('close', release);
+  try { return await forwardPassBody(req, res, app, rest, base, body); }
+  finally { res.off('close', release); release(); }
+}
+async function forwardPassBody(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, base: string, body: Buffer): Promise<ProxyLog> {
   const started = Date.now();
   const facts = requestFacts(body);
   let host = "";
@@ -500,6 +543,7 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
   for (const [key, value] of Object.entries(req.headers)) if (value != null && !PASS_HOP.has(key.toLowerCase())) headers[key] = value;
   if (body.length || !["GET", "HEAD"].includes(req.method || "")) headers["content-length"] = String(body.length);
   const proxy = await proxyFor(upstream);
+  if (res.destroyed) return entry({ status: 499, error: '客户端连接已关闭' });
   return new Promise((resolve) => {
     let done = false;
     let observer: ReturnType<typeof bodyObserver> | null = null;
@@ -549,6 +593,7 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
     // 仅 GET / HEAD 的失效复用连接可重发；POST 的交付状态未知，照常返回错误。
     const send = () => {
       const sent = upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers: headers as http.OutgoingHttpHeaders, timeout: 600_000 }, onResponse);
+      concurrencyMonitor.observeRequest(sent, transparentScopes(app, req.headers));
       sent.on("error", (error) => {
         if (!resent && !responded && !done && staleReuse(sent, error)) { resent = true; send(); return; }
         fail(502, describeNetError(error, Boolean(proxy)));
@@ -560,111 +605,149 @@ export async function forwardPass(req: http.IncomingMessage, res: http.ServerRes
   });
 }
 
-/*
- * 透明转发的长连接。Codex 用官方登录时，对话走一条 WebSocket：握手请求原样转给官方（头一个不少，只有 host 换成官方的），
- * 官方的握手回复原样还给工具，之后两头的字节原样对搬——帧不解开、不重组、不改。
- * 旁路用 WsReader 看一眼搬过去的帧：工具发 response.create 算一次请求的开始，官方回 response.completed 算结束，
- * 从里面读型号、用量，记首字延迟和速度。一条连接上可以先后有很多次请求，每次记一条。
- */
+/* Each WebSocket peer owns its compression context. Admission can drop one
+ * create event without invalidating subsequent compressed messages. Ordered
+ * lanes include warm-ups for correlation, but only inference turns reserve
+ * capacity or contribute usage/speed logs. */
 const TUNNEL_DROP = new Set(["host", "content-length", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding"]);
-const jsonField = (text: string, key: string) => new RegExp(`"${key}"\\s*:\\s*"([^"\\\\]{1,200})"`).exec(text)?.[1] || "";
 export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head: Buffer, app: AgentApp, rest: string, base: string, log: (entry: ProxyLog) => void) {
-  const refuse = (status: number, text: string) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${text}\r\nconnection: close\r\ncontent-length: 0\r\n\r\n`); };
+  const refuse = (status: number, text: string) => { if (!socket.destroyed) socket.end('HTTP/1.1 ' + status + ' ' + text + '\r\nconnection: close\r\ncontent-length: 0\r\n\r\n'); };
   let upstream: URL;
-  try { upstream = joinUpstream(base, rest); } catch { refuse(502, "Bad Gateway"); return; }
-  const path = rest.split("?")[0].slice(0, 200);
-  const entry = (extra: Partial<ProxyLog>): ProxyLog => ({ at: Date.now(), app, providerId: "pass-" + app, provider: PASS_NAME, model: "", status: 0, ms: 0, pass: true, method: "WS", path, attempt: 1, pool: false, host: upstream.host, stream: true, ...extra });
+  try { upstream = joinUpstream(base, rest); } catch { refuse(502, 'Bad Gateway'); return; }
+  const scopes = transparentScopes(app, req.headers);
+  concurrencyMonitor.trackSocket(socket as Socket, 'clients', scopes);
+  const path = rest.split('?')[0].slice(0, 200);
+  const entry = (extra: Partial<ProxyLog>): ProxyLog => ({ at: Date.now(), app, providerId: 'pass-' + app, provider: PASS_NAME, model: '', status: 0, ms: 0, pass: true, method: 'WS', path, attempt: 1, pool: false, host: upstream.host, stream: true, ...extra });
   const headers: Record<string, string | string[]> = {};
-  for (const [key, value] of Object.entries(req.headers)) if (value != null && !TUNNEL_DROP.has(key.toLowerCase())) headers[key] = value;
+  const owned = new Set([...TUNNEL_DROP, 'connection', 'upgrade', 'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions', 'sec-websocket-protocol']);
+  for (const [key, value] of Object.entries(req.headers)) if (value != null && !owned.has(key.toLowerCase())) headers[key] = value;
   const proxy = await proxyFor(upstream);
-  const opened = Date.now();
-  let settled = false;
-  const upstreamReq = upstreamRequest(upstream, proxy, { method: "GET", headers: headers as http.OutgoingHttpHeaders, timeout: 30_000 });
-  const rawHead = (res: http.IncomingMessage, drop?: Set<string>) => {
-    let text = `HTTP/1.1 ${res.statusCode} ${res.statusMessage || ""}\r\n`;
-    for (let index = 0; index + 1 < res.rawHeaders.length; index += 2) if (!drop?.has(res.rawHeaders[index].toLowerCase())) text += `${res.rawHeaders[index]}: ${res.rawHeaders[index + 1]}\r\n`;
-    return text;
-  };
-  // 官方没有同意升级（没登录、限流……）：把它的回复原样还给工具
-  upstreamReq.on("response", (res) => {
-    settled = true;
-    const status = res.statusCode || 502;
-    socket.write(rawHead(res, new Set(["transfer-encoding", "connection", "keep-alive"])) + "connection: close\r\n\r\n");
-    res.on("data", (chunk: Buffer) => socket.write(chunk));
-    res.on("end", () => { socket.end(); log(entry({ status, ms: Date.now() - opened, ...(status >= 400 ? { error: `HTTP ${status}` } : {}) })); });
-    res.on("error", () => socket.destroy());
-  });
-  upstreamReq.on("upgrade", (res, up, upHead) => {
-    settled = true;
-    up.setTimeout(0);
-    up.setNoDelay?.(true);
-    (socket as Duplex & { setNoDelay?: (on: boolean) => void }).setNoDelay?.(true);
-    socket.write(rawHead(res) + "\r\n");
-    const deflate = /permessage-deflate/i.test(String(res.headers["sec-websocket-extensions"] || ""));
-    type Turn = { started: number; requestBytes: number; model: string; effort: string; firstAt: number; firstTokenAt: number; genAt: number; bytes: number; responseId: string; returned: string; tier: string };
-    let turn: Turn | null = null;
-    const whole = (message: { head: string; tail: string }) => (message.head.length < SNIFF_EDGE ? message.head : message.head + "\n" + message.tail);
-    const fromClient = new WsReader(deflate, (message) => {
-      if (!message.text) return;
-      const text = whole(message);
-      if (!/"type"\s*:\s*"response\.create"/.test(text)) return;
-      turn = { started: message.endAt, requestBytes: message.bytes, model: jsonField(text, "model").slice(0, 120), effort: jsonField(text, "effort").slice(0, 20), firstAt: 0, firstTokenAt: 0, genAt: 0, bytes: 0, responseId: "", returned: "", tier: tierOf(jsonField(text, "service_tier")) };
-    });
-    const closeTurn = (status: number, endAt: number, extra: Partial<ProxyLog>) => {
-      const current = turn;
-      if (!current) return;
-      turn = null;
-      log(entry({ at: endAt, model: current.model, status, ms: endAt - current.started, requestBytes: current.requestBytes, responseBytes: current.bytes,
-        ...(current.model ? { requestModel: current.model } : {}), ...(current.effort ? { effort: current.effort } : {}), ...(current.tier ? { tier: current.tier } : {}),
-        ...(current.firstAt ? { firstByteMs: current.firstAt - current.started } : {}), ...(current.firstTokenAt ? { firstTokenMs: current.firstTokenAt - current.started } : {}), ...returnedOf({ responseId: current.responseId, model: current.returned }), ...extra }));
-    };
-    const fromServer = new WsReader(deflate, (message) => {
-      const current = turn;
-      if (!current) return;
-      current.bytes += message.bytes;
-      if (!current.firstAt) current.firstAt = message.startAt;
-      if (!message.text) return;
-      const type = /"type"\s*:\s*"([A-Za-z_.]+)"/.exec(message.head.slice(0, 400))?.[1] || "";
-      // 响应 ID 和实际用的型号：response.created / response.completed 里都带着整个 response 对象
-      if (!current.responseId && message.responseId && /^response\.(created|in_progress|completed|failed|incomplete)$/.test(type)) { current.responseId = message.responseId; current.returned = message.model || ""; }
-      if (!current.genAt && type === "response.output_item.added") current.genAt = message.startAt;
-      if (!current.firstTokenAt && /\.delta$/.test(type)) current.firstTokenAt = message.startAt;
-      if (!/^(response\.(completed|failed|incomplete)|error)$/.test(type)) return;
-      // 用量优先用边收边找到的那一整段（见 ws-sniff.ts 的 Grab）；没有再退回到从开头结尾那一截里找
-      const text = whole(message), usage = message.usage ?? sniffUsage(text);
-      const counts = { input: usage.input, output: usage.output, ...(usage.cacheRead != null ? { cacheRead: usage.cacheRead } : {}) };
-      if (type === "response.completed") closeTurn(200, message.endAt, { ...counts, ...speedOf(usage.output, message.endAt - (current.genAt || current.firstAt)) });
-      else {
-        const status = Number(/"status"\s*:\s*([45]\d\d)\b/.exec(text)?.[1]) || 500;
-        closeTurn(status, message.endAt, { ...counts, error: `HTTP ${status} · ${type}` });
+  if (socket.destroyed) return;
+  const compressed = /permessage-deflate/i.test(String(req.headers['sec-websocket-extensions'] || ''));
+  const protocols = String(req.headers['sec-websocket-protocol'] || '').split(',').map(value => value.trim()).filter(Boolean);
+  const options: WebSocket.ClientOptions = { headers: Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value])), perMessageDeflate: compressed, handshakeTimeout: 30_000, maxPayload: 100 * 1024 * 1024, followRedirects: false,
+    finishRequest: request => {
+      concurrencyMonitor.observeRequest(request, scopes);
+      if (proxy && upstream.protocol === 'http:') {
+        request.path = upstream.href;
+        request.setHeader('host', upstream.host);
+        if (proxy.auth) request.setHeader('proxy-authorization', proxy.auth);
       }
-    }, true);
-    if (head.length) { up.write(head); fromClient.push(head); }
-    if (upHead.length) { socket.write(upHead); fromServer.push(upHead); }
-    socket.on("data", (chunk: Buffer) => fromClient.push(chunk));
-    up.on("data", (chunk: Buffer) => fromServer.push(chunk));
-    socket.pipe(up);
-    up.pipe(socket);
-    let closed = false;
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      // 让已经到了、还在解压的最后一条消息有机会记下来
-      setTimeout(() => { closeTurn(499, Date.now(), { error: "连接在回复完成前关闭" }); fromClient.stop(); fromServer.stop(); }, 200);
-      up.destroy(); socket.destroy();
-    };
-    for (const side of [socket, up]) { side.on("close", close); side.on("error", close); }
-  });
-  const fail = (status: number, message: string) => {
-    if (settled) return;
-    settled = true;
-    refuse(status, status === 504 ? "Gateway Timeout" : "Bad Gateway");
-    log(entry({ status, ms: Date.now() - opened, error: message }));
+      request.end();
+    }
   };
-  upstreamReq.on("error", (error) => fail(502, describeNetError(error, Boolean(proxy))));
-  upstreamReq.on("timeout", () => { if (!settled) { upstreamReq.destroy(); fail(504, "上游超时"); } });
-  socket.once("close", () => { if (!settled) upstreamReq.destroy(); });
-  upstreamReq.end();
+  if (proxy && upstream.protocol === 'https:') options.agent = websocketAgent(proxy);
+  const address = proxy && upstream.protocol === 'http:' ? 'ws://' + proxy.host + ':' + proxy.port : upstream.href;
+  const remote = new WebSocket(address, protocols, options);
+  let response: http.IncomingMessage | undefined;
+  let local: WebSocket | undefined, server: WebSocketServer | undefined;
+  let opened = false, ended = false;
+  type Turn = { lane: string; id: string; event: string; inference: boolean; model: string; effort: string; tier: string; started: number; firstAt: number; firstTokenAt: number; genAt: number; bytes: number; requestBytes: number; release: () => void; grab: Grab };
+  const lanes = new Map<string, Turn[]>(), byId = new Map<string, Turn>(), byEvent = new Map<string, Turn>();
+  const closeTurn = (turn: Turn, status: number, extra: Partial<ProxyLog> = {}) => {
+    const queue = lanes.get(turn.lane);
+    if (!queue?.includes(turn)) return;
+    queue.splice(queue.indexOf(turn), 1); if (!queue.length) lanes.delete(turn.lane);
+    if (turn.id) byId.delete(turn.id);
+    if (turn.event) byEvent.delete(turn.event);
+    turn.release();
+    if (!turn.inference) return;
+    const endAt = Date.now(), usage = turn.grab.usage;
+    log(entry({ at: endAt, model: turn.model, status, ms: endAt - turn.started, requestBytes: turn.requestBytes, responseBytes: turn.bytes,
+      ...(turn.model ? { requestModel: turn.model } : {}), ...(turn.effort ? { effort: turn.effort } : {}), ...(turn.tier ? { tier: turn.tier } : {}),
+      ...(turn.firstAt ? { firstByteMs: turn.firstAt - turn.started } : {}), ...(turn.firstTokenAt ? { firstTokenMs: turn.firstTokenAt - turn.started } : {}),
+      ...(usage ? { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(status < 400 ? speedOf(usage.output, endAt - (turn.genAt || turn.firstAt || turn.started)) : {}) } : {}),
+      ...returnedOf(turn.grab), ...extra }));
+  };
+  const close = () => {
+    if (ended) return; ended = true;
+    for (const queue of [...lanes.values()]) for (const turn of [...queue]) closeTurn(turn, 499, { error: '连接在回复完成前关闭' });
+    local?.terminate(); remote.terminate(); server?.close(); socket.destroy();
+  };
+  socket.once('close', close);
+  socket.once('error', close);
+  remote.on('error', error => {
+    if (!opened && !ended) { refuse(502, 'Bad Gateway'); log(entry({ status: 502, error: describeNetError(error, Boolean(proxy)) })); }
+    close();
+  });
+  remote.once('close', close);
+  remote.once('upgrade', res => { response = res; });
+  remote.once('unexpected-response', (_request, res) => {
+    if (ended) { res.destroy(); return; }
+    const status = res.statusCode || 502;
+    let raw = 'HTTP/1.1 ' + status + ' ' + res.statusMessage + '\r\n';
+    for (let i = 0; i < res.rawHeaders.length; i += 2) if (!['transfer-encoding', 'connection', 'keep-alive'].includes(res.rawHeaders[i].toLowerCase())) raw += res.rawHeaders[i] + ': ' + res.rawHeaders[i + 1] + '\r\n';
+    socket.write(raw + 'connection: close\r\n\r\n');
+    res.on('data', chunk => socket.write(chunk));
+    res.once('end', () => { log(entry({ status, error: 'HTTP ' + status })); socket.end(); });
+    res.once('error', close);
+  });
+  remote.once('open', () => {
+    if (ended || socket.destroyed) { close(); return; }
+    opened = true;
+    server = new WebSocketServer({ noServer: true, perMessageDeflate: compressed, maxPayload: 100 * 1024 * 1024, handleProtocols: () => remote.protocol || false });
+    server.on('headers', generated => {
+      // Preserve upstream custom headers/casing, but each peer has its own key,
+      // negotiated compression context and protocol handshake.
+      const replacements = new Map(generated.slice(1).map(line => [line.split(':')[0].toLowerCase(), line]));
+      const result = [generated[0]];
+      for (let i = 0; i < (response?.rawHeaders.length || 0); i += 2) {
+        const name = response!.rawHeaders[i], key = name.toLowerCase();
+        if (['sec-websocket-accept', 'sec-websocket-extensions', 'sec-websocket-protocol'].includes(key)) {
+          if (replacements.has(key)) result.push(replacements.get(key)!);
+        } else result.push(name + ': ' + response!.rawHeaders[i + 1]);
+        replacements.delete(key);
+      }
+      for (const [key, line] of replacements) if (key.startsWith('sec-websocket-')) result.push(line);
+      generated.splice(0, generated.length, ...result);
+    });
+    server.handleUpgrade(req, socket, head, peer => {
+      local = peer;
+      peer.on('error', close); peer.once('close', close);
+      peer.on('message', (data, binary) => {
+        if (ended || remote.readyState !== WebSocket.OPEN) return;
+        let json: Record<string, any> | null = null;
+        if (!binary) { try { json = JSON.parse(data.toString()); } catch { /* non-inference application message */ } }
+        if (json?.type === 'response.create') {
+          const inference = json.generate !== false;
+          const admission = inference ? concurrencyMonitor.admit(scopes) : { release: () => {} };
+          if ('error' in admission) {
+            const message = 'TokenPulse concurrency limit: ' + admission.error.label + ' (' + admission.error.limit + ')';
+            peer.send(JSON.stringify({ type: 'error', status: 429, ...(typeof json.stream_id === 'string' ? { stream_id: json.stream_id } : {}), ...(typeof json.event_id === 'string' ? { event_id: json.event_id } : {}), error: { type: 'concurrency_limit', code: 'tokenpulse_concurrency_limit', message } }));
+            log(entry({ status: 429, error: message })); return;
+          }
+          const lane = typeof json.stream_id === 'string' ? json.stream_id : '';
+          const event = typeof json.event_id === 'string' ? json.event_id : '';
+          const turn: Turn = { lane, id: '', event, inference, model: String(json.model || '').slice(0, 120), effort: String(json.reasoning?.effort || '').slice(0, 20), tier: tierOf(json.service_tier), started: Date.now(), firstAt: 0, firstTokenAt: 0, genAt: 0, bytes: 0, requestBytes: Buffer.byteLength(data.toString()), release: admission.release, grab: new Grab() };
+          const queue = lanes.get(lane) || []; queue.push(turn); lanes.set(lane, queue);
+          if (event) byEvent.set(event, turn);
+        }
+        remote.send(data, { binary }, error => { if (error) close(); });
+      });
+    });
+  });
+  remote.on('message', (data, binary) => {
+    if (!local || ended) return;
+    let json: Record<string, any> | null = null;
+    if (!binary) { try { json = JSON.parse(data.toString()); } catch { /* preserve payload */ } }
+    const lane = typeof json?.stream_id === 'string' ? json.stream_id : '';
+    const id = json?.response?.id || json?.response_id || '';
+    const event = json?.error?.event_id || json?.event_id;
+    const turn = (id && byId.get(id)) || (event && byEvent.get(event)) || lanes.get(lane)?.[0];
+    if (turn && json) {
+      const at = Date.now(), text = data.toString(), type = String(json.type || '');
+      if (!turn.firstAt) turn.firstAt = at;
+      turn.bytes += Buffer.byteLength(data.toString()); turn.grab.feed(text);
+      if (id && !turn.id) { turn.id = id; byId.set(id, turn); }
+      if (!turn.genAt && type === 'response.output_item.added') turn.genAt = at;
+      if (!turn.firstTokenAt && /\.delta$/.test(type)) turn.firstTokenAt = at;
+      if (/^response\.(completed|failed|incomplete|cancelled|canceled)$/.test(type) || type === 'error') {
+        const status = type === 'response.completed' ? 200 : Number(json.status) || (type.includes('cancel') ? 499 : 500);
+        closeTurn(turn, status, status >= 400 ? { error: 'HTTP ' + status + ' · ' + type } : {});
+      }
+    }
+    local.send(data, { binary }, error => { if (error) close(); });
+  });
 }
 
 function wantsStream(body: Buffer, rest: string) {

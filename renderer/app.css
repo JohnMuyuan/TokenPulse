@@ -177,9 +177,8 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   position: fixed; inset: 0 0 auto 0; z-index: 95;
   height: var(--titlebar-h);
   display: flex; align-items: center; gap: 9px; padding-left: 18px;
-  background:
-    linear-gradient(var(--line), var(--line)) calc(var(--sidebar-w) - 1px) 0 / 1px 100% no-repeat,
-    linear-gradient(to right, var(--sidebar) var(--sidebar-w), var(--bg) var(--sidebar-w));
+  background: var(--bg);
+  isolation: isolate;
   user-select: none;
   /* 整条可以拖动窗口；按钮必须设回 no-drag，否则点不动。 */
   -webkit-app-region: drag;
@@ -213,9 +212,20 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
   width: var(--sidebar-w);
   display: flex; flex-direction: column;
   padding: 26px 16px 18px;
-  background: var(--sidebar);
-  border-right: 1px solid var(--line);
+  background: transparent;
+  border-right: 1px solid transparent;
+  isolation: isolate;
 }
+
+/* A separate surface moves the boundary without stretching text or laying out
+ * the charts on every animation frame. The live layout changes only once. */
+.sidebar::before, .titlebar::before {
+  content: ""; position: absolute; inset: 0 auto 0 0;
+  width: 236px; background: var(--sidebar); border-right: 1px solid var(--line);
+  transform-origin: left; transform: scaleX(calc(var(--sidebar-w) / 236px));
+  pointer-events: none; z-index: -1;
+}
+.sidebar-label-ghost { position: fixed; z-index: 96; pointer-events: none; }
 
 .brand { display: flex; align-items: center; gap: 11px; margin: 0 8px 34px; }
 .brand-mark {

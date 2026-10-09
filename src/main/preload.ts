@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { ConcurrencyLiveState, ConcurrencyHistory, ConcurrencyHistoryQuery, ConcurrencySettings, ConcurrencyState } from '../core/concurrency';
 
 /**
  * 渲染进程唯一的对外口子。只暴露这几个方法 —— 没有 nodeIntegration，
@@ -12,6 +13,15 @@ let demo = false;
 const blocked = () => Promise.reject(new Error("演示数据不能修改"));
 
 contextBridge.exposeInMainWorld("tokenpulse", {
+  concurrency: {
+    state: (): Promise<ConcurrencyLiveState> => demo ? Promise.resolve({ at: Date.now(), rows: [], alerts: [], coverage: [], settings: { retention: 30, rules: {} } }) : ipcRenderer.invoke('concurrency:state'),
+    history: (query: ConcurrencyHistoryQuery): Promise<ConcurrencyHistory> => demo ? Promise.resolve({ at: Date.now(), since: Date.now(), step: 60000, metric: query.metric, scope: query.scope, points: [] }) : ipcRenderer.invoke('concurrency:history', query),
+    save: (value: ConcurrencySettings): Promise<ConcurrencyState & { storageError: string }> => demo ? blocked() : ipcRenderer.invoke('concurrency:save', value),
+    onState: (handler: (state: ConcurrencyLiveState) => void) => {
+      const listener = (_event: unknown, state: ConcurrencyLiveState) => { if (!demo) handler(state); };
+      ipcRenderer.on('concurrency-state', listener); return () => ipcRenderer.off('concurrency-state', listener);
+    }
+  },
   /** 打开演示模式并返回演示快照；关掉时结束演示进程。 */
   demo: (on: boolean) => {
     demo = Boolean(on);

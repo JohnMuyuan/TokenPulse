@@ -1,6 +1,6 @@
 /**
  * 透明转发的长连接（src/core/agent-proxy.ts 的 tunnelPass + src/core/ws-sniff.ts）：
- * WebSocket 握手和之后的字节原样在两头之间搬运；旁路读出型号、用量、首字延迟和速度。
+ * WebSocket 握手保留应用头；消息载荷完整转发，两端分别协商压缩；读出型号、用量、首字延迟和速度。
  * 跑法（先 npm run compile）：node scripts/test-pass-socket.cjs
  * 上游是本机的假服务，不连任何真实接口。
  */
@@ -75,6 +75,11 @@ function connect(port, url, headers) {
   });
 }
 
+async function sameMessages(actual, expected, compressed) {
+  const { WsReader } = require('../build/core/ws-sniff');
+  const decode = async buffer => { const messages = []; const reader = new WsReader(compressed, m => { if (m.text) messages.push([m.head, m.tail]); }); reader.push(buffer); await delay(100); reader.stop(); return messages; };
+  assert.deepEqual(await decode(actual), await decode(expected), 'application messages survive frame rebuilding and independent compression');
+}
 (async () => {
   const logs = [];
   let target = null;
@@ -96,7 +101,7 @@ function connect(port, url, headers) {
     // 握手：官方收到的头和工具发的一样（只有 host 是官方自己的）；工具收到的是官方的回复，一个头不差
     const shake = up.handshakes[0];
     assert.equal(shake.url, "/backend-api/codex/responses?x=1");
-    for (const [name, value] of Object.entries(headers)) if (name !== "Host") assert.equal(shake.headers[name.toLowerCase()], value, "握手的头原样带过去：" + name);
+    for (const [name, value] of Object.entries(headers)) if (!["Host", "Sec-WebSocket-Key"].includes(name)) assert.equal(shake.headers[name.toLowerCase()], value, "握手的头原样带过去：" + name);
     assert.equal(shake.headers.host, `127.0.0.1:${target}`);
     assert.deepEqual(Object.keys(shake.headers).filter((name) => !Object.keys(headers).some((own) => own.toLowerCase() === name)), [], "握手没有多加别的头");
     assert.match(client.head, /^HTTP\/1\.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: [^\r]+\r\nX-Up-Thing: Kept$/, "官方的握手回复原样还给工具（顺序、大小写都不变）");
@@ -107,7 +112,7 @@ function connect(port, url, headers) {
     client.send(frame(first.subarray(0, 30000), { mask: true, fin: false }));
     client.send(frame("", { mask: true, opcode: 9 })); // 夹在分片中间的 ping
     client.send(frame(first.subarray(30000), { mask: true, opcode: 0 }));
-    await until(() => up.received.length === client.sent.length, "官方收到第一次请求");
+    await until(() => up.received.length > 0, "官方收到第一次请求");
     await delay(300);
     // response.created 里带着整段系统提示词，型号排在它后面很远：也要读得到
     up.send(frame(JSON.stringify({ type: "response.created", response: { id: "resp_0a1b2c3d4e5f", object: "response", instructions: "sys ".repeat(9000), model: "gpt-qa-model-2026-01-01", output: [] } })));
@@ -117,13 +122,14 @@ function connect(port, url, headers) {
     await delay(250);
     up.send(frame(completed(300)));
     await until(() => logs.length === 1, "第一次请求的记录");
+    const firstForwardedBytes = up.received.length;
     // 第二次请求走同一条连接；这次官方报错
     client.send(frame(request("second", "gpt-qa-mini"), { mask: true }));
-    await until(() => up.received.length === client.sent.length, "官方收到第二次请求");
+    await until(() => up.received.length > firstForwardedBytes, "官方收到第二次请求");
     up.send(frame(JSON.stringify({ type: "error", status: 429, error: { type: "usage_limit_reached", message: "limit reached synthetic-private-echo Bearer synthetic-test-token" } })));
-    await until(() => logs.length === 2 && client.received.length === up.sent.length, "第二次请求的记录");
-    assert.ok(up.received.equals(client.sent), "工具发的字节原样到官方（帧没有解开、没有重组）");
-    assert.ok(client.received.equals(up.sent), "官方发的字节原样到工具");
+    await until(() => logs.length === 2 && client.received.length > 0, "第二次请求的记录");
+    await sameMessages(up.received, client.sent, false);
+    await sameMessages(client.received, up.sent, false);
 
     const [one, two] = logs;
     assert.deepEqual([one.pass, one.app, one.method, one.path, one.status, one.model, one.effort, one.input, one.output, one.cacheRead, one.host], [true, "codex", "WS", "/responses", 200, "gpt-qa-model", "high", 5000, 300, 4000, `127.0.0.1:${target}`]);
@@ -138,11 +144,12 @@ function connect(port, url, headers) {
     assert.equal(/synthetic-private-echo|synthetic-test-token/.test(JSON.stringify(logs)), false, "WebSocket 错误正文的敏感回显不进入日志");
     assert.deepEqual([one.tier, two.tier ?? null], ["priority", null], "快速模式（service_tier）记下来，默认档不记");
     assert.equal(/TESTJWT|acct-test|secret-text|reply-text|second/.test(JSON.stringify(logs)), false, "记录里没有凭据、请求内容和回复内容");
-    console.log("PASS pass-through socket: handshake and every byte carried as they are in both directions; model, tokens, delays and speed read on the side for each request on the connection");
+    console.log("PASS pass-through socket: authentication/custom handshake headers and application messages preserved in both directions; model, tokens, delays and speed read on the side for each request on the connection");
 
     // 回复到一半连接断了：记一条没完成的
+    const secondForwardedBytes = up.received.length;
     client.send(frame(request("third", "gpt-qa-model"), { mask: true }));
-    await until(() => up.received.length === client.sent.length, "官方收到第三次请求");
+    await until(() => up.received.length > secondForwardedBytes, "官方收到第三次请求");
     up.send(frame(JSON.stringify({ type: "response.created" })));
     await delay(50);
     up.socket.destroy();
@@ -159,17 +166,19 @@ function connect(port, url, headers) {
     assert.match(zipClient.head, /Sec-WebSocket-Extensions: permessage-deflate/);
     const squeezeUp = deflater(), squeezeDown = deflater();
     for (const [model, output] of [["gpt-zip-a", 120], ["gpt-zip-b", 90]]) {
+      const beforePackedBytes = packed.received.length;
       zipClient.send(frame(await squeezeUp(request("zip " + "y".repeat(5000), model)), { mask: true, rsv1: true }));
-      await until(() => packed.received.length === zipClient.sent.length, "官方收到压缩的请求");
+      await until(() => packed.received.length > beforePackedBytes, "官方收到压缩的请求");
       packed.send(frame(await squeezeDown(JSON.stringify({ type: "response.created" })), { rsv1: true }));
       await delay(260);
       packed.send(frame(await squeezeDown(completed(output)), { rsv1: true }));
       await until(() => logs.some((entry) => entry.model === model), "压缩连接的记录 " + model);
     }
-    assert.ok(packed.received.equals(zipClient.sent) && zipClient.received.equals(packed.sent), "压缩的帧同样原样搬运");
+    await sameMessages(packed.received, zipClient.sent, true);
+    await sameMessages(zipClient.received, packed.sent, true);
     assert.deepEqual(logs.map((entry) => [entry.status, entry.model, entry.input, entry.output, entry.cacheRead, entry.tokensPerSec > 0]), [[200, "gpt-zip-a", 5000, 120, 4000, true], [200, "gpt-zip-b", 5000, 90, 4000, true]]);
     zipClient.socket.destroy(); packed.close();
-    console.log("PASS pass-through socket: compressed frames carried untouched and still read on the side; a reply cut short is recorded as unfinished");
+    console.log("PASS pass-through socket: compressed application messages preserved with independent contexts; a reply cut short is recorded as unfinished");
 
     /* ---------- 官方不同意升级 / 没开 ---------- */
     logs.length = 0;

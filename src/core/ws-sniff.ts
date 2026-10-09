@@ -1,8 +1,10 @@
 /*
  * 透明转发的长连接（WebSocket）旁路解析。
  *
- * Codex 用官方登录时，对话走的是一条 WebSocket 长连接。透明转发把这条连接的字节原样在两头之间搬运（见 agent-proxy.ts 的 tunnelPass），
- * 这里只是**旁路**看一眼搬过去的帧：把一条条消息拼出来，留下开头和结尾各一小段，供上面找型号和用量数字。
+ * Grab extracts usage/model metadata from application messages. The production
+ * relay in agent-proxy.ts now uses ws with independent compression contexts.
+ * WsReader remains available for synthetic raw-frame compatibility checks:
+ * it reconstructs messages and retains only small head/tail samples in memory.
  * 不改、不拦、不保存任何帧；解析出错就停止解析，搬运不受影响。
  *
  * 支持：分片、掩码（工具发出的帧都带掩码）、控制帧夹在分片中间、permessage-deflate 压缩（协商了才解）。

@@ -46,6 +46,68 @@ function applySidebar() {
   requestAnimationFrame(() => { moveIndicator(); syncSegs(); layoutAccountTabBar(); });
 }
 
+// FLIP translations preserve readable text; the background alone scales.
+// Read the current visual positions before cancelling so a reversal stays continuous.
+const sidebarAnimations = new Set();
+const sidebarGhosts = new Set();
+function stopSidebarMotion() {
+  for (const animation of sidebarAnimations) animation.cancel();
+  sidebarAnimations.clear();
+  for (const ghost of sidebarGhosts) ghost.remove();
+  sidebarGhosts.clear();
+}
+function transitionSidebar(animate) {
+  const sidebar = $('sidebar'), workspace = document.querySelector('.workspace');
+  const moving = [workspace, ...sidebar.querySelectorAll('.brand-mark, .nav-item > .icon')];
+  const positions = moving.map(node => node.getBoundingClientRect());
+  const surfaces = [sidebar, document.querySelector('.titlebar')];
+  const transforms = surfaces.map(node => getComputedStyle(node, '::before').transform);
+  const labels = [...document.querySelectorAll('.brand-text, .nav-caption, .nav-label, .version, .titlebar-name')];
+  const visibleLabels = labels.filter(node => node.getClientRects().length).map(node => ({
+    node, rect: node.getBoundingClientRect(), font: getComputedStyle(node).font,
+    color: getComputedStyle(node).color, opacity: getComputedStyle(node).opacity
+  }));
+  stopSidebarMotion();
+  keepScroll(applySidebar);
+  if (!animate || reducedMotion.matches) return;
+  const options = { duration: 220, easing: getComputedStyle(document.documentElement).getPropertyValue('--ease').trim() };
+  const run = (node, frames, extra = {}, cleanup = () => {}) => {
+    const animation = node.animate(frames, { ...options, ...extra });
+    sidebarAnimations.add(animation);
+    animation.finished.catch(() => {}).finally(() => { sidebarAnimations.delete(animation); cleanup(); });
+  };
+  moving.forEach((node, i) => {
+    const rect = node.getBoundingClientRect(), dx = positions[i].left - rect.left, dy = positions[i].top - rect.top;
+    if (dx || dy) run(node, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }]);
+  });
+  surfaces.forEach((node, i) => run(node, [
+    { transform: transforms[i] }, { transform: getComputedStyle(node, '::before').transform }
+  ], { pseudoElement: '::before' }));
+  for (const node of labels.filter(node => node.getClientRects().length)) {
+    const before = visibleLabels.find(item => item.node === node);
+    run(node, [{ opacity: before?.opacity || 0 }, { opacity: 1 }]);
+  }
+  for (const { node, rect, font, color, opacity } of visibleLabels) {
+    if (node.getClientRects().length) continue;
+    const ghost = node.cloneNode(true);
+    const originalChildren = node.querySelectorAll('*');
+    ghost.querySelectorAll('*').forEach((child, i) => {
+      const style = getComputedStyle(originalChildren[i]);
+      Object.assign(child.style, { font: style.font, color: style.color, display: style.display, marginTop: style.marginTop });
+    });
+    ghost.removeAttribute('id');
+    ghost.querySelectorAll('[id]').forEach(child => child.removeAttribute('id'));
+    ghost.className = 'sidebar-label-ghost';
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.inert = true;
+    Object.assign(ghost.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, margin: '0', font, color });
+    document.body.append(ghost); sidebarGhosts.add(ghost);
+    run(ghost, [{ opacity }, { opacity: 0 }], { duration: 160 }, () => { ghost.remove(); sidebarGhosts.delete(ghost); });
+  }
+}
+reducedMotion.addEventListener('change', stopSidebarMotion);
+window.addEventListener('pagehide', stopSidebarMotion);
+
 /* ---------------- DOM 小工具 ---------------- */
 
 function el(tag, attrs = {}, children = []) {
@@ -2011,6 +2073,7 @@ function renderPage(snapshot) {
   if (state.page === 'sessions') window.PulseSessions?.show();
   if (state.page === 'egress') window.PulseEgress?.show();
   if (state.page === 'providers') window.PulseProviders?.show();
+  if (state.page === 'concurrency') window.PulseConcurrency?.show();
   if (state.page === 'usage') loadRequests();
   renderRequestAlert(snapshot);
   syncSourceOptions(snapshot);
@@ -2044,7 +2107,7 @@ const overviewRange = { days: 30, from: '', to: '', follow: false };
 function navigate(page) {
   // 以前的「请求记录」页并进了用量明细（通知、额度详情的链接还会传 requests 过来）
   if (page === 'requests') { page = 'usage'; showUsageView('requests'); }
-  if (!['overview', 'quota', 'usage', 'egress', 'sessions', 'providers'].includes(page)) page = 'overview';
+  if (!['overview', 'quota', 'usage', 'egress', 'sessions', 'providers', 'concurrency'].includes(page)) page = 'overview';
   const rangePage = state.rangePage || 'overview';
   if (page === 'usage' && state.page !== 'usage') {
     if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
@@ -2053,15 +2116,17 @@ function navigate(page) {
   if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
   if (page === 'overview' || page === 'usage') state.rangePage = page;
   state.page = page;
-  const labels = { overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
+  if (page !== 'concurrency') window.PulseConcurrency?.hide();
+  if (page !== 'providers') window.PulseProviders?.hide();
+  const labels = { concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
-  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions', 'providers']) $('page-' + name).hidden = name !== page;
+  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions', 'providers', 'concurrency']) $('page-' + name).hidden = name !== page;
   // 会话页是占满屏幕的工作台：大标题、页脚在那一页收起来（sessions.css）
   document.body.dataset.page = page;
   $('overview-analysis').hidden = page !== 'overview';
-  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress' || page === 'providers';
+  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress' || page === 'providers' || page === 'concurrency';
   $('tip').hidden = true;
   enter();
   if (current) render(current);
@@ -2423,12 +2488,12 @@ async function openSettings(tab = 'general') {
 for (const slot of document.querySelectorAll('[data-brand]')) slot.append(brandSvg(slot.dataset.brand));
 applyTheme();
 applySidebar();
-$('sidebar-toggle').addEventListener('click', () => {
+$('sidebar-toggle').addEventListener('click', event => {
   sidebarMode = document.documentElement.dataset.sidebar === 'collapsed' ? 'expanded' : 'collapsed';
   try { localStorage.setItem(SIDEBAR_KEY, sidebarMode); } catch {}
-  keepScroll(applySidebar);
+  transitionSidebar(event.detail > 0);
 });
-narrowSidebar.addEventListener('change', () => { if (!sidebarMode) keepScroll(applySidebar); });
+narrowSidebar.addEventListener('change', () => { stopSidebarMotion(); if (!sidebarMode) keepScroll(applySidebar); });
 darkQuery.addEventListener('change', () => { if (themeMode === 'system') applyTheme(true); });
 moveIndicator();
 api.version?.().then(version => {

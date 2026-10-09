@@ -439,6 +439,39 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(await evaluate("document.activeElement.id"), 'sidebar-toggle', '切换保留键盘焦点');
     assert.equal(await evaluate("document.querySelector('#sidebar-toggle').title"), '收起侧栏');
     console.log('PASS sidebar: icon navigation, wide collapse, narrow expansion, reload persistence, dark theme and focus');
+    contents.debugger.attach('1.3');
+    await contents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+    const motion = await evaluate(`(() => {
+      const area = document.querySelector('.workspace'), button = document.querySelector('#sidebar-toggle');
+      const before = area.getBoundingClientRect().left;
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      const started = area.getBoundingClientRect().left;
+      for (const animation of sidebarAnimations) { animation.pause(); animation.currentTime = 110; }
+      const middle = area.getBoundingClientRect().left;
+      const surface = getComputedStyle(document.querySelector('.sidebar'), '::before').transform;
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      const reversed = area.getBoundingClientRect().left;
+      return { before, started, middle, reversed, surface, count: sidebarAnimations.size, focus: document.activeElement.id };
+    })()`);
+    assert.ok(motion.count > 2, 'pointer toggle animates surface, workspace and icons');
+    assert.ok(Math.abs(motion.started - motion.before) < 2, 'collapse starts at the current visual position');
+    assert.ok(motion.middle > 76 && motion.middle < 236, 'content glides between widths');
+    const scale = Number(motion.surface.match(/matrix\(([^,]+)/)?.[1]);
+    assert.ok(scale > 76 / 236 && scale < 1, 'sidebar boundary moves with content');
+    assert.ok(Math.abs(motion.reversed - motion.middle) < 2, 'rapid reversal preserves the current position');
+    assert.equal(motion.focus, 'sidebar-toggle');
+    await evaluate('Promise.all([...sidebarAnimations].map(animation => { animation.finish(); return animation.finished.catch(() => {}); }))');
+    await until("sidebarAnimations.size === 0 && sidebarGhosts.size === 0");
+    assert.equal(await evaluate("document.querySelector('.workspace').getBoundingClientRect().left"), 236);
+    await contents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    await evaluate("document.querySelector('#sidebar-toggle').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))");
+    assert.equal(await evaluate('sidebarAnimations.size'), 0, 'reduced motion has no layout movement');
+    assert.equal(await evaluate("document.querySelector('.workspace').getBoundingClientRect().left"), 76);
+    await contents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+    await evaluate("document.querySelector('#sidebar-toggle').click()");
+    assert.equal(await evaluate('sidebarAnimations.size'), 0, 'keyboard-style activation is immediate');
+    contents.debugger.detach();
+    console.log('PASS sidebar motion: moving boundary, content glide, continuous reversal, cleanup, focus, reduced motion and keyboard');
     // Failure to restore must cancel application quit, not leave a dead proxy address.
     const backend = require('../build/core/agent-switch');
     const { dialog } = require('electron');

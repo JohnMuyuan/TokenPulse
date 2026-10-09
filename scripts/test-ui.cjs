@@ -559,9 +559,10 @@ app.on('web-contents-created', (_, contents) => {
       // 夜间模式下标题栏跟着变色（系统标题栏做不到）
       await evaluate("setThemeMode('dark')");
       await delay(600); // 切换主题有 0.35 秒的颜色过渡
-      // 标题栏是两段渐变（左边接侧栏、右边接内容区），深色时两段都要是深色
-      const titlebarBackground = await evaluate("getComputedStyle(document.getElementById('titlebar')).backgroundImage");
-      assert.ok(titlebarBackground.includes('rgb(18, 20, 25)'), titlebarBackground);
+      // 标题栏的侧栏背景独立移动，两块背景都要跟着深色主题。
+      const titlebarBackground = await evaluate("({ sidebar: getComputedStyle(document.getElementById('titlebar'), '::before').backgroundColor, workspace: getComputedStyle(document.getElementById('titlebar')).backgroundColor, body: getComputedStyle(document.body).backgroundColor })");
+      assert.equal(titlebarBackground.sidebar, 'rgb(18, 20, 25)');
+      assert.equal(titlebarBackground.workspace, titlebarBackground.body);
       await evaluate("setThemeMode('light')");
       await delay(600);
       // 时间选择器（参照 AllAi）：输入框选自定义范围

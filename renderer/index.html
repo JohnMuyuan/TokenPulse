@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="usage-insights.css">
 <link rel="stylesheet" href="usage-projects.css">
 <link rel="stylesheet" href="agent-switch.css">
+<link rel="stylesheet" href="concurrency.css">
 <link rel="stylesheet" href="tokens-ci.css">
 <link rel="stylesheet" href="intro.css">
 </head>
@@ -37,6 +38,7 @@
   <symbol id="i-requests" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 5 14 2.5-7h4"/></symbol>
   <symbol id="i-sessions" viewBox="0 0 24 24"><path d="M5 5.5h14A2.5 2.5 0 0 1 21.5 8v8a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3v-3H5A2.5 2.5 0 0 1 2.5 16V8A2.5 2.5 0 0 1 5 5.5Z"/><path d="M7 10h10M7 14h6"/></symbol>
   <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6.5" cy="7" r="2.2"/><circle cx="17.5" cy="17" r="2.2"/><path d="M8.7 7H15a3.5 3.5 0 0 1 0 7H9"/></symbol>
+  <symbol id="i-concurrency" viewBox="0 0 24 24"><path d="M3 6h9.5M3 12h15.5M3 18h6.5"/><circle cx="15" cy="6" r="1.7"/><circle cx="21" cy="12" r="1.7" transform="translate(-0.3 0)"/><circle cx="12" cy="18" r="1.7"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/></symbol>
   <symbol id="i-reply" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 0-7.5-7.5H4v7.5h5.5L6 15l4.5 4.5v-4.2H12.5A7.5 7.5 0 0 0 20 11.5Z"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18" cy="12" r="1.3"/></symbol>
@@ -103,6 +105,7 @@
     <button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button>
     <button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button>
     <button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button>
+    <button class="nav-item" data-page="concurrency" title="并发监控"><svg class="icon"><use href="#i-concurrency"/></svg><span class="nav-label">并发监控</span></button>
     <button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button>
     <button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button>
   </nav>
@@ -333,6 +336,7 @@
 
     <section id="page-egress" class="page" hidden></section>
     <section id="page-sessions" class="page" hidden></section>
+    <section id="page-concurrency" class="page" hidden></section>
     <section id="page-providers" class="page" hidden></section>
 
     <footer>
@@ -464,6 +468,7 @@
 <script src="usage-projects.js"></script>
 <script src="provider-avatars.js"></script>
 <script src="agent-switch.js"></script>
+<script src="concurrency.js"></script>
 <script src="tokens-ci.js"></script>
 <script src="intro.js"></script>
 </body>
