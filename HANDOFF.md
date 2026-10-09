@@ -2,7 +2,9 @@
 
 ## 新对话先看这里
 
-**0.3.41 进行中（2026-10-09，测试版已打，未提交、未发布）：返回型号以回复结束时报的为准。**
+**0.3.41 进行中（2026-10-09，测试版已打，未发布）：返回型号以回复结束时报的为准 + Codex 手动降智检测。**
+
+- **代码已作为备份推到 GitHub main（提交 `84bf3b8`，WIP）**：用户要让别的 AI 接着改，怕改错，要求先上传当前代码。没有打标签、没有建 Release，GitHub 的最新发布仍是 v0.3.40。要回到这个状态：`git checkout 84bf3b8`（或对比 `git diff 84bf3b8`）。
 
 - 起因：用户的 Codex 账号被官方降级，用量明细却显示「型号一致」。参考项目 `D:\CodePorject\Exmaple\sub2api-production` 的「使用记录」能标出上游响应模型不匹配，做法在 `backend/internal/service/upstream_response_model.go`：一次回复里型号会报两次（`response.created` 和 `response.completed` 等结束事件），以结束事件为准。TokenPulse 原来只读第一次出现的（`Grab` 里 `if (!this.model)`）。用户确认按此修，归 0.3.41。
 - 改动：`ws-sniff.ts` 的 `Grab` 新增 `first` / `final`，`model` 改为取值器（结束时报的优先），`declared` 在两者不同时给出开头报的；结束事件靠 `GRAB_TERMINAL` 标记定位，之后第一处 `"model"` 即 `response.model`，用绝对偏移处理分段。`agent-proxy.ts` 日志多一个 `declaredModel`（`returnedOf`、本地路由的 Outcome）；`route-ledger.ts` 的 `RouteReturned.declared`；`request-log.ts` / `request-verify.ts` 的 `proxy.declared`，不一致时原因里多一条「上游回复开头报的是 A，结束时报的是 B」。HTTP 透明转发、本地路由直通、WebSocket 都用同一个 `Grab`；接口格式转换过的转发本来就不读返回型号，没变。
