@@ -17,7 +17,7 @@
   const MODEL_SORT = [['tokens', 'Tokens'], ['costUsd', '费用'], ['requests', '请求']];
   const view = { metric: 'tokens', modelSort: 'tokens', year: 'recent', yearMetric: 'tokens' };
   // 工具的颜色：三家官方用品牌色，其余（CC Switch 导入的 OpenCode 等）按出现顺序轮流取
-  const BRAND = { 'Claude Code': 'var(--claude)', 'Codex CLI': 'var(--openai)', 'Grok Build': 'var(--grok)' };
+  const BRAND = { 'Claude Code': 'var(--claude)', 'Codex CLI': 'var(--openai)', 'Grok Build': 'var(--grok)', 'DeepSeek Harness': '#4d6bfe' };
   const PALETTE = ['#6d7fd6', '#c9832f', '#8b5cf6', '#0ea5a4', '#e05a8a', '#65a30d', '#d946ef'];
   const colorCache = new Map();
   function colorOf(source) {

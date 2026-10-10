@@ -1,0 +1,136 @@
+/* DeepSeek 余额监控（0.3.42）：额度详情里每个账号一页、总览里的一条，以及添加 / 设置账号的对话框。 */
+:root { --deepseek: #4d6bfe; --ds-warn: #c2700a; }
+:root[data-theme="dark"] { --deepseek: #7c93ff; --ds-warn: #f0a23b; }
+
+/* 图标是 brand.js 里的 deepseek（自带品牌色），这里只管底色和大小 */
+.account-avatar.deepseek { background: color-mix(in srgb, var(--deepseek) 14%, transparent); }
+.ds-balance-mark .brand-svg { width: 22px; height: 22px; }
+
+/*
+ * 额度详情：选中 DeepSeek 的账号时，这一页由 deepseek-balance.js 画。
+ * 官方账号的「换一种模型，整窗能用多少」不适用（DeepSeek 有自己的一块，按余额算）；
+ * 时间线只在指定了本机用量的那个账号下面有（app.js 切回官方账号时会去掉 ds-no-timeline）。
+ */
+#page-quota.ds-mode #quota-model-study { display: none; }
+#page-quota.ds-mode.ds-no-timeline #quota-model-timeline { display: none; }
+.ds-window .ds-total { color: var(--deepseek); }
+.ds-window.low .ds-total { color: var(--ds-warn); }
+.ds-window.bad .ds-total { color: var(--muted); }
+.ds-window .quota-footnote, .ds-local .quota-footnote { display: flex; flex-direction: column; gap: 2px; }
+.ds-local-off { display: grid; justify-items: center; gap: 8px; padding: 44px 18px; line-height: 1.7; }
+.ds-local-off .btn { margin-top: 10px; }
+.ds-trend .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 18px; flex-wrap: wrap; }
+.ds-trend-chart { height: 240px; }
+.ds-col-hit { fill: transparent; }
+.ds-topup-dot { fill: var(--deepseek); }
+.ds-trend .sample-caption, .ds-models .ms-note { display: block; }
+.ds-other-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; margin-bottom: 18px; }
+.ds-other { display: flex; flex-direction: column; gap: 6px; padding: 18px 22px; }
+.ds-other strong { font-size: 26px; font-weight: 700; letter-spacing: -.015em; }
+.ds-other small { font-size: 12px; color: var(--muted); }
+#quota-detail > .ds-models, #quota-detail > .ds-about { margin-top: 18px; }
+.ds-models .ms-rank-head.ds-rank-head, .ds-models .ms-row.ds-row { grid-template-columns: 30px minmax(240px, 1.3fr) minmax(170px, 1fr) minmax(130px, .6fr); }
+.ds-models .ms-row.ds-row { cursor: default; }
+.ds-models .ms-meter .full { background: var(--deepseek); }
+.ds-models .ms-meter .full.relative { background: var(--faint); }
+.ds-dot { background: var(--deepseek); }
+.ds-budget small, .ds-budget p { line-height: 1.6; }
+.ds-context-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.ds-context-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.ds-note.low { color: var(--ds-warn); }
+.ds-note-text { display: inline-flex; flex-wrap: wrap; align-items: baseline; }
+.ds-figure-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+.ds-about { display: flex; flex-direction: column; gap: 10px; padding: 18px 22px; font-size: 13.5px; }
+.ds-about-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.ds-about-row b { min-width: 72px; font-weight: 650; }
+.ds-about-alert { display: inline-flex; flex-wrap: wrap; align-items: baseline; }
+.ds-about-faint { color: var(--faint); font-size: 12.5px; }
+.ds-about-hint { margin: 4px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.ds-empty .btn { margin-top: 14px; }
+
+/* 总览里的卡片：骨架用官方账号卡片的样式（.quota-card），这里只补 DeepSeek 自己的部分 */
+.quota-card.deepseek { --card-accent: var(--deepseek); }
+.quota-card.deepseek .ring-value { stroke: var(--deepseek); }
+.quota-card.deepseek .ring-value.critical { stroke: var(--danger); }
+.quota-card.deepseek .quota-remaining small { margin-left: 2px; }
+.ds-card-total { font-size: 24px; letter-spacing: -.02em; line-height: 1.2; color: var(--deepseek); }
+.ds-card-total.low { color: var(--ds-warn); }
+.ds-card-total.bad { color: var(--muted); }
+.ds-card-warn { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 14px; padding: 9px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--ds-warn); font-size: 12.5px; line-height: 1.5; }
+.ds-card-warn.bad { background: var(--danger-soft); color: var(--danger); }
+.ds-card-warn .icon { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+.ds-card-rows { display: grid; gap: 9px; margin-bottom: 16px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.ds-card-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--muted); }
+.ds-card-row b { color: var(--text); font-weight: 650; white-space: nowrap; }
+.ds-card-row b.muted { color: var(--faint); font-weight: 500; }
+.ds-card-row b.warn-text { color: var(--ds-warn); }
+/* 第三方中转站的 Key：没有品牌图标，用首字母 */
+.account-avatar.relay { background: var(--tile-neutral); color: var(--text-2); }
+.quota-card.relay { --card-accent: var(--accent); }
+.quota-card.relay .plan { text-transform: none; letter-spacing: 0; }
+.account-avatar.relay .letter-mark { font-size: 16px; }
+.quota-context .account-avatar.relay .letter-mark { font-size: 22px; }
+.ds-letter { display: inline-grid; place-items: center; border-radius: 5px; background: var(--tile-neutral); color: var(--text-2); font-size: 10.5px; font-weight: 750; line-height: 1; }
+.ds-queue-logo.ds-letter { border-radius: 9px; font-size: 13px; }
+/* 选了图标（预设或上传的图片）的第三方 Key */
+.ds-pic { display: inline-grid; place-items: center; overflow: hidden; }
+.ds-pic img { width: 62%; height: 62%; object-fit: contain; }
+.ds-pic img[src^="data:"] { width: 100%; height: 100%; object-fit: cover; }
+.brand-glyph.ds-pic { border-radius: 5px; }
+.brand-glyph.ds-pic img { width: 100%; height: 100%; }
+.ds-queue-logo.ds-pic { background: var(--tile-neutral); }
+:root[data-theme=dark] .ds-pic img.mono { filter: invert(1) brightness(1.1); }
+.ds-balance-look[hidden] { display: none; }
+.ds-balance-look .pv-avatar-grid { max-height: 132px; overflow-y: auto; padding: 2px; }
+.ds-balance-look .account-avatar { width: 44px; height: 44px; border-radius: 13px; flex: none; }
+.ds-balance-card { max-height: calc(100vh - 48px); overflow-y: auto; }
+.ds-limits { display: grid; gap: 14px; margin: 18px 0 4px; }
+.ds-limit .quota-mini-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.ds-balance-field[hidden], .ds-balance-check[hidden], .ds-balance-field small[hidden] { display: none; }
+.ds-balance-kind { align-self: flex-start; }
+.ds-balance-field input[type="text"][name="ds-balance-url"] { width: 100%; }
+.ds-queue-logo { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: color-mix(in srgb, var(--deepseek) 14%, transparent); }
+.ds-queue-logo .brand-svg { width: 16px; height: 16px; }
+.ds-queue-tag.low { background: var(--warn-soft); color: var(--ds-warn); }
+.ds-queue-tag.bad { background: var(--danger-soft); color: var(--danger); }
+.ds-queue-more { padding: 4px 0; color: var(--faint); font-size: 12px; }
+.ds-card-actions { display: inline-flex; align-items: center; gap: 14px; }
+.ds-card-actions .icon { width: 14px; height: 14px; }
+.ds-card-setup { margin: 0 0 18px; }
+.ds-balance-warn { font-weight: 600; }
+.low .ds-balance-warn { color: var(--ds-warn); }
+.bad .ds-balance-warn { color: var(--danger); }
+.ds-balance-line { margin-left: 5px; }
+.ds-balance-time { color: inherit; }
+
+/* 对话框 */
+.ds-balance-card { width: min(480px, 100%); padding: 20px 24px; display: flex; flex-direction: column; gap: 16px; }
+.ds-balance-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ds-balance-head h3 { margin: 0; font-size: 17px; font-weight: 680; }
+.ds-balance-field { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.ds-balance-field > span { font-weight: 600; }
+.ds-balance-field input {
+  height: 36px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 9px;
+  background: var(--surface); color: var(--text); font: inherit; min-width: 0;
+}
+.ds-balance-field input[type="number"] { width: 160px; }
+.ds-balance-field input[type="text"] { width: 260px; max-width: 100%; }
+.ds-balance-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ds-balance-field small { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.ds-balance-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; cursor: pointer; }
+.ds-balance-check input { margin-top: 3px; flex: none; accent-color: var(--accent); }
+.ds-balance-check > span { display: grid; gap: 3px; }
+.ds-balance-check b { font-weight: 600; }
+.ds-balance-check small { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.ds-balance-link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.ds-balance-error { margin: 0; padding: 9px 12px; border-radius: 9px; background: var(--danger-soft); color: var(--danger); font-size: 12.5px; line-height: 1.5; }
+.ds-balance-error[hidden] { display: none; }
+.ds-balance-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.ds-balance-gap { flex: 1; }
+
+@media (max-width: 900px) {
+  .ds-context-meta { align-items: flex-start; }
+  .ds-models .ms-rank-head.ds-rank-head { display: none; }
+  .ds-models .ms-row.ds-row { grid-template-columns: 30px minmax(0, 1fr); }
+  .ds-models .ms-row.ds-row > .ms-cap { grid-column: 2; }
+}

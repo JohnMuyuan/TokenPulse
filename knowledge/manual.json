@@ -8,6 +8,22 @@
       "cacheRead": 0,
       "cacheWrite": 0,
       "note": "免费模型（-free 后缀、OpenCode 的 big-pickle）：排在最前面，免得先被厂商的规则认走"
+    },
+    {
+      "match": "^deepseek[-_ ]?(?:v4(?:\\.1)?[-_ ]?)?flash(?:[-_ ]?vision[-_ ]?exp)?$",
+      "input": 0.3,
+      "output": 1.2,
+      "cacheRead": 0.006,
+      "cacheWrite": 0,
+      "note": "DeepSeek 官方定价（高峰价）。闲时半价：高峰是 UTC 周一到周五 01:00–04:00 和 06:00–10:00，中国法定节假日除外。deepseek-flash = DeepSeek-V4.1-Flash"
+    },
+    {
+      "match": "^deepseek[-_ ]?v4[-_ ]?pro(?:[-_ ]?\\d{4})?$",
+      "input": 1.32,
+      "output": 3.96,
+      "cacheRead": 0.044,
+      "cacheWrite": 0,
+      "note": "DeepSeek 官方定价（高峰价）。闲时半价：高峰是 UTC 周一到周五 01:00–04:00 和 06:00–10:00，中国法定节假日除外。deepseek-v4-pro = DeepSeek-V4-Pro"
     }
   ],
   "fallback": [
@@ -303,6 +319,16 @@
       "model": "gpt-5.6-sol",
       "promo": true,
       "note": "OpenAI 官方目前是优惠价（输入 $4 / 输出 $20，缓存读 $0.40，缓存写 $5；长上下文 >272K 输入翻倍），结束时间未公布。"
+    }
+  ],
+  "displayNames": [
+    {
+      "match": "^deepseek-flash$",
+      "name": "DeepSeek-V4.1-Flash"
+    },
+    {
+      "match": "^deepseek-v4-pro$",
+      "name": "DeepSeek-V4-Pro"
     }
   ]
 }

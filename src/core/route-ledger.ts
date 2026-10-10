@@ -287,5 +287,55 @@ export function routeReturned(responseId: string | undefined, at: number): Route
   return null;
 }
 
+/*
+ * 一段时间里，本地路由把某个工具的请求交给了谁、各占多少（0.3.42）。
+ * 给没有共同响应 ID 的工具用（Grok：会话文件一整轮汇总成一条，对不上单次请求）：
+ * 这一轮从开始到结束之间，转发记录里号池交给各个账号的 Token 数就是分摊的比例。
+ * 键是账号 id；交给第三方供应商（不是官方账号）的记在空字符串名下。透明转发的不算（那是 CLI 自己登录的账号）。
+ * 没读到用量的转发（/models 之类）不算。
+ */
+type ShareRow = { at: number; account: string; weight: number };
+const shareCache = new Map<string, { size: number; mtimeMs: number; apps: Map<string, ShareRow[]> }>();
+const APP_OF_KIND: Record<OfficialAccountKind, string> = { claude: "claude", chatgpt: "codex", grok: "grok" };
+function shareIndex(name: string): Map<string, ShareRow[]> {
+  const stat = peek("log:" + name, () => path.join(routeLogDir(), name));
+  if (!stat) return new Map();
+  const cached = shareCache.get(name);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.apps;
+  const apps = new Map<string, ShareRow[]>();
+  try {
+    for (const line of fs.readFileSync(path.join(routeLogDir(), name), "utf8").split("\n")) {
+      if (!line || line.includes('"pass":true')) continue;
+      let row: Record<string, unknown>;
+      try { row = JSON.parse(line); } catch { continue; }
+      const at = Number(row.at), weight = (Number(row.input) || 0) + (Number(row.output) || 0);
+      if (!Number.isFinite(at) || !(weight > 0) || !(Number(row.status) < 400) || row.error || row.pass === true || typeof row.app !== "string") continue;
+      const list = apps.get(row.app) ?? [];
+      list.push({ at, account: typeof row.account === "string" ? row.account : "", weight });
+      apps.set(row.app, list);
+    }
+  } catch { return new Map(); }
+  for (const list of apps.values()) list.sort((a, b) => a.at - b.at);
+  shareCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, apps });
+  return apps;
+}
+export function routeShares(kind: OfficialAccountKind, from: number, to: number): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!(to >= from)) return out;
+  const names = new Set([monthName(from, 0), monthName(to, 0)]);
+  for (const name of names) {
+    const list = shareIndex(name).get(APP_OF_KIND[kind]);
+    if (!list?.length) continue;
+    let lo = 0, hi = list.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].at < from) lo = mid + 1; else hi = mid; }
+    for (let i = lo; i < list.length && list[i].at <= to; i++) {
+      // 账号要是这一家的；别家的（不该出现）和第三方供应商一样记在空名下
+      const account = list[i].account.startsWith(kind + ":") ? list[i].account : "";
+      out.set(account, (out.get(account) ?? 0) + list[i].weight);
+    }
+  }
+  return out;
+}
+
 /** 测试用：丢掉内存里的缓存。 */
-export function resetRouteLedgerCache() { cache = null; appended = 0; returnedCache.clear(); accountCache.clear(); seen.clear(); }
+export function resetRouteLedgerCache() { cache = null; appended = 0; returnedCache.clear(); accountCache.clear(); shareCache.clear(); seen.clear(); }

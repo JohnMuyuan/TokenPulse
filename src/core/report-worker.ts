@@ -1,4 +1,5 @@
 import { queryModelStudy } from "./model-study";
+import { queryDeepSeek } from "./deepseek-insight";
 import { parentPort, workerData } from "worker_threads";
 import { buildSnapshot } from "./report";
 import { queryRequests, recentAlerts } from "./request-log";
@@ -13,7 +14,10 @@ function localDay(at: number) {
 }
 
 // 扫描、JSON 解析和汇总都含同步 CPU / 文件操作，不能占用 Electron 的窗口事件循环。
-if (workerData.modelStudy) {
+if (workerData.deepseek) {
+  // DeepSeek 账号页的分析（余额历史 + DeepSeek Harness 的流水）
+  parentPort!.postMessage(queryDeepSeek(workerData.deepseek));
+} else if (workerData.modelStudy) {
   parentPort!.postMessage(queryModelStudy(workerData.modelStudy));
 } else if (workerData.sessions === "list") {
   parentPort!.postMessage(listSessions());

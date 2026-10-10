@@ -25,13 +25,15 @@ export type PriceRule = Price4 & { match: string; note: string;
 /** 0.3.13：手动给型号打的标签（优惠价等），until 过了就不显示。 */
 export type ModelLabel = { model: string; promo?: boolean; until?: string; note?: string };
 export type AliasRule = { match: string; replace: string; note: string };
+/** 接口里的型号名 → 给人看的名字（0.3.42）：DeepSeek 的接口只认 deepseek-flash，实际是 DeepSeek-V4.1-Flash，官方以后可能把它指向新版本。 */
+export type DisplayName = { match: string; name: string };
 /** 思考等级规则（0.3.11 起随知识库在线下发）：每家列出型号，以及「哪些型号支持哪些等级」。 */
 export type CapabilityRule = { match: string; efforts: string[]; semantics?: string };
 export type CapabilityDoc = { source?: string; modelsSource?: string; models: string[]; rules: CapabilityRule[] };
 export type Capabilities = { checkedAt: string } & Partial<Record<"claude" | "chatgpt" | "grok", CapabilityDoc>>;
 /** 思考等级的 token 消耗（0.3.12，Epoch AI 基准数据）：同一型号各等级每个任务的输出 token，和各家族相对 medium 的平均倍数。 */
 export type EffortUsage = { source: string; sourceUrl: string; license: string; anchor: string; updatedAt: string; models: Record<string, { basis: string; perTask: Record<string, number> }>; families: Partial<Record<"claude" | "chatgpt" | "grok", Record<string, number>>> };
-export type Knowledge = { schema: 1; version: string; updatedAt: string; prices: PriceRule[]; aliases: AliasRule[]; capabilities?: Capabilities; effortUsage?: EffortUsage; labels?: ModelLabel[] };
+export type Knowledge = { schema: 1; version: string; updatedAt: string; prices: PriceRule[]; aliases: AliasRule[]; capabilities?: Capabilities; effortUsage?: EffortUsage; labels?: ModelLabel[]; displayNames?: DisplayName[] };
 export type KnowledgeSource = "bundled" | "downloaded";
 
 export const KNOWLEDGE_URL = "https://raw.githubusercontent.com/JohnMuyuan/TokenPulse/main/knowledge/models.json";
@@ -104,7 +106,14 @@ export function parseKnowledge(value: unknown): Knowledge | null {
     if (typeof l?.model !== "string" || !/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(l.model)) continue;
     labels.push({ model: l.model.toLowerCase(), ...(l.promo === true ? { promo: true } : {}), ...(isDay(l.until) ? { until: l.until as string } : {}), ...(typeof l.note === "string" ? { note: text(l.note, 300) } : {}) });
   }
-  return { schema: 1, version: input.version, updatedAt: text(input.updatedAt, 40), prices, aliases, ...(capabilities ? { capabilities } : {}), ...(effortUsage ? { effortUsage } : {}), ...(labels.length ? { labels } : {}) };
+  const displayNames: DisplayName[] = [];
+  for (const raw of Array.isArray(input.displayNames) ? input.displayNames.slice(0, 200) : []) {
+    const d = raw as Record<string, unknown>;
+    const match = pattern(d?.match);
+    if (!match || !compiles(match) || typeof d.name !== "string" || !/^[\w .:()/+-]{1,80}$/.test(d.name)) continue;
+    displayNames.push({ match, name: d.name });
+  }
+  return { schema: 1, version: input.version, updatedAt: text(input.updatedAt, 40), prices, aliases, ...(capabilities ? { capabilities } : {}), ...(effortUsage ? { effortUsage } : {}), ...(labels.length ? { labels } : {}), ...(displayNames.length ? { displayNames } : {}) };
 }
 
 const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "adaptive", "auto", "not_supported"]);
@@ -194,6 +203,7 @@ export function resetKnowledgeCache() {
   cached = null;
   compiledPrices = null;
   compiledAliases = null;
+  compiledNames = null;
 }
 
 let compiledPrices: { test: RegExp; price: PriceRule }[] | null = null;
@@ -228,6 +238,13 @@ export function priceNotes(modelId: string, rule: PriceRule | null): PriceNotes 
   if (!Object.keys(notes).length) return null;
   if (rule) notes.price = { input: rule.input, output: rule.output, cacheRead: rule.cacheRead, cacheWrite: rule.cacheWrite };
   return notes;
+}
+
+let compiledNames: { test: RegExp; name: string }[] | null = null;
+/** 接口里的型号名换成给人看的名字；没有对应的原样返回。 */
+export function displayModel(modelId: string) {
+  compiledNames ??= (loadKnowledge().knowledge.displayNames ?? []).map((item) => ({ test: new RegExp(item.match, "i"), name: item.name }));
+  return compiledNames.find((item) => item.test.test(modelId))?.name ?? modelId;
 }
 
 export function aliasRules() {

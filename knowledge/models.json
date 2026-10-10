@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.10.10",
-  "updatedAt": "2026-10-10T07:18:17.468Z",
+  "version": "2026.10.10.1",
+  "updatedAt": "2026-10-10T14:12:16.576Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。 labels：给型号打标签（promo 优惠价、until 到期日 YYYY-MM-DD、note 说明），到期自动去掉；pinned 规则也可以带 until。",
   "prices": [
     {
@@ -11,6 +11,22 @@
       "cacheRead": 0,
       "cacheWrite": 0,
       "note": "免费模型（-free 后缀、OpenCode 的 big-pickle）：排在最前面，免得先被厂商的规则认走"
+    },
+    {
+      "match": "^deepseek[-_ ]?(?:v4(?:\\.1)?[-_ ]?)?flash(?:[-_ ]?vision[-_ ]?exp)?$",
+      "input": 0.3,
+      "output": 1.2,
+      "cacheRead": 0.006,
+      "cacheWrite": 0,
+      "note": "DeepSeek 官方定价（高峰价）。闲时半价：高峰是 UTC 周一到周五 01:00–04:00 和 06:00–10:00，中国法定节假日除外。deepseek-flash = DeepSeek-V4.1-Flash"
+    },
+    {
+      "match": "^deepseek[-_ ]?v4[-_ ]?pro(?:[-_ ]?\\d{4})?$",
+      "input": 1.32,
+      "output": 3.96,
+      "cacheRead": 0.044,
+      "cacheWrite": 0,
+      "note": "DeepSeek 官方定价（高峰价）。闲时半价：高峰是 UTC 周一到周五 01:00–04:00 和 06:00–10:00，中国法定节假日除外。deepseek-v4-pro = DeepSeek-V4-Pro"
     },
     {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-4\\.20-experimental-beta-non-reasoning-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
@@ -1980,6 +1996,16 @@
       "model": "gpt-5.6-sol",
       "promo": true,
       "note": "OpenAI 官方目前是优惠价（输入 $4 / 输出 $20，缓存读 $0.40，缓存写 $5；长上下文 >272K 输入翻倍），结束时间未公布。"
+    }
+  ],
+  "displayNames": [
+    {
+      "match": "^deepseek-flash$",
+      "name": "DeepSeek-V4.1-Flash"
+    },
+    {
+      "match": "^deepseek-v4-pro$",
+      "name": "DeepSeek-V4-Pro"
     }
   ]
 }

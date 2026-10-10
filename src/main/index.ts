@@ -19,7 +19,7 @@ import { updateMark } from "../core/quota-offmachine";
 import { parseModelStudyQuery } from "../core/model-study";
 import { modelCandidates, parseStudyModels } from "../core/model-catalog";
 import { FAMILY as STUDY_FAMILY } from "../core/quota-offmachine";
-import { loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
+import { loadDeepSeek, loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
 import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerminal, resolveCli, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
@@ -40,6 +40,7 @@ import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange 
 import { randomUUID } from "crypto";
 import { readFileSync } from "fs";
 import { TokensUploader } from "./tokens-ci";
+import { DeepSeekBalance } from "./deepseek-balance";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 /**
@@ -71,6 +72,16 @@ const exitMonitor = new ExitMonitor({
     const notification = new Notification({ title: tr("出口监控") + " · " + DOMAINS[event.provider].name, body: tr(event.message) + (event.ip ? " · " + event.ip : "") + (event.region ? " · " + event.region : ""), icon: windowIcon() });
     notification.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "egress" }); });
     notification.show();
+  },
+});
+/** DeepSeek 余额监控（0.3.42）：用户自己填的 API Key，只用来查余额，见 deepseek-balance.ts。 */
+const deepseekBalance = new DeepSeekBalance({
+  publish: state => { if (win && !win.isDestroyed()) win.webContents.send("deepseek-balance-state", state); },
+  notify: (info, below, label, kind) => {
+    if (!Notification.isSupported()) return;
+    const sign = info.currency === "CNY" ? "¥" : info.currency === "USD" ? "$" : info.currency + " ";
+    const note = new Notification({ title: tr(kind === "relay" ? "第三方 Key 余额不多了" : "DeepSeek 余额不多了") + (label ? " · " + label : ""), body: `${tr("当前余额")} ${sign}${info.total.toFixed(2)} · ${tr("提醒线")} ${sign}${below.toFixed(2)}`, icon: windowIcon() });
+    note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
   },
 });
 /** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
@@ -853,6 +864,28 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("tokens-ci:resume", () => tokensUploader.resume());
     ipcMain.handle("tokens-ci:open", (_event, url: unknown) => { if (typeof url === "string" && /^https:\/\/[^\s]+$/i.test(url)) void shell.openExternal(url); });
     tokensUploader.start();
+    ipcMain.handle("deepseek-balance:state", () => deepseekBalance.state());
+    ipcMain.handle("deepseek-balance:add", (_event, value: unknown) => deepseekBalance.add(value));
+    ipcMain.handle("deepseek-balance:update", (_event, id: unknown, value: unknown) => deepseekBalance.update(id, value));
+    ipcMain.handle("deepseek-balance:remove", (_event, id: unknown) => deepseekBalance.remove(id));
+    ipcMain.handle("deepseek-balance:refresh", (_event, id: unknown) => deepseekBalance.refresh(id, true));
+    ipcMain.handle("deepseek-balance:refresh-all", () => deepseekBalance.refreshAll(true));
+    ipcMain.handle("deepseek-balance:reorder", (_event, ids: unknown) => deepseekBalance.reorder(ids));
+    // 账号页的分析（消耗、预测、模型换算、时间线、速度）：在 worker 里读余额历史和 DeepSeek Harness 的流水
+    ipcMain.handle("deepseek-balance:insight", (_event, id: unknown) => {
+      const owner = deepseekBalance.owner(id);
+      if (!owner) throw new Error("找不到这个 DeepSeek 账号，可能已经删除了");
+      return loadDeepSeek({ op: "insight", accountId: owner.id, local: owner.local });
+    });
+    ipcMain.handle("deepseek-balance:timeline", (_event, value: unknown) => {
+      const query = (value ?? {}) as { accountId?: unknown; cycles?: { five?: unknown; week?: unknown } };
+      const owner = deepseekBalance.owner(typeof query.accountId === "string" ? query.accountId.replace(/^deepseek:/, "") : "");
+      if (!owner) throw new Error("找不到这个 DeepSeek 账号，可能已经删除了");
+      const cycle = (item: unknown) => (typeof item === "string" && /^\d{1,16}:\d{1,16}$/.test(item) ? item : undefined);
+      return loadDeepSeek({ op: "timeline", accountId: owner.id, local: owner.local, cycles: { five: cycle(query.cycles?.five), week: cycle(query.cycles?.week) } });
+    });
+    ipcMain.handle("deepseek-balance:speed", (_event, days: unknown) => loadDeepSeek({ op: "speed", days: Math.max(0, Math.min(3650, Number(days) || 0)) }));
+    deepseekBalance.start();
     ipcMain.handle("snapshot", () => getInitialSnapshot());
     ipcMain.handle("refresh", async () => refresh(true));
     ipcMain.handle("prefs:read", () => readPrefs());
@@ -1112,7 +1145,7 @@ if (!app.requestSingleInstanceLock()) {
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
     destroyTrayPanel();
-    if (agentQuitReady) { quitting = true; concurrencyService.stop(); exitMonitor.stop(); tokensUploader.stop(); stopAllReplies(); releasePrism(); return; }
+    if (agentQuitReady) { quitting = true; concurrencyService.stop(); exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

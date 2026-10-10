@@ -15,7 +15,7 @@ const OAUTH_META = {
   claude: { name: 'Claude', brand: 'claude' },
   grok: { name: 'Grok', brand: 'grok' }
 };
-const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok' };
+const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
 const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', models: [], project: '', channel: 'all', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
@@ -1040,6 +1040,8 @@ function renderOverview() {
     const report = lead ? poolReport(pool, lead) : null;
     return stagger(quotaCard({ kind: pool.kind, key: lead?.key || pool.kind, account: report || null }, pool), i);
   }));
+  // DeepSeek 按量付费，没有额度窗口：它的卡片（余额、还能用几天）由 deepseek-balance.js 画，和别家并排
+  for (const card of window.DeepSeekBalance?.cards() || []) $('quota-cards').append(stagger(card, $('quota-cards').children.length));
   dailyChart(entering());
   const t = analysis.total;
   // 过去 24 小时按小时算节奏，其余按天
@@ -1255,13 +1257,40 @@ function trendChart(host, points, animate) {
   playChart(host, animate);
 }
 /** 额度页顶上的标签：一个账号一个。账号有变化（新登录、删除、调顺序）才重建，平时只切换选中。 */
+/*
+ * 标签的排列（0.3.42）：所有账号可以互相拖动，不管是不是同一家。
+ * 同一家几个账号之间的先后以账号列表为准（设置里也能调，号池、总览都用它）；这里只另外记「各家怎么穿插」：
+ * 存的是拖完之后整行的标签，用的时候只取它的「第几个位置是哪一家」，每一家的位置按账号列表的顺序依次填进去。
+ * 新加的账号排在同一家最后一个的后面。只是界面上的排列，存在本机的 localStorage。
+ */
+const TAB_ORDER_KEY = 'tokenpulse-quota-tabs';
+function savedTabOrder() {
+  try { const list = JSON.parse(localStorage.getItem(TAB_ORDER_KEY) || '[]'); return Array.isArray(list) ? list.filter(item => typeof item === 'string') : []; } catch { return []; }
+}
+function orderQuotaTabs(items) {
+  const saved = savedTabOrder();
+  if (!saved.length) return items;
+  const kindOf = new Map(items.map(item => [item.key, item.kind]));
+  const queues = new Map();
+  for (const item of items) queues.set(item.kind, [...(queues.get(item.kind) || []), item]);
+  const out = [];
+  for (const key of saved) { const next = queues.get(kindOf.get(key))?.shift(); if (next) out.push(next); }
+  for (const queue of queues.values()) for (const item of queue) {
+    const at = out.findLastIndex(other => other.kind === item.kind);
+    if (at < 0) out.push(item); else out.splice(at + 1, 0, item);
+  }
+  return out;
+}
 function drawAccountTabs(slots) {
   const tabs = $('account-tabs');
-  const signature = slots.map(slot => `${slot.key}:${accountWho(slot.account)}`).join('|');
+  // DeepSeek 的账号（按量付费，一个 API Key 一个）默认排在官方账号后面，见 deepseek-balance.js
+  const extra = window.DeepSeekBalance?.tabs() || [];
+  const items = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind, who: accountWho(slot.account), slot })), ...extra.map(tab => ({ key: tab.key, kind: tab.kind, who: tab.who, tab }))]);
+  const signature = items.map(item => `${item.key}:${item.who}`).join('|');
   if (tabs.dataset.signature !== signature) {
     tabs.dataset.signature = signature;
-    tabs.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...slots.map(slot => {
-      const who = accountWho(slot.account);
+    tabs.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...items.map(({ slot, tab, who }) => {
+      if (tab) return window.DeepSeekBalance.tabButton(tab);
       return el('button', { type: 'button', 'data-account': slot.key, 'data-kind': slot.kind, title: slot.account?.accountLabel || null }, [
         el('span', { class: 'brand-glyph' }, [brandSvg(META[slot.kind].brand)]), META[slot.kind].name,
         who ? el('small', { class: 'tab-who', text: who, translate: 'no' }) : null
@@ -1291,8 +1320,7 @@ function markAccountTabEdges() {
   const overflow = max > 2;
   tabs.classList.toggle('overflow-left', overflow && tabs.scrollLeft > 2);
   tabs.classList.toggle('overflow-right', overflow && max - tabs.scrollLeft > 2);
-  const real = [...tabs.querySelectorAll(':scope > button')].filter(button => button.dataset.account !== button.dataset.kind);
-  const canReorder = real.some(button => real.filter(item => item.dataset.kind === button.dataset.kind).length > 1);
+  const canReorder = tabs.querySelectorAll(':scope > button').length > 1;
   const hint = canReorder ? 'reorder' : '';
   if (tabs.dataset.scrollHint !== hint) {
     tabs.dataset.scrollHint = hint;
@@ -1325,7 +1353,8 @@ function accountTabButtons(kind) {
 }
 function beginTabReorder(gesture, event) {
   const tabs = $('account-tabs');
-  const buttons = accountTabButtons(gesture.kind);
+  // 整行的标签一起排：可以拖到别家的账号前面或后面
+  const buttons = [...tabs.querySelectorAll(':scope > button')];
   const from = buttons.indexOf(gesture.button);
   if (from < 0) return;
   gesture.mode = 'reorder';
@@ -1377,12 +1406,29 @@ function finishTabReorder(gesture, commit) {
     const next = gesture.buttons.at(-1).nextSibling;
     for (const button of ordered) tabs.insertBefore(button, next);
     syncSeg(tabs);
-    saveQuotaTabOrder(gesture.kind, ordered.map(item => item.dataset.account));
+    saveTabLayout(gesture, ordered);
   }
   requestAnimationFrame(() => tabs.classList.remove('settling'));
 }
+/**
+ * 拖完之后：整行的排列记在本机（各家怎么穿插）；被拖的那个账号如果越过了同一家的别的账号，
+ * 同一家内部的先后也变了，照旧存回账号列表（官方账号 / DeepSeek 各存各的）。
+ */
+function saveTabLayout(gesture, ordered) {
+  try { localStorage.setItem(TAB_ORDER_KEY, JSON.stringify(ordered.map(item => item.dataset.account))); } catch { /* 存不下来：这次的排列到下次重画为止 */ }
+  const family = list => list.filter(item => item.dataset.kind === gesture.kind && item.dataset.account !== item.dataset.kind).map(item => item.dataset.account);
+  const before = family(gesture.buttons), after = family(ordered);
+  if (before.join('|') !== after.join('|')) saveQuotaTabOrder(gesture.kind, after);
+  else showStatus('已调整顺序');
+}
 /** 可见账号的新顺序嵌回完整列表：藏起来的账号不在这一行，仍留在原来的位置。 */
 async function saveQuotaTabOrder(kind, visibleIds) {
+  // DeepSeek 的账号不在官方账号列表里，顺序存在它自己那边（deepseek-balance.ts）
+  if (kind === 'deepseek' || kind === 'relay') {
+    try { await window.DeepSeekBalance.reorder(visibleIds); showStatus('已调整顺序'); }
+    catch (error) { showStatus(cleanRemoteError(error, '顺序没保存上，请重试'), true); if (current) renderQuota(); }
+    return;
+  }
   try {
     const statuses = await api.officialAccounts();
     const all = (statuses.find(item => item.kind === kind)?.accounts || []).map(item => item.id);
@@ -1403,6 +1449,16 @@ function renderQuota() {
   quotaTimelineNode ??= $('quota-model-timeline');
   const host = $('quota-detail'); host.replaceChildren();
   const slots = quotaSlots();
+  // 选中的是 DeepSeek 的账号：按量付费，没有额度窗口，这一页由 deepseek-balance.js 画（余额、消耗、用量、时间线、速度、模型换算）
+  const deepseek = Boolean(window.DeepSeekBalance?.owns(state.account));
+  $('page-quota').classList.toggle('ds-mode', deepseek);
+  if (!deepseek) $('page-quota').classList.remove('ds-no-timeline');
+  if (deepseek) {
+    state.account = window.DeepSeekBalance.renderQuota(host, state.account, quotaTimelineNode);
+    drawAccountTabs(slots);
+    syncSegs();
+    return;
+  }
   // state.account 可能是账号 id，也可能是家名（首页「详情」、老的默认值）：对不上账号就取这一家的第一个
   const slot = slots.find(item => item.key === state.account) || slots.find(item => item.kind === state.account) || slots[0];
   state.account = slot.key;
@@ -1537,23 +1593,24 @@ function speedBucketLabel(at, bucketMs) {
   const text = day.toLocaleDateString(locale, { year: day.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', month: 'numeric', day: 'numeric' });
   return bucketMs > 86400000 ? `${text} 起的一周` : text;
 }
-function speedPanel(account, kind) {
+/** custom：数据不是从转发记录来的账号（DeepSeek 的速度是 Harness 自己记在日志里的），{ tag, hint, load(days), empty() }。 */
+function speedPanel(account, kind, custom = null) {
   state.speedRange ??= 30;
   const panel = el('article', { class: 'panel speed-panel' });
   const body = el('div', { class: 'speed-body' });
   const seg = el('div', { class: 'seg compact', 'aria-label': '时间范围' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),
     ...SPEED_RANGES.map(([days, label]) => el('button', { type: 'button', 'data-speed-range': String(days), class: state.speedRange === days ? 'on' : null, text: label }))]);
   panel.append(el('div', { class: 'panel-heading capacity-heading' }, [
-    el('div', {}, [el('h2', {}, ['模型速度 ', el('span', { class: 'section-tag', text: account.accountLabel || META[kind].name + ' 账号' })]), el('p', { text: '每个模型每秒输出多少 Token。请求经过 TokenPulse 时量出来：开着「透明转发」，或者这个账号在号池里。记录永久保存。' })]),
+    el('div', {}, [el('h2', {}, ['模型速度 ', el('span', { class: 'section-tag', text: custom?.tag || account.accountLabel || META[kind].name + ' 账号' })]), el('p', { text: custom?.hint || '每个模型每秒输出多少 Token。请求经过 TokenPulse 时量出来：开着「透明转发」，或者这个账号在号池里。记录永久保存。' })]),
     seg,
   ]), body);
   const load = () => {
     const key = [kind, account.accountId || '', state.speedRange].join('|');
-    if (speedCache.has(key)) drawSpeed(body, speedCache.get(key), kind); else body.replaceChildren(empty('正在读取…'));
-    Promise.resolve(api.passSpeedAccount?.(kind, account.accountId || '', state.speedRange)).then(data => {
+    if (speedCache.has(key)) drawSpeed(body, speedCache.get(key), kind, custom); else body.replaceChildren(empty('正在读取…'));
+    Promise.resolve(custom ? custom.load(state.speedRange) : api.passSpeedAccount?.(kind, account.accountId || '', state.speedRange)).then(data => {
       speedCache.set(key, data || null);
       if (speedCache.size > 24) speedCache.delete(speedCache.keys().next().value);
-      if (panel.isConnected && key === [kind, account.accountId || '', state.speedRange].join('|')) keepScroll(() => drawSpeed(body, data, kind));
+      if (panel.isConnected && key === [kind, account.accountId || '', state.speedRange].join('|')) keepScroll(() => drawSpeed(body, data, kind, custom));
     }).catch(() => { if (panel.isConnected) body.replaceChildren(empty('速度记录读取失败，请重试。')); });
   };
   seg.addEventListener('click', event => {
@@ -1567,7 +1624,8 @@ function speedPanel(account, kind) {
   load();
   return panel;
 }
-function drawSpeed(body, data, kind) {
+function drawSpeed(body, data, kind, custom = null) {
+  if ((!data || !data.models.length) && custom) { body.replaceChildren(custom.empty()); return; }
   if (!data || !data.models.length) {
     const open = el('button', { type: 'button', class: 'btn', text: '去打开透明转发' });
     open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open('pass'); });
@@ -1873,12 +1931,13 @@ function modelCell(row) {
   return el('td', { class: 'request-model' }, [el('b', { text: main, title: main }), sub ? el('small', {}, sub) : null, tags.length ? el('div', { class: 'request-tags' }, tags) : null].filter(Boolean));
 }
 /* 账号 */
-const ACCOUNT_BASIS = { session: '会话记录', timeline: '登录时间线', inferred: '推断' };
+const ACCOUNT_BASIS = { session: '会话记录', timeline: '登录时间线', inferred: '推断', route: '号池转发记录', 'route-window': '号池转发记录（按时间）' };
 const ACCOUNT_BASIS_HINT = {
   session: '会话文件里直接记下了这个账号',
   timeline: '按请求时间，对上当时 CLI 登录的账号',
   inferred: 'TokenPulse 开始记录登录之前的请求，按最早记下的账号推断',
-  route: '经 TokenPulse 的号池发出，按本地路由的记录对上号池里的这个账号'
+  route: '经 TokenPulse 的号池发出，按本地路由的记录对上号池里的这个账号',
+  'route-window': '这一轮对话期间，号池把请求全部交给了这个账号（Grok 的记录按轮汇总，按时间对上转发记录）'
 };
 /** 项目和账号放一格：上面项目，下面是发出这次请求的账号。 */
 function projectAccountCell(row) {
@@ -2024,6 +2083,7 @@ function render(snapshot) {
   keepScroll(() => renderPage(snapshot));
   // tokens.ci 状态栏：进出演示模式时跟着显示 / 隐藏
   window.PulseTokensCi?.refresh();
+  window.DeepSeekBalance?.render();
 }
 /** 重建期间锁住主区高度，重建完还原滚动位置。 */
 /** 滚动的是工作区，不是整个窗口（标题栏下面那块，见 app.css 的 .workspace）。 */
@@ -2843,6 +2903,20 @@ $('account-tabs').addEventListener('click', event => {
   state.account = button.dataset.account;
   if (current) { enter(); renderQuota(); }
 });
+// 额度详情右上角的「添加账号」（0.3.42）：三种账号的入口放在一起，不用去设置里找
+$('quota-add-account').addEventListener('click', event => {
+  const trigger = event.currentTarget;
+  if (trigger.getAttribute('aria-expanded') === 'true') { closeOptionMenu(true); return; }
+  openOptionMenu(trigger, '添加哪一种账号', [
+    { value: 'official', label: 'ChatGPT / Claude / Grok 官方账号', hint: '去设置 → 官方账号里登录，或者添加本机 CLI 已经登录的账号' },
+    { value: 'deepseek', label: 'DeepSeek', hint: '填 DeepSeek 开放平台的 API Key，监控余额' },
+    { value: 'relay', label: '第三方中转站的 Key', hint: '填站点地址和 Key，监控余额和额度（sub2api、new-api）' },
+  ], null, value => {
+    if (value === 'official') openSettings('accounts');
+    else if (!window.DeepSeekBalance?.state()) toast('余额监控还没准备好，请稍后再试', { kind: 'error' });
+    else window.DeepSeekBalance.open(null, value);
+  });
+});
 $('account-tabs').addEventListener('pointerdown', event => {
   // 还在「按下未拖动」状态的旧手势（上次在这一行外面松的手，这里收不到 pointerup）直接作废，不能挡住这一次
   if (event.button !== 0 || tabGesture?.mode === 'reorder') return;
@@ -2850,10 +2924,9 @@ $('account-tabs').addEventListener('pointerdown', event => {
   tabDragged = false;
   const button = event.target.closest('#account-tabs > button');
   if (!button) return;
-  const siblings = accountTabButtons(button.dataset.kind);
   tabGesture = {
     mode: 'pending', id: event.pointerId, x: event.clientX, y: event.clientY,
-    button, kind: button.dataset.kind, canReorder: siblings.length > 1 && siblings.includes(button),
+    button, kind: button.dataset.kind, canReorder: $('account-tabs').querySelectorAll(':scope > button').length > 1,
   };
 });
 $('account-tabs').addEventListener('pointermove', event => {

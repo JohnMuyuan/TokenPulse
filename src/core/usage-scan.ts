@@ -6,6 +6,10 @@ import path from "path";
 import { dataFile, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline } from "./login-timeline";
+import { routeShares } from "./route-ledger";
+import zlib from "zlib";
+import { displayModel } from "./knowledge";
+import { estimateCost } from "./model-pricing";
 
 /**
  * 统计**这台电脑上所有** AI CLI 的 token 消耗 —— 不管那一轮是在终端里跑的、
@@ -47,12 +51,13 @@ export type UsageBucket = {
  */
 export type DayBuckets = Record<string, Record<string, Record<string, UsageBucket>>>;
 
-export type Kind = "claude-code" | "codex" | "grok-build";
+export type Kind = "claude-code" | "codex" | "grok-build" | "deepseek-harness";
 
 export const SOURCES: Record<Kind, string> = {
   "claude-code": "Claude Code",
   codex: "Codex CLI",
   "grok-build": "Grok Build",
+  "deepseek-harness": "DeepSeek Harness",
 };
 
 type FileState = {
@@ -132,6 +137,14 @@ type FileState = {
   grokCompactOutput?: number;
   /** Grok：最近一轮缓存读取占输入的比例，压缩那次的输入按它拆缓存。 */
   cacheRatio?: number;
+  /** Grok：这一轮从什么时候开始（第一段用户消息）、上一轮什么时候结束。给号池分摊找时间范围用（0.3.42）。 */
+  turnStartAt?: number;
+  lastTurnAt?: number;
+  /**
+   * 经号池发出去的那部分，按账号拆开的小时账（0.3.42），结构同 accountHours。
+   * 用号池时工具配置里填的是本地路由，文件整体记成「不是官方」，统计时整份被跳过——这一份单独留着，照样算到号池成员名下。
+   */
+  routedHours?: Record<string, Record<string, Record<string, UsageBucket>>>;
 };
 
 export type UsageRollups = {
@@ -164,8 +177,9 @@ export type UsageRollups = {
  *    （实测 27 个会话、约 1.07 亿 Token）。Codex 文件整份重算；其他来源没有变化，不重读。
  * 9：补记「压缩上下文」那一次模型调用（见 compactionRow 一节）。三家都整份重算。
  * 10：号池归属只使用共同响应 ID；重算清掉旧的时间猜测造成的账号小时账。
+ * 13：DeepSeek Harness 的流水补记出字时间（首字延迟、每秒 Token 数），额度详情的「模型速度」用。
  */
-const STATE_VERSION = 10;
+const STATE_VERSION = 13;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -202,6 +216,12 @@ function bucket(days: DayBuckets, day: string, source: string, model: string): U
   const bySource = (days[day] ??= {});
   const byModel = (bySource[source] ??= {});
   return (byModel[model] ??= emptyBucket());
+}
+
+/** 一份用量按比例取一部分（号池分摊用）：Token 和次数取整，费用不取整。 */
+function scaleUsage(usage: UsageBucket, share: number): UsageBucket {
+  const part = (value: number) => Math.round(value * share);
+  return { input: part(usage.input), output: part(usage.output), cacheRead: part(usage.cacheRead), cacheWrite: part(usage.cacheWrite), reasoning: part(usage.reasoning), costUsd: usage.costUsd * share, requests: part(usage.requests) };
 }
 
 export function addUsage(into: UsageBucket, usage: UsageBucket) {
@@ -258,7 +278,8 @@ function configOfficial(): Record<Kind, boolean | undefined> {
   } catch {
     // 没有 config.toml 同上
   }
-  return { "claude-code": claude, codex: undefined, "grok-build": grok };
+  // DeepSeek 按量付费，没有订阅额度窗口，不分官方 / 第三方
+  return { "claude-code": claude, codex: undefined, "grok-build": grok, "deepseek-harness": undefined };
 }
 
 type CodexProviderRule = { official: boolean };
@@ -428,7 +449,7 @@ function walkJsonl(dir: string, out: string[] = [], depth = 0) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walkJsonl(full, out, depth + 1);
-    else if (entry.name.endsWith(".jsonl")) out.push(full);
+    else if (entry.name.endsWith(".jsonl") || entry.name.endsWith(".jsonl.zstd")) out.push(full);
   }
   return out;
 }
@@ -439,6 +460,8 @@ function roots(): { kind: Kind; dir: string }[] {
     { kind: "claude-code", dir: path.join(home, ".claude", "projects") },
     { kind: "codex", dir: path.join(home, ".codex", "sessions") },
     { kind: "grok-build", dir: path.join(home, ".grok", "sessions") },
+    // DeepSeek Harness（0.3.42）：~/.dsh/sessions/<工作目录>/session-<id>/session.v4.jsonl.zstd
+    { kind: "deepseek-harness", dir: path.join(home, ".dsh", "sessions") },
   ];
 }
 
@@ -456,6 +479,8 @@ type Row = {
   cwd?: string;
   /** 压缩上下文那一次调用：CLI 没写 usage，按上下文大小和摘要长度估的。 */
   compaction?: boolean;
+  /** DeepSeek Harness：日志里记的出字时间（见 deepseekStream）。 */
+  stream?: { firstAt: number; tokensPerSec?: number };
 };
 
 /* ---------------- 压缩上下文 ---------------- */
@@ -650,6 +675,93 @@ function grokRows(obj: Record<string, unknown>): Row[] {
   }));
 }
 
+/*
+ * DeepSeek Harness（0.3.42）。会话文件是 session.v4.jsonl.zstd：每写一批事件追加一个 zstd 帧，帧里是整行的 JSON。
+ * 每次调用模型记一条 assistant/message，带 usage：inputTokens 不含缓存命中的部分（和它界面上的「缓存命中」对得上：
+ * cacheRead ÷ (input + cacheRead)），TokenPulse 这边 input 的口径是含缓存读写的，所以加回去。
+ * 型号在 message.source.model（deepseek-flash 这种内部名），思考等级在 request/header 的 config.reasoningEffort。
+ * 没有响应 ID；费用它不记，按单价表算。
+ */
+function deepseekRow(obj: Record<string, unknown>): Row | null {
+  if (obj.type !== "assistant/message") return null;
+  const data = obj.data as Record<string, unknown> | undefined;
+  const usage = data?.usage as Record<string, unknown> | undefined;
+  const at = num(obj.time);
+  if (!usage || !at) return null;
+  const message = data?.message as Record<string, unknown> | undefined;
+  const source = message?.source as Record<string, unknown> | undefined;
+  const response = (source?.replayState as Record<string, unknown> | undefined)?.response as Record<string, unknown> | undefined;
+  const cacheRead = num(usage.cacheReadTokens), cacheWrite = num(usage.cacheWriteTokens);
+  const input = num(usage.inputTokens) + cacheRead + cacheWrite, output = num(usage.outputTokens);
+  if (!input && !output) return null;
+  // 接口里叫 deepseek-flash，给人看的名字（DeepSeek-V4.1-Flash）从知识库里查；按请求当时的对应关系记下来
+  const model = typeof source?.model === "string" && source.model ? displayModel(source.model) : "";
+  // 单价表里是高峰价，闲时半价：按这次请求的时间算好记下来（按天汇总之后就分不出时段了）
+  const costUsd = estimateCost(model, { input, output, cacheRead, cacheWrite }) * (deepseekPeak(at) ? 1 : 0.5);
+  return { at, id: typeof message?.id === "string" ? message.id : "", model, returned: typeof response?.model === "string" && response.model ? displayModel(response.model) : undefined,
+    usage: { input, output, cacheRead, cacheWrite, reasoning: 0, costUsd, requests: 1 }, stream: deepseekStream(data?.stream, output) };
+}
+/**
+ * 回复是流式收的，日志里每一块都带时间（data.stream[].time，毫秒）。第一块到最后一块之间就是出字用的时间（含思考）。
+ * 回复太短（不到 20 个 Token 或不到 0.3 秒）算出来的速度没有意义，不记速度，只留第一块的时间给首字延迟用。
+ */
+function deepseekStream(value: unknown, output: number): Row["stream"] {
+  if (!Array.isArray(value) || !value.length) return undefined;
+  const first = num((value[0] as Record<string, unknown> | null)?.time), last = num((value[value.length - 1] as Record<string, unknown> | null)?.time);
+  if (!first || last < first) return undefined;
+  const ms = last - first;
+  return { firstAt: first, ...(output >= 20 && ms >= 300 ? { tokensPerSec: Math.round(output / ms * 10000) / 10 } : {}) };
+}
+/** 首字延迟 = 第一块回复的时间 − 这一步开始的时间；对不上（没记到开始、差了十分钟以上）就不记。 */
+function deepseekTiming(stream: NonNullable<Row["stream"]>, stepStartAt?: number) {
+  const first = stepStartAt ? stream.firstAt - stepStartAt : -1;
+  return { stream: true, ...(first > 0 && first < 600_000 ? { firstTokenMs: first } : {}), ...(stream.tokensPerSec ? { tokensPerSec: stream.tokensPerSec } : {}) };
+}
+/** DeepSeek 的高峰时段：UTC 周一到周五 01:00–04:00 和 06:00–10:00。中国法定节假日不算高峰，这里判断不了，节假日会按高峰价多算一点。 */
+export function deepseekPeak(at: number) {
+  const time = new Date(at), day = time.getUTCDay(), hour = time.getUTCHours();
+  return day >= 1 && day <= 5 && ((hour >= 1 && hour < 4) || (hour >= 6 && hour < 10));
+}
+
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+/** 把一段字节里完整的 zstd 帧依次解开。最后一帧没写完（或者这次没读全）就停在它前面，consumed 是已经解开的字节数。 */
+function zstdFrames(raw: Buffer): { text: string; consumed: number } {
+  const unzip = (zlib as unknown as { zstdDecompressSync?: (data: Buffer) => Buffer }).zstdDecompressSync;
+  if (!unzip) return { text: "", consumed: 0 };
+  const parts: Buffer[] = [];
+  let at = 0;
+  while (at < raw.length) {
+    const end = zstdFrameEnd(raw, at);
+    if (end < 0) break;
+    try { parts.push(unzip(raw.subarray(at, end))); } catch { break; }
+    at = end;
+  }
+  return { text: Buffer.concat(parts).toString("utf8"), consumed: at };
+}
+/**
+ * 从 at 开始的这一帧到哪里结束；没写完或者不是 zstd 帧返回 -1。
+ * 不能靠「解得开」来判断：帧被截断时解压函数不报错，只是少给内容，那样会把没写完的帧当成读过了。
+ * 所以按帧的结构走一遍（RFC 8878）：帧头 → 一个个块（3 字节块头里写着大小和「是不是最后一块」）→ 可选的 4 字节校验。
+ */
+function zstdFrameEnd(raw: Buffer, at: number): number {
+  if (at + 6 > raw.length || raw.compare(ZSTD_MAGIC, 0, 4, at, at + 4) !== 0) return -1;
+  const descriptor = raw[at + 4];
+  const single = (descriptor >> 5) & 1, contentSizeFlag = descriptor >> 6;
+  let pos = at + 5 + (single ? 0 : 1) + [0, 1, 2, 4][descriptor & 3] + (contentSizeFlag === 0 ? single : [0, 2, 4, 8][contentSizeFlag]);
+  for (;;) {
+    if (pos + 3 > raw.length) return -1;
+    const header = raw[pos] | (raw[pos + 1] << 8) | (raw[pos + 2] << 16);
+    const type = (header >> 1) & 3;
+    if (type === 3) return -1;
+    // RLE 块（type 1）不管声明多大，只占 1 个字节
+    pos += 3 + (type === 1 ? 1 : header >> 3);
+    if (pos > raw.length) return -1;
+    if (header & 1) break;
+  }
+  if ((descriptor >> 2) & 1) pos += 4;
+  return pos > raw.length ? -1 : pos;
+}
+
 /* ---------------- 扫一个文件 ---------------- */
 
 /** 一轮扫描里攒下的请求流水。rescanned：有文件从头重读过，流水里会有重复，扫完要整理。 */
@@ -683,7 +795,7 @@ function scanFile(
     if (state.offset > 0) { out.rescanned = true; state.replayUntil = Math.min(stat.size, Math.max(state.replayUntil || 0, state.offset)); }
     if (metadataOnly) state.metadataOnlyUntil = state.offset; else delete state.metadataOnlyUntil;
     state.offset = 0;
-    if (!metadataOnly) { state.days = {}; state.hours = {}; state.accountHours = {}; }
+    if (!metadataOnly) { state.days = {}; state.hours = {}; state.accountHours = {}; state.routedHours = {}; }
     state.model = undefined;
     state.effort = undefined;
     state.effortSource = undefined;
@@ -698,6 +810,8 @@ function scanFile(
     state.pendingCompact = undefined;
     state.grokCompactOutput = undefined;
     state.cacheRatio = undefined;
+    state.turnStartAt = undefined;
+    state.lastTurnAt = undefined;
   };
   if (state.v !== STATE_VERSION) {
     state.v = STATE_VERSION;
@@ -714,13 +828,16 @@ function scanFile(
   }
   const end = Math.min(stat.size, state.offset + MAX_CHUNK);
   let text = "";
+  // 压缩的会话文件（DeepSeek Harness）：偏移按压缩后的字节算，一次推进到最后一个完整的帧
+  let packed = -1;
   try {
     const fd = fs.openSync(file, "r");
     try {
       const length = end - state.offset;
       const buffer = Buffer.allocUnsafe(length);
       const read = fs.readSync(fd, buffer, 0, length, state.offset);
-      text = buffer.subarray(0, read).toString("utf8");
+      if (kind === "deepseek-harness") { const frames = zstdFrames(buffer.subarray(0, read)); text = frames.text; packed = frames.consumed; }
+      else text = buffer.subarray(0, read).toString("utf8");
     } finally {
       fs.closeSync(fd);
     }
@@ -730,13 +847,14 @@ function scanFile(
   // 最后一行可能只读了一半：留到下次，偏移只推进到最后一个完整换行。
   const lastBreak = text.lastIndexOf(String.fromCharCode(10));
   if (lastBreak < 0) return false;
-  const consumed = Buffer.byteLength(text.slice(0, lastBreak + 1), "utf8");
+  const consumed = packed >= 0 ? packed : Buffer.byteLength(text.slice(0, lastBreak + 1), "utf8");
   const source = SOURCES[kind];
   let touched = false;
   let lineEnd = state.offset;
   const rowsBefore: Row[] = [];
   for (const line of text.slice(0, lastBreak).split(String.fromCharCode(10))) {
     lineEnd += Buffer.byteLength(line, "utf8") + 1;
+    if (packed >= 0) lineEnd = state.offset + packed;
     const metadataOnly = state.metadataOnlyUntil != null && lineEnd <= state.metadataOnlyUntil;
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
@@ -761,10 +879,22 @@ function scanFile(
       const identity = attachment?.identity as Record<string, unknown> | undefined;
       if (typeof identity?.modelId === "string" && identity.modelId) state.requested = identity.modelId;
     }
+    if (kind === "deepseek-harness") {
+      if (obj.type === "session" && typeof obj.cwd === "string" && obj.cwd) state.cwd = obj.cwd;
+      // 每次调用模型前写一条 step/start：到第一块回复之间就是首字延迟
+      if (obj.type === "step/start") state.turnStartAt = num(obj.time) || undefined;
+      if (obj.type === "request/header") {
+        const config = (((obj.data as Record<string, unknown> | undefined)?.header as Record<string, unknown> | undefined)?.config) as Record<string, unknown> | undefined;
+        if (typeof config?.model === "string" && config.model) state.requested = displayModel(config.model);
+        const effort = typeof config?.reasoningEffort === "string" ? config.reasoningEffort.slice(0, 20) : "";
+        state.effort = effort || undefined; state.effortSource = effort ? "request/header.reasoningEffort" : undefined;
+      }
+    }
     if (kind === "grok-build") {
       const update = (obj.params as Record<string, unknown> | undefined)?.update as Record<string, unknown> | undefined;
       const meta = update?._meta as Record<string, unknown> | undefined;
       if (update?.sessionUpdate === "user_message_chunk" && typeof meta?.modelId === "string" && meta.modelId) state.requested = meta.modelId;
+      if (update?.sessionUpdate === "user_message_chunk" && !state.turnStartAt) state.turnStartAt = num(obj.timestamp) * 1000 || undefined;
     }
     if (kind === "codex") {
       const payload = obj.payload as Record<string, unknown> | undefined;
@@ -808,7 +938,7 @@ function scanFile(
         state.effort = found?.effort; state.effortSource = found ? "update._meta." + found.source : undefined;
       }
     }
-    let one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : null;
+    let one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : kind === "deepseek-harness" ? deepseekRow(obj) : null;
     if (kind === "codex") {
       if (obj.type === "token_usage_record") state.codexRecords = true;
       else if (!one && !state.codexRecords) one = codexTokenCountRow(obj, state);
@@ -848,6 +978,29 @@ function scanFile(
       rowsBefore.push({ at: pending.at, id: pending.id, model: turnRows[0].model, usage: compactionUsage(pending.pre, pending.cached ?? 0, pending.output ?? 0), compaction: true });
     }
     const rows = [...rowsBefore.splice(0), ...turnRows];
+    /*
+     * Grok 号池（0.3.42）：会话文件一整轮汇总成一条，没有响应 ID，对不上单次请求。
+     * 改用这一轮的时间范围去查转发记录：号池把这段时间里的请求交给了谁、各占多少 Token，就按这个比例把这一轮的用量分给他们。
+     * 总量不变，只是原来没有归属的那部分有了去处；交给第三方供应商的那一份仍然不归任何官方账号。
+     */
+    let shares: Map<string, number> | null = null, shareTotal = 0, soleAccount = "";
+    if (kind === "grok-build" && turnRows.length) {
+      const at = turnRows[0].at;
+      // 没记下这一轮什么时候开始的：只往前看 10 分钟，宁可少归也不把更早的号池请求算进来
+      const from = Math.max(state.turnStartAt ?? Math.max(state.lastTurnAt ?? 0, at - 10 * 60_000), at - 6 * HOUR_MS);
+      const hit = routeShares("grok", from - 2000, at + 2000);
+      if (hit.size) {
+        shares = hit;
+        for (const weight of hit.values()) shareTotal += weight;
+        if (hit.size === 1 && !hit.has("")) soleAccount = [...hit.keys()][0];
+      }
+      state.lastTurnAt = at;
+      state.turnStartAt = undefined;
+    }
+    const addRouted = (account: string, at: number, model: string, usage: UsageBucket) => {
+      const byHour = (((state.routedHours ??= {})[account] ??= {})[String(Math.floor(at / HOUR_MS) * HOUR_MS)] ??= {});
+      addUsage((byHour[model] ??= emptyBucket()), usage);
+    };
     for (const row of rows) {
       const model = row.model || state.model || "未知模型";
       // Claude Code 内部占位的那种，不是真的 API 请求，别算进去。
@@ -865,7 +1018,17 @@ function scanFile(
         addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
         const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
         addUsage((byModel[model] ??= emptyBucket()), row.usage);
-        if (routed || state.official === true) {
+        const split = !routed && !row.compaction ? shares : null;
+        if (routed) addRouted(routed.id, row.at, model, row.usage);
+        if (split) {
+          for (const [account, weight] of split) {
+            if (!account) continue;
+            const part = scaleUsage(row.usage, weight / shareTotal);
+            addRouted(account, row.at, model, part);
+            const byAccountHour = (((state.accountHours ??= {})[account] ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
+            addUsage((byAccountHour[model] ??= emptyBucket()), part);
+          }
+        } else if (routed || state.official === true) {
           const account = routed ?? resolveAccount(
             KIND_OF_SOURCE[source],
             row.at,
@@ -903,9 +1066,11 @@ function scanFile(
         reasoning: row.usage.reasoning,
         costUsd: row.usage.costUsd,
         calls: row.usage.requests,
+        ...(row.stream ? { timing: deepseekTiming(row.stream, state.turnStartAt) } : {}),
         accountRef: state.accountRef,
         accountEmail: state.accountEmail,
-        ...(routed ? { routedAccount: routed.id, routedAccountBasis: "response-id" as const } : {}),
+        ...(routed ? { routedAccount: routed.id, routedAccountBasis: "response-id" as const }
+          : soleAccount && !row.compaction ? { routedAccount: soleAccount, routedAccountBasis: "route-window" as const } : {}),
         ...(row.compaction ? { compaction: true } : {}),
       });
       touched = true;

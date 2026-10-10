@@ -78,6 +78,11 @@ export function accountSpeed(kind: OfficialAccountKind, account: string, days: n
       rows.push({ at, model, fast: isFastTier(row.tier), speed, first, output: Number(row.output) || 0 });
     }
   }
+  return speedSeriesOf(rows, since, now);
+}
+
+/** 一批量到的速度 → 按模型分行、按时间分桶。DeepSeek Harness 的速度是它自己日志里记的（deepseek-insight.ts），也走这里。 */
+export function speedSeriesOf(rows: { at: number; model: string; fast: boolean; speed: number; first: number; output: number }[], since: number, now: number): SpeedSeries {
   // 账号图只画速度；首字摘要包含同组的短回复，速度次数 / 输出保持独立。
   const measured = rows.filter(row => row.speed > 0);
   if (!measured.length) return { from: since || now - 7 * DAY, to: now, bucketMs: DAY, models: [], max: 0, total: 0 };

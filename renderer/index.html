@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="agent-switch.css">
 <link rel="stylesheet" href="concurrency.css">
 <link rel="stylesheet" href="tokens-ci.css">
+<link rel="stylesheet" href="deepseek-balance.css">
 <link rel="stylesheet" href="intro.css">
 </head>
 <body>
@@ -145,6 +146,7 @@
       <div id="quota-cards" class="quota-grid">
         <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
       </div>
+      <!-- DeepSeek 余额（renderer/deepseek-balance.js）：按量付费，没有额度窗口 -->
     </section>
 
     <div id="usage-filters" class="filterbar">
@@ -238,7 +240,10 @@
             <div class="account-tabs-thumb"></div>
           </div>
         </div>
-        <span class="muted"><svg class="icon"><use href="#i-info"/></svg>官方窗口独立于用量筛选</span>
+        <div class="quota-toolbar-side">
+          <span class="muted"><svg class="icon"><use href="#i-info"/></svg>官方窗口独立于用量筛选</span>
+          <button id="quota-add-account" class="btn btn-accent" type="button" aria-haspopup="menu" aria-expanded="false"><svg class="icon"><use href="#i-plus"/></svg>添加账号</button>
+        </div>
       </div>
       <div id="quota-detail"></div>
       <section id="quota-model-study" class="panel model-study" aria-label="模型容量排行"></section>
@@ -391,6 +396,13 @@
           <button id="open-tokens-ci" class="btn" type="button"><svg class="icon"><use href="#i-up"/></svg>设置 tokens.ci 上传</button>
         </div>
         <div class="setting-block">
+          <div class="setting-title">API Key 余额监控</div>
+          <p class="setting-hint">DeepSeek 按量付费，没有订阅额度。填一个 DeepSeek 开放平台的 API Key，TokenPulse 每 10 分钟查一次余额，低于你设的数时提醒。有几个账号可以填几个，每个账号在额度详情里各有一页。Key 只保存在这台电脑上，只用来查余额，查余额不花钱。</p>
+          <button id="open-deepseek-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加 DeepSeek 账号</button>
+          <p class="setting-hint">自己买的第三方中转站 Key 也可以监控：填站点地址和 Key，能看到余额、Key 的额度和限速窗口、每天的用量。支持 sub2api 和 new-api / one-api 搭的站。Key 只发给你填的那个站点。</p>
+          <button id="open-relay-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加第三方 Key</button>
+        </div>
+        <div class="setting-block">
           <div class="setting-title">供应商配置备份</div>
           <p class="setting-hint">TokenPulse 每次改动 Claude / Codex / Grok 的配置文件前都会先让你确认，并自动留一份备份；接管前的原件也单独保存。可以在这里一键还原，或打开只读保护。</p>
           <button id="open-config-backups" class="btn" type="button"><svg class="icon"><use href="#i-lock"/></svg>打开配置保护</button>
@@ -470,6 +482,7 @@
 <script src="agent-switch.js"></script>
 <script src="concurrency.js"></script>
 <script src="tokens-ci.js"></script>
+<script src="deepseek-balance.js"></script>
 <script src="intro.js"></script>
 </body>
 </html>

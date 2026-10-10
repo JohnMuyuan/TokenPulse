@@ -23,7 +23,7 @@ import { aliasRules } from "./knowledge";
 export type VerifyStatus = "match" | "mismatch" | "suspect" | "unverified";
 
 export type VerifyInput = {
-  kind: "claude-code" | "codex" | "grok-build" | "cc-switch";
+  kind: "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "cc-switch";
   /** 客户端请求的型号。undefined = 会话里没记下来。 */
   requested?: string;
   /** 上游返回的型号。undefined = 这家 CLI 不记。 */
@@ -76,7 +76,7 @@ export function idShape(id?: string) {
 /** 从响应 ID 看是哪种接口回的。 */
 export function channelOf(kind: VerifyInput["kind"], responseId?: string) {
   const id = responseId || "";
-  if (!id) return kind === "grok-build" ? "xAI（Grok Build）" : "未知";
+  if (!id) return kind === "grok-build" ? "xAI（Grok Build）" : kind === "deepseek-harness" ? "DeepSeek" : "未知";
   if (/^msg_bdrk_/.test(id)) return "AWS Bedrock";
   if (/^msg_vrtx_/.test(id)) return "Google Vertex";
   if (ANTHROPIC_MESSAGE.test(id)) return "Anthropic 官方格式";
@@ -141,6 +141,9 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
     if (responseId && !OPENAI_RESPONSE.test(responseId)) {
       problems.push(`响应 ID 是 ${channel}（${idShape(responseId)}），不是 OpenAI 的 resp_ + 十六进制`);
     }
+  } else if (kind === "deepseek-harness") {
+    if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");
+    else if (!requested) notes.push("会话记录里没记下请求的型号");
   } else {
     if (!returned) notes.push("这一轮没有返回按型号拆分的用量，无法核对返回型号");
     else if (!requested) notes.push("这一轮没记下请求的型号");

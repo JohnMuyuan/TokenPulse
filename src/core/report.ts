@@ -292,11 +292,6 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   for (const file of Object.values(rollups.files)) {
     const account = file.kind ? ACCOUNT_OF_KIND[file.kind] : undefined;
     if (!account) continue;
-    if (file.official !== true) {
-      if (file.official === false) sessions[account].excluded += 1;
-      continue;
-    }
-    sessions[account].included += 1;
     const addHours = (hours: Record<string, Record<string, UsageBucket>> | undefined, accountId?: string) => {
       for (const [key, models] of Object.entries(hours ?? {})) {
         const hour = Number(key);
@@ -320,6 +315,13 @@ export function buildSnapshot(now = Date.now()): Snapshot {
         }
       }
     };
+    if (file.official !== true) {
+      if (file.official === false) sessions[account].excluded += 1;
+      // 文件整体不是官方的（配置里填的是本地路由），但经号池发出去的那部分实际用的是官方账号：算到号池成员名下（0.3.42）
+      for (const [accountId, hours] of Object.entries(file.routedHours ?? {})) if (accountId) addHours(hours, accountId);
+      continue;
+    }
+    sessions[account].included += 1;
     // 0.3.3 以后重扫出的小时账按账号拆开；旧账本没有该字段，先保留未标注的兼容行。
     if (file.accountHours && Object.keys(file.accountHours).length) {
       for (const [accountId, hours] of Object.entries(file.accountHours)) addHours(hours, accountId || undefined);

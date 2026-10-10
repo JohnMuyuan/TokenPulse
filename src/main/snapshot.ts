@@ -1,4 +1,5 @@
 import type { ModelStudies, ModelStudyQuery } from "../core/model-study";
+import type { DeepSeekQuery } from "../core/deepseek-insight";
 import path from "path";
 import { Worker } from "worker_threads";
 import type { Snapshot } from "../core/report";
@@ -38,6 +39,11 @@ export function loadSessions(): Promise<SessionSummary[]> {
 
 export function loadSessionDetail(kind: string, id: string): Promise<SessionDetail | null> {
   return runWorker<SessionDetail | null>({ sessions: "detail", kind, id });
+}
+
+/** DeepSeek 账号页的分析：读余额历史和 DeepSeek Harness 的流水，同样放在 worker 里。 */
+export function loadDeepSeek<T = unknown>(query: DeepSeekQuery): Promise<T> {
+  return runWorker<T>({ deepseek: query });
 }
 
 /** 模型容量校准和周期时间轴在 worker 计算，不占用窗口事件循环。 */

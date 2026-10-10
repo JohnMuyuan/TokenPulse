@@ -261,8 +261,8 @@ function build({ manual, current, litellm, openrouter, epoch, today }) {
   // 更具体（更长）的 id 排前面；锚定了整串，顺序只影响可读性
   const autoRules = [...auto.values()].sort((a, b) => b.auto.length - a.auto.length || a.auto.localeCompare(b.auto));
   const labels = (manual.labels || []).filter(live);
-  const body = { prices: [...pinned, ...autoRules, ...manual.fallback], aliases: manual.aliases, capabilities: manual.capabilities, ...(effortUsage ? { effortUsage } : {}), ...(labels.length ? { labels } : {}) };
-  const unchanged = current && JSON.stringify({ prices: current.prices, aliases: current.aliases, capabilities: current.capabilities, ...(current.effortUsage ? { effortUsage: current.effortUsage } : {}), ...(current.labels?.length ? { labels: current.labels } : {}) }) === JSON.stringify(body);
+  const body = { prices: [...pinned, ...autoRules, ...manual.fallback], aliases: manual.aliases, capabilities: manual.capabilities, ...(effortUsage ? { effortUsage } : {}), ...(labels.length ? { labels } : {}), ...(manual.displayNames?.length ? { displayNames: manual.displayNames } : {}) };
+  const unchanged = current && JSON.stringify({ prices: current.prices, aliases: current.aliases, capabilities: current.capabilities, ...(current.effortUsage ? { effortUsage: current.effortUsage } : {}), ...(current.labels?.length ? { labels: current.labels } : {}), ...(current.displayNames?.length ? { displayNames: current.displayNames } : {}) }) === JSON.stringify(body);
   let version = current?.version || '';
   if (!unchanged) {
     const day = today.slice(0, 10).replace(/-/g, '.');

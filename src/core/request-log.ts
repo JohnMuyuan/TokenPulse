@@ -21,7 +21,7 @@ import { windowSegments } from "./quota-monitor";
  */
 
 /** cc-switch：从 CC Switch 导入的（TokenPulse 自己那天没有这个工具的记录，或者是它不扫的工具）。 */
-export type RequestKind = "claude-code" | "codex" | "grok-build" | "cc-switch";
+export type RequestKind = "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "cc-switch";
 
 export type RequestRecord = {
   /** 去重键，同一家 CLI 内唯一：Claude 的 requestId、Codex 的 response_id、Grok 的 prompt_id + 型号。 */
@@ -63,7 +63,7 @@ export type RequestRecord = {
   /** 经 TokenPulse 号池发出去的：扫描时按路由账本对上的号池成员（官方账号 id）。记在流水里，账本过期清掉之后仍然知道。 */
   routedAccount?: string;
   /** 新归属已用共同响应 ID 核验；旧的时间猜测不能继续当成确证。 */
-  routedAccountBasis?: "response-id";
+  routedAccountBasis?: "response-id" | "route-window";
   /** 压缩上下文那一次调用：CLI 没写 usage，按压缩前的上下文和摘要长度估的（见 usage-scan.ts）。 */
   compaction?: boolean;
   /** 查询时附上的：同一次请求在代理里的记录——TokenPulse 自己转发时读到的（见 withRoute），或 CC Switch 代理的（见 matchProxy）。不落盘。 */
@@ -72,7 +72,7 @@ export type RequestRecord = {
   timing?: RouteTiming;
 };
 
-const SOURCE_NAMES: Record<RequestKind, string> = { "claude-code": "Claude Code", codex: "Codex CLI", "grok-build": "Grok Build", "cc-switch": "CC Switch" };
+const SOURCE_NAMES: Record<RequestKind, string> = { "claude-code": "Claude Code", codex: "Codex CLI", "grok-build": "Grok Build", "deepseek-harness": "DeepSeek Harness", "cc-switch": "CC Switch" };
 const sourceOf = (record: RequestRecord) => record.source ?? SOURCE_NAMES[record.kind] ?? record.kind;
 
 export function requestDir() {
@@ -337,6 +337,8 @@ function sessionOf(record: RequestRecord) {
   if (record.kind === "cc-switch") return record.id;
   const base = path.basename(record.file, ".jsonl");
   // Grok 的文件都叫 updates.jsonl，会话 ID 是上一级目录
+  // DeepSeek Harness 的文件都叫 session.v4.jsonl.zstd，会话 ID 也在上一级目录（session-<id>）
+  if (record.kind === "deepseek-harness") return path.basename(path.dirname(record.file)).replace(/^session-/, "");
   return record.kind === "grok-build" ? path.basename(path.dirname(record.file)) : base.replace(/^rollout-[\dT:-]+-/, "");
 }
 
@@ -352,6 +354,8 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
   // 经 TokenPulse 号池发出去的（0.3.34）：这一条实际用的是号池里的官方账号，按路由账本归到它名下、算官方用量
   const routed: RequestAccount | null = record.kind === "cc-switch" ? null
     : record.routedAccount && record.routedAccountBasis === "response-id" && record.responseId ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route" }
+    // Grok：这一轮的请求在转发记录里全部交给了同一个号池账号（见 usage-scan.ts）
+    : record.routedAccount && record.routedAccountBasis === "route-window" ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route-window" }
     : routedAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, accounts.labels, record.responseId);
   const official = routed ? true : fileOfficial;
   // 走中转 / API Key 的不是官方账号发的；CC Switch 导入的走它代理的也一样

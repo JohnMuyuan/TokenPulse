@@ -22,7 +22,7 @@ export type LoginTimeline = { version: 1; kinds: Partial<Record<OfficialAccountK
 
 /** 依据：会话里直接写了 / 按登录时间线 / 时间线开始前的推断。 */
 /** route：经 TokenPulse 的号池发出去的，路由记下了交给哪个账号（见 route-ledger.ts）。 */
-export type AccountBasis = "session" | "timeline" | "inferred" | "route";
+export type AccountBasis = "session" | "timeline" | "inferred" | "route" | "route-window";
 export type RequestAccount = { id: string; label: string; basis: AccountBasis };
 
 function file() {

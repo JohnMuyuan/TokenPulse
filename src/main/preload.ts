@@ -28,6 +28,25 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return on ? ipcRenderer.invoke("demo:snapshot") : ipcRenderer.invoke("demo:end");
   },
   isDemo: () => demo,
+  /** DeepSeek 余额监控（0.3.42）。API Key 只往主进程送，不会再读回来。 */
+  deepseekBalance: {
+    state: () => ipcRenderer.invoke("deepseek-balance:state"),
+    add: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:add", value)),
+    update: (id: string, value: unknown) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:update", id, value)),
+    remove: (id: string) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:remove", id)),
+    refresh: (id: string) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:refresh", id)),
+    refreshAll: () => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:refresh-all")),
+    reorder: (ids: string[]) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:reorder", ids)),
+    /** 账号页的分析：消耗、预测、模型换算；时间线和速度各一个。 */
+    insight: (id: string) => ipcRenderer.invoke("deepseek-balance:insight", id),
+    timeline: (query: unknown) => ipcRenderer.invoke("deepseek-balance:timeline", query),
+    speed: (days: number) => ipcRenderer.invoke("deepseek-balance:speed", days),
+    onState: (handler: (state: unknown) => void) => {
+      const listener = (_event: unknown, state: unknown) => handler(state);
+      ipcRenderer.on("deepseek-balance-state", listener);
+      return () => ipcRenderer.off("deepseek-balance-state", listener);
+    },
+  },
   /** tokens.ci 自动上传（0.3.38）。演示模式下会改东西的操作一律拒绝。 */
   tokensCi: {
     state: () => ipcRenderer.invoke("tokens-ci:state"),

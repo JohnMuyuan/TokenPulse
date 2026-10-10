@@ -130,7 +130,7 @@ check('third-party Grok usage stays third-party near a pool request', async () =
   const state = Object.values(rollups.files)[0]; state.v = 9; state.accountHours = { 'grok:pool-a': {} };
   fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'usage-rollups.json'), JSON.stringify(rollups));
   scanner.scanLocalUsage(); const repaired = Object.values(scanner.readRollups().files)[0];
-  assert.equal(repaired.v, 10); assert(!Object.hasOwn(repaired.accountHours || {}, 'grok:pool-a')); assert.equal(Object.values(Object.values(Object.values(repaired.days)[0])[0])[0].input, 1000);
+  assert.equal(repaired.v, 13); assert(!Object.hasOwn(repaired.accountHours || {}, 'grok:pool-a')); assert.equal(Object.values(Object.values(Object.values(repaired.days)[0])[0])[0].input, 1000);
 });
 check('pagination includes every equal-time row, with stable identity for old logs', async () => {
   const at = new Date(2025, 0, 15).getTime(); const file = path.join(ledger.routeLogDir(), '2025-01.jsonl'); fs.mkdirSync(path.dirname(file), { recursive: true });
