@@ -1,6 +1,80 @@
-# Current handoff · 0.3.41 published (2026-10-09)
+# Current handoff · 0.3.42 published (2026-10-10)
 
 ## 新对话先看这里
+
+**0.3.42 已正式发布（2026-10-10）。下面各条里「未提交、未发布」「等用户看测试版」的说法都已过期，以本段为准。**
+
+- 提交 `23d8491`（0.3.42：DeepSeek 和第三方 Key 的余额监控），标签 `v0.3.42`，已推送 `origin/main`。GitHub Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.42 ，非草稿、非预发布，`releases/latest` 指向 `v0.3.42`。
+- 附件 4 个，大小与本地一致：`TokenPulse-0.3.42-Setup.exe` 112,534,382、`.blockmap` 119,753、`TokenPulse-0.3.42-Portable.exe` 112,277,174、`latest.yml` 352；公开下载到的 `latest.yml` 是 `version: 0.3.42`。发布说明：`dist/release-0.3.42.md`（同 GitHub Release 正文）、`renderer/intro.js` 的 NOTES、`i18n.js` 的英文。
+- 发布前的验证：`npm test` 退出 0（451 PASS）、`npm run test:ui` 退出 0（57 PASS）；`npm run dist` 退出 0，包内 97 个文件和源码一致，版本 0.3.42；exe / asar / 安装包未占用，没有遗留进程。
+- **发布时的一个插曲**：`git fetch` 发现远程多了机器人的提交 `6dc80bc`（知识库自动更新到 2026.10.10），和本地知识库版本号相同、内容不同（远程没有 DeepSeek 的单价和显示名，本地没有它新增的 `gpt-rosalind-discovery`）。处理：`NODE_USE_ENV_PROXY=1 node scripts/update-knowledge.cjs --write` 重新生成成 **2026.10.10.1**（127 条单价、2 条显示名，两边的都有），重跑 `npm test`、重新 `npm run dist` 并核对，再提交、`git rebase origin/main`（`models.json` 冲突取本地重新生成的那份）。直接跑这个脚本会连接超时，要带 `NODE_USE_ENV_PROXY=1` 走系统代理。
+- 没验证 / 已知限制（发布说明里也写了）：真实的 DeepSeek 余额接口没有用真实 Key 测过；new-api / one-api 的余额接口没有用真实站点测过；sub2api 只在用户的测试站上测了钱包余额模式；系统通知的实际弹出、上传图标图片、真实鼠标拖动标签、英文界面逐句目检都没做。
+- 没做：**供应商切换支持 DeepSeek Harness**——用户决定先不做（调查结论在下面 0.3.42 的条目里）。用户说接下来还有一个「特别的东西」要做，内容还没说。
+- 用户给过的那个中转站测试 Key 没有写进任何文件；测试时被发给过 example.com 一次，已告知用户并建议删除。
+
+**以下是 0.3.42 开发过程的记录（2026-10-09 起，按时间顺序追加）：号池用量算到成员名下（Grok 按转发记录分摊）。**
+
+- 起因：用户用 Grok 号池，成员账号下面一直没有用量。原因两层：(1) Grok 会话文件一整轮汇总成一条、没有响应 ID，0.3.37 起不按时间猜，所以不归属；(2) **report.ts 对 `official !== true` 的文件整份跳过**，而用号池时配置里是本地路由、文件整体就是「不是官方」，所以连 Claude / Codex 号池成员已经对上的 `accountHours` 也没进账号的小时图表。
+- 改动：
+  - `route-ledger.ts` 新增 `routeShares(kind, from, to)`：这段时间里本地路由把这家工具的请求交给各账号的 Token 数（透明转发、失败、没读到用量的不算；第三方供应商记在空字符串名下），按月份文件建索引并缓存。
+  - `usage-scan.ts`：Grok 每一轮用「第一段用户消息的时间（`turnStartAt`）→ `turn_completed` 的时间」（前后各放 2 秒；没有开始时间时取上一轮结束和 10 分钟前较晚的那个，最长 6 小时）查 `routeShares`，按比例把这一轮的用量分给各账号（`scaleUsage`，Token 和次数取整）；一轮只交给一个账号时流水记 `routedAccount` + `routedAccountBasis: "route-window"`。新增 `FileState.routedHours`（经号池的部分按账号的小时账，Claude / Codex 靠响应 ID 对上的也写进去）。`STATE_VERSION` 10 → 11（升级后整份重扫，把历史补上）。
+  - `report.ts`：文件不是官方时，仍把 `routedHours` 里有账号的部分加进账号的小时用量。
+  - `request-log.ts` / `login-timeline.ts`：账号依据多一种 `route-window`；`app.js` 的依据标签和说明、`i18n.js`、`intro.js` 的 0.3.42 说明、README 号池归属一段已更新。
+- 验证：新 `scripts/test-grok-pool.cjs`（加入 npm test）4/4：分摊比例、第三方那份不归属、总量不变、单账号的轮次标账号、重扫不重复。`test-routing-regressions.cjs` 里的版本断言 10 → 11（场景本身仍通过）。`npm test` 退出 0，`npm run test:ui` 退出 0（48 PASS）。在用户数据目录的副本上只读试跑（只复制了转发记录，读真实 `~/.grok` 会话，测完已删）：扫描 4.8 秒，6 个 Grok 号池成员各分到约 230–270 万 Token，合计占 Grok 全部历史的 2%（其余是直连官方的）；真实会话的 `user_message_chunk` 54 条都带时间戳。
+- 测试版：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，91 个运行时文件与源码一致，包内 0.3.42，exe / asar 未占用。
+- 已知限制：一轮交给两个以上账号时，「逐条请求」里那一条不标账号、仍显示为非官方（只进各自的小时用量）；同一时间有两个 Grok 会话都走号池时，各轮的比例会混在一起（总量不变）；Grok 开着透明转发时配置里也有 `base_url`，文件同样被当成「不是官方」，这部分用量目前不归到 CLI 登录的账号（旧问题，没动）；升级后第一次启动要重扫，多等几秒。
+- **同版本追加：支持 DeepSeek Harness 的用量（2026-10-10，用户要求和 Grok 号池放进同一个版本）。** 只做了用量统计这一层。
+  - 对象：DeepSeek 官方的 `deepseek-ai/deepseek-harness`（桌面版，数据在 `~/.dsh`）。会话文件 `~/.dsh/sessions/<工作目录>/session-<id>/session.v4.jsonl.zstd`：每批事件追加一个 zstd 帧，帧里是整行 JSON。`session` 行有 `cwd`；`request/header` 的 `data.header.config` 有 `model` / `reasoningEffort`（中途换等级会再写一条，`reason: "change"`）；每次调用模型一条 `assistant/message`，`data.usage` 是 `inputTokens / outputTokens / cacheReadTokens / cacheWriteTokens / totalTokens`，**inputTokens 不含缓存命中**（界面的「缓存命中」= cacheRead ÷ (input + cacheRead)，实测 85% 对得上），型号在 `data.message.source.model`（内部名 `deepseek-flash`，界面显示 DeepSeek-V41-Flash），`source.replayState.response.model` 当返回型号。没有响应 ID，不记费用。
+  - 代码：`usage-scan.ts` 新 Kind `deepseek-harness`（来源名「DeepSeek Harness」）、`roots()`、`walkJsonl` 认 `.jsonl.zstd`、`deepseekRow`（input 把缓存读写加回去）、`zstdFrames` + `zstdFrameEnd`（**按 RFC 8878 的帧结构算出每帧的结束位置**——不能靠「解得开」判断，截断的帧 `zstdDecompressSync` 不报错只少给内容，会把没写完的帧当成读过了；偏移按压缩后的字节记，停在最后一个完整帧）、`request/header` 更新 `state.requested` / `state.effort`。`official` 记 undefined（按量付费，没有额度窗口，不进账号 / 额度那套）。`request-log.ts` / `request-verify.ts` 的 kind、来源名、会话 ID（上级目录去掉 `session-`）、通道「DeepSeek」。`usage-insights.js` 给了品牌色，图标用现成的字母标。README 支持的工具表、0.3.42 更新说明、i18n 已补。Electron 44 自带的 Node 24.20 有 `zstdDecompressSync`。
+  - 验证：在用户真实会话上只读试跑（临时数据目录，已删）：三个会话合计 81,136 / 10,287 / 95,222 Token，其中「读取笔记并修改计数脚本」那个和用户截图里界面显示的 81.1K、2 轮 7 步、最后一步 13.1K、思考等级 high → max 都对得上；参考费用按知识库里 `deepseek` 那条单价算（$0.28 / $0.42 / 缓存 $0.028 每百万），`deepseek-flash` 的真实单价没核对过。新 `scripts/test-deepseek-harness.cjs`（加入 npm test）2/2：多帧、追加、半帧等待、换等级、不重复、不存对话内容。`npm test` 退出 0，`npm run test:ui` 退出 0（48 PASS）。
+  - 测试版已重打（含 Grok 号池 + DeepSeek Harness）：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，91 个文件一致，包内 0.3.42，未占用。
+  - 没做：额度 / 余额、会话管理、供应商切换、型号核验的特殊规则、专门的品牌图标；`dsh` 的命令行形态和第三方 provider 没见过样本；官方标注是开发者预览版，`session.v4` 的格式以后可能变。
+- **同版本再追加：DeepSeek 显示名 / 官方单价 / 余额监控（2026-10-10，用户确认三项都放进 0.3.42）。上面那条里「没做余额」「单价没核对」「只统计到 91 个文件」的说法以本条为准。**
+  - 显示名：会话里的型号是接口名 `deepseek-flash`，官方定价页写明它就是 DeepSeek-V4.1-Flash。知识库新增 `displayNames`（`knowledge/manual.json` → `models.json`，`update-knowledge.cjs` 会带上；`knowledge.ts` 的 `displayModel()`），扫描时把型号、返回型号、请求型号都换成显示名。`STATE_VERSION` 11 → 12（装过上一个测试版的会重扫一次，把 `deepseek-flash` 换成显示名）。
+  - 单价（`manual.json` 的 pinned，排在通用 `deepseek` 那条前面）：Flash 输入 $0.30 / 输出 $1.20 / 缓存 $0.006；V4-Pro $1.32 / $3.96 / $0.044，都是**高峰价**。闲时半价：`usage-scan.ts` 的 `deepseekPeak()`（UTC 周一到周五 01–04、06–10 点），费用在扫描时按请求时间算好写进记录。中国法定节假日判断不了，会按高峰价略多算。定价页只写「$」没写币种。`models.json` 是手工插入的，版本 2026.10.10；跑 `update-knowledge.cjs`（不带 --write）显示会生成 2026.10.10.1，说明和生成器的输出还有别的差异（上游价格变动），没写回。
+  - 余额监控：`src/main/deepseek-balance.ts`（`GET https://api.deepseek.com/user/balance`，走 `upstream-proxy`；10 分钟一次，启动 8 秒后先查；手动刷新至少隔 5 秒；低于提醒线通知一次，回升后重新计；401 / 403 的 Key 不保存）。Key 由用户自己在 DeepSeek 开放平台创建，存 `<数据目录>/deepseek-balance.json`（**明文**，和数据目录里其他凭据一样），不发给界面，界面只有 `sk-…后四位`。没有用 DeepSeek Harness 的登录凭据（那是账号授权，不是 API Key）。界面 `renderer/deepseek-balance.js|css`：总览（官方额度下面）和额度详情各一张卡，本机有 `~/.dsh` 或已填 Key 才显示；入口还有 设置 → 数据。IPC `deepseek-balance:*`，preload `deepseekBalance`。`TOKENPULSE_DEEPSEEK_BASE` 只给测试用。
+  - 验证：新 `scripts/test-deepseek-balance.cjs`（7/7，进 npm test）、`scripts/test-deepseek-balance-ui.cjs`（6 PASS，进 test:ui，假服务器 + 假 Key）。`npm test` 退出 0；`npm run test:ui` 退出 0（54 PASS）。真实会话只读试跑：三个会话显示 DeepSeek-V4.1-Flash、型号一致，费用 $0.00298 / $0.00195 / $0.00416。**没验证：真实 DeepSeek 余额接口**（没有用户的 Key，只按官方文档的字段做；等用户填 Key 后看）；系统通知的实际弹出没测。
+  - 测试版已重打：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，95 个文件（含 `knowledge/models.json`）和源码一致，包内 0.3.42，exe / asar 未占用，没有遗留进程。临时目录里的截图和日志没清（用户拒绝过一条带 `rm -rf` 的合并命令，之后命令都拆开执行）。
+- **余额监控按用户反馈重做了界面，并支持多个账号（2026-10-10；上一条里「总览和额度详情各一张卡」「一个 Key」的说法以本条为准）。** 用户测试后指出：额度详情里 DeepSeek 没有自己的卡片，反而每个账号的页面下面都挂着同一张余额卡；API Key 也应该能填多个。
+  - 现在：额度详情顶上每个 DeepSeek 账号一个标签（排在官方账号后面，字母标 D），点进去是这个账号自己的一页——只有余额（总余额 / 充值 / 赠送）、提醒线、Key 后四位和「刷新 / 设置 / 添加账号」，没有额度窗口、容量排行和时间线（`#page-quota.ds-mode` 用 CSS 藏掉那两节）。别的账号的页面里不再有 DeepSeek。总览保留一条，列出每个账号的余额，点一行去那个账号的页。装过 DeepSeek Harness 但没填 Key 时，额度详情有一个空的 DeepSeek 标签当入口。
+  - 接法：`app.js` 的 `drawAccountTabs` 把 `DeepSeekBalance.tabs()` 拼在后面（签名里也算上），`renderQuota` 开头判断 `DeepSeekBalance.owns(state.account)` 走 `DeepSeekBalance.renderQuota(host, key)`。选中的账号 key 是 `deepseek:<id>`（没账号时是 `deepseek`）。标签的 `data-kind` 和 `data-account` 相同，所以不参与拖动排序。`deepseek-balance.js` 里余额数据叫 `balance`，避免和 app.js 全局的 `state` 重名。
+  - 主进程：`deepseek-balance.json` 改成 `{ accounts: [{ id, label, apiKey, alertBelow, last, alerted }] }`，最多 20 个；旧的单 Key 格式（上一个测试版写的）读进来当第一个账号。方法 `add / update / remove / refresh(id) / refreshAll`；重复的 Key 拒绝；新加或换 Key 时 401 / 403 不保存、保持原样；手动刷新按账号各自限 5 秒；通知标题带账号名，点通知去额度详情。IPC `deepseek-balance:add|update|remove|refresh|refresh-all`。
+  - 验证：`test-deepseek-balance.cjs` 7/7（多账号、换 Key、旧格式迁移）；`test-deepseek-balance-ui.cjs` 7 PASS（标签、各自一页、别的账号页面里没有 DeepSeek、两个账号、总览、出错、改名 / 删除）。`npm test` 退出 0；`npm run test:ui` 退出 0（55 PASS）。仍然**没验证真实的 DeepSeek 余额接口**和系统通知的实际弹出。
+  - 测试版已重打：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，95 个文件一致，包内 0.3.42，exe / asar 未占用，没有遗留进程。
+- **同版本再追加：DeepSeek 账号页补全（2026-10-10，进行中）。** 用户看了多账号版之后反馈「只能看到多少钱」，要求把官方账号额度详情里的消耗趋势、最近 24 小时用量、时间线、模型速度、换一种模型能用多少都移植过来，并换上 AllAi 项目里的 DeepSeek 图标。上面「等用户看测试版」那条已过期，以本条为准。
+  - 思路：官方账号看「窗口用了百分之几」，DeepSeek 对应的是余额。新增余额历史（每次查到余额记一笔，`<数据目录>/deepseek-balance-history.json`，数字没变的连续几次只留头尾），余额掉了多少就是花了多少；再和 DeepSeek Harness 的请求流水对起来。
+  - 已写完（已 `npm run compile` 通过，**还没跑测试、没截图、没打包**）：
+    - `src/core/deepseek-insight.ts`（新）：余额历史读写、`analyzeDeepSeek`（今天 / 7 天 / 30 天花了多少、日均、还能用几天、本机 / 本机以外、实际折算率、各模型高峰 / 闲时余额能用多少）、`deepseekSpeed`、时间线（结构照 `model-study.ts`，按自然日 / 7 天分段，曲线是余额）、`queryDeepSeek`（worker 入口）。
+    - `usage-scan.ts`：DeepSeek Harness 的流水补记出字时间（`timing.firstTokenMs / tokensPerSec`，从日志里 `assistant/message.data.stream[].time` 和 `step/start` 算），`STATE_VERSION` 12 → 13（`test-routing-regressions.cjs` 的断言已改）。
+    - `pass-speed.ts` 抽出 `speedSeriesOf`；`report-worker.ts` / `snapshot.ts` 加 `deepseek` 入口；`index.ts` 加 IPC `deepseek-balance:insight|timeline|speed`；`preload.ts` 对应三个方法。
+    - `deepseek-balance.ts`：账号多一个 `harness`（本机 Harness 的用量算在哪个账号上，最多一个，第一个账号默认是；Harness 是账号授权登录、对不上 API Key，只能用户指定）；查到余额写历史；删账号删历史。
+    - `renderer/brand.js` 加 `deepseek` 图标（来自 `D:\CodePorject\Web\AllAi\public\brand\presets\deepseek-color.svg`）；`deepseek-balance.js` 的账号页整段重写；`deepseek-balance.css`；`app.js`（`speedPanel` / `drawSpeed` 支持自定义数据来源、`BRAND_OF_SOURCE`、`renderQuota` 把时间线节点传过去）；`model-study.js`（时间线支持 `kind: 'deepseek'`：余额曲线、没有「本机以外」标注）。
+  - 已完成并验证（2026-10-10）：英文翻译（`i18n.js` 约 120 条 + 5 条 PATTERN）、`intro.js` 0.3.42 说明多一条「DeepSeek 账号页补全」、README 一行、时间线的余额曲线纵轴改成只取这段时间里的范围（从 0 画起是一条平线）。截图（只有测试数据）看过亮色 / 暗色。
+  - 验证：新的 `scripts/test-deepseek-insight.cjs` 5/5（出字时间采集、余额历史、花费 / 预测 / 本机与本机以外 / 折算率 / 模型换算、没有记录时不编数、时间线结构），已加进 `npm test`；`test-deepseek-balance-ui.cjs` 8 PASS（新增一项：用写进临时目录的余额历史和 Harness 流水核对账号页每一块，数字能手算；另外核对图标、第二个账号没有本机用量、在设置里换本机归属、删账号后历史一起删）。`npm test` 退出 0（446 PASS）。`npm run test:ui` 第一次在 `test-intro-ui.cjs` 的「真实数据目录没有变化」失败（并发历史文件在测试期间被定时写了一笔，和本次改动无关），单独重跑 3 PASS；它后面的 6 个界面测试逐个跑都退出 0。合计界面测试 56 PASS。
+  - 用真实的 `~/.dsh` 只读核对过（数据目录用临时的，只看汇总）：15 条请求全部量到速度，DeepSeek-V4.1-Flash 中位 188.1 Token/秒、首字 1.7 秒。
+  - 没验证：真实的 DeepSeek 余额接口（没有用户的 Key）、真实账号上余额历史攒几天之后的消耗和折算率、系统通知的实际弹出、英文界面的逐句目检。
+  - 已知限制：消耗从填了 Key 之后才开始记（以前的补不回来）；TokenPulse 关着的时候不查余额，那段时间花的合到重新打开的那一天；赠送余额过期会算成花掉的；人民币余额在校准前用 1 美元 ≈ 7.2 元的粗略比例（`REFERENCE_RATE`），实测比例超出 3–18 不采用；高峰 / 闲时判断不了中国法定节假日；更新后第一次打开会整份重扫一遍（`STATE_VERSION` 13）。
+  - 测试版已重打：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，96 个文件和源码一致，包内 0.3.42，exe / asar 未占用，没有遗留进程。
+  - 追加（2026-10-10）：用户反馈额度详情里 DeepSeek 的标签不能拖动。原因是之前故意把 `data-kind` 设成和 `data-account` 一样、让它不参与拖动排序。现在 DeepSeek 的标签 `data-kind` 都是 `deepseek`，同一家多个账号可以互相拖动；`app.js` 的 `saveQuotaTabOrder` 对 `deepseek` 走 `DeepSeekBalance.reorder` → IPC `deepseek-balance:reorder` → `deepseek-balance.ts` 的 `reorder(ids)`（必须正好是全部账号）。和官方账号一样只能在同一家内部调，不能拖到别家前面。`test-deepseek-balance-ui.cjs` 加了断言（顺序存盘、选中的账号不变、总览跟着变），8 PASS；`test-ui.cjs` 23 PASS；balance 7/7、insight 5/5。没有用真实鼠标拖过 DeepSeek 的标签（拖动手势是通用代码，测试里直接调的存顺序）。测试版已重打。
+  - 再追加（2026-10-10）：用户要的其实是**所有账号都能互相拖动，不分是哪一家**（以前一直只能在同一家内部调）。上一条「不能拖到别家前面」已过期。做法（`renderer/app.js`）：拖动时整行标签一起排；拖完把整行的标签存进 localStorage（`tokenpulse-quota-tabs`），画的时候 `orderQuotaTabs` 只取它的「第几个位置是哪一家」，每家的位置按账号列表的顺序填，新账号排在同一家最后一个后面。同一家内部的先后仍以账号列表为准：被拖的账号越过同家账号时照旧存回去（官方账号 `reorderOfficialAccounts`，DeepSeek `reorder`），所以设置里的顺序、号池、总览不会和标签对不上。只影响额度详情那一排标签，总览的卡片顺序没动。`intro.js` / `i18n.js` 加了一条说明。
+  - 验证：`test-deepseek-balance-ui.cjs` 里用合成的指针事件把 DeepSeek 的标签拖到整行最前面，核对排列、账号列表跟着变、重画和切页之后还在，8 PASS；`npm run test:ui` 这次整条跑完退出 0（56 PASS）。测试版已重打，96 个文件和源码一致，exe / asar 未占用，没有遗留进程。没有用真实鼠标拖过。
+  - 再追加（2026-10-10）：用户要求总览里 DeepSeek 和别家一样是一张卡片，不要单独的一条。`renderer/index.html` 里那条 `section[data-ds-balance]` 删了；`deepseek-balance.js` 的 `renderStrip` 换成 `card()` / `renderCard()`，`app.js` 的 `renderOverview` 把它追加到 `#quota-cards` 最后（样式用官方账号卡片的 `.quota-card`，`deepseek-balance.css` 里总览那段重写）。卡片：头（图标、账号名、状态）→ 圆环（按最近 7 天的速度还能用几天，30 天以上画满，中间写天数）+ 总余额 → 今天 / 7 天花了多少、还能用多久、本机今天的 Tokens → 其余 DeepSeek 账号的队列 → 页脚（更新时间、刷新、详情）。主角是指定了本机用量的账号，没有就第一个。没填 Key 但装了 Harness 时是一张带「填写 API Key」的卡片。卡片在总览里固定排最后，没有跟额度详情的标签排列走。
+  - 验证：`test-deepseek-balance-ui.cjs` 的总览断言改成卡片（在 `#quota-cards` 里、和别的卡片同宽、图标、主角 / 队列、圆环画满），8 PASS；`npm run test:ui` 整条退出 0（56 PASS）；截图（测试数据）看过亮色。测试版已重打，96 个文件和源码一致，exe / asar 未占用，没有遗留进程。英文界面没有逐句目检。
+  - **同版本再追加：第三方中转站 Key 的余额监控（2026-10-10，用户要求放进 0.3.42）。**
+    - 接口：sub2api 是 `GET <站点>/v1/usage`（Bearer Key，只鉴权不计费；格式照 `D:\CodePorject\Exmaple\sub2api-production\backend\internal\handler\gateway_handler.go` 的 `Usage`：钱包余额 / 订阅限额 / Key 自己的额度和限速窗口，外加这个 Key 今天、累计、每天的用量）；new-api / one-api 是 `/v1/dashboard/billing/subscription` + `/usage`（总额度 − 已用，**照公开实现写的，没有拿真实站点测过**）。先试上次认出来的那种，都不是就报「不支持」，不编数字。
+    - 代码：`src/core/relay-balance.ts`（新：`relayBase` 只认 https、本机可 http；`parseSub2api` / `parseNewApi` / `queryRelay`）；`src/main/deepseek-balance.ts` 的账号多了 `kind: deepseek | relay`、`baseUrl`、`flavor`，结果多了 `extra`（套餐、额度、窗口、到期、用量），加账号时查不出来的站不留，本机 Harness 的用量指定不到中转站头上；`renderer/deepseek-balance.js`：标签（`data-kind=relay`、首字母图标）、`renderRelay`（余额 + 站点统计的限额进度条 / 用量 / 每天用量图 / 余额走势，没有本机用量、时间线、速度、模型换算）、总览多一张中转站卡片（`cards()`）、对话框可以选类型并填站点地址；`index.html` 设置 → 数据多一个「添加第三方 Key」；`i18n.js` / `intro.js` / README 已补。
+    - 验证：新的 `scripts/test-relay-balance.cjs` 5/5（已进 `npm test`）；`test-deepseek-balance-ui.cjs` 加了中转站整条流程，9 PASS；`npm test` 退出 0（451 PASS）；`npm run test:ui` 第一次在 `test-agent-switch-ui.cjs` 的侧栏宽度断言失败（236 ≠ 76，和本次改动无关，单独重跑通过），它和后面的界面测试逐个跑都退出 0，合计 57 PASS。
+    - **真实站点实测**：用户给了自己搭的 sub2api 测试站和一个测试 Key（用户说测完就删；Key 没有写进任何文件，已扫过仓库和临时目录）。只发了查余额的请求：钱包余额模式，认成 sub2api，余额读对，Key 不出现在给界面的数据里；错的 Key 报「无效」，不是中转站的地址报「不支持」，http 地址被拒绝。测「不支持」时这个测试 Key 被发给过 example.com 一次（IANA 的保留域名），已告诉用户。真实站点上只测了钱包余额这一种；订阅限额、Key 额度、限速窗口是用假服务器按源码格式测的。界面没有连真实站点跑过。
+    - 测试版已重打：`dist/win-unpacked/TokenPulse.exe`，构建退出 0，97 个文件和源码一致，包内 0.3.42，exe / asar 未占用，没有遗留进程。
+  - 再追加（2026-10-10）：额度详情右上角加了「添加账号」按钮（`index.html` 的 `#quota-add-account`，和原来那句「官方窗口独立于用量筛选」一起包在 `.quota-toolbar-side` 里）。点开是一个菜单（复用 `openOptionMenu`）：官方账号 → 打开设置的「官方账号」那一栏；DeepSeek / 第三方中转站的 Key → 直接开添加对话框。设置 → 数据里的两个入口和页面里的「添加账号」都还在。`test-deepseek-balance-ui.cjs` 里中转站那段改成从这个按钮进，并核对三个选项各自去哪；看门狗放宽到 330 秒（带截图跑时出现过一次 200 秒超时，没复现，之后带截图 32 秒、不带 15 秒）。`npm run test:ui` 整条退出 0（57 PASS）。测试版已重打，97 个文件和源码一致，exe / asar 未占用，没有遗留进程。
+  - 再追加（2026-10-10）：第三方 Key 可以选图标。复用供应商页那套头像（`renderer/provider-avatars.js` 的 `PulseAvatars`，预设图标与 AllAi 同源）：自动匹配（按名字和站点地址）/ 名称首字母 / 预设 / 上传图片（界面缩成 128px）。`deepseek-balance.ts` 的 relay 账号多了 `icon`（预设 id 或 `letter`）和 `avatar`（data URL，≤ 400,000 字符，格式校验同 `agent-switch.ts`），DeepSeek 账号不收这两项；`deepseek-balance.js` 的标签、页面头部、总览卡片、队列都按它画，对话框里多一块图标选择。`test-relay-balance.cjs` 加了图标校验的断言（5/5），`test-deepseek-balance-ui.cjs` 加了选预设 / 换首字母 / 各处显示的断言（9 PASS）。`npm test` 退出 0（451 PASS），`npm run test:ui` 退出 0（57 PASS）。测试版已重打，97 个文件和源码一致，未占用，没有遗留进程。上传图片这一步没有在测试里走（走的是预设和首字母）。
+  - **没做、等用户决定：供应商切换支持 DeepSeek Harness。** 用户提出后只做了只读调查（没有改 `~/.dsh` 里任何文件），结论：
+    - Harness 0.2.0-rc.2 的第三方供应商由 `@deepseek-ai/dsh-llm-pi-ai` 插件提供，配置写在 `~/.dsh/profiles/desktop/cordis.patch.yml`（顶层是 YAML 数组，每项 `{ id?, name, config }`）：`config.providers.<路由名>` = `{ displayName, apiKeyEnv, api: openai-completions | openai-responses | anthropic-messages, baseURL, models: [{ id, name, contextWindow }] }`；新会话默认用哪个模型在同一个文件的 `agent-default-model` 项（`provider` / `model` / `reasoningEffort`，现在是 `deepseek-account` / `deepseek-flash`）。
+    - Key 不在配置里：`apiKeyEnv` 只是一个名字，值在 `~/.dsh/.credentials.yaml` 的 `refs:` 下面（`refs: { NAME: sk-… }`）。官方文档写明可以直接改这个文件、会热重载；但格式不对（未知的键、重复键、YAML 坏了）Harness **启动会失败**。
+    - 两个文件改了都是下一次请求生效，不用重启 Harness。已有会话各自记着自己的模型，默认值只影响新会话。
+    - 资料来源：安装包 `C:\Users\<用户>\AppData\Local\Programs\DeepSeek Harness\resources\app.asar` 里各包的 `README.zh.md`（`dsh-llm-pi-ai`、`dsh-credentials-local`、`dsh-client-ui-settings-models`、`dsh-agent-default-model`）。
+    - 难点：要保留注释和 `!!js` 表达式地改 YAML（项目里没有声明 YAML 依赖，`node_modules` 里的 `js-yaml` 是别人带进来的、会丢注释）；`agent-switch.ts` 里加第四个工具涉及写入、备份、退出还原、漂移检测、本地路由；真实效果只能在用户机器上开着 Harness 验证。
+- 下一步：等用户看测试版，并决定 Harness 供应商切换怎么做（见上一条）；发布按老流程。0.3.42 全部改动未提交、未发布。
 
 **0.3.41 已正式发布（2026-10-09）。以这一段为准，下面「0.3.41 进行中 / 未发布」是发布前的记录。**
 
