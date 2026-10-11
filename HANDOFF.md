@@ -1,6 +1,15 @@
-# Current handoff · 0.3.44 已正式发布（2026-10-11）
+# Current handoff · 0.3.45 已正式发布（2026-10-11）
 
 ## 新对话先看这里
+
+### 0.3.45 已正式发布（2026-10-11）
+
+- 正式发布是 **0.3.45**。提交 `74c4b26`（0.3.45：Grok 按选中的型号转发、用量明细红点看过即消），标签 `v0.3.45`，已推送 `origin/main`。GitHub Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.45 ，标题 `TokenPulse 0.3.45`，非草稿、非预发布，`releases/latest` 指向 `v0.3.45`，target 是完整 SHA `74c4b2692170f069fa74f8280c8dad85d7a23035`。
+- 这一版：TokenPulse 接管 Grok 时，选 `grok-4.6` 就按 `grok-4.6` 发，另选 4.5 或 4.7 也按所选型号发；关掉之后原来的自定义模型表恢复。`grok-4.6` 和 `grok-4.6-build` 算同一个型号。用量明细侧栏的红点打开这一页后清掉。
+- 附件 4 个，大小和 SHA256 与本地一致，GitHub 资产摘要也一致：`TokenPulse-0.3.45-Setup.exe` 112,559,291（`bfc457064539b55ab22837d33e217eaf7327436e317ee4991b28d58477af0eff`）、`.blockmap` 119,738（`39bf3c33b2b7d130fc37f79663b3c1e536086f497086ff4f3685ae30b99e2092`）、`TokenPulse-0.3.45-Portable.exe` 112,302,065（`39843e169f11870e08a7f74cdc3a4d438ca60f4b44eae231f92807da030a623c`）、`latest.yml` 352（`c39f3db4420f38f5dbba86d6bbdb86870ab10f2bccb88a0ae1c0280f802a82a6`）。公开下载的 `releases/latest/download/latest.yml` 是 `version: 0.3.45`。
+- 发布前：`npm test` 退出 0。`npm run test:ui` 里 `test-ui.cjs` 第一次停在翻页断言 `15 !== 7`，单独重跑退出 0；其余界面测试随后退出 0。`npm run dist` 退出 0。包内 132 个运行时文件和源码逐字节一致，版本 0.3.45，exe ProductVersion 0.3.45.0。
+- 收尾：四个附件和 `dist/win-unpacked` 的 exe / app.asar 能独占打开。没有留下这次的 electron、node 或打包进程。工作目录在项目根。安装版（`AppData\Local\Programs\TokenPulse`，PID 4528）当时在跑，没有关。
+- 已知限制：已经打开的 Grok 会话仍用它记住的型号，新开一段再生效。关掉 TokenPulse 后，`[model."grok-4.6"]` 会回到接管前的写法。
 
 ### 0.3.44 已正式发布（2026-10-11）
 
@@ -10,6 +19,7 @@
 - 发布前：`npm test` 退出 0。`npm run test:ui` 里 `test-model-study-ui.cjs` 第一次停在「浮层完整显示、在最上层」，单独重跑退出 0；`test-ui.cjs` 在第一次整套里已过，其余界面测试随后退出 0。`npm run dist` 退出 0。包内 132 个运行时文件和源码逐字节一致，版本 0.3.44，exe ProductVersion 0.3.44.0。发布说明：`dist/release-0.3.44.md`（同 GitHub Release 正文）、`renderer/intro.js` 的 NOTES、`i18n.js` 的英文、`README.md`。
 - 收尾：四个附件和 `dist/win-unpacked` 的 exe / app.asar 能独占打开。没有留下这次的 electron、node 或打包进程。工作目录在项目根。安装版（`AppData\Local\Programs\TokenPulse`，PID 35432，2026-10-11 8:45 启动）当时在跑，没有关。
 - 已知限制（发布说明里也写了）：按额度轮换看的是整个账号的剩余，网页和其他设备也算在里面；正在用的号和最高分差得不多时会继续用它。号池页的用量来自转发记录。DeepSeek 的切换只对新会话生效；窗口里正开着的会话先在那边说完再在这里回复；桌面配置里已有的模型供应商会被这一层盖住，切回官方登录后恢复。新任务仍不从「开一个新对话」启动。没有在用户的 Harness 上真的切换。headless 回复会花额度，实测前要先问用户。
+- **2026-10-11 Grok 型号第三次修（测试版待重打）**：16:56 和 16:59 的转发记录是 `requestModel: grok-4.7`、`model: grok-4.6`、`returnedModel: grok-4.6-build`。原因是 `~/.grok/config.toml` 里 `[model."grok-4.6"]` 把这个 id 的接口型号写成了 `grok-4.7`，号池的 pin 又把上游改回 `grok-4.6`，核验就对不上。4.5 / 4.7 没有这张表，请求和返回一致。已改：接管期间把这张表的型号改回它自己的 id，退出时还原；官方账号成员不再改写客户端选的型号。`test-agent-switch.cjs` 已过。`npx electron-builder --win dir --publish never` 退出 0。正式安装包仍是已发布的 0.3.44。新开一段 Grok 再测。关掉 TokenPulse 后那张表会还原。
 
 **0.3.44 开发过程（下面各条里「未提交、未发布」「还没打测试版」「NOTES 还没写」都已过期，以本节上面为准）**
 
