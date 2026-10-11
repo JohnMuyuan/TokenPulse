@@ -4,7 +4,7 @@ import { estimateCost, priceOf } from "./model-pricing";
 import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
 import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-switch";
-import { routeReturned, type RouteTiming } from "./route-ledger";
+import { routeEvents, routeLogDir, routeReturned, type RouteTiming } from "./route-ledger";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline, type RequestAccount } from "./login-timeline";
 import { quotaAttribution } from "./quota-attribution";
 import { readQuotaHistory } from "./quota-history";
@@ -64,6 +64,8 @@ export type RequestRecord = {
   routedAccount?: string;
   /** 新归属已用共同响应 ID 核验；旧的时间猜测不能继续当成确证。 */
   routedAccountBasis?: "response-id" | "route-window";
+  /** 这条是从转发记录的哪一次拆出来的。同一轮还没写完时，查询会按这个 id 避免和当场补上的那条算两次。 */
+  routeEventId?: string;
   /** 压缩上下文那一次调用：CLI 没写 usage，按压缩前的上下文和摘要长度估的（见 usage-scan.ts）。 */
   compaction?: boolean;
   /** 查询时附上的：同一次请求在代理里的记录——TokenPulse 自己转发时读到的（见 withRoute），或 CC Switch 代理的（见 matchProxy）。不落盘。 */
@@ -480,6 +482,50 @@ function ccSwitchRecords(covered: Set<string>) {
  * 这次请求经 TokenPulse 转发过（本地路由 / 透明转发）的话，附上转发时从上游回复里读到的型号（0.3.35）。
  * 靠响应 ID 对应，是同一次请求才对得上；没对上返回 null，再去试 CC Switch 的代理记录。
  */
+/**
+ * 一轮还没在会话文件里写完时，转发记录里已经有每一次交给了谁。
+ * 这些先补进查询，额度详情和时间线不用等到整轮结束。轮次写完并扫进流水之后，同一条转发的 id 已经在 routeEventId 里，这里就不再补。
+ */
+function pendingGrokPool(seen: Set<string>, query: RequestQuery): RequestRecord[] {
+  if (query.source !== "all" && query.source !== SOURCE_NAMES["grok-build"]) return [];
+  const from = query.since ?? new Date(`${query.from}T00:00:00`).getTime();
+  const to = query.until ?? new Date(`${query.to}T23:59:59.999`).getTime();
+  if (!(to >= from)) return [];
+  // routeEvents 只读时间范围两头的月份；查询往往横跨很多月，改按目录里真实有的月份逐个查
+  const fromName = `${new Date(from).getFullYear()}-${String(new Date(from).getMonth() + 1).padStart(2, "0")}.jsonl`;
+  const toName = `${new Date(to).getFullYear()}-${String(new Date(to).getMonth() + 1).padStart(2, "0")}.jsonl`;
+  let names: string[] = [];
+  try { names = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name) && name >= fromName && name <= toName); } catch { return []; }
+  const out: RequestRecord[] = [];
+  for (const name of names) {
+    const [year, month] = name.slice(0, 7).split("-").map(Number);
+    const start = new Date(year, month - 1, 1).getTime();
+    const end = new Date(year, month, 1).getTime() - 1;
+    for (const event of routeEvents("grok", Math.max(from, start), Math.min(to, end))) {
+      if (!event.account || seen.has(event.id) || !/^grok/i.test(event.model)) continue;
+      out.push({
+        id: `grok-pool:${event.id}`,
+        at: event.at,
+        kind: "grok-build",
+        file: "grok-pool/forward/updates.jsonl",
+        model: event.model,
+        ...(event.effort ? { effort: event.effort, effortSource: "route-log" } : {}),
+        input: event.input,
+        output: event.output,
+        cacheRead: event.cacheRead,
+        cacheWrite: 0,
+        reasoning: 0,
+        costUsd: 0,
+        calls: 1,
+        routedAccount: event.account,
+        routedAccountBasis: "route-window",
+        routeEventId: event.id,
+      });
+    }
+  }
+  return out;
+}
+
 function withRoute(record: RequestRecord): RequestRecord | null {
   if (record.kind === "cc-switch" || !record.responseId) return null;
   const hit = routeReturned(record.responseId, record.at);
@@ -591,16 +637,17 @@ export function queryRequests(query: RequestQuery): RequestPage {
     }
     yield* cc.own;
   };
-  for (const raw of inMonths()) {
-    {
+  const seenRouteEvents = new Set<string>();
+  const take = (raw: RequestRecord) => {
+      if (raw.routeEventId) seenRouteEvents.add(raw.routeEventId);
       const key = keyOf(raw);
-      if (seen.has(key)) continue; // 还没整理的重复行
+      if (seen.has(key)) return; // 还没整理的重复行
       seen.add(key);
       const day = dayOf(raw.at);
-      if (day < query.from || day > query.to) continue;
-      if (query.since != null && raw.at < query.since) continue;
-      if (query.until != null && raw.at > query.until) continue;
-      if (query.source !== "all" && sourceOf(raw) !== query.source) continue;
+      if (day < query.from || day > query.to) return;
+      if (query.since != null && raw.at < query.since) return;
+      if (query.until != null && raw.at > query.until) return;
+      if (query.source !== "all" && sourceOf(raw) !== query.source) return;
       const record = raw.kind === "cc-switch" ? raw : withRoute(raw) ?? cc.matchProxy(raw);
       const row = toRow(record, official.get(record.file), accountCtx);
       facets.models.add(row.model);
@@ -612,17 +659,17 @@ export function queryRequests(query: RequestQuery): RequestPage {
         accountRows.set(row.account.id, list);
       }
       if (query.aggregate && !query.filteredAggregate) aggregateRow(row, day, raw.at);
-      if (query.models?.length && !query.models.includes(row.model)) continue;
-      if (query.project && (query.project === "__missing__" ? Boolean(row.cwd) : projectKey(row.cwd) !== projectKey(query.project))) continue;
-      if (query.channel === "official" && row.official !== true) continue;
-      if (query.channel === "api" && row.official !== false) continue;
-      if (query.channel === "unknown" && row.official !== undefined) continue;
+      if (query.models?.length && !query.models.includes(row.model)) return;
+      if (query.project && (query.project === "__missing__" ? Boolean(row.cwd) : projectKey(row.cwd) !== projectKey(query.project))) return;
+      if (query.channel === "official" && row.official !== true) return;
+      if (query.channel === "api" && row.official !== false) return;
+      if (query.channel === "unknown" && row.official !== undefined) return;
       if (q) {
         const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.cwd, row.session, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
-        if (!haystack.includes(q)) continue;
+        if (!haystack.includes(q)) return;
       }
       const accountId = row.account?.id ?? "none";
       const bucket = byAccount.get(accountId) ?? { id: accountId, label: row.account?.label ?? "", source: row.source, requests: 0, tokens: 0, costUsd: 0, lastAt: 0, inferred: 0 };
@@ -632,17 +679,18 @@ export function queryRequests(query: RequestQuery): RequestPage {
       bucket.lastAt = Math.max(bucket.lastAt, row.at);
       if (row.account?.basis === "inferred") bucket.inferred += 1;
       byAccount.set(accountId, bucket);
-      if (query.account && accountId !== query.account) continue;
+      if (query.account && accountId !== query.account) return;
       counts.all += 1;
       counts[row.status] += 1;
       tokens += row.tokens;
       costUsd += row.costUsd;
-      if (query.status !== "all" && row.status !== query.status) continue;
+      if (query.status !== "all" && row.status !== query.status) return;
       if (query.aggregate && query.filteredAggregate) aggregateRow(row, day, raw.at);
       if (query.projects) projectRow(row);
       matched.push(row);
-    }
-  }
+  };
+  for (const raw of inMonths()) take(raw);
+  for (const raw of pendingGrokPool(seenRouteEvents, query)) take(raw);
 
   matched.sort((a, b) =>
     query.sort === "tokens" ? b.tokens - a.tokens || b.at - a.at : query.sort === "cost" ? b.costUsd - a.costUsd || b.at - a.at : b.at - a.at,

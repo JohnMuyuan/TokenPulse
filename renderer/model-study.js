@@ -131,6 +131,7 @@
 
   function drawQuota(mode) {
     const host = Q.host, data = Q.loader.view.data;
+    try {
     if (mode === 'none') { host.replaceChildren(quotaHeading(), empty('这个账号还没有带账号标识的官方额度采样，暂时没法换算。')); syncSegs(host); return; }
     if (mode === 'loading') { host.replaceChildren(quotaHeading(), skeleton(6)); syncSegs(host); return; }
     if (mode === 'error' || !data) {
@@ -179,6 +180,7 @@
     syncSegs(host);
     if (mode === 'enter') playChart(list, true);
     if (before) flip(host, before);
+    } finally { if (host && window.markLayout) window.markLayout(host, host.dataset.layout || 'quota:study'); }
   }
 
   /** 只看实测：主数字换成实测值，调用次数和还剩多少按同样的比例换；这个窗口没有实测就空着。 */
@@ -742,6 +744,7 @@
 
   function drawTimeline(mode) {
     const host = T.host, data = T.loader.view.data;
+    try {
     if (mode === 'none') { host.replaceChildren(...timelineHeading(), empty('这个账号还没有带账号标识的官方额度周期。')); return; }
     if (mode === 'loading') { host.replaceChildren(...timelineHeading(), skeleton(4)); return; }
     if (mode === 'error' || !data) {
@@ -761,6 +764,7 @@
     applyFocus();
     const editing = host.querySelector('.ms-mark-editor');
     if (editing && mode !== 'update') editing.querySelector('select, input')?.focus({ preventScroll: true });
+    } finally { if (host && window.markLayout) window.markLayout(host, host.dataset.layout || 'quota:timeline'); }
   }
 
   /** 颜色跟着模型走（两条时间线一致）：按周期里的用量从多到少分配色相，等级用深浅区分。 */

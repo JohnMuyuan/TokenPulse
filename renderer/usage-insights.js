@@ -609,7 +609,7 @@
       modelTable(models, total)
     ]);
 
-    host.replaceChildren(yearPanel(), trendPanel, el('div', { class: 'insight-grid' }, [toolPanel, distPanel]), modelPanel, speedPanel());
+    host.replaceChildren(markLayout(yearPanel(), 'usage:year'), markLayout(trendPanel, 'usage:trend'), el('div', { class: 'insight-grid' }, [markLayout(toolPanel, 'usage:tools'), markLayout(distPanel, 'usage:hours')]), markLayout(modelPanel, 'usage:models'), markLayout(speedPanel(), 'usage:speed'));
     for (const group of host.querySelectorAll('.seg')) syncSeg(group);
     trendChart(trendHost, trend, order, view.metric, animate);
     if (hourData.loading) { hodHost.append(empty('正在读取逐条请求记录…')); distNote.textContent = ''; }

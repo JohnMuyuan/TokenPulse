@@ -24,7 +24,7 @@ import { sessionCommand, type AgentKind } from "../core/sessions";
 import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerminal, resolveCli, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
 import type { RequestQuery } from "../core/request-log";
-import { prefsExist, readPrefs, writePrefs, type Prefs } from "./prefs";
+import { prefsExist, quotaEverySeconds, readPrefs, writePrefs, type Prefs } from "./prefs";
 import { demoCall, endDemo } from "./demo";
 import { envProxyFor, setSystemProxyResolver } from "../core/upstream-proxy";
 import { tr } from "./i18n";
@@ -51,14 +51,12 @@ import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
  *
  * 两个定时器，节奏不一样：
  * - 扫本机会话文件：1 分钟一次。纯本地读文件，增量扫（只读新增的字节），很便宜。
- * - 问官方额度接口：5 分钟一次。这是网络请求，而且额度本身也就几分钟才动一格，
- *   问太勤没意义还容易被限流。
+ * - 问额度：官方订阅、DeepSeek 余额、第三方 Key 余额共用 prefs 里的间隔，默认 1 分钟。
  */
 
 const SCAN_EVERY_MS = 60_000;
-/** 窗口收进托盘或最小化时，用量扫描放慢到这个间隔（0.3.21）。额度查询本来就是 5 分钟一次，不变。 */
+/** 窗口收进托盘或最小化时，用量扫描放慢到这个间隔（0.3.21）。额度查询仍按设置里的间隔，不放慢。 */
 const AWAY_SCAN_EVERY_MS = 3 * 60_000;
-const QUOTA_EVERY_MS = 5 * 60_000;
 
 let win: BrowserWindow | null = null;
 /** 上次是在托盘里被自动更新重启的：这次启动也只进托盘，别弹窗口打扰用户。 */
@@ -571,6 +569,15 @@ function publishSnapshot(snapshot: Snapshot): Snapshot {
  * 只在窗口真的被隐藏 / 最小化过之后才算「收着」：开机直接进托盘、还没显示过的窗口不算，和以前一样。
  */
 let windowAway = false, snapshotHeld = false, lastScanAt = 0;
+let quotaTimer: ReturnType<typeof setInterval> | undefined;
+/** 官方额度和 API 余额共用 prefs 里的间隔。改设置时清掉旧定时器再按新间隔排。 */
+function scheduleQuotaChecks() {
+  if (quotaTimer) clearInterval(quotaTimer);
+  const every = readPrefs().quotaEverySeconds * 1000;
+  quotaTimer = setInterval(() => backgroundRefresh(true), every);
+  quotaTimer.unref?.();
+  deepseekBalance.reschedule(every);
+}
 function setWindowAway(away: boolean) {
   if (windowAway === away) return;
   windowAway = away;
@@ -666,7 +673,11 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
     const list = Array.isArray(patch.localOnlyAccounts) ? patch.localOnlyAccounts : [];
     patch = { ...patch, localOnlyAccounts: [...new Set(list.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 400))].slice(0, 100) };
   }
+  if ("quotaEverySeconds" in patch) patch = { ...patch, quotaEverySeconds: quotaEverySeconds(patch.quotaEverySeconds) };
+  const previousEvery = readPrefs().quotaEverySeconds;
   const next = writePrefs(patch);
+  // 保存之后才改定时器。这一轮不额外查，下一轮按新间隔走。
+  if (next.quotaEverySeconds !== previousEvery) scheduleQuotaChecks();
   // 容量怎么折算变了：不重新查额度，只按新的口径重算一遍快照
   if ("localOnlyAccounts" in patch) backgroundRefresh(false);
   /*
@@ -1124,9 +1135,10 @@ if (!app.requestSingleInstanceLock()) {
       return true;
     });
 
+    scheduleQuotaChecks();
     backgroundRefresh(true);
+    void deepseekBalance.refreshAll(false);
     setInterval(() => { if (!windowAway || Date.now() - lastScanAt >= AWAY_SCAN_EVERY_MS - 1000) backgroundRefresh(false); }, SCAN_EVERY_MS);
-    setInterval(() => backgroundRefresh(true), QUOTA_EVERY_MS);
 
     app.on("activate", () => {
       if (!BrowserWindow.getAllWindows().length) createWindow();

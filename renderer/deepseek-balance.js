@@ -38,6 +38,13 @@
   };
   const demo = () => Boolean(window.tokenpulse?.isDemo?.());
   const accounts = () => (demo() ? [] : balance?.accounts || []);
+  const autoEvery = () => {
+    const seconds = Math.round(Number(balance?.everySeconds));
+    if (!Number.isFinite(seconds) || seconds <= 0) return '按设置的间隔自动查询';
+    if (seconds % 60 === 0) return `每 ${seconds / 60} 分钟自动查询`;
+    if (seconds < 60) return `每 ${seconds} 秒自动查询`;
+    return `每 ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒自动查询`;
+  };
   const visible = () => Boolean(balance) && !demo() && (accounts().length > 0 || balance.detected);
   /** DeepSeek 的图标（renderer/brand.js，和 AllAi 同源）。 */
   const logo = cls => el('span', { class: cls, 'aria-hidden': 'true' }, [brandSvg('deepseek')]);
@@ -180,7 +187,7 @@
   /** 余额走势：余额是一段一段平的，画成阶梯。纵轴只取这段时间里的范围（从 0 画起的话花掉的那一点看不出来）。 */
   function balanceChart(host, points, currency, now, animate) {
     host.replaceChildren();
-    if (points.length < 2) { host.append(empty('余额记录还不够画走势。TokenPulse 开着的时候每 10 分钟记一次。')); return; }
+    if (points.length < 2) { host.append(empty('余额记录还不够画走势。TokenPulse 开着的时候按设置里的间隔记一次。')); return; }
     const w = Math.max(280, host.clientWidth), h = host.clientHeight || 190, left = 62, right = 12, top = 14, bottom = 28;
     const low = Math.min(...points.map(p => p.total)), high = Math.max(...points.map(p => p.total));
     const pad = Math.max((high - low) * .18, high * .002, .01), min = Math.max(0, low - pad), max = high + pad;
@@ -240,7 +247,7 @@
     if (!same) { panel.append(el('div', { class: 'prediction-line' }, [icon('trend'), el('span', { text: data ? '消耗和预测按这个账号的另一种币种算。' : '正在读取消耗记录…' })])); return panel; }
     spendBlocks(panel, spend, data, info);
     panel.append(el('p', { class: 'quota-footnote' }, [
-      el('span', { text: '花掉多少按余额的变化算：TokenPulse 开着的时候每 10 分钟查一次余额，关着的那段时间合在一起算到下一次查到的时候。' }),
+      el('span', { text: '花掉多少按余额的变化算：TokenPulse 开着的时候按设置里的间隔查一次余额，关着的那段时间合在一起算到下一次查到的时候。' }),
       data.since != null ? el('span', {}, [el('span', { text: '余额记录开始于' }), el('span', { class: 'num', text: ' ' + date(data.since, true) }), el('span', { text: '。' })]) : null,
       el('span', { text: '余额是整个 DeepSeek 账号的，其他设备和其他程序花的也在里面；赠送余额过期也会算成花掉的。' }),
     ]));
@@ -297,7 +304,7 @@
           !byTokens && day.added > 0 ? `充值 / 赠送 +${cash(day.added, data.currency)}` : '', !byTokens && day.balance != null ? `当天结束时余额 ${cash(day.balance, data.currency)}` : '', !byTokens && account.harness && day.tokens ? `本机 ${tokens(day.tokens)} Tokens` : ''];
         return { at: day.from, value, text: lines.filter(Boolean).join('\n'), mark: !byTokens && day.added > 0 };
       });
-      if (!rows.some(row => row.value > 0)) host.replaceChildren(empty(byTokens ? '最近 30 天没有扫到 DeepSeek Harness 的请求。' : data.since == null ? '还没有余额记录。TokenPulse 开着的时候每 10 分钟记一次，余额有变化就会出现在这里。' : '有余额记录以来，余额还没有减少过。'));
+      if (!rows.some(row => row.value > 0)) host.replaceChildren(empty(byTokens ? '最近 30 天没有扫到 DeepSeek Harness 的请求。' : data.since == null ? '还没有余额记录。TokenPulse 开着的时候按设置里的间隔记一次，余额有变化就会出现在这里。' : '有余额记录以来，余额还没有减少过。'));
       else barChart(host, rows, byTokens ? tokens : value => cash(value, data.currency), animate);
       note.replaceChildren(...(byTokens
         ? [el('span', { text: '本机 DeepSeek Harness 每天用的 Tokens。' })]
@@ -427,7 +434,7 @@
     if (!spend) { panel.append(el('div', { class: 'prediction-line' }, [icon('trend'), el('span', { text: '正在读取消耗记录…' })])); return panel; }
     spendBlocks(panel, spend, data, info);
     panel.append(el('p', { class: 'quota-footnote' }, [
-      el('span', { text: '花掉多少按余额的变化算：TokenPulse 开着的时候每 10 分钟查一次余额，关着的那段时间合在一起算到下一次查到的时候。' }),
+      el('span', { text: '花掉多少按余额的变化算：TokenPulse 开着的时候按设置里的间隔查一次余额，关着的那段时间合在一起算到下一次查到的时候。' }),
       data.since != null ? el('span', {}, [el('span', { text: '余额记录开始于' }), el('span', { class: 'num', text: ' ' + date(data.since, true) }), el('span', { text: '。' })]) : null,
       el('span', { text: '余额是站点上这个账户的，同一个账户下别的 Key、别的设备花的也在里面。' }),
     ]));
@@ -501,7 +508,7 @@
         el('p', { class: 'muted', text: '第三方中转站的 Key：余额、限额和用量由站点提供' }),
       ]),
       el('div', { class: 'context-meta ds-context-meta' }, [
-        el('div', {}, [last ? el('span', { class: 'num', text: clock(last.at) + ' ' }) : null, el('span', { text: last ? (last.ok ? '更新' : '查询失败') : account.loading ? '正在查询…' : '还没查询过' }), el('span', { text: ' · ' }), el('span', { text: '每 10 分钟自动查询' })]),
+        el('div', {}, [last ? el('span', { class: 'num', text: clock(last.at) + ' ' }) : null, el('span', { text: last ? (last.ok ? '更新' : '查询失败') : account.loading ? '正在查询…' : '还没查询过' }), el('span', { text: ' · ' }), el('span', { text: autoEvery() })]),
         el('div', { class: 'ds-context-actions' }, [
           button('刷新', () => call(() => api.refresh(account.id), '查询失败'), { glyph: 'refresh', action: 'ds-refresh', disabled: account.loading, cls: 'btn' + (account.loading ? ' is-busy' : '') }),
           button('设置', () => openDialog(account.id), { glyph: 'settings', action: 'ds-settings' }),
@@ -516,17 +523,17 @@
       return PREFIX + ':' + account.id;
     }
     const info = infos[0] || null;
-    host.append(el('div', { class: 'quota-window-grid' }, [relayBalancePanel(account, info, data, level), sitePanel(account)]));
-    if (info) host.append(trendPanel(account, data, after));
-    host.append(relayHistory(account, data, after));
-    host.append(el('article', { class: 'panel ds-about' }, [
+    host.append(el('div', { class: 'quota-window-grid' }, [markLayout(relayBalancePanel(account, info, data, level), 'quota:balance'), markLayout(sitePanel(account), 'quota:site')]));
+    if (info) host.append(markLayout(trendPanel(account, data, after), 'quota:spend'));
+    host.append(markLayout(relayHistory(account, data, after), 'quota:history'));
+    host.append(markLayout(el('article', { class: 'panel ds-about' }, [
       el('div', { class: 'ds-about-row' }, [el('b', { text: '余额提醒' }), account.alertBelow != null
         ? el('span', { class: 'ds-about-alert num', text: `余额低于 ${cash(account.alertBelow, info?.currency || 'USD')} 时提醒一次` })
         : el('span', { text: '没有设提醒线。点「设置」可以设一个数，余额低于它时提醒你。' })]),
       el('div', { class: 'ds-about-row' }, [el('b', { text: 'API Key' }), el('span', { class: 'num', text: account.keyHint, translate: 'no' }), el('span', { class: 'ds-about-faint', text: '只保存在这台电脑上，只用来查余额' })]),
       el('div', { class: 'ds-about-row' }, [el('b', { text: '站点地址' }), el('span', { class: 'num', text: account.baseUrl, translate: 'no' }), el('span', { class: 'ds-about-faint', text: 'Key 只发给这个地址' })]),
       el('p', { class: 'ds-about-hint', text: '查余额用的是站点提供的查询接口，不花额度。本机哪些请求用了这个 Key，TokenPulse 分不出来，所以这一页没有本机用量、时间线和速度。' }),
-    ]));
+    ]), 'quota:about'));
     for (const draw of after) draw();
     return PREFIX + ':' + account.id;
   }
@@ -558,7 +565,7 @@
         el('p', { class: 'muted', text: account.harness ? '按量付费，没有订阅额度窗口，看的是余额 · 本机 DeepSeek Harness 的用量算在这个账号上' : '按量付费，没有订阅额度窗口，看的是余额' }),
       ]),
       el('div', { class: 'context-meta ds-context-meta' }, [
-        el('div', {}, [last ? el('span', { class: 'num', text: clock(last.at) + ' ' }) : null, el('span', { text: last ? (last.ok ? '更新' : '查询失败') : account.loading ? '正在查询…' : '还没查询过' }), el('span', { text: ' · ' }), el('span', { text: '每 10 分钟自动查询' })]),
+        el('div', {}, [last ? el('span', { class: 'num', text: clock(last.at) + ' ' }) : null, el('span', { text: last ? (last.ok ? '更新' : '查询失败') : account.loading ? '正在查询…' : '还没查询过' }), el('span', { text: ' · ' }), el('span', { text: autoEvery() })]),
         el('div', { class: 'ds-context-actions' }, [
           button('刷新', () => call(() => api.refresh(account.id), '查询失败'), { glyph: 'refresh', action: 'ds-refresh', disabled: account.loading, cls: 'btn' + (account.loading ? ' is-busy' : '') }),
           button('设置', () => openDialog(account.id), { glyph: 'settings', action: 'ds-settings' }),
@@ -575,34 +582,34 @@
       return PREFIX + ':' + account.id;
     }
     const main = infos.find(info => info.currency === data?.currency) || infos[0];
-    host.append(el('div', { class: 'quota-window-grid' }, [balancePanel(account, main, data, level), localPanel(account, data, main.currency)]));
+    host.append(el('div', { class: 'quota-window-grid' }, [markLayout(balancePanel(account, main, data, level), 'quota:balance'), markLayout(localPanel(account, data, main.currency), 'quota:local')]));
     // 同一个账号还有别的币种的余额：只列数字
     const others = infos.filter(info => info !== main);
     if (others.length) host.append(el('div', { class: 'ds-other-grid' }, others.map(info => el('article', { class: 'panel ds-other', 'data-currency': info.currency }, [
       el('span', { class: 'ds-figure-title', text: '另一种币种的余额' }), el('strong', { class: 'num', text: cash(info.total, info.currency) }),
       el('small', {}, [el('span', { text: '充值余额' }), el('span', { class: 'num', text: ` ${cash(info.toppedUp, info.currency)} · ` }), el('span', { text: '赠送余额' }), el('span', { class: 'num', text: ` ${cash(info.granted, info.currency)}` })]),
     ]))));
-    host.append(trendPanel(account, data, after), historyGrid(account, data, after));
+    host.append(markLayout(trendPanel(account, data, after), 'quota:spend'), markLayout(historyGrid(account, data, after), 'quota:history'));
     if (account.harness) {
       // 时间线、速度：只画本机 DeepSeek Harness 的请求，所以只在指定了本机用量的那个账号下面有
       if (timelineNode) host.append(timelineNode);
       window.PulseModelStudy?.timeline(current, PREFIX + ':' + account.id, { kind: 'deepseek', accountId: PREFIX + ':' + account.id, lastCheckedAt: last?.at || 0 });
-      host.append(speedPanel({ accountId: 'harness', accountLabel: '' }, 'deepseek', {
+      host.append(markLayout(speedPanel({ accountId: 'harness', accountLabel: '' }, 'deepseek', {
         tag: 'DeepSeek Harness',
         hint: '每个模型每秒输出多少 Token。DeepSeek Harness 自己在日志里记了每次回复的出字时间，不用开透明转发。只要会话文件还在，以前的也能看。',
         load: days => api.speed(days),
         empty: () => el('div', { class: 'empty speed-empty' }, [el('p', { text: '这段时间还没有量到速度。用 DeepSeek Harness 聊几句，下一次扫描之后这里就会有走势；回复太短（不到 20 个 Token）的不算。' })]),
-      }));
+      }), 'quota:speed'));
     }
-    host.append(modelsPanel(account, data));
+    host.append(markLayout(modelsPanel(account, data), 'quota:models'));
     const currency = main.currency;
-    host.append(el('article', { class: 'panel ds-about' }, [
+    host.append(markLayout(el('article', { class: 'panel ds-about' }, [
       el('div', { class: 'ds-about-row' }, [el('b', { text: '余额提醒' }), account.alertBelow != null
         ? el('span', { class: 'ds-about-alert num', text: `余额低于 ${cash(account.alertBelow, currency)} 时提醒一次` })
         : el('span', { text: '没有设提醒线。点「设置」可以设一个数，余额低于它时提醒你。' })]),
       el('div', { class: 'ds-about-row' }, [el('b', { text: 'API Key' }), el('span', { class: 'num', text: account.keyHint, translate: 'no' }), el('span', { class: 'ds-about-faint', text: '只保存在这台电脑上，只用来查余额' })]),
       el('p', { class: 'ds-about-hint', text: '本机 DeepSeek Harness 的每一次请求在「用量明细」里，工具选 DeepSeek Harness。' }),
-    ]));
+    ]), 'quota:about'));
     for (const draw of after) draw();
     return PREFIX + ':' + account.id;
   }

@@ -14,6 +14,11 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.43': [
+      ['overview', '侧栏和各页卡片可以收起用不到的部分', '点侧栏「工作空间」旁边的「编辑布局」，可以去掉用不到的页面和各页上的卡片，总览的四张统计小卡也能各自去掉，之后加回原来的位置。只影响这台电脑上的界面，监控和通知照常进行。'],
+      ['trace', 'Grok 号池的消耗记到每次转发', '额度详情和时间线以前只在一整轮都交给同一个账号时才认这笔用量，一轮里换过账号就当成「本机以外」。现在每一次转发记在当时用的那个账号上，额度上涨能对上本机的请求。'],
+      ['clock', '额度查询改成同一个间隔', 'Claude、ChatGPT、Grok 的订阅额度，以及 DeepSeek 和第三方 Key 的余额，现在用同一个间隔自动查。默认 1 分钟。在设置 → 通用里拖动滑块，保存后生效。最短 1 分钟，最长 10 分钟。'],
+    ],
     '0.3.42': [
       ["plus","支持 DeepSeek Harness 的用量","用量明细里现在能看到 DeepSeek Harness（DeepSeek 官方的 dsh）的每一次请求：Token、缓存命中、型号、思考等级、项目和参考费用。型号按官方的叫法显示（deepseek-flash 显示成 DeepSeek-V4.1-Flash），参考费用按 DeepSeek 官方单价算，并区分高峰和闲时（闲时半价）。会话管理和供应商切换暂时不支持它。"],
       ["cost","新增：DeepSeek 余额监控","DeepSeek 按量付费，没有订阅额度，所以看的是余额。在 DeepSeek 开放平台创建一个 API Key 填进来，额度详情顶上就会多一个 DeepSeek 的标签，点进去是这个账号的余额（充值和赠送分开）；有几个账号可以填几个 Key，每个账号各有一页，总览里也会列出来。每 10 分钟自动查一次，也可以手动刷新；每个账号可以设一个数，余额低于它时提醒你。Key 只保存在这台电脑上，只用来查余额，查余额不花钱。入口：额度详情里的 DeepSeek 标签，或者 设置 → 数据。"],
@@ -328,8 +333,17 @@
     if (r.top < top || r.bottom > window.innerHeight - 16) scroller.scrollTo({ top: scroller.scrollTop + r.top - top, behavior: 'instant' });
   }
 
+  function tourSteps() {
+    return STEPS.filter(step => {
+      if (step.page && window.layoutHidesPage?.(step.page)) return false;
+      if (step.target === '#quota-cards' && window.layoutHidesCard?.('quota')) return false;
+      if (step.target === '#overview-analysis .analysis-grid' && window.layoutHidesCard?.('trend') && window.layoutHidesCard?.('rhythm')) return false;
+      return true;
+    });
+  }
   async function startGuide() {
     if (tour) return;
+    const steps = tourSteps();
     notesOpen?.done(false);
     if (!$('settings').hidden) window.closeModal?.('settings');
     const last = document.activeElement;
@@ -382,14 +396,14 @@
     const schedule = () => { cancelAnimationFrame(self.frame); if (tour === self) self.frame = requestAnimationFrame(place); };
 
     const show = async i => {
-      const step = STEPS[i], token = ++self.token;
+      const step = steps[i], token = ++self.token;
       self.index = i;
-      count.textContent = `${i + 1} / ${STEPS.length}`;
+      count.textContent = `${i + 1} / ${steps.length}`;
       title.textContent = step.title;
       text.textContent = step.text;
-      bar.firstChild.style.width = `${((i + 1) / STEPS.length) * 100}%`;
+      bar.firstChild.style.width = `${((i + 1) / steps.length) * 100}%`;
       prev.hidden = i === 0;
-      next.textContent = i === 0 ? '开始' : i === STEPS.length - 1 ? '完成' : '下一步';
+      next.textContent = i === 0 ? '开始' : i === steps.length - 1 ? '完成' : '下一步';
       card.classList.remove('step-in'); void card.offsetWidth; if (!reduced()) card.classList.add('step-in');
       if (step.page && document.body.dataset.page !== step.page) window.navigate?.(step.page);
       step.before?.();
@@ -426,18 +440,20 @@
       } else if (saved && state.usageView !== saved.usageView) { window.showUsageView?.(saved.usageView); if (current) window.render?.(current); }
       lockPage(false);
       save({ onboarding: 'done', seenVersion: version });
-      window.navigate?.('overview');
+      const home = window.layoutHidesPage?.('overview') ? window.layoutFirstPage?.() : 'overview';
+      if (home) window.navigate?.(home);
+      else window.showLayoutEmpty?.();
       if (self.last?.isConnected) self.last.focus?.();
     };
     const onKey = event => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(); }
-      else if (event.key === 'ArrowRight' && self.index < STEPS.length - 1) { event.preventDefault(); show(self.index + 1); }
+      else if (event.key === 'ArrowRight' && self.index < steps.length - 1) { event.preventDefault(); show(self.index + 1); }
       else if (event.key === 'ArrowLeft' && self.index > 0) { event.preventDefault(); show(self.index - 1); }
       else trapTab(event, card);
     };
     skip.addEventListener('click', finish);
     prev.addEventListener('click', () => show(Math.max(0, self.index - 1)));
-    next.addEventListener('click', () => (self.index === STEPS.length - 1 ? finish() : show(self.index + 1)));
+    next.addEventListener('click', () => (self.index === steps.length - 1 ? finish() : show(self.index + 1)));
     window.addEventListener('resize', schedule);
     document.addEventListener('scroll', schedule, true);
     document.addEventListener('keydown', onKey, true);

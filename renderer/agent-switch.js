@@ -268,7 +268,7 @@
       button('管理路由', () => go('router'), 'btn', 'route'),
     ]);
     const cards = el('div', { class: 'pv-app-grid' }, APPS.map((a, i) => appCard(a, i)));
-    return [head('概览', '四家工具现在用的是谁、走直连还是本地路由。点卡片进入管理。'), status, cards];
+    return [head('概览', '四家工具现在用的是谁、走直连还是本地路由。点卡片进入管理。'), markLayout(status, 'providers:status'), cards];
   }
   function stat(label, value) { return el('div', { class: 'pv-stat' }, [el('small', { text: label }), el('strong', { text: value, translate: 'no' })]); }
   function appCard(a, i) {
@@ -286,7 +286,7 @@
     ]);
     paint(card, { '--i': i });
     card.addEventListener('click', () => go(a.id));
-    return card;
+    return markLayout(card, 'providers:' + a.id);
   }
 
   /* ---------------- 单个工具 ---------------- */

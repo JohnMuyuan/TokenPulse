@@ -99,16 +99,20 @@
     <span class="brand-text">TokenPulse<small>Your AI usage, at a glance</small></span>
   </a>
 
-  <div class="nav-caption">工作空间</div>
+  <div class="nav-head">
+    <div class="nav-caption">工作空间</div>
+    <button id="layout-edit" type="button" class="layout-edit" aria-pressed="false" title="编辑布局" aria-label="编辑布局"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg><span class="layout-edit-label">编辑布局</span></button>
+  </div>
   <nav id="nav" aria-label="主导航">
     <span class="nav-indicator" aria-hidden="true"></span>
-    <button class="nav-item active" data-page="overview" title="总览"><svg class="icon"><use href="#i-overview"/></svg><span class="nav-label">总览</span></button>
-    <button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button>
-    <button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button>
-    <button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button>
-    <button class="nav-item" data-page="concurrency" title="并发监控"><svg class="icon"><use href="#i-concurrency"/></svg><span class="nav-label">并发监控</span></button>
-    <button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button>
-    <button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button>
+    <div class="nav-slot"><button class="nav-item active" data-page="overview" title="总览"><svg class="icon"><use href="#i-overview"/></svg><span class="nav-label">总览</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="overview" aria-label="从侧栏移除总览" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="quota" aria-label="从侧栏移除额度详情" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="usage" aria-label="从侧栏移除用量明细" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="egress" aria-label="从侧栏移除出口监控" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="concurrency" title="并发监控"><svg class="icon"><use href="#i-concurrency"/></svg><span class="nav-label">并发监控</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="concurrency" aria-label="从侧栏移除并发监控" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="sessions" aria-label="从侧栏移除会话管理" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="providers" aria-label="从侧栏移除供应商" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <button id="layout-add" type="button" class="layout-add" hidden aria-haspopup="menu" aria-expanded="false" title="添加"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span class="nav-label">添加</span></button>
   </nav>
 
   <div class="sidebar-bottom">
@@ -138,7 +142,18 @@
       </div>
     </section>
 
-    <section id="page-overview" class="page">
+    <div id="layout-hidden-note" class="layout-note" hidden>
+      <span>此页已从侧栏隐藏</span>
+      <button id="layout-restore-page" type="button" class="text-btn">加回侧栏</button>
+    </div>
+    <section id="layout-empty" class="empty large" hidden>
+      <h3>侧栏是空的</h3>
+      <p>用不到的页面已经收起来了。编辑布局后可以再加回来。</p>
+      <button id="layout-empty-edit" type="button" class="btn">编辑布局</button>
+    </section>
+
+    <section id="page-overview" class="page layout-card" data-layout="overview:quota">
+      <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:quota" aria-label="移除官方额度" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
       <div class="section-heading">
         <h2>官方额度<span class="section-tag">实时窗口</span></h2>
         <button class="text-btn" data-go="quota">查看完整预测<svg class="icon"><use href="#i-arrow"/></svg></button>
@@ -197,6 +212,7 @@
       <div id="detail-filter-chips" class="detail-filter-chips" aria-live="polite"></div>
       <p id="detail-filter-note" class="detail-filter-note">统计、明细和导出使用相同筛选；请求条数与模型调用次数分别统计。</p>
     </section>
+    <p id="overview-layout-empty" class="layout-note" hidden>这一页的卡片都收起来了。编辑布局后可以加回来。</p>
     <section id="usage-summary">
       <div id="tiles" class="stats-grid">
         <div class="skeleton-stat"></div><div class="skeleton-stat"></div><div class="skeleton-stat"></div><div class="skeleton-stat"></div>
@@ -205,7 +221,8 @@
 
     <section id="overview-analysis" class="page">
       <div class="analysis-grid">
-        <article class="panel">
+        <article class="panel layout-card" data-layout="overview:trend">
+          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:trend" aria-label="移除用量趋势" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
           <div class="panel-heading">
             <div><h2>用量趋势</h2><p id="chart-caption">按天汇总 · 本机时间</p></div>
             <div id="chart-metric" class="seg compact"><span class="seg-thumb" aria-hidden="true"></span><button data-metric="tokens" class="on">Tokens</button><button data-metric="costUsd">费用</button><button data-metric="requests">请求</button></div>
@@ -213,17 +230,20 @@
           <div id="daily-chart" class="chart"></div>
           <div id="chart-summary" class="chart-summary"></div>
         </article>
-        <article class="panel">
+        <article class="panel layout-card" data-layout="overview:rhythm">
+          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:rhythm" aria-label="移除使用节奏" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
           <div class="panel-heading"><h2>使用节奏</h2><span class="section-tag">所选范围</span></div>
           <div id="rhythm"></div>
         </article>
       </div>
       <div class="split-grid">
-        <article class="panel">
+        <article class="panel layout-card" data-layout="overview:sources">
+          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:sources" aria-label="移除工具分布" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
           <div class="panel-heading"><h2>工具分布</h2><span class="section-tag">按 Tokens</span></div>
           <div id="sources"></div>
         </article>
-        <article class="panel">
+        <article class="panel layout-card" data-layout="overview:ranking">
+          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:ranking" aria-label="移除模型用量排行" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
           <div class="panel-heading"><h2>模型用量排行</h2><button class="text-btn" data-go="usage">查看明细<svg class="icon"><use href="#i-arrow"/></svg></button></div>
           <div id="model-ranking"></div>
         </article>
@@ -246,20 +266,28 @@
         </div>
       </div>
       <div id="quota-detail"></div>
-      <section id="quota-model-study" class="panel model-study" aria-label="模型容量排行"></section>
-      <section id="quota-model-timeline" class="panel model-study" aria-label="模型与思考等级时间轴"></section>
+      <section id="quota-model-study" class="panel model-study layout-card" data-layout="quota:study" aria-label="模型容量排行">
+        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="quota:study" aria-label="移除模型容量排行" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </section>
+      <section id="quota-model-timeline" class="panel model-study layout-card" data-layout="quota:timeline" aria-label="模型与思考等级时间轴">
+        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="quota:timeline" aria-label="移除模型与思考等级时间线" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </section>
     </section>
 
     <section id="page-usage" class="page" hidden>
-      <article class="panel breakdown-panel">
+      <article class="panel breakdown-panel layout-card" data-layout="usage:breakdown">
+        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="usage:breakdown" aria-label="移除 Token 构成" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         <div class="panel-heading"><h2>Token 构成</h2><span class="muted">输入含缓存读写，推理为输出子集</span></div>
         <div id="token-breakdown" class="breakdown-grid"></div>
       </article>
       <!-- 用量分析：分工具趋势、工具 / 模型完整排行、使用时段分布（renderer/usage-insights.js） -->
       <div id="usage-insights" class="usage-insights"></div>
       <!-- tokens.ci 自动上传的状态栏 / 介绍卡（renderer/tokens-ci.js） -->
-      <section id="tokens-ci" class="panel tokens-ci" aria-label="tokens.ci 上传" hidden></section>
-      <article class="panel records-panel usage-records">
+      <section id="tokens-ci" class="panel tokens-ci layout-card" data-layout="usage:tokensci" aria-label="tokens.ci 上传" hidden>
+        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="usage:tokensci" aria-label="移除 tokens.ci" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </section>
+      <article class="panel records-panel usage-records layout-card" data-layout="usage:records">
+        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="usage:records" aria-label="移除用量明细" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
         <div class="panel-heading">
           <div>
             <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span><span id="project-count" class="section-tag" hidden></span></h2>
@@ -397,7 +425,7 @@
         </div>
         <div class="setting-block">
           <div class="setting-title">API Key 余额监控</div>
-          <p class="setting-hint">DeepSeek 按量付费，没有订阅额度。填一个 DeepSeek 开放平台的 API Key，TokenPulse 每 10 分钟查一次余额，低于你设的数时提醒。有几个账号可以填几个，每个账号在额度详情里各有一页。Key 只保存在这台电脑上，只用来查余额，查余额不花钱。</p>
+          <p class="setting-hint">DeepSeek 按量付费，没有订阅额度。填一个 DeepSeek 开放平台的 API Key，TokenPulse 按「设置 → 通用」里的额度查询间隔查余额，低于你设的数时提醒。有几个账号可以填几个，每个账号在额度详情里各有一页。Key 只保存在这台电脑上，只用来查余额，查余额不花钱。</p>
           <button id="open-deepseek-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加 DeepSeek 账号</button>
           <p class="setting-hint">自己买的第三方中转站 Key 也可以监控：填站点地址和 Key，能看到余额、Key 的额度和限速窗口、每天的用量。支持 sub2api 和 new-api / one-api 搭的站。Key 只发给你填的那个站点。</p>
           <button id="open-relay-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加第三方 Key</button>

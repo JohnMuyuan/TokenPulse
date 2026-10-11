@@ -30,9 +30,28 @@ export type Prefs = {
   agentReadOnly: boolean;
   /** 自己加进「换一种模型，整窗能用多少」的型号（0.3.12），按家分开；model-catalog.ts 的 readStudyModels 在 worker 里直接读。 */
   studyModels: Partial<Record<"claude" | "chatgpt" | "grok", { model: string; efforts: string[] }[]>>;
+  /**
+   * 额度自动查询间隔（秒），只按整分钟。官方订阅额度、DeepSeek 余额、第三方 Key 余额共用这一个数。
+   * 默认 60。界面滑块是 1 到 10 分钟，保存后主进程才改定时器。
+   */
+  quotaEverySeconds: number;
 };
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {} };
+/** 额度查询间隔的边界（秒）。界面滑块和主进程校验用同一组数：1 到 10 分钟。 */
+export const QUOTA_EVERY_MIN_SECONDS = 60;
+export const QUOTA_EVERY_MAX_SECONDS = 10 * 60;
+export const QUOTA_EVERY_DEFAULT_SECONDS = 60;
+
+/** 把读到的间隔收成 1 到 10 的整分钟。空的、不是数的，用默认 1 分钟。 */
+export function quotaEverySeconds(value: unknown): number {
+  if (value == null || value === "") return QUOTA_EVERY_DEFAULT_SECONDS;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) return QUOTA_EVERY_DEFAULT_SECONDS;
+  const minutes = Math.min(10, Math.max(1, Math.round(seconds / 60)));
+  return minutes * 60;
+}
+
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS };
 
 function file() {
   return dataFile("prefs.json");
@@ -44,11 +63,13 @@ export function prefsExist(): boolean {
 }
 
 export function readPrefs(): Prefs {
-  return { ...DEFAULTS, ...readJson<Partial<Prefs>>(file(), {}) };
+  const raw = readJson<Partial<Prefs>>(file(), {});
+  return { ...DEFAULTS, ...raw, quotaEverySeconds: quotaEverySeconds(raw.quotaEverySeconds) };
 }
 
 export function writePrefs(patch: Partial<Prefs>): Prefs {
-  const next = { ...readPrefs(), ...patch };
+  const current = readPrefs();
+  const next = { ...current, ...patch, quotaEverySeconds: quotaEverySeconds("quotaEverySeconds" in patch ? patch.quotaEverySeconds : current.quotaEverySeconds) };
   writeJson(file(), next);
   return next;
 }

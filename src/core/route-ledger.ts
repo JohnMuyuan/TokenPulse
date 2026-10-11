@@ -294,7 +294,7 @@ export function routeReturned(responseId: string | undefined, at: number): Route
  * 键是账号 id；交给第三方供应商（不是官方账号）的记在空字符串名下。透明转发的不算（那是 CLI 自己登录的账号）。
  * 没读到用量的转发（/models 之类）不算。
  */
-type ShareRow = { at: number; account: string; weight: number };
+type ShareRow = { at: number; account: string; weight: number; id: string; model: string; effort: string; input: number; output: number; cacheRead: number };
 const shareCache = new Map<string, { size: number; mtimeMs: number; apps: Map<string, ShareRow[]> }>();
 const APP_OF_KIND: Record<OfficialAccountKind, string> = { claude: "claude", chatgpt: "codex", grok: "grok" };
 function shareIndex(name: string): Map<string, ShareRow[]> {
@@ -308,10 +308,16 @@ function shareIndex(name: string): Map<string, ShareRow[]> {
       if (!line || line.includes('"pass":true')) continue;
       let row: Record<string, unknown>;
       try { row = JSON.parse(line); } catch { continue; }
-      const at = Number(row.at), weight = (Number(row.input) || 0) + (Number(row.output) || 0);
+      const at = Number(row.at), input = Number(row.input) || 0, output = Number(row.output) || 0, weight = input + output;
       if (!Number.isFinite(at) || !(weight > 0) || !(Number(row.status) < 400) || row.error || row.pass === true || typeof row.app !== "string") continue;
       const list = apps.get(row.app) ?? [];
-      list.push({ at, account: typeof row.account === "string" ? row.account : "", weight });
+      const id = typeof row.id === "string" && row.id ? row.id : `${at}:${list.length}`;
+      list.push({
+        at, account: typeof row.account === "string" ? row.account : "", weight, id,
+        model: String(row.requestModel || row.model || "").slice(0, 120),
+        effort: typeof row.effort === "string" ? row.effort.slice(0, 20) : "",
+        input, output, cacheRead: Number(row.cacheRead) || 0,
+      });
       apps.set(row.app, list);
     }
   } catch { return new Map(); }
@@ -319,8 +325,10 @@ function shareIndex(name: string): Map<string, ShareRow[]> {
   shareCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, apps });
   return apps;
 }
-export function routeShares(kind: OfficialAccountKind, from: number, to: number): Map<string, number> {
-  const out = new Map<string, number>();
+/** 一段时间里本地路由交出的每一次转发。账号不是这一家（含第三方供应商）时 account 为空。 */
+export type RouteEvent = { at: number; account: string; weight: number; id: string; model: string; effort: string; input: number; output: number; cacheRead: number };
+export function routeEvents(kind: OfficialAccountKind, from: number, to: number): RouteEvent[] {
+  const out: RouteEvent[] = [];
   if (!(to >= from)) return out;
   const names = new Set([monthName(from, 0), monthName(to, 0)]);
   for (const name of names) {
@@ -329,11 +337,16 @@ export function routeShares(kind: OfficialAccountKind, from: number, to: number)
     let lo = 0, hi = list.length;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid].at < from) lo = mid + 1; else hi = mid; }
     for (let i = lo; i < list.length && list[i].at <= to; i++) {
+      const row = list[i];
       // 账号要是这一家的；别家的（不该出现）和第三方供应商一样记在空名下
-      const account = list[i].account.startsWith(kind + ":") ? list[i].account : "";
-      out.set(account, (out.get(account) ?? 0) + list[i].weight);
+      out.push({ ...row, account: row.account.startsWith(kind + ":") ? row.account : "" });
     }
   }
+  return out;
+}
+export function routeShares(kind: OfficialAccountKind, from: number, to: number): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const event of routeEvents(kind, from, to)) out.set(event.account, (out.get(event.account) ?? 0) + event.weight);
   return out;
 }
 

@@ -62,7 +62,7 @@ function transitionSidebar(animate) {
   const positions = moving.map(node => node.getBoundingClientRect());
   const surfaces = [sidebar, document.querySelector('.titlebar')];
   const transforms = surfaces.map(node => getComputedStyle(node, '::before').transform);
-  const labels = [...document.querySelectorAll('.brand-text, .nav-caption, .nav-label, .version, .titlebar-name')];
+  const labels = [...document.querySelectorAll('.brand-text, .nav-caption, .nav-label, .version, .titlebar-name, .layout-edit-label')];
   const visibleLabels = labels.filter(node => node.getClientRects().length).map(node => ({
     node, rect: node.getBoundingClientRect(), font: getComputedStyle(node).font,
     color: getComputedStyle(node).color, opacity: getComputedStyle(node).opacity
@@ -515,9 +515,12 @@ function syncSegs() { for (const group of document.querySelectorAll('.seg')) syn
 function moveIndicator() {
   const active = document.querySelector('#nav .nav-item.active');
   const bar = document.querySelector('.nav-indicator');
-  if (!active || !bar) return;
+  if (!bar) return;
+  const slot = active?.closest('.nav-slot');
+  if (!active || slot?.hidden) { bar.hidden = true; return; }
+  bar.hidden = false;
   bar.style.height = `${active.offsetHeight}px`;
-  bar.style.transform = `translateY(${active.offsetTop}px)`;
+  bar.style.transform = `translateY(${(slot || active).offsetTop}px)`;
 }
 
 /* ---------------- 状态 ---------------- */
@@ -808,7 +811,8 @@ function quotaCard({ kind, key, account }, pool = null) {
     body.push(el('div', { class: 'quota-missing' }, [el('p', { text: '可能尚未登录、凭据过期或网络未连通。本机用量仍正常记录。' })]));
   }
   if (multi) body.push(poolQueue(pool, key));
-  const link = el('button', { class: 'text-btn', 'aria-label': `${who ? meta.name + ' ' + who : meta.name} 额度详情` }, ['详情', icon('arrow')]);
+  const link = el('button', { class: 'text-btn', 'data-go': 'quota', 'aria-label': `${who ? meta.name + ' ' + who : meta.name} 额度详情` }, ['详情', icon('arrow')]);
+  link.hidden = navHidden('quota');
   link.addEventListener('click', () => { state.account = key; navigate('quota'); });
   const forecast = !stale && !waiting && report?.used >= 100 ? '额度已用完，等待重置'
     : !stale && !waiting && report?.etaAt && report.runsOutBeforeReset ? `约 ${duration(report.etaAt - Date.now())} 后达到上限`
@@ -940,11 +944,12 @@ function renderStats() {
     const valueNode = el('span', { class: 'num' });
     countTo(valueNode, 'stat:' + name, value, format);
     const approx = format === amount ? cnApprox(value) : '';
-    return el('article', { class: 'stat' }, [
+    const card = el('article', { class: 'stat' }, [
       el('div', { class: 'stat-label' }, [el('span', { class: 'stat-icon' }, [icon(name)]), el('span', { text: label }), el('span', { class: 'stat-unit', text: unit })]),
       el('div', { class: 'stat-value' + (format === amount && numberMode === 'exact' && value >= 1e9 ? ' long' : ''), title: format === amount ? number(value) : '' }, [valueNode, approx ? el('small', { class: 'cn-approx', text: approx }) : null]),
       el('div', { class: 'stat-sub' }, sub)
     ]);
+    return state.page === 'overview' ? markLayout(card, 'overview:' + name) : card;
   }));
 }
 
@@ -1468,7 +1473,7 @@ function renderQuota() {
   window.PulseModelStudy?.timeline(current, account?.accountId || '');
   const sessions = current.sessions[kind] || { included: 0, excluded: 0 };
   const pool = poolOf(kind);
-  if (pool?.accountCount > 1) host.append(poolPanel(pool));
+  if (pool?.accountCount > 1) host.append(markLayout(poolPanel(pool), 'quota:pool'));
   host.append(el('div', { class: 'quota-context' }, [
     avatar(kind),
     el('div', {}, [
@@ -1491,20 +1496,20 @@ function renderQuota() {
   const blocked = blockNote(kind, true);
   if (blocked) host.append(blocked);
   if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `最后一次成功查询是 ${date(checkedAt(account), true)}，已超过 15 分钟（可能是网络不通或凭据过期）。以下是历史记录，当前剩余额度需刷新确认。`]));
-  host.append(el('div', { class: 'quota-window-grid' }, [windowPanel('5 小时窗口', account.five, account), windowPanel('周额度窗口', account.week, account)]));
-  if (kind === 'chatgpt') host.append(probePanel(account));
+  host.append(el('div', { class: 'quota-window-grid' }, [markLayout(windowPanel('5 小时窗口', account.five, account), 'quota:five'), markLayout(windowPanel('周额度窗口', account.week, account), 'quota:week')]));
+  if (kind === 'chatgpt') host.append(markLayout(probePanel(account), 'quota:probe'));
   const capacity = capacityPanel(account);
-  host.append(capacity);
+  host.append(markLayout(capacity, 'quota:capacity'));
   const hourly = el('div', { class: 'chart' });
   const history = el('article', { class: 'panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '最近 24 小时 · 官方会话用量' })]), hourly, el('p', { class: 'sample-caption', text: '仅统计本机归属该官方账号的会话。横轴按本地时间，含当前未结束的小时。' })]);
   const trend = el('div', { class: 'chart quota-trend' });
   const trendPanel = el('article', { class: 'panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '本周额度采样' })]), trend, el('p', { class: 'sample-caption', text: `手动重置次数：${account.resetCredits ?? '接口未提供'} · 活跃时间占比：${account.week?.activeShare == null ? '样本不足' : percent(account.week.activeShare * 100)}` })]);
-  host.append(el('div', { class: 'quota-history-grid' }, [history, trendPanel]));
+  host.append(el('div', { class: 'quota-history-grid' }, [markLayout(history, 'quota:hourly'), markLayout(trendPanel, 'quota:samples')]));
   // 时间线紧跟在这两张图下面
   if (quotaTimelineNode) host.append(quotaTimelineNode);
   const speed = speedPanel(account, kind);
-  if (speed) host.append(speed);
-  host.append(accountRequestsPanel(account, meta));
+  if (speed) host.append(markLayout(speed, 'quota:speed'));
+  host.append(markLayout(accountRequestsPanel(account, meta), 'quota:account'));
   const animate = entering();
   chart(hourly, account.hourly, 'tokens', true, animate);
   trendChart(trend, account.trend, animate);
@@ -1937,7 +1942,7 @@ const ACCOUNT_BASIS_HINT = {
   timeline: '按请求时间，对上当时 CLI 登录的账号',
   inferred: 'TokenPulse 开始记录登录之前的请求，按最早记下的账号推断',
   route: '经 TokenPulse 的号池发出，按本地路由的记录对上号池里的这个账号',
-  'route-window': '这一轮对话期间，号池把请求全部交给了这个账号（Grok 的记录按轮汇总，按时间对上转发记录）'
+  'route-window': '这次转发交给了这个账号。Grok 的会话按一整轮汇总，TokenPulse 按转发记录把这一轮拆开，记到每次实际用的账号上'
 };
 /** 项目和账号放一格：上面项目，下面是发出这次请求的账号。 */
 function projectAccountCell(row) {
@@ -2084,6 +2089,7 @@ function render(snapshot) {
   // tokens.ci 状态栏：进出演示模式时跟着显示 / 隐藏
   window.PulseTokensCi?.refresh();
   window.DeepSeekBalance?.render();
+  applyLayout();
 }
 /** 重建期间锁住主区高度，重建完还原滚动位置。 */
 /** 滚动的是工作区，不是整个窗口（标题栏下面那块，见 app.css 的 .workspace）。 */
@@ -2220,10 +2226,213 @@ function showUsageView(view) {
  * 时间范围按页面各管各的：总览默认 30 天、改了会记住；用量明细每次打开都从「今天」开始（看明细一般是看今天的）。
  */
 const overviewRange = { days: 30, from: '', to: '', follow: false };
-function navigate(page) {
+/* ---------------- 工作空间布局（0.3.43） ---------------- */
+
+const LAYOUT_KEY = 'tokenpulse-layout';
+const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers'];
+const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', concurrency: '并发监控', sessions: '会话管理', providers: '供应商' };
+/** 每一页能单独收起的卡片。id 带页面前缀，加回时按这个顺序回到原位。 */
+const LAYOUT = [
+  ['overview:quota', '官方额度'], ['overview:tokens', '总 Tokens'], ['overview:cost', '参考费用'], ['overview:requests', '请求次数'], ['overview:cache', '缓存读取占比'],
+  ['overview:trend', '用量趋势'], ['overview:rhythm', '使用节奏'], ['overview:sources', '工具分布'], ['overview:ranking', '模型用量排行'],
+  ['quota:pool', '账号池'], ['quota:five', '5 小时窗口'], ['quota:week', '周额度窗口'], ['quota:probe', '降智检测'], ['quota:capacity', '额度容量趋势'],
+  ['quota:hourly', '最近 24 小时'], ['quota:samples', '本周额度采样'], ['quota:study', '模型容量排行'], ['quota:timeline', '模型与思考等级时间线'],
+  ['quota:speed', '模型速度'], ['quota:account', '这个账号的请求'], ['quota:balance', '余额'], ['quota:local', '本机用量'], ['quota:spend', '消耗趋势'],
+  ['quota:history', '余额走势'], ['quota:models', '模型换算'], ['quota:site', '站点上的 Key'], ['quota:about', '账号说明'],
+  ['usage:breakdown', 'Token 构成'], ['usage:year', '全年活跃度'], ['usage:trend', '用量趋势 · 按工具'], ['usage:tools', '工具排行'], ['usage:hours', '使用时段分布'],
+  ['usage:models', '模型排行'], ['usage:speed', '模型速度走势'], ['usage:tokensci', 'tokens.ci 上传'], ['usage:records', '用量明细'],
+  ['egress:chatgpt', 'ChatGPT 出口'], ['egress:claude', 'Claude 出口'], ['egress:grok', 'Grok 出口'], ['egress:history', '变化与告警'],
+  ['concurrency:coverage', '监控范围'], ['concurrency:requests', '活跃 AI 请求'], ['concurrency:clients', '客户端连接'], ['concurrency:upstream', '上游连接'],
+  ['concurrency:history', '并发历史'], ['concurrency:breakdown', '供应商与账号'], ['concurrency:settings', '上限与保存期限'],
+  ['sessions:list', '会话列表'], ['sessions:detail', '会话内容'],
+  ['providers:status', '本地路由状态'], ['providers:claude', 'Claude Code'], ['providers:desktop', 'Claude 桌面端'], ['providers:codex', 'Codex'], ['providers:grok', 'Grok CLI'],
+];
+const LAYOUT_BY_KEY = Object.fromEntries(LAYOUT);
+const OVERVIEW_STATS = ['overview:tokens', 'overview:cost', 'overview:requests', 'overview:cache'];
+const OVERVIEW_RANGE = [...OVERVIEW_STATS, 'overview:trend', 'overview:rhythm', 'overview:sources', 'overview:ranking'];
+const LEGACY_CARDS = { quota: ['overview:quota'], stats: OVERVIEW_STATS, trend: ['overview:trend'], rhythm: ['overview:rhythm'], sources: ['overview:sources'], ranking: ['overview:ranking'] };
+let layoutEdit = false;
+let hiddenNav = [];
+let hiddenCards = [];
+function navHidden(page) { return hiddenNav.includes(page); }
+function cardHidden(id) {
+  if (hiddenCards.includes(id)) return true;
+  return Boolean(id && !id.includes(':') && hiddenCards.includes('overview:' + id));
+}
+function expandCardId(id) {
+  if (LAYOUT_BY_KEY[id]) return [id];
+  if (LEGACY_CARDS[id]) return LEGACY_CARDS[id];
+  if (LAYOUT_BY_KEY['overview:' + id]) return ['overview:' + id];
+  return [];
+}
+function layoutFirstPage() { return NAV_PAGES.find(id => !navHidden(id)) || ''; }
+function readLayout() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
+    hiddenNav = Array.isArray(raw.hiddenNav) ? [...new Set(raw.hiddenNav.filter(id => NAV_PAGES.includes(id)))] : [];
+    hiddenCards = Array.isArray(raw.hiddenCards) ? [...new Set(raw.hiddenCards.flatMap(expandCardId))] : [];
+  } catch { hiddenNav = []; hiddenCards = []; }
+}
+function writeLayout() {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify({ hiddenNav, hiddenCards })); } catch { /* 记不住就只对这次生效 */ }
+}
+function setLayoutEdit(on) {
+  layoutEdit = Boolean(on);
+  if (!layoutEdit) closeOptionMenu();
+  applyLayout();
+}
+function hideNav(page) {
+  if (!NAV_PAGES.includes(page) || navHidden(page)) return;
+  hiddenNav.push(page);
+  writeLayout();
+  if (state.page === page) {
+    const next = layoutFirstPage();
+    if (next) navigate(next);
+    else showLayoutEmpty();
+  } else applyLayout();
+}
+function showNav(page) {
+  if (!navHidden(page)) return;
+  hiddenNav = hiddenNav.filter(id => id !== page);
+  writeLayout();
+  if (!state.page) navigate(page);
+  else applyLayout();
+}
+function hideCard(id) {
+  const key = expandCardId(id)[0];
+  if (!key || cardHidden(key)) return;
+  hiddenCards.push(key);
+  writeLayout();
+  applyLayout();
+}
+function showCard(id) {
+  const keys = new Set(expandCardId(id));
+  if (![...keys].some(cardHidden)) return;
+  hiddenCards = hiddenCards.filter(item => !keys.has(item));
+  writeLayout();
+  applyLayout();
+}
+/** 给一块卡片打上布局标记，并放上删除按钮。按钮型卡片外包一层，避免按钮里再套按钮。 */
+function markLayout(node, key) {
+  if (!node || !LAYOUT_BY_KEY[key]) return node;
+  let host = node;
+  if (node.tagName === 'BUTTON') {
+    if (node.parentElement?.dataset.layout === key) host = node.parentElement;
+    else {
+      host = el('div', { class: 'layout-card layout-wrap', 'data-layout': key });
+      if (node.parentNode) node.replaceWith(host);
+      host.append(node);
+    }
+  } else {
+    if (!node.classList.contains('layout-card')) node.className = ('layout-card ' + node.className).trim();
+    node.dataset.layout = key;
+  }
+  if (!host.querySelector(':scope > .layout-remove')) {
+    host.append(el('button', { type: 'button', class: 'layout-remove', 'data-layout-remove': 'card', 'data-layout-id': key, title: '移除', 'aria-label': '移除' + LAYOUT_BY_KEY[key] }, [icon('close')]));
+  }
+  return host;
+}
+window.markLayout = markLayout;
+function showLayoutEmpty() {
+  state.page = '';
+  document.body.dataset.page = 'empty';
+  window.PulseConcurrency?.hide();
+  window.PulseProviders?.hide();
+  for (const name of NAV_PAGES) { const node = $('page-' + name); if (node) node.hidden = true; }
+  $('overview-analysis').hidden = true;
+  $('detail-filters').hidden = true;
+  for (const button of document.querySelectorAll('#nav [data-page]')) {
+    button.classList.remove('active');
+    button.setAttribute('aria-current', 'false');
+  }
+  $('page-label').textContent = '工作空间';
+  $('page-title').textContent = '侧栏是空的';
+  $('page-description').textContent = '用不到的页面已经收起来了。编辑布局后可以再加回来。';
+  applyLayout();
+}
+function applyLayout() {
+  for (const page of NAV_PAGES) {
+    const slot = document.querySelector(`#nav [data-page="${page}"]`)?.closest('.nav-slot');
+    if (slot) slot.hidden = navHidden(page);
+  }
+  if (layoutEdit) document.documentElement.dataset.layoutEdit = 'on';
+  else delete document.documentElement.dataset.layoutEdit;
+  const editBtn = $('layout-edit');
+  const editLabel = layoutEdit ? '完成' : '编辑布局';
+  editBtn.setAttribute('aria-pressed', String(layoutEdit));
+  editBtn.title = editLabel;
+  editBtn.setAttribute('aria-label', editLabel);
+  editBtn.querySelector('.layout-edit-label').textContent = editLabel;
+  editBtn.querySelector('use').setAttribute('href', layoutEdit ? '#i-check' : '#i-edit');
+  const add = $('layout-add');
+  add.hidden = !(layoutEdit && (hiddenNav.length || hiddenCards.length));
+  if (state.page) document.body.dataset.page = state.page;
+  const onOverview = state.page === 'overview';
+  const onUsage = state.page === 'usage';
+  const overviewBlock = $('page-overview');
+  if (overviewBlock && (state.page === 'overview' || state.page === '')) overviewBlock.hidden = !onOverview || cardHidden('overview:quota');
+  for (const node of document.querySelectorAll('[data-layout]')) {
+    const key = node.dataset.layout;
+    if (!node.querySelector(':scope > .layout-remove') && LAYOUT_BY_KEY[key]) markLayout(node, key);
+    const stat = OVERVIEW_STATS.includes(key);
+    const shouldHide = cardHidden(key) && !(stat && state.page !== 'overview');
+    if (shouldHide) { node.hidden = true; node.dataset.layoutHidden = '1'; }
+    else if (node.dataset.layoutHidden) { node.hidden = false; delete node.dataset.layoutHidden; }
+  }
+  const analysis = document.querySelector('#overview-analysis .analysis-grid');
+  const split = document.querySelector('#overview-analysis .split-grid');
+  if (analysis) analysis.hidden = !onOverview || (cardHidden('overview:trend') && cardHidden('overview:rhythm'));
+  if (split) split.hidden = !onOverview || (cardHidden('overview:sources') && cardHidden('overview:ranking'));
+  $('overview-analysis').hidden = state.page !== 'overview' || ['overview:trend', 'overview:rhythm', 'overview:sources', 'overview:ranking'].every(cardHidden);
+  const rangeOnOverview = OVERVIEW_RANGE.some(id => !cardHidden(id));
+  $('usage-filters').hidden = !(onUsage || (onOverview && rangeOnOverview));
+  $('usage-summary').hidden = !(onUsage || (onOverview && OVERVIEW_STATS.some(id => !cardHidden(id))));
+  const pageCards = LAYOUT.filter(([key]) => key.startsWith(state.page + ':'));
+  $('overview-layout-empty').hidden = !state.page || !pageCards.length || pageCards.some(([key]) => !cardHidden(key));
+  $('layout-hidden-note').hidden = !(state.page && navHidden(state.page));
+  $('layout-empty').hidden = state.page !== '';
+  for (const button of document.querySelectorAll('[data-go]')) button.hidden = navHidden(button.dataset.go);
+  moveIndicator();
+}
+function openLayoutMenu(trigger) {
+  if (menuOwner === trigger) { closeOptionMenu(); return; }
+  closeOptionMenu();
+  const menu = $('option-menu');
+  const item = (label, pick) => {
+    const button = el('button', { type: 'button', class: 'option-item', role: 'menuitem', tabindex: -1 }, [el('span', { class: 'option-item-text' }, [el('b', { text: label })])]);
+    button.addEventListener('click', () => { closeOptionMenu(true); pick(); });
+    return button;
+  };
+  const nodes = [];
+  const pages = NAV_PAGES.filter(navHidden);
+  if (pages.length) nodes.push(el('div', { class: 'option-menu-label', text: '页面' }), ...pages.map(id => item(NAV_LABELS[id], () => showNav(id))));
+  for (const page of NAV_PAGES) {
+    const cards = LAYOUT.filter(([key]) => key.startsWith(page + ':') && cardHidden(key));
+    if (cards.length) nodes.push(el('div', { class: 'option-menu-label', text: NAV_LABELS[page] }), ...cards.map(([key, label]) => item(label, () => showCard(key))));
+  }
+  menu.setAttribute('aria-label', '添加');
+  menu.replaceChildren(...nodes);
+  menu.hidden = false;
+  menuOwner = trigger;
+  trigger.setAttribute('aria-expanded', 'true');
+  const rect = trigger.getBoundingClientRect(), width = Math.min(Math.max(rect.width, 220), window.innerWidth - 24);
+  menu.style.width = `${width}px`;
+  menu.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
+  const height = menu.offsetHeight;
+  menu.style.top = `${window.innerHeight - rect.bottom - 12 >= height ? rect.bottom + 6 : Math.max(12, rect.top - height - 6)}px`;
+  menu.querySelector('.option-item')?.focus();
+}
+window.layoutHidesPage = page => navHidden(page);
+window.layoutHidesCard = id => cardHidden(id);
+window.layoutFirstPage = layoutFirstPage;
+window.showLayoutEmpty = showLayoutEmpty;
+
+function navigate(page, options = {}) {
+  const force = options.force === true;
   // 以前的「请求记录」页并进了用量明细（通知、额度详情的链接还会传 requests 过来）
   if (page === 'requests') { page = 'usage'; showUsageView('requests'); }
-  if (!['overview', 'quota', 'usage', 'egress', 'sessions', 'providers', 'concurrency'].includes(page)) page = 'overview';
+  if (!NAV_PAGES.includes(page)) page = 'overview';
+  if (!force && navHidden(page)) return;
   const rangePage = state.rangePage || 'overview';
   if (page === 'usage' && state.page !== 'usage') {
     if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
@@ -2236,16 +2445,15 @@ function navigate(page) {
   if (page !== 'providers') window.PulseProviders?.hide();
   const labels = { concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
-  for (const button of document.querySelectorAll('[data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
+  for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
-  for (const name of ['overview', 'quota', 'usage', 'egress', 'sessions', 'providers', 'concurrency']) $('page-' + name).hidden = name !== page;
+  for (const name of NAV_PAGES) $('page-' + name).hidden = name !== page;
   // 会话页是占满屏幕的工作台：大标题、页脚在那一页收起来（sessions.css）
   document.body.dataset.page = page;
-  $('overview-analysis').hidden = page !== 'overview';
-  $('usage-filters').hidden = $('usage-summary').hidden = page === 'quota' || page === 'sessions' || page === 'egress' || page === 'providers' || page === 'concurrency';
   $('tip').hidden = true;
   enter();
   if (current) render(current);
+  applyLayout();
   syncSegs();
   scroller.scrollTo({ top: 0, behavior: 'instant' });
   scrollGuard.reset();
@@ -2349,7 +2557,7 @@ const THEME_OPTIONS = [
 /** 存进 prefs.json 的设置项。外观不在这里：它要在读 prefs 之前就生效，存在 localStorage。 */
 const PREF_ROWS = {
   general: [
-    { key: 'closeToTray', title: '关闭窗口时', hint: '收进托盘后照常每分钟记录用量、每 5 分钟采样额度。真正退出请用托盘图标的右键菜单。', options: [
+    { key: 'closeToTray', title: '关闭窗口时', hint: '收进托盘后照常每分钟记录用量，额度按设置里的间隔继续查。真正退出请用托盘图标的右键菜单。', options: [
       { value: true, label: '收进托盘继续运行', hint: '默认。后台记录不中断' },
       { value: false, label: '直接退出', hint: '关掉窗口就结束进程，期间不记录用量' }] },
     { key: 'autoLaunch', title: '开机自启', hint: '登录电脑后自动在托盘里开始记录。只对安装版和免安装版生效，开发模式不会写入启动项。', options: [
@@ -2560,6 +2768,44 @@ const LANGUAGE_OPTIONS = [
   { value: 'zh', label: '简体中文' },
   { value: 'en', label: 'English' }
 ];
+function quotaEveryMinutes(seconds) {
+  const minutes = Math.round((Number(seconds) || 60) / 60);
+  return Math.min(10, Math.max(1, Number.isFinite(minutes) ? minutes : 1));
+}
+function quotaEveryLabel(seconds) {
+  return `每 ${quotaEveryMinutes(seconds)} 分钟`;
+}
+/** 额度查询间隔：滑块只改整分钟，点保存才写入并让主进程改定时器。 */
+function quotaIntervalRow(prefs) {
+  let saved = quotaEveryMinutes(prefs.quotaEverySeconds) * 60;
+  let draft = saved;
+  const value = el('span', { class: 'interval-value num', id: 'pref-quota-every-value' });
+  const slider = el('input', { type: 'range', class: 'interval-slider', id: 'pref-quota-every', min: '1', max: '10', step: '1', value: String(saved / 60), 'aria-label': '额度查询间隔' });
+  const save = el('button', { type: 'button', class: 'btn btn-accent', id: 'pref-quota-every-save', text: '保存' });
+  const paint = () => {
+    value.textContent = quotaEveryLabel(draft);
+    slider.setAttribute('aria-valuetext', value.textContent);
+    save.disabled = draft === saved;
+  };
+  slider.addEventListener('input', () => {
+    draft = quotaEveryMinutes(Number(slider.value) * 60) * 60;
+    paint();
+  });
+  save.addEventListener('click', async () => {
+    const next = draft;
+    save.disabled = true;
+    if (await savePref('quotaEverySeconds', next)) saved = next;
+    paint();
+  });
+  paint();
+  return settingRow('额度查询间隔', 'Claude、ChatGPT、Grok 的订阅额度，以及 DeepSeek 和第三方 Key 的余额，共用这一个间隔。默认 1 分钟。拖动滑块后点保存才会改掉正在跑的查询。最短 1 分钟，最长 10 分钟。', el('div', { class: 'interval-row' }, [
+    el('span', { class: 'interval-bound', text: '1 分钟' }),
+    slider,
+    el('span', { class: 'interval-bound', text: '10 分钟' }),
+    value,
+    save,
+  ]));
+}
 function renderSettings(prefs) {
   $('settings-general').replaceChildren(
     settingRow('外观', '深浅色。选「跟随系统」就跟着 Windows 的设置走。', optionSelect({ id: 'pref-theme', label: '外观', value: themeMode, options: THEME_OPTIONS, onChange: setThemeMode })),
@@ -2571,6 +2817,7 @@ function renderSettings(prefs) {
       // 主进程的托盘菜单和通知也跟着换：先存进 prefs，再重新加载界面
       onChange: async next => { await savePref('language', next); window.PulseI18n?.setMode(next); }
     })),
+    quotaIntervalRow(prefs),
     ...PREF_ROWS.general.map(row => prefRow(row, prefs)));
   $('settings-alerts').replaceChildren(...PREF_ROWS.alerts.map(row => prefRow(row, prefs)));
   renderCcSwitch(current?.ccSwitch, prefs);
@@ -2611,14 +2858,31 @@ $('sidebar-toggle').addEventListener('click', event => {
 });
 narrowSidebar.addEventListener('change', () => { stopSidebarMotion(); if (!sidebarMode) keepScroll(applySidebar); });
 darkQuery.addEventListener('change', () => { if (themeMode === 'system') applyTheme(true); });
-moveIndicator();
+readLayout();
+if (navHidden(state.page)) {
+  const next = layoutFirstPage();
+  if (next) navigate(next);
+  else showLayoutEmpty();
+} else applyLayout();
 api.version?.().then(version => {
   for (const node of document.querySelectorAll('.app-version')) node.textContent = 'v' + version;
   // 1.0 之前都是预览版
   for (const node of document.querySelectorAll('.preview-tag, .preview-note')) node.hidden = !/^0\./.test(version);
 }).catch(() => {});
-for (const button of document.querySelectorAll('[data-page], [data-go]')) button.addEventListener('click', () => navigate(button.dataset.page || button.dataset.go));
+for (const button of document.querySelectorAll('#nav [data-page], [data-go]')) button.addEventListener('click', () => navigate(button.dataset.page || button.dataset.go));
 document.querySelector('.brand').addEventListener('click', e => { e.preventDefault(); navigate('overview'); });
+$('layout-edit').addEventListener('click', () => setLayoutEdit(!layoutEdit));
+$('layout-empty-edit').addEventListener('click', () => setLayoutEdit(true));
+$('layout-add').addEventListener('click', () => openLayoutMenu($('layout-add')));
+$('layout-restore-page').addEventListener('click', () => { if (state.page) showNav(state.page); });
+document.addEventListener('click', event => {
+  const remove = event.target.closest?.('[data-layout-remove]');
+  if (!remove || !layoutEdit) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (remove.dataset.layoutRemove === 'nav') hideNav(remove.dataset.layoutId);
+  else hideCard(remove.dataset.layoutId);
+});
 const picker = { from: '', to: '', follow: false, month: '' };
 function monthOf(day) { return day.slice(0, 7); }
 function shiftMonth(month, n) { const [y, m] = month.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
@@ -3098,6 +3362,11 @@ async function runAccountAction(action, kind, id, button) {
 }
 $('open-data').addEventListener('click', async () => { try { const error = await api.openDataDir(); if (error) $('prefs-status').textContent = '无法打开数据目录：' + error; } catch { $('prefs-status').textContent = '无法打开数据目录'; } });
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && layoutEdit && !menuOwner && $('settings').hidden && $('range-popover').hidden) {
+    event.preventDefault();
+    setLayoutEdit(false);
+    return;
+  }
   const modal = ['settings'].find(id => !$(id).hidden); if (!modal || menuOwner) return;
   if (event.key === 'Escape') { event.preventDefault(); closeModal(modal); }
   if (event.key === 'Tab') {
@@ -3153,7 +3422,7 @@ api.onEgressState?.(syncQuotaBlocks);
 api.egressState?.().then(syncQuotaBlocks).catch(() => {});
 api.onOpenPage?.(target => {
   if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
-  navigate(target?.page || 'overview');
+  navigate(target?.page || 'overview', { force: true });
 });
 api.onError(message => { bootFailed(); showStatus(message, true); });
 api.snapshot().then(receive).catch(() => { bootFailed(); showStatus('本地数据读取失败，请点击刷新重试。', true); });

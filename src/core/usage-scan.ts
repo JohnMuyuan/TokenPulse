@@ -6,7 +6,7 @@ import path from "path";
 import { dataFile, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline } from "./login-timeline";
-import { routeShares } from "./route-ledger";
+import { routeEvents, type RouteEvent } from "./route-ledger";
 import zlib from "zlib";
 import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
@@ -178,8 +178,9 @@ export type UsageRollups = {
  * 9：补记「压缩上下文」那一次模型调用（见 compactionRow 一节）。三家都整份重算。
  * 10：号池归属只使用共同响应 ID；重算清掉旧的时间猜测造成的账号小时账。
  * 13：DeepSeek Harness 的流水补记出字时间（首字延迟、每秒 Token 数），额度详情的「模型速度」用。
+ * 14：Grok 号池一轮里的每一次转发各记一条请求（时间、账号），额度时间线才能把这段上涨认作本机。
  */
-const STATE_VERSION = 13;
+const STATE_VERSION = 14;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -218,10 +219,26 @@ function bucket(days: DayBuckets, day: string, source: string, model: string): U
   return (byModel[model] ??= emptyBucket());
 }
 
-/** 一份用量按比例取一部分（号池分摊用）：Token 和次数取整，费用不取整。 */
-function scaleUsage(usage: UsageBucket, share: number): UsageBucket {
-  const part = (value: number) => Math.round(value * share);
-  return { input: part(usage.input), output: part(usage.output), cacheRead: part(usage.cacheRead), cacheWrite: part(usage.cacheWrite), reasoning: part(usage.reasoning), costUsd: usage.costUsd * share, requests: part(usage.requests) };
+/** 一份用量按权重拆开：Token 和次数取整且加起来等于原来的数，费用按比例。 */
+function splitByWeight(usage: UsageBucket, weights: number[]): UsageBucket[] {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const parts = weights.map(() => emptyBucket());
+  if (!(total > 0)) return parts;
+  const fields = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "requests"] as const;
+  for (const field of fields) {
+    const raw = weights.map((weight) => (usage[field] * weight) / total);
+    const floors = raw.map((value) => Math.floor(value));
+    let left = usage[field] - floors.reduce((sum, value) => sum + value, 0);
+    const order = raw.map((value, index) => ({ index, frac: value - floors[index] })).sort((a, b) => b.frac - a.frac || a.index - b.index);
+    for (const item of order) {
+      if (left <= 0) break;
+      floors[item.index] += 1;
+      left -= 1;
+    }
+    parts.forEach((part, index) => { part[field] = floors[index]; });
+  }
+  parts.forEach((part, index) => { part.costUsd = (usage.costUsd * weights[index]) / total; });
+  return parts;
 }
 
 export function addUsage(into: UsageBucket, usage: UsageBucket) {
@@ -979,20 +996,19 @@ function scanFile(
     }
     const rows = [...rowsBefore.splice(0), ...turnRows];
     /*
-     * Grok 号池（0.3.42）：会话文件一整轮汇总成一条，没有响应 ID，对不上单次请求。
-     * 改用这一轮的时间范围去查转发记录：号池把这段时间里的请求交给了谁、各占多少 Token，就按这个比例把这一轮的用量分给他们。
-     * 总量不变，只是原来没有归属的那部分有了去处；交给第三方供应商的那一份仍然不归任何官方账号。
+     * Grok 号池：会话文件一整轮汇总成一条，没有响应 ID，对不上单次请求。
+     * 用这一轮的时间范围去查转发记录，按各次转发的 Token 数把这一轮拆开。
+     * 每一次转发给官方账号的，请求流水记在那一次的时间上、归到那个账号——额度时间线认的是这些时间，
+     * 不是轮次结束的那一个点。交给第三方供应商的那一份仍然不归任何官方账号。总量不变。
      */
-    let shares: Map<string, number> | null = null, shareTotal = 0, soleAccount = "";
+    let poolEvents: RouteEvent[] = [], otherWeight = 0;
     if (kind === "grok-build" && turnRows.length) {
       const at = turnRows[0].at;
       // 没记下这一轮什么时候开始的：只往前看 10 分钟，宁可少归也不把更早的号池请求算进来
       const from = Math.max(state.turnStartAt ?? Math.max(state.lastTurnAt ?? 0, at - 10 * 60_000), at - 6 * HOUR_MS);
-      const hit = routeShares("grok", from - 2000, at + 2000);
-      if (hit.size) {
-        shares = hit;
-        for (const weight of hit.values()) shareTotal += weight;
-        if (hit.size === 1 && !hit.has("")) soleAccount = [...hit.keys()][0];
+      for (const event of routeEvents("grok", from - 2000, at + 2000)) {
+        if (event.account) poolEvents.push(event);
+        else otherWeight += event.weight;
       }
       state.lastTurnAt = at;
       state.turnStartAt = undefined;
@@ -1014,20 +1030,30 @@ function scanFile(
       if (kind === "grok-build" && !row.compaction && row.usage.input) state.cacheRatio = Math.min(1, row.usage.cacheRead / row.usage.input);
       // 经 TokenPulse 号池发出去的：配置里填的是本地路由，文件整体被当成「不是官方」，但这一条实际用的是号池里的官方账号
       const routed = !row.compaction ? routedAccount(KIND_OF_SOURCE[source], row.at, accountContext.labels, row.responseId) : null;
+      const baseId = row.id || `${row.at}:${model}:${row.usage.input}:${row.usage.output}`;
+      // 号池这一轮里的每一次官方转发各成一条；第一条沿用原来的 id，重扫时替掉按整轮记的那一条
+      const poolSplit = !routed && !row.compaction && poolEvents.length > 0;
+      const pieces: { at: number; usage: UsageBucket; id: string; account?: string; basis?: "response-id" | "route-window"; routeEventId?: string; effort?: string; effortSource?: string }[] = [];
+      if (poolSplit) {
+        const weights = [...poolEvents.map((event) => event.weight), ...(otherWeight > 0 ? [otherWeight] : [])];
+        const parts = splitByWeight(row.usage, weights);
+        poolEvents.forEach((event, index) => pieces.push({
+          at: event.at, usage: parts[index], id: index === 0 ? baseId : `${baseId}~${event.id}`,
+          account: event.account, basis: "route-window", routeEventId: event.id,
+          ...(event.effort ? { effort: event.effort, effortSource: "route-log" } : {}),
+        }));
+        if (otherWeight > 0) pieces.push({ at: row.at, usage: parts[parts.length - 1], id: `${baseId}~other` });
+      } else pieces.push({ at: row.at, usage: row.usage, id: baseId, ...(routed ? { account: routed.id, basis: "response-id" as const } : {}) });
       if (!metadataOnly) {
         addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
         const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
         addUsage((byModel[model] ??= emptyBucket()), row.usage);
-        const split = !routed && !row.compaction ? shares : null;
-        if (routed) addRouted(routed.id, row.at, model, row.usage);
-        if (split) {
-          for (const [account, weight] of split) {
-            if (!account) continue;
-            const part = scaleUsage(row.usage, weight / shareTotal);
-            addRouted(account, row.at, model, part);
-            const byAccountHour = (((state.accountHours ??= {})[account] ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
-            addUsage((byAccountHour[model] ??= emptyBucket()), part);
-          }
+        const addAccountHour = (account: string, at: number, usage: UsageBucket) => {
+          const byAccountHour = (((state.accountHours ??= {})[account] ??= {})[String(Math.floor(at / HOUR_MS) * HOUR_MS)] ??= {});
+          addUsage((byAccountHour[model] ??= emptyBucket()), usage);
+        };
+        if (poolSplit) {
+          for (const piece of pieces) if (piece.account) { addRouted(piece.account, piece.at, model, piece.usage); addAccountHour(piece.account, piece.at, piece.usage); }
         } else if (routed || state.official === true) {
           const account = routed ?? resolveAccount(
             KIND_OF_SOURCE[source],
@@ -1036,41 +1062,38 @@ function scanFile(
             accountContext.timeline,
             accountContext.labels,
           );
-          const accountKey = account?.id ?? "";
-          const byAccount = ((state.accountHours ??= {})[accountKey] ??= {});
-          const byAccountHour = (byAccount[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
-          addUsage((byAccountHour[model] ??= emptyBucket()), row.usage);
+          if (routed) addRouted(routed.id, row.at, model, row.usage);
+          addAccountHour(account?.id ?? "", row.at, row.usage);
         }
       }
       if (row.cwd) state.cwd = row.cwd;
       const effortMatchesModel = kind !== "grok-build" || Boolean(state.requested && normalizeModel(model) === normalizeModel(state.requested));
       const responseEffort = kind === "claude-code" && !row.compaction ? recordedEffort(obj) : undefined;
-      out.records.push({
-        // 没有 ID 的（极少）用时间 + 型号 + token 凑一个，重读时还是同一个键
-        id: row.id || `${row.at}:${model}:${row.usage.input}:${row.usage.output}`,
-        at: row.at,
+      for (const piece of pieces) out.records.push({
+        id: piece.id,
+        at: piece.at,
         kind,
         file,
         cwd: state.cwd ?? (kind === "grok-build" ? grokCwd(file) : undefined),
         model,
-        effort: kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined,
-        effortSource: kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined,
+        effort: piece.effort ?? (kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined),
+        effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined),
         requested: kind === "codex" ? state.model : state.requested,
         returned: row.returned,
         responseId: row.responseId,
         requestId: row.requestId,
-        input: row.usage.input,
-        output: row.usage.output,
-        cacheRead: row.usage.cacheRead,
-        cacheWrite: row.usage.cacheWrite,
-        reasoning: row.usage.reasoning,
-        costUsd: row.usage.costUsd,
-        calls: row.usage.requests,
+        input: piece.usage.input,
+        output: piece.usage.output,
+        cacheRead: piece.usage.cacheRead,
+        cacheWrite: piece.usage.cacheWrite,
+        reasoning: piece.usage.reasoning,
+        costUsd: piece.usage.costUsd,
+        calls: piece.usage.requests,
         ...(row.stream ? { timing: deepseekTiming(row.stream, state.turnStartAt) } : {}),
         accountRef: state.accountRef,
         accountEmail: state.accountEmail,
-        ...(routed ? { routedAccount: routed.id, routedAccountBasis: "response-id" as const }
-          : soleAccount && !row.compaction ? { routedAccount: soleAccount, routedAccountBasis: "route-window" as const } : {}),
+        ...(piece.account ? { routedAccount: piece.account, routedAccountBasis: piece.basis } : {}),
+        ...(piece.routeEventId ? { routeEventId: piece.routeEventId } : {}),
         ...(row.compaction ? { compaction: true } : {}),
       });
       touched = true;

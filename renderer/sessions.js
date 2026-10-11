@@ -156,7 +156,7 @@
       N.list
     ]);
     N.main = el('section', { class: 'panel sw-main', 'aria-live': 'polite' });
-    host.replaceChildren(el('div', { class: 'sw' }, [aside, N.main]));
+    host.replaceChildren(el('div', { class: 'sw' }, [markLayout(aside, 'sessions:list'), markLayout(N.main, 'sessions:detail')]));
 
     N.search.addEventListener('input', () => { S.search = N.search.value; drawList(); });
     N.refresh.addEventListener('click', () => loadList(true));

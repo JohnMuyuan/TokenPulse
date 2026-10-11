@@ -56,7 +56,7 @@
     const introText = node('div', null, 'cm-intro-text');
     introText.append(node('b', '监控范围'), node('p', '只统计经 TokenPulse 转发的流量（本地路由、号池、透明转发）；工具直连官方时这里看不到。连接包含空闲的复用连接，活跃请求包含正在等上游的请求。', 'cm-help'));
     coverage = node('div', null, 'cm-coverage'); coverage.setAttribute('role', 'list');
-    intro.append(introText, coverage); host.append(intro);
+    intro.append(introText, coverage); host.append(markLayout(intro, 'concurrency:coverage'));
     cards = node('div', null, 'cm-cards'); host.append(cards);
     for (const [key, title] of Object.entries(metrics)) {
       const card = node('div', null, 'panel cm-card'), head = node('div', null, 'cm-card-head'), mark = node('span', null, 'cm-card-icon');
@@ -64,7 +64,7 @@
       const number = node('strong', '—'); number.dataset.metric = key;
       const meter = node('div', null, 'cm-meter'); meter.dataset.meter = key; meter.append(node('i')); meter.hidden = true;
       const limit = node('small', '未设置上限'); limit.dataset.limit = key;
-      card.append(head, number, meter, limit, node('p', METRIC_NOTE[key], 'cm-card-note')); cards.append(card);
+      card.append(head, number, meter, limit, node('p', METRIC_NOTE[key], 'cm-card-note')); cards.append(markLayout(card, 'concurrency:' + key));
     }
     alerts = node('div', null, 'cm-alerts'); alerts.setAttribute('role', 'status'); host.append(alerts);
 
@@ -76,13 +76,13 @@
     for (const control of [scope, metric, days]) control.onchange = () => loadHistory();
     chart = node('div', null, 'cm-chart'); chart.setAttribute('role', 'img'); chart.setAttribute('aria-label', '并发历史');
     status = node('div', '', 'cm-status'); status.setAttribute('aria-live', 'polite');
-    history.append(heading('并发历史', '图中显示每个时间段的峰值；空白表示未监控或软件没有运行。', toolbar), chart, status); host.append(history);
+    history.append(heading('并发历史', '图中显示每个时间段的峰值；空白表示未监控或软件没有运行。', toolbar), chart, status); host.append(markLayout(history, 'concurrency:history'));
 
     const breakdown = node('section', null, 'panel cm-panel cm-breakdown');
     const scroll = node('div', null, 'table-scroll'), table = node('table', null, 'cm-table'), head = node('thead'), header = node('tr');
     for (const [i, title] of ['查看范围', ...Object.values(metrics), '拒绝次数', '上限设置'].entries()) { const th = node('th', title); if (i > 0) th.className = 'n'; header.append(th); }
     head.append(header); rows = node('tbody'); rows.id = 'cm-rows'; table.append(head, rows); scroll.append(table);
-    breakdown.append(heading('供应商与账号', '每一行的数字是「当前 / 上限」。共享或归属不确定的连接不能单独设上限。'), scroll); host.append(breakdown);
+    breakdown.append(heading('供应商与账号', '每一行的数字是「当前 / 上限」。共享或归属不确定的连接不能单独设上限。'), scroll); host.append(markLayout(breakdown, 'concurrency:breakdown'));
 
     const settings = settingsPanel = node('section', null, 'panel cm-panel cm-settings');
     settings.append(heading('上限与保存期限', '留空表示不设上限。拒绝只作用于新的 AI 请求，不中断已有请求；连接上限仅提醒。共享或未归属连接不支持个别上限。'));
@@ -109,7 +109,7 @@
     }, 'btn btn-accent');
     save.id = 'cm-save'; saveStatus = node('div', '', 'cm-status'); saveStatus.setAttribute('role', 'status');
     const foot = node('div', null, 'cm-settings-foot'); foot.append(save, saveStatus);
-    settings.append(foot); host.append(settings);
+    settings.append(foot); host.append(markLayout(settings, 'concurrency:settings'));
   }
   function updateOptions(control, values) {
     const current = control.value, signature = JSON.stringify(values);

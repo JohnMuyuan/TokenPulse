@@ -111,7 +111,7 @@ export function rememberOfficialAccount(account: CliAccount, keepCredential: boo
   // 只读 CLI 的时候，删掉过的账号不再登记回来；在 TokenPulse 里重新登录才算用户要它回来
   if (!keepCredential && !found && store.removed?.includes(id)) return id;
   if (found) {
-    // 额度每 5 分钟查一轮，CLI 登录没变也进来登记一次。名字和邮箱都没变就别写盘：
+    // 额度按设置的间隔查一轮，CLI 登录没变也进来登记一次。名字和邮箱都没变就别写盘：
     // 这份文件里有 refresh token，没变化也整份重写只会增加和设置里拖动排序撞在一起的机会。
     if (!keepCredential && found.email === email && found.label === account.label) return id;
     Object.assign(found, meta);

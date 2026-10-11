@@ -141,7 +141,7 @@
       const stamp = node('p', 'egress-stamp');
       card.append(head, hero, chips, reason, facts, intelBox, settings, stamp);
       controls.set(provider.provider, { card, badge, hostLine, flag, ip, copyIp, place, chips, facts, sources, refresh, reason, summaryState, official, stamp, host, ips, regions, useIp });
-      grid.append(card);
+      grid.append(markLayout(card, 'egress:' + provider.provider));
     }
 
     const saveBar = node('div', 'egress-savebar'), saveButton = button('保存设置', () => save(), 'btn btn-accent'); saveButton.id = 'egress-save'; const statusLine = node('p', '', '设置保存在本机。'); statusLine.id = 'egress-message'; statusLine.setAttribute('role', 'status'); saveBar.append(saveButton, statusLine);
@@ -149,7 +149,7 @@
     const historyTitle = node('div'); historyTitle.append(node('h2', '', '变化与告警'), node('p', 'muted', '仅保留最近 50 条变化记录和告警，不保存每轮采样。'));
     historyHead.append(historyTitle, button('清空记录', async () => { try { receive(await api.clearEgressHistory()); message('监控历史已清空。'); } catch { message('清空记录失败。', true); } }));
     const list = node('ol'); list.id = 'egress-events'; history.append(historyHead, list);
-    root.replaceChildren(toolbar, note, grid, saveBar, history); built = true; syncInputs();
+    root.replaceChildren(toolbar, note, grid, saveBar, markLayout(history, 'egress:history')); built = true; syncInputs();
   }
 
   function syncInputs() {

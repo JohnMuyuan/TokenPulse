@@ -7,7 +7,7 @@
  *
  * - 可以填多个 Key（多个 DeepSeek 账号），每个有自己的名字、余额和提醒线；
  * - Key 不发给界面，界面只拿到「sk-…后四位」的提示；
- * - 每 10 分钟查一次，打开软件后先查一次；也可以手动刷新（每个账号至少隔 5 秒）；
+ * - 和官方额度共用设置里的查询间隔（默认 1 分钟），打开软件后先查一次；也可以手动刷新（每个账号至少隔 5 秒）；
  * - 余额低于设的数时提醒一次，回到上面之后再跌下来才会再提醒。
  */
 import crypto from "crypto";
@@ -31,8 +31,9 @@ type Account = { id: string; kind: BalanceKind; label: string; apiKey: string; b
 type Stored = { accounts: Account[] };
 type Fetcher = (key: string) => Promise<{ status: number; body: string }>;
 
-const EVERY_MS = 10 * 60_000;
 const MANUAL_GAP_MS = 5000;
+const EVERY_MIN_MS = 60_000;
+const EVERY_MAX_MS = 10 * 60_000;
 const MAX_ACCOUNTS = 20;
 const KEY = /^sk-[A-Za-z0-9_-]{16,200}$/;
 /** 中转站的 Key 格式各家不一样，只要求是一串看得见的字符。 */
@@ -92,7 +93,7 @@ export class DeepSeekBalance {
   private loading = new Set<string>();
   private lastStarted = new Map<string, number>();
   private timer?: ReturnType<typeof setInterval>;
-  private first?: ReturnType<typeof setTimeout>;
+  private everyMs = 60_000;
   private stopped = false;
   private readonly file = dataFile("deepseek-balance.json");
   private readonly fetcher: Fetcher;
@@ -135,7 +136,7 @@ export class DeepSeekBalance {
     // 本机装没装过 DeepSeek Harness：装过才在界面里主动露出 DeepSeek
     const detected = fs.existsSync(path.join(os.homedir(), ".dsh"));
     return {
-      detected, everyMinutes: EVERY_MS / 60_000, max: MAX_ACCOUNTS,
+      detected, everySeconds: Math.round(this.everyMs / 1000), max: MAX_ACCOUNTS,
       accounts: this.stored.accounts.map((account) => ({ id: account.id, kind: account.kind, label: account.label, host: hostOf(account.baseUrl), baseUrl: account.baseUrl ?? "", flavor: account.flavor ?? null, icon: account.icon ?? "", avatar: account.avatar ?? "", keyHint: `${account.apiKey.startsWith("sk-") ? "sk-" : ""}…${account.apiKey.slice(-4)}`, harness: account.harness === true, alertBelow: account.alertBelow ?? null, last: account.last ?? null, loading: this.loading.has(account.id) })),
     };
   }
@@ -152,14 +153,22 @@ export class DeepSeekBalance {
   private save() { try { writeJson(this.file, this.stored.accounts.length ? { accounts: this.stored.accounts.map((account) => ({ ...account, harness: account.harness === true })) } : this.stored); } catch { /* 存不下来：这次的结果还在内存里 */ } }
   private publish() { if (!this.stopped) this.options.publish?.(this.state()); }
 
-  start() {
-    this.timer = setInterval(() => { void this.refreshAll(false); }, EVERY_MS);
+  start() { this.stopped = false; }
+  /** 改自动查询间隔。调用方传入的毫秒数会收成 1 到 10 的整分钟。不立刻查，下一轮按新间隔走。 */
+  reschedule(everyMs: number) {
+    const minutes = Math.round((Number(everyMs) || this.everyMs) / 60_000);
+    const ms = Math.min(EVERY_MAX_MS, Math.max(EVERY_MIN_MS, (Number.isFinite(minutes) ? minutes : 1) * 60_000));
+    this.everyMs = ms;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+    if (this.stopped) return;
+    this.timer = setInterval(() => { void this.refreshAll(false); }, ms);
     this.timer.unref?.();
-    if (this.stored.accounts.length) { this.first = setTimeout(() => { void this.refreshAll(false); }, 8000); this.first.unref?.(); }
+    this.publish();
   }
-  stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); if (this.first) clearTimeout(this.first); }
+  stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
-  /** 加一个账号：先查一次，DeepSeek 明确说 Key 不对就不留（留着只会每 10 分钟白查一次）。 */
+  /** 加一个账号：先查一次，DeepSeek 明确说 Key 不对就不留（留着只会按间隔白查一次）。 */
   async add(value: unknown) {
     const input = (value ?? {}) as Record<string, unknown>;
     const key = typeof input.key === "string" ? input.key.trim() : "";

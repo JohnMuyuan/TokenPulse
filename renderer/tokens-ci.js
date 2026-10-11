@@ -38,6 +38,7 @@
   /* ---------------- 用量明细里的状态栏 ---------------- */
 
   function render() {
+    try {
     const demo = window.tokenpulse?.isDemo?.();
     const s = state?.settings;
     const setUp = s && (s.enabled || s.version || s.lastRunAt);
@@ -81,6 +82,7 @@
         button('预览', () => openWizard('preview', { single: true }), { action: 'tokens-preview', disabled: !!state.running && state.running !== 'preview' }),
         button('设置', () => openWizard('settings'), { glyph: 'settings', action: 'tokens-settings' }),
       ]));
+    } finally { if (window.markLayout) window.markLayout(host, 'usage:tokensci'); }
   }
 
   /** 上传有了新结果：手动的告诉一声成功 / 失败；自动的只在连续失败的第一次提醒（之后状态栏上一直写着）。 */

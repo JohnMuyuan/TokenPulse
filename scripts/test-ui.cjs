@@ -123,6 +123,19 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("getComputedStyle(document.querySelector('#toast-stack .tp-toast')).position"), 'relative', '进度线要贴在每条提示自己的底部');
       assert.equal(await evaluate("window.tokenpulse.readPrefs().then(p => p.notifyAt)"), 90);
       assert.match(await evaluate("document.getElementById('pref-notifyAt').textContent"), /90%/);
+      assert.equal(await evaluate("document.getElementById('pref-quota-every').value"), '1');
+      assert.equal(await evaluate("document.getElementById('pref-quota-every').min"), '1');
+      assert.equal(await evaluate("document.getElementById('pref-quota-every').max"), '10');
+      assert.equal(await evaluate("document.getElementById('pref-quota-every').step"), '1');
+      assert.equal(await evaluate("document.getElementById('pref-quota-every-save').disabled"), true);
+      assert.match(await evaluate("document.getElementById('pref-quota-every-value').textContent"), /每 1 分钟/);
+      await evaluate("(() => { const s = document.getElementById('pref-quota-every'); s.value = '3'; s.dispatchEvent(new Event('input', { bubbles: true })); })()");
+      assert.equal(await evaluate("document.getElementById('pref-quota-every-save').disabled"), false);
+      assert.equal(await evaluate("window.tokenpulse.readPrefs().then(p => p.quotaEverySeconds)"), 60);
+      await evaluate("document.getElementById('pref-quota-every-save').click()");
+      await until("window.tokenpulse.readPrefs().then(p => p.quotaEverySeconds === 180)");
+      assert.equal(await evaluate("document.getElementById('pref-quota-every-save').disabled"), true);
+      assert.match(await evaluate("document.getElementById('pref-quota-every-value').textContent"), /每 3 分钟/);
       await evaluate("document.querySelector('[data-settings-tab=accounts]').click()");
       assert.equal(await evaluate("document.querySelector('[data-panel=general]').hidden"), true);
       // 账号列表在设置窗口打开后才异步加载（要探测 CLI），先等它出来。

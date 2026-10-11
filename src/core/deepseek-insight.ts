@@ -54,7 +54,7 @@ export function readBalanceHistory(id: string): BalanceSample[] {
 }
 /**
  * 记一次查到的余额。数字没变的连续几次只留头尾两笔（尾巴那一笔的时间跟着往后挪）：
- * 既不让文件每 10 分钟长一行，又留得住「到几点为止余额还没动」。
+ * 既不让文件每次查询都长一行，又留得住「到几点为止余额还没动」。
  */
 export function appendBalanceSamples(id: string, at: number, infos: { currency: string; total: number; granted: number; toppedUp: number }[]) {
   if (!infos.length) return;

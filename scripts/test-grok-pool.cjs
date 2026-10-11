@@ -3,8 +3,9 @@
  * 起因：Grok 的会话文件一整轮汇总成一条，没有响应 ID，对不上单次请求，号池成员名下一直没有用量。
  * 现在按这一轮的时间范围查转发记录，按号池交给各账号的 Token 数分摊。
  * 覆盖：routeShares 的时间范围 / 透明转发和没有用量的不算 / 第三方供应商记在空名下；
- * 一轮交给两个账号按比例拆、总量不变；一轮只交给一个账号时这条请求标上账号；没有转发记录的不归属；
- * 文件整体「不是官方」时这部分仍进账号的小时账（routedHours）。
+ * 一轮交给两个账号按比例拆、总量不变；每一次转发给哪个账号，请求流水里就有一条、时间是这次转发的时间；
+ * 没有转发记录的不归属；文件整体「不是官方」时这部分仍进账号的小时账（routedHours）；
+ * 一轮里换了好几个账号时，额度上涨只要落在这些转发的时间上，就不算「本机以外」。
  * 用一次性的 HOME 和数据目录，不碰真实的 ~/.grok 和 ~/.tokenpulse。
  */
 const assert = require('node:assert/strict');
@@ -67,10 +68,10 @@ try {
     userMessage(sec(400)), turnDone(sec(460), 'p4', 600, 60),
   ].map(row => JSON.stringify(row)).join('\n') + '\n');
   const scan = scanLocalUsage();
-  assert.equal(scan.records.length, 4);
+  assert.equal(scan.records.length, 7, '三次转发、一轮单账号、第三方那一份、没有转发的一轮');
   const state = Object.values(readRollups().files).find(file => file.kind === 'grok-build');
   assert.equal(state.official, false, '文件整体仍然不是官方');
-  const sum = account => Object.values(state.routedHours?.[account] ?? {}).flatMap(models => Object.values(models)).reduce((total, bucket) => ({ input: total.input + bucket.input, output: total.output + bucket.output, requests: total.requests + bucket.requests, cost: total.cost + bucket.costUsd }), { input: 0, output: 0, requests: 0, cost: 0 });
+  const sum = (account, fileState = state) => Object.values(fileState.routedHours?.[account] ?? {}).flatMap(models => Object.values(models)).reduce((total, bucket) => ({ input: total.input + bucket.input, output: total.output + bucket.output, requests: total.requests + bucket.requests, cost: total.cost + bucket.costUsd }), { input: 0, output: 0, requests: 0, cost: 0 });
   const a = sum('grok:acc-a'), b = sum('grok:acc-b');
   // 第一轮 4000/400 按 3:1 拆；第二轮 1000/200 全给 A；第三轮 2000/0 一半给 A，另一半（第三方供应商）不归任何账号
   assert.deepEqual([a.input, a.output, b.input, b.output], [3000 + 1000 + 1000, 300 + 200 + 0, 1000, 100]);
@@ -81,20 +82,57 @@ try {
   assert.equal(day, 4000 + 1000 + 2000 + 600);
   pass('a turn handed to two pool accounts is split by their token share, a third-party share stays unattributed, totals unchanged');
 
-  const rows = queryRequests({ from: '2000-01-01', to: '2999-01-01', source: 'all', status: 'all', search: '', sort: 'time', page: 0, pageSize: 20 }).rows.sort((x, y) => x.at - y.at);
-  assert.deepEqual(rows.map(row => [row.account?.id ?? null, row.account?.basis ?? null, row.official]), [
-    [null, null, false],                              // 两个账号各占一部分：这一条不标单个账号
-    ['grok:acc-a', 'route-window', true],             // 全部交给 A
-    [null, null, false],                              // A 和第三方各一半
-    [null, null, false],                              // 没有转发记录
-  ]);
-  pass('request rows: a turn served entirely by one pool account is shown under it; mixed or unknown turns are not guessed');
-
-  // 再扫一遍不重复计算
   scanLocalUsage();
-  const again = Object.values(readRollups().files).find(file => file.kind === 'grok-build');
-  assert.deepEqual(again.routedHours, state.routedHours);
+  assert.deepEqual(Object.values(readRollups().files).find(file => file.kind === 'grok-build').routedHours, state.routedHours);
   pass('rescanning does not double count');
+
+  const ask = (extra = {}) => queryRequests({ from: '2000-01-01', to: '2999-01-01', source: 'all', status: 'all', search: '', sort: 'time', page: 0, pageSize: 50, all: true, ...extra }).rows.sort((x, y) => x.at - y.at);
+  const rows = ask();
+  assert.equal(rows.reduce((total, row) => total + row.input, 0), 4000 + 1000 + 2000 + 600, '拆开之后请求流水的 Token 还是这四轮');
+  assert.deepEqual(rows.map(row => [row.at, row.account?.id ?? null, row.account?.basis ?? null, row.official, row.input]), [
+    [sec(20), 'grok:acc-a', 'route-window', true, 2400],
+    [sec(30), 'grok:acc-a', 'route-window', true, 600],
+    [sec(50), 'grok:acc-b', 'route-window', true, 1000],
+    [sec(120), 'grok:acc-a', 'route-window', true, 1000],
+    [sec(220), 'grok:acc-a', 'route-window', true, 1000],
+    // 会话文件的时间戳是秒，扫描时会取整；没对上账号的那两条记在轮次结束
+    [Math.round(sec(260) / 1000) * 1000, null, null, false, 1000],
+    [Math.round(sec(460) / 1000) * 1000, null, null, false, 600],
+  ]);
+  pass('each pool forward is its own official request at that time; a third-party share and a turn with no forward stay unattributed');
+
+  const { analyzeModelStudy } = require(path.join(build, 'model-study.js'));
+  const studyAccount = 'grok:acc-a';
+  const studyRows = ask({ account: studyAccount, channel: 'official' });
+  const weekReset = new Date(Date.now() + 3 * 86400000).toISOString();
+  const fiveReset = new Date(Date.now() + 3 * 3600000).toISOString();
+  const sample = (at, pct) => ({ account: studyAccount, at, week: pct, weekReset, five: pct, fiveReset });
+  const study = analyzeModelStudy(
+    { kind: 'grok', accountId: studyAccount, window: 'week' },
+    [sample(sec(0), 0), sample(sec(60), 8), sample(sec(700), 9), sample(sec(760), 17)],
+    studyRows,
+    [{ model: 'grok-qa', effort: 'unknown', origins: ['observed'] }],
+    Date.now(),
+  );
+  assert.equal(study.offMachine.points, 8, '远离本机转发的上涨仍是本机以外');
+  assert.ok(study.offMachine.detected[0].from >= sec(700) - 1000, '第一轮里的上涨没有被算成本机以外');
+  assert.ok(study.timeline.length > 0, '时间线上有这个账号自己的请求');
+  pass('quota rises during a multi-account turn count as local; a rise with no forward still counts as off this PC');
+
+  forward(sec(800), 'grok:acc-b', 100, 20, { requestModel: 'grok-qa' });
+  ledger.resetRouteLedgerCache();
+  const open = ask({ account: 'grok:acc-b', channel: 'official' });
+  assert.deepEqual(open.map(row => [row.at, row.input]), [[sec(50), 1000], [sec(800), 100]]);
+  fs.appendFileSync(session, [userMessage(sec(780)), turnDone(sec(820), 'p5', 100, 20)].map(row => JSON.stringify(row)).join('\n') + '\n');
+  scanLocalUsage();
+  const closed = ask({ account: 'grok:acc-b', channel: 'official' });
+  assert.deepEqual(closed.map(row => [row.at, row.input]), [[sec(50), 1000], [sec(800), 100]]);
+  pass('a forward still in an open turn shows under that account, and finishing the turn does not count it twice');
+  const after = Object.values(readRollups().files).find(file => file.kind === 'grok-build');
+  assert.deepEqual([sum('grok:acc-a', after).input, sum('grok:acc-b', after).input], [5000, 1100]);
+  scanLocalUsage();
+  const third = Object.values(readRollups().files).find(file => file.kind === 'grok-build');
+  assert.deepEqual(third.routedHours, after.routedHours);
 
   console.log(`${checks}/${checks} grok pool checks passed`);
 } catch (error) {
