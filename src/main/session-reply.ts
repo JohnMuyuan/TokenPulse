@@ -91,6 +91,15 @@ export function resolveCli(kind: AgentKind): { file: string; prefix: string[]; e
     }
     return null;
   }
+  if (kind === "deepseek") {
+    const override = process.env.TOKENPULSE_DSH_CLI;
+    if (override && fs.existsSync(override)) return { file: override, prefix: [] };
+    const root = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Programs", "DeepSeek Harness");
+    const exe = path.join(root, "DeepSeek Harness.exe");
+    const cli = path.join(root, "resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js");
+    if (fs.existsSync(exe) && fs.existsSync(cli)) return { file: exe, prefix: [cli], env: { ELECTRON_RUN_AS_NODE: "1" } };
+    return null;
+  }
   const name = kind === "claude" ? "claude" : "grok";
   const known = kind === "claude" ? path.join(home, ".local", "bin", "claude.exe") : path.join(home, ".grok", "bin", "grok.exe");
   const file = [known, ...where(`${name}.exe`)].find((candidate) => fs.existsSync(candidate));
@@ -144,7 +153,7 @@ export const quotePs = (value: string) => `'${value.replace(/['‘’‚‛]/g, 
  */
 export type ExitGuard = { host: string; allowedIps: string[]; allowedRegions: string[] };
 export const guardMode = (guard?: ExitGuard | null): "ip" | "region" | null => guard?.allowedIps.length ? "ip" : guard?.allowedRegions.length ? "region" : null;
-const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok" };
+const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok", deepseek: "DeepSeek Harness" };
 
 /**
  * 启动 CLI 之前，在**同一个 PowerShell 窗口里**测一次出口：符合白名单才往下走，否则打印原因、不启动。
@@ -243,6 +252,8 @@ export function terminalHome(cwd?: string) {
 
 /** 命令行参数（不含提示词本身）。单独导出给测试。 */
 export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFile?: string) {
+  // headless 文档：dsh --profile headless --json --session-id <id>，任务用 - 从 stdin 读。新任务不带 session-id。
+  if (kind === "deepseek") return ["--profile", "headless", "--json", ...(id ? ["--session-id", id] : []), "-"];
   if (kind === "claude") {
     return ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--resume", id, "--permission-mode", mode === "edit" ? "acceptEdits" : "dontAsk"];
   }
@@ -273,6 +284,7 @@ export function deleteArgs(kind: AgentKind, id: string): string[] | null {
 
 /** 永久删除一段会话；正在回复的会话不允许删除。 */
 export async function deleteSession(kind: AgentKind, id: string) {
+  if (kind === "deepseek") throw new Error("DeepSeek Harness 的会话不从这里删除");
   const key = `${kind}:${id}`;
   if ([...runs.values()].some((run) => run.key === key)) throw new Error("这段会话正在回复，请先停止再删除");
   const args = deleteArgs(kind, id);
@@ -313,6 +325,13 @@ export function readEvent(kind: AgentKind, line: string, streamed: boolean): { d
     return {};
   }
   if (!row || typeof row !== "object") return {};
+  if (kind === "deepseek") {
+    if (row.type === "text" && typeof row.text === "string") return { delta: row.text };
+    if (row.type === "tool_call") return { tool: String(row.name || row.tool || "工具").slice(0, 160) };
+    if (row.type === "final") return { final: typeof row.text === "string" ? row.text : "" };
+    if (row.type === "error") return { error: String(row.message || "DeepSeek Harness 回复失败") };
+    return {};
+  }
   if (kind === "codex") {
     const item = row.item ?? {};
     // Codex 一轮里可能先说一段、跑命令、再说一段：每段是一条完整的 agent_message，中间空一行
@@ -377,7 +396,7 @@ export function startReply(
   const key = `${options.kind}:${options.id}`;
   if ([...runs.values()].some((run) => run.key === key)) throw new Error("这段会话正在回复，等它结束或先停止");
   const cli = resolveCli(options.kind);
-  if (!cli) throw new Error(`没找到 ${options.kind === "claude" ? "Claude Code" : options.kind === "codex" ? "Codex CLI" : "Grok Build"}，请先安装官方 CLI`);
+  if (!cli) throw new Error(`没找到 ${options.kind === "claude" ? "Claude Code" : options.kind === "codex" ? "Codex CLI" : options.kind === "deepseek" ? "DeepSeek Harness" : "Grok Build"}，请先安装官方程序`);
   const runId = `r${Date.now()}-${seq++}`;
   let promptFile: string | undefined;
   if (options.kind === "grok") {

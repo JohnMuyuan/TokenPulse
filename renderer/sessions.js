@@ -24,7 +24,8 @@
   const AGENTS = {
     claude: { name: 'Claude Code', short: 'Claude', brand: 'claude' },
     codex: { name: 'Codex CLI', short: 'Codex', brand: 'openai' },
-    grok: { name: 'Grok Build', short: 'Grok', brand: 'grok' }
+    grok: { name: 'Grok Build', short: 'Grok', brand: 'grok' },
+    deepseek: { name: 'DeepSeek Harness', short: 'DeepSeek', brand: 'deepseek' }
   };
   const DAY = 86400000;
   /** 0.3.16：这一家设了出口 IP 白名单时，TokenPulse 启动的 CLI 会先测出口。 */
@@ -282,9 +283,9 @@
   function visibleItems() { return S.items.filter(matches); }
 
   function drawList() {
-    const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0 };
+    const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0, deepseek: 0 };
     for (const item of S.items) counts[item.kind] = (counts[item.kind] || 0) + 1;
-    N.kinds.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...['all', 'claude', 'codex', 'grok'].map(kind =>
+    N.kinds.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...['all', 'claude', 'codex', 'grok', 'deepseek'].map(kind =>
       el('button', { type: 'button', 'data-kind': kind, class: S.kind === kind ? 'on' : '', 'aria-pressed': String(S.kind === kind), title: `${kind === 'all' ? '全部' : AGENTS[kind].short} · ${number(counts[kind] || 0)} 个会话` }, [
         kind === 'all' ? '全部' : AGENTS[kind].short, el('small', { text: number(counts[kind] || 0) })
       ])));
@@ -395,12 +396,13 @@
 
   /** 「更多」菜单：终端、复制信息和永久删除。借用设置里的选项菜单样式。 */
   function openMore(anchor, d) {
-    openOptionMenu(anchor, '更多操作', [
-      { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
-      { value: 'command', label: '复制继续命令', hint: d.resumeCommand },
+    const menu = [
+      d.kind === 'deepseek' ? null : { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
+      d.resumeCommand ? { value: 'command', label: '复制继续命令', hint: d.resumeCommand } : null,
       { value: 'id', label: '复制会话 ID', hint: d.id },
-      { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true }
-    ], null, async value => {
+      d.kind === 'deepseek' ? null : { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
+    ].filter(Boolean);
+    openOptionMenu(anchor, '更多操作', menu, null, async value => {
       if (value === 'command') copy(d.resumeCommand, '继续命令已复制');
       if (value === 'id') copy(d.id, '会话 ID 已复制');
       if (value === 'delete') await deleteConversation(d);

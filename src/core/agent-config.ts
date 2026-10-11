@@ -129,7 +129,7 @@ export function configTransaction<T>(work: () => T): T {
     for (const item of reads) if (raw(item.file) !== item.before) throw new Error('配置已被其他程序修改，本次操作已取消');
     const tools = changes.filter(item => !isStore(item.file));
     if (preview) { preview.push(...tools.map(item => ({ ...item }))); return result; }
-    if (tools.length && readOnly() && !allowRestore) throw new Error('只读保护已开启：TokenPulse 不会改动 Claude / Codex / Grok 的配置文件。需要切换时，先在供应商页关闭只读保护。');
+    if (tools.length && readOnly() && !allowRestore) throw new Error('只读保护已开启：TokenPulse 不会改动 Claude / Codex / Grok / DeepSeek Harness 的配置文件。需要切换时，先在供应商页关闭只读保护。');
     if (expected !== null && tools.length) {
       const ok = changeSignature(tools) === expected;
       expected = null;

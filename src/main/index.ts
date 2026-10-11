@@ -19,7 +19,7 @@ import { updateMark } from "../core/quota-offmachine";
 import { parseModelStudyQuery } from "../core/model-study";
 import { modelCandidates, parseStudyModels } from "../core/model-catalog";
 import { FAMILY as STUDY_FAMILY } from "../core/quota-offmachine";
-import { loadDeepSeek, loadModelStudy, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
+import { loadDeepSeek, loadModelStudy, loadPool, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
 import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerminal, resolveCli, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
@@ -34,7 +34,7 @@ import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOffi
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
-import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, poolDef, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
 import { randomUUID } from "crypto";
@@ -92,7 +92,7 @@ function concurrencyState(): ConcurrencyLiveState {
     const view = coreAgentView();
     concurrencyMonitor.register(view.providers.map(provider => ({ id: 'provider:' + provider.id, label: provider.name, kind: 'provider' as const })));
     concurrencyMonitor.register(readOfficialAccountStore().accounts.filter(account => !account.hidden).map(account => ({ id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' as const })));
-    concurrencyMonitor.register(['claude', 'codex', 'grok'].flatMap(app => providerScopes(app)));
+    concurrencyMonitor.register(['claude', 'codex', 'grok', 'deepseek'].flatMap(app => providerScopes(app)));
     concurrencyCoverage = Object.keys(view.proxy.apps).map(app => ({ app, monitored: view.proxy.running && (view.proxy.apps[app as keyof typeof view.proxy.apps] || (view.pass[app as keyof typeof view.pass]?.on && view.pass[app as keyof typeof view.pass]?.connected) || false) }));
     concurrencyMonitor.setAvailable(concurrencyCoverage.some(item => item.monitored));
   }
@@ -708,7 +708,7 @@ function isOfficialAccountKind(value: unknown): value is OfficialAccountKind {
 }
 
 function isAgentKind(value: unknown): value is AgentKind {
-  return value === "claude" || value === "codex" || value === "grok";
+  return value === "claude" || value === "codex" || value === "grok" || value === "deepseek";
 }
 
 /** 找到会话并确认参数：id 来自界面，只收三家之一、长度有限的字符串。 */
@@ -726,9 +726,11 @@ async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unk
   if (prompt.length > 100_000) throw new Error("回复内容太长");
   const cwd = hit.session.cwd;
   if (!cwd || !fsSync.existsSync(cwd)) throw new Error("这个会话的项目目录已经不在了，没法在原目录里继续");
-  // 0.3.16：凡是 TokenPulse 启动的 CLI，设了出口 IP 白名单就先测出口，不在白名单不启动
-  const gate = await exitMonitor.gateLaunch(CLI_PROVIDER[hit.kind], CLI_NAME[hit.kind]);
-  if (!gate.ok) throw new Error(gate.message);
+  // 0.3.16：凡是 TokenPulse 启动的 CLI，设了出口 IP 白名单就先测出口，不在白名单不启动。Harness 这版不做出口监控。
+  if (hit.kind !== "deepseek") {
+    const gate = await exitMonitor.gateLaunch(CLI_PROVIDER[hit.kind], CLI_NAME[hit.kind]);
+    if (!gate.ok) throw new Error(gate.message);
+  }
   const runId = startReply({ kind: hit.kind, id: hit.id, cwd, prompt, mode: (mode === "edit" ? "edit" : "readonly") as ReplyMode }, (event) => {
     if (win && !win.isDestroyed()) win.webContents.send("session-reply", event);
   });
@@ -738,6 +740,7 @@ async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unk
 /** 在终端里接着这段会话（交互模式，能看到 CLI 自己的界面）。 */
 async function openInTerminal(kind: unknown, id: unknown) {
   const hit = await sessionOf(kind, id);
+  if (hit.kind === "deepseek") throw new Error("DeepSeek Harness 没有交互式命令行，不能在终端里继续");
   const session = hit.session;
   const cwd = session.cwd && fsSync.existsSync(session.cwd) ? session.cwd : undefined;
   // 终端里的 CLI 走的是那个 PowerShell 的网络环境：出口检测放在终端里做（见 session-reply.ts 的 exitGuardScript）
@@ -764,7 +767,8 @@ function projectFolder(value: unknown) {
 }
 /** 开一个新对话（0.3.16）：在项目文件夹里打开终端，启动选的那个 CLI。新会话由 CLI 自己建，之后会出现在会话列表里。 */
 function startConversation(kind: unknown, folder: unknown) {
-  if (!isAgentKind(kind)) throw new Error("请选择一个工具");
+  if (kind === "deepseek") throw new Error("DeepSeek Harness 的新任务不从终端开始。打开已有会话后可以在这里回复。");
+  if (kind !== "claude" && kind !== "codex" && kind !== "grok") throw new Error("请选择一个工具");
   const cwd = projectFolder(folder);
   if (!resolveCli(kind)) throw new Error("没有找到这个工具的命令行程序，请先安装它的 CLI");
   const guard = exitMonitor.launchRule(CLI_PROVIDER[kind]);
@@ -897,6 +901,19 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("deepseek-balance:speed", (_event, days: unknown) => loadDeepSeek({ op: "speed", days: Math.max(0, Math.min(3650, Number(days) || 0)) }));
     deepseekBalance.start();
+    // 额度详情的号池页（0.3.44）：号池定义从供应商数据里取（不带凭据），汇总在 worker 里读转发记录和额度采样
+    const poolOf = (id: unknown) => {
+      const pool = poolDef(typeof id === "string" ? id.replace(/^pool:/, "") : "");
+      if (!pool) throw new Error("找不到这个号池，可能已经删除了");
+      return pool;
+    };
+    ipcMain.handle("pool-insight:summary", (_event, id: unknown) => loadPool({ op: "summary", pool: poolOf(id) }));
+    ipcMain.handle("pool-insight:speed", (_event, id: unknown, days: unknown) => loadPool({ op: "speed", pool: poolOf(id), days: Math.max(0, Math.min(3650, Number(days) || 0)) }));
+    ipcMain.handle("pool-insight:timeline", (_event, value: unknown) => {
+      const query = (value ?? {}) as { accountId?: unknown; cycles?: { five?: unknown; week?: unknown } };
+      const cycle = (item: unknown) => (typeof item === "string" && /^\d{1,16}:\d{1,16}$/.test(item) ? item : undefined);
+      return loadPool({ op: "timeline", pool: poolOf(query.accountId), cycles: { five: cycle(query.cycles?.five), week: cycle(query.cycles?.week) } });
+    });
     ipcMain.handle("snapshot", () => getInitialSnapshot());
     ipcMain.handle("refresh", async () => refresh(true));
     ipcMain.handle("prefs:read", () => readPrefs());

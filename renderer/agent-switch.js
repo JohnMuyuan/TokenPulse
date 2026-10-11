@@ -38,8 +38,9 @@
     { id: 'desktop', name: 'Claude 桌面端', kind: 'claude' },
     { id: 'codex', name: 'Codex', kind: 'chatgpt' },
     { id: 'grok', name: 'Grok CLI', kind: 'grok' },
+    { id: 'deepseek', name: 'DeepSeek Harness', kind: 'deepseek' },
   ];
-  const NATIVE = { claude: 'anthropic', desktop: 'anthropic', codex: 'openai-responses', grok: 'openai-responses' };
+  const NATIVE = { claude: 'anthropic', desktop: 'anthropic', codex: 'openai-responses', grok: 'openai-responses', deepseek: 'openai-chat' };
   const CLAUDE_ROLES = [['sonnet', 'Sonnet', true], ['opus', 'Opus', true], ['fable', 'Fable', true], ['haiku', 'Haiku', false], ['subagent', '子代理', true]];
   const DESKTOP_ROLES = [['sonnet', 'Sonnet', true], ['opus', 'Opus', true], ['fable', 'Fable', true], ['haiku', 'Haiku', true]];
   const LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
@@ -47,9 +48,9 @@
   const HUES = ['#4f7fd9', '#d9774f', '#10a37f', '#8b5cf6', '#c9832f', '#e05a8a', '#0ea5a4', '#65a30d'];
   const SECTION_KEY = 'tokenpulse-providers-section';
 
-  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'router', 'pass', 'logs', 'prism', 'import', 'safety'];
-  /** 能建号池的工具（桌面端用自己的网关配置，不支持）。 */
-  const POOL_APPS = ['claude', 'codex', 'grok'];
+  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'deepseek', 'router', 'pass', 'logs', 'prism', 'import', 'safety'];
+  /** 能建号池的工具（桌面端用自己的网关配置，不支持）。DeepSeek 的号池只有 API Key 供应商。 */
+  const POOL_APPS = ['claude', 'codex', 'grok', 'deepseek'];
   let view = null, signature = '', section = 'overview', editor = null, editorPane = 'basic', dragging = null, entered = false;
   try { const saved = localStorage.getItem(SECTION_KEY); if (saved) section = saved; } catch { /* 读不到就从概览开始 */ }
 
@@ -58,7 +59,7 @@
   const paint = (node, props) => { for (const [k, v] of Object.entries(props)) k.startsWith('--') ? node.style.setProperty(k, v) : (node.style[k] = v); return node; };
   const providersOf = app => (view?.providers || []).filter(p => p.app === app);
   const currentOf = app => providersOf(app).find(p => p.active) || null;
-  const routeAddress = app => `http://127.0.0.1:${view.proxy.port}/${app === 'codex' || app === 'grok' ? app + '/v1' : app}`;
+  const routeAddress = app => `http://127.0.0.1:${view.proxy.port}/${app === 'claude' || app === 'desktop' ? app : app + '/v1'}`;
   /** 故障转移的顺序：当前那家在前，后面按列表顺序排加入了备用的。 */
   const queueOf = app => { const cur = currentOf(app); return [cur, ...providersOf(app).filter(p => p.failover && p !== cur)].filter(Boolean); };
   const healthText = h => h === 'open' ? '暂时跳过（连续失败）' : h === 'degraded' ? '路由最近失败过' : '路由暂无失败记录（不是连通性验证）';
@@ -87,14 +88,34 @@
     let h = 0; for (const c of p.name || '?') h = (h * 31 + c.charCodeAt(0)) >>> 0;
     return paint(el('span', { class: cls + ' pv-letter', 'aria-hidden': 'true', text: [...(p.name || '?').trim()][0]?.toUpperCase() || '?' }), { '--hue': HUES[h % HUES.length] });
   }
-  const STRATEGY = { 'round-robin': '轮询', 'fill-first': '用满再换' };
+  const STRATEGY = { 'round-robin': '轮询', 'fill-first': '用满再换', 'reset-first': '快重置优先', 'most-left': '剩余最多' };
+  /** 轮换方式的选项：[值, 名字, 一句说明]。 */
+  const STRATEGY_OPTIONS = [
+    ['round-robin', '轮询', '每个请求换下一个成员，用量摊平'],
+    ['fill-first', '用满再换', '一直用第一个，出错或限流才换下一个'],
+    ['reset-first', '快重置优先', '每周额度快重置、又还剩很多的号先用，到期前尽量不浪费'],
+    ['most-left', '剩余最多', '一直用剩余额度最多的号，别的号多出 5% 以上才换'],
+  ];
+  const QUOTA_STRATEGY = s => s === 'reset-first' || s === 'most-left';
   const poolSummary = p => `号池 · ${p.pool.members.length} 个成员 · ${STRATEGY[p.pool.strategy] || '轮询'}`;
-  /** 号池成员：名字 + 能不能用 + 这次运行转发过几次。 */
+  const pctText = v => v == null ? '—' : `${Math.round(v)}%`;
+  /** 官方账号成员的额度：剩多少（两个窗口里少的那个）+ 每周什么时候重置。 */
+  function memberQuotaText(q) {
+    if (!q) return '还没有查到额度';
+    const parts = [q.fiveLeft != null ? `5 小时剩 ${pctText(q.fiveLeft)}` : '', q.weekLeft != null ? `每周剩 ${pctText(q.weekLeft)}` : ''].filter(Boolean);
+    if (q.weekResetAt) parts.push(`每周 ${new Date(q.weekResetAt).toLocaleString(window.PulseI18n?.lang() === 'en' ? 'en-US' : 'zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 重置`);
+    if (q.limited) parts.push('刚回过 429，等下一次查到额度');
+    return parts.join('，');
+  }
+  /** 号池成员：名字 + 能不能用 + 这次运行转发过几次；按额度排的号池再加剩余额度，标出下一个请求交给谁。 */
   function memberChips(p) {
-    return el('div', { class: 'pv-members' }, p.pool.members.map(m => el('span', { class: 'pv-member' + (m.usable ? '' : ' off'), title: (m.usable ? (m.health === 'open' ? '连续失败，暂时跳过' : '可用') : m.type === 'account' ? '凭据过期或账号已删除：在设置里重新登录这个账号' : '供应商已删除或没有地址') + (m.requests ? `\n本次运行转发 ${m.requests} 次，成功 ${m.ok} 次${m.lastStatus ? '，最近 HTTP ' + m.lastStatus : ''}` : '') }, [
+    const quota = QUOTA_STRATEGY(p.pool.strategy);
+    return el('div', { class: 'pv-members' }, p.pool.members.map(m => el('span', { class: 'pv-member' + (m.usable ? '' : ' off') + (quota && p.pool.next === m.id ? ' next' : ''), 'data-member': m.id, title: (m.usable ? (m.health === 'open' ? '连续失败，暂时跳过' : '可用') : m.type === 'account' ? '凭据过期或账号已删除：在设置里重新登录这个账号' : '供应商已删除或没有地址') + (quota && m.type === 'account' ? '\n' + memberQuotaText(m.quota) : quota ? '\nAPI Key 没有额度可看，排在官方账号后面当后备' : '') + (quota && p.pool.next === m.id ? '\n下一个请求先交给它' : '') + (m.requests ? `\n本次运行转发 ${m.requests} 次，成功 ${m.ok} 次${m.lastStatus ? '，最近 HTTP ' + m.lastStatus : ''}` : '') }, [
       el('i', { class: 'pv-dot ' + (!m.usable ? 'off' : m.health) }),
       el('span', { class: 'pv-member-kind', text: m.type === 'account' ? '账号' : 'Key' }),
       el('b', { text: m.name, translate: 'no' }),
+      quota && m.type === 'account' ? el('small', { class: 'pv-member-left' + (m.quota?.limited || (m.quota?.left != null && m.quota.left < 1) ? ' spent' : ''), text: m.quota ? pctText(m.quota.left) : '—' }) : null,
+      quota && p.pool.next === m.id ? el('span', { class: 'pv-member-next', text: '下一个' }) : null,
       m.requests ? el('small', { text: `${m.ok}/${m.requests}` }) : null,
     ])));
   }
@@ -180,7 +201,7 @@
     const main = el('div', { class: 'pv-main', role: 'tabpanel', 'aria-label': editor ? '编辑供应商' : sectionTitle() });
     if (editor) main.append(editorForm());
     else {
-      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), router, pass: passSection, logs, prism: prismSection, import: importSection, safety: safetySection }[section]();
+      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), deepseek: () => appSection('deepseek'), router, pass: passSection, logs, prism: prismSection, import: importSection, safety: safetySection }[section]();
       main.append(...[].concat(body));
     }
     const layout = el('div', { class: 'pv' }, [editor ? editorNav() : nav(), main]);
@@ -206,7 +227,7 @@
     return { overview: '概览', router: '本地路由', pass: '透明转发', logs: '转发记录', prism: 'Prism 桥', import: '导入供应商', safety: '配置保护' }[section] || appOf(section)?.name || '';
   }
 
-  /** 二级菜单：概览 / 四家工具 / 路由 / 导入。每项带一句当前状态，不用点进去也知道现在是什么情况。 */
+  /** 二级菜单：概览 / 各家工具 / 路由 / 导入。每项带一句当前状态，不用点进去也知道现在是什么情况。 */
   function nav() {
     const item = (id, label, sub, lead, badge) => {
       const b = el('button', { type: 'button', class: 'pv-nav-item' + (section === id ? ' on' : ''), 'data-section': id, role: 'tab', 'aria-selected': String(section === id) }, [
@@ -950,7 +971,9 @@
     return row;
   }
   function presetSection(app) {
-    const items = app === 'claude' || app === 'desktop' ? [['anthropic', 'Anthropic 原生', '原生 Messages API'], ['openai-chat', 'OpenAI Chat 兼容', '需要本地路由转换'], ['openai-responses', 'OpenAI Responses 兼容', '需要本地路由转换']] : [['openai-responses', 'OpenAI Responses', 'Codex / Grok 原生'], ['openai-chat', 'OpenAI Chat 兼容', '需要本地路由转换']];
+    const items = app === 'deepseek'
+      ? [['openai-chat', 'OpenAI Chat', '直连时按这个协议写；本地路由也用它'], ['openai-responses', 'OpenAI Responses', '直连时按这个协议写，本地路由会转成 Chat'], ['anthropic', 'Anthropic', '直连时按这个协议写，本地路由会转成 Chat']]
+      : app === 'claude' || app === 'desktop' ? [['anthropic', 'Anthropic 原生', '原生 Messages API'], ['openai-chat', 'OpenAI Chat 兼容', '需要本地路由转换'], ['openai-responses', 'OpenAI Responses 兼容', '需要本地路由转换']] : [['openai-responses', 'OpenAI Responses', 'Codex / Grok 原生'], ['openai-chat', 'OpenAI Chat 兼容', '需要本地路由转换']];
     const box = el('div', { class: 'pv-preset-strip' }, [el('span', { class: 'pv-section-copy-label', text: '快速预设' }), ...items.map(([id, label, note]) => { const b = button(label, () => { editor.upstream = id; root.querySelectorAll('.pv-editor [data-key=upstream] .pv-chip').forEach(chip => { const on = chip.dataset.value === id; chip.classList.toggle('on', on); chip.setAttribute('aria-checked', String(on)); }); showFeedback(label + ' 已应用，请继续填写地址和模型。', 'success'); showEditorPane('connect'); }, 'pv-chip'); b.title = note; return b; })]);
     return box;
   }
@@ -968,7 +991,7 @@
       const names = editor.pool.members.map(m => ({ type: m.type === 'account' ? '官方账号' : 'API Key 供应商', name: memberName(m) }));
       return JSON.stringify({ cli: appOf(app)?.name, pool: { name: data.name || '', strategy: STRATEGY[editor.pool.strategy], members: names },
         toolConfig: { baseUrl: routeAddress(app), apiKey: 'PROXY_MANAGED（占位，真实凭据只在 TokenPulse 里）', model: data.model || '由工具自己选' },
-        forwarding: app === 'codex' ? '官方账号 → https://chatgpt.com/backend-api/codex/responses（Bearer + Chatgpt-Account-Id）' : app === 'grok' ? '官方账号 → https://cli-chat-proxy.grok.com/v1（Bearer）' : '官方账号 → https://api.anthropic.com（Bearer + anthropic-beta: oauth-2025-04-20）',
+        forwarding: app === 'deepseek' ? 'API Key 供应商经本地路由转发。Harness 用 OpenAI Chat 连到本机，已有会话仍用自己记住的模型。' : app === 'codex' ? '官方账号 → https://chatgpt.com/backend-api/codex/responses（Bearer + Chatgpt-Account-Id）' : app === 'grok' ? '官方账号 → https://cli-chat-proxy.grok.com/v1（Bearer）' : '官方账号 → https://api.anthropic.com（Bearer + anthropic-beta: oauth-2025-04-20）',
         failover: '成员返回 401 / 403 / 429 / 5xx 或连不上时换下一个；连续失败 3 次暂停 60 秒' }, null, 2);
     }
     const redact = value => value ? '••••••••' : '';
@@ -1255,7 +1278,7 @@
     return box;
   }
   function poolMembers() {
-    const strategy = el('div', { class: 'pv-chips', role: 'radiogroup', 'aria-label': '轮换方式' }, [['round-robin', '轮询', '每个请求换下一个成员，用量摊平'], ['fill-first', '用满再换', '一直用第一个，出错或限流才换下一个']].map(([id, label, note]) => {
+    const strategy = el('div', { class: 'pv-chips', role: 'radiogroup', 'aria-label': '轮换方式' }, STRATEGY_OPTIONS.map(([id, label, note]) => {
       const b = el('button', { type: 'button', class: 'pv-chip' + (editor.pool.strategy === id ? ' on' : ''), role: 'radio', 'aria-checked': String(editor.pool.strategy === id), 'data-value': id }, [el('span', { text: label }), el('small', { text: note })]);
       b.addEventListener('click', () => { editor.pool.strategy = id; strategy.querySelectorAll('.pv-chip').forEach(n => { const on = n === b; n.classList.toggle('on', on); n.setAttribute('aria-checked', String(on)); }); });
       return b;
@@ -1263,10 +1286,10 @@
     const keys = providersOf(editor.app).filter(p => !p.official && !p.locked && !p.pool && p.baseUrl);
     return el('div', { class: 'pv-pool-editor' }, [
       el('div', { class: 'pv-field' }, [el('span', { text: '轮换方式' }), strategy]),
-      el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: '官方账号' }), el('small', { text: '用各账号自己的登录凭据，直接转给官方接口。是否符合各家的服务条款，请自行判断。' })]), poolAccounts()]),
+      editor.app === 'deepseek' ? null : el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: '官方账号' }), el('small', { text: '用各账号自己的登录凭据，直接转给官方接口。是否符合各家的服务条款，请自行判断。' })]), poolAccounts()]),
       el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: 'API Key 供应商' }), el('small', { text: '同一工具下已保存的供应商，用它们自己的地址和密钥。' })]),
         keys.length ? el('div', { class: 'pv-pick-list' }, keys.map(p => pickRow({ type: 'provider', id: p.id }, providerMark(p, 'pv-mark pv-pick-avatar'), p.name, [p.model, formatName(p.upstream)].filter(Boolean).join(' · ')))) : el('p', { class: 'pv-hint', text: '这个工具下还没有 API Key 供应商。' })]),
-      el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: '顺序' }), el('small', { text: '轮询从上一次的下一个开始；用满再换总是从第一个开始。' })]), poolOrder()]),
+      el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: '顺序' }), el('small', { text: '轮询从上一次的下一个开始；用满再换总是从第一个开始。快重置优先和剩余最多按各账号最近一次查到的额度排，分数一样时按这个顺序；API Key 没有额度可看，排在官方账号后面；已经用完的排到最后。' })]), poolOrder()]),
     ]);
   }
 

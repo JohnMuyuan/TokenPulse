@@ -1,26 +1,28 @@
 /** 供应商切换和本地路由共用的类型。 */
 
 /** 用户不用 Gemini（2026-09-28）：Gemini CLI 和 Gemini 上游都不支持，旧数据里的 Gemini 供应商读入时丢掉。 */
-export type AgentApp = "claude" | "desktop" | "codex" | "grok";
+export type AgentApp = "claude" | "desktop" | "codex" | "grok" | "deepseek";
 
 /** 上游接口。和客户端自己说的协议可以不同，不同时由本地路由转换。 */
 export type Upstream = "anthropic" | "openai-chat" | "openai-responses";
 
-export const AGENT_APPS: AgentApp[] = ["claude", "desktop", "codex", "grok"];
+export const AGENT_APPS: AgentApp[] = ["claude", "desktop", "codex", "grok", "deepseek"];
 
 export const AGENT_LABEL: Record<AgentApp, string> = {
   claude: "Claude Code",
   desktop: "Claude 桌面端",
   codex: "Codex",
   grok: "Grok CLI",
+  deepseek: "DeepSeek Harness",
 };
 
-/** 各工具自己发出的协议。桌面端和 Claude Code 一样发 Anthropic Messages。 */
+/** 各工具自己发出的协议。桌面端和 Claude Code 一样发 Anthropic Messages。Harness 走本地路由时用 OpenAI Chat，直连时按供应商自己的协议写。 */
 export const NATIVE_UPSTREAM: Record<AgentApp, Upstream> = {
   claude: "anthropic",
   desktop: "anthropic",
   codex: "openai-responses",
   grok: "openai-responses",
+  deepseek: "openai-chat",
 };
 
 export const UPSTREAM_LABEL: Record<Upstream, string> = {
@@ -61,10 +63,16 @@ export type ProxyTarget = {
   accountId?: string;
   /** 号池成员：401 / 403 也换下一个（别的账号可能还能用）。 */
   pool?: boolean;
+  /** 号池成员属于哪个号池（0.3.44）。记进转发记录，额度详情的号池页按它汇总。 */
+  poolId?: string;
 };
 
-/** 号池：同一工具的多个官方账号 / API Key 供应商轮流用。 */
-export type PoolStrategy = "round-robin" | "fill-first";
+/**
+ * 号池：同一工具的多个官方账号 / API Key 供应商轮流用。
+ * reset-first：快重置优先；most-left：剩余最多（0.3.44，见 pool-order.ts）。
+ */
+export type PoolStrategy = "round-robin" | "fill-first" | "reset-first" | "most-left";
+export const POOL_STRATEGIES: PoolStrategy[] = ["round-robin", "fill-first", "reset-first", "most-left"];
 export type PoolMember = { type: "account" | "provider"; id: string };
 /** reasoningEffort：只有 Grok 的号池用，见 ProxyTarget.reasoningEffort。 */
 export type PoolConfig = { strategy: PoolStrategy; members: PoolMember[]; reasoningEffort?: string };
@@ -80,7 +88,7 @@ export const POOL_OFFICIAL: Partial<Record<AgentApp, { kind: "claude" | "chatgpt
 export const POOL_KEY = "TOKENPULSE_POOL";
 
 export function isAgentApp(value: unknown): value is AgentApp {
-  return value === "claude" || value === "desktop" || value === "codex" || value === "grok";
+  return value === "claude" || value === "desktop" || value === "codex" || value === "grok" || value === "deepseek";
 }
 
 export function isUpstream(value: unknown): value is Upstream {

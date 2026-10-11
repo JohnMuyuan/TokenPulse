@@ -1,5 +1,6 @@
 import type { ModelStudies, ModelStudyQuery } from "../core/model-study";
 import type { DeepSeekQuery } from "../core/deepseek-insight";
+import type { PoolQuery } from "../core/pool-insight";
 import path from "path";
 import { Worker } from "worker_threads";
 import type { Snapshot } from "../core/report";
@@ -44,6 +45,11 @@ export function loadSessionDetail(kind: string, id: string): Promise<SessionDeta
 /** DeepSeek 账号页的分析：读余额历史和 DeepSeek Harness 的流水，同样放在 worker 里。 */
 export function loadDeepSeek<T = unknown>(query: DeepSeekQuery): Promise<T> {
   return runWorker<T>({ deepseek: query });
+}
+
+/** 额度详情的号池页（0.3.44）：读转发记录和额度采样，放在 worker 里。 */
+export function loadPool<T = unknown>(query: PoolQuery): Promise<T> {
+  return runWorker<T>({ pool: query });
 }
 
 /** 模型容量校准和周期时间轴在 worker 计算，不占用窗口事件循环。 */

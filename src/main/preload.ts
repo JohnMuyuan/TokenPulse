@@ -47,6 +47,12 @@ contextBridge.exposeInMainWorld("tokenpulse", {
       return () => ipcRenderer.off("deepseek-balance-state", listener);
     },
   },
+  /** 额度详情的号池页（0.3.44）：汇总、时间线、速度。只读。 */
+  poolInsight: {
+    summary: (id: string) => ipcRenderer.invoke("pool-insight:summary", id),
+    timeline: (query: unknown) => ipcRenderer.invoke("pool-insight:timeline", query),
+    speed: (id: string, days: number) => ipcRenderer.invoke("pool-insight:speed", id, days),
+  },
   /** tokens.ci 自动上传（0.3.38）。演示模式下会改东西的操作一律拒绝。 */
   tokensCi: {
     state: () => ipcRenderer.invoke("tokens-ci:state"),

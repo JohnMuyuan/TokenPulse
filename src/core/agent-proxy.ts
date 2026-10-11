@@ -43,6 +43,8 @@ export type ProxyLog = {
   path?: string;
   attempt?: number;
   pool?: boolean;
+  /** 号池 id（0.3.44 起）。更早的记录没有：官方账号成员看 providerId 的「号池id@」前缀。 */
+  poolId?: string;
   requestModel?: string;
   client?: string;
   upstream?: string;
@@ -112,7 +114,7 @@ function readBody(req: http.IncomingMessage) {
 export function appOfPath(pathname: string): { app: AgentApp; rest: string } | null {
   const parts = pathname.split("/").filter(Boolean);
   const head = parts[0];
-  if (head !== "claude" && head !== "desktop" && head !== "codex" && head !== "grok") return null;
+  if (head !== "claude" && head !== "desktop" && head !== "codex" && head !== "grok" && head !== "deepseek") return null;
   return { app: head, rest: `/${parts.slice(1).join("/")}` };
 }
 
@@ -226,7 +228,7 @@ export function startAgentProxy(options: Options) {
     const detail = (target: ProxyTarget) => {
       let host = "";
       try { host = new URL(target.baseUrl).host; } catch { /* 地址不合法：下面转发时会报错 */ }
-      return { method: req.method || "POST", path: routed.rest.slice(0, 200), attempt, pool: !!target.pool, client, upstream: target.upstream, host, stream: wantsStream(body, routed.rest), requestBytes: body.length,
+      return { method: req.method || "POST", path: routed.rest.slice(0, 200), attempt, pool: !!target.pool, ...(target.poolId ? { poolId: target.poolId } : {}), client, upstream: target.upstream, host, stream: wantsStream(body, routed.rest), requestBytes: body.length,
         ...(facts.model ? { requestModel: facts.model } : {}), ...(facts.tier ? { tier: facts.tier } : {}), ...(target.reasoningEffort && routed.app === "grok" && !facts.effort ? { effort: target.reasoningEffort } : facts.effort ? { effort: facts.effort } : {}) };
     };
     try {

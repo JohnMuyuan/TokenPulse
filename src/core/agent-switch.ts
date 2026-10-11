@@ -17,7 +17,9 @@ import path from "path";
 import { ccSwitchDbPath } from "./cc-switch";
 import { fetchUpstreamModels, probeUrl, startAgentProxy, type ProxyLog } from "./agent-proxy";
 import { canonicalLevels, claudeRoleEnv, desktopModelMap, desktopProfile, desktopRouteModels, DESKTOP_PROFILE_ID, DESKTOP_PROFILE_NAME, emptySlot, loadCodexTemplate, parseSlots, codexCatalogEntry, patchCodexCatalog, type DesktopMode, type ModelSlot, type ThinkingFlags } from "./agent-models";
-import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, POOL_KEY, POOL_OFFICIAL, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type PoolConfig, type PoolMember, type ProxyTarget, type Upstream } from "./agent-types";
+import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, POOL_KEY, POOL_OFFICIAL, POOL_STRATEGIES, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type PoolConfig, type PoolMember, type PoolStrategy, type ProxyTarget, type Upstream } from "./agent-types";
+import { accountQuota, leftOf, LIMIT_HOLD_MS, orderPool, type MemberQuota } from "./pool-order";
+import type { PoolDef } from "./pool-insight";
 import { readOfficialAccountStore, resolveAccountCredential } from "./accounts";
 import { setConcurrencyIdentityResolver, type ConcurrencyScope } from './concurrency';
 
@@ -128,7 +130,12 @@ export type ProviderView = {
   dailyLimitUsd: number | null; monthlyLimitUsd: number | null;
   envOverrides: Record<string, string>; requestHeaders: Record<string, string>; requestBody: Record<string, unknown>;
   avatar: string;
-  pool: (PoolConfig & { members: (PoolMember & { name: string; usable: boolean; requests: number; ok: number; lastAt: number; lastStatus: number; health: "ok" | "degraded" | "open" })[] }) | null;
+  pool: (PoolConfig & { members: PoolMemberView[]; /** 按额度排的号池：下一个请求先交给谁（成员 id）。 */ next?: string }) | null;
+};
+type PoolMemberView = PoolMember & {
+  name: string; usable: boolean; requests: number; ok: number; lastAt: number; lastStatus: number; health: "ok" | "degraded" | "open";
+  /** 官方账号成员的最近一次额度（剩余百分比、重置时间），没查到是 null。 */
+  quota?: { fiveLeft: number | null; fiveResetAt: number | null; weekLeft: number | null; weekResetAt: number | null; left: number | null; at: number; limited: boolean } | null;
 };
 
 export type AgentView = {
@@ -157,7 +164,8 @@ function avatarOf(value: unknown) { const text = typeof value === "string" ? val
 /** Grok 官方目录里出现过的思考等级。 */
 const GROK_EFFORTS = ["low", "medium", "high", "xhigh"];
 function poolOf(app: AgentApp, value: unknown): PoolConfig | null {
-  if (!value || typeof value !== "object" || !POOL_OFFICIAL[app]) return null;
+  // DeepSeek Harness 没有官方账号可进号池，只收 API Key 供应商。桌面端仍然没有号池。
+  if (!value || typeof value !== "object" || (!POOL_OFFICIAL[app] && app !== "deepseek")) return null;
   const raw = value as { strategy?: unknown; members?: unknown; reasoningEffort?: unknown };
   const seen = new Set<string>();
   const members = (Array.isArray(raw.members) ? raw.members : []).flatMap((item): PoolMember[] => {
@@ -169,10 +177,15 @@ function poolOf(app: AgentApp, value: unknown): PoolConfig | null {
     return [{ type: member.type, id: member.id }];
   }).slice(0, 40);
   const effort = app === "grok" && typeof raw.reasoningEffort === "string" && GROK_EFFORTS.includes(raw.reasoningEffort) ? raw.reasoningEffort : "";
-  return { strategy: raw.strategy === "fill-first" ? "fill-first" : "round-robin", members, ...(effort ? { reasoningEffort: effort } : {}) };
+  const kept = app === "deepseek" ? members.filter((member) => member.type === "provider") : members;
+  return { strategy: POOL_STRATEGIES.includes(raw.strategy as PoolStrategy) ? raw.strategy as PoolStrategy : "round-robin", members: kept, ...(effort ? { reasoningEffort: effort } : {}) };
 }
 /** 号池轮到第几个：每个号池一个游标，每来一个请求往后挪一格。 */
 const poolCursor = new Map<string, number>();
+/** 按额度排的号池（pool-order.ts）：每个号池上一次成功用的成员（目标 id），分数差得不多就继续用它。 */
+const poolCurrent = new Map<string, string>();
+/** 回过 429 的官方账号成员（目标 id → 时间）：下一次查到它的额度之前先排后面。 */
+const poolLimited = new Map<string, number>();
 /** 号池成员的转发统计（只在内存里，重启清零）。键是成员的目标 id。 */
 const memberStats = new Map<string, { requests: number; ok: number; lastAt: number; lastStatus: number }>();
 
@@ -200,13 +213,13 @@ function emptyStore(): Store {
     direct: {}, owned: {}, restore: {}, proxyWritten: {},
     route: {},
     exclusive: {},
-    proxy: { port: 17621, apps: { claude: false, desktop: false, codex: false, grok: false } },
+    proxy: { port: 17621, apps: { claude: false, desktop: false, codex: false, grok: false, deepseek: false } },
     pass: { apps: {}, before: {}, written: {} },
   };
 }
 
 function seedOfficials(store: Store) {
-  const rows: [AgentApp, string][] = [["claude", "Claude 官方"], ["desktop", "Claude 桌面端官方"], ["codex", "OpenAI 官方"], ["grok", "Grok 官方"]];
+  const rows: [AgentApp, string][] = [["claude", "Claude 官方"], ["desktop", "Claude 桌面端官方"], ["codex", "OpenAI 官方"], ["grok", "Grok 官方"], ["deepseek", "DeepSeek 官方"]];
   rows.forEach(([app, name], sort) => {
     if (store.providers.some((item) => item.id === `official-${app}`)) return;
     store.providers.push(officialSeed(app, name, sort));
@@ -336,7 +349,7 @@ export function agentView(): AgentView {
           codexAutoCompact: typeof provider.extra.model_auto_compact_token_limit === "number" ? provider.extra.model_auto_compact_token_limit : null,
           thinking: provider.thinking, websiteUrl: provider.websiteUrl, category: provider.category, icon: provider.icon, iconColor: provider.iconColor, endpointAutoSelect: provider.endpointAutoSelect, commonConfigEnabled: provider.commonConfigEnabled, isFullUrl: provider.isFullUrl, promptCacheKey: provider.promptCacheKey, promptCacheRouting: provider.promptCacheRouting, codexFastMode: provider.codexFastMode, dailyLimitUsd: provider.dailyLimitUsd, monthlyLimitUsd: provider.monthlyLimitUsd, envOverrides: provider.envOverrides, requestHeaders: provider.requestHeaders, requestBody: provider.requestBody,
           avatar: provider.avatar,
-          pool: provider.pool ? { ...provider.pool, members: provider.pool.members.map((member) => poolMemberView(store, provider, member)) } : null,
+          pool: provider.pool ? poolView(store, provider) : null,
         };
       }),
     proxy: {
@@ -360,8 +373,25 @@ export function agentView(): AgentView {
   };
 }
 
-/** 号池成员在界面上的样子：名字、现在能不能用、转发统计。不带任何凭据。 */
-function poolMemberView(store: Store, pool: Provider, member: PoolMember) {
+/** 号池在界面上的样子。按额度排的两种方式再给出「下一个请求先交给谁」（和转发时用同一套排法，不挪轮询游标）。 */
+function poolView(store: Store, provider: Provider) {
+  const pool = provider.pool!;
+  const members = pool.members.map((member) => poolMemberView(store, provider, member));
+  if (pool.strategy !== "reset-first" && pool.strategy !== "most-left") return { ...pool, members };
+  const usable = members.filter((member) => member.usable && healthOf(memberTargetId(provider, member)) !== "open");
+  const order = orderPool(pool.strategy, usable.map((member) => candidateOf(memberTargetId(provider, member), member.type === "account" ? member.id : undefined)), poolCurrent.get(provider.id));
+  const first = order[0] && usable.find((member) => memberTargetId(provider, member) === order[0].id);
+  return { ...pool, members, ...(first ? { next: first.id } : {}) };
+}
+/** 额度详情的号池页要的号池定义（pool-insight.ts）：名字、工具、轮换方式、成员。不带任何凭据。 */
+export function poolDef(id: unknown): PoolDef | null {
+  const store = load();
+  const provider = typeof id === "string" ? byId(store, id) : undefined;
+  if (!provider?.pool) return null;
+  return { id: provider.id, name: provider.name, app: provider.app, strategy: provider.pool.strategy, members: provider.pool.members.map((member) => ({ key: memberTargetId(provider, member), type: member.type, id: member.id, name: poolMemberView(store, provider, member).name })) };
+}
+/** 号池成员在界面上的样子：名字、现在能不能用、转发统计、官方账号的额度。不带任何凭据。 */
+function poolMemberView(store: Store, pool: Provider, member: PoolMember): PoolMemberView {
   const targetId = memberTargetId(pool, member);
   const stats = memberStats.get(targetId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };
   if (member.type === "provider") {
@@ -370,7 +400,11 @@ function poolMemberView(store: Store, pool: Provider, member: PoolMember) {
   }
   const account = readOfficialAccountStore().accounts.find((item) => item.id === member.id);
   const usable = !!account && !account.hidden && !resolveAccountCredential(account).expired;
-  return { ...member, name: account ? account.alias || account.email || account.label : "已删除的账号", usable, ...stats, health: healthOf(targetId) };
+  return { ...member, name: account ? account.alias || account.email || account.label : "已删除的账号", usable, ...stats, health: healthOf(targetId), quota: quotaView(accountQuota(member.id), poolLimited.get(targetId)) };
+}
+function quotaView(quota: MemberQuota | null, limitedAt?: number) {
+  if (!quota) return null;
+  return { fiveLeft: quota.five?.left ?? null, fiveResetAt: quota.five?.resetAt ?? null, weekLeft: quota.week?.left ?? null, weekResetAt: quota.week?.resetAt ?? null, left: leftOf(quota), at: quota.at, limited: !!limitedAt && quota.at <= limitedAt && Date.now() - limitedAt < LIMIT_HOLD_MS };
 }
 function memberTargetId(pool: Provider, member: PoolMember) {
   return member.type === "provider" ? member.id : `${pool.id}@${member.id}`;
@@ -481,12 +515,14 @@ function parseSave(input: unknown) {
   const app = body.app;
   const upstream = body.upstream;
   const poolInput = body.pool && typeof body.pool === "object";
-  if (poolInput && isAgentApp(app) && !POOL_OFFICIAL[app]) throw new Error("Claude 桌面端不支持号池");
+  if (poolInput && isAgentApp(app) && app !== "deepseek" && !POOL_OFFICIAL[app]) throw new Error("Claude 桌面端不支持号池");
+  const poolMembers = Array.isArray(asObj(body.pool).members) ? asObj(body.pool).members as unknown[] : [];
+  if (app === "deepseek" && poolInput && poolMembers.some((item) => asObj(item).type === "account")) throw new Error("DeepSeek Harness 的号池只能放 API Key 供应商");
   const pool = isAgentApp(app) && poolInput ? poolOf(app, body.pool) : null;
   if (!isAgentApp(app) || (!pool && !isUpstream(upstream))) throw new Error("工具或接口格式不正确");
   const name = str(body.name).trim();
   // 号池不用填地址：官方账号走各家官方接口，API Key 成员走它们自己的地址。这里记官方接口，只是占位
-  const baseUrl = pool ? POOL_OFFICIAL[app]!.baseUrl : str(body.baseUrl).trim().replace(/\/+$/, "");
+  const baseUrl = pool ? (POOL_OFFICIAL[app]?.baseUrl || "https://api.deepseek.com") : str(body.baseUrl).trim().replace(/\/+$/, "");
   if (!name || name.length > 60) throw new Error("请填写 60 字以内的名称");
   let url: URL;
   try { url = new URL(baseUrl); } catch { throw new Error("请求地址需要是 http 或 https 网址"); }
@@ -495,7 +531,7 @@ function parseSave(input: unknown) {
   const slots = parseSlots(body.slots);
   const model = str(body.model).trim() || slots.find((slot) => slot.model)?.model || "";
   // 号池可以不指定模型：官方账号按 CLI 自己选的模型发。Grok 的配置表必须写一个模型名
-  if ((!model && (!pool || app === "grok")) || model.length > 120) throw new Error("请填写模型名");
+  if ((!model && (!pool || app === "grok" || app === "deepseek")) || model.length > 120) throw new Error("请填写模型名");
   const context = Number(body.contextWindow);
   const thinking = asObj(body.thinking);
   const codexContext = app === "codex" && ("codexContextWindow" in body || "codexAutoCompact" in body) ? parseCodexContext(body.codexContextWindow, body.codexAutoCompact) : null;
@@ -549,7 +585,7 @@ function objectMap(value: unknown) { const obj = asObj(value); return Object.fro
 function rejectLoopback(baseUrl: string) {
   const url = new URL(baseUrl);
   const local = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-  if (local && /^\/(claude|desktop|codex|grok)(\/|$)/.test(url.pathname)) throw new Error("这个地址是本地路由自己，不能当作供应商");
+  if (local && /^\/(claude|desktop|codex|grok|deepseek)(\/|$)/.test(url.pathname)) throw new Error("这个地址是本地路由自己，不能当作供应商");
 }
 
 function nextSort(store: Store, app: AgentApp) {
@@ -596,7 +632,8 @@ export async function activateProvider(id: string) {
     if (provider.locked) throw new Error('该供应商的凭证由原工具管理，请添加 API Key 供应商');
     if (provider.official && store.proxy.apps[app]) throw new Error('请先关闭本地路由，再切回官方登录');
     await precheckCodex(provider);
-    const cross = !!provider.endpoint && (!!provider.pool || provider.endpoint.upstream !== NATIVE_UPSTREAM[app] || (app === 'desktop' && provider.desktopMode === 'map'));
+    // Harness 自己能说这三种协议，直连时按供应商的协议写，不强迫走本地路由。号池和别的工具格式不同时才必须转换。
+    const cross = !!provider.endpoint && (!!provider.pool || (app !== "deepseek" && provider.endpoint.upstream !== NATIVE_UPSTREAM[app]) || (app === "desktop" && provider.desktopMode === "map"));
     if (cross || store.proxy.apps[app]) {
       await enableProxy(app, id, true);
       return { message: '已启用 ' + provider.name + (provider.pool ? '（号池，经本地路由轮流转发）' : '（本地路由）') + resumeHint(app), restart: app !== 'claude' };
@@ -844,10 +881,15 @@ export function repairAgentConfigs(): string[] {
       } catch { /* 不是 JSON：下次切换会重新生成 */ }
     }
     if (dropLeftover(grokFile(), 'model.' + GROK_TABLE, (blocks) => { const models = blocks.find((block) => block.header && headerName(block.header) === 'models'); return !!models && readKey(models.lines, 'default') === GROK_TABLE; })) fixed.push('Grok 配置里留下的空路由表');
+    const deepseekText = configRead(deepseekPatchFile());
+    if (deepseekText != null && !deepseekText.replace(/#[^\n]*/g, "").trim()) {
+      configWrite(deepseekPatchFile(), null);
+      fixed.push("DeepSeek Harness 的空补丁文件");
+    }
     // 接管 / 切换时记下的「我们写的样子」跟着更新，免得把这次修复当成外部修改
     if (fixed.length) {
       const store = load();
-      for (const app of ['codex', 'grok'] as AgentApp[]) {
+      for (const app of ['codex', 'grok', 'deepseek'] as AgentApp[]) {
         if (store.owned[app]) store.owned[app] = snapshotFiles(app);
         if (store.proxyWritten[app]) store.proxyWritten[app] = snapshotFiles(app);
       }
@@ -991,7 +1033,9 @@ function grokDefaultName() {
 }
 /** 切换成功时顺带说明各工具的坑：Grok 继续旧会话会换回旧模型。 */
 function resumeHint(app: AgentApp) {
-  return app === 'grok' ? '。提示：Grok 继续旧会话时会换回那个会话记住的模型，请新开会话，或在会话里输入 /model ' + GROK_TABLE : '';
+  if (app === "grok") return "。提示：Grok 继续旧会话时会换回那个会话记住的模型，请新开会话，或在会话里输入 /model " + GROK_TABLE;
+  if (app === "deepseek") return "。提示：只对新会话生效，已经打开的会话仍用它自己记住的模型";
+  return "";
 }
 
 export async function importCcProviders() { return syncMutation(() => importCcProvidersImpl()); }
@@ -1172,15 +1216,16 @@ function plainTarget(item: Provider): ProxyTarget {
  */
 function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
   const spec = POOL_OFFICIAL[pool.app];
-  if (!spec || !pool.pool) return [];
+  if (!pool.pool || (!spec && pool.app !== "deepseek")) return [];
   const accounts = readOfficialAccountStore().accounts;
   const members = pool.pool.members.flatMap((member): ProxyTarget[] => {
     const id = memberTargetId(pool, member);
     if (member.type === "provider") {
       const item = byId(store, member.id);
       if (!item?.endpoint || item.official || item.locked || item.pool || item.app !== pool.app) return [];
-      return [{ ...plainTarget(item), id, concurrencyProviderId: item.id, concurrencyProviderName: item.name, concurrencyPoolId: pool.id, concurrencyPoolName: pool.name, name: `${pool.name} · ${item.name}`, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}) }];
+      return [{ ...plainTarget(item), id, concurrencyProviderId: item.id, concurrencyProviderName: item.name, concurrencyPoolId: pool.id, concurrencyPoolName: pool.name, name: `${pool.name} · ${item.name}`, pool: true, poolId: pool.id, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}) }];
     }
+    if (!spec) return [];
     const account = accounts.find((row) => row.id === member.id && row.kind === spec.kind && !row.hidden);
     if (!account) return [];
     const { credential, expired } = resolveAccountCredential(account);
@@ -1188,13 +1233,24 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
     return [{
       // AGENT_SWITCH_POOL_BASE 只给自动化测试用：把官方接口换成本机假上游
       id, concurrencyProviderId: pool.id, concurrencyProviderName: pool.name, name: `${pool.name} · ${account.alias || account.email || account.label}`, upstream: NATIVE_UPSTREAM[pool.app], baseUrl: process.env.AGENT_SWITCH_POOL_BASE ? `${process.env.AGENT_SWITCH_POOL_BASE}/${pool.app}` : spec.baseUrl, apiKey: credential.token,
-      model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, officialAccount: account.id, pool: true, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}),
+      model: "", requestHeaders: pool.requestHeaders, requestBody: pool.requestBody, auth: spec.auth, accountId: credential.accountId, officialAccount: account.id, pool: true, poolId: pool.id, ...(pool.pool?.reasoningEffort ? { reasoningEffort: pool.pool.reasoningEffort } : {}),
     }];
   });
-  if (!members.length || pool.pool.strategy === "fill-first") return members;
+  const strategy = pool.pool.strategy;
+  if (!members.length || strategy === "fill-first") return members;
+  if (strategy === "reset-first" || strategy === "most-left") {
+    const order = orderPool(strategy, members.map((target) => candidateOf(target.id, target.officialAccount)), poolCurrent.get(pool.id));
+    return order.map((item) => members.find((target) => target.id === item.id)!);
+  }
   const start = (poolCursor.get(pool.id) ?? 0) % members.length;
   poolCursor.set(pool.id, start + 1);
   return [...members.slice(start), ...members.slice(0, start)];
+}
+/** 号池成员在 pool-order.ts 里的样子：官方账号带上最近一次额度，API Key 供应商没有额度。 */
+function candidateOf(targetId: string, account?: string) {
+  return account
+    ? { id: targetId, type: "account" as const, quota: accountQuota(account), limitedAt: poolLimited.get(targetId) }
+    : { id: targetId, type: "provider" as const, quota: null };
 }
 
 function pushLog(entry: ProxyLog) {
@@ -1203,6 +1259,11 @@ function pushLog(entry: ProxyLog) {
   if (entry.account && !entry.error && entry.status < 400 && POOL_OFFICIAL[entry.app]) appendRoute({ at: entry.at, kind: POOL_OFFICIAL[entry.app]!.kind, account: entry.account, responseId: entry.responseId });
   // 每一次转发都永久记下来（按月分文件，见 route-ledger.ts）：以后能回头看当时是怎么转发的
   appendRouteLog(entry);
+  // 按额度排的号池：记下这次是谁接的；官方账号回 429 就先排到后面，等下一次查到它的额度
+  if (entry.poolId && !entry.pass) {
+    if (!entry.error && entry.status < 400) { poolCurrent.set(entry.poolId, entry.providerId); poolLimited.delete(entry.providerId); }
+    else if (entry.status === 429 && entry.providerId.startsWith(entry.poolId + "@")) poolLimited.set(entry.providerId, entry.at);
+  }
   const stats = memberStats.get(entry.providerId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };
   stats.requests += 1; if (!entry.error) stats.ok += 1; stats.lastAt = entry.at; stats.lastStatus = entry.status;
   memberStats.set(entry.providerId, stats);
@@ -1213,19 +1274,20 @@ function pushLog(entry: ProxyLog) {
 function proxyBase(app: AgentApp, port: number) {
   const host = `http://127.0.0.1:${port}`;
   if (app === "claude" || app === "desktop") return `${host}/${app}`;
-  if (app === "grok") return `${host}/grok/v1`;
-  return `${host}/codex/v1`;
+  if (app === "codex") return `${host}/codex/v1`;
+  return `${host}/${app}/v1`;
 }
 
 function applyProxy(app: AgentApp) {
   const store = load();
   const provider = byId(store, store.route[app]);
   if (!provider?.endpoint) throw new Error("本地路由还没有选定供应商");
-  if (provider.pool && !POOL_OFFICIAL[app]) throw new Error("Claude 桌面端不支持号池");
+  if (provider.pool && app !== "deepseek" && !POOL_OFFICIAL[app]) throw new Error("Claude 桌面端不支持号池");
   const port = runtimePort || store.proxy.port;
   if (app === "claude") writeClaude(store, provider, proxyBase(app, port), PROXY_MANAGED, true);
   else if (app === "desktop") writeDesktop(provider, proxyBase(app, port), PROXY_MANAGED, true);
   else if (app === "codex") writeCodex(store, provider, proxyBase(app, port), PROXY_MANAGED, true);
+  else if (app === "deepseek") writeDeepseek(provider, proxyBase(app, port), PROXY_MANAGED, true);
   else writeGrok(provider, proxyBase(app, port), PROXY_MANAGED, true);
   store.owned[app] = snapshotFiles(app); store.proxyWritten[app] = snapshotFiles(app);
   save(store);
@@ -1240,6 +1302,7 @@ function applyDirect(provider: Provider) {
   if (provider.app === "claude") writeClaude(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "desktop") writeDesktop(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "codex") writeCodex(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
+  else if (provider.app === "deepseek") writeDeepseek(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else writeGrok(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   // 透明转发开着：切到第三方供应商就关掉；重新写了一遍官方登录的配置（把那一行也清掉了）就再加回去
   if (isPassApp(provider.app) && store.pass.apps[provider.app]) {
@@ -1384,6 +1447,156 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
   syncCodexLegacyProviders(blocks);
   writeText(file, stringifyToml(blocks));
   store.exclusive.codex = exclusive;
+}
+
+const DS_BEGIN = "# >>> TokenPulse（自动生成，切回官方登录时删除）";
+const DS_END = "# <<< TokenPulse";
+const DS_REF = "TOKENPULSE_ROUTE";
+function deepseekDir() { return path.join(agentHome(), ".dsh"); }
+function deepseekPatchFile() { return path.join(deepseekDir(), "cordis.patch.yml"); }
+function deepseekCredFile() { return path.join(deepseekDir(), ".credentials.yaml"); }
+function deepseekDesktopPatch() { return path.join(deepseekDir(), "profiles", "desktop", "cordis.patch.yml"); }
+function yamlQuote(value: string) {
+  if (/^[A-Za-z0-9._:/+-]+$/.test(value) && !/^(true|false|null|yes|no|~)$/i.test(value)) return value;
+  return "'" + value.replace(/'/g, "''") + "'";
+}
+function yamlUnquote(value: string) {
+  const text = value.trim();
+  if (text.startsWith("'") && text.endsWith("'") && text.length >= 2) return text.slice(1, -1).replace(/''/g, "'");
+  if (text.startsWith('"') && text.endsWith('"') && text.length >= 2) return text.slice(1, -1).replace(/\\"/g, '"');
+  return text;
+}
+function deepseekNewline(text: string) { return text.includes("\r\n") ? "\r\n" : "\n"; }
+/** 只替换标记之间的那段。标记以外的原文按字节留着。没有标记、又要删时，原文不动。 */
+function spliceMarked(text: string, block: string | null) {
+  const nl = deepseekNewline(text);
+  const start = text.indexOf(DS_BEGIN);
+  const end = text.indexOf(DS_END);
+  if (start >= 0 && end > start) {
+    const before = text.slice(0, start).replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "");
+    const after = text.slice(end + DS_END.length).replace(new RegExp(`^(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+`), "");
+    if (!block) {
+      if (!before && !after) return "";
+      if (!after) return before + nl;
+      return before + nl + nl + after.replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "") + nl;
+    }
+    const parts = [before, block.replace(/\s*$/, ""), after].filter((part) => part.length);
+    return parts.join(nl + nl).replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "") + nl;
+  }
+  if (!block) return text;
+  if (!text.trim()) return block.endsWith("\n") ? block.replace(/\n/g, nl) : block.replace(/\n/g, nl) + nl;
+  const base = text.replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "");
+  return base + nl + nl + block.replace(/\n/g, nl).replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "") + nl;
+}
+function deepseekApi(upstream: Upstream, proxy: boolean) {
+  if (proxy || upstream === "openai-chat") return "openai-completions";
+  if (upstream === "openai-responses") return "openai-responses";
+  return "anthropic-messages";
+}
+function deepseekBlock(provider: Provider, baseUrl: string, proxy: boolean) {
+  const models = [...new Set([...provider.slots.map((slot) => slot.model), provider.endpoint?.model || ""].filter(Boolean))].slice(0, 24);
+  if (!models.length || !baseUrl) throw new Error("DeepSeek Harness 的路由需要地址和至少一个模型");
+  const api = deepseekApi(provider.endpoint?.upstream || "openai-chat", proxy);
+  const lines = [
+    DS_BEGIN,
+    "- id: llm-pi-ai",
+    "  name: '@deepseek-ai/dsh-llm-pi-ai'",
+    "  config:",
+    "    providers:",
+    "      tokenpulse:",
+    "        displayName: " + yamlQuote("TokenPulse · " + provider.name.replace(/[\r\n]/g, " ").slice(0, 80)),
+    "        api: " + api,
+    "        baseURL: " + yamlQuote(baseUrl),
+    "        apiKeyEnv: " + DS_REF,
+    "        models:",
+  ];
+  for (const id of models) {
+    lines.push("          - id: " + yamlQuote(id), "            name: " + yamlQuote(id));
+    if (provider.contextWindow) lines.push("            contextWindow: " + provider.contextWindow);
+  }
+  lines.push("- id: agent-default-model", "  name: '@deepseek-ai/dsh-agent-default-model'", "  config:", "    provider: tokenpulse", "    model: " + yamlQuote(models[0]), DS_END);
+  return lines.join("\n") + "\n";
+}
+function credentialTopKeys(text: string) {
+  const keys: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith("#") || /^[ \t]/.test(line)) continue;
+    const key = /^([A-Za-z_][A-Za-z0-9_-]*):/.exec(line);
+    if (key) keys.push(key[1]);
+  }
+  return keys;
+}
+/** 在 refs 里写或删 TOKENPULSE_ROUTE。别的行保持原样。重复的顶层键、空的这一行都不落盘。 */
+function editCredentialRef(text: string, value: string | null) {
+  const nl = deepseekNewline(text);
+  const lines = text.length ? text.split(/\r?\n/) : [];
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const keys = credentialTopKeys(lines.join("\n"));
+  if (new Set(keys).size !== keys.length) throw new Error("DeepSeek 的凭据文件有重复的顶层键，已停止写入");
+  const refsAt = lines.findIndex((line) => line === "refs:" || line === "refs: ");
+  const refsEnd = (start: number) => {
+    let end = start + 1;
+    while (end < lines.length && (!lines[end].trim() || lines[end].trim().startsWith("#") || /^[ \t]/.test(lines[end]))) end++;
+    return end;
+  };
+  if (value == null) {
+    if (refsAt >= 0) {
+      const end = refsEnd(refsAt);
+      const kept = lines.slice(refsAt + 1, end).filter((line) => !/^\s*TOKENPULSE_ROUTE\s*:/.test(line));
+      if (kept.some((line) => line.trim() && !line.trim().startsWith("#"))) lines.splice(refsAt + 1, end - refsAt - 1, ...kept);
+      else {
+        const dropBlank = refsAt > 0 && lines[refsAt - 1] === "";
+        lines.splice(dropBlank ? refsAt - 1 : refsAt, end - refsAt + (dropBlank ? 1 : 0));
+      }
+    }
+  } else {
+    if (!value.trim()) throw new Error("DeepSeek 的路由密钥不能是空的");
+    const row = "  " + DS_REF + ": " + yamlQuote(value);
+    if (refsAt < 0) {
+      if (lines.length) lines.push("");
+      lines.push("refs:", row);
+    } else {
+      const end = refsEnd(refsAt);
+      const next = lines.slice(refsAt + 1, end).filter((line) => !/^\s*TOKENPULSE_ROUTE\s*:/.test(line));
+      next.push(row);
+      lines.splice(refsAt + 1, end - refsAt - 1, ...next);
+    }
+  }
+  const out = lines.join(nl);
+  const written = credentialTopKeys(out);
+  if (new Set(written).size !== written.length) throw new Error("DeepSeek 的凭据文件有重复的顶层键，已停止写入");
+  return out ? out.replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "") + nl : "";
+}
+function deepseekDesktopHasProviders() {
+  // 只读用户自己的桌面补丁，用来提醒会不会被盖住。不把它加进可写文件，也就不会改它。
+  try {
+    return /^- id:\s*llm-pi-ai\s*$/m.test(fs.readFileSync(deepseekDesktopPatch(), "utf8"));
+  } catch {
+    return false;
+  }
+}
+function writeDeepseek(provider: Provider, baseUrl: string, apiKey: string, proxy: boolean) {
+  const official = provider.official || !baseUrl;
+  const patch = spliceMarked(readText(deepseekPatchFile()), official ? null : deepseekBlock(provider, baseUrl, proxy));
+  const cred = editCredentialRef(readText(deepseekCredFile()), official ? null : apiKey);
+  if (!official && (!patch.includes(DS_BEGIN) || !patch.includes("baseURL:") || !patch.includes("model:"))) throw new Error("DeepSeek Harness 的配置没有写完整，已停止写入");
+  if (!official && deepseekDesktopHasProviders()) configNotice = [configNotice, "DeepSeek Harness 的桌面配置里已经有自己的供应商。TokenPulse 这一层会盖住它们，切回官方登录后恢复。"].filter(Boolean).join(" ");
+  configWrite(deepseekPatchFile(), patch.trim() ? patch : null);
+  configWrite(deepseekCredFile(), cred.trim() ? cred : null);
+}
+function readDeepseekLive(): { baseUrl: string; apiKey: string; model: string; upstream: Upstream } {
+  const text = readText(deepseekPatchFile());
+  const start = text.indexOf(DS_BEGIN), end = text.indexOf(DS_END);
+  const block = start >= 0 && end > start ? text.slice(start, end) : "";
+  const field = (name: string) => { const found = new RegExp("^ *" + name + ": *(.+)$", "m").exec(block); return found ? yamlUnquote(found[1]) : ""; };
+  const api = field("api");
+  const cred = /^[ \t]*TOKENPULSE_ROUTE\s*:\s*(.+)$/m.exec(readText(deepseekCredFile()));
+  return {
+    baseUrl: field("baseURL"),
+    apiKey: cred ? yamlUnquote(cred[1]) : "",
+    model: field("model"),
+    upstream: api === "openai-responses" ? "openai-responses" : api === "anthropic-messages" ? "anthropic" : "openai-chat",
+  };
 }
 
 function writeGrok(provider: Provider, baseUrl: string, apiKey: string, _proxy: boolean) {
@@ -1570,7 +1783,7 @@ function snapshotLive(app: AgentApp): Provider | null {
     createdAt: Date.now(),
     endpoint,
     apiKeyField: app === 'claude' && asObj(readObject(claudeFile()).env).ANTHROPIC_API_KEY && !asObj(readObject(claudeFile()).env).ANTHROPIC_AUTH_TOKEN ? 'ANTHROPIC_API_KEY' : 'ANTHROPIC_AUTH_TOKEN',
-    extra: extractExtra(app, app === 'claude' ? readObject(claudeFile()) : { config: readText(app === 'codex' ? codexFile() : grokFile()) }),
+    extra: extractExtra(app, app === "claude" ? readObject(claudeFile()) : { config: readText(app === "codex" ? codexFile() : app === "deepseek" ? deepseekPatchFile() : grokFile()) }),
     slots: app === 'claude' ? slotsFromImport(app, readObject(claudeFile())) : [],
     desktopMode: 'direct', contextWindow: null,
     thinking: { supportsThinking: false, supportsEffort: false }, ...ADVANCED_DEFAULTS,
@@ -1593,6 +1806,10 @@ function slotsFromImport(app: AgentApp, settings: unknown): ModelSlot[] {
 
 function endpointFromLive(app: AgentApp): Endpoint | null {
   if (app === "desktop") return null;
+  if (app === "deepseek") {
+    const read = readDeepseekLive();
+    return { baseUrl: notPass(read.baseUrl), apiKey: read.apiKey, model: read.model, upstream: read.upstream };
+  }
   if (app === "claude") {
     const env = asObj(readObject(claudeFile()).env);
     return { baseUrl: notPass(str(env.ANTHROPIC_BASE_URL)), apiKey: str(env.ANTHROPIC_AUTH_TOKEN) || str(env.ANTHROPIC_API_KEY), model: str(env.ANTHROPIC_MODEL) || str(readObject(claudeFile()).model) || str(env.ANTHROPIC_DEFAULT_SONNET_MODEL), upstream: "anthropic" };
@@ -1606,7 +1823,7 @@ function liveMarker(app: AgentApp) {
   try {
     const endpoint = endpointFromLive(app);
     if (!endpoint?.baseUrl) return null;
-    return { base: endpoint.baseUrl, managed: endpoint.apiKey === PROXY_MANAGED || /127\.0\.0\.1:\d+\/(claude|desktop|codex|grok)(\/|$)/.test(endpoint.baseUrl) };
+    return { base: endpoint.baseUrl, managed: endpoint.apiKey === PROXY_MANAGED || /127\.0\.0\.1:\d+\/(claude|desktop|codex|grok|deepseek)(\/|$)/.test(endpoint.baseUrl) };
   } catch {
     return null;
   }
@@ -1704,6 +1921,7 @@ function filesForApp(app: AgentApp) {
   if (app === 'claude') return [claudeFile()];
   if (app === 'codex') return [codexFile(), path.join(path.dirname(codexFile()), 'tokenpulse-model-catalog.json')];
   if (app === 'grok') return [grokFile()];
+  if (app === 'deepseek') return [deepseekPatchFile(), deepseekCredFile()];
   return [path.join(desktopDir(), 'configLibrary', DESKTOP_PROFILE_ID + '.json'), path.join(desktopDir(), 'configLibrary', '_meta.json')];
 }
 configureConfigFiles(() => [storeFile(), ...AGENT_APPS.flatMap(filesForApp)]);
@@ -1755,6 +1973,10 @@ function restoreProxy(store: Store, app: AgentApp) {
     if (live === ours) { configWrite(file, original); continue; }
     if (live === null || ours === null) continue;
     if (file.endsWith('.toml')) configWrite(file, restoreToml(live, original || '', ours));
+    else if (app === "deepseek") {
+      const stripped = file.endsWith(".credentials.yaml") ? editCredentialRef(live, null) : spliceMarked(live, null);
+      configWrite(file, stripped.trim() ? stripped : null);
+    }
     else if (file.endsWith('settings.json') || file.endsWith('claude.json')) {
       const restored = reverseJson(JSON.parse(live), original === null ? undefined : JSON.parse(original), JSON.parse(ours));
       configWrite(file, restored === undefined ? null : JSON.stringify(restored, null, 2) + '\n');

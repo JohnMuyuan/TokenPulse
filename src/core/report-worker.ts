@@ -1,5 +1,6 @@
 import { queryModelStudy } from "./model-study";
 import { queryDeepSeek } from "./deepseek-insight";
+import { queryPool } from "./pool-insight";
 import { parentPort, workerData } from "worker_threads";
 import { buildSnapshot } from "./report";
 import { queryRequests, recentAlerts } from "./request-log";
@@ -17,6 +18,9 @@ function localDay(at: number) {
 if (workerData.deepseek) {
   // DeepSeek 账号页的分析（余额历史 + DeepSeek Harness 的流水）
   parentPort!.postMessage(queryDeepSeek(workerData.deepseek));
+} else if (workerData.pool) {
+  // 额度详情的号池页（0.3.44）：读转发记录和额度采样
+  parentPort!.postMessage(queryPool(workerData.pool));
 } else if (workerData.modelStudy) {
   parentPort!.postMessage(queryModelStudy(workerData.modelStudy));
 } else if (workerData.sessions === "list") {

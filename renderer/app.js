@@ -1289,13 +1289,14 @@ function orderQuotaTabs(items) {
 function drawAccountTabs(slots) {
   const tabs = $('account-tabs');
   // DeepSeek 的账号（按量付费，一个 API Key 一个）默认排在官方账号后面，见 deepseek-balance.js
-  const extra = window.DeepSeekBalance?.tabs() || [];
+  const extra = [...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])];
   const items = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind, who: accountWho(slot.account), slot })), ...extra.map(tab => ({ key: tab.key, kind: tab.kind, who: tab.who, tab }))]);
   const signature = items.map(item => `${item.key}:${item.who}`).join('|');
   if (tabs.dataset.signature !== signature) {
     tabs.dataset.signature = signature;
     tabs.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...items.map(({ slot, tab, who }) => {
-      if (tab) return window.DeepSeekBalance.tabButton(tab);
+      // 号池（0.3.44）：供应商页建的号池，每个一页，见 pool-quota.js
+      if (tab) return tab.kind === 'pool' ? window.PoolQuota.tabButton(tab) : window.DeepSeekBalance.tabButton(tab);
       return el('button', { type: 'button', 'data-account': slot.key, 'data-kind': slot.kind, title: slot.account?.accountLabel || null }, [
         el('span', { class: 'brand-glyph' }, [brandSvg(META[slot.kind].brand)]), META[slot.kind].name,
         who ? el('small', { class: 'tab-who', text: who, translate: 'no' }) : null
@@ -1428,6 +1429,13 @@ function saveTabLayout(gesture, ordered) {
 }
 /** 可见账号的新顺序嵌回完整列表：藏起来的账号不在这一行，仍留在原来的位置。 */
 async function saveQuotaTabOrder(kind, visibleIds) {
+  // 号池的顺序只记在本机（pool-quota.js），不动供应商页的顺序
+  if (kind === 'pool') {
+    await window.PoolQuota?.reorder(visibleIds);
+    showStatus('已调整顺序');
+    if (current) renderQuota();
+    return;
+  }
   // DeepSeek 的账号不在官方账号列表里，顺序存在它自己那边（deepseek-balance.ts）
   if (kind === 'deepseek' || kind === 'relay') {
     try { await window.DeepSeekBalance.reorder(visibleIds); showStatus('已调整顺序'); }
@@ -1456,8 +1464,17 @@ function renderQuota() {
   const slots = quotaSlots();
   // 选中的是 DeepSeek 的账号：按量付费，没有额度窗口，这一页由 deepseek-balance.js 画（余额、消耗、用量、时间线、速度、模型换算）
   const deepseek = Boolean(window.DeepSeekBalance?.owns(state.account));
+  // 选中的是号池（0.3.44）：这一页由 pool-quota.js 画（总额度、用量、成员分摊、趋势、时间线、速度、模型、请求）
+  const poolPage = !deepseek && Boolean(window.PoolQuota?.owns(state.account));
   $('page-quota').classList.toggle('ds-mode', deepseek);
+  $('page-quota').classList.toggle('pool-mode', poolPage);
   if (!deepseek) $('page-quota').classList.remove('ds-no-timeline');
+  if (poolPage) {
+    state.account = window.PoolQuota.renderQuota(host, state.account, quotaTimelineNode);
+    drawAccountTabs(slots);
+    syncSegs();
+    return;
+  }
   if (deepseek) {
     state.account = window.DeepSeekBalance.renderQuota(host, state.account, quotaTimelineNode);
     drawAccountTabs(slots);
@@ -2239,6 +2256,8 @@ const LAYOUT = [
   ['quota:hourly', '最近 24 小时'], ['quota:samples', '本周额度采样'], ['quota:study', '模型容量排行'], ['quota:timeline', '模型与思考等级时间线'],
   ['quota:speed', '模型速度'], ['quota:account', '这个账号的请求'], ['quota:balance', '余额'], ['quota:local', '本机用量'], ['quota:spend', '消耗趋势'],
   ['quota:history', '余额走势'], ['quota:models', '模型换算'], ['quota:site', '站点上的 Key'], ['quota:about', '账号说明'],
+  ['quota:pool-quota', '号池总额度'], ['quota:pool-usage', '号池用量'], ['quota:pool-members', '成员分摊'], ['quota:pool-hourly', '号池最近 24 小时'],
+  ['quota:pool-daily', '号池最近 30 天'], ['quota:pool-models', '号池用过的模型'], ['quota:pool-requests', '这个号池的请求'],
   ['usage:breakdown', 'Token 构成'], ['usage:year', '全年活跃度'], ['usage:trend', '用量趋势 · 按工具'], ['usage:tools', '工具排行'], ['usage:hours', '使用时段分布'],
   ['usage:models', '模型排行'], ['usage:speed', '模型速度走势'], ['usage:tokensci', 'tokens.ci 上传'], ['usage:records', '用量明细'],
   ['egress:chatgpt', 'ChatGPT 出口'], ['egress:claude', 'Claude 出口'], ['egress:grok', 'Grok 出口'], ['egress:history', '变化与告警'],

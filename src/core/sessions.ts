@@ -1,7 +1,9 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { cliDir } from "./credentials";
 import { dataFile, readJson, writeJson } from "./paths";
+import { zstdFrames } from "./zstd-frames";
 
 /**
  * 会话管理：把本机各家 CLI 的会话文件读成「一段段对话」。
@@ -27,7 +29,7 @@ import { dataFile, readJson, writeJson } from "./paths";
  * 只读，不改 CLI 的任何文件。
  */
 
-export type AgentKind = "claude" | "codex" | "grok";
+export type AgentKind = "claude" | "codex" | "grok" | "deepseek";
 
 export type SessionMessage =
   | { id: string; role: "user" | "assistant"; text: string; at?: number }
@@ -133,10 +135,11 @@ function projectName(cwd: string | undefined, fallback: string) {
 }
 
 function commandOf(kind: AgentKind, id: string) {
+  if (kind === "deepseek") return "";
   return kind === "codex" ? `codex resume ${id}` : `${kind === "claude" ? "claude" : "grok"} --resume ${id}`;
 }
 
-const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex CLI", grok: "Grok Build" };
+const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex CLI", grok: "Grok Build", deepseek: "DeepSeek Harness" };
 
 function readLines(file: string) {
   try {
@@ -412,6 +415,57 @@ function parseGrok(file: string): Parsed | null {
   return summarize("grok", id, b, cwd, str(summary?.generated_title), file);
 }
 
+/* ---------------- DeepSeek Harness ---------------- */
+
+/** 测试把会话目录指到临时文件夹。正式运行读用户主目录下的 .dsh。 */
+export function dshRoot() {
+  return process.env.TOKENPULSE_DSH_HOME || path.join(os.homedir(), ".dsh");
+}
+
+function blockText(content: unknown, keep: (type: string) => boolean) {
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((block) => {
+    if (!block || typeof block !== "object") return [];
+    const row = block as Record<string, unknown>;
+    return keep(str(row.type)) && typeof row.text === "string" ? [row.text] : [];
+  }).join("\n");
+}
+
+function parseDeepseek(file: string): Parsed | null {
+  let raw: Buffer;
+  try { raw = fs.readFileSync(file); } catch { return null; }
+  const b = new Builder();
+  let id = path.basename(path.dirname(file)).replace(/^session-/, "");
+  let cwd: string | undefined;
+  let createdAt: number | undefined;
+  let title = "";
+  let model = "";
+  for (const line of zstdFrames(raw).text.split(/\n/)) {
+    const row = parseLine(line);
+    if (!row) continue;
+    const at = timestamp(row.time) ?? timestamp(row.createdAt);
+    const data = (row.data ?? {}) as Record<string, any>;
+    if (row.type === "session") {
+      if (typeof row.id === "string" && row.id) id = row.id;
+      if (typeof row.cwd === "string" && row.cwd) cwd = row.cwd;
+      createdAt = timestamp(row.createdAt) ?? createdAt;
+    } else if (row.type === "session/title" && typeof data.title === "string") title = data.title;
+    else if (row.type === "model/selection" && typeof data.model === "string") { model = data.model; b.models.add(data.model); }
+    else if (row.type === "user/message") b.text("user", blockText(data.content, (type) => type === "text"), at);
+    else if (row.type === "assistant/message") {
+      const message = data.message ?? {};
+      if (typeof message?.source?.model === "string") b.models.add(message.source.model);
+      b.text("assistant", blockText(message.content, (type) => type === "text"), at);
+    } else if (row.type === "tool/call") b.tool(str(data.callId), str(data.name), data.arguments, at);
+    else if (row.type === "tool/result") b.toolResult(str(data.message?.toolCallId), blockText(data.message?.content, () => true), data.message?.isError === true);
+    else if (row.type === "command/run") b.event(`命令 ${str(data.name)}`.trim(), at);
+  }
+  if (model) b.models.add(model);
+  const parsed = summarize("deepseek", id, b, cwd, title, file);
+  if (parsed && createdAt && !parsed.createdAt) parsed.createdAt = createdAt;
+  return parsed;
+}
+
 /* ---------------- 汇总 ---------------- */
 
 function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefined, cliTitle: string, file: string): Parsed | null {
@@ -476,11 +530,12 @@ function sources(): { kind: AgentKind; files: string[] }[] {
     { kind: "claude", files: walk(path.join(cliDir("claude"), "projects"), (file) => file.endsWith(".jsonl")) },
     { kind: "codex", files: walk(path.join(cliDir("chatgpt"), "sessions"), (file) => file.endsWith(".jsonl")) },
     { kind: "grok", files: walk(path.join(cliDir("grok"), "sessions"), (file) => path.basename(file) === "updates.jsonl") },
+    { kind: "deepseek", files: walk(path.join(dshRoot(), "sessions"), (file) => path.basename(file) === "session.v4.jsonl.zstd") },
   ];
 }
 
 function parseFile(kind: AgentKind, file: string) {
-  return kind === "claude" ? parseClaude(file) : kind === "codex" ? parseCodex(file) : parseGrok(file);
+  return kind === "claude" ? parseClaude(file) : kind === "codex" ? parseCodex(file) : kind === "deepseek" ? parseDeepseek(file) : parseGrok(file);
 }
 
 function stripFile(parsed: Parsed): SessionSummary {
@@ -578,7 +633,7 @@ export function deleteClaudeSession(id: string) {
 
 /** 详情：只读这一个会话文件。索引里没有（新会话）就先刷新一遍列表。 */
 export function getSession(kind: unknown, id: unknown): SessionDetail | null {
-  if ((kind !== "claude" && kind !== "codex" && kind !== "grok") || typeof id !== "string" || !id || id.length > 200) return null;
+  if ((kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "deepseek") || typeof id !== "string" || !id || id.length > 200) return null;
   let file = fileOf(kind, id);
   if (!file || !fs.existsSync(file)) {
     listSessions();

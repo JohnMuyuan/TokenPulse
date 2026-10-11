@@ -58,7 +58,8 @@
     const key = JSON.stringify(query) + '|' + stamp;
     if (!cache.has(key)) {
       // DeepSeek 的账号没有官方额度周期：时间线按自然日 / 7 天分段，数据从余额历史和 DeepSeek Harness 的流水来
-      const pending = query.kind === 'deepseek' ? api.deepseekBalance.timeline(query) : api.modelStudy(query);
+      // 号池（0.3.44）：同样按自然日 / 7 天分段，数据从这个号池的转发记录和成员的额度采样来
+      const pending = query.kind === 'deepseek' ? api.deepseekBalance.timeline(query) : query.kind === 'pool' ? api.poolInsight.timeline(query) : api.modelStudy(query);
       cache.set(key, pending);
       pending.catch(() => cache.delete(key));
       while (cache.size > 12) cache.delete(cache.keys().next().value);
@@ -710,9 +711,12 @@
   function timelineAccounts(snapshot) { return [...(snapshot?.accounts || []).filter(a => a.accountId && (a.five || a.week)), ...(T.extra ? [T.extra] : [])]; }
   /** DeepSeek 的账号：上方的曲线是余额，没有「本机以外」的标注。 */
   const isBalance = study => Boolean(study?.balance);
+  /** 号池（0.3.44）：上方的曲线是官方账号成员每周额度已用的平均值，也没有「本机以外」的标注。 */
+  const isPool = study => study?.query?.kind === 'pool';
+  const isPlain = study => isBalance(study) || isPool(study);
   const balanceText = (study, value) => { const c = study.balance?.currency; return (c === 'CNY' ? '¥' : c === 'USD' ? '$' : c ? c + ' ' : '') + (Number(value) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
   const balanceAt = (study, at) => { let value = null; for (const p of study.track) { if (p.at > at) break; value = p.value; } return value ?? study.track[0]?.value ?? 0; };
-  /** extra：不在快照里的账号（DeepSeek 的），{ kind, accountId, lastCheckedAt }。 */
+  /** extra：不在快照里的账号（DeepSeek 的、号池），{ kind, accountId, lastCheckedAt, brand? }。 */
   function timelineUpdate(snapshot, preferred, extra = null) {
     T.extra = extra;
     T.host ??= $('quota-model-timeline');
@@ -732,11 +736,13 @@
   function timelineHeading() {
     const report = timelineAccounts(T.snapshot).find(a => a.accountId === T.accountId);
     return [el('div', { class: 'panel-heading ms-head' }, [el('div', { class: 'ms-title' }, [
-      report ? avatar(report.kind, 'ms-brand') : null,
+      report ? avatar(report.brand || report.kind, 'ms-brand') : null,
       el('div', {}, [
-        el('h2', {}, ['模型与思考等级 · 时间线', el('span', { class: 'section-tag', text: report?.kind === 'deepseek' ? '按天 / 按 7 天' : '按官方周期' })]),
+        el('h2', {}, ['模型与思考等级 · 时间线', el('span', { class: 'section-tag', text: report?.kind === 'deepseek' || report?.kind === 'pool' ? '按天 / 按 7 天' : '按官方周期' })]),
         el('p', { text: report?.kind === 'deepseek'
           ? '每个模型 × 思考等级一条轨道，画的是本机 DeepSeek Harness 的请求；上方曲线是这个账号的余额。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。'
+          : report?.kind === 'pool'
+          ? '每个模型 × 思考等级一条轨道，画的是经过这个号池转发的请求；上方曲线是号池里官方账号每周额度已用的平均值。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。'
           : '每个模型 × 思考等级一条轨道，上方曲线是全账号官方额度已用百分比。额度涨了、同期本机没有 Code 请求的时段标在「本机以外」轨道上，可以补上用了什么模型。左键拖动平移，按住右键拖选一段可放大或标注，Ctrl + 滚轮缩放。' })
       ])
     ])])];
@@ -829,9 +835,19 @@
       el('span', { text: '左键拖动左右平移（放大后）· 按住右键拖选一段放大 · Ctrl + 滚轮缩放 · 点色块看详情。' }),
     ], '时间线怎么看', 'ms-tl-help', 'help');
   }
+  function poolHelp() {
+    return infoTip([
+      el('b', { text: '时间线怎么看' }),
+      ...[['curve', '绿色折线：号池里官方账号成员每周额度已用的平均值（整个账号的，网页聊天、其他设备也算在里面）。只有 API Key 成员的号池没有这条线。'],
+        ['run', '模型轨道上的色块：经过这个号池转发的请求，颜色越深思考等级越高。轨道名下面写着「等级 · 用了多久 · 占多少」。'],
+        ['now', '绿色竖虚线：现在。']].map(([kind, text]) => el('span', { class: 'ms-help-row' }, [el('i', { class: 'ms-sw ' + kind, 'aria-hidden': 'true' }), el('span', { text })])),
+      el('b', { text: '鼠标' }),
+      el('span', { text: '左键拖动左右平移（放大后）· 按住右键拖选一段放大 · Ctrl + 滚轮缩放 · 点色块看详情。' }),
+    ], '时间线怎么看', 'ms-tl-help', 'help');
+  }
   function cycleCard(w, label, study, colors, data) {
     const sel = study.selected, index = sel ? study.cycles.findIndex(c => c.id === sel.id) : -1;
-    const combos = summarize(study), plain = isBalance(study);
+    const combos = summarize(study), plain = isPlain(study);
     const step = delta => {
       const next = study.cycles[index + delta];
       if (!next) return;
@@ -855,9 +871,9 @@
           sel ? el('span', { class: 'ms-range', text: `${date(sel.startAt)} → ${date(sel.endAt)}` }) : null,
           status ? el('span', { class: `ms-badge ${status[1]}`, text: status[0] }) : null,
           sel?.resetCard ? el('span', { class: 'ms-badge warn', text: '重置卡分段' }) : null,
-          sel ? (plain ? balanceHelp() : timelineHelp()) : null]),
+          sel ? (isPool(study) ? poolHelp() : plain ? balanceHelp() : timelineHelp()) : null]),
         el('div', { class: 'ms-cycle-nav' }, [
-          el('span', { class: 'ms-cycle-stats', text: sel ? `${number(combos.length)} 个组合 · ${tokens(study.totals.tokens)} Tokens · ${number(study.totals.calls)} 次调用 · 本机用了 ${durationText(activeTime(study.timeline))}（占周期 ${shareText(activeTime(study.timeline), sel.endAt - sel.startAt)}）` : '' }),
+          el('span', { class: 'ms-cycle-stats', text: sel ? `${number(combos.length)} 个组合 · ${tokens(study.totals.tokens)} Tokens · ${number(study.totals.calls)} 次调用 · ${isPool(study) ? '号池用了' : '本机用了'} ${durationText(activeTime(study.timeline))}（占周期 ${shareText(activeTime(study.timeline), sel.endAt - sel.startAt)}）` : '' }),
           older, el('span', { class: 'ms-cycle-pos', text: sel ? `${index + 1} / ${study.cycles.length}` : '—' }), newer
         ])
       ]),
@@ -866,7 +882,7 @@
       T.pick?.w === w && sel ? offTools(w, study) : null,
       sel && !plain ? offMachineSummary(w, study, combos) : null,
       T.edit?.w === w && sel ? markEditor(w, study, data) : null,
-      combos.length ? comboList(combos, study.totals.tokens, colors, study.query.kind, sel ? sel.endAt - sel.startAt : 0) : null,
+      combos.length ? comboList(combos, study.totals.tokens, colors, study.query.kind, sel ? sel.endAt - sel.startAt : 0, study.source) : null,
       study.totals.unknownEffort ? el('p', { class: 'ms-note', text: `其中 ${number(study.totals.unknownEffort)} 条请求没记录思考等级（旧日志或客户端没写），单独放在「未记录等级」轨道。` }) : null
     ]);
     const redraw = animate => {
@@ -996,7 +1012,7 @@
       node.append(svg('line', { class: 'ms-grid faint', x1: left, x2: right, y1: y(g), y2: y(g) }));
       const t = svg('text', { class: 'axis', x: left - 8, y: y(g) + 4, 'text-anchor': 'end' }); t.textContent = isBalance(study) ? (g === 50 ? '' : balanceText(study, study.balance.min + (study.balance.max - study.balance.min) * g / 100)) : `${g}%`; node.append(t);
     }
-    const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = isBalance(study) ? '余额' : '官方总池已用'; node.append(bandLabel);
+    const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = isBalance(study) ? '余额' : isPool(study) ? '成员平均已用' : '官方总池已用'; node.append(bandLabel);
     // 官方已用的阶梯线：只取视图前后各一屏内的采样；从视图左边（或第一次采样）开始画
     const track = study.track.filter(p => p.at <= end + span);
     if (track.length) {
@@ -1062,7 +1078,8 @@
     // 各组合的轨道
     if (!combos.length) {
       const t = svg('text', { class: 'axis', x: (left + right) / 2, y: laneTop + laneIndex * laneH + laneH / 2 + 4, 'text-anchor': 'middle' });
-      t.textContent = isBalance(study) ? (sel.active && study.cycles.length > 1 ? '这段时间里还没有本机 DeepSeek Harness 的请求，点右上角 ‹ 往前看' : '这段时间里没有本机 DeepSeek Harness 的请求')
+      t.textContent = isPool(study) ? (sel.active && study.cycles.length > 1 ? '这段时间里号池还没有转发过请求，点右上角 ‹ 往前看' : '这段时间里号池没有转发过请求')
+        : isBalance(study) ? (sel.active && study.cycles.length > 1 ? '这段时间里还没有本机 DeepSeek Harness 的请求，点右上角 ‹ 往前看' : '这段时间里没有本机 DeepSeek Harness 的请求')
         : sel.active && study.cycles.length > 1 ? '这个周期里还没有本机官方请求，点右上角 ‹ 看上一个周期' : '这个周期里没有本机官方请求';
       node.append(t);
     }
@@ -1070,7 +1087,7 @@
       const cy = laneTop + (i + laneIndex) * laneH + laneH / 2, color = colorFor(combo, colors);
       const lane = svg('g', { class: 'ms-lane', 'data-key': combo.key });
       paint(lane, { '--i': i });
-      const logo = brandSvg(META[study.query.kind]?.brand || study.query.kind);
+      const logo = brandSvg(study.brand || META[study.query.kind]?.brand || study.query.kind);
       for (const [k, val] of Object.entries({ x: 4, y: cy - 9, width: 18, height: 18, class: 'brand-svg ms-lane-logo' })) logo.setAttribute(k, val);
       const name = svg('text', { class: 'ms-lane-name', x: 30, y: cy - 2 }); name.textContent = combo.model.length > 22 ? combo.model.slice(0, 21) + '…' : combo.model;
       name.setAttribute('translate', 'no');
@@ -1100,7 +1117,7 @@
 
     // 悬停在上方曲线区：显示那一刻的官方已用
     const hit = svg('rect', { class: 'ms-hit', x: left, y: bandTop, width: right - left, height: bandH });
-    hit.addEventListener('pointermove', e => { if (!host._dragging) tipAt(`${date(toTime(e.clientX))}\n${isBalance(study) ? `余额 ${balanceText(study, balanceAt(study, toTime(e.clientX)))}` : `官方额度已用 ${pctAt(study, toTime(e.clientX)).toFixed(0)}%`}`, e.clientX, e.clientY); });
+    hit.addEventListener('pointermove', e => { if (!host._dragging) tipAt(`${date(toTime(e.clientX))}\n${isBalance(study) ? `余额 ${balanceText(study, balanceAt(study, toTime(e.clientX)))}` : isPool(study) ? (study.track.length ? `成员平均周额度已用 ${pctAt(study, toTime(e.clientX)).toFixed(0)}%` : '号池里没有官方账号成员的额度采样') : `官方额度已用 ${pctAt(study, toTime(e.clientX)).toFixed(0)}%`}`, e.clientX, e.clientY); });
     hit.addEventListener('pointerleave', hideTip);
     node.insertBefore(hit, node.querySelector('.ms-lane'));
 
@@ -1188,11 +1205,11 @@
   function selectionActions(host, w, study, from, to, center, selection) {
     host.querySelector('.ms-select-actions')?.remove();
     const bar = el('div', { class: 'ms-select-actions', role: 'group', 'aria-label': '所选时段' }, [
-      el('span', { text: `${date(from)} – ${hm(to)} · ${isBalance(study) ? `余额 ${balanceText(study, balanceAt(study, from))} → ${balanceText(study, balanceAt(study, to))}` : `官方 +${growth(study, from, to).toFixed(1)}%`}` }),
+      el('span', { text: `${date(from)} – ${hm(to)} · ${isBalance(study) ? `余额 ${balanceText(study, balanceAt(study, from))} → ${balanceText(study, balanceAt(study, to))}` : isPool(study) ? `成员平均 +${growth(study, from, to).toFixed(1)}%` : `官方 +${growth(study, from, to).toFixed(1)}%`}` }),
     ]);
     const act = (text, fn, cls = 'btn') => { const b = el('button', { type: 'button', class: cls, text }); b.addEventListener('click', () => { bar.remove(); selection.setAttribute('hidden', ''); fn(); }); bar.append(b); return b; };
     const first = act('放大到这段', () => setZoom(w, study, from, to), 'btn btn-accent');
-    if (!isBalance(study)) act('标注为本机以外的使用', () => openEditor(w, study, { from, to }));
+    if (!isPlain(study)) act('标注为本机以外的使用', () => openEditor(w, study, { from, to }));
     act('取消', () => {});
     paint(bar, { left: `${Math.min(88, Math.max(12, center * 100)).toFixed(1)}%` });
     host.append(bar);
@@ -1387,11 +1404,11 @@
     return form;
   }
 
-  function comboList(combos, total, colors, kind, span) {
+  function comboList(combos, total, colors, kind, span, source = '') {
     const list = el('div', { class: 'ms-combos' }, combos.map(c => {
       const item = el('button', { type: 'button', class: 'ms-combo', 'data-key': c.key, 'aria-pressed': 'false' }, [
         paint(el('i', { class: 'ms-swatch' }), { background: colorFor(c, colors), opacity: alphaFor(c.effort) }),
-        el('span', { class: 'ms-combo-name' }, [miniLogo(META[kind]?.source || 'DeepSeek Harness'), el('b', { text: c.model, translate: 'no', title: c.model }), levelBadge(c.effort)]),
+        el('span', { class: 'ms-combo-name' }, [miniLogo(kind === 'pool' ? source : META[kind]?.source || 'DeepSeek Harness'), el('b', { text: c.model, translate: 'no', title: c.model }), levelBadge(c.effort)]),
         el('span', { class: 'ms-combo-bar' }, [paint(el('i'), { width: `${Math.max(1, total ? c.tokens / total * 100 : 0).toFixed(2)}%`, background: colorFor(c, colors) })]),
         el('span', { class: 'ms-combo-num' }, [el('b', { text: tokens(c.tokens) }), el('small', { text: `${total ? (c.tokens / total * 100).toFixed(1) : '0'}% · ${number(c.calls)} 次${c.priced ? ` · ${money(c.costUsd)}` : ''}` })]),
         el('span', { class: 'ms-combo-time', title: '有请求的时间，相隔 5 分钟以内的连成一段' }, [el('b', { text: durationText(c.activeMs) }), el('small', { text: `占周期 ${shareText(c.activeMs, span)}` })])

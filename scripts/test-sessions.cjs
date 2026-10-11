@@ -12,6 +12,7 @@ const grokDir = path.join(root, 'grok');
 process.env.CLAUDE_CONFIG_DIR = claudeDir;
 process.env.CODEX_HOME = codexDir;
 process.env.GROK_HOME = grokDir;
+process.env.TOKENPULSE_DSH_HOME = path.join(root, 'dsh');
 process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
 const write = (file, rows) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, rows.map(row => typeof row === 'string' ? row : JSON.stringify(row)).join('\n') + '\n'); };
 const project = path.join(root, 'Demo');
@@ -80,24 +81,40 @@ write(path.join(grokSession, 'updates.jsonl'), [
 ]);
 fs.writeFileSync(path.join(grokSession, 'summary.json'), JSON.stringify({ generated_title: '打个招呼', current_model_id: 'grok-4.6' }));
 
+const zlib = require('zlib');
+const deepseekLines = [
+  { type: 'session', id: 'session-demo', createdAt: '2026-09-24T13:00:00Z', cwd: project },
+  { type: 'session/title', time: '2026-09-24T13:00:01Z', data: { title: '看看 Demo' } },
+  { type: 'user/message', time: '2026-09-24T13:00:02Z', data: { role: 'user', content: [{ type: 'text', text: '目录里有什么' }] } },
+  { type: 'assistant/message', time: '2026-09-24T13:00:03Z', data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: '想一下' }, { type: 'text', text: '有一个文件。' }], source: { model: 'deepseek-flash' } } } },
+  { type: 'tool/call', time: '2026-09-24T13:00:04Z', data: { callId: 'c1', name: 'read', arguments: { path: 'a.txt' } } },
+  { type: 'tool/result', time: '2026-09-24T13:00:05Z', data: { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'hello' }], isError: false } } },
+].map((row) => JSON.stringify(row)).join('\n') + '\n';
+const deepseekFile = path.join(process.env.TOKENPULSE_DSH_HOME, 'sessions', 'Demo', 'session-demo', 'session.v4.jsonl.zstd');
+fs.mkdirSync(path.dirname(deepseekFile), { recursive: true });
+fs.writeFileSync(deepseekFile, zlib.zstdCompressSync(Buffer.from(deepseekLines)));
+
 const sessions = require('../build/core/sessions.js');
 const list = sessions.listSessions();
-assert.deepStrictEqual(list.map(item => item.key).sort(), ['claude:claude-1', 'codex:codex-1', 'grok:grok-1'], '子代理、子会话、空会话都不该出现在列表里');
+assert.deepStrictEqual(list.map(item => item.key).sort(), ['claude:claude-1', 'codex:codex-1', 'deepseek:session-demo', 'grok:grok-1'], '子代理、子会话、空会话都不该出现在列表里');
 
 const byKind = Object.fromEntries(list.map(item => [item.kind, item]));
 assert.strictEqual(byKind.claude.title, '检查 Demo 项目', 'Claude 用 CLI 生成的标题');
 assert.strictEqual(byKind.codex.title, '列出 Demo 文件', 'Codex 用 session_index 里的标题');
 assert.strictEqual(byKind.grok.title, '打个招呼', 'Grok 用 summary.json 的标题');
+assert.strictEqual(byKind.deepseek.title, '看看 Demo', 'DeepSeek 用 session/title');
+assert.strictEqual(byKind.deepseek.resumeCommand, '');
 for (const item of list) {
   assert.strictEqual(item.cwd, project);
   assert.strictEqual(item.project, 'Demo');
   assert.strictEqual(item.turns, 1, `${item.kind} 只有一轮用户提问`);
-  assert(item.resumeCommand.includes(item.id));
+  if (item.kind !== 'deepseek') assert(item.resumeCommand.includes(item.id));
   assert(!('messages' in item), '列表里不带整段对话');
 }
 assert.deepStrictEqual(byKind.claude.models, ['claude-opus-5']);
 assert.deepStrictEqual(byKind.codex.models, ['gpt-6']);
 assert.deepStrictEqual(byKind.grok.models, ['grok-4.6']);
+assert.deepStrictEqual(byKind.deepseek.models, ['deepseek-flash']);
 
 // Claude：meta / sidechain / system-reminder 过滤，斜杠命令变事件，同 id 的文字拼成一条，工具结果挂到工具上
 const claude = sessions.getSession('claude', 'claude-1');
@@ -120,6 +137,13 @@ const grok = sessions.getSession('grok', 'grok-1');
 assert.deepStrictEqual(talk(grok.messages), ['user:你好', 'assistant:你好，需要我做什么？']);
 const readFile = grok.messages.find(m => m.role === 'tool');
 assert(readFile && readFile.name === 'read_file' && readFile.error && readFile.output.includes('not found'));
+
+const deepseek = sessions.getSession('deepseek', 'session-demo');
+assert.deepStrictEqual(talk(deepseek.messages), ['user:目录里有什么', 'assistant:有一个文件。']);
+assert(!deepseek.messages.some(m => /想一下/.test(m.text || m.output || '')), '思考过程不进对话正文');
+const readTool = deepseek.messages.find(m => m.role === 'tool');
+assert(readTool && readTool.name === 'read' && readTool.output.includes('hello') && !readTool.error);
+assert.deepStrictEqual(deepseek.models, ['deepseek-flash']);
 
 // 参数检查
 assert.strictEqual(sessions.getSession('claude', 'missing'), null);
@@ -155,8 +179,12 @@ assert(codexArgs.includes('sandbox_mode="read-only"') && codexArgs.includes('app
 assert(reply.replyArgs('codex', 'abc', 'edit').includes('sandbox_mode="workspace-write"'));
 const grokArgs = reply.replyArgs('grok', 'abc', 'readonly', 'C:\\tmp\\p.txt');
 assert(grokArgs.includes('dontAsk') && grokArgs.at(-1) === 'C:\\tmp\\p.txt' && grokArgs[grokArgs.indexOf('--resume') + 1] === 'abc');
+assert.deepStrictEqual(reply.replyArgs('deepseek', 'session-demo', 'readonly'), ['--profile', 'headless', '--json', '--session-id', 'session-demo', '-']);
+assert.deepStrictEqual(reply.replyArgs('deepseek', '', 'edit'), ['--profile', 'headless', '--json', '-']);
+assert.deepStrictEqual(reply.readEvent('deepseek', JSON.stringify({ type: 'text', text: '你好' }), false), { delta: '你好' });
+assert.deepStrictEqual(reply.readEvent('deepseek', JSON.stringify({ type: 'error', message: '失败' }), false), { error: '失败' });
 // 提示词绝不进命令行
-for (const args of [claudeArgs, codexArgs, grokArgs]) assert(!args.some(arg => arg.includes('提示词')));
+for (const args of [claudeArgs, codexArgs, grokArgs, reply.replyArgs('deepseek', 'session-demo', 'readonly')]) assert(!args.some(arg => arg.includes('提示词')));
 assert.deepStrictEqual(reply.deleteArgs('codex', 'abc'), ['delete', '--force', 'abc'], 'Codex 删除要带 --force：没有终端时它没法问确认');
 assert.deepStrictEqual(reply.deleteArgs('grok', 'abc'), ['sessions', 'delete', 'abc']);
 assert.strictEqual(reply.deleteArgs('claude', 'abc'), null);

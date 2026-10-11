@@ -380,6 +380,10 @@
 .pv-member b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .pv-member small { color: var(--muted); font-variant-numeric: tabular-nums; }
 .pv-member.off { color: var(--muted); border-style: dashed; }
+.pv-member.next { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.pv-member small.pv-member-left { color: var(--text-2); font-weight: 600; }
+.pv-member small.pv-member-left.spent { color: var(--danger, #d14343); }
+.pv-member-next { padding: 0 6px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-strong); font-size: 10.5px; font-weight: 600; }
 .pv-member-kind { padding: 0 5px; border-radius: 5px; background: var(--tile-neutral); color: var(--muted); font-size: 10.5px; font-weight: 600; }
 .pv-pool-editor { display: grid; gap: 16px; }
 .pv-pool-group { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
