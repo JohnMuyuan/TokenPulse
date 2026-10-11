@@ -1,6 +1,59 @@
-# Current handoff · 0.3.42 published (2026-10-10)
+# Current handoff · 0.3.43 published (2026-10-11)
 
 ## 新对话先看这里
+
+### 接手速览（2026-10-11，0.3.43 已正式发布）
+
+**现在的状态**
+
+- 正式发布是 **0.3.43**。提交 `70f8e4b`（0.3.43：编辑布局、Grok 号池记到每次转发、额度查询同一个间隔），标签 `v0.3.43`，已推送 `origin/main`。GitHub Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.43 ，标题 `TokenPulse 0.3.43`，非草稿、非预发布，`releases/latest` 指向 `v0.3.43`。
+- 这一版三件事：侧栏和各页卡片可以编辑布局；Grok 号池的每一次转发记到额度详情和时间线；官方订阅额度、DeepSeek 余额、第三方 Key 余额共用一个查询间隔。默认 1 分钟，设置 → 通用的滑块是 1 到 10 的整分钟，保存后生效。
+- 附件 4 个，大小和 SHA256 与本地一致：`TokenPulse-0.3.43-Setup.exe` 112,540,789（`766808a14efa0442dd67f8fdb345349ade735bebe491f67a32eee2aded53874e`）、`.blockmap` 119,677（`c625d573bb59208d16cc90da0ac9c6b48309dfda2089663650e13895407e6161`）、`TokenPulse-0.3.43-Portable.exe` 112,283,577（`fdc87e2ed5480f7840434ce59324b1974c464deeac27647fb4b0a6d625a3dc7d`）、`latest.yml` 352（`f0a477d1a784450628b9448e12d18cec0a008aa27efd2907fa49c0c823edd35e`）。公开下载的 `releases/latest/download/latest.yml` 是 `version: 0.3.43`，sha512 和大小与本地相同。
+- 发布前：`npm test` 退出 0，`npm run test:ui` 退出 0（58 条 PASS）。`npm run dist` 退出 0。包内 128 个运行时文件和源码逐字节一致，`build` / `renderer` / `knowledge` 没有漏进包的文件，版本 0.3.43，exe ProductVersion 0.3.43.0。发布说明：`dist/release-0.3.43.md`（同 GitHub Release 正文）、`renderer/intro.js` 的 NOTES、`i18n.js` 的英文。
+- 收尾：四个附件和 `dist/win-unpacked` 的 exe / app.asar 能独占打开。没有留下这次的 electron、node 或打包进程。工作目录在项目根。安装版（`AppData\Local\Programs\TokenPulse`，PID 35956 一带，2026-10-11 3:15 启动）当时在跑，没有关。根目录未跟踪的 `app.js` 没有提交，也没有打进包。
+- 已知限制（发布说明里也写了）：收起布局只影响这台电脑的界面；同一时间两个 Grok 会话都走号池时，各轮比例可能混在一起，总量不变；额度上涨前后 5 分钟没有对得上的本机请求时，时间线标成「本机以外」；数字没变时历史曲线大约 15 分钟才多一个点；更新后第一次打开会重扫。没有用真实鼠标点过编辑布局和额度详情。真实 DeepSeek 余额接口、new-api / one-api 真实站点，仍是 0.3.42 留下的未验证项。
+
+**0.3.43 开发过程（下面各条里「未提交、未发布」「正在打安装包」「正式发布仍是 0.3.42」都已过期，以本节上面为准）**
+
+- 三件事都在 0.3.43：侧栏和各页卡片可以编辑布局；Grok 号池的转发记到额度详情和时间线上；额度查询收成一个间隔。
+- **额度查询间隔（本轮已改成整分钟，测试版已重打）**：官方订阅（Claude / ChatGPT / Grok）、DeepSeek API、第三方中转 Key 共用 `prefs.json` 的 `quotaEverySeconds`。默认 **1 分钟**。设置 → 通用的滑块只走整分钟，**1 到 10 分钟**，点保存才改定时器，保存本身不立刻再查一轮。不是整分钟的旧值会收到最近的整分钟，再限制在这范围内。打开软件时这几路马上各查一次，之后按这个间隔。窗口收进托盘也不放慢这一路。用量扫描仍是开着 1 分钟、收起 3 分钟。数字没变时，官方历史曲线仍约 15 分钟才多记一个点。手动刷新 API 余额仍是每个账号至少隔 5 秒。
+- 代码：`src/main/prefs.ts`、`src/main/deepseek-balance.ts`、`renderer/app.js`、`renderer/i18n.js`、`renderer/intro.js`、`scripts/test-quota-interval.cjs`、`scripts/test-ui.cjs`、`README.md`。验证：`npx tsc -p tsconfig.json` 退出 0；`node scripts/test-quota-interval.cjs` 3 项过；`npx electron scripts/test-ui.cjs` 退出 0。没有跑完整 `npm test`。`npx electron-builder --win dir --publish never` 退出 0。包内版本 0.3.43（exe ProductVersion 0.3.43.0），asar 里滑块是 1 到 10 分钟，最短间隔常量是 60 秒。exe 和 app.asar 能独占打开。安装版当时在跑，没有关。没有留下这次打包的 electron / node。
+- 工作区里的 `package.json` 曾经只剩版本号、脚本和 electron-builder 配置都没了。已经按 0.3.42 的那份加回来，版本仍是 0.3.43，`test` 里加了 `test-quota-interval.cjs`，`test:ui` 里加了 `test-layout-ui.cjs`。
+- 上一轮（号池）打的测试版已经再次重打，以上面「额度查询间隔」那条为准。那一次包里已经有 `poolEvents`、`pendingGrokPool`、`STATE_VERSION = 14`，这次的包仍是这些，并加上了查询间隔。
+- **Grok 号池（本轮）**：用户能在转发记录里看到每次用了哪个号，但额度详情「这个账号的请求」和时间线仍认为额度上涨是本机以外。只读统计（不输出账号、对话）：约 370 次带用量的号池转发、6 个成员；对得上会话的轮次里，13 轮里只有 1 轮全程同一个号，其余 12 轮中途换过号。旧逻辑只在「这一整轮只有一个号」时才把那一条记成这个账号的官方请求，而且时间记在轮次结束。所以时间线几乎看不到本机请求。
+- 改法：一轮里的每一次官方转发各记一条请求，时间用转发完成的时间，账号用当时那个成员；Token 仍按这一轮的比例拆，加起来不变。还没写完的一轮，查询时先用转发记录补上，轮次扫进来之后同一条不重复。`STATE_VERSION` 13 → 14，下次打开会重扫。
+- 改动文件：`src/core/route-ledger.ts`、`src/core/usage-scan.ts`、`src/core/request-log.ts`、`renderer/app.js`、`renderer/i18n.js`、`renderer/intro.js`、`scripts/test-grok-pool.cjs`、`scripts/test-routing-regressions.cjs`、本文件。布局那一批文件仍是 0.3.43 的一部分。
+- 验证：`node scripts/test-grok-pool.cjs` 6/6；`test-routing-regressions.cjs` 9/9；`test-route-ledger.cjs`、`test-requests.cjs` 63/63、`test-usage-scan.cjs` 16/16。`npm run compile` 退出 0。没有用真实鼠标点过额度详情。
+- 布局（同一版本，上一轮已打进当时的测试版）：侧栏「工作空间」的页面和各页卡片可以在「编辑布局」里藏起来，再加回原来的位置。只藏界面，出口监控、并发、供应商路由和通知照常跑。
+- 布局相关文件：`renderer/index.html`、`renderer/app.js`、`renderer/app.css`、`renderer/i18n.js`、`renderer/intro.js`、`package.json`、`package-lock.json`、`scripts/test-layout-ui.cjs`（已加入 `test:ui`）。这一条写的时候还没发布，发布结果见最上面。
+- 怎么用：侧栏「工作空间」旁边的「编辑布局」。进去之后，当前这一页上的卡片都能删（不只是总览）：总览的四张统计小卡（总 Tokens、参考费用、请求次数、缓存读取占比）各自能删，额度详情、用量明细、出口监控、并发监控、会话管理、供应商里的主要卡片也能删。「添加」按页面分组，加回原来的位置。「完成」或 Esc 退出。全部页面藏掉也可以，主区是空状态。藏起来的页，页面里跳过去的按钮一起藏。点通知仍会打开那一页，顶上有「加回侧栏」。记在本机 localStorage 键 `tokenpulse-layout`（记的是藏了哪些，id 形如 `overview:tokens`）。「设置」和「收起侧栏」不能藏。总览的「官方额度」整块一起藏，不单独藏某一个账号。总览藏起的统计小卡不影响用量明细上的同一排数字。
+- 验证：`scripts/test-layout-ui.cjs` 退出 0。`npm test` 在 `test-deepseek-insight.cjs` 停住（本机时间 2026-10-11 00:52，时间线断言要「今天」的请求，夹具写在两小时前、落在昨天；和这次界面改动无关）。该文件之后的 node 测试单独跑完，退出 0。`npm run test:ui` 里 `test-ui.cjs` 单独重跑退出 0；`test-intro-ui.cjs` 第一次报「真实数据目录没有变化」（并发历史文件在测试期间多了一笔，已知偶发），单独重跑退出 0；其余界面测试退出 0，含 `test-layout-ui.cjs`。
+- 开发当时还没做：没有用真实鼠标点过编辑布局。英文文案在 `i18n.js`，界面测试里核对了「编辑布局」和「加回侧栏」两句。安装包、提交和发布后来都做了，见最上面。
+
+**上一份接手时的状态（0.3.42 已发布，做 0.3.43 之前）**
+
+- 当时 `origin/main` 在 `c062c88`，工作区只有这份 `HANDOFF.md` 有未提交改动。
+
+**可能的下一步（都要等用户开口，不要自己动手）**
+
+1. **供应商切换支持 DeepSeek Harness**：用户说先不做。只读调查的结论在下面 0.3.42 的记录里（搜「没做、等用户决定」）。要做的话放到下一个版本、先做直连，并且先征得用户同意再在他的 Harness 上实测（要写 `~/.dsh` 下的配置和凭据文件，写坏了 Harness 会打不开）。
+3. **0.3.42 发布后的跟进**：发布说明里写明了两处没验证——new-api / one-api 的余额查询没用真实站点测过；DeepSeek 的余额接口没用真实 Key 测过。有用户反馈数字不对时从这里查。
+4. **Codex 降智检测**（0.3.41）在健康账号上的表现一直没验证，等用户有条件时测。
+
+**和这位用户合作的约定（长期有效，都是用户明确说过的）**
+
+- 用中文回复。说话直接、通俗，先说结论。
+- 版本号听用户的。「测试版」= 只打 `--win dir`（`npx electron-builder --win dir --publish never`），不出安装包、不提交、不发布，等用户说发布再发。
+- 「老样子」发布流程：测试 → `npm run dist` → 核对包内文件和源码一致 → `git fetch` → 提交 → 打标签 → 推送 → `gh release create`（Setup.exe、.blockmap、Portable.exe、latest.yml）→ 核对附件和 `releases/latest` → 查进程和占用 → HANDOFF 单独一个提交。发布说明三处都要写：`dist/release-x.y.z.md`、GitHub Release、`renderer/intro.js` 的 NOTES（英文在 `i18n.js`）。
+- **提交、标签、PR、发布说明里不要带会话链接**（用户的规定，优先于工具自带的署名提示）。
+- 截图和视频素材只用演示数据或测试数据，不用用户本机的真实数据。
+- 用户本机的 `~/.tokenpulse`、`~/.codex`、`~/.grok`、`~/.dsh` 等只读，输出只给汇总和结构，不输出 token、邮箱、Key、对话内容；没经同意不改用户真实的工具配置。DeepSeek Harness 的登录凭据不拿来做任何事。
+- 破坏性的 Git 操作要用户明确要求。Codex 降智检测只能手动触发，不用用户的真实账号去跑。
+- 命令拆开一条一条执行，不要串成一大条；不要用 `rm -rf` 清理临时文件（用户拒绝过），留在临时目录里就行。
+- 在 Git Bash 里用 heredoc / `sed` / `node -e` 改带反斜杠的内容会被改坏：用编辑工具，或者先写一个补丁脚本文件再用 `node` 跑；脚本要按文件自己的换行符（有的文件是 CRLF）匹配，成功一半之后不要重跑。
+- `node scripts/update-knowledge.cjs --write` 直接跑会连接超时，要带 `NODE_USE_ENV_PROXY=1` 走系统代理。远程有机器人每天自动提交知识库（`knowledge/models.json`），发布前 `git fetch` 可能会遇到它，处理办法见下面 0.3.42 的「发布时的一个插曲」。
+- 两个界面测试偶尔会因为时间差失败，和改动无关，单独重跑就过：`test-intro-ui.cjs`（「真实数据目录没有变化」）、`test-agent-switch-ui.cjs`（侧栏宽度 236 ≠ 76）。
+- 其余规则见仓库根目录的 `AGENTS.md`（每次完成工程工作都要更新这份文档；构建和测试之后确认自己的进程退出、文件没被占用；不要结束用户正在用的 TokenPulse）。
 
 **0.3.42 已正式发布（2026-10-10）。下面各条里「未提交、未发布」「等用户看测试版」的说法都已过期，以本段为准。**
 
