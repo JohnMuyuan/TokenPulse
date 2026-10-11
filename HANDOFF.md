@@ -1,6 +1,63 @@
-# Current handoff · 0.3.43 published (2026-10-11)
+# Current handoff · 0.3.44 已正式发布（2026-10-11）
 
 ## 新对话先看这里
+
+### 0.3.44 已正式发布（2026-10-11）
+
+- 正式发布是 **0.3.44**。提交 `eb633a3`（0.3.44：号池按额度轮换、额度详情的号池页、DeepSeek Harness 的供应商和会话），标签 `v0.3.44`，已推送 `origin/main`。GitHub Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.44 ，标题 `TokenPulse 0.3.44`，非草稿、非预发布，`releases/latest` 指向 `v0.3.44`，target 是完整 SHA `eb633a3f382955abc109d9385706a50d79eeaf8a`。
+- 这一版三件事：号池新增「快重置优先」和「剩余最多」；额度详情里每个号池有自己的一页；DeepSeek Harness 可以切换供应商、走本地路由、用只含 API Key 的号池，会话可以查看和回复。
+- 附件 4 个，大小和 SHA256 与本地一致，GitHub 资产摘要也一致：`TokenPulse-0.3.44-Setup.exe` 112,558,329（`dec04693bc9bec51a823e4fb3b09d4342f10402734c8089d39120b805fa7fef6`）、`.blockmap` 119,729（`966264f6e6e1de87b8fd6fdca5f7d051a84df9a95772b308d724f84b49902f81`）、`TokenPulse-0.3.44-Portable.exe` 112,301,107（`c16b3b9d749592da77e5dd33efc5a4038afa9d4bf25ba765fd691905e74ba949`）、`latest.yml` 352（`da690575984a87f8b7802d1ff192e784264b380beb53921d1d70a8efb911f7b6`）。公开下载的 `releases/latest/download/latest.yml` 是 `version: 0.3.44`，sha512 和大小与本地相同。
+- 发布前：`npm test` 退出 0。`npm run test:ui` 里 `test-model-study-ui.cjs` 第一次停在「浮层完整显示、在最上层」，单独重跑退出 0；`test-ui.cjs` 在第一次整套里已过，其余界面测试随后退出 0。`npm run dist` 退出 0。包内 132 个运行时文件和源码逐字节一致，版本 0.3.44，exe ProductVersion 0.3.44.0。发布说明：`dist/release-0.3.44.md`（同 GitHub Release 正文）、`renderer/intro.js` 的 NOTES、`i18n.js` 的英文、`README.md`。
+- 收尾：四个附件和 `dist/win-unpacked` 的 exe / app.asar 能独占打开。没有留下这次的 electron、node 或打包进程。工作目录在项目根。安装版（`AppData\Local\Programs\TokenPulse`，PID 35432，2026-10-11 8:45 启动）当时在跑，没有关。
+- 已知限制（发布说明里也写了）：按额度轮换看的是整个账号的剩余，网页和其他设备也算在里面；正在用的号和最高分差得不多时会继续用它。号池页的用量来自转发记录。DeepSeek 的切换只对新会话生效；窗口里正开着的会话先在那边说完再在这里回复；桌面配置里已有的模型供应商会被这一层盖住，切回官方登录后恢复。新任务仍不从「开一个新对话」启动。没有在用户的 Harness 上真的切换。headless 回复会花额度，实测前要先问用户。
+
+**0.3.44 开发过程（下面各条里「未提交、未发布」「还没打测试版」「NOTES 还没写」都已过期，以本节上面为准）**
+
+计划全文：`C:\Users\7ipny\.claude\plans\concurrent-wishing-hippo.md`（用户已批准）。三件事：号池两种新轮换方式；额度详情的号池页；DeepSeek Harness 补齐（供应商切换 + 本地路由、号池、会话管理，用户勾选；出口监控、托盘这版不做）。用户同意在他的 Harness 上实测供应商切换，前提是先备份 `~/.dsh/profiles/desktop/cordis.patch.yml` 和 `~/.dsh/.credentials.yaml`，测完还原并逐字节核对；headless 回复会花额度，实测前要再问用户。
+
+- 已做：删除根目录旧副本 `app.js`（用户同意）；版本 0.3.44（package.json / package-lock.json）。
+- **测试版（2026-10-11 08:30）**：`npx tsc -p tsconfig.json` 退出 0，`npx electron-builder --win dir --publish never` 退出 0。产物 `dist/win-unpacked/TokenPulse.exe`（ProductVersion 0.3.44.0，FileVersion 0.3.44）。asar 里 132 个运行时文件（build、renderer、knowledge）和当前磁盘逐字节一致，包内 version 0.3.44、main `build/main/index.js`。号池两种轮换、额度号池页、Harness 切换和会话都在包里。exe 和 app.asar 能独占打开。没有留下这次的 electron / node。工作目录在项目根。0.3.43 的安装包文件时间仍是 3:29，没有重打安装包、没有提交、没有发布。用户的安装版（`AppData\Local\Programs\TokenPulse`，PID 37848，2026-10-11 3:38 启动，带 `--updated`）当时在跑，没有关。测这个目录包之前要先从托盘退出安装版，否则单实例会跳回旧程序。
+- 已做（第 1 件）：`src/core/pool-order.ts`（新）：`orderPool`（reset-first = 每周剩余 ÷ 距每周重置小时数，在用的号分数 ≥ 最高分 80% 就继续用；most-left = 两个窗口里少的那个，多 5 个百分点才换；分段：能用 → 没数据 → API Key → 用完的）、`accountQuota`（读 quota-history 最后一条 + quota-checked 时间，按 mtime 缓存，超 30 分钟当没数据，过了重置时间算满）。`agent-types.ts` 的 `PoolStrategy` / `POOL_STRATEGIES`、`ProxyTarget.poolId`；`agent-proxy.ts` 的 `ProxyLog.poolId`；`agent-switch.ts` 的 `poolTargets` 按额度排、`pushLog` 记当前成员和 429（`poolCurrent` / `poolLimited`，429 的账号在查到新额度前最多 10 分钟排后面）、`poolView` 给出 `next` 和成员 `quota`。界面 `renderer/agent-switch.js`（`STRATEGY_OPTIONS`、成员显示剩余和「下一个」）、`agent-switch.css`。测试 `scripts/test-pool-strategy.cjs` 5/5，已进 `npm test`。i18n 英文还没补。
+- 已做（第 2 件，额度详情的号池页）：
+  - 后端 `src/core/pool-insight.ts`（新），在 report-worker 里跑（`report-worker.ts` 的 `workerData.pool`，`snapshot.ts` 的 `loadPool`）。读 route-log：0.3.44 起认 `poolId`；旧记录的官方成员认 `号池id@`，Key 成员认名字前缀「号池名 · 」；透明转发不算。Anthropic 的 input 加回缓存读取。汇总包括：成员分摊、限流次数、用了多久（间隔不到 5 分钟连成一段）、24 小时和 30 天按成员拆、模型 × 等级、最近 60 次。总额度 = 官方成员每周剩余之和 ÷ 100；7 天用量按 quota-history 同一周期内的上涨算，再估还能用几天。时间线 `kind:'pool'` 按天 / 7 天分段，曲线是成员每周已用的平均值。速度用 `speedSeriesOf`。
+  - 主进程：`agent-switch.ts` 的 `poolDef(id)` 只给名字和 id，不带凭据。`index.ts` 的 IPC `pool-insight:summary|speed|timeline`；`preload.ts` 的 `poolInsight`。
+  - 界面：`renderer/pool-quota.js|css`（新），`index.html` 已引入。标签 key 是 `pool:<id>`，拖动排序只记在本机 localStorage `tokenpulse-pool-tabs`。`app.js` 的 `drawAccountTabs` / `saveQuotaTabOrder` / `renderQuota` 加了分支（`pool-mode` 类会藏掉容量排行），布局 key 是 `quota:pool-*` 七个。`model-study.js` 认 `kind:'pool'`：`isPool` / `isPlain` / `poolHelp`，「号池用了」，曲线名「成员平均已用」，取 `study.brand` / `study.source`。
+  - 测试：`scripts/test-pool-insight.cjs` 7/7，已进 `npm test`；`scripts/test-pool-quota-ui.cjs` 8/8，已进 `test:ui`。截图只用了测试数据，放在 scratchpad。回归：`test-model-study-ui`、`test-deepseek-balance-ui`、`test-provider-pool-ui` 都过了。完整 `npm test` / `test:ui` 还没跑。
+- 已做（i18n）：第 1、2 件的英文已补进 `renderer/i18n.js`（`"用满再换"` 后 77 条词条，`本机用了` 模板后 24 条 PATTERNS，标注 `// 0.3.44`）。还顺手修了一个旧 bug：0.3.42 那批写成 `[/re/, (_, a, b) => …]` 的模板，以前 `translate()` 只传 `m`，结果「3 次」被译成 "undefined req"。现在是 `render(m, ...m.slice(1))`（i18n.js 里 `const m = core.match(re)` 那处）。用 node `require('renderer/i18n.js').translate` 抽查过号池页的句子，都对。改完以后没有重跑 UI 测试。
+- **第 3 件 Harness：供应商切换和会话列表已写，已经打进上面的测试版，还没在真机上切。** 只读核对结论如下（来自 Harness 安装包 `%LOCALAPPDATA%\Programs\DeepSeek Harness\resources\app.asar` 里的 README 和 lib 源码，只读）：
+  - 补丁的叠法（`dsh-app-boot` 的 `readProfilePatches`）：先叠 bundle 层，再叠 `~/.dsh/profiles/<profile>/cordis.patch.yml`，再叠 **home 级 `~/.dsh/cordis.patch.yml`**，最后是命令行 overlay。所有层拼成一个列表按顺序应用；按 id 命中的补丁会**整个替换**那一项的 config，不做深合并，所以后面的覆盖前面的。`dsh-hmr` 两个补丁文件都盯着，改了会热加载。home 级文件对 desktop 和 headless 都生效。文件不存在就当没有这一层；空文件或只有注释的文件会让启动失败，要写 `[]`。
+  - **建议的做法（和计划不同，更干净）**：只写 home 级 `~/.dsh/cordis.patch.yml`，**不碰用户的 `profiles/desktop/cordis.patch.yml`**。这个文件目前不存在，由 TokenPulse 创建；切回官方登录时，如果文件内容只有我们写的，就删掉整个文件，否则只去掉我们的标记段。代价是：TokenPulse 接管期间，Harness 界面里改默认模型会被拒绝（config editor 遇到上层覆盖时不写文件）。内容大致是：
+    ```yaml
+    # >>> TokenPulse（自动生成，切回官方登录时删除）
+    - id: llm-pi-ai
+      name: '@deepseek-ai/dsh-llm-pi-ai'
+      config:
+        providers:
+          tokenpulse:            # 路由键只能是小写字母和连字符
+            displayName: TokenPulse · <供应商名>
+            api: openai-completions          # 直连时用供应商自己的：openai-completions / openai-responses / anthropic-messages
+            baseURL: http://127.0.0.1:<端口>/deepseek/v1   # 直连时是供应商地址
+            apiKeyEnv: TOKENPULSE_ROUTE
+            models:
+              - id: <模型名>
+    - id: agent-default-model
+      name: '@deepseek-ai/dsh-agent-default-model'
+      config:
+        provider: tokenpulse
+        model: <模型名>
+    # <<< TokenPulse
+    ```
+    手写的路由必须同时有 `api`、`baseURL` 和非空的 `models`。不要另外 insert 第二个 pi-ai 实例：它会重复注册目录和登录流程，有冲突风险。有个已知限制：如果用户在 Harness 的「模型」页配过自己的 pi-ai 供应商（desktop 补丁里会出现 `- id: llm-pi-ai`），我们这一层会把它们整个盖掉。用户现在没有这一项。建议检测到时在切换提示里说明。
+  - 密钥：`apiKeyEnv` 每次请求都会解析一遍，解析顺序是：启动时的环境变量 > `~/.dsh/.credentials.yaml` 的 `refs:` > 项目 `.env` > `~/.dsh/.env`。`.credentials.yaml` 有 watcher，改了热加载，也允许手工编辑。用户的这个文件现在是 `version: 1` 加 `records:`（三条账号登录记录），**没有 `refs:`**。所以要在文件里加一个 `refs:` 段，写一行 `TOKENPULSE_ROUTE: <key>`；走本地路由时写 `PROXY_MANAGED`。不认识的顶层键、空值、重复键都会让 Harness 拒绝加载，写完必须自查。也可以考虑：本地路由时改写 `~/.dsh/.env`，完全不碰 credentials。但 `.env` 是启动时拍的快照，直连换 key 得重启 Harness。
+  - 用户现有的 desktop 补丁有 4 项：`agent-default-model`（provider/model/reasoningEffort）、`ui-settings-account`、`ui-chat`、`ui-settings`。官方默认是 `deepseek-official` / `deepseek-flash`。profile 的 bundles 是 `dsh-base` 加 `dsh-web-app`。
+  - headless 命令：`DeepSeek Harness.exe` 加环境变量 `ELECTRON_RUN_AS_NODE=1`，跑 `resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js`（`runCli({manageDesktopProfile:true})`）。`--profile headless`、`--session-id`、`--json` 这几个参数还**没核对**，要去看 `@deepseek-ai/dsh/lib/bin.js`。
+  - 读安装包用的辅助脚本（在 scratchpad，不在仓库）：`asar-ls.cjs <正则> [第几个]`，作用是列出或读出 asar 里的文件，正则别用 `\\`；`mask-yaml.cjs <文件>`，只打印 YAML 的键结构，值都打码。**不要读 `.credentials.yaml` 的值。**
+- **这一轮已做（供应商切换）**：按上面的 home 级补丁写，不碰 `profiles/desktop/cordis.patch.yml`。`writeDeepseek` 只替换 `# >>> TokenPulse` 到 `# <<< TokenPulse` 之间，凭据只动 `refs` 里的 `TOKENPULSE_ROUTE`。直连时按供应商自己的协议写（openai-completions / openai-responses / anthropic-messages），不因为协议不同就强迫走本地路由。本地路由和号池写成 `http://127.0.0.1:<端口>/deepseek/v1`，协议固定 openai-completions，密钥写 `PROXY_MANAGED`。号池只收 API Key 供应商。切回官方登录时，补丁文件如果只剩我们写的就删掉，凭据里拿掉这一行。桌面补丁里已有 `id: llm-pi-ai` 时，切换提示会说明这一层会盖住它们。`zstdFrames` 抽到 `src/core/zstd-frames.ts`。
+- **这一轮已做（会话）**：列表和查看能读 `session.v4.jsonl.zstd`（用户消息、助手正文、工具调用；思考块不进正文）。测试目录用 `TOKENPULSE_DSH_HOME`，免得测试去读用户真实的 `~/.dsh`。回复参数按 headless 文档：`--profile headless --json --session-id <id> -`，任务从 stdin 读。界面上 DeepSeek 的会话没有「在终端里继续」和「删除」。新任务还不会从「开一个新对话」里启动（那个入口仍是开终端，DeepSeek 会直接说明不行）。
+- **验证（这一轮）**：`npx tsc -p tsconfig.json` 退出 0。`node scripts/test-deepseek-switch.cjs` 5 项过。`node scripts/test-sessions.cjs` 过（含合成的 zstd 会话）。`node scripts/test-deepseek-harness.cjs` 2/2。`node scripts/test-agent-switch.cjs`、`test-agent-drift.cjs`、`test-agent-config.cjs` 过。没有跑完整 `npm test` / `npm run test:ui`。测试版已打，见上面。没有在用户的 Harness 上切换。
+- **发布后仍没做**：真机切换前先备份 `profiles/desktop/cordis.patch.yml`、`.credentials.yaml`，以及 home 级 `cordis.patch.yml`（如果有），测完逐字节核对。**headless 回复会花额度，实测前要先问用户。** 新任务的 headless 入口还没接到「开一个新对话」。NOTES、README、英文更新说明和完整测试都在发布时做了，见最上面。
+- Git：全部未提交。没有在跑的构建或测试进程。用户的安装版 TokenPulse 如果在跑，不要关。
+
 
 ### 接手速览（2026-10-11，0.3.43 已正式发布）
 
