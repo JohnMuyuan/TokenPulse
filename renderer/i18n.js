@@ -207,6 +207,13 @@
     "额度详情和时间线以前只在一整轮都交给同一个账号时才认这笔用量，一轮里换过账号就当成「本机以外」。现在每一次转发记在当时用的那个账号上，额度上涨能对上本机的请求。": "Quota details and the timeline used to count a Grok pool turn only when the whole turn went to one account; a turn that switched accounts was treated as off this PC. Each forward is now recorded under the account that served it, so a quota rise lines up with requests on this PC.",
     "额度查询改成同一个间隔": "Quota checks now share one interval",
     "Claude、ChatGPT、Grok 的订阅额度，以及 DeepSeek 和第三方 Key 的余额，现在用同一个间隔自动查。默认 1 分钟。在设置 → 通用里拖动滑块，保存后生效。最短 1 分钟，最长 10 分钟。": "Subscription quota for Claude, ChatGPT and Grok, and balances for DeepSeek and third-party keys, are now checked on one interval. The default is 1 minute. Drag the slider under Settings → General and save to apply it. The shortest is 1 minute and the longest is 10 minutes.",
+    // 0.3.45 更新说明
+    "Grok 选哪个型号，就按哪个发": "Grok sends the model you pick",
+    "Grok 里如果给 grok-4.6 配过一张自定义模型，选它时发出去的会是另一张表上的型号。TokenPulse 开着并接管 Grok 时，选 grok-4.6 就按 grok-4.6 转发；另选 4.5 或 4.7，也按你选的那个发。关掉 TokenPulse 后，原来的那张表会恢复。": "If grok-4.6 has a custom model entry, choosing it can send the model named on that entry. While TokenPulse is open and managing Grok, choosing grok-4.6 sends grok-4.6, and choosing 4.5 or 4.7 sends that model. When you quit TokenPulse, the original entry comes back.",
+    "Grok 4.6 和 4.6-build 算同一个型号": "Grok 4.6 and 4.6-build are the same model",
+    "Grok Build 计费时会在型号后面加上 -build。用量明细现在把 grok-4.6 和 grok-4.6-build 看成同一个型号，不再标成不一致。": "Grok Build adds -build to the model name when it bills. Usage details now treat grok-4.6 and grok-4.6-build as the same model.",
+    "用量明细的红点看过就消": "The usage-details dot clears once you look",
+    "侧栏「用量明细」上的红点表示还有没看过的型号不一致。打开这一页之后就清掉，之后只有新出现的才会再标。": "The dot on Usage details in the sidebar means there are model mismatches you have not looked at. It clears when you open the page, and comes back only for mismatches that show up later.",
     // 0.3.44 更新说明
     "号池可以按额度轮换": "Pools can rotate by remaining quota",
     "编辑号池时多了两种轮换：「快重置优先」先用每周额度快要重置、又还剩很多的号；「剩余最多」一直用剩得最多的号，别的号多出 5% 以上才换。按各账号最近一次查到的额度排。": "Editing a pool adds two rotations: Reset soonest first uses accounts whose weekly quota resets soon and still has a lot left; Most left stays on the account with the most left, and switches only when another is ahead by more than 5%. Accounts are ranked by their latest quota check.",

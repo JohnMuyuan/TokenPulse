@@ -24,7 +24,7 @@ port.on("message", ({ data }) => {
     let result: unknown;
     if (data.op === "snapshot") {
       const snapshot = buildSnapshot() as ReturnType<typeof buildSnapshot> & { demo?: boolean };
-      snapshot.requestFlags = { flagged: 0, mismatch: 0, suspect: 0 };
+      snapshot.requestFlags = { flagged: 0, mismatch: 0, suspect: 0, latest: 0 };
       snapshot.demo = true;
       result = snapshot;
     } else if (data.op === "study") result = queryModelStudy(data.query as ModelStudyQuery);

@@ -57,7 +57,9 @@ try {
     normalizeModel("claude-opus-5[1m]") === "claude-opus-5" &&
     normalizeModel("claude-opus-4-8-20260315") === "claude-opus-4-8" &&
     normalizeModel("us.anthropic.claude-opus-4-8-v1:0") === "claude-opus-4-8" &&
-    normalizeModel("grok-4.6-build") === "grok-4.6");
+    normalizeModel("grok-4.6-build") === "grok-4.6" &&
+    normalizeModel("Grok 4.6 Build") === "grok-4.6" &&
+    normalizeModel("grok-4.6 · TokenPulse") === "grok-4.6");
   check("不会把 gpt-5 和 gpt-5.4 当成同一个（不做模糊包含）", normalizeModel("gpt-5") !== normalizeModel("gpt-5.4"));
   const swapped = verifyRequest({ kind: "claude-code", requested: "claude-opus-5[1m]", returned: "claude-sonnet-5", responseId: official(1), requestId: req(1), official: false });
   check("请求 opus、返回 sonnet → 型号不一致", swapped.status === "mismatch" && /claude-opus-5\[1m\].*claude-sonnet-5/.test(swapped.reasons[0]), swapped.reasons[0]);
@@ -117,6 +119,8 @@ try {
   check("新的 identity 写入后恢复核验", byId["resp_" + "3".repeat(50)]?.requested === "gpt-5.6-sol[1m]" && byId["resp_" + "3".repeat(50)]?.status === "match");
   const grokRows = page.rows.filter((row) => row.source === "Grok Build").sort((a, b) => a.at - b.at);
   check("Grok：grok-4.6 → grok-4.6-build 是官方变体，算一致", grokRows[0]?.status === "match" && grokRows[0]?.calls === 3, JSON.stringify(grokRows[0]?.reasons));
+  const buildEcho = verifyRequest({ kind: "grok-build", requested: "grok-4.6", returned: "grok-4.6-build", proxy: { declared: "grok-4.6", returned: "grok-4.6-build", via: "tokenpulse" } });
+  check("Grok：回复开头的 grok-4.6 和结束时的 grok-4.6-build 是同一个型号，不算存疑", buildEcho.status === "match", JSON.stringify(buildEcho));
   check("Grok：请求 grok-4.6、返回 grok-4.5-fast → 型号不一致", grokRows[1]?.status === "mismatch");
   check("Grok 的工作目录从目录名解出来", grokRows[0]?.cwd === "D:\\work\\grok", grokRows[0]?.cwd);
   const codexRow = page.rows.find((row) => row.source === "Codex CLI");

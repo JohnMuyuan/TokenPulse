@@ -61,7 +61,7 @@ if (workerData.deepseek) {
     page: 0,
     pageSize: 1,
   });
-  snapshot.requestFlags = { flagged: week.counts.mismatch + week.counts.suspect, mismatch: week.counts.mismatch, suspect: week.counts.suspect };
+  snapshot.requestFlags = { flagged: week.counts.mismatch + week.counts.suspect, mismatch: week.counts.mismatch, suspect: week.counts.suspect, latest: week.latestFlagAt || 0 };
   parentPort!.postMessage(snapshot);
   if (workerData.scan) {
     try {

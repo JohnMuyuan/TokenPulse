@@ -915,7 +915,12 @@ export async function resumeAgentProxy() {
     const repairNote = configNotice;
     for (const app of AGENT_APPS) {
       const store = load(); if (!store.proxy.apps[app]) continue;
-      if (store.restore[app] && proxyIsOurs(app)) { await ensureProxy(); continue; }
+      if (store.restore[app] && proxyIsOurs(app)) {
+        await ensureProxy();
+        // Grok 的同名模型表会把号池填的型号换成另一个。每次启动按当前供应商再写一遍，退出时仍还原接管前的配置。
+        if (app === "grok") applyProxy(app);
+        continue;
+      }
       if (!stillOwned(store, app)) {
         configTransaction(() => { const current = load(); current.proxy.apps[app] = false; save(current); });
         configNotice = '检测到外部配置变更，未自动接管 ' + AGENT_LABEL[app]; continue;
@@ -1608,9 +1613,15 @@ function writeGrok(provider: Provider, baseUrl: string, apiKey: string, _proxy: 
     if (models && readKey(models.lines, "default") === GROK_TABLE) upsertKey(models.lines, "default", null);
   } else {
     setTableKey(blocks, "models", "default", quote(GROK_TABLE));
-    for (const [key, value] of Object.entries({ name: 'TokenPulse · ' + provider.name, model: provider.endpoint?.model || 'grok', base_url: baseUrl, api_key: apiKey, api_backend: 'responses', ...(provider.contextWindow ? { context_window: provider.contextWindow } : {}) })) {
+    const model = provider.endpoint?.model || "grok";
+    for (const [key, value] of Object.entries({ name: 'TokenPulse · ' + provider.name, model, base_url: baseUrl, api_key: apiKey, api_backend: 'responses', ...(provider.contextWindow ? { context_window: provider.contextWindow } : {}) })) {
       setTableKey(blocks, 'model.' + GROK_TABLE, key, quote(value));
     }
+    // 同名的自定义表如果把这个 id 换成了另一个型号，Grok 选它时发出去的就是那一个。接管期间让这个 id 表示它自己，退出时还原。
+    const own = "model." + tableName(model);
+    const foreign = blocks.find((block) => block.header && headerName(block.header) === own);
+    const declared = foreign ? (readKey(foreign.lines, "model") || "").trim() : "";
+    if (foreign && declared && declared !== model) setTableKey(blocks, own, "model", quote(model));
   }
   dropEmptyTable(blocks, 'model.' + GROK_TABLE);
   writeText(file, stringifyToml(blocks));

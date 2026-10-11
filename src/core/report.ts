@@ -63,7 +63,7 @@ export type Snapshot = {
   /** CC Switch 导入的状态（设置 → 数据）。 */
   ccSwitch: CcSwitchStatus;
   /** 最近 7 天型号不一致 / 响应存疑的次数（侧栏红点）。 */
-  requestFlags?: { flagged: number; mismatch: number; suspect: number };
+  requestFlags?: { flagged: number; mismatch: number; suspect: number; /** 这 7 天里最近一条不一致或存疑的时间。侧栏红点看过之后，比这更早的不再标。 */ latest?: number };
 };
 
 function toTotals(bucket: UsageBucket): Totals {

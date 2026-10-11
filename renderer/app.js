@@ -2076,12 +2076,24 @@ function drawRequests() {
   $('request-pagination').textContent = `第 ${page.page + 1} / ${page.pages} 页 · 共 ${number(page.total)} 次请求`;
   $('request-prev').disabled = page.page === 0; $('request-next').disabled = page.page >= page.pages - 1;
 }
-/** 侧栏上的红点：最近 7 天型号不一致 / 响应存疑的次数（快照里带着，不用进页面才知道）。 */
+/** 看过用量明细之后，比这更早的不一致不再在侧栏标红点。 */
+const REQUEST_ALERT_SEEN = 'tokenpulse-request-alert-seen';
+function requestAlertSeen() {
+  try { const n = Number(localStorage.getItem(REQUEST_ALERT_SEEN)); return Number.isFinite(n) ? n : 0; } catch { return 0; }
+}
+/** 侧栏上的红点：最近 7 天里、上次看过用量明细之后新出现的型号不一致 / 响应存疑。 */
 function renderRequestAlert(snapshot) {
-  const n = snapshot.requestFlags?.flagged || 0;
-  $('nav-request-alert').hidden = !n;
-  $('nav-request-alert').textContent = n > 99 ? '99+' : String(n);
-  $('nav-request-alert').title = n ? `最近 7 天有 ${n} 次请求型号不一致或响应存疑` : '';
+  const flags = snapshot.requestFlags || {};
+  const n = flags.flagged || 0;
+  const latest = typeof flags.latest === 'number' ? flags.latest : 0;
+  const badge = $('nav-request-alert');
+  if (state.page === 'usage' && latest > requestAlertSeen()) {
+    try { localStorage.setItem(REQUEST_ALERT_SEEN, String(latest)); } catch { /* 记不住就下次再标 */ }
+  }
+  const fresh = n > 0 && (flags.latest == null || latest > requestAlertSeen());
+  badge.hidden = !fresh;
+  badge.textContent = n > 99 ? '99+' : String(n || '');
+  badge.title = fresh ? `最近 7 天有 ${n} 次请求型号不一致或响应存疑` : '';
 }
 function requeryRequests(resetPage = true) {
   detailResultsPending = detailPointerMotion && !reducedMotion.matches;

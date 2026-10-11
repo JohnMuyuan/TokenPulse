@@ -57,7 +57,9 @@ export function normalizeModel(model: string) {
   let out = model.trim().toLowerCase();
   // 规则在 knowledge/models.json 的 aliases 里，能在线更新
   for (const rule of aliasRules()) out = out.replace(rule.test, rule.replace);
-  return out;
+  // 空格、以及缀在型号后面的路由名，先收成同一种写法，再认 Grok Build 的 -build
+  out = out.replace(/\s*·\s*tokenpulse$/i, "").replace(/\s+/g, "-");
+  return out.replace(/^(grok-[\d.]+)-build$/, "$1");
 }
 
 const isClaude = (model?: string) => Boolean(model && /claude/i.test(model));
@@ -103,8 +105,9 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
     mismatch = true;
     problems.push(`请求的是 ${requested}，上游返回的是 ${returned}`);
   }
-  // 上游在一次回复里前后报了两个型号（0.3.41）：开头报的多半是照着请求回显的，结束时报的才是实际用的
-  if (proxy?.declared) problems.push(`上游回复开头报的是 ${proxy.declared}，结束时报的是 ${proxy.returned}`);
+  // 上游在一次回复里前后报了两个型号（0.3.41）：开头报的多半是照着请求回显的，结束时报的才是实际用的。
+  // 只是同一种写法（grok-4.6 和 grok-4.6-build）时，开头和结束对得上，不算问题。
+  if (proxy?.declared && normalizeModel(proxy.declared) !== normalizeModel(proxy.returned)) problems.push(`上游回复开头报的是 ${proxy.declared}，结束时报的是 ${proxy.returned}`);
   // 会话文件和代理记录都有返回型号、却对不上：CLI 记的是它以为的，代理看到的才是上游真回的
   if (!mismatch && proxy && input.returned && normalizeModel(proxy.returned) !== normalizeModel(input.returned)) {
     mismatch = true;

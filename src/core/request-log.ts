@@ -316,6 +316,8 @@ export type RequestPage = {
   page: number;
   pages: number;
   rows: RequestRow[];
+  /** 当前时间范围内最近一条型号不一致或响应存疑的时间。没有时是 0。 */
+  latestFlagAt: number;
   /** 当前时间 / 工具 / 搜索条件下各核验结论的次数（不受「核验」筛选影响，给顶部卡片用）。 */
   counts: Record<"all" | VerifyStatus, number>;
   /** 同上条件下 token 和花费的合计。 */
@@ -623,6 +625,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const q = query.search.trim().toLowerCase();
   const seen = new Set<string>();
   const counts: RequestPage["counts"] = { all: 0, match: 0, mismatch: 0, suspect: 0, unverified: 0 };
+  let latestFlagAt = 0;
   let tokens = 0;
   let costUsd = 0;
   const matched: RequestRow[] = [];
@@ -682,6 +685,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.account && accountId !== query.account) return;
       counts.all += 1;
       counts[row.status] += 1;
+      if ((row.status === "mismatch" || row.status === "suspect") && row.at > latestFlagAt) latestFlagAt = row.at;
       tokens += row.tokens;
       costUsd += row.costUsd;
       if (query.status !== "all" && row.status !== query.status) return;
@@ -706,6 +710,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
     pages,
     rows: query.all ? matched : matched.slice(page * pageSize, (page + 1) * pageSize),
     counts,
+    latestFlagAt,
     tokens,
     costUsd,
     firstAt,
