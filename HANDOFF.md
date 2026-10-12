@@ -1,6 +1,14 @@
-# Current handoff · 0.3.45 已正式发布（2026-10-11）
+# Current handoff · 0.3.46 已正式发布（2026-10-12）
 
 ## 新对话先看这里
+
+### 0.3.46 已正式发布（2026-10-12）
+
+- 正式发布是 **0.3.46**。提交 `2cb3425`（0.3.46：刷新后说明额度结果），标签 `v0.3.46`，已推送 `origin/main`。GitHub Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.46 ，标题 `TokenPulse 0.3.46`，非草稿、非预发布，`releases/latest` 指向 `v0.3.46`，target 是完整 SHA `2cb3425b928b5057bb92cc1a50cabc184f7dc25c`。
+- 这一版：点「刷新数据」或托盘刷新后，右上角弹出结果。问到了是绿色，写出哪一家、哪个账号、额度变了多少；没变也会说已刷新。这次没问到最新额度是黄色。登录失效才红色，并请重新登录。定时自动查询不弹。
+- 附件 4 个，大小和 SHA256 与本地一致，GitHub 资产摘要也一致：`TokenPulse-0.3.46-Setup.exe` 112,561,573（`e6ad433795430f4454f84784848ea0f372b46ce84922606860e4807a788ac72d`）、`.blockmap` 119,743（`ca42f66900cb47a3f5daba73af32f12e92db694b37f2c0e540026fc884a7594b`）、`TokenPulse-0.3.46-Portable.exe` 112,304,433（`5557d6a63e2d6142abf9c9c3b94dc7cb04b71a62ae03741b61e7ed9c55f917c3`）、`latest.yml` 352（`12c2fd50284efaf4e79ca384f42c366e9075691497ca96850689c454078b40fc`）。
+- 发布前：`npm test` 退出 0。`npm run test:ui` 退出 0。`npm run dist` 退出 0。包内 132 个运行时文件和源码逐字节一致，版本 0.3.46，exe ProductVersion 0.3.46.0。
+- 收尾：四个附件和 `dist/win-unpacked` 的 exe / app.asar 能独占打开。没有留下这次的 electron、node 或打包进程。工作目录在项目根。安装版（`AppData\Local\Programs\TokenPulse`）当时在跑，没有关。
 
 ### 0.3.45 已正式发布（2026-10-11）
 
