@@ -17,16 +17,21 @@ export function curlBin() {
 }
 
 export async function curlJson(url: string, headers: string[], timeout = 15000) {
-  const args = ["-sS", "-m", "12", "--http1.1", ...(await curlProxyArgs(url)), url];
+  const args = ["-sS", "-m", "12", "--http1.1", ...(await curlProxyArgs(url)), "-w", "\n%{http_code}", url];
   for (const header of headers) args.push("-H", header);
   const { stdout } = await execFileAsync(curlBin(), args, {
     timeout,
     windowsHide: true,
     maxBuffer: 2 * 1024 * 1024,
   });
-  const text = stdout.trim();
+  const cut = stdout.lastIndexOf("\n");
+  const status = Number(cut >= 0 ? stdout.slice(cut + 1).trim() : "");
+  const text = (cut >= 0 ? stdout.slice(0, cut) : stdout).trim();
+  if (status === 401 || status === 403) throw new Error("auth");
   if (!text.startsWith("{") && !text.startsWith("[")) throw new Error("not json");
-  return JSON.parse(text) as Record<string, unknown>;
+  const json = JSON.parse(text) as Record<string, unknown>;
+  if (Number.isFinite(status) && status >= 400) throw new Error(`http ${status}`);
+  return json;
 }
 
 /**

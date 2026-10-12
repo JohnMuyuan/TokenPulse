@@ -12,7 +12,7 @@ import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
 import { dataDir } from "../core/paths";
-import { fetchOfficialQuota } from "../core/quota";
+import { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, type QuotaGlance } from "../core/quota";
 import type { Snapshot } from "../core/report";
 import { updateCalibration } from "../core/quota-calibration";
 import { updateMark } from "../core/quota-offmachine";
@@ -597,30 +597,69 @@ function getInitialSnapshot(): Promise<Snapshot> {
   return initialSnapshot;
 }
 
-function backgroundRefresh(withQuota: boolean) {
+function backgroundRefresh(withQuota: boolean, notifyQuota = false) {
   lastScanAt = Date.now();
-  void refresh(withQuota).catch((error) => {
+  void refresh(withQuota, notifyQuota).catch((error) => {
     console.error("[TokenPulse] 刷新失败", error);
-    win?.webContents.send("refresh-error", "刷新失败，请重试并检查数据目录是否可写。");
+    win?.webContents.send("refresh-error", tr("刷新失败，请重试并检查数据目录是否可写。"));
   });
+}
+
+let lastQuotaNotice: string | undefined;
+let lastQuotaNoticeKind: "success" | "warning" | "error" = "success";
+/** 手动刷新撞上正在跑的一轮时，那一轮结束也要把额度没查到说出来。 */
+let quotaNoticePending = false;
+/** 同一次手动刷新只说一遍，避免正在跑的一轮和排队的一轮各弹一次。 */
+let quotaNoticeSent: string | undefined;
+
+function emitQuotaNotice(notice: string | undefined, kind: "success" | "warning" | "error") {
+  lastQuotaNotice = notice;
+  lastQuotaNoticeKind = kind;
+  if (!notice || quotaNoticeSent === notice) return;
+  quotaNoticeSent = notice;
+  const channel = kind === "error" ? "refresh-error" : kind === "warning" ? "refresh-warn" : "refresh-ok";
+  win?.webContents.send(channel, tr(notice));
+}
+
+const QUOTA_KIND_LABEL: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
+
+function quotaGlances(snapshot: Snapshot | null): QuotaGlance[] {
+  return (snapshot?.accounts ?? []).map((account) => ({
+    id: account.accountId || account.key || account.kind,
+    kind: account.kind,
+    who: account.displayName || account.accountLabel || QUOTA_KIND_LABEL[account.kind] || account.kind,
+    five: account.five?.used,
+    week: account.week?.used,
+  }));
 }
 
 /**
  * 跑一轮：扫会话文件 +（需要时）问官方额度，然后把新快照推给窗口。
  * `withQuota` 为 false 时只扫本地，用于那个 1 分钟的快节奏定时器。
+ * 手动点刷新时 `notifyQuota` 为 true：额度没查到要说出来，不能当成刷新成功。
  */
-async function runRefresh(withQuota: boolean): Promise<Snapshot> {
+async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
   // 先展示已有统计，再更新本地文件；网络慢或断网时仍然可以使用界面。
   await getInitialSnapshot();
   let snapshot = publishSnapshot(await loadSnapshot(true));
   notifyRequests(snapshot);
   if (withQuota) {
+    const tell = notifyQuota || quotaNoticePending;
+    quotaNoticePending = false;
+    const before = quotaGlances(lastSnapshot);
     try {
       // 设了出口 IP 白名单的那家，出口不对就不去问官方（见 egress-monitor.ts 的 gateQuota）
-      await fetchOfficialQuota(true, (kind) => exitMonitor.gateQuota(kind));
+      const result = await fetchOfficialQuota(true, (kind) => exitMonitor.gateQuota(kind));
       snapshot = publishSnapshot(await loadSnapshot(false));
+      const issues = result.issues ?? [];
+      lastQuotaNotice = issues.length ? quotaIssueNotice(issues) : quotaRefreshSummary(before, quotaGlances(snapshot));
+      lastQuotaNoticeKind = issues.length ? quotaIssueTone(issues) : "success";
+      if (tell) emitQuotaNotice(lastQuotaNotice, lastQuotaNoticeKind);
     } catch (error) {
       console.error("[TokenPulse] 额度接口失败", error);
+      lastQuotaNotice = "官方额度没查到，请稍后重试。";
+      lastQuotaNoticeKind = "warning";
+      if (tell) emitQuotaNotice(lastQuotaNotice, "warning");
     }
     maybeNotify(snapshot);
   }
@@ -635,20 +674,32 @@ let queuedQuota: Promise<Snapshot> | null = null;
  * 但正在跑的那轮只扫本地、而这次要问额度时不能共用：手动「刷新数据」
  * 正好撞上 1 分钟的本地扫描，就会拿回一份没问过额度的快照。这种情况排一轮在后面。
  */
-function refresh(withQuota: boolean): Promise<Snapshot> {
+function refresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
+  if (notifyQuota) {
+    quotaNoticePending = true;
+    if (!refreshing) quotaNoticeSent = undefined;
+  }
   if (refreshing) {
-    if (!withQuota || refreshingQuota) return refreshing;
+    if (!withQuota || refreshingQuota) {
+      if (notifyQuota) {
+        return refreshing.then((snapshot) => {
+          if (quotaNoticePending && lastQuotaNotice) emitQuotaNotice(lastQuotaNotice, lastQuotaNoticeKind);
+          return snapshot;
+        });
+      }
+      return refreshing;
+    }
     queuedQuota ??= refreshing
       .catch(() => undefined)
       .then(() => {
         queuedQuota = null;
-        return refresh(true);
+        return refresh(true, notifyQuota);
       });
     return queuedQuota;
   }
   refreshingQuota = withQuota;
   // finally 里清状态，排在后面的那轮挂在它之后，看到的一定是已经空出来的 refreshing。
-  refreshing = runRefresh(withQuota).finally(() => {
+  refreshing = runRefresh(withQuota, notifyQuota).finally(() => {
     refreshing = null;
     refreshingQuota = false;
   });
@@ -915,7 +966,7 @@ if (!app.requestSingleInstanceLock()) {
       return loadPool({ op: "timeline", pool: poolOf(query.accountId), cycles: { five: cycle(query.cycles?.five), week: cycle(query.cycles?.week) } });
     });
     ipcMain.handle("snapshot", () => getInitialSnapshot());
-    ipcMain.handle("refresh", async () => refresh(true));
+    ipcMain.handle("refresh", async () => refresh(true, true));
     ipcMain.handle("prefs:read", () => readPrefs());
     ipcMain.handle("prefs:write", (_event, patch: Partial<Prefs>) => applyPrefs(patch));
     ipcMain.handle("accounts:list", () => listOfficialOAuthStatus());
@@ -978,7 +1029,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.on("tray-panel:size", (_event, height: unknown) => resizeTrayPanel(Number(height)));
     ipcMain.on("tray-panel:action", (_event, action: unknown) => {
       if (action === "open") { hideTrayPanel(); revealWindow(); }
-      else if (action === "refresh") backgroundRefresh(true);
+      else if (action === "refresh") backgroundRefresh(true, true);
       else if (action === "quit") { quitting = true; app.quit(); }
       else if (action === "close") hideTrayPanel();
     });

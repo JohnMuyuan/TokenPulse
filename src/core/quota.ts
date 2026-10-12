@@ -48,6 +48,134 @@ export type AccountKind = OfficialAccountKind;
  */
 export type OfficialQuotaMap = Partial<Record<AccountKind, OfficialQuota>> & { all?: OfficialQuota[] };
 
+/** 这一轮某个官方账号的额度没查到。刷新按钮要说出来，不能当成成功。 */
+export type QuotaIssue = {
+  kind: AccountKind;
+  accountId?: string;
+  who: string;
+  reason: "expired" | "auth" | "blocked" | "empty" | "error";
+  detail?: string;
+};
+
+export type QuotaFetchResult = OfficialQuotaMap & { issues: QuotaIssue[] };
+
+const KIND_LABEL: Record<AccountKind, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
+
+function whoOf(kind: AccountKind, accountId?: string): string {
+  if (accountId) {
+    const account = visibleAccounts(kind).find((item) => item.id === accountId);
+    if (account) return account.alias || account.email || account.label || KIND_LABEL[kind];
+  }
+  return KIND_LABEL[kind];
+}
+
+/** 提示里写清哪家、哪个账号，例如「Claude 的 7ipnyt@gmail.com」。 */
+export function quotaAccountTitle(kind: AccountKind, who?: string): string {
+  const brand = KIND_LABEL[kind] || kind;
+  const name = (who || "").trim();
+  if (!name || name === brand) return brand;
+  if (name.startsWith(`${brand} `) || name.startsWith(`${brand}的`)) return name;
+  return `${brand} 的 ${name}`;
+}
+
+function isAuthFailure(raw?: string): boolean {
+  const text = (raw || "").toLowerCase();
+  return (
+    text === "auth" ||
+    text.includes("401") ||
+    text.includes("403") ||
+    text.includes("unauthor") ||
+    text.includes("authentication") ||
+    text.includes("invalid_token") ||
+    text.includes("invalid grant") ||
+    text.includes("token_expired")
+  );
+}
+
+function quotaAuthFailed(json: Record<string, unknown> | null | undefined): boolean {
+  if (!json || typeof json !== "object") return false;
+  const nested = json.error && typeof json.error === "object" ? (json.error as Record<string, unknown>) : null;
+  const bits = [json.type, json.error, json.message, json.code, nested?.type, nested?.code, nested?.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  return /unauthor|forbidden|authentication|invalid.?token|invalid.?api.?key|invalid.?grant|token.?expired|not.?logged|unauthenticated/.test(bits);
+}
+
+function isNetworkFailure(raw?: string): boolean {
+  const text = (raw || "").toLowerCase();
+  return (
+    text.includes("timed out") ||
+    text.includes("timeout") ||
+    text.includes("enotfound") ||
+    text.includes("econn") ||
+    text.includes("exit") ||
+    text.includes("curl")
+  );
+}
+
+/** 给刷新按钮 / 托盘刷新用的整句。没有问题就没有这句话。 */
+export function quotaIssueNotice(issues: QuotaIssue[] | undefined): string | undefined {
+  if (!issues?.length) return undefined;
+  return issues
+    .map((issue) => {
+      const who = quotaAccountTitle(issue.kind, issue.who);
+      if (issue.reason === "expired" || issue.reason === "auth" || isAuthFailure(issue.detail)) {
+        return `${who} 登录已失效，请重新登录。`;
+      }
+      if (issue.reason === "blocked") return `${who} 的额度没查：出口 IP 不在允许列表。`;
+      if (isNetworkFailure(issue.detail)) return `${who} 的官方额度没查到，没连上官方。`;
+      return `${who} 这次没问到最新额度，还是显示上次的数字。`;
+    })
+    .join("");
+}
+
+/** 登录失效用红色；问不到数字、没连上、出口被拦用黄色，不是额度没变。 */
+export function quotaIssueTone(issues: QuotaIssue[] | undefined): "warning" | "error" {
+  if (!issues?.length) return "warning";
+  if (issues.some((issue) => issue.reason === "expired" || issue.reason === "auth" || isAuthFailure(issue.detail))) return "error";
+  return "warning";
+}
+
+/** 刷新前后各账号 5 小时 / 周额度的已用百分比，用来写「变了多少」。 */
+export type QuotaGlance = { id: string; who: string; kind?: AccountKind; five?: number; week?: number };
+
+const CHANGE_EPS = 0.05;
+
+function fmtPct(n: number) {
+  return `${n.toFixed(1)}%`;
+}
+
+function moved(from: number | undefined, to: number | undefined) {
+  if (to == null || !Number.isFinite(to)) return false;
+  if (from == null || !Number.isFinite(from)) return true;
+  return Math.abs(to - from) >= CHANGE_EPS;
+}
+
+function windowLine(who: string, label: string, from: number | undefined, to: number) {
+  if (from == null || !Number.isFinite(from)) return `${who} ${label}已用 ${fmtPct(to)}。`;
+  const delta = to - from;
+  const sign = delta > 0 ? "+" : "";
+  return `${who} ${label} ${fmtPct(from)} → ${fmtPct(to)}（${sign}${delta.toFixed(1)}%）。`;
+}
+
+/** 手动刷新成功时右上角那句：已刷新，以及哪一项额度变了、变了多少。 */
+export function quotaRefreshSummary(before: QuotaGlance[], after: QuotaGlance[]): string {
+  const prev = new Map(before.map((item) => [item.id, item]));
+  const lines: string[] = [];
+  for (const item of after) {
+    const old = prev.get(item.id);
+    const who = item.kind ? quotaAccountTitle(item.kind, item.who) : item.who || "账号";
+    if (moved(old?.five, item.five) && item.five != null) lines.push(windowLine(who, "5 小时", old?.five, item.five));
+    if (moved(old?.week, item.week) && item.week != null) lines.push(windowLine(who, "周额度", old?.week, item.week));
+  }
+  if (!after.length) return "已刷新。本机用量已更新。";
+  if (!lines.length) return "已刷新。官方额度没有变化。";
+  const shown = lines.slice(0, 4);
+  const extra = lines.length - shown.length;
+  return `已刷新。${shown.join("")}${extra > 0 ? `另外 ${extra} 项也变了。` : ""}`;
+}
+
 let cache: { at: number; value: OfficialQuotaMap } | null = null;
 const CACHE_MS = 120_000;
 
@@ -213,6 +341,7 @@ async function grokCreditsConfig(key: string) {
       "x-xai-token-auth: xai-grok-cli",
       "User-Agent: xai-grok-cli",
     ]);
+    if (quotaAuthFailed(json)) throw new Error("auth");
     const config = json.config && typeof json.config === "object" ? (json.config as Record<string, unknown>) : null;
     if (config) {
       const pct = config.creditUsagePercent;
@@ -291,6 +420,7 @@ async function chatgptQuota(active: Target): Promise<OfficialQuota | undefined> 
       () => null as Record<string, unknown> | null,
     ),
   ]);
+  if (quotaAuthFailed(usage)) throw new Error("auth");
   const limit = usage.rate_limit as Record<string, unknown> | undefined;
   const primary = limit?.primary_window as Record<string, unknown> | undefined;
   const secondary = limit?.secondary_window as Record<string, unknown> | undefined;
@@ -326,6 +456,7 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
     "anthropic-beta: oauth-2025-04-20",
     "anthropic-version: 2023-06-01",
   ]);
+  if (quotaAuthFailed(json)) throw new Error("auth");
   const five = windowPct(json.five_hour);
   const week = windowPct(json.seven_day);
   if (!five && !week) return undefined;
@@ -349,26 +480,53 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
  */
 export type QuotaGate = (kind: AccountKind) => Promise<boolean>;
 
-export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promise<OfficialQuotaMap> {
-  if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache.value;
+export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promise<QuotaFetchResult> {
+  if (!force && cache && Date.now() - cache.at < CACHE_MS) return { ...cache.value, issues: [] };
   const kinds: AccountKind[] = ["claude", "chatgpt", "grok"];
+  const issues: QuotaIssue[] = [];
   // 检查本身出错也按「不放行」处理：宁可这一轮没有额度，也不从没确认过的出口去问官方
   const passed = gate ? await Promise.all(kinds.map((kind) => gate(kind).catch(() => false))) : kinds.map(() => true);
   const allowed = kinds.filter((_, i) => passed[i]);
+  for (let i = 0; i < kinds.length; i++) {
+    if (passed[i] || !visibleAccounts(kinds[i]).length) continue;
+    issues.push({ kind: kinds[i], who: KIND_LABEL[kinds[i]], reason: "blocked" });
+  }
   // TokenPulse 自己登录的账号需要由本软件负责续期，额度查询仍只使用各账号自己的凭据。
   await renewStoredCredentials(Date.now(), undefined, allowed).catch(() => 0);
   const value: OfficialQuotaMap = {};
   const query = { claude: claudeQuota, chatgpt: chatgptQuota, grok: grokQuota };
-  // 所有账号一起查；结果按「家 → 设置里的顺序」排好，第一个也放进 value[家] 给按家取的地方用
-  const jobs = allowed.flatMap((kind) =>
-    targetsOf(kind).map((target) =>
-      query[kind](target).then(
-        (quota) => (quota ? { ...quota, kind } : undefined),
-        // 额度接口不是每次都能通（token 过期、网络不好）：这个账号这轮就没有，别影响别的。
-        () => undefined,
-      ),
-    ),
-  );
+  const jobs: Promise<OfficialQuota | undefined>[] = [];
+  for (const kind of allowed) {
+    const targets = targetsOf(kind);
+    const queryable = new Set(targets.map((target) => target.accountId));
+    for (const account of visibleAccounts(kind)) {
+      if (queryable.has(account.id)) continue;
+      issues.push({ kind, accountId: account.id, who: whoOf(kind, account.id), reason: "expired" });
+    }
+    for (const target of targets) {
+      const who = whoOf(kind, target.accountId);
+      jobs.push(
+        query[kind](target).then(
+          (quota) => {
+            if (quota) return { ...quota, kind };
+            issues.push({ kind, accountId: target.accountId, who, reason: "empty" });
+            return undefined;
+          },
+          (error: unknown) => {
+            const detail = error instanceof Error ? error.message : String(error);
+            issues.push({
+              kind,
+              accountId: target.accountId,
+              who,
+              reason: isAuthFailure(detail) ? "auth" : "error",
+              detail: detail.slice(0, 80),
+            });
+            return undefined;
+          },
+        ),
+      );
+    }
+  }
   const all: OfficialQuota[] = [];
   for (const quota of await Promise.all(jobs)) if (quota) all.push(quota);
   value.all = all;
@@ -379,5 +537,5 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promi
   } catch {
     // 写不进去只是少一个采样点
   }
-  return value;
+  return { ...value, issues };
 }

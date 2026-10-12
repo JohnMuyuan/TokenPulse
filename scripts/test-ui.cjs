@@ -214,6 +214,8 @@ app.on('web-contents-created', (_, contents) => {
       assert.ok(finishQuota, 'Quota request started');
       finishQuota();
       await until("!document.getElementById('refresh').disabled");
+      await until("[...document.querySelectorAll('.tp-toast .tp-toast-message')].some(n => /已刷新/.test(n.textContent))");
+      assert.match(await evaluate("[...document.querySelectorAll('.tp-toast.success .tp-toast-message')].map(n => n.textContent).join('\\n')"), /已刷新/);
       assert.equal(await evaluate("window.tokenpulse.snapshot().then(s => Boolean(s.scannedAt))"), true);
       assert.ok(maxGap < 1000, `Main process blocked for ${maxGap} ms`);
       console.log(`PASS refresh completes; maximum main event-loop gap ${maxGap} ms`);
@@ -871,6 +873,23 @@ app.on('web-contents-created', (_, contents) => {
       await until("document.querySelectorAll('#egress-events .egress-event').length === 0");
       await evaluate("navigate('overview')");
       console.log('PASS exit monitor navigation, three providers, drafts, allowlists, alerts, deduplication, validation and safe pause');
+
+      require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = async () => ({ issues: [{ kind: 'claude', who: 'Claude', reason: 'expired' }] });
+      await evaluate("document.querySelectorAll('.tp-toast').forEach(node => node.remove()); document.getElementById('refresh').click()");
+      await until("!document.getElementById('refresh').disabled && document.querySelector('.tp-toast.error')");
+      assert.match(await evaluate("document.querySelector('.tp-toast.error .tp-toast-message').textContent"), /重新登录|登录已失效/);
+      await evaluate("document.querySelector('.tp-toast.error .tp-toast-close').click()");
+      await until("!document.querySelector('.tp-toast.error')");
+      console.log('PASS refresh shows an error when official quota could not be fetched');
+
+      require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = async () => ({ issues: [{ kind: 'claude', who: 'Claude', reason: 'empty' }] });
+      await evaluate("document.querySelectorAll('.tp-toast').forEach(node => node.remove()); document.getElementById('refresh').click()");
+      await until("!document.getElementById('refresh').disabled && document.querySelector('.tp-toast.warning')");
+      assert.match(await evaluate("document.querySelector('.tp-toast.warning .tp-toast-message').textContent"), /这次没问到最新额度/);
+      assert.equal(await evaluate("document.querySelector('.tp-toast.error')"), null, '问不到数字不是红色错误');
+      await evaluate("document.querySelector('.tp-toast.warning .tp-toast-close').click()");
+      await until("!document.querySelector('.tp-toast.warning')");
+      console.log('PASS unread quota is a warning, not a red error');
 
       // UI 回归仅使用 DOM、布局与计算样式断言，不生成或读取截图。
       ipcMain.removeHandler('refresh');

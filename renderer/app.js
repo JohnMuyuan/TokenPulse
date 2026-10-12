@@ -543,7 +543,7 @@ function showStatus(message, error = false) {
  * 返回 { close }。
  */
 const toastKeys = new Map();
-function toast(message, { kind = 'success', key = '', actions = [], cls = '' } = {}) {
+function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms } = {}) {
   const stack = document.getElementById('toast-stack') || (() => { const node = el('div', { id: 'toast-stack', 'aria-live': 'polite' }); document.body.append(node); return node; })();
   const loud = kind === 'error' || kind === 'warning';
   const old = key ? toastKeys.get(key) : null;
@@ -560,7 +560,7 @@ function toast(message, { kind = 'success', key = '', actions = [], cls = '' } =
     })) : null,
   ]);
   const sticky = kind === 'pending' || actions.length > 0;
-  let left = kind === 'error' ? 6500 : kind === 'warning' ? 5000 : 3600, since = Date.now(), timer = sticky ? 0 : setTimeout(() => close(), left);
+  let left = ms ?? (kind === 'error' ? 6500 : kind === 'warning' ? 5000 : 3600), since = Date.now(), timer = sticky ? 0 : setTimeout(() => close(), left);
   function dispose() { clearTimeout(timer); node.remove(); if (key && toastKeys.get(key)?.node === node) toastKeys.delete(key); }
   function close() {
     clearTimeout(timer);
@@ -3456,5 +3456,7 @@ api.onOpenPage?.(target => {
   navigate(target?.page || 'overview', { force: true });
 });
 api.onError(message => { bootFailed(); showStatus(message, true); });
+api.onRefreshOk?.(message => { toast(message, { kind: 'success', key: 'refresh-quota', ms: 5600 }); });
+api.onRefreshWarn?.(message => { toast(message, { kind: 'warning', key: 'refresh-quota', ms: 5600 }); });
 api.snapshot().then(receive).catch(() => { bootFailed(); showStatus('本地数据读取失败，请点击刷新重试。', true); });
 setInterval(() => { if (current && !document.hidden) render({ ...current, now: Date.now() }); }, 30000);

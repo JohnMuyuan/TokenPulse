@@ -236,6 +236,18 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     ipcRenderer.on("refresh-error", listener);
     return () => ipcRenderer.off("refresh-error", listener);
   },
+  /** 手动刷新成功：本机用量已更新，并说明官方额度变了什么。 */
+  onRefreshOk: (handler: (message: string) => void) => {
+    const listener = (_event: unknown, message: string) => handler(message);
+    ipcRenderer.on("refresh-ok", listener);
+    return () => ipcRenderer.off("refresh-ok", listener);
+  },
+  /** 额度这次没问到（还不是登录失效）：黄色提醒，不是红色。 */
+  onRefreshWarn: (handler: (message: string) => void) => {
+    const listener = (_event: unknown, message: string) => handler(message);
+    ipcRenderer.on("refresh-warn", listener);
+    return () => ipcRenderer.off("refresh-warn", listener);
+  },
   /** 主进程每轮刷新完会主动推一份，界面不用自己轮询。 */
   onSnapshot: (handler: (snapshot: unknown) => void) => {
     // 演示期间真实快照不交给界面（演示结束后界面会自己重读一次）
