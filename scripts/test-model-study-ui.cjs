@@ -321,7 +321,9 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   // 说明平时隐藏，聚焦感叹号才显示；浮层里的「在设置里打开」按钮可以点到
   assert.equal(await evaluate("getComputedStyle(document.querySelector('#quota-detail .quota-scope-tip .info-tip-pop')).display"), 'none');
   // 隐藏的测试窗口里 focus() 不触发 focus 事件，这里用悬停打开（键盘聚焦走同一个 open）
-  await evaluate("document.querySelector('#quota-detail .quota-scope-tip').scrollIntoView({ block: 'start' })"); await delay(100);
+  // 等感叹号真的滚进可视区再悬停（整套测试一起跑、机器忙的时候，滚动有时还没生效，浮层就按旧位置算了）
+  await until("(() => { const t = document.querySelector('#quota-detail .quota-scope-tip'); t.scrollIntoView({ block: 'center' }); const r = t.getBoundingClientRect(); return r.top >= 60 && r.bottom <= innerHeight - 60; })()");
+  await delay(100);
   await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseenter'))");
   // 打开时浮层挂在 body 上、fixed 定位：不会被卡片裁掉，也不会被后面的面板盖住
   await until("document.querySelector('body > .info-tip-pop.open')");

@@ -124,6 +124,10 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     // 编辑布局：号池的卡片都有布局标记
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${DETAIL} [data-layout^="quota:pool-"]')].map(n => n.dataset.layout).sort()`),
       ['quota:pool-daily', 'quota:pool-hourly', 'quota:pool-members', 'quota:pool-models', 'quota:pool-quota', 'quota:pool-requests', 'quota:pool-usage']);
+    // 0.3.50：没拖过的卡片保持页面自己的顺序（以前时间线和模型速度被挪到最上面）
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const order = await evaluate(`[...document.querySelectorAll('${DETAIL} > [data-layout]')].map(n => n.dataset.layout)`);
+    assert.ok(order.indexOf('quota:pool-members') < order.indexOf('quota:speed') && order.indexOf('quota:speed') < order.indexOf('quota:pool-requests'), 'page order kept: ' + order.join(','));
     pass('every pool card can be hidden in layout editing');
 
     // 只有官方账号成员的另一个号池、拖动排序（只记在本机）

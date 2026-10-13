@@ -21,7 +21,8 @@ const prefsFile = () => JSON.parse(fs.readFileSync(path.join(root, 'data', 'pref
 const crypto = require('node:crypto');
 const fingerprint = () => {
   const out = {};
-  const walk = dir => { for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (fs.statSync(file).isDirectory()) walk(file); else if (name !== 'prefs.json') out[path.relative(root, file)] = crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex'); } };
+  // 并发监控在后台按自己的节奏写历史（和引导无关，0.3.50 引导变长后有时正好赶上），不算「演示数据写进了真实目录」
+  const walk = dir => { for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (name === 'concurrency-history') continue; if (fs.statSync(file).isDirectory()) walk(file); else if (name !== 'prefs.json') out[path.relative(root, file)] = crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex'); } };
   for (const dir of ['data', 'home']) if (fs.existsSync(path.join(root, dir))) walk(path.join(root, dir));
   return out;
 };
@@ -88,6 +89,11 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
       // 0.3.16：出口监控的检测间隔和启动前核对、会话管理的新对话 / 新项目
       [18, 'egress', '#page-egress .egress-toolbar', /检测间隔，和启动前核对出口/], [20, 'sessions', '#page-sessions .sw-new-row', /新对话、新项目/],
     ];
+    // 0.3.50：步数按标题找（分章节以后各步的序号会变）
+    const titles = await evaluate('PulseIntro.titles()');
+    const at = heading => { const i = titles.findIndex(title => heading.test(title)); assert.ok(i >= 0, 'no step ' + heading); return i + 1; };
+    checks.push([0, 'overview', '#tiles', /所选范围的四个数字/], [0, 'overview', '#overview-analysis .split-grid', /工具分布与模型排行/], [0, 'usage', '#usage-insights', /用量分析/], [0, 'providers', '#page-providers .pv-nav [data-section="router"]', /^本地路由$/], [0, 'egress', '#nav [data-page="concurrency"]', /并发监控/], [0, 'overview', '#layout-edit', /编辑布局/], [0, 'quota', '#quota-detail [data-layout="quota:account"]', /这个账号的请求/], [0, 'usage', '#page-usage [data-layout="usage:speed"]', /模型速度走势/]);
+    for (const check of checks) check[0] = at(check[3]);
     for (const [n, page, sel, heading] of checks) {
       await go(n);
       assert.equal(await evaluate('document.body.dataset.page'), page, `第 ${n} 步切到 ${page}`);
@@ -95,14 +101,21 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
       assert.equal(await covers(sel), 'ok', `第 ${n} 步高亮 ${sel}`);
     }
     // 演示账号的内容是真的算出来的：容量趋势有折线、有模型换算、时间线上待标注和已标注的本机以外都有、按项目有卡片
-    await go(12);
+    await go(at(/看不懂颜色/));
     assert.ok(await evaluate("document.querySelectorAll('#quota-detail .capacity-chart svg circle, #quota-detail .capacity-chart svg path').length > 0"), '容量趋势有图');
     assert.ok(await evaluate("document.querySelectorAll('#quota-model-study .ms-row').length >= 5"), '模型换算列出多个组合');
     assert.ok(await evaluate("document.querySelector('#quota-model-timeline .ms-cycle.week .ms-off.detected') && document.querySelector('#quota-model-timeline .ms-cycle.week .ms-off.marked')"), '时间线上待标注、已标注都有');
-    await go(16);
+    await go(at(/按项目看用量/));
     assert.equal(await evaluate('state.usageView'), 'projects');
     assert.ok(await evaluate("document.querySelectorAll('#view-projects .pj-card').length >= 3"), '按项目列出演示项目 ' + await evaluate("state.days + '|' + document.querySelectorAll('#view-projects .pj-card').length + '|' + document.querySelector('#view-projects').textContent.slice(0, 300)"));
-    await go(4);
+    // 目录：列出各章，点一章跳到它的第一步，章节名写在卡片上
+    await evaluate("document.querySelector('.tour-toc-btn').click()");
+    await until("!document.querySelector('.tour-toc').hidden");
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('.tour-toc-item b')].map(b => b.textContent)"), ['开始', '总览', '额度详情', '用量明细', '供应商', '会话与监控', '个性化与设置']);
+    await evaluate("[...document.querySelectorAll('.tour-toc-item')].find(b => b.textContent.startsWith('供应商')).click()");
+    await until(`document.querySelector('.tour-count').textContent.startsWith('${at(/供应商 · 一键切换/)} /') && document.querySelector('.tour-toc').hidden`);
+    assert.equal(await text('.tour-chapter'), '供应商');
+    await go(at(/用量趋势与使用节奏/));
     assert.equal(await evaluate('document.body.dataset.page'), 'overview');
     // 900px 窄窗口：卡片仍在窗口里
     const win = BrowserWindow.fromWebContents(contents); win.setSize(900, 700); await delay(300);

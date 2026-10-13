@@ -24,6 +24,13 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: false, startMinimized: false, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done', theme: 'light' }));
 require('../build/core/quota.js').fetchOfficialQuota = async () => ({});
 
+/* ---- 供应商页（0.3.50）：在临时目录里存几家虚构的供应商和一个号池（示例域名、假 Key），不碰本机任何工具配置 ---- */
+const agentSwitch = require('../build/core/agent-switch.js');
+const relayA = agentSwitch.saveProvider({ app: 'claude', name: 'Example Relay', baseUrl: 'https://relay.example.com/v1', apiKey: 'sk-example-aaaa', model: 'claude-sonnet-5', upstream: 'anthropic' });
+const relayB = agentSwitch.saveProvider({ app: 'claude', name: 'Example Gateway', baseUrl: 'https://gateway.example.net', apiKey: 'sk-example-bbbb', model: 'gpt-5.5', upstream: 'openai-responses' });
+agentSwitch.saveProvider({ app: 'claude', name: '示例号池', pool: { strategy: 'most-left', members: [{ type: 'provider', id: relayA }, { type: 'provider', id: relayB }] } });
+agentSwitch.saveProvider({ app: 'codex', name: 'Example Compatible', baseUrl: 'https://api.example.org/v1', apiKey: 'sk-example-cccc', model: 'gpt-5.5', upstream: 'openai-chat' });
+
 /* ---- 截图里不该出现的：本机用户名、主目录路径（邮箱另外按格式查） ---- */
 const forbidden = [...new Set([realHome, realHome.replace(/\\/g, '/'), realUser].filter(value => typeof value === 'string' && value.length >= 3))];
 const replacements = forbidden.map(value => [value, '***']);
@@ -147,8 +154,21 @@ app.on('web-contents-created', (_, contents) => {
       await capture('overview-dark', "navigate('overview'); applyRange(30); setThemeMode('dark'); document.querySelector('.workspace').scrollTop = 0");
       await capture('settings-light', "setThemeMode('light'); openSettings('general').then(() => document.activeElement?.blur())");
       await js("closeModal('settings')");
+      // 供应商页：Claude Code 下面的几家虚构供应商和号池
+      await capture('providers-light', "navigate('providers'); window.PulseProviders?.open('claude'); document.querySelector('.workspace').scrollTop = 0", 2500);
+      // 编辑布局（0.3.49）：卡片上沿的把手和 ×、藏起来的「使用节奏」留一条占位、右边的布局面板
+      await js("navigate('overview'); setLayoutEdit(true)");
+      await capture('layout-light', "document.querySelector('[data-layout-hide=\"overview:rhythm\"]')?.click(); setTimeout(() => document.querySelectorAll('.tp-toast-close').forEach(b => b.click()), 50); document.querySelector('.workspace').scrollTop = 0", 1500);
+      await js("resetLayout(); setTimeout(() => document.querySelectorAll('.tp-toast-close').forEach(b => b.click()), 50); setLayoutEdit(false)");
       window.setSize(900, 650);
       await capture('compact-light', "document.querySelector('.workspace').scrollTop = 0");
+      // 新手引导（0.3.50）：分章节，打开目录。放在最后：结束引导会退出演示模式
+      window.setSize(1440, 960);
+      await js("navigate('overview'); document.querySelector('.workspace').scrollTop = 0; PulseIntro.startGuide()");
+      await pause(2500);
+      await js("(() => { const n = PulseIntro.titles().indexOf('官方额度一眼看完'); for (let i = 0; i < n; i++) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); })()");
+      await pause(1500);
+      await capture('tour-light', "document.querySelector('.tour-toc-btn').click()", 1200);
       console.log('Saved README screenshots to artifacts/ui');
       await js('window.tokenpulse.demo(false)').catch(() => {});
       clearTimeout(timeout); try { fs.rmSync(temp, { recursive: true, force: true }); } catch { /* 还被占着就留给系统清理 */ }

@@ -14,6 +14,10 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.50': [
+      ['help', '新手引导介绍得更全了', '引导分成七章：开始、总览、额度详情、用量明细、供应商、会话与监控、个性化与设置，补上了号池、透明转发、本地路由、转发记录、配置保护、并发监控、模型速度、编辑布局和一键切换 CLI 登录。卡片右上角的「目录」可以直接跳到想看的那一章。设置 → 关于 里可以随时重新打开。'],
+      ['trend', '号池的模型速度合成一条线', '「模型速度走势」以前把号池里每个账号各画一条线，同一个模型一下子冒出好几条。现在同一个号池的几个账号合成一条，按号池名显示；不同的第三方供应商、不同的思考等级仍然分开。供应商页透明转发里的速度汇总也一样。'],
+    ],
     '0.3.49': [
       ['overview', '编辑布局重新做了', '点侧栏「编辑布局」后，每张卡片和侧栏的每一页上沿都有把手和 ×：拖动换位置，点 × 隐藏，能撤销。总览的官方额度按 Claude、ChatGPT、Grok、DeepSeek 分开，额度详情的账号标签也能单独藏。藏起来的东西在原处留一条虚线，点「显示」就回到原位；右边的布局面板按页面列出全部，每页都能恢复默认。'],
       ['terminal', '设置里一键切换 CLI 的登录账号', '设置 → 官方账号里，在 TokenPulse 里登录过的账号旁边多了「切到 CLI」。点一下，Claude Code、Codex 或 Grok 的登录就换成这个账号，不用再去终端里登出、登录。换下来的账号由 TokenPulse 接着保存，随时能切回去。已经开着的会话要重新打开才会用新账号。'],
@@ -230,30 +234,56 @@
     window.showUsageView?.(view);
     if (changed && current) window.render?.(current);
   };
+  /*
+   * 引导的每一步（0.3.50 扩写成分章节）。chapter：卡片左上角写着第几章，「目录」里能直接跳到某一章。
+   * 演示数据只覆盖额度、用量和会话；供应商、并发这些页面显示的是真实界面，所以那几步只高亮菜单项、用文字讲清楚能做什么。
+   */
+  const providers = section => () => window.PulseProviders?.open(section);
   const STEPS = [
-    { title: '欢迎使用 TokenPulse', text: 'TokenPulse 常驻托盘，记录本机 AI CLI（Claude Code、Codex、Grok）的用量，并盯住官方订阅额度。接下来用一个演示账号带你走一遍：演示数据只在引导里出现，不会写进你的数据，结束后自动换回来。' },
-    { page: 'overview', target: '#nav', title: '左侧切换页面', text: '总览、额度详情、用量明细、出口监控、会话管理、供应商，都在这里。' },
-    { page: 'overview', target: '#quota-cards', title: '官方额度一眼看完', text: '每个官方账号的 5 小时窗口和周窗口：还剩多少、什么时候重置、照现在的节奏大约什么时候用完。' },
-    { page: 'overview', target: '#overview-analysis .analysis-grid', title: '用量趋势与使用节奏', text: '按天看 Tokens、费用、请求数的走势，以及一天里哪些时段用得最多。上方可以切换时间范围和工具。' },
-    { page: 'overview', target: '#refresh', title: '数据自动更新', text: '后台会定时扫描本机日志、查询官方额度。想马上看最新数字就点「刷新数据」。' },
-    { page: 'quota', target: '#page-quota .quota-toolbar', title: '额度详情 · 按账号看', text: '每个官方账号一个标签；同一家登记了多个账号时分开统计，也能组成账号池。' },
-    { page: 'quota', target: '#quota-detail .quota-window-grid', title: '5 小时与周窗口', text: '已用百分比、重置时间，以及按最近的使用节奏估算「大约什么时候用完」。' },
-    { page: 'quota', target: '#quota-detail .capacity-panel', title: '额度容量趋势', text: '把每个历史窗口折算成「整窗大约能用多少」（Tokens 或 API 等价费用），连成折线。官方悄悄调了额度，这里能看出来。' },
-    { page: 'quota', target: '#quota-model-study .ms-budgets', title: '换一种模型，整窗能用多少', text: '先按本机的真实用量折算出整窗预算，再换算到每个模型 × 思考等级：换成 Sonnet 能多用几倍、开 xhigh 要少用多少，一目了然。' },
-    { page: 'quota', target: '#quota-model-study .ms-highlights', title: '一眼看结论，再看完整排行', text: '最耐用、调用最多、你最常用的组合放在最前面；下面是全部模型 × 思考等级的完整排行，可以换排序、按等级筛选。' },
-    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl', title: '模型与思考等级 · 时间线', text: '每个模型 × 思考等级一条轨道，写着这个周期里用了多久、占多少；上面叠着官方额度的已用曲线：哪段时间用了什么、额度涨得多快都能对上。左键拖动平移，按住右键拖选一段放大或标注，Ctrl + 滚轮缩放。' },
-    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl-help', title: '看不懂颜色？点问号', text: '周期标题旁的圆圈问号里，写着每种颜色和色块的意思：灰色竖条是「说不清来源」（前后 5 分钟内本机有请求、采样有缺口或刚发生），橙色竖条是「本机以外」，都不计入容量折算。' },
-    { page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-off-summary', title: '本机以外的消耗', text: '额度涨了、同期本机却没有 Code 请求的时段（网页聊天、其他设备）会自动识别，不计入容量折算。点色块可以像剪视频一样分割、删除，或者补上用了什么模型和等级。' },
-    { page: 'usage', before: () => usageView('requests'), target: '#page-usage .breakdown-panel', title: 'Token 构成与用量分析', text: '输入、输出、缓存读写、推理各占多少；往下是分工具的趋势、模型排行和使用时段分布。' },
-    { page: 'usage', before: () => usageView('requests'), target: '#page-usage .usage-records', title: '每一次请求', text: '逐条看每次请求用了多少 Token、占了多少额度、是哪个账号发的；型号对不上、响应可疑会直接标出来。也可以按日汇总、导出 CSV。' },
-    { page: 'usage', before: () => usageView('projects'), target: '#page-usage .usage-records', wait: '#view-projects .pj-card', title: '按项目看用量', text: '每个项目文件夹被几个 Agent 对话改过、用了多少 Token 和额度，由哪些模型 × 思考等级组成。' },
-    { page: 'egress', target: '[data-page="egress"]', title: '出口监控', text: '分别检测三家的出口 IP，偏离白名单或地区规则时提醒，还能在出口不对时暂停查询额度。' },
-    { page: 'egress', target: '#page-egress .egress-toolbar', title: '检测间隔，和启动前核对出口', text: '「检测间隔」可以填 5 到 60 秒。开着监控、并给某一家设了白名单时，凡是 TokenPulse 启动的这一家的 CLI 都会先核对出口：设了 IP 白名单就看 IP，只设了地区白名单就看地区。监控关着，或者两个白名单都没设，就直接启动。' },
-    { page: 'sessions', target: '[data-page="sessions"]', title: '会话管理', text: '查看本机 Agent 的对话历史，复制项目地址，或者直接接着回复。' },
-    { page: 'sessions', target: '#page-sessions .sw-new-row', title: '新对话、新项目', text: '「新对话」在已有的项目里开一段新对话，「新项目」先选或新建一个文件夹；选好工具后，TokenPulse 在那个文件夹里打开终端启动它。会话的「更多」里还能在终端里接着聊。' },
-    { page: 'providers', target: '[data-page="providers"]', title: '供应商', text: '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 一键切换模型供应商，模型候选和思考等级分开设置。每次改动工具配置前都会先给你看逐行对比、确认后才写，并自动备份；担心改坏可以在「配置保护」里打开只读保护。' },
-    { page: 'overview', target: '#settings-open', title: '设置', text: '在这里登录官方账号、设置额度提醒、切换主题和语言。以后想再看这份引导，到 设置 → 关于 里重新打开。' },
+    { chapter: '开始', title: '欢迎使用 TokenPulse', text: 'TokenPulse 常驻托盘，记录本机 AI 工具（Claude Code、Codex、Grok、DeepSeek Harness）的用量，盯住官方订阅额度，还能切换供应商、管理会话。接下来用一个演示账号带你走一遍，分成几章：右上角的「目录」可以直接跳到想看的那一章。演示数据只在引导里出现，不会写进你的数据，结束后自动换回来。' },
+    { chapter: '开始', page: 'overview', target: '#nav', title: '左侧切换页面', text: '总览、额度详情、用量明细、出口监控、并发监控、会话管理、供应商，都在这里。侧栏可以收起成只有图标；不常用的页面可以在「编辑布局」里藏起来。' },
+    { chapter: '开始', page: 'overview', target: '#refresh', title: '数据自动更新', text: '后台会定时扫描本机日志，并按设置里的间隔（默认 1 分钟）查询官方额度和余额。想马上看最新数字就点「刷新数据」，右上角会告诉你哪个账号的哪项额度变了多少。' },
+
+    { chapter: '总览', page: 'overview', target: '#quota-cards', title: '官方额度一眼看完', text: '每家一张卡：5 小时窗口和周窗口还剩多少、什么时候重置、照现在的节奏大约什么时候用完。同一家登记了几个账号时，下面列出其他账号的剩余。DeepSeek 和第三方 Key 的余额也在这一排，显示还能用几天。' },
+    { chapter: '总览', page: 'overview', target: '#tiles', title: '所选范围的四个数字', text: '总 Tokens、参考费用（按官方标价估算，订阅账号不会真的这样扣钱）、请求次数、缓存读取占比。上方可以切换时间范围和工具，下面的图表跟着变。' },
+    { chapter: '总览', page: 'overview', target: '#overview-analysis .analysis-grid', title: '用量趋势与使用节奏', text: '按天看 Tokens、费用、请求数的走势，以及一天里哪些时段用得最多。' },
+    { chapter: '总览', page: 'overview', target: '#overview-analysis .split-grid', title: '工具分布与模型排行', text: '哪个工具用得最多、哪些模型最费 Token。点「查看明细」直接跳到用量明细。' },
+
+    { chapter: '额度详情', page: 'quota', target: '#page-quota .quota-toolbar', title: '额度详情 · 按账号看', text: '每个官方账号一个标签；在供应商页建的号池、DeepSeek 和第三方 Key 也各有一个标签。按住标签左右拖动可以调整顺序，「添加账号」可以登录更多账号。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-detail .quota-window-grid', title: '5 小时与周窗口', text: '已用百分比、重置时间，以及按最近的使用节奏估算「大约什么时候用完」。下面的小卡片是这个窗口里用了多少 Token、多少请求、每小时用多少。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-detail .capacity-panel', title: '额度容量趋势', text: '把每个历史窗口折算成「整窗大约能用多少」（Tokens 或 API 等价费用），连成折线。官方悄悄调了额度，这里能看出来。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-model-study .ms-budgets', title: '换一种模型，整窗能用多少', text: '先按本机的真实用量折算出整窗预算，再换算到每个模型 × 思考等级：换成 Sonnet 能多用几倍、开 xhigh 要少用多少，一目了然。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-model-study .ms-highlights', title: '一眼看结论，再看完整排行', text: '最耐用、调用最多、你最常用的组合放在最前面；下面是全部模型 × 思考等级的完整排行，可以换排序、按等级筛选。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl', title: '模型与思考等级 · 时间线', text: '每个模型 × 思考等级一条轨道，写着这个周期里用了多久、占多少；上面叠着官方额度的已用曲线：哪段时间用了什么、额度涨得多快都能对上。左键拖动平移，按住右键拖选一段放大或标注，Ctrl + 滚轮缩放。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-tl-help', title: '看不懂颜色？点问号', text: '周期标题旁的圆圈问号里，写着每种颜色和色块的意思：灰色竖条是「说不清来源」（前后 5 分钟内本机有请求、采样有缺口或刚发生），橙色竖条是「本机以外」，都不计入容量折算。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-model-timeline .ms-cycle.week .ms-off-summary', title: '本机以外的消耗', text: '额度涨了、同期本机却没有 Code 请求的时段（网页聊天、其他设备）会自动识别，不计入容量折算。点色块可以像剪视频一样分割、删除，或者补上用了什么模型和等级。' },
+    { chapter: '额度详情', page: 'quota', target: '#quota-detail [data-layout="quota:account"]', title: '这个账号的请求', text: '只看这个账号发出的每一次请求：用了多少 Token、什么模型和思考等级、占了多少额度。请求经过 TokenPulse（透明转发或号池）时，上面还有「模型速度」：每个模型每秒输出多少 Token、首字等多久。' },
+    { chapter: '额度详情', title: '号池、DeepSeek 和第三方 Key 也有自己的一页', text: '号池的那一页：总额度相当于几个号、按现在的速度还能用几天、每个成员各用了多少、24 小时和 30 天的分摊、时间线和最近的请求。DeepSeek 和第三方 Key 的那一页：余额走势、消耗趋势、本机用量和模型换算，余额低了会提醒。' },
+
+    { chapter: '用量明细', page: 'usage', before: () => usageView('requests'), target: '#page-usage .breakdown-panel', title: 'Token 构成', text: '输入、输出、缓存读写、推理各占多少。上方的时间范围、工具、模型筛选对这一页的所有数字都生效。' },
+    { chapter: '用量明细', page: 'usage', before: () => usageView('requests'), target: '#usage-insights', title: '用量分析', text: '全年活跃度、按工具的趋势、工具和模型排行、一天里的使用时段分布。' },
+    { chapter: '用量明细', page: 'usage', before: () => usageView('requests'), target: '#page-usage [data-layout="usage:speed"]', title: '模型速度走势', text: '经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度和首字延迟，画成折线。同一个型号不同思考等级、不同供应商分开一条线，同一个号池的几个账号合成一条；可以看 24 小时到全部记录，点图例开关每条线。' },
+    { chapter: '用量明细', page: 'usage', before: () => usageView('requests'), target: '#page-usage .usage-records', title: '每一次请求', text: '逐条看每次请求用了多少 Token、占了多少额度、是哪个账号发的；请求的型号和实际回复的型号对不上、响应可疑会直接标出来，侧栏上也会亮红点。也可以按日汇总、导出 CSV。' },
+    { chapter: '用量明细', page: 'usage', before: () => usageView('projects'), target: '#page-usage .usage-records', wait: '#view-projects .pj-card', title: '按项目看用量', text: '每个项目文件夹被几个 Agent 对话改过、用了多少 Token 和额度，由哪些模型 × 思考等级组成。' },
+
+    { chapter: '供应商', page: 'providers', before: providers('overview'), target: '#page-providers .pv-nav [data-section="overview"]', title: '供应商 · 一键切换', text: '为 Claude Code、Claude 桌面端、Codex、Grok CLI 和 DeepSeek Harness 切换模型供应商：官方登录、第三方 API Key，或者你建的号池。每家工具的模型候选和思考等级分开设置；改工具配置前都会先给你看逐行对比，确认后才写，并自动备份。' },
+    { chapter: '供应商', page: 'providers', before: providers('overview'), target: '#page-providers .pv-nav [data-section="claude"]', title: '添加供应商和号池', text: '在某个工具下面点「添加供应商」：填地址、Key 和模型就行，接口格式不一样（比如让 Claude Code 用 OpenAI 格式的模型）也能用，本地路由会自动转换。号池能把几个官方账号或 API Key 放在一起轮流用，有四种轮换方式：轮询、用满再换、快重置优先、剩余最多；额度用完的号会自动避开。' },
+    { chapter: '供应商', page: 'providers', before: providers('router'), target: '#page-providers .pv-nav [data-section="router"]', title: '本地路由', text: '第三方供应商、跨格式和号池都经过本机的本地路由转发：真实 Key 只留在 TokenPulse 里，工具配置里写的是占位。一家出错可以自动换备用的；退出 TokenPulse 时工具配置会还原成直连。' },
+    { chapter: '供应商', page: 'providers', before: providers('pass'), target: '#page-providers .pv-nav [data-section="pass"]', title: '透明转发：量官方模型有多快', text: '用官方登录时，打开透明转发，请求原样经过本机一下：只计时、读回复里的 Token 数，凭据还是工具自己的。这样官方模型也能画出速度走势。' },
+    { chapter: '供应商', page: 'providers', before: providers('logs'), target: '#page-providers .pv-nav [data-section="logs"]', title: '转发记录', text: '每一次经过本地路由或透明转发的请求都记下来，永久保存：交给了谁、状态、耗时、首字、速度。号池换了哪个账号、哪次失败换了下一个，都能在这里看到。' },
+    { chapter: '供应商', page: 'providers', before: providers('safety'), target: '#page-providers .pv-nav [data-section="safety"]', title: '配置保护和导入', text: '「配置保护」里能看每次改动前后的备份、一键还原，担心改坏可以打开只读保护。「导入供应商」能把 CC Switch 里已有的供应商一次导进来。' },
+
+    { chapter: '会话与监控', page: 'sessions', target: '#nav [data-page="sessions"]', title: '会话管理', text: '查看本机 Agent 的对话历史，复制项目地址，或者直接在 TokenPulse 里接着回复。' },
+    { chapter: '会话与监控', page: 'sessions', target: '#page-sessions .sw-new-row', title: '新对话、新项目', text: '「新对话」在已有的项目里开一段新对话，「新项目」先选或新建一个文件夹；选好工具后，TokenPulse 在那个文件夹里打开终端启动它。会话的「更多」里还能在终端里接着聊。' },
+    { chapter: '会话与监控', page: 'egress', target: '#nav [data-page="egress"]', title: '出口监控', text: '分别检测三家的出口 IP，偏离白名单或地区规则时提醒，还能在出口不对时暂停查询额度。' },
+    { chapter: '会话与监控', page: 'egress', target: '#page-egress .egress-toolbar', title: '检测间隔，和启动前核对出口', text: '「检测间隔」可以填 5 到 60 秒。开着监控、并给某一家设了白名单时，凡是 TokenPulse 启动的这一家的 CLI 都会先核对出口：设了 IP 白名单就看 IP，只设了地区白名单就看地区。监控关着，或者两个白名单都没设，就直接启动。' },
+    { chapter: '会话与监控', target: '#nav [data-page="concurrency"]', title: '并发监控', text: '看清经过本机的 AI 请求同时有多少个、各连到哪：活跃请求、客户端连接、上游连接，以及按供应商和账号分开的数字。可以给每家设上限，超了提醒或直接拒绝新请求，历史记录能回头看。点侧栏的「并发监控」打开。' },
+
+    { chapter: '个性化与设置', page: 'overview', target: '#layout-edit', title: '编辑布局', text: '点这里进入编辑：每张卡片和侧栏的每一页上沿都有把手和 ×，拖动换位置、点 × 隐藏，能撤销。藏起来的东西在原处留一条虚线，点「显示」回到原位；右边的布局面板按页面列出全部，每页都能恢复默认。只记在这台电脑上。' },
+    { chapter: '个性化与设置', page: 'overview', target: '#settings-open', title: '设置', text: '「官方账号」里可以登录多个账号，在 TokenPulse 里登录过的能一键「切到 CLI」，不用再去终端里登出登录；也能添加 DeepSeek 和第三方 Key 的余额账号。另外还有额度提醒、额度查询间隔、语言和主题、关窗口时收进托盘、开机启动。以后想再看这份引导，到 设置 → 关于 里重新打开。' },
   ];
+  /** 章节：名字和第一步。 */
+  const CHAPTERS = [...new Set(STEPS.map(step => step.chapter))];
 
   const el = (tag, attrs = {}, children = []) => window.el(tag, attrs, children);
   const icon = name => window.icon(name);
@@ -381,6 +411,9 @@
     const layer = el('div', { class: 'tour', role: 'presentation' });
     const spot = el('div', { class: 'tour-spot', 'aria-hidden': 'true' });
     const count = el('span', { class: 'tour-count' });
+    const chapter = el('span', { class: 'tour-chapter' });
+    const tocButton = el('button', { type: 'button', class: 'text-btn tour-toc-btn', 'aria-expanded': 'false', 'aria-controls': 'tour-toc', text: '目录' });
+    const toc = el('div', { id: 'tour-toc', class: 'tour-toc', role: 'menu', hidden: '' });
     const badge = el('span', { class: 'tour-demo', text: '演示数据', title: '引导里显示的是虚构的演示账号，不是你的数据', hidden: '' });
     const title = el('h3', { id: 'tour-title' });
     const text = el('p', { id: 'tour-text' });
@@ -389,7 +422,8 @@
     const prev = el('button', { type: 'button', class: 'btn', text: '上一步' });
     const next = el('button', { type: 'button', class: 'btn btn-accent' });
     const card = el('section', { class: 'tour-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tour-title', 'aria-describedby': 'tour-text' }, [
-      el('div', { class: 'tour-top' }, [el('span', { class: 'tour-meta' }, [count, badge]), skip]),
+      el('div', { class: 'tour-top' }, [el('span', { class: 'tour-meta' }, [chapter, count, badge]), el('span', { class: 'tour-top-actions' }, [tocButton, skip])]),
+      toc,
       title, text,
       el('div', { class: 'tour-foot' }, [bar, el('div', { class: 'tour-actions' }, [prev, next])]),
     ]);
@@ -423,12 +457,27 @@
       card.style.left = Math.round(Math.min(Math.max(margin, x), vw - cw - margin)) + 'px';
       card.style.top = Math.round(Math.min(Math.max(top0 + margin, y), vh - ch - margin)) + 'px';
     };
+    const closeToc = () => { toc.hidden = true; tocButton.setAttribute('aria-expanded', 'false'); };
+    const openToc = () => {
+      const here = steps[self.index]?.chapter;
+      toc.replaceChildren(...CHAPTERS.map(name => ({ name, first: steps.findIndex(step => step.chapter === name), size: steps.filter(step => step.chapter === name).length })).filter(item => item.first >= 0).map(item => {
+        const b = el('button', { type: 'button', role: 'menuitem', class: 'tour-toc-item' + (item.name === here ? ' on' : '') }, [el('b', { text: item.name }), el('small', { text: `${item.size} 步` })]);
+        b.addEventListener('click', () => { closeToc(); show(item.first); });
+        return b;
+      }));
+      toc.hidden = false; tocButton.setAttribute('aria-expanded', 'true');
+      (toc.querySelector('.on') || toc.querySelector('button'))?.focus();
+      schedule();
+    };
+    tocButton.addEventListener('click', () => (toc.hidden ? openToc() : (closeToc(), schedule())));
     const schedule = () => { cancelAnimationFrame(self.frame); if (tour === self) self.frame = requestAnimationFrame(place); };
 
     const show = async i => {
       const step = steps[i], token = ++self.token;
       self.index = i;
       count.textContent = `${i + 1} / ${steps.length}`;
+      chapter.textContent = step.chapter || '';
+      closeToc();
       title.textContent = step.title;
       text.textContent = step.text;
       bar.firstChild.style.width = `${((i + 1) / steps.length) * 100}%`;
@@ -476,7 +525,9 @@
       if (self.last?.isConnected) self.last.focus?.();
     };
     const onKey = event => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(); }
+      if (event.key === 'Escape' && !toc.hidden) { event.preventDefault(); event.stopPropagation(); closeToc(); tocButton.focus(); schedule(); }
+      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(); }
+      else if (!toc.hidden && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); const items = [...toc.querySelectorAll('button')], i = items.indexOf(document.activeElement); items[(i + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); }
       else if (event.key === 'ArrowRight' && self.index < steps.length - 1) { event.preventDefault(); show(self.index + 1); }
       else if (event.key === 'ArrowLeft' && self.index > 0) { event.preventDefault(); show(self.index - 1); }
       else trapTab(event, card);
@@ -530,6 +581,6 @@
   $('whatsnew-open')?.addEventListener('click', () => { window.closeModal?.('settings'); showNotes(version || undefined, { fromSettings: true }); });
   api.version?.().then(v => { version = version || v; const btn = $('whatsnew-open'); if (btn) btn.hidden = !NOTES[v]; }).catch(() => {});
 
-  window.PulseIntro = { startGuide, active: () => Boolean(tour), demo: () => Boolean(tour?.demo), showNotes: v => showNotes(v || version, { fromSettings: true }), steps: STEPS.length, notes: NOTES };
+  window.PulseIntro = { startGuide, active: () => Boolean(tour), demo: () => Boolean(tour?.demo), showNotes: v => showNotes(v || version, { fromSettings: true }), steps: STEPS.length, titles: () => STEPS.map(step => step.title), chapters: CHAPTERS, notes: NOTES };
   boot();
 })();

@@ -101,6 +101,11 @@ try {
     const ever = speedSeries(0, now);
     assert.deepEqual([ever.bucketMs, ever.total > week.total], [7 * DAY, true], "全部：跨度长就按周，300 天前的也在");
     assert.deepEqual(speedSeries(7, now - 400 * DAY).lines, [], "那时还没有记录");
+    // 0.3.50：同一个号池的几个账号合成一条线（转发记录里是「号池名 · 成员」），第三方供应商仍各自一条
+    fs.appendFileSync(monthFile(now - 500), [["Team · a@example.com", 40], ["Team · b@example.com", 60], ["Team · b@example.com", 50]].map(([provider, speed], i) => JSON.stringify({ at: now - 500 - i, app: "grok", pool: true, provider, status: 200, requestModel: "grok-x", tokensPerSec: speed, firstTokenMs: 1000, output: 300 })).join("\n") + "\n");
+    const merged = speedSeries(7, now).lines.filter((line) => line.model === "grok-x");
+    assert.deepEqual(merged.map((line) => [line.via, line.count, line.tokensPerSec]), [["Team", 3, 50]], "一个号池一条线");
+    assert.deepEqual(passSpeed(7).filter((row) => row.model === "grok-x").map((row) => [row.via, row.count]), [["Team", 3]], "供应商页的汇总也合成一行");
   } finally { Date.now = real; }
   console.log("PASS pass speed: per-account, per-model speed trend from the permanent forwarding log (median and quartiles per hour / day / week, attributed by the CLI login at the time)");
 } finally {

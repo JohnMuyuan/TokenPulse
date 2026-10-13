@@ -38,6 +38,17 @@
 .tour-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .tour-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tour-skip { font-size: 12.5px; }
+/* 0.3.50：分章节，左上角写着第几章，「目录」能跳到某一章 */
+.tour-top-actions { display: inline-flex; align-items: center; gap: 12px; }
+.tour-toc-btn { font-size: 12.5px; }
+.tour-chapter { padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 11.5px; font-weight: 650; }
+.tour-chapter:empty { display: none; }
+.tour-toc { display: grid; gap: 2px; margin: 0 0 10px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.tour-toc[hidden] { display: none; }
+.tour-toc-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; text-align: left; }
+.tour-toc-item:hover, .tour-toc-item:focus-visible { background: var(--surface); }
+.tour-toc-item.on b { color: var(--accent); }
+.tour-toc-item small { color: var(--faint); font-size: 11.5px; }
 .tour-card h3 { font: 650 16px/1.4 var(--font-display); color: var(--text); }
 .tour-card p { margin: 6px 0 14px; color: var(--text-2); font-size: 13px; line-height: 1.7; }
 .tour-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

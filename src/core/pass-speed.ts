@@ -14,7 +14,7 @@ import fs from "fs";
 import path from "path";
 import type { OfficialAccountKind } from "./credentials";
 import { accountLabels, readLoginTimeline, resolveAccount } from "./login-timeline";
-import { routeLogDir } from "./route-ledger";
+import { routeLogDir, speedVia } from "./route-ledger";
 
 export type SpeedBucket = { at: number; median: number; low: number; high: number; count: number; firstTokenMs: number | null };
 /** fast：快速模式（Codex 的 priority / fast、Claude 的 fast）的请求单独一行，不和普通模式混着算。 */
@@ -106,7 +106,7 @@ export function speedSeriesOf(rows: { at: number; model: string; fast: boolean; 
 
 /*
  * 全部模型的速度走势（0.3.39，用量明细里的折线图）：不分账号，透明转发和本地路由量到的都算。
- * 一条线 = 工具 + 型号 + 快速模式 + 思考等级 + 经由（官方登录 / 供应商 / 号池成员）：
+ * 一条线 = 工具 + 型号 + 快速模式 + 思考等级 + 经由（官方登录 / 供应商 / 号池；号池里的几个账号合成一条，0.3.50）：
  * 同一个型号不同等级每秒 Token 数差不多，但首字差很多；不同中转站的速度也不一样，所以分开。
  * 按时间分桶（同 accountSpeed：两天以内按小时，三个月以内按天，再长按周），每个桶取速度和首字的中位数。
  */
@@ -133,7 +133,7 @@ export function speedSeries(days: number, now = Date.now()): SpeedLines {
       const app = String(row.app || ""), model = String(row.requestModel || row.model || "").slice(0, 120);
       if (!model) continue;
       const fast = isFastTier(row.tier), effort = typeof row.effort === "string" ? row.effort.slice(0, 20) : "";
-      const via = row.pass === true ? "" : String(row.provider || "").slice(0, 80);
+      const via = speedVia(row);
       rows.push({ at, key: [app, model, fast ? "fast" : "", effort, via].join("|"), app, model, fast, effort, via, speed, first });
     }
   }

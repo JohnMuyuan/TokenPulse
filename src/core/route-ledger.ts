@@ -195,15 +195,25 @@ export function readRouteLog(options: { limit?: number; before?: number; cursor?
 
 /*
  * 量到的模型速度（0.3.35 透明转发，0.3.36 起本地路由也量）：从保存的转发记录里取最近 days 天（0 = 全部，记录永久保存）、成功并且量到了每秒 Token 数的，
- * 按「工具 + 型号 + 快速模式 + 思考等级 + 经谁转的」汇总：透明转发是官方登录；本地路由的写供应商 / 号池成员的名字——同一个型号在不同的中转站速度不一样，不能混着算。
+ * 按「工具 + 型号 + 快速模式 + 思考等级 + 经谁转的」汇总：透明转发是官方登录；本地路由的写供应商 / 号池的名字（号池里几个账号合成一个，0.3.50）——同一个型号在不同的中转站速度不一样，不能混着算。
  * 思考等级（0.3.39）单独分开：真机记录里同一个型号不同等级的每秒 Token 数差不多，但首字延迟差很多（想得越久，第一段内容出来得越晚），混在一起中位数就看不出来了。
  * 用中位数和四分位：个别特别慢或特别快的请求（排队、只回了一两句）不会把数字带偏。
  */
 export type PassSpeedRow = {
   app: string; model: string; fast: boolean; /** 请求里带的思考等级，没带是空的。 */ effort: string;
-  /** 经谁转的：透明转发是空的，本地路由是供应商 / 号池成员的名字。 */ via: string;
+  /** 经谁转的：透明转发是空的，本地路由是供应商 / 号池的名字（号池里的几个账号合成一个，见 speedVia）。 */ via: string;
   count: number; tokensPerSec: number; low: number; high: number; fastest: number; slowest: number; firstTokenMs: number | null; output: number; lastAt: number;
 };
+/*
+ * 速度按「经由」分线时的名字（0.3.50）。透明转发是空的；第三方供应商是它的名字；
+ * 号池的一次转发记的是「号池名 · 成员」，同一个号池的几个账号速度本来就是一家的，合成一条，只留号池名。
+ */
+export function speedVia(row: Record<string, unknown>) {
+  if (row.pass === true) return "";
+  const provider = String(row.provider || "");
+  const cut = row.pool === true ? provider.indexOf(" · ") : -1;
+  return (cut > 0 ? provider.slice(0, cut) : provider).slice(0, 80);
+}
 export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
   const since = days > 0 ? now - days * DAY_MS : 0;
   const groups = new Map<string, { app: string; model: string; fast: boolean; effort: string; via: string; speeds: number[]; firsts: number[]; output: number; lastAt: number }>();
@@ -220,7 +230,7 @@ export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
       try { row = JSON.parse(line); } catch { continue; }
       const at = Number(row.at), speed = Number(row.tokensPerSec);
       if (!(at >= since) || at > now + 60_000 || !(speed > 0) || Number(row.status) >= 400 || row.error) continue;
-      const via = row.pass === true ? "" : String(row.provider || "").slice(0, 80);
+      const via = speedVia(row);
       const app = String(row.app || ""), model = String(row.requestModel || row.model || "").slice(0, 120);
       if (!model) continue;
       // 快速模式（Codex 的 priority / fast、Claude 的 fast）单独算，不和普通模式混在一起

@@ -2405,23 +2405,26 @@ function showCard(id) { for (const key of expandCardId(id)) setLayoutHidden(key,
 function rankOf(key, fallback = 0) {
   if (Number.isFinite(layoutRanks[key])) return layoutRanks[key];
   if (key.startsWith('nav:')) return NAV_PAGES.indexOf(key.slice(4)) * 10;
-  // 官方额度各家的先后本来由账号顺序决定（设置里能调）：没拖过就照画出来的顺序
-  return key in LAYOUT_INDEX && !key.startsWith('overview:quota:') ? LAYOUT_INDEX[key] * 10 : 100000 + fallback;
+  // 没拖过的卡片照页面画出来的顺序（fallback 是它在容器里的位置）。不能按 LAYOUT 表的顺序：
+  // 时间线、模型速度在几种页面里共用，表里排得靠前，DeepSeek / 号池页上会被挪到最上面（0.3.50 修）
+  return fallback;
 }
 const layoutItems = zone => [...zone.children].filter(node => node.dataset?.layout);
 /** 按名次把一个容器里的卡片排好。只动卡片占的那几个位置，夹在中间的标题等不动。 */
 function sortZone(zone) {
   const cards = layoutItems(zone);
+  // 第一次见到时记下它在页面上本来的位置：没拖过（或恢复默认之后）就按这个排，拖动过的 DOM 顺序不算数
+  cards.forEach((node, i) => { if (node.dataset.layoutNatural === undefined) node.dataset.layoutNatural = String(i); });
   if (cards.length < 2) return;
-  const sorted = cards.map((node, i) => ({ node, rank: rankOf(node.dataset.layout, i), i })).sort((a, b) => a.rank - b.rank || a.i - b.i).map(item => item.node);
+  const sorted = cards.map((node, i) => ({ node, rank: rankOf(node.dataset.layout, Number(node.dataset.layoutNatural)), i })).sort((a, b) => a.rank - b.rank || a.i - b.i).map(item => item.node);
   if (sorted.every((node, i) => node === cards[i])) return;
   const marks = cards.map(node => { const mark = document.createComment(''); node.replaceWith(mark); return mark; });
   marks.forEach((mark, i) => mark.replaceWith(sorted[i]));
 }
 /** 拖完：这个容器里的 key 按新顺序，重新分它们原来占的名次。 */
 function saveZoneOrder(zone) {
-  const keys = layoutItems(zone).map(node => node.dataset.layout);
-  const slots = keys.map((key, i) => rankOf(key, i)).sort((a, b) => a - b);
+  const items = layoutItems(zone), keys = items.map(node => node.dataset.layout);
+  const slots = items.map((node, i) => rankOf(node.dataset.layout, node.dataset.layoutNatural === undefined ? i : Number(node.dataset.layoutNatural))).sort((a, b) => a - b);
   // 名次有重复（都是没排过的新卡片）时拉开，免得下次排回去
   for (let i = 1; i < slots.length; i++) if (slots[i] <= slots[i - 1]) slots[i] = slots[i - 1] + 0.5;
   keys.forEach((key, i) => { layoutRanks[key] = slots[i]; });
@@ -2718,7 +2721,7 @@ function navigate(page, options = {}) {
   state.page = page;
   if (page !== 'concurrency') window.PulseConcurrency?.hide();
   if (page !== 'providers') window.PulseProviders?.hide();
-  const labels = { concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex 和 Grok CLI 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
+  const labels = { concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI 和 DeepSeek Harness 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();

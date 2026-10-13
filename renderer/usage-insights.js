@@ -405,7 +405,7 @@
     retry.addEventListener('click', () => loadSpeedLines(true));
     const panel = el('article', { class: 'panel insight-panel speed-lines-panel' }, [
       el('div', { class: 'panel-heading' }, [
-        el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度。同一个型号用不同的思考等级、经不同的供应商分开一条线；记录永久保存，不跟上面的时间范围走。' })]),
+        el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度。同一个型号用不同的思考等级、经不同的供应商分开一条线，同一个号池里的几个账号合成一条；记录永久保存，不跟上面的时间范围走。' })]),
         el('div', { class: 'speed-lines-tools' }, [metricSeg, rangeSeg]),
       ]),
       el('div', { class: 'speed-lines-status', role: 'status' }, [el('span'), retry]),
