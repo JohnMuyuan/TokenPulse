@@ -207,6 +207,15 @@
     "额度详情和时间线以前只在一整轮都交给同一个账号时才认这笔用量，一轮里换过账号就当成「本机以外」。现在每一次转发记在当时用的那个账号上，额度上涨能对上本机的请求。": "Quota details and the timeline used to count a Grok pool turn only when the whole turn went to one account; a turn that switched accounts was treated as off this PC. Each forward is now recorded under the account that served it, so a quota rise lines up with requests on this PC.",
     "额度查询改成同一个间隔": "Quota checks now share one interval",
     "Claude、ChatGPT、Grok 的订阅额度，以及 DeepSeek 和第三方 Key 的余额，现在用同一个间隔自动查。默认 1 分钟。在设置 → 通用里拖动滑块，保存后生效。最短 1 分钟，最长 10 分钟。": "Subscription quota for Claude, ChatGPT and Grok, and balances for DeepSeek and third-party keys, are now checked on one interval. The default is 1 minute. Drag the slider under Settings → General and save to apply it. The shortest is 1 minute and the longest is 10 minutes.",
+    // 0.3.47 更新说明
+    "换 Key 时会等验证结果": "Key changes wait for verification",
+    "DeepSeek 和第三方余额账号正在查询时，更换 Key 会等旧查询结束，再验证新 Key。新 Key 无效时，原来的 Key、名字、提醒线和 Harness 归属一起保留。": "When a DeepSeek or relay balance query is running, changing the key waits for it to finish before checking the new key. If the new key is invalid, the original key, name, alert threshold and Harness assignment are kept.",
+    "添加失败后保留原账号归属": "Failed additions keep the existing assignment",
+    "添加 DeepSeek 账号时，即使勾选了本机 Harness 用量归属，Key 验证失败也不会清掉原账号的归属。接口返回空金额时，也不会把它当成零余额。": "If a new DeepSeek key is rejected, selecting it for local Harness usage no longer clears the existing account assignment. Empty amounts from the API are no longer interpreted as a zero balance.",
+    "余额历史可以往前翻": "Browse earlier balance history",
+    "DeepSeek 账号即使没有本机请求，只要记过余额，也能在时间线里翻到那些日期。": "DeepSeek accounts can browse dates with recorded balances in the timeline even when there were no local requests.",
+    "零点的请求算在当天": "Midnight requests belong to the new day",
+    "DeepSeek 和号池时间线会把零点整的请求算到新的一天，和按天统计保持一致。": "DeepSeek and pool timelines assign requests at exactly midnight to the new day, matching daily statistics.",
     // 0.3.46 更新说明
     "刷新后会告诉你结果": "Refresh tells you what happened",
     "点「刷新数据」后，右上角会弹出结果：哪一家、哪个账号、哪一项额度变了多少；没变也会说已刷新。这次没问到是黄色提醒；登录失效才红色，并请你重新登录。": "After you click Refresh, a notice appears at the top right: which company, which account, and which quota window changed and by how much. Unchanged quota is still reported as refreshed. If the latest quota could not be fetched, the notice is yellow. Expired sign-in is red and asks you to sign in again.",

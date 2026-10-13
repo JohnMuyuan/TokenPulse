@@ -325,9 +325,11 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseenter'))");
   // 打开时浮层挂在 body 上、fixed 定位：不会被卡片裁掉，也不会被后面的面板盖住
   await until("document.querySelector('body > .info-tip-pop.open')");
+  await evaluate("Promise.all(document.querySelector('body > .info-tip-pop.open').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
   assert.match(await text('body > .info-tip-pop.open'), /官方已用是整个账号的/);
   assert.ok(await evaluate("Boolean(document.querySelector('body > .info-tip-pop.open button.text-btn'))"));
-  assert.ok(await evaluate("(() => { const p = document.querySelector('body > .info-tip-pop.open'), r = p.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.bottom - 6); return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && p.contains(hit); })()"), '浮层完整显示、在最上层');
+  const tipBounds = await evaluate("(() => { const p = document.querySelector('body > .info-tip-pop.open'), r = p.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.bottom - 6); return { left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:innerWidth, height:innerHeight, onTop:p.contains(hit), hit:hit?.className }; })()");
+  assert.ok(tipBounds.left >= 0 && tipBounds.top >= 0 && tipBounds.right <= tipBounds.width && tipBounds.bottom <= tipBounds.height && tipBounds.onTop, '浮层完整显示、在最上层：' + JSON.stringify(tipBounds));
   await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseleave'))");
   await until("!document.querySelector('body > .info-tip-pop.open') && document.querySelector('#quota-detail .quota-scope-tip .info-tip-pop')");
   // 共享账号的额度容量趋势也有折线了（只用本机区间折算）

@@ -1,6 +1,17 @@
-# Current handoff · 0.3.46 已正式发布（2026-10-12）
+# Current handoff · 0.3.47 修复审查进行中（2026-10-13）
 
 ## 新对话先看这里
+
+### 0.3.47 发布检查点（验证完成，待提交发布）
+
+- 起点 ca116cc / 0.3.46，初始工作区干净。当前 package.json / package-lock.json 已升级 0.3.47。
+- 修复：余额换 Key 等待已有查询、同账号编辑串行，拒绝新 Key 时保留旧 Key/名字/提醒线/Harness 归属；新增无效 Key 不夺走原 Harness 归属；空金额/布尔值不再当作零余额；DeepSeek 只有余额采样的历史日期也能翻页；DeepSeek/号池零点整请求计入新的一天。关键文件 src/main/deepseek-balance.ts、src/core/deepseek-insight.ts、src/core/pool-insight.ts。
+- 回归：scripts/test-deepseek-balance.cjs 10/10、test-deepseek-insight.cjs 5/5、test-pool-insight.cjs 8/8、test-relay-balance.cjs 5/5。余额分析测试固定本地中午；知识库 CLI 测试补本地 Epoch 目录；浮层测试等动画结束后验几何位置，失败输出边界。
+- 最终 npm test、npm run test:ui、npm run dist 均退出 0，日志在项目根 audit-test-final.log、audit-ui-final.log、audit-dist.log（忽略文件）。早期失败：沙箱 PowerShell EPERM（获准沙箱外测试后解决）；余额时间线凌晨跨日（固定时钟）；浮层测试时序及 Animation 跨 IPC 返回失败（等待动画并返回 true 后全套通过）。
+- 产物：dist/TokenPulse-0.3.47-Setup.exe、.exe.blockmap、TokenPulse-0.3.47-Portable.exe、latest.yml。dist/verify-0.3.47.cjs 核验 132 个运行时文件逐字节一致、包内 0.3.47 / build/main/index.js、latest.yml 的安装包 SHA512 和大小一致；exe ProductVersion 0.3.47.0。SHA256/大小见 dist/verification-0.3.47.json。
+- 发布文案：dist/release-0.3.47.md；中英文应用说明 renderer/intro.js、renderer/i18n.js；README 已更新。
+- 资源收尾：四个附件、dist/win-unpacked/TokenPulse.exe 与 resources/app.asar 独占读取成功，检测句柄均已 Dispose。CIM 检查无本轮残留 Node/Electron/打包器；用户安装版 PID 20404 及子进程保持运行，未关闭。终端保持项目根目录。
+- 尚未提交/发布/安装；下一步提交和推送，上传四个附件为草稿，核验远端大小与摘要后正式发布并确认 latest。未验证真实付费接口、真实 Key 更换、真实 Harness 切换或在本机安装新版。自动化使用合成数据。本轮修复的是已确认缺陷，不表示全项目没有其他潜在问题。
 
 ### 0.3.46 已正式发布（2026-10-12）
 

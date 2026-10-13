@@ -71,7 +71,8 @@ export function parseBalance(body: string): { available: boolean; infos: Balance
   for (const raw of json.balance_infos.slice(0, 8)) {
     const item = raw as Record<string, unknown>;
     const currency = typeof item?.currency === "string" && /^[A-Z]{3}$/.test(item.currency) ? item.currency : "";
-    const total = Number(item?.total_balance), granted = Number(item?.granted_balance), toppedUp = Number(item?.topped_up_balance);
+    const amount = (value: unknown) => typeof value === "number" || (typeof value === "string" && value.trim() !== "") ? Number(value) : NaN;
+    const total = amount(item?.total_balance), granted = amount(item?.granted_balance), toppedUp = amount(item?.topped_up_balance);
     if (!currency || !Number.isFinite(total)) continue;
     infos.push({ currency, total, granted: Number.isFinite(granted) ? granted : 0, toppedUp: Number.isFinite(toppedUp) ? toppedUp : 0 });
   }
@@ -91,6 +92,8 @@ function labelText(value: unknown) {
 export class DeepSeekBalance {
   private stored: Stored;
   private loading = new Set<string>();
+  private pending = new Map<string, Promise<ReturnType<DeepSeekBalance["state"]>>>();
+  private edits = new Map<unknown, Promise<ReturnType<DeepSeekBalance["state"]>>>();
   private lastStarted = new Map<string, number>();
   private timer?: ReturnType<typeof setInterval>;
   private everyMs = 60_000;
@@ -182,7 +185,8 @@ export class DeepSeekBalance {
     // 第一个账号默认就是本机 Harness 用的那个；之后加的要用户自己指定
     const firstDeepseek = kind === "deepseek" && !this.stored.accounts.some((item) => item.kind === "deepseek");
     const account: Account = { id: crypto.randomBytes(6).toString("hex"), kind, label: labelText(input.label), apiKey: key, ...(kind === "relay" ? { baseUrl, ...(iconOf(input.icon) ? { icon: iconOf(input.icon) } : {}), ...(avatarOf(input.avatar) ? { avatar: avatarOf(input.avatar) } : {}) } : {}), ...(alertBelow ? { alertBelow } : {}), ...(kind === "deepseek" && (input.harness === true || (input.harness !== false && firstDeepseek)) ? { harness: true } : {}) };
-    if (account.harness) for (const other of this.stored.accounts) other.harness = false;
+    const wantsHarness = account.harness;
+    account.harness = false;
     this.stored.accounts.push(account);
     this.save();
     await this.refresh(account.id, true, true);
@@ -195,10 +199,25 @@ export class DeepSeekBalance {
       this.save(); this.publish();
       throw new Error(reason);
     }
+    if (wantsHarness && this.stored.accounts.includes(account)) {
+      for (const other of this.stored.accounts) other.harness = other === account;
+      this.save(); this.publish();
+    }
     return { ...this.state(), id: account.id };
   }
   /** 改名字、提醒线，或者换 Key（换 Key 同样先查一次，不对就保持原样）。 */
   async update(id: unknown, value: unknown) {
+    const previous = this.edits.get(id);
+    const task = (async () => {
+      if (previous) await previous.catch(() => {});
+      if (typeof id === "string") await this.pending.get(id);
+      return this.updateNow(id, value);
+    })();
+    this.edits.set(id, task);
+    try { return await task; }
+    finally { if (this.edits.get(id) === task) this.edits.delete(id); }
+  }
+  private async updateNow(id: unknown, value: unknown) {
     const account = this.find(id);
     const input = (value ?? {}) as Record<string, unknown>;
     const key = typeof input.key === "string" ? input.key.trim() : "";
@@ -206,6 +225,17 @@ export class DeepSeekBalance {
     if (key && account.kind === "relay" && !RELAY_KEY.test(key)) throw new Error("这不像 API Key（应该是一串不带空格的字符）");
     if (key && this.stored.accounts.some((item) => item !== account && item.apiKey === key && (item.baseUrl ?? "") === (account.baseUrl ?? ""))) throw new Error("这个 API Key 已经添加过了");
     const alertBelow = "alertBelow" in input ? alertAmount(input.alertBelow) : account.alertBelow;
+    if (key && key !== account.apiKey) {
+      const before = { apiKey: account.apiKey, last: account.last, alerted: account.alerted };
+      account.apiKey = key; account.last = undefined; account.alerted = false;
+      await this.refresh(account.id, true, true);
+      if ((account.last as BalanceResult | undefined)?.error === INVALID_KEY) {
+        Object.assign(account, before);
+        this.save(); this.publish();
+        throw new Error(INVALID_KEY);
+      }
+    }
+    if (!this.stored.accounts.includes(account)) return this.state();
     if ("label" in input) account.label = labelText(input.label);
     if (account.kind === "relay" && ("icon" in input || "avatar" in input)) {
       const icon = iconOf(input.icon), avatar = avatarOf(input.avatar);
@@ -215,17 +245,6 @@ export class DeepSeekBalance {
     if (input.harness === true && account.kind === "deepseek") { for (const other of this.stored.accounts) other.harness = false; account.harness = true; }
     else if (input.harness === false) account.harness = false;
     if (alertBelow !== account.alertBelow) { if (alertBelow) account.alertBelow = alertBelow; else delete account.alertBelow; account.alerted = false; }
-    if (key && key !== account.apiKey) {
-      const before = { apiKey: account.apiKey, last: account.last };
-      account.apiKey = key; account.last = undefined; account.alerted = false;
-      this.save();
-      await this.refresh(account.id, true, true);
-      if ((account.last as BalanceResult | undefined)?.error === INVALID_KEY) {
-        account.apiKey = before.apiKey; account.last = before.last;
-        this.save(); this.publish();
-        throw new Error(INVALID_KEY);
-      }
-    }
     this.check(account);
     this.save(); this.publish();
     return this.state();
@@ -256,6 +275,15 @@ export class DeepSeekBalance {
     return this.state();
   }
   async refresh(id: unknown, manual: boolean, force = false) {
+    if (typeof id !== "string") return this.state();
+    const previous = this.pending.get(id);
+    if (previous) return previous;
+    const task = this.refreshNow(id, manual, force);
+    this.pending.set(id, task);
+    try { return await task; }
+    finally { if (this.pending.get(id) === task) this.pending.delete(id); }
+  }
+  private async refreshNow(id: unknown, manual: boolean, force = false) {
     const account = this.stored.accounts.find((item) => item.id === id);
     if (!account || this.loading.has(account.id) || this.stopped) return this.state();
     if (manual && !force && this.now() - (this.lastStarted.get(account.id) ?? -Infinity) < MANUAL_GAP_MS) return this.state();

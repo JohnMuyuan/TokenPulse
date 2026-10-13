@@ -159,7 +159,7 @@ try {
   fs.writeFileSync(path.join(dir, 'litellm.json'), JSON.stringify(litellm));
   fs.writeFileSync(path.join(dir, 'openrouter.json'), JSON.stringify(openrouter));
   const out = path.join(dir, 'gh-output');
-  execFileSync(process.execPath, [path.join(__dirname, 'update-knowledge.cjs'), '--dir', dir, '--write', '--litellm', path.join(dir, 'litellm.json'), '--openrouter', path.join(dir, 'openrouter.json'), '--today', day, '--report', path.join(dir, 'report.md')], { env: { ...process.env, GITHUB_OUTPUT: out }, stdio: 'pipe' });
+  execFileSync(process.execPath, [path.join(__dirname, 'update-knowledge.cjs'), '--dir', dir, '--write', '--litellm', path.join(dir, 'litellm.json'), '--openrouter', path.join(dir, 'openrouter.json'), '--epoch', dir, '--today', day, '--report', path.join(dir, 'report.md')], { env: { ...process.env, GITHUB_OUTPUT: out }, stdio: 'pipe' });
   assert.match(fs.readFileSync(out, 'utf8'), /changed=true\nreview=false\nversion=2026\.09\.30/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'models.json'), 'utf8')).version, '2026.09.30');
   assert.match(fs.readFileSync(path.join(dir, 'report.md'), 'utf8'), /模型知识库自动更新/);

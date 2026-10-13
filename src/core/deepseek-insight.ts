@@ -257,10 +257,10 @@ function timelineStudy(accountId: string, window: "five" | "week", cycleId: stri
     const start = shiftDay(end, -length);
     if (end <= now - DEEPSEEK_DAYS * DAY) break;
     const active = now >= start && now < end;
-    if (active || rows.some((row) => row.at > start && row.at <= end)) cycles.push({ id: `${start}:${end}`, startAt: start, endAt: end, resetAt: end, used: 0, sampleAt: now, active, resetCard: false });
+    if (active || rows.some((row) => row.at >= start && row.at < end) || samples.some((sample) => sample.at >= start && sample.at < end)) cycles.push({ id: `${start}:${end}`, startAt: start, endAt: end, resetAt: end, used: 0, sampleAt: now, active, resetCard: false });
   }
   const selected = (cycleId ? cycles.find((cycle) => cycle.id === cycleId) : null) ?? cycles[0] ?? null;
-  const observed = selected ? rows.filter((row) => row.at > selected.startAt && row.at <= Math.min(selected.endAt, now)) : [];
+  const observed = selected ? rows.filter((row) => row.at >= selected.startAt && row.at < selected.endAt && row.at <= now) : [];
   const binMs = 60_000;
   const bins = new Map<string, { key: string; model: string; effort: string; startAt: number; endAt: number; firstAt: number; lastAt: number; count: number; calls: number; tokens: number; costUsd: number | null }>();
   for (const row of observed) {

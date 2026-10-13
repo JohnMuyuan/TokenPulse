@@ -125,6 +125,42 @@ const body = (total, extra = {}) => JSON.stringify({ is_available: true, balance
     service.stop();
     pass('state survives a restart; deleting one account leaves the others; the single-key format from the first test build is migrated');
 
+    // 0.3.47：失败的新增不能夺走原账号的 Harness 归属。
+    service.start(); replies.set(KEY2, { status: 401, body: '{}' });
+    const owner = service.state().accounts[0].id;
+    await service.update(owner, { harness: true });
+    await assert.rejects(() => service.add({ key: KEY2, harness: true }), /无效或已被删除/);
+    assert.equal(service.owner(owner).local, true, '新增失败后保留原 Harness 归属');
+    pass('a rejected account does not steal Harness ownership');
+
+    // 非金额值不能被 Number(null/false/空串) 转成 0，触发虚假的余额告警。
+    for (const invalid of [null, false, '', ' ', [], {}]) {
+      assert.equal(parseBalance(JSON.stringify({ balance_infos: [{ currency: 'CNY', total_balance: invalid }] })).infos.length, 0);
+    }
+    pass('invalid balance values are not interpreted as zero');
+
+    // 查询尚未结束时换 Key：必须真正验证新 Key，拒绝后完整保留旧配置。
+    let release;
+    const seen = [];
+    const concurrent = new DeepSeekBalance({ fetcher: async key => {
+      seen.push(key);
+      if (seen.length === 1) return new Promise(resolve => { release = resolve; });
+      return { status: 401, body: '{}' };
+    } });
+    const original = concurrent.state().accounts[0];
+    const refresh = concurrent.refresh(original.id, false);
+    const update = concurrent.update(original.id, { key: KEY3, label: 'changed', harness: false, alertBelow: 99 });
+    const rejected = assert.rejects(update, /无效或已被删除/);
+    release({ status: 200, body: body(66) });
+    await refresh;
+    await rejected;
+    assert.equal(seen.length, 2, '新 Key 也发起一次验证');
+    const restored = concurrent.state().accounts[0];
+    assert.deepEqual([restored.keyHint, restored.label, restored.harness, restored.alertBelow], [original.keyHint, original.label, original.harness, original.alertBelow]);
+    assert.equal(restored.last.infos[0].total, 66);
+    concurrent.stop();
+    pass('key replacement waits for the in-flight query and rolls back all rejected edits');
+
     // 型号名和单价
     assert.equal(displayModel('deepseek-flash'), 'DeepSeek-V4.1-Flash');
     assert.equal(displayModel('deepseek-v4-pro'), 'DeepSeek-V4-Pro');

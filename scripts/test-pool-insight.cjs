@@ -176,5 +176,13 @@ const summary = insight.queryPool({ op: 'summary', pool });
   pass('pool insight: poolDef returns names and ids only');
 }
 
+{
+  const midnightPool = { ...pool, id: 'midnight', name: 'Midnight' };
+  write({ ...base, at: startOfToday, poolId: 'midnight', providerId: 'prov-k', status: 200, input: 123, output: 7, upstream: 'openai-chat', requestModel: 'gpt-5.1' });
+  const line = insight.queryPool({ op: 'timeline', pool: midnightPool });
+  assert.equal(line.five.totals.tokens, 130, '零点整的请求属于当天');
+  assert.equal(line.five.cycles.length, 1, '不能把零点整的请求算到昨天');
+  pass('pool timeline assigns midnight requests to the new day');
+}
 fs.rmSync(root, { recursive: true, force: true });
 console.log(`test-pool-insight: ${checks} checks passed`);

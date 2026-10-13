@@ -25,6 +25,9 @@ let checks = 0;
 const pass = name => { checks++; console.log('PASS ' + name); };
 const H = 3600_000, D = 24 * H;
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} ≈ ${b}`);
+// 固定本地中午，避免凌晨执行时“两小时前”的请求落在昨天。
+const realNow = Date.now;
+Date.now = () => new Date(2026, 9, 12, 12).getTime();
 
 try {
   // 1. 出字时间：step/start 之后 1.7 秒来第一块，再过 4 秒结束，输出 800 Token → 首字 1700 毫秒、每秒 200 Token
@@ -119,7 +122,12 @@ try {
   assert.ok(line.week.track.every(point => point.pct >= 0 && point.pct <= 100 && point.value > 0));
   assert.deepEqual([line.week.offMachine.detected.length, line.week.attribution.intervals.length], [0, 0]);
   const older = insight.queryDeepSeek({ op: 'timeline', accountId: 'line', local: false });
-  assert.deepEqual([older.five.timeline.length, older.five.cycles.length], [0, 1], '没指定本机用量：时间线上没有请求');
+  assert.equal(older.five.timeline.length, 0, '没指定本机用量：时间线上没有请求');
+  assert.ok(older.five.cycles.length > 1, '只有余额采样的历史日期也能翻页');
+  const past = older.five.cycles.find(cycle => !cycle.active);
+  const pastLine = insight.queryDeepSeek({ op: 'timeline', accountId: 'line', local: false, cycles: { five: past.id } });
+  assert.equal(pastLine.five.selected.id, past.id);
+  assert.ok(pastLine.five.track.length > 0);
   pass('the timeline is cut by day and by 7 days, carries the balance curve and has no off-machine markup');
 
   console.log(`${checks}/5 deepseek insight checks passed`);
@@ -127,5 +135,6 @@ try {
   console.error('FAIL', error.stack || error.message);
   process.exitCode = 1;
 } finally {
+  Date.now = realNow;
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 留给系统清 */ }
 }
