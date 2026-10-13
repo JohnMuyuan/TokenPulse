@@ -1,6 +1,24 @@
-# Current handoff · 0.3.49 已正式发布（2026-10-13）
+# Current handoff · 0.3.50 已正式发布（2026-10-13）
 
 ## 新对话先看这里
+
+### 0.3.50 已正式发布（2026-10-13）
+
+- 用户验收后发布，并要求更新 README 截图和内容。README：开头介绍、Electron 44 徽章、号池 402 / 避开用完的号、速度线合并、Grok 默认模型接回、新增「并发监控」一节、功能表加「布局随你摆」「分章节的新手引导」、官方账号「切到 CLI」、截图表加 providers / layout / tour / compact、DeepSeek Harness 会话文件、隐私一节改写（网络请求清单、切到 CLI 时凭据去向）。`scripts/capture-ui.cjs` 新增三张截图：供应商页（临时目录里存的虚构供应商和号池）、编辑布局、新手引导目录；全部截图重新生成，均为演示 / 示例数据并经泄露检查。
+- 发布前追加修复：① 0.3.49 起没拖过的卡片按 LAYOUT 表顺序排，DeepSeek / 第三方 Key / 号池页的时间线和模型速度被挪到最上面——`rankOf` 没有存过名次时改用卡片第一次出现时记下的 `data-layout-natural`（`sortZone` 记录，`saveZoneOrder` 也用），恢复默认能回到原顺序；`test-pool-quota-ui.cjs` 加顺序断言。② 引导「目录」打开时聚焦当前章。③ 供应商页副标题补 DeepSeek Harness。④ `test-model-study-ui.cjs` 浮层测试改成等感叹号滚进可视区再悬停（整套跑时两次以相同坐标失败、单独跑通过）。
+- 最终：`npm test` 退出 0（0 FAIL）；`npm run test:ui` 退出 0（77 PASS）；`npm run dist` 退出 0；`dist/verify-0.3.50.cjs`：133 个运行时文件逐字节一致，latest.yml version 0.3.50。
+- 提交 7c056a3（0.3.50：分章节的新手引导、号池速度合成一条线、更新 README 和截图），标签 v0.3.50，已推送。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.50 ，非草稿、非预发布，releases/latest 指向 v0.3.50，公开 latest.yml 为 0.3.50。附件 uploaded 且与本地一致：Setup.exe 112578568 / 25fa7cd58b6108bf18bceba9087ff3b6781b0afbf3162978b17965e2acb38e08；.blockmap 119705 / ed24216e192354395cfbc5da2cfc1cdf4478650e8e0bdff09971f71d525158a9；Portable.exe 112321428 / d53d3d3da1844dc02f278215277ea95e96d0c720588d41e13e0fe365e7cd54a8；latest.yml 352 / f849a3ca6aa71b891b9f60d982130daae728b6fe8db17167c0fb10a58f10f076。
+- 收尾事故（已处理）：写 HANDOFF 的一条 shell 命令里反引号被当成命令替换，意外又跑了 `npm test` 和半套 `npm run test:ui`（发布之后）。核对后结束了这些进程（全部是项目 node_modules 里的 electron / npm，命令行确认，用户安装版未动）；dist 里四个附件的 SHA256 重新核对，和已上传的一致，没被重新打包。之后无残留 node / electron 进程。教训：中文说明里带反引号时不要放进双引号的 shell 字符串，改用 Edit / Write。
+
+以下为开发过程记录（「未提交」等字样已过期）：
+
+### 0.3.50 测试版（开发记录）
+
+- 起点 7751ae6（0.3.49 已发布）。用户两项：
+  1. 新手引导太简单：`renderer/intro.js` 的 STEPS 重写成 35 步、7 章（开始、总览、额度详情、用量明细、供应商、会话与监控、个性化与设置），每步带 `chapter`；卡片左上角显示章节名，右上角「目录」（`.tour-toc`）能跳到某一章，Esc 先关目录、上下键在目录里移动。新增内容：统计小卡、工具分布、这个账号的请求、号池 / 余额页（纯文字步）、用量分析、模型速度走势、供应商（一键切换、添加供应商和号池、本地路由、透明转发、转发记录、配置保护和导入，用 `PulseProviders.open(section)` 切到对应二级菜单并高亮菜单项）、并发监控（只高亮侧栏、不切页：切过去会让并发监控写历史）、编辑布局、设置（切到 CLI、余额账号等）。删掉了过时的「组成账号池」。修了旧 bug：出口 / 会话两步的 `[data-page=...]` 也匹配到 `<body>`，高亮了整个窗口，改成 `#nav [data-page=...]`。`PulseIntro` 多导出 `titles()` / `chapters`。intro.css 加章节和目录样式。i18n 补 35 条 + 「目录」+「N 步」模板。
+  2. 模型速度走势里号池每个账号一条线：转发记录里号池的 provider 是「号池名 · 成员」。`route-ledger.ts` 新增 `speedVia(row)`：`pool:true` 时取「 · 」前的号池名；`pass-speed.ts` 的 `speedSeries` 和 `route-ledger.ts` 的 `passSpeed` 都用它。真实数据只读核对：Grok 现在每个型号 × 等级一条「所有号」线。说明文字（用量明细、供应商透明转发页）和英文已改。
+- 测试：`test-pass-speed.cjs` 加号池合并断言；`test-intro-ui.cjs` 改成按标题找步数，新增 8 个目标检查和目录跳转检查，数据目录指纹忽略 `concurrency-history`（后台监控自己写，和引导无关）。`npm test` 退出 0（0 FAIL，audit-test-0350.log）；`npm run test:ui` 最后一次退出 0（77 PASS，audit-ui-0350.log）。之前几次完整跑分别在 agent-switch-ui（速度图例 10 秒等待）、model-study-ui（浮层位置）、test-ui（总超时）偶发失败，每个单独重跑都通过，判断为负载下的时序问题，没有改这些测试。
+- 版本 0.3.50；intro NOTES / i18n / README 已写。测试版 `npx electron-builder --win dir --publish never` 退出 0，exe 0.3.50.0，asar 含新代码；exe/asar 可独占打开；无残留进程（中途一个我自己的走查脚本卡住，PID 2196，核对命令行后结束）。未写 release 文案，未提交。
 
 ### 0.3.49 已正式发布（2026-10-13）
 
