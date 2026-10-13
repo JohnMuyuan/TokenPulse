@@ -113,13 +113,13 @@ function listen(handler) {
   fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'quota-history.json'), JSON.stringify({ version: 1, accounts: { claude: [sample('qa-a', 10, 120), sample('qa-b', 70, 3), sample('qa-c', 40, 48)] } }));
   fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'quota-checked.json'), JSON.stringify({ accounts: { 'claude:qa-a': t, 'claude:qa-b': t, 'claude:qa-c': t } }));
   const hits = [];
-  let limit = '';
+  let limit = '', limitStatus = 429;
   const fake = await listen((req, res) => {
     req.resume();
     req.on('end', () => {
       const auth = req.headers.authorization || '';
       hits.push(auth.replace('Bearer ', ''));
-      if (auth === 'Bearer ' + limit) { res.writeHead(429, { 'content-type': 'application/json' }); res.end('{"error":"rate_limit"}'); return; }
+      if (auth === 'Bearer ' + limit) { res.writeHead(limitStatus, { 'content-type': 'application/json' }); res.end('{"error":"rate_limit"}'); return; }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ id: 'msg_x', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }] }));
     });
@@ -152,10 +152,21 @@ function listen(handler) {
     await send();
     assert.deepEqual(hits, ['oauth-a']);
     assert.equal(view().next, 'claude:qa-a');
+    // 0.3.48：轮询也跳过用完的号。c 额度查到只剩 0.5%；a 回 402（Grok 额度用完就回这个）换下一个，之后也排后面
+    sw.saveProvider({ id: pool, app: 'claude', name: 'Quota Pool', pool: { strategy: 'round-robin', members } });
+    fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'quota-history.json'), JSON.stringify({ version: 1, accounts: { claude: [sample('qa-a', 10, 120), sample('qa-b', 20, 100), sample('qa-c', 99.5, 48)] } }));
+    fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'quota-checked.json'), JSON.stringify({ accounts: { 'claude:qa-a': t, 'claude:qa-b': t + 1, 'claude:qa-c': t } }));
+    hits.length = 0; limit = 'oauth-a'; limitStatus = 402;
+    for (let i = 0; i < 4; i++) assert.equal((await send()).status, 200, '402 换下一个成员，不把错误交给工具');
+    assert.ok(!hits.includes('oauth-c'), '额度用完的 c 不再轮到');
+    assert.equal(hits.filter(h => h === 'oauth-a').length, 1, '回过 402 的 a 只撞一次，之后排后面');
+    assert.ok(hits.filter(h => h === 'oauth-b').length >= 3);
+    limit = ''; limitStatus = 429;
+    pass('pool order: round robin skips accounts whose quota is spent; a 402 moves on and holds that account back');
     // 转发记录带上号池 id
     const logDir = path.join(process.env.TOKENPULSE_DATA_DIR, 'route-log');
     const rows = fs.readdirSync(logDir).flatMap(name => fs.readFileSync(path.join(logDir, name), 'utf8').trim().split('\n')).map(line => JSON.parse(line));
-    assert.ok(rows.length >= 5 && rows.every(row => row.poolId === pool), '每一次转发都记了号池 id');
+    assert.ok(rows.length >= 9 && rows.every(row => row.poolId === pool), '每一次转发都记了号池 id');
     assert.ok(rows.some(row => row.status === 429 && row.providerId === `${pool}@claude:qa-b`));
     pass('pool order: through the local route, reset-first and most-left pick members from saved quota, a 429 moves on and holds that account back, the view shows the next member, the route log records the pool id');
   } finally {

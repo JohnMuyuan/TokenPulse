@@ -2,7 +2,7 @@
  * 号池按额度排成员（0.3.44）：「快重置优先」和「剩余最多」两种轮换方式。
  *
  * 额度来自 quota-history.ts 记下的最近一次采样（每个官方账号按设置里的查询间隔查一次，默认 1 分钟）。
- * 两次查询之间用完了，上游回 429，路由照旧换下一个成员；这里再把回过 429 的账号记一下，
+ * 两次查询之间用完了，上游回 429（Grok 额度用完回 402），路由照旧换下一个成员；这里再把回过 429 的账号记一下，
  * 下一次查到它的额度之前（最多 10 分钟）先排到后面，免得每个请求都先撞一次 429。
  *
  * 排序分四段：有额度数据、没用完的（按方式排）→ 没有额度数据的官方账号（查不到、出口被拦）→ API Key 供应商（没有额度可看，当后备）
@@ -54,7 +54,7 @@ export function resetScore(quota: MemberQuota, now = Date.now()) {
   return window.left / hours;
 }
 
-function spent(item: PoolCandidate, now: number) {
+export function spent(item: PoolCandidate, now = Date.now()) {
   if (item.limitedAt && now - item.limitedAt < LIMIT_HOLD_MS && (!item.quota || item.quota.at <= item.limitedAt)) return true;
   const left = leftOf(item.quota);
   return left != null && left < SPENT;

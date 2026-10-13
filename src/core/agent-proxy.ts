@@ -378,8 +378,8 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       const status = upstreamRes.statusCode || 502;
       upstreamRes.once("aborted", () => incomplete(502, "回复中途断开"));
       upstreamRes.on("error", () => incomplete(502, "回复中途断开"));
-      // 号池成员：401 / 403 多半是这个账号的登录失效或没权限，换下一个成员
-      if (status === 429 || status >= 500 || (target.pool && (status === 401 || status === 403))) {
+      // 号池成员：401 / 403 多半是这个账号的登录失效或没权限，402 是额度用完（Grok 实测），都换下一个成员
+      if (status === 429 || status >= 500 || (target.pool && (status === 401 || status === 402 || status === 403))) {
         // 错误正文可能回显提示词 / 凭据，不进日志，也不用为了重试保存在内存。
         upstreamRes.resume();
         upstreamRes.on("end", () => finish({ kind: "fail", status, error: `HTTP ${status}` }));

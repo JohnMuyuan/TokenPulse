@@ -18,7 +18,7 @@ import { ccSwitchDbPath } from "./cc-switch";
 import { fetchUpstreamModels, probeUrl, startAgentProxy, type ProxyLog } from "./agent-proxy";
 import { canonicalLevels, claudeRoleEnv, desktopModelMap, desktopProfile, desktopRouteModels, DESKTOP_PROFILE_ID, DESKTOP_PROFILE_NAME, emptySlot, loadCodexTemplate, parseSlots, codexCatalogEntry, patchCodexCatalog, type DesktopMode, type ModelSlot, type ThinkingFlags } from "./agent-models";
 import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, POOL_KEY, POOL_OFFICIAL, POOL_STRATEGIES, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type PoolConfig, type PoolMember, type PoolStrategy, type ProxyTarget, type Upstream } from "./agent-types";
-import { accountQuota, leftOf, LIMIT_HOLD_MS, orderPool, type MemberQuota } from "./pool-order";
+import { accountQuota, leftOf, LIMIT_HOLD_MS, orderPool, spent, type MemberQuota } from "./pool-order";
 import type { PoolDef } from "./pool-insight";
 import { readOfficialAccountStore, resolveAccountCredential } from "./accounts";
 import { setConcurrencyIdentityResolver, type ConcurrencyScope } from './concurrency';
@@ -921,6 +921,8 @@ export async function resumeAgentProxy() {
         if (app === "grok") applyProxy(app);
         continue;
       }
+      // 上次没正常退出、期间 Grok 把默认模型换走了：路由表还是我们的，直接接回（把默认模型改回来）
+      if (app === 'grok' && store.restore[app] && grokRouteTableOurs()) { await enableProxy(app, undefined, true); continue; }
       if (!stillOwned(store, app)) {
         configTransaction(() => { const current = load(); current.proxy.apps[app] = false; save(current); });
         configNotice = '检测到外部配置变更，未自动接管 ' + AGENT_LABEL[app]; continue;
@@ -1242,14 +1244,24 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
     }];
   });
   const strategy = pool.pool.strategy;
-  if (!members.length || strategy === "fill-first") return members;
+  if (!members.length) return members;
+  if (strategy === "fill-first") return spentLast(members);
   if (strategy === "reset-first" || strategy === "most-left") {
     const order = orderPool(strategy, members.map((target) => candidateOf(target.id, target.officialAccount)), poolCurrent.get(pool.id));
     return order.map((item) => members.find((target) => target.id === item.id)!);
   }
   const start = (poolCursor.get(pool.id) ?? 0) % members.length;
   poolCursor.set(pool.id, start + 1);
-  return [...members.slice(start), ...members.slice(0, start)];
+  return spentLast([...members.slice(start), ...members.slice(0, start)]);
+}
+/*
+ * 轮询和用满再换也跳过已经用完的官方账号（0.3.48）：查到的额度剩不到 1%，或者刚回过 429 / 402（Grok 额度用完回 402）。
+ * 只是排到最后、不删：其他成员都不行时还会试它，额度恢复后自动回到轮换里。
+ */
+function spentLast(members: ProxyTarget[]) {
+  const now = Date.now();
+  const out = members.filter((target) => !target.officialAccount || !spent(candidateOf(target.id, target.officialAccount), now));
+  return [...out, ...members.filter((target) => !out.includes(target))];
 }
 /** 号池成员在 pool-order.ts 里的样子：官方账号带上最近一次额度，API Key 供应商没有额度。 */
 function candidateOf(targetId: string, account?: string) {
@@ -1267,7 +1279,7 @@ function pushLog(entry: ProxyLog) {
   // 按额度排的号池：记下这次是谁接的；官方账号回 429 就先排到后面，等下一次查到它的额度
   if (entry.poolId && !entry.pass) {
     if (!entry.error && entry.status < 400) { poolCurrent.set(entry.poolId, entry.providerId); poolLimited.delete(entry.providerId); }
-    else if (entry.status === 429 && entry.providerId.startsWith(entry.poolId + "@")) poolLimited.set(entry.providerId, entry.at);
+    else if ((entry.status === 429 || entry.status === 402) && entry.providerId.startsWith(entry.poolId + "@")) poolLimited.set(entry.providerId, entry.at);
   }
   const stats = memberStats.get(entry.providerId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };
   stats.requests += 1; if (!entry.error) stats.ok += 1; stats.lastAt = entry.at; stats.lastStatus = entry.status;
@@ -1625,6 +1637,7 @@ function writeGrok(provider: Provider, baseUrl: string, apiKey: string, _proxy: 
   }
   dropEmptyTable(blocks, 'model.' + GROK_TABLE);
   writeText(file, stringifyToml(blocks));
+  if (!provider.official && baseUrl && !configPreviewing()) dismissGrokCampaigns();
 }
 
 const CATALOG_REJECTED = '本机的 Codex 读不了 TokenPulse 生成的模型目录（多半是 Codex 更新后格式变了），这次没有写入模型目录：Codex 能正常使用，模型列表和思考等级用它自带的。请更新 TokenPulse。';
@@ -1870,6 +1883,62 @@ function codexFile() {
 function grokFile() {
   return path.join(process.env.GROK_HOME || path.join(agentHome(), ".grok"), "config.toml");
 }
+/*
+ * Grok 自己会改 [models].default（0.3.48 排查）：继续旧会话时换回那个会话的模型、/model 切换时存成默认。
+ * 以前这一行一变，TokenPulse 就当作「外部改了配置」：退出时放弃接管、下次启动不再接回本地路由，
+ * 用户在 TokenPulse 里设好的供应商就这样丢了。现在只差这一行时仍算我们的，接回时把它改回来。
+ */
+function withoutGrokDefault(text: string | null) {
+  if (text === null) return null;
+  try {
+    const blocks = parseToml(text);
+    const models = blocks.find((block) => block.header && headerName(block.header) === "models");
+    if (models) upsertKey(models.lines, "default", null);
+    return stringifyToml(blocks);
+  } catch { return text; }
+}
+/** 本地路由写的那张 [model.tokenpulse_route] 还在（地址是本机、密钥是占位），只是默认模型被 Grok 换走了。 */
+function grokRouteTableOurs() {
+  const blocks = parseToml(readText(grokFile()));
+  const table = blocks.find((block) => block.header && headerName(block.header) === tableName("model", GROK_TABLE));
+  return !!table && readKey(table.lines, "api_key") === PROXY_MANAGED
+    && normalizeUrl(readKey(table.lines, "base_url") || "") === normalizeUrl(proxyBase("grok", runtimePort || load().proxy.port));
+}
+/*
+ * Grok 的「上新活动」（远程下发的 campaigns，例如 grok-4.7-launch）会把新会话的默认模型临时换成官方新型号，
+ * 优先级高于 config.toml 的 [models].default；只有用户在 Grok 里自己改过默认模型，Grok 才把这个活动记成已关闭。
+ * TokenPulse 切到第三方供应商 / 号池时，替用户把当前改默认模型的活动记成已关闭（只往 dismissed_ids 里加，不删别的）。
+ */
+function dismissGrokCampaigns() {
+  const dir = path.dirname(grokFile());
+  const ids = new Set<string>();
+  try {
+    const walk = (value: unknown, depth: number) => {
+      if (!value || typeof value !== "object" || depth > 8) return;
+      if (Array.isArray(value)) { for (const item of value) walk(item, depth + 1); return; }
+      const obj = value as Record<string, unknown>;
+      if (Array.isArray(obj.campaigns)) for (const item of obj.campaigns) {
+        const campaign = asObj(item);
+        if (typeof campaign.id === "string" && campaign.id && asObj(campaign.models).default) ids.add(campaign.id);
+      }
+      for (const child of Object.values(obj)) walk(typeof child === "string" && /^[[{]/.test(child.trim()) ? safeJson(child) : child, depth + 1);
+    };
+    walk(JSON.parse(fs.readFileSync(path.join(dir, "settings_cache.json"), "utf8")), 0);
+  } catch { return; }
+  if (!ids.size) return;
+  const file = path.join(dir, "campaigns_state.json");
+  let state: Record<string, unknown> = {};
+  try { state = asObj(JSON.parse(fs.readFileSync(file, "utf8"))); } catch (error) { if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return; }
+  const dismissed = Array.isArray(state.dismissed_ids) ? state.dismissed_ids.filter((id): id is string => typeof id === "string") : [];
+  const added = [...ids].filter((id) => !dismissed.includes(id));
+  if (!added.length) return;
+  try {
+    const tmp = file + ".tokenpulse.tmp";
+    fs.writeFileSync(tmp, JSON.stringify({ ...state, dismissed_ids: [...dismissed, ...added] }));
+    fs.renameSync(tmp, file);
+  } catch { /* 写不了就算了：Grok 照样能用，只是新会话可能先用活动的型号 */ }
+}
+function safeJson(text: string) { try { return JSON.parse(text) as unknown; } catch { return null; } }
 
 function quoteEnv(value: string) {
   return /[\s#"'`]/.test(value) ? quote(value) : value;
@@ -1939,7 +2008,8 @@ configureConfigFiles(() => [storeFile(), ...AGENT_APPS.flatMap(filesForApp)]);
 function snapshotFiles(app: AgentApp): FileSnapshot { return Object.fromEntries(filesForApp(app).map(file => [file, configRead(file)])); }
 function stillOwned(store: Store, app: AgentApp) {
   const owned = store.owned[app];
-  return !!owned && filesForApp(app).every(file => Object.hasOwn(owned, file) && configRead(file) === owned[file]);
+  return !!owned && filesForApp(app).every(file => Object.hasOwn(owned, file)
+    && (configRead(file) === owned[file] || (app === 'grok' && withoutGrokDefault(configRead(file)) === withoutGrokDefault(owned[file]))));
 }
 function proxyIsOurs(app: AgentApp) {
   if (app === 'desktop') {
@@ -1972,7 +2042,8 @@ function restoreProxy(store: Store, app: AgentApp) {
     if (proxyIsOurs(app)) throw new Error('旧路由缺少恢复快照，请先备份并在原工具恢复直连配置后再关闭');
     return;
   }
-  if (!proxyIsOurs(app)) {
+  // Grok 只是自己换了默认模型、路由表还是我们的：照常还原，路由开关留着，下次启动接回来
+  if (!proxyIsOurs(app) && !(app === 'grok' && grokRouteTableOurs())) {
     delete store.restore[app]; delete store.proxyWritten[app]; delete store.owned[app];
     store.proxy.apps[app] = false;
     if (app === 'codex') ensureCodexLegacyProviders();

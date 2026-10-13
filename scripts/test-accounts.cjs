@@ -237,7 +237,16 @@ try {
     const { accountLabels, resolveAccount } = build("core/login-timeline.js");
     const labels = accountLabels();
     check("显示名用别名", labels.get("grok:g2") === "备用");
-    check("按邮箱对账号时不受别名影响，对上后显示别名", resolveAccount("grok", NOW, { email: "G2@example.com" }, { version: 1, kinds: {} }, labels)?.id === "grok:g2" && resolveAccount("grok", NOW, { email: "g2@example.com" }, { version: 1, kinds: {} }, labels)?.label === "备用");
+    {
+      // 0.3.48：bridge-session 的 ownerAccountUuid 一直是第一个账号，会话中途换了登录（当前邮箱是第二个）要按邮箱算
+      const two = new Map([["claude:a1", "一号"], ["claude:a2", "二号"]]);
+      two.emails = new Map([["claude:a1", "one@example.com"], ["claude:a2", "two@example.com"]]);
+      const empty = { version: 1, kinds: {} };
+      check("会话里 ref 是一号、当前邮箱是二号：算二号", resolveAccount("claude", NOW, { ref: "a1", email: "Two@example.com" }, empty, two)?.id === "claude:a2");
+      check("ref 和邮箱一致：仍按 ref", resolveAccount("claude", NOW, { ref: "a1", email: "one@example.com" }, empty, two)?.id === "claude:a1");
+      check("ref 账号没有记邮箱：仍按 ref", resolveAccount("claude", NOW, { ref: "a3", email: "two@example.com" }, empty, two)?.id === "claude:a3");
+    }
+    check("按邮箱对账号时不受别名影响，对上后显示别名",resolveAccount("grok", NOW, { email: "G2@example.com" }, { version: 1, kinds: {} }, labels)?.id === "grok:g2" && resolveAccount("grok", NOW, { email: "g2@example.com" }, { version: 1, kinds: {} }, labels)?.label === "备用");
 
     accounts.removeOfficialAccount("grok:g3", false);
     const afterRemove = accounts.readOfficialAccountStore();

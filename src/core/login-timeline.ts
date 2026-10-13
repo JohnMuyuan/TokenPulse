@@ -116,7 +116,14 @@ export function resolveAccount(
   if (!kind) return null;
   if (evidence.ref) {
     const id = accountIdOf(kind, evidence.ref);
-    return { id, label: labels.get(id) ?? evidence.email ?? id, basis: "session" };
+    /*
+     * 0.3.48：ref 来自 bridge-session 的 ownerAccountUuid，是远程控制桥接的发起账号，会话里中途换了登录也一直不变；
+     * session_context 的 userEmail 才是当前登录。两者对不上（ref 账号的邮箱已知且和当前邮箱不同）时按邮箱算。
+     */
+    const refEmail = labels.emails?.get(id);
+    if (!evidence.email || !refEmail || refEmail.toLowerCase() === evidence.email.toLowerCase()) {
+      return { id, label: labels.get(id) ?? evidence.email ?? id, basis: "session" };
+    }
   }
   if (evidence.email) {
     const email = evidence.email.toLowerCase();

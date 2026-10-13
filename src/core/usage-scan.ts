@@ -179,8 +179,9 @@ export type UsageRollups = {
  * 10：号池归属只使用共同响应 ID；重算清掉旧的时间猜测造成的账号小时账。
  * 13：DeepSeek Harness 的流水补记出字时间（首字延迟、每秒 Token 数），额度详情的「模型速度」用。
  * 14：Grok 号池一轮里的每一次转发各记一条请求（时间、账号），额度时间线才能把这段上涨认作本机。
+ * 15：Claude 会话中途换了登录时按当前邮箱归账号（bridge-session 的 ownerAccountUuid 不随登录变），重算账号小时账。
  */
-const STATE_VERSION = 14;
+const STATE_VERSION = 15;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
