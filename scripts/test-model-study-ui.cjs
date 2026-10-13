@@ -322,15 +322,12 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   assert.equal(await evaluate("getComputedStyle(document.querySelector('#quota-detail .quota-scope-tip .info-tip-pop')).display"), 'none');
   // 隐藏的测试窗口里 focus() 不触发 focus 事件，这里用悬停打开（键盘聚焦走同一个 open）
   // 等感叹号真的滚进可视区再悬停（整套测试一起跑、机器忙的时候，滚动有时还没生效，浮层就按旧位置算了）
-  await until("(() => { const t = document.querySelector('#quota-detail .quota-scope-tip'); t.scrollIntoView({ block: 'center' }); const r = t.getBoundingClientRect(); return r.top >= 60 && r.bottom <= innerHeight - 60; })()");
+  await until("(() => { const t = document.querySelector('#quota-detail .quota-scope-tip'); t.scrollIntoView({ block: 'center', behavior: 'instant' }); const r = t.getBoundingClientRect(); return r.top >= 60 && r.bottom <= innerHeight - 60; })()");
   await delay(100);
-  await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseenter'))");
-  // 打开时浮层挂在 body 上、fixed 定位：不会被卡片裁掉，也不会被后面的面板盖住
-  await until("document.querySelector('body > .info-tip-pop.open')");
-  await evaluate("Promise.all(document.querySelector('body > .info-tip-pop.open').getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)");
-  assert.match(await text('body > .info-tip-pop.open'), /官方已用是整个账号的/);
-  assert.ok(await evaluate("Boolean(document.querySelector('body > .info-tip-pop.open button.text-btn'))"));
-  const tipBounds = await evaluate("(() => { const p = document.querySelector('body > .info-tip-pop.open'), r = p.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.bottom - 6); return { left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:innerWidth, height:innerHeight, onTop:p.contains(hit), hit:hit?.className }; })()");
+  // 在同一页面任务里打开并读几何；排队的滚动事件会正常关闭浮层，不能跨多个 IPC 读取旧节点。
+  const tipBounds = await evaluate("(() => { document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseenter')); const p = document.querySelector('body > .info-tip-pop.open'); for(const animation of p.getAnimations()) animation.finish(); const r = p.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.bottom - 6); return { text:p.textContent, button:Boolean(p.querySelector('button.text-btn')), left:r.left, top:r.top, right:r.right, bottom:r.bottom, width:innerWidth, height:innerHeight, onTop:p.contains(hit), hit:hit?.className }; })()");
+  assert.match(tipBounds.text, /官方已用是整个账号的/);
+  assert.ok(tipBounds.button);
   assert.ok(tipBounds.left >= 0 && tipBounds.top >= 0 && tipBounds.right <= tipBounds.width && tipBounds.bottom <= tipBounds.height && tipBounds.onTop, '浮层完整显示、在最上层：' + JSON.stringify(tipBounds));
   await evaluate("document.querySelector('#quota-detail .quota-scope-tip').dispatchEvent(new MouseEvent('mouseleave'))");
   await until("!document.querySelector('body > .info-tip-pop.open') && document.querySelector('#quota-detail .quota-scope-tip .info-tip-pop')");
@@ -436,7 +433,7 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   console.log('PASS 0.3.12 add models + effort basis: picker from knowledge with prices, effort chips, saved to prefs, other-provider guard, dark mode, row tag "你添加的", "等级参考" with Epoch AI source, remove');
   console.log('PASS 0.3.8 model sections: both windows listed without querying, budget conversion, relative fallback, sorting, level filter, timeline lanes and quota curve (in quota page, following account tabs), focus, failure without stale data, late responses, 900px and reduced motion');
   clearTimeout(watchdog); app.exit(0);
- } catch(e){console.error('FAIL',e.message);clearTimeout(watchdog);app.exit(1);}
+ } catch(e){console.error('FAIL',e);clearTimeout(watchdog);app.exit(1);}
 }));
 if (process.env.TOKENPULSE_TEST_APP) {
  const { nativeImage } = require('electron'); const icons = require(path.join(appRoot,'build/main/icon.js')); const resources = path.dirname(appRoot);

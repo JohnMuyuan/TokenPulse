@@ -200,6 +200,94 @@
     return panel;
   }
 
+  /*
+   * 生存分析（0.3.51）：这周的额度能撑到底吗。数字在 pool-insight.ts 的 survivalOf 里算：
+   * 曲线是号池剩余（个号）随时间的变化，灰线是前几周；虚线按最近 7 天平均每天用掉的量往后推，成员的重置时间到了就回满；
+   * 「把握」= 拿最近 14 天里每一天的用量各当一次「以后天天这么用」推 7 天，撑得住的天数占多少。
+   */
+  function survivalPanel(provider, data) {
+    const panel = el('article', { class: 'panel pq-survival' }, [el('div', { class: 'panel-heading' }, [
+      el('div', {}, [el('h2', {}, ['生存分析 ', el('span', { class: 'section-tag', text: '本周 · 周一起' })]), el('p', { text: '把号池的额度当成一条生命线：这周撑不撑得住、什么时候最惊险、每个号哪天倒下的。' })]),
+    ])]);
+    const s = data?.survival;
+    if (!data) { panel.append(empty('正在读取…')); return panel; }
+    if (!s) { panel.append(empty('号池里没有官方账号成员的额度采样，没法做生存分析（API Key 成员没有额度可看）。')); return panel; }
+    const sure = s.confidence ? Math.round(s.confidence.survive / s.confidence.of * 100) : null;
+    const out = s.projection?.outAt ?? null;
+    const weekEnd = s.weekStart + 7 * DAY;
+    // 把握圆环
+    const ring = svg('svg', { viewBox: '0 0 100 100', class: 'pq-sv-ring', 'aria-hidden': 'true' });
+    ring.append(svg('circle', { cx: 50, cy: 50, r: 42, class: 'pq-sv-ring-bg' }));
+    if (sure != null) { const arc = svg('circle', { cx: 50, cy: 50, r: 42, class: 'pq-sv-ring-fg' + (sure < 60 ? ' bad' : sure < 85 ? ' warn' : ''), 'stroke-dasharray': 263.9, 'stroke-dashoffset': 263.9 * (1 - sure / 100) }); ring.append(arc); }
+    const verdict = !s.projection ? { tone: 'warn', title: '无法预测', text: '额度采样不足，暂时无法估计未来 7 天。' } : out == null
+      ? { tone: 'ok', title: '未来 7 天都撑得住', text: s.perDay != null ? `照最近 7 天平均每天用掉 ${s.perDay.toFixed(2)} 个号的速度，加上各成员的重置，号池在未来 7 天里不会断粮。` : '最近没有用量。' }
+      : { tone: out - s.now < 2 * DAY ? 'bad' : 'warn', title: `大约 ${date(out)} 会断粮`, text: `照最近 7 天平均每天用掉 ${s.perDay.toFixed(2)} 个号的速度推下去，算上各成员的重置，号池在 ${date(out)} 左右全部见底。` };
+    const chip = (color, label, value) => { const dot = el('i', { class: 'pq-dot', 'aria-hidden': 'true' }); dot.style.background = color; return el('span', { class: 'pq-sv-chip' }, [dot, span(label + ' '), el('b', { text: value })]); };
+    panel.append(el('div', { class: 'pq-sv-hero' }, [
+      el('div', { class: 'pq-sv-ringbox', title: s.confidence ? `最近 ${s.confidence.of} 天里，有 ${s.confidence.survive} 天的用量节奏能撑满 7 天` : '' }, [ring, el('div', { class: 'pq-sv-ring-center' }, [el('b', { class: 'num', text: sure == null ? '—' : sure + '%' }), el('small', { text: sure == null ? '数据还不够' : '撑住的把握' })])]),
+      el('div', { class: 'pq-sv-verdict' }, [
+        el('h3', { class: verdict.tone, text: verdict.title }),
+        el('p', { text: verdict.text }),
+        el('p', { class: 'pq-faint', text: s.confidence ? `把握：拿最近 ${s.confidence.of} 天里每一天的实际用量，各当一次「以后天天这么用」推 7 天，有 ${s.confidence.survive} 天的节奏撑得住。` : '把握要至少 3 天的额度采样才算得出来。' }),
+        el('div', { class: 'pq-sv-chips' }, [
+          chip('var(--accent)', '剩余', s.left != null ? `${s.left.toFixed(1)} 个号` : '—'),
+          chip('var(--ring-week)', '下一个号重置', s.nextReset ? date(s.nextReset) : '—'),
+          s.danger ? chip('var(--warn)', '本周最惊险', `${date(s.danger.at)} · ${s.danger.left.toFixed(1)} 个号`) : null,
+        ]),
+      ]),
+    ]));
+    // 生存曲线
+    const W = 960, H = 260, L = 40, R = 14, T = 14, B = 30, max = Math.max(1, s.accounts);
+    const x = at => L + Math.min(1, Math.max(0, (at - s.weekStart) / (7 * DAY))) * (W - L - R), y = v => T + (1 - Math.min(max, Math.max(0, v)) / max) * (H - T - B);
+    const chart = svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'pq-sv-curve', role: 'img', 'aria-label': '号池剩余额度随时间的变化' });
+    for (let v = 0; v <= max; v++) { chart.append(svg('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid' })); const t = svg('text', { x: L - 8, y: y(v) + 4, 'text-anchor': 'end', class: 'axis' }); t.textContent = String(v); chart.append(t); }
+    ['周一', '周二', '周三', '周四', '周五', '周六', '周日'].forEach((label, i) => { const t = svg('text', { x: x(s.weekStart + (i + .5) * DAY), y: H - 8, 'text-anchor': 'middle', class: 'axis' }); t.textContent = label; chart.append(t); });
+    chart.append(svg('line', { x1: L, x2: W - R, y1: y(0), y2: y(0), class: 'pq-sv-zero' }));
+    for (const week of s.past) chart.append(svg('polyline', { class: 'pq-sv-past', points: week.points.map(p => `${x(s.weekStart + p.d * DAY)},${y(p.left)}`).join(' ') }));
+    if (s.curve.length) {
+      chart.append(svg('path', { class: 'pq-sv-area', d: `M${x(s.curve[0].at)},${y(0)} ` + s.curve.map(p => `L${x(p.at)},${y(p.left)}`).join(' ') + ` L${x(s.curve.at(-1).at)},${y(0)} Z` }));
+      chart.append(svg('polyline', { class: 'pq-sv-line', points: s.curve.map(p => `${x(p.at)},${y(p.left)}`).join(' ') }));
+    }
+    const ahead = (s.projection?.points || []).filter(p => p.at <= weekEnd);
+    if (ahead.length && s.left != null) chart.append(svg('polyline', { class: 'pq-sv-ahead', points: [`${x(s.now)},${y(s.left)}`, ...ahead.map(p => `${x(p.at)},${y(p.left)}`)].join(' ') }));
+    const mark = (at, v, cls, label, anchor = 'middle', offset = -12) => {
+      chart.append(svg('circle', { cx: x(at), cy: y(v), r: 6, class: cls }));
+      const t = svg('text', { x: x(at) + (anchor === 'end' ? -10 : anchor === 'start' ? 10 : 0), y: y(v) + offset, 'text-anchor': anchor, class: cls + '-label' }); t.textContent = label; chart.append(t);
+    };
+    if (s.danger && s.curve.length > 3) mark(s.danger.at, s.danger.left, 'pq-sv-danger', `最惊险 ${s.danger.left.toFixed(1)}`, x(s.danger.at) > W - 160 ? 'end' : 'start');
+    if (s.left != null) mark(s.now, s.left, 'pq-sv-now', `现在 ${s.left.toFixed(1)}`, x(s.now) > W - 120 ? 'end' : 'middle', s.danger && Math.abs(x(s.now) - x(s.danger.at)) < 130 && Math.abs(y(s.left) - y(s.danger.left)) < 30 ? 22 : -12);
+    if (out != null && out <= weekEnd) { const t = svg('text', { x: Math.min(W - R - 4, x(out)), y: y(0) - 8, 'text-anchor': 'end', class: 'pq-sv-out-label' }); t.textContent = '断粮'; chart.append(t, svg('circle', { cx: x(out), cy: y(0), r: 5, class: 'pq-sv-out' })); }
+    const legendItem = (cls, label) => el('span', {}, [el('i', { class: 'pq-sv-key ' + cls, 'aria-hidden': 'true' }), span(label)]);
+    panel.append(el('div', { class: 'pq-sv-chart' }, [chart, el('div', { class: 'pq-sv-legend' }, [legendItem('line', '本周'), legendItem('ahead', '照最近 7 天的速度往后推'), s.past.length ? legendItem('past', `前 ${s.past.length} 周`) : null, legendItem('zero', '断粮线')])]));
+    // 每个号的寿命 + 这周的数字
+    const lanes = el('div', { class: 'pq-sv-lanes' }, [el('h3', { text: '每个号这周的状态' }), ...s.members.map(member => {
+      const lane = el('div', { class: 'pq-sv-lane' });
+      const pos = at => `${Math.min(100, Math.max(0, (at - s.weekStart) / (7 * DAY) * 100))}%`;
+      const alive = el('i', { class: 'pq-sv-alive' }); alive.style.width = pos(s.now); lane.append(alive);
+      for (const span_ of member.dead) { const dead = el('i', { class: 'pq-sv-dead', title: `${date(span_.from)} – ${date(span_.to)} 额度用完` }); dead.style.left = pos(span_.from); dead.style.width = `calc(${pos(span_.to)} - ${pos(span_.from)})`; lane.append(dead); }
+      for (const at of member.resets) { const tick = el('i', { class: 'pq-sv-reset', title: `${date(at)} 重置` }); tick.style.left = pos(at); lane.append(tick); }
+      if (member.outAt && member.outAt <= weekEnd) { const fall = el('i', { class: 'pq-sv-fall', title: `照现在的速度，${date(member.outAt)} 左右见底`, text: '×' }); fall.style.left = pos(member.outAt); lane.append(fall); }
+      const dead = member.left != null && member.left < 1;
+      return el('div', { class: 'pq-sv-member' }, [
+        el('b', { text: member.name, translate: 'no', title: member.name }),
+        lane,
+        el('span', { class: 'pq-sv-life' + (dead ? ' out' : '') }, [el('b', { class: 'num', text: member.left == null ? '—' : dead ? '见底' : `剩 ${pct(member.left)}` }), el('small', { text: `占用量 ${percent(member.share * 100)}` })]),
+      ]);
+    })]);
+    const stat = (label, value, sub, tone = '') => el('div', { class: 'pq-sv-stat ' + tone }, [el('span', { text: label }), el('b', { class: 'num', text: value }), el('small', { text: sub })]);
+    const weeks = el('div', { class: 'pq-sv-weeks' }, [...[...s.past].reverse().map(week => el('span', { class: week.min > 0.05 ? 'ok' : 'out', title: `${date(week.week).slice(0, 5)} 那周最低 ${week.min.toFixed(1)} 个号` }, [el('i', { text: week.min > 0.05 ? '✓' : '×' }), el('small', { text: date(week.week).slice(0, 5) })])),
+      el('span', { class: 'now', title: '本周' }, [el('i', { text: sure == null ? '?' : sure + '%' }), el('small', { text: '本周' })])]);
+    const stats = el('div', { class: 'pq-sv-side' }, [el('div', { class: 'pq-sv-stats' }, [
+      stat('满额一个号能撑', s.avgLifeDays != null ? `${s.avgLifeDays.toFixed(1)} 天` : '—', '按各号最近 7 天的用量'),
+      stat('号池每天用掉', s.perDay != null ? `${s.perDay.toFixed(2)} 个号` : '—', '最近 7 天平均'),
+      stat('本周最低', s.danger ? `${s.danger.left.toFixed(1)} 个号` : '—', s.danger ? date(s.danger.at) : '', s.danger && s.danger.left < 0.5 ? 'warn' : ''),
+      stat('连续撑过', `${s.streak} 周`, s.past.length ? `前 ${s.past.length} 周里` : '还没有往周的数据'),
+    ]), s.past.length ? weeks : null]);
+    panel.append(el('div', { class: 'pq-sv-grid' }, [lanes, stats]));
+    panel.append(el('p', { class: 'quota-footnote', text: '只算官方账号成员。官方的百分比是整个账号的消耗（网页聊天、其他设备也算），「断粮」指所有官方账号成员的每周额度都见底；号池里的 API Key 成员还能接着用。往后推是估计，用量忽多忽少时会有偏差。' }));
+    return panel;
+  }
+
   /** 号池用了多少：Token、参考费用、用了多久。 */
   function usagePanel(provider, data) {
     const panel = el('article', { class: 'panel window-panel pq-usage' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '号池用量' }), el('span', { class: 'section-tag', text: appOf(provider).name })])]);
@@ -325,6 +413,7 @@
     ]));
     if (entry.failed && !data) host.append(el('p', { class: 'stale-note' }, [icon('alert'), span('号池的统计没有读出来，稍后会自动重试。')]));
     host.append(el('div', { class: 'quota-window-grid' }, [markLayout(quotaPanel(provider, data), 'quota:pool-quota'), markLayout(usagePanel(provider, data), 'quota:pool-usage')]));
+    if (provider.pool.members.some(member => member.type === 'account')) host.append(markLayout(survivalPanel(provider, data), 'quota:pool-survival'));
     host.append(markLayout(membersPanel(provider, data), 'quota:pool-members'));
     host.append(historyGrid(data, after));
     if (timelineNode) host.append(timelineNode);

@@ -623,6 +623,7 @@
     }
   }
   window.PulseInsights = { render: draw };
+  window.PulseInsights.refreshSpeed = () => loadSpeedLines(true);
   // 速度记录先在后台读好：打开用量明细时折线图直接画出来，不会读完才把下面的内容往下推
   setTimeout(() => loadSpeedLines(), 1500);
 })();

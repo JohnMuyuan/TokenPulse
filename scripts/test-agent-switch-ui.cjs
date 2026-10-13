@@ -4,6 +4,9 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
+let speedReads = 0;
+const register = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, handler) => register(channel, channel === 'pass-speed:series' ? (...args) => { speedReads++; return handler(...args); } : handler);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-agent-ui-'));
 const home = path.join(root, 'home');
@@ -117,6 +120,10 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     // 仍然算官方登录：Claude Code 那一页的当前供应商是官方
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav [data-section=claude] small').textContent`), 'Claude 官方');
     // 量到的速度来自保存的转发记录（0.3.39 起在额度详情「全部模型的速度」）：放几条进去，按型号 × 思考等级取中位数
+    const readsBefore = speedReads;
+    await evaluate('window.PulseInsights.refreshSpeed()');
+    while (speedReads === readsBefore) await delay(10);
+    await delay(100); // 确保“还没新记录”的结果已经进入预读缓存。
     const month = new Date(), speedFile = path.join(root, 'data', 'route-log', `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}.jsonl`);
     const speedRow = (speed, first, i, extra = {}) => JSON.stringify({ at: Date.now() - 60000 * (i + 1), app: 'claude', providerId: 'pass-claude', provider: '官方登录（透明转发）', model: 'claude-qa-5', requestModel: 'claude-qa-5', status: 200, ms: 9000, pass: true, firstByteMs: 900, firstTokenMs: first, tokensPerSec: speed, input: 100, output: 700, ...extra });
     fs.writeFileSync(speedFile, [...[[80, 1200], [100, 1500], [120, 2400]].map(([speed, first], i) => speedRow(speed, first, i)), speedRow(98, 6000, 5, { effort: 'max' }), speedRow(undefined, 800, 6, { model: 'short-only', requestModel: 'short-only', output: 5 })].join('\n') + '\n');
@@ -126,6 +133,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await evaluate(`document.querySelector('${P} [data-action=open-speed]').click()`);
     const SPEED = '.speed-lines-panel';
     await until(`state.page === 'usage' && document.querySelectorAll('${SPEED} .speed-lines-chip').length === 2`);
+    assert.ok(speedReads > readsBefore + 1, '速度入口会重新读取预读缓存之后新增的记录');
     const chips = () => evaluate(`[...document.querySelectorAll('${SPEED} .speed-lines-chip')].map(c => [c.querySelector('.speed-lines-name').textContent, c.querySelector('small').textContent, c.querySelector('b').textContent, c.getAttribute('aria-pressed')])`);
     assert.deepEqual(await chips(), [['claude-qa-5', '官方登录（透明转发）', '100', 'true'], ['claude-qa-5 · max', '官方登录（透明转发）', '98', 'true']], '思考等级分开一条线，图例写整段时间的中位速度');
     assert.equal(await evaluate(`document.querySelector('${SPEED} [data-speed-range].on').dataset.speedRange`), '0', '默认看全部');

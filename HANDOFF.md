@@ -1,6 +1,44 @@
-# Current handoff · 0.3.50 已正式发布（2026-10-13）
+# Current handoff · 0.3.51 已验收，正在正式发布（2026-10-13）
 
 ## 新对话先看这里
+
+### 0.3.51 已验收，正在正式发布（2026-10-13）
+
+- **发布检查点（构建核验完成，待提交上传）**：用户已验收并明确要求发布 GitHub。npm run dist 退出0（audit-dist-0351.log）；140个运行时文件与验收版ASAR逐字节一致，包内version0.3.51，exe ProductVersion0.3.51.0。此前 npm test / 最终 npm run test:ui 已通过（88条PASS），本轮代码未改。latest.yml的版本、安装包SHA512和大小核对一致。
+- 四个本地发布附件：dist/TokenPulse-0.3.51-Setup.exe 112602875 / SHA256 903e15922b6b2b799185ffe0fb261a809004ebd16df6b957ea82dbae4dab7387；.exe.blockmap 119730 / f9c85c431eb6de5df26296f96c3f58bd48e40a3dae25bd005375c28793769c75；TokenPulse-0.3.51-Portable.exe 112345727 / dfe7a0746fedc7b84a548e8709b546eb34e68aac79be98087fa6ce614dc87fe5；latest.yml 352 / fb81ebe32bba0419da7463b9c08a215edd97dcf8118eab390bc24d3fc8ea230a。摘要记录 dist/assets-0.3.51.json；发布正文 dist/release-0.3.51.md 已冻结，并经独立只读核对PASS。
+- 四附件及win-unpacked exe/app.asar均可独占打开，句柄已Dispose；CIM确认无本轮遗留Node/Electron/打包器，用户安装版PID13948保持运行。下一步提交、推送v0.3.51与main，草稿上传四附件并核验GitHub摘要，正式发布后确认latest和公开latest.yml。当前尚未提交或上传。
+
+#### 0.3.51 开发与验收记录（以下为发布前历史，发布状态以上面入口为准）
+
+- **验收时状态（2026-10-13，已完成开发和测试版）**：起点 e2c769b，保留上轮未提交改动。package.json / lock 为 0.3.51；test:ui 加入 test-share-card.cjs、test-share-ui.cjs。卡片加载阻塞已解决：第一张成功后销毁最后一个窗口，测试触发 Electron 默认退出，第二张加载才 ERR_FAILED。测试补 window-all-closed 生命周期处理，渲染窗口保留 sandbox 并 finally 销毁。
+- 已接入 renderer/share.js|css、index.html 顶栏按钮：原生 dialog 的月份/订阅费/名称披露开关、月报和所有徽章收集册、PNG 预览/保存/复制、快照后的月报/新里程碑提醒。默认隐藏路线名，首次里程碑检查静默基线；提醒去重，生成结果有代次检查，旧预览不覆盖新选项。演示引导期间阻止读取真实分享数据。share-report 增 routes 和里程碑 analogy；shareMonth 按所选月份附近查日桶，避免全历史周桶跨月。
+- 生存分析继续用最近7天平均：修了跳过缺测日期后误取更早用量、三轮重新分配不够多账号、缺官方成员或采样过期仍预测、零数据被描述成“撑得住”。往周/日分界按日历处理。新 i18n 词条及卡片按 lang 渲染，intro NOTES / README 完成。实际里程碑定义为16枚，旧检查点写17是计数笔误。
+- 定点测试：分享卡片5组 PASS（中英 PNG、数据/里程碑、主进程月初速度日桶、PNG ClipboardItem 编码、隐藏窗口销毁）；分享 UI 4组 PASS（月份/订阅费/隐私开关/导出 mock、旧预览、Esc、提醒去重、英文/900px/导出按钮完整可见）；pool-insight 9组 PASS（含平均/缺测/过期/5账号分摊）；pool-quota-ui 全过（生存面板/布局/英文深色）。截图只用合成数据，dist/share-shots，已查看月报/窄窗口/生存分析。自查修了窄窗底栏遮挡和曲线标签重叠。
+- 最终命令结果：npm test 退出0（audit-test-0351.log）；最后 npm run test:ui 退出0（audit-ui-0351-final.log，88条 PASS）；最后翻译 test-features 46/46；npx electron-builder --win dir --publish never 退出0（audit-dir-0351.log）。打包后 dist/packaged-share-smoke.cjs 用真实 ASAR 内模块生成合成英文 PNG 并确认隐藏窗口销毁，退出0。这些日志/截图/核验脚本均在忽略目录或忽略文件中。
+- 早期 UI 失败已处理：速度图启动预读空数据缓存，入口现在调用 PulseInsights.refreshSpeed，test-agent-switch-ui 刻意先缓存空记录再写新记录锁定回归；浮层排队滚动事件关闭提示，测试在同一页面任务内打开/完成动画/读几何并用即时滚动；旧 test-ui.cjs 的30秒总时限不足以跑完累计步骤，改为90秒，各步骤短超时保留。相关文件 renderer/agent-switch.js、usage-insights.js、scripts/test-agent-switch-ui.cjs、test-model-study-ui.cjs、test-ui.cjs。NOTES说明速度入口修复。
+- 最新产物：dist/win-unpacked/TokenPulse.exe，FileVersion 0.3.51 / ProductVersion 0.3.51.0；包内 version 0.3.51，main build/main/index.js。dist/verify-0.3.51.cjs 核对140个 build/renderer/knowledge运行时文件逐字节一致，也反向检查包里无额外运行时文件；app.asar SHA256 a4cf3c36447a5a45e661f07992cd6c8e17f2b4b61b1ae1f1350ef0b350d41994，记录 dist/verification-0.3.51.json。本轮仅目录测试版，dist的0.3.50安装包和latest.yml仍为旧正式产物。
+- 资源收尾：本轮 Electron/Node/打包进程均已退出；CIM按命令行/路径核对，用户正式安装版PID20592及子进程保持运行，未关闭。测试版exe/app.asar、旧正式Setup/Portable/latest.yml可独占读取，句柄均立即Dispose，终端在项目根。加载排查临时脚本已移除。
+- Git/安装/发布：全部未提交、未推送、未安装、未发布0.3.51，按用户“先打测试版”要求待验收。下一步用户从托盘退出已运行的正式版，再打开上述测试版（单实例否则会跳回旧软件）；验收后再按历史风格准备安装包/Release。真实保存对话框与系统剪贴板写入未操作（测试mock，PNG编码已验证），不读真实凭据、不发收费请求。生存分析是官方周额度的估算，只统计有额度采样的官方成员，不是保障；API Key不计入生存曲线。名称披露只显示所选月测速记录里出现的路线名。
+- 下方 Claude 中断记录为接续前历史；其中加载阻塞、未测试和待办已由本轮完成，以以上状态为准。
+
+- 用户要做分享卡片：**月报**（每月 1 号提示，也能手动生成任意月份）、**里程碑**（达成时提示、徽章收集册）、**号池生存分析**（放在额度详情的号池页里自己看，不分享）。导出：预览后保存 PNG + 复制到剪贴板，预览里能选露不露号池名 / 供应商名。卡片上要有「人话换算」（几种轮换：《三体》等，按数量级挑）。版本 0.3.51，先打测试版。
+- 设计稿（演示数据）在 scratchpad 的 `survival/`：`card.html`（生存分析）、`share.html`（月报 + 里程碑），渲染脚本 `render.cjs` / `render-share.cjs`。实现时照这个样子做。
+- **Claude 中断时的历史检查点（2026-10-13；以下阻塞/待办已由 Codex 接续完成）**：
+  - ✅ `src/core/share-report.ts`（新）：`monthReport({usage, month, hours, speed})`、`reportMonths`、`milestoneState(usage, now)`（17 枚里程碑：累计 Tokens 1亿–1000亿、单日 1 亿、连续 7/30/100/365 天、API 价值 $1k/$10k/$50k、10 万次请求）、`analogyOf`（《三体》《红楼梦》《哈利·波特》、代码行、硕士论文，按数量级挑，seed = 年*12+月 轮换）。缓存省下 = cacheRead ×（输入价 − 缓存读价）。夜里 = 22:00–06:00。最快模型至少 20 次样本、同型号×等级只留最快。用真实数据只读试算过，数值合理（用户已过 100 亿，所以加了 300 亿 / 1000 亿档）。
+  - ✅ `src/core/pool-insight.ts`：新增 `survivalOf`，`analyzePool` 返回 `survival`（本周曲线、前 7 周、最惊险点、往后推 7 天的模拟（成员按最近 7 天用量比例分摊、重置回满）、`confidence`=最近 14 天每天用量各推一遍撑住的天数、每个号本周见底时段 / 重置 / 预计见底、`avgLifeDays`、`streak`、`nextReset`）。往后推用 7 天**平均**（用户用量很集中，中位数会抹掉猛用的几天——已试过，别改回中位数）。
+  - ✅ `renderer/pool-quota.js` 新增 `survivalPanel`（圆环=把握%、结论、曲线 SVG、每个号的寿命条、四个数字、往周 ✓/×），插在号池总额度下面，布局 key `quota:pool-survival`（已加进 app.js 的 LAYOUT 表）；CSS 在 `pool-quota.css` 末尾 `.pq-sv-*`。**还没在界面里实际看过 / 没有 UI 测试**。
+  - ✅ `src/main/share.ts`（新）：`shareMonth` / `shareMilestones`（用 `getInitialSnapshot` 的 usage + `loadRequests` 的按小时汇总 + `speedSeries(0)`）、`renderShareCard`（隐藏窗口打开 `renderer/share-card.html`，调 `window.renderShareCard(kind, data, options)`，按 `.share-card` 截图返回 PNG data URL）、`saveShareCard`（保存对话框）、`copyShareCard`（Electron 44 剪贴板是 `clipboard.write([new ClipboardItem({'image/png': Blob})])`，没有 writeImage 了）。`index.ts` 已注册 IPC `share:month|milestones|render|save|copy`；`preload.ts` 已加 `window.tokenpulse.share.*`。
+  - ✅ `renderer/share-card.html|css|js`（新）：月报卡和里程碑卡，照设计稿排版（品牌标志用 SVG 画，不依赖 packaging/icon.png；内联样式只用 CSSOM，符合 CSP）。
+  - ✅ `scripts/test-share-card.cjs`（新，还没进 npm 脚本）：合成用量测月报 / 里程碑数字，前两组 PASS。
+  - ❌ **当前阻塞**：第三组（画成 PNG）在测试里 `loadFile(renderer/share-card.html)` 报 `ERR_FAILED (-2)`。已排除：不是 sandbox（去掉后照样失败）。独立脚本（scratchpad `load-test.cjs`）用默认 webPreferences 能加载、`typeof renderShareCard === 'function'`；带 `sandbox:true` 时同样 -2。下一步：在测试里打印 `did-fail-load` 详情；对比独立脚本的差别（测试里先 require 了 `build/main/share.js` → `snapshot.js`，可能有 session/protocol 拦截；或 `paintWhenInitiallyHidden` / `spellcheck`）；必要时改用 `win.loadURL(pathToFileURL(file).href)`。
+- **剩下要做**：
+  1. 修上面的加载问题，跑通 `test-share-card.cjs`（`TOKENPULSE_SHOT_DIR` 可以存图看效果，只有合成数据），把它加进 `test:ui`。
+  2. 界面入口和弹窗（还没写）：顶栏或用量明细加「分享卡片」按钮 → 弹窗：月报 / 里程碑两个标签，月报可选月份（`share.month()` 返回 `months`），可填「订阅费 $/月」（存 localStorage，传 `options.subscriptionUsd`，月报上显示回本倍数），里程碑可选哪一枚（`options.id`）；预览就是 `share.render()` 返回的 PNG；「保存 PNG」「复制图片」。新文件建议 `renderer/share.js|css`，在 index.html 引入。
+  3. 提醒：每次新快照后（或定时）调 `share.milestones()`，和 localStorage 里看过的比，新达成的弹 toast「🎉 新里程碑：xx · 生成分享卡」（第一次运行只记下、不刷屏）；每月 1–7 号如果上个月有用量且没看过，弹「x 月月报出炉了」。
+  4. 号池生存分析：在界面里看一眼（只用测试数据截图），给 `test-pool-insight.cjs` 加 survival 的断言、`test-pool-quota-ui.cjs` 加面板存在的断言。
+  5. i18n 英文（survival 面板、分享弹窗、卡片文字——卡片是截图，最好按界面语言出中文 / 英文两套文字，至少别出现未翻译的混合）、intro.js 0.3.51 NOTES、README。
+  6. 版本 package.json / lock 改 0.3.51；`npm test`、`npm run test:ui`；测试版 `npx electron-builder --win dir --publish never`；查占用和残留进程；更新本节。
+- 注意：用户的安装版 TokenPulse 在跑，别关。截图只用演示 / 测试数据。scratchpad 里 `survival/` 是设计稿，`load-test.cjs` 是排查脚本，都不在仓库里。
 
 ### 0.3.50 已正式发布（2026-10-13）
 

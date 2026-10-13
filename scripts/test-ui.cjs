@@ -77,7 +77,8 @@ const heartbeat = setInterval(() => {
   maxGap = Math.max(maxGap, Date.now() - previous);
   previous = Date.now();
 }, 50);
-const watchdog = setTimeout(() => { console.error('FAIL UI timed out'); app.exit(1); }, 30000);
+// 全套累计了多次刷新和主题切换；各步骤仍有自己的短超时，总时限留出忙碌机器的余量。
+const watchdog = setTimeout(() => { console.error('FAIL UI timed out'); app.exit(1); }, 90000);
 app.on('web-contents-created', (_, contents) => {
   contents.on('did-finish-load', async () => {
     try {

@@ -94,6 +94,14 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   addCliAccount: (kind: string) => ipcRenderer.invoke("accounts:add-cli", kind),
   /** 账号管理：remove 隐藏 / 普通删除，purge 完全删除 TokenPulse 记录，restore 恢复，rename 改名。 */
   manageOfficialAccount: (action: "remove" | "purge" | "restore" | "rename", id: string, alias?: string) => ipcRenderer.invoke("accounts:manage", action, id, alias),
+  /** 分享卡片（0.3.51）：月报 / 里程碑的数据，画成 PNG（data URL），保存、复制。 */
+  share: {
+    month: (month?: string) => demo ? blocked() : ipcRenderer.invoke("share:month", month),
+    milestones: () => demo ? blocked() : ipcRenderer.invoke("share:milestones"),
+    render: (kind: "month" | "milestone", data: unknown, options?: Record<string, unknown>) => demo ? blocked() : ipcRenderer.invoke("share:render", kind, data, options),
+    save: (dataUrl: string, name: string) => demo ? blocked() : ipcRenderer.invoke("share:save", dataUrl, name),
+    copy: (dataUrl: string) => demo ? blocked() : ipcRenderer.invoke("share:copy", dataUrl),
+  },
   /** 一键把 CLI 的登录切到这个账号（0.3.49）。 */
   switchCliAccount: (id: string) => ipcRenderer.invoke("accounts:switch-cli", id),
   /** 拖拽排序：这一家账号的新顺序。 */

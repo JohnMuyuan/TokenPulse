@@ -78,6 +78,15 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.match(await text(`${DETAIL} .pq-quota .prediction-line`), /大约还能用/);
     assert.match(await text(`${DETAIL} .pq-quota .quota-footnote`), /整个账号的消耗/);
     pass('pool quota adds the members\' weekly remainder (70% + 80% = 1.5 accounts), one ring per account member, and projects days left');
+    assert.ok(await evaluate(`document.querySelector('${DETAIL} .pq-survival .pq-sv-curve')`));
+    assert.equal(await evaluate(`document.querySelectorAll('${DETAIL} .pq-survival .pq-sv-member').length`), 2);
+    assert.match(await text(`${DETAIL} .pq-survival`), /生存分析.*本周.*只算官方账号成员/s);
+    if (shots) {
+      await evaluate(`(() => { const target=document.querySelector('${DETAIL} .pq-survival'); for(const node of target.parentElement.children) node.hidden=node!==target; })()`);
+      await shot('survival');
+      await evaluate(`for(const node of document.querySelector('${DETAIL}').children) node.hidden=false`);
+    }
+    pass('survival panel shows the weekly curve, account lanes and forecast limitations');
 
     // 用量：今天的 Token = 最近 24 小时那几次里今天的部分；成员分摊三行
     const today = await evaluate("(() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })()");
@@ -123,7 +132,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
 
     // 编辑布局：号池的卡片都有布局标记
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${DETAIL} [data-layout^="quota:pool-"]')].map(n => n.dataset.layout).sort()`),
-      ['quota:pool-daily', 'quota:pool-hourly', 'quota:pool-members', 'quota:pool-models', 'quota:pool-quota', 'quota:pool-requests', 'quota:pool-usage']);
+      ['quota:pool-daily', 'quota:pool-hourly', 'quota:pool-members', 'quota:pool-models', 'quota:pool-quota', 'quota:pool-requests', 'quota:pool-survival', 'quota:pool-usage']);
     // 0.3.50：没拖过的卡片保持页面自己的顺序（以前时间线和模型速度被挪到最上面）
     await new Promise(resolve => setTimeout(resolve, 300));
     const order = await evaluate(`[...document.querySelectorAll('${DETAIL} > [data-layout]')].map(n => n.dataset.layout)`);
@@ -143,6 +152,19 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     await until("!document.getElementById('page-quota').classList.contains('pool-mode')");
     assert.equal(await evaluate(`document.querySelectorAll('${DETAIL} .pq-quota').length`), 0);
     pass('switching back to an official account restores the normal page');
+
+    const reloaded = new Promise(resolve => contents.once('did-finish-load', resolve));
+    await evaluate("PulseI18n.setMode('en')"); await reloaded;
+    await evaluate("navigate('quota')");
+    await until(`document.querySelector('${TABS}[data-account="pool:${poolId}"]')`);
+    await evaluate(`document.querySelector('${TABS}[data-account="pool:${poolId}"]').click()`);
+    await until(`document.querySelector('${DETAIL} .pq-survival .pq-sv-verdict h3')`);
+    await delay(150);
+    const englishPanel = await text(`${DETAIL} .pq-survival`);
+    assert.ok(!/[一-鿿]/.test(englishPanel), 'untranslated survival text: ' + englishPanel);
+    await evaluate("setThemeMode('dark')");
+    await shot('survival-dark-en');
+    pass('survival panel is translated in English and follows dark theme');
 
     console.log('pool quota UI checks passed');
     clearTimeout(watchdog); app.exit(0);

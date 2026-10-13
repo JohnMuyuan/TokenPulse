@@ -6,6 +6,7 @@ import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
 import { countRouteLog, passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
 import { accountSpeed, speedSeries } from "../core/pass-speed";
+import { copyShareCard, renderShareCard, saveShareCard, shareMilestones, shareMonth } from "./share";
 import { lastProbes, runProbe } from "./codex-state-probe";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import fsSync from "fs";
@@ -1064,6 +1065,13 @@ if (!app.requestSingleInstanceLock()) {
     });
     // 全部模型的速度走势（用量明细的折线图，0.3.39）；days：0 = 全部
     ipcMain.handle("pass-speed:series", (_event, days: unknown) => { try { return speedSeries(Math.max(0, Math.min(3650, Number(days) || 0))); } catch { return null; } });
+    // 分享卡片（0.3.51）：月报、里程碑的数据，画成 PNG，保存 / 复制（见 share.ts）
+    const shareSnapshot = () => getInitialSnapshot();
+    ipcMain.handle("share:month", (_event, month: unknown) => shareMonth(shareSnapshot, month));
+    ipcMain.handle("share:milestones", () => shareMilestones(shareSnapshot));
+    ipcMain.handle("share:render", (_event, kind: unknown, data: unknown, options: unknown) => renderShareCard(kind, data, options));
+    ipcMain.handle("share:save", (_event, dataUrl: unknown, name: unknown) => saveShareCard(win, dataUrl, name));
+    ipcMain.handle("share:copy", (_event, dataUrl: unknown) => copyShareCard(dataUrl));
     // Codex 降智检测（0.3.41）：只在用户点了才跑，见 codex-state-probe.ts
     ipcMain.handle("codex-probe:run", (_event, accountId: unknown) => runProbe(accountId));
     ipcMain.handle("codex-probe:last", () => lastProbes());

@@ -110,6 +110,134 @@ function weekUsed(samples: QuotaSample[], from: number) {
   return used;
 }
 
+/*
+ * 生存分析（0.3.51）：把号池的额度当成一条生命线，回答「这周撑得住吗」。只看官方账号成员（API Key 没有额度可看）。
+ * - 号池剩余（个号）= 各成员每周剩余百分比加起来 ÷ 100；某个时刻用的是那之前最后一次采样，采样里的重置时间过了就算满。
+ * - 本周 = 本地周一 0 点到现在；前 7 周同样按周一对齐叠在后面比较。
+ * - 往后推：按最近 7 天每天用掉多少、按各成员最近 7 天的用量比例分到每个号，成员的重置时间到了就回满，一小时一步推 7 天，
+ *   全部成员都见底就是「断粮」。
+ * - 把握：拿最近 14 天里每一天的实际用量各当一次「之后每天都这么用」推一遍，有几天的节奏能撑满 7 天。少于 3 天的数据不给。
+ * 官方百分比是整个账号的（网页聊天、其他设备也算），这里照实用。
+ */
+const WEEK = 7 * DAY;
+function weekStartOf(at: number) {
+  const d = new Date(at);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getTime();
+}
+export function survivalOf(members: { key: string; name: string; samples: QuotaSample[]; share: number; checkedAt?: number }[], now: number) {
+  const list = members.map(member => ({ ...member, samples: member.samples.filter(sample => sample.at <= now && Number.isFinite(sample.week)).sort((a, b) => a.at - b.at) })).filter(member => member.samples.length);
+  if (!list.length) return null;
+  const leftAt = (samples: QuotaSample[], at: number) => {
+    let hit: QuotaSample | null = null;
+    for (const sample of samples) { if (sample.at > at) break; if (sample.week != null) hit = sample; }
+    if (!hit) return null;
+    const reset = hit.weekReset ? Date.parse(hit.weekReset) : NaN;
+    return Number.isFinite(reset) && reset <= at ? 100 : Math.max(0, Math.min(100, 100 - hit.week!));
+  };
+  const poolAt = (at: number) => {
+    let total = 0, known = 0;
+    for (const member of list) { const left = leftAt(member.samples, at); if (left != null) { total += left; known++; } }
+    return known ? total / 100 : null;
+  };
+  const weekStart = weekStartOf(now);
+  const step = HOUR;
+  const curve: { at: number; left: number }[] = [];
+  for (let at = weekStart; at <= now; at += step) { const left = poolAt(at); if (left != null) curve.push({ at, left }); }
+  const nowLeft = poolAt(now);
+  if (nowLeft != null) curve.push({ at: now, left: nowLeft });
+  const danger = curve.reduce<{ at: number; left: number } | null>((low, point) => (!low || point.left < low.left ? point : low), null);
+  const past: { week: number; points: { d: number; left: number }[]; min: number }[] = [];
+  for (let w = 1; w <= 7; w++) {
+    const start = shiftDay(weekStart, -w * 7), end = shiftDay(start, 7), points: { d: number; left: number }[] = [];
+    for (let at = start; at < end; at += 2 * HOUR) { const left = poolAt(at); if (left != null) points.push({ d: (at - start) / (end - start) * 7, left }); }
+    // 至少大半周有数据才拿来比
+    if (points.length >= 60) past.push({ week: start, points, min: Math.min(...points.map((point) => point.left)) });
+  }
+  let streak = 0;
+  for (const week of past) { if (week.min > 0.05) streak++; else break; }
+
+  // 最近 14 天每天号池用掉多少（个号）：同一个周期里每周已用的上涨
+  const dayStart = (() => { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+  const rates: { ago: number; value: number }[] = [];
+  for (let i = 1; i <= 14; i++) {
+    const from = shiftDay(dayStart, -i), to = shiftDay(from, 1);
+    let used = 0, covered = false;
+    for (const member of list) {
+      let prev: QuotaSample | null = null;
+      for (const sample of member.samples) {
+        if (sample.week == null) continue;
+        if (prev && sample.at > from && sample.at <= to) { covered = true; if (sameReset(prev.weekReset, sample.weekReset) && sample.week > prev.week!) used += sample.week - prev.week!; }
+        prev = sample;
+      }
+    }
+    if (covered) rates.push({ ago: i, value: used / 100 });
+  }
+  // 往后推用最近 7 天的平均：真实用量常常是几天猛用、几天几乎不用，中位数会把猛用的那几天整个抹掉
+  const recent = rates.filter(rate => rate.ago <= 7);
+  const perDay = recent.length ? recent.reduce((sum, rate) => sum + rate.value, 0) / recent.length : null;
+  const forecastable = list.length === members.length && list.every(member => member.checkedAt != null && now - member.checkedAt <= 30 * 60_000);
+
+  // 往后推 7 天：一小时一步
+  const shares = (() => { const total = list.reduce((sum, member) => sum + member.share, 0); return list.map((member) => (total > 0 ? member.share / total : 1 / list.length)); })();
+  const latest = list.map((member) => [...member.samples].reverse().find((sample) => sample.week != null)!);
+  const simulate = (rate: number) => {
+    const left = list.map((member) => leftAt(member.samples, now) ?? 0);
+    const resets = latest.map((sample) => { const at = sample.weekReset ? Date.parse(sample.weekReset) : NaN; return Number.isFinite(at) ? at : null; });
+    const points: { at: number; left: number }[] = [];
+    const deaths: (number | null)[] = list.map(() => null);
+    let outAt: number | null = null;
+    for (let h = 1; h <= 168; h++) {
+      const at = now + h * HOUR;
+      list.forEach((_, i) => { let reset = resets[i]; while (reset != null && reset <= at) { left[i] = 100; reset += WEEK; } resets[i] = reset; });
+      let demand = rate / 24 * 100;
+      // 按比例分给还有额度的号；见底的那份挪给别的号
+      for (let round = 0; round < list.length && demand > 1e-9; round++) {
+        const alive = list.map((_, i) => i).filter((i) => left[i] > 0);
+        const weight = alive.reduce((sum, i) => sum + shares[i], 0);
+        if (!alive.length) break;
+        let spent = 0;
+        for (const i of alive) { const want = demand * (weight > 0 ? shares[i] / weight : 1 / alive.length); const take = Math.min(left[i], want); left[i] -= take; spent += take; if (left[i] <= 0 && deaths[i] == null) deaths[i] = at; }
+        demand -= spent;
+      }
+      if (demand > 1e-6 && outAt == null) outAt = at;
+      if (h % 2 === 0) points.push({ at, left: left.reduce((a, b) => a + b, 0) / 100 });
+    }
+    return { points, outAt, deaths };
+  };
+  const projection = forecastable && perDay != null ? simulate(perDay) : null;
+  const confidence = forecastable && rates.length >= 3 ? { survive: rates.filter(rate => simulate(rate.value).outAt == null).length, of: rates.length } : null;
+
+  // 本周每个号：见底的时段、重置的时刻
+  const memberLines = list.map((member, i) => {
+    const dead: { from: number; to: number }[] = [], resets: number[] = [];
+    let open: number | null = null, prevReset: string | undefined;
+    for (let at = weekStart; at <= now; at += HOUR) {
+      const left = leftAt(member.samples, at);
+      if (left != null && left < 1) { open ??= at; } else if (open != null) { dead.push({ from: open, to: at }); open = null; }
+    }
+    if (open != null) dead.push({ from: open, to: now });
+    for (const sample of member.samples) {
+      if (sample.at < weekStart - WEEK || sample.week == null) continue;
+      if (prevReset && sample.weekReset && !sameReset(prevReset, sample.weekReset)) { const at = Date.parse(prevReset); if (at >= weekStart && at <= now) resets.push(at); }
+      prevReset = sample.weekReset;
+    }
+    const left = leftAt(member.samples, now);
+    return { key: member.key, name: member.name, left, share: shares[i], dead, resets, outAt: projection?.deaths[i] ?? null };
+  });
+  // 平均每个号满额能撑几天：100% ÷ 它最近 7 天每天用掉的百分比
+  const lives = list.map((member) => member.samples).map((samples) => { let used = 0, prev: QuotaSample | null = null; for (const sample of samples) { if (sample.week == null) continue; if (prev && sample.at > now - WEEK && sameReset(prev.weekReset, sample.weekReset) && sample.week > prev.week!) used += sample.week - prev.week!; prev = sample; } return used > 0 ? 100 / (used / 7) : null; }).filter((value): value is number => value != null);
+  return {
+    weekStart, now, left: nowLeft, accounts: list.length, perDay,
+    curve, danger, past, streak, projection, confidence,
+    members: memberLines,
+    avgLifeDays: lives.length ? lives.reduce((a, b) => a + b, 0) / lives.length : null,
+    nextReset: latest.map((sample) => (sample.weekReset ? Date.parse(sample.weekReset) : NaN)).filter((at) => Number.isFinite(at) && at > now).sort((a, b) => a - b)[0] ?? null,
+  };
+}
+export type PoolSurvival = NonNullable<ReturnType<typeof survivalOf>>;
+
 export function analyzePool(pool: PoolDef, rows: PoolRow[], now = Date.now()) {
   const today = startOfDay(now);
   const recent = rows.filter((row) => row.at > now - POOL_DAYS * DAY);
@@ -164,6 +292,7 @@ export function analyzePool(pool: PoolDef, rows: PoolRow[], now = Date.now()) {
     totals: { ...total, today: usage(recent.filter((row) => row.at > today)), d7: usage(recent.filter((row) => row.at > now - 7 * DAY)) },
     members, models, hourly, daily,
     quota: { accounts: pool.members.filter((m) => m.type === "account").length, measured: withQuota.length, left, used7, perDay, daysLeft: perDay ? left / perDay : null, tracks },
+    survival: survivalOf(pool.members.filter((m) => m.type === "account").map((m) => ({ key: m.key, name: m.name, samples: samplesOf(m.id), share: members.find((member) => member.key === m.key)?.weekUsed7 ?? 0, checkedAt: accountQuota(m.id, now)?.at })), now),
     recent: recent.slice(-60).reverse().map((row) => ({ at: row.at, member: row.member, memberName: row.memberName, model: row.model, effort: row.effort, status: row.status, ok: row.ok, attempt: row.attempt, tokens: row.tokens, costUsd: row.costUsd, ms: row.ms, speed: row.speed || null })),
   };
 }

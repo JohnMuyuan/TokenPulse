@@ -184,5 +184,23 @@ const summary = insight.queryPool({ op: 'summary', pool });
   assert.equal(line.five.cycles.length, 1, '不能把零点整的请求算到昨天');
   pass('pool timeline assigns midnight requests to the new day');
 }
+{
+  const make = (samples, share = 1) => ({ key: 'a', name: 'Test', samples, share, checkedAt: now });
+  const sample = (ago, week) => ({ at: now - ago * D, week, weekReset: iso(now + 10 * D) });
+  const single = insight.survivalOf([make([sample(0, 30)])], now);
+  assert.equal(single.projection, null, '单个采样不能预测');
+  const samples = Array.from({ length: 9 }, (_, i) => sample(8 - i, i === 0 ? 0 : 70));
+  const result = insight.survivalOf([make(samples)], now);
+  assert.ok(Math.abs(result.perDay - 0.1) < 1e-9, '集中一天用掉70%，最近7天平均10%，不能用中位数抹掉');
+  assert.ok(result.curve.length && result.danger && result.projection.points.length === 84);
+  assert.equal(result.confidence.of, 7);
+  assert.equal(insight.survivalOf([make(samples), { key: 'unknown', name: 'Unknown', samples: [], share: 0 }], now).projection, null, '缺一个账号的采样不能保证全池撑住');
+  assert.equal(insight.survivalOf([{ ...make(samples), checkedAt: now - H }], now).projection, null, '陈旧采样不生成预测');
+  const old = insight.survivalOf([make([sample(12, 0), sample(10, 20), sample(9, 30), sample(0, 30)])], now);
+  assert.equal(old.perDay, null, '旧日期的用量不能填进最近7天平均');
+  const many = [10, 2, .5, .2, 100].map((left, i) => ({ key: String(i), name: 'Test ' + i, checkedAt: now, share: [.9, .09, .009, .0009, .0001][i], samples: [sample(8, 0), sample(7, 100 - left), sample(0, 100 - left)] }));
+  assert.ok(insight.survivalOf(many, now).projection.outAt > now + H, '五个账号逐个用完时继续分摊到还有额度的账号，不能因为只循环三轮就误报断粮');
+  pass('survival uses 7-day average, handles missing and stale quotas, and reports curve and simulated confidence');
+}
 fs.rmSync(root, { recursive: true, force: true });
 console.log(`test-pool-insight: ${checks} checks passed`);

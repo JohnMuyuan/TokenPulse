@@ -61,3 +61,77 @@
   .pq-req { grid-template-columns: 100px minmax(0, 1fr) 70px; }
   .pq-req > span:nth-child(3), .pq-req > span:nth-child(6) { display: none; }
 }
+
+/* 生存分析（0.3.51） */
+.pq-survival { margin-bottom: 18px; }
+.pq-sv-hero { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 22px; align-items: center; margin: 4px 0 14px; }
+.pq-sv-ringbox { position: relative; width: 140px; height: 140px; }
+.pq-sv-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
+.pq-sv-ring circle { fill: none; stroke-width: 9; }
+.pq-sv-ring-bg { stroke: var(--tile-neutral); }
+.pq-sv-ring-fg { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .8s var(--ease); }
+.pq-sv-ring-fg.warn { stroke: var(--warn); }
+.pq-sv-ring-fg.bad { stroke: var(--danger); }
+.pq-sv-ring-center { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.pq-sv-ring-center b { font: 700 30px/1 var(--font-display); letter-spacing: -.02em; }
+.pq-sv-ring-center small { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.pq-sv-verdict h3 { margin: 0 0 6px; font: 700 21px/1.25 var(--font-display); }
+.pq-sv-verdict h3.ok { color: var(--accent); }
+.pq-sv-verdict h3.warn { color: var(--warn); }
+.pq-sv-verdict h3.bad { color: var(--danger); }
+.pq-sv-verdict p { margin: 0 0 6px; color: var(--text-2); font-size: 13.5px; line-height: 1.6; }
+.pq-sv-verdict p.pq-faint { color: var(--muted); font-size: 12.5px; }
+.pq-sv-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.pq-sv-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 10px; background: var(--surface-2); box-shadow: 0 0 0 1px var(--line); color: var(--text-2); font-size: 12.5px; }
+.pq-sv-chip b { color: var(--text); font-variant-numeric: tabular-nums; }
+.pq-sv-chart { margin: 4px 0 16px; }
+.pq-sv-curve { display: block; width: 100%; height: auto; }
+.pq-sv-curve .grid { stroke: var(--line); stroke-width: 1; }
+.pq-sv-curve .axis { fill: var(--faint); font-size: 12px; }
+.pq-sv-zero { stroke: var(--danger); stroke-width: 1.5; stroke-dasharray: 3 5; }
+.pq-sv-past { fill: none; stroke: var(--line-strong); stroke-width: 1.6; stroke-linejoin: round; }
+.pq-sv-area { fill: var(--accent); opacity: .12; }
+.pq-sv-line { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+.pq-sv-ahead { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 7 6; stroke-linecap: round; }
+.pq-sv-danger { fill: var(--surface); stroke: var(--warn); stroke-width: 3; }
+.pq-sv-danger-label { fill: var(--warn); font-size: 12.5px; font-weight: 700; }
+.pq-sv-now { fill: var(--accent); stroke: var(--surface); stroke-width: 3; }
+.pq-sv-now-label { fill: var(--text); font-size: 12.5px; font-weight: 700; }
+.pq-sv-out { fill: var(--danger); }
+.pq-sv-out-label { fill: var(--danger); font-size: 12px; font-weight: 700; }
+.pq-sv-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 4px; color: var(--muted); font-size: 12.5px; }
+.pq-sv-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.pq-sv-key { display: inline-block; width: 20px; height: 0; border-top: 3px solid var(--accent); }
+.pq-sv-key.ahead { border-top-style: dashed; }
+.pq-sv-key.past { border-top-color: var(--line-strong); }
+.pq-sv-key.zero { border-top: 2px dotted var(--danger); }
+.pq-sv-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.pq-sv-lanes h3 { margin: 0 0 8px; font-size: 14px; }
+.pq-sv-member { display: grid; grid-template-columns: 120px minmax(0, 1fr) 88px; align-items: center; gap: 12px; padding: 7px 0; font-size: 13px; }
+.pq-sv-member + .pq-sv-member { border-top: 1px solid var(--line); }
+.pq-sv-member > b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.pq-sv-lane { position: relative; height: 12px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.pq-sv-lane i { position: absolute; top: 0; bottom: 0; display: block; }
+.pq-sv-alive { left: 0; border-radius: 999px; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #fff)); }
+.pq-sv-dead { background: var(--danger); opacity: .85; border-radius: 3px; }
+.pq-sv-reset { width: 2px; top: -4px !important; bottom: -4px !important; margin-left: -1px; border-radius: 2px; background: var(--ring-week); }
+.pq-sv-fall { width: 16px; height: 16px; top: 50% !important; bottom: auto !important; margin: -8px 0 0 -8px; border-radius: 50%; background: var(--surface); color: var(--danger); box-shadow: 0 0 0 2px var(--danger); font-size: 11px; font-weight: 800; font-style: normal; line-height: 16px; text-align: center; }
+.pq-sv-life { text-align: right; }
+.pq-sv-life b { display: block; font-size: 13.5px; }
+.pq-sv-life small { color: var(--muted); font-size: 11.5px; }
+.pq-sv-life.out b { color: var(--danger); }
+.pq-sv-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pq-sv-stat { padding: 12px 14px; border-radius: 14px; background: var(--surface-2); box-shadow: 0 0 0 1px var(--line); }
+.pq-sv-stat span { color: var(--muted); font-size: 12px; }
+.pq-sv-stat b { display: block; margin: 3px 0 1px; font: 700 21px/1.2 var(--font-display); letter-spacing: -.01em; }
+.pq-sv-stat small { color: var(--muted); font-size: 11.5px; }
+.pq-sv-stat.warn b { color: var(--warn); }
+.pq-sv-weeks { display: flex; gap: 6px; margin-top: 12px; }
+.pq-sv-weeks span { flex: 1; text-align: center; color: var(--faint); font-size: 11px; }
+.pq-sv-weeks i { display: grid; place-items: center; height: 30px; margin-bottom: 4px; border-radius: 8px; font-style: normal; font-weight: 800; font-size: 13px; background: var(--accent-soft); color: var(--accent); }
+.pq-sv-weeks .out i { background: var(--danger-soft); color: var(--danger); }
+.pq-sv-weeks .now i { background: var(--accent); color: #fff; font-size: 11.5px; }
+@media (max-width: 900px) {
+  .pq-sv-hero, .pq-sv-grid { grid-template-columns: 1fr; }
+  .pq-sv-member { grid-template-columns: 90px minmax(0, 1fr) 76px; }
+}

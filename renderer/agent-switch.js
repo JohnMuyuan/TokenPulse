@@ -523,6 +523,7 @@
     const toSpeed = el('button', { type: 'button', class: 'btn', 'data-action': 'open-speed' }, [el('span', { text: '去用量明细看模型速度' })]);
     toSpeed.addEventListener('click', () => {
       window.navigate?.('usage');
+      window.PulseInsights?.refreshSpeed?.();
       // 用量分析是读完统计才画的：等那张图出来再滚过去
       let tries = 0;
       const reveal = () => { const panel = document.querySelector('.speed-lines-panel'); if (panel) panel.scrollIntoView({ block: 'start', behavior: 'smooth' }); else if (++tries < 40) setTimeout(reveal, 100); };
