@@ -1,6 +1,30 @@
-# Current handoff · 0.3.48 已正式发布（2026-10-13）
+# Current handoff · 0.3.49 已正式发布（2026-10-13）
 
 ## 新对话先看这里
+
+### 0.3.49 已正式发布（2026-10-13）
+
+- 用户验收测试版后发布。发布前 npm test 退出 0（0 FAIL）、npm run test:ui 退出 0（77 PASS），npm run dist 退出 0（audit-dist.log）。dist/verify-0.3.49.cjs：133 个运行时文件与源码逐字节一致，latest.yml version 0.3.49。发布文案 dist/release-0.3.49.md（同 GitHub Release 正文），intro.js NOTES / i18n / README 已写。
+- 提交 9744871（0.3.49：重做编辑布局、一键切换 CLI 登录、去掉自动账号池、修复换菜单白屏），标签 v0.3.49，已推送 origin/main。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.49 ，标题 TokenPulse 0.3.49，非草稿、非预发布；releases/latest 指向 v0.3.49，公开 latest.yml 为 version: 0.3.49。
+- 附件均 uploaded，大小 / SHA256 与本地一致：Setup.exe 112573911 / fd9f0885a3a64ff21798af556b4d0587733fc86edbc7c74979d544e70e7e7b21；.blockmap 119716 / 3d6bd76458d99df8e45d00107c4b1374392130862782972530bdc4fdd7b4d483；Portable.exe 112316752 / 3a50fca6360c9cd749d227d3fb799471ac34c2e85accb0b17984176157ef1506；latest.yml 352 / ead48e15cfd7a4a0a114fd2ba854ee29c98b16c886274fb72ae64ad64d96fed9。
+- 收尾：四个附件和 win-unpacked 的 exe / app.asar 可独占打开；无残留 node / electron / 打包进程；用户安装版未关闭、未主动安装新版。一键切换 CLI 登录仍未在真机上切换过（用户测试版验收时说没问题，但未确认是否实际点过切换）。
+
+以下为开发过程记录（「未提交」等字样已过期）：
+
+
+- 起点 c9911f7（0.3.48 已发布）。用户四项：
+  1. 同一家多个官方账号被自动聚合成「账号池」显示在额度详情：删掉额度详情的 `poolPanel`（布局 key `quota:pool` 的卡片不再渲染，表项和 CSS 留着没删）；首页额度卡下方的队列标题改为「其他账号」，去掉「下一个」标签。后端 `report.ts` 的 `pools` 结构（active/next）没动，首页主账号仍取第一个有余量的。
+  2. 供应商页从「转发记录」等长列表换二级菜单后白屏：原因是 `scrollGuard` 把内容变短当成要保持位置，在底部垫空白。`app.js` 新增 `window.PulseScroll.top()`，`agent-switch.js` 的 `go()`、打开 / 关闭编辑器时回到顶部。`test-agent-switch-ui.cjs` 加断言（滚到底再换菜单 → scrollTop 0、垫片 0）。
+  3. 设置 → 官方账号去掉「当前顺位 / 下一个 / 排队」，只写「剩余 X%」/「额度已用完」；去掉序号列；设置说明文字改写（i18n 已补）。
+  4. 新功能：设置里一键切换 CLI 登录账号。`src/core/cli-switch.ts`（新）：`switchCliAccount(id)`：先续期、要求目标账号有 TokenPulse 存的可续期凭据；Codex 缺 id_token 时用该账号 refresh token 换一次拿 id_token（`token-refresh.ts` 成功结果多了 `raw`）；备份 CLI 原文件到 `~/.tokenpulse/backups/cli-switch`（留 10 次）；换下来的账号把 CLI 里最新凭据和资料收进账号库（之后由 TokenPulse 续期）；切进去的账号删掉 TokenPulse 存的凭据（refresh token 只留一个主人）；写完读回核对，不对就还原 CLI 文件和账号库。写的文件：Claude `.credentials.json` 的 `claudeAiOauth` + `.claude.json` 的 `oauthAccount`（其余内容保留）；Codex `auth.json`；Grok `auth.json` 同签发方那一行。`StoredOfficialAccount.cliAuth` 存不含 token 的 CLI 资料，登录（`oauth.ts` runLogin）和被换下时记下。IPC `accounts:switch-cli`，preload `switchCliAccount`，设置行按钮「切到 CLI」（`autoRenew && usable && !inCli` 才显示）。测试 `scripts/test-cli-switch.cjs` 6/6，已进 `npm test`。
+- **未在真机上切换过**（会改用户真实 CLI 登录）；没有 cliAuth 的旧账号，Claude 只写 accountUuid/email，靠 Claude Code 自己补资料，Grok 写最小资料，均未真机验证。
+- 版本 0.3.49；intro.js NOTES / i18n / README 已写。`npm test` 退出 0（0 FAIL，audit-test-0349.log）；`npm run test:ui` 退出 0（69 PASS，audit-ui-0349.log）。中途一次 test-ui 主题颜色断言失败（深色过渡 600ms 时序），单独重跑两次都过，判断为偶发；另一次是 intro 测试要求当前版本有 NOTES，补上后通过。
+- 测试版：`npx electron-builder --win dir --publish never` 退出 0，exe 0.3.49.0，asar 含新代码；exe / asar 可独占打开；无残留 node / electron 进程。未写 dist/release-0.3.49.md，未提交。
+- **追加：编辑布局重做（用户确认：要拖动排序、原位占位条 + 右侧布局面板、账号标签可藏、并进 0.3.49）。**
+  - `renderer/app.js` 布局一节整段重写（「工作空间布局（0.3.43；0.3.49 重做）」）：状态 `layoutHidden`（卡片 key、`nav:<页>`、`tab:<账号标签>`）+ `layoutRanks`（拖动后的名次），localStorage `tokenpulse-layout` 改成 `{v:2, hidden, ranks}`，能读 0.3.43 的 `hiddenNav/hiddenCards`（旧的 `quota` = 官方额度每一家都藏）。`markLayout` 给卡片加工具条（把手 + 名字 + ×，压在卡片上沿；卡片 overflow:hidden 的编辑时放开）和占位条；`syncCards` 由 `#main` 上的 MutationObserver 每帧补标记、隐藏/占位、按名次排序（异步画的卡片也覆盖）。拖动用 pointer 事件，只在同一父容器内换；把手上方向键也能换；侧栏 `.nav-slot` 同样处理。隐藏后提示带「撤销」（`toast` 新增 `sticky:false`）。侧栏至少留一页、账号标签至少留一个。右侧 `#layout-panel`：侧栏页面 + 每页按区域分组的开关、「前往」「恢复默认」、底部「全部恢复默认」；换页时面板滚到当前页。
+  - 总览「官方额度」拆成 `overview:quota:claude/chatgpt/grok/deepseek/relay`（app.js renderOverview、deepseek-balance.js cards/renderCard 打标记）；没拖过时各家顺序仍按账号顺序。`#page-overview` 不再是整块卡片，各家都藏了才收起。额度详情账号标签：`drawAccountTabs` 记 `tabLabels`、编辑时画占位和 `.tab-layout` 按钮；`renderQuota` 开头选中的标签被藏了就换到第一个没藏的。
+  - `index.html` 删掉旧的 `.layout-remove` 按钮和 `#layout-add`；`app.css` 旧规则换成新的一段（工具条、占位、侧栏、标签、面板、折叠侧栏）。i18n 补 20 条 + 12 个模板；intro NOTES / README 已加。
+  - 测试：`scripts/test-layout-ui.cjs` 重写（8 组，含真实鼠标拖动、方向键、撤销、按页/全部恢复、标签、刷新保持、旧设置迁移、英文）。修过的回归：test-ui 依赖 `layout-card` 类在最前、额度卡默认顺序；面板区域顺序。最终 `npm test` 退出 0（0 FAIL）、`npm run test:ui` 退出 0（77 PASS）；测试版重新打包退出 0，asar 含新代码，exe/asar 可独占打开，无残留进程。截图只用测试数据（scratchpad）。
 
 ### 0.3.48 已正式发布（2026-10-13）
 
