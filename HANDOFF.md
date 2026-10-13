@@ -1,8 +1,8 @@
-# Current handoff · 0.3.47 修复审查进行中（2026-10-13）
+# Current handoff · 0.3.47 已正式发布（2026-10-13）
 
 ## 新对话先看这里
 
-### 0.3.47 发布检查点（验证完成，待提交发布）
+### 0.3.47 已正式发布（2026-10-13）
 
 - 起点 ca116cc / 0.3.46，初始工作区干净。当前 package.json / package-lock.json 已升级 0.3.47。
 - 修复：余额换 Key 等待已有查询、同账号编辑串行，拒绝新 Key 时保留旧 Key/名字/提醒线/Harness 归属；新增无效 Key 不夺走原 Harness 归属；空金额/布尔值不再当作零余额；DeepSeek 只有余额采样的历史日期也能翻页；DeepSeek/号池零点整请求计入新的一天。关键文件 src/main/deepseek-balance.ts、src/core/deepseek-insight.ts、src/core/pool-insight.ts。
@@ -11,7 +11,9 @@
 - 产物：dist/TokenPulse-0.3.47-Setup.exe、.exe.blockmap、TokenPulse-0.3.47-Portable.exe、latest.yml。dist/verify-0.3.47.cjs 核验 132 个运行时文件逐字节一致、包内 0.3.47 / build/main/index.js、latest.yml 的安装包 SHA512 和大小一致；exe ProductVersion 0.3.47.0。SHA256/大小见 dist/verification-0.3.47.json。
 - 发布文案：dist/release-0.3.47.md；中英文应用说明 renderer/intro.js、renderer/i18n.js；README 已更新。
 - 资源收尾：四个附件、dist/win-unpacked/TokenPulse.exe 与 resources/app.asar 独占读取成功，检测句柄均已 Dispose。CIM 检查无本轮残留 Node/Electron/打包器；用户安装版 PID 20404 及子进程保持运行，未关闭。终端保持项目根目录。
-- 尚未提交/发布/安装；下一步提交和推送，上传四个附件为草稿，核验远端大小与摘要后正式发布并确认 latest。未验证真实付费接口、真实 Key 更换、真实 Harness 切换或在本机安装新版。自动化使用合成数据。本轮修复的是已确认缺陷，不表示全项目没有其他潜在问题。
+- 已提交并推送 origin/main，发布提交 af6b2edfdeed0b499f25a1b575b868986a64b159，标签 v0.3.47。GitHub Release：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.47 ，标题 TokenPulse 0.3.47，非草稿、非预发布；releases/latest 已指向 v0.3.47，target 为上述完整 SHA。发布后交接更新单独提交。
+- 四个远端附件均 uploaded，大小和 GitHub SHA256 摘要逐项匹配本地：Setup.exe 112562385 / 5f3ba1d124a0e4d966b85e1334b26d301d43208c2e6e2b4174ec1efd9e222370；Setup.exe.blockmap 119740 / 6d9a8d0b73ee3f532d155f669f4f628427364a87d66527849796af103ca305ed；Portable.exe 112305228 / fa7d02a8b775d1d38842d58106cc554aae6d5480cb16d5d65dc73d2918b6e937；latest.yml 352 / 8cecb25a1ce0b463df75675e1cfeaece04caadab9afbe9e294b33647dcbd44ee。Release 正文与本地发布说明一致。公开 releases/latest/download/latest.yml 经 curl 下载与本地一致（最初沙箱内 Invoke-WebRequest TLS 认证失败，未禁用证书校验；改用获准的 curl 成功）。
+- 未主动安装新版，未验证真实付费接口、真实 Key 更换或真实 Harness 切换；自动化使用合成数据。本轮修复的是已确认缺陷，不表示全项目没有其他潜在问题。没有剩余发布阻塞。下次接手先核对 Git、版本和实际运行软件；下方均为旧版本历史。
 
 ### 0.3.46 已正式发布（2026-10-12）
 
