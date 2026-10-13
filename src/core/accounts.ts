@@ -32,6 +32,8 @@ export type StoredOfficialAccount = {
   alias?: string;
   /** 只有 TokenPulse 登录进来的账号才有。 */
   credential?: OfficialCredential;
+  /** 一键切换 CLI 登录时要一起写回的 CLI 资料（不含 token），见 cli-switch.ts。 */
+  cliAuth?: Record<string, unknown>;
   /** 续期被官方拒绝（refresh token 失效）时的原因。有它就不再重试，等用户重新登录。 */
   renewFailed?: string;
   /**

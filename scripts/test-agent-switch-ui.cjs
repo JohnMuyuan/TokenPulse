@@ -92,8 +92,14 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await evaluate(`document.querySelector('${P} [data-action=logs-prev]').click()`);
     await atPage(6);
     assert.equal(await pagerText(), '第 6 / 7 页 · 共 130 条转发');
-    // 透明转发（0.3.35）：说明做什么 / 不做什么，Claude Code 和 Codex 各一个开关，默认关；下面是量到的速度
+    // 0.3.49：在转发记录里滚到很下面再换二级菜单，回到顶部，不留一大块空白
+    await evaluate(`document.querySelector('.workspace').scrollTo({ top: 99999, behavior: 'instant' })`);
+    await until(`document.querySelector('.workspace').scrollTop > 200`);
     await nav('pass');
+    await delay(200);
+    assert.equal(await evaluate(`document.querySelector('.workspace').scrollTop`), 0, '换二级菜单回到顶部');
+    assert.equal(await evaluate(`document.getElementById('scroll-floor').offsetHeight`), 0, '没有垫空白');
+    // 透明转发（0.3.35）：说明做什么 / 不做什么，Claude Code 和 Codex 各一个开关，默认关；下面是量到的速度
     await until(`document.querySelectorAll('${P} .pv-route-row .pv-switch').length === 3 && document.querySelector('${P} [data-action=open-speed]')`);
     assert.match(await evaluate(`document.querySelector('${P} .pv-pass-what').textContent`), /一个字节都不动.*型号核验.*不保存、不读取登录凭据.*不保存请求和回复的内容.*只在本机.*恢复直连/);
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${P} .pv-route-row')].map(r => [r.querySelector('b').textContent, r.querySelector('.pv-switch').getAttribute('aria-checked'), r.querySelector('.pv-switch').disabled, r.querySelector('small').textContent])`), [['Claude Code', 'false', false, '直连官方，没有测速。'], ['Codex', 'false', false, '直连官方，没有测速。'], ['Grok CLI', 'false', false, '直连官方，没有测速。']]);

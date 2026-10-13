@@ -204,11 +204,9 @@ function poolAccountName(account) { return account?.displayName || account?.acco
 function poolQuotaText(account) {
   if (!account) return "";
   if (!account.reporting) return "暂无额度数据";
-  if (account.exhausted) return "额度已用完 · 应切换";
-  const left = `剩余 ${account.limitingLeft.toFixed(1)}%`;
-  if (account.active) return account.forecastAt ? `当前顺位 · 约 ${duration(account.forecastAt - (current?.now || Date.now()))}后用完` : `当前顺位 · ${left}`;
-  if (account.next) return `下一个 · ${left}`;
-  return `排队 · ${left}`;
+  if (account.exhausted) return "额度已用完";
+  // 0.3.49：同一家登记了几个账号只是一起展示额度，不是号池，不写顺位 / 下一个 / 排队
+  return `剩余 ${account.limitingLeft.toFixed(1)}%`;
 }
 /** 设置页的官方账号列表。数据来自主进程，不含任何凭据。 */
 function renderOfficialAccounts(statuses = []) {
@@ -253,11 +251,15 @@ function renderOfficialAccounts(statuses = []) {
         el('span', { class: 'oauth-account-who' }, [
           el('span', { class: 'oauth-account-name', text: name, title: name, translate: 'no', 'data-alias': account.alias || '', 'data-email': email }),
           account.alias && email ? el('small', { class: 'oauth-account-email', text: email, title: email, translate: 'no' }) : null,
-          quotaText ? el('small', { class: 'oauth-account-quota' + (pooled.exhausted ? ' exhausted' : pooled.active ? ' active' : ''), text: quotaText }) : null
+          quotaText ? el('small', { class: 'oauth-account-quota' + (pooled.exhausted ? ' exhausted' : ''), text: quotaText }) : null
         ]),
         account.autoRenew && !account.hidden ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，不用重新登录' }) : null,
         account.hidden ? null : localOnlySwitch(account.id, name),
         el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: state }),
+        // 0.3.49：TokenPulse 存着这个账号能续期的登录，就能一键写进 CLI
+        !account.hidden && !account.inCli && account.usable && account.autoRenew
+          ? el('button', { type: 'button', class: 'btn oauth-switch', 'data-account-action': 'switch-cli', 'data-account-kind': status.kind, 'data-account-id': account.id, title: `把 ${status.label} CLI 的登录切换到这个账号` }, [icon('terminal'), '切到 CLI'])
+          : null,
         el('span', { class: 'oauth-actions' }, actions)
       ]);
     });
@@ -543,7 +545,7 @@ function showStatus(message, error = false) {
  * 返回 { close }。
  */
 const toastKeys = new Map();
-function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms } = {}) {
+function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms, sticky: keep } = {}) {
   const stack = document.getElementById('toast-stack') || (() => { const node = el('div', { id: 'toast-stack', 'aria-live': 'polite' }); document.body.append(node); return node; })();
   const loud = kind === 'error' || kind === 'warning';
   const old = key ? toastKeys.get(key) : null;
@@ -559,7 +561,7 @@ function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms
       return b;
     })) : null,
   ]);
-  const sticky = kind === 'pending' || actions.length > 0;
+  const sticky = kind === 'pending' || (actions.length > 0 && keep !== false);
   let left = ms ?? (kind === 'error' ? 6500 : kind === 'warning' ? 5000 : 3600), since = Date.now(), timer = sticky ? 0 : setTimeout(() => close(), left);
   function dispose() { clearTimeout(timer); node.remove(); if (key && toastKeys.get(key)?.node === node) toastKeys.delete(key); }
   function close() {
@@ -679,10 +681,9 @@ function poolRing(pool, account) {
   return parts.join(" · ") || "暂无额度数据";
 }
 function poolRows(pool, detail = false) {
-  return pool.accounts.map((account, index) => {
-    const row = el('button', { type: 'button', class: `pool-account-row${account.exhausted ? ' exhausted' : account.active ? ' active' : account.next ? ' next' : ''}` }, [
+  return pool.accounts.map((account) => {
+    const row = el('button', { type: 'button', class: `pool-account-row${account.exhausted ? ' exhausted' : ''}` }, [
       poolRing(pool, account),
-      el('span', { class: 'pool-order', text: String(index + 1).padStart(2, '0') }),
       el('span', { class: 'pool-account-copy' }, [el('b', { text: poolAccountName(account), translate: 'no' }), el('small', { text: poolWindowText(account) })]),
       el('span', { class: 'pool-account-state', text: poolQuotaText(account) })
     ]);
@@ -706,11 +707,11 @@ function poolQueue(pool, leadKey) {
     mini.classList.add('pool-mini-ring');
     mini.removeAttribute('title');
     const state = item.exhausted ? '已用完' : !item.reporting ? '暂无数据' : `剩 ${item.limitingLeft.toFixed(1)}%`;
-    const row = el('button', { type: 'button', class: 'pool-queue-row' + (item.exhausted ? ' exhausted' : item.next ? ' next' : ''), title: item.accountLabel || '' }, [
+    const row = el('button', { type: 'button', class: 'pool-queue-row' + (item.exhausted ? ' exhausted' : ''), title: item.accountLabel || '' }, [
       mini,
       el('span', { class: 'pool-queue-name', text: poolAccountName(item), translate: 'no' }),
-      // 没有标签也占住这一格，右边的百分比才能上下对齐
-      item.next ? el('span', { class: 'pool-queue-tag', text: '下一个' }) : el('span', { 'aria-hidden': 'true' }),
+      // 空格子占住标签那一列，右边的百分比才能上下对齐
+      el('span', { 'aria-hidden': 'true' }),
       el('span', { class: 'pool-queue-left', text: state })
     ]);
     row.addEventListener('click', () => open(item));
@@ -719,7 +720,7 @@ function poolQueue(pool, leadKey) {
   const more = others.length > QUEUE_ROWS ? el('button', { type: 'button', class: 'pool-queue-more' }, [`还有 ${number(others.length - QUEUE_ROWS)} 个账号`, icon('arrow')]) : null;
   more?.addEventListener('click', () => { state.account = leadKey; navigate('quota'); });
   return el('div', { class: 'pool-queue' }, [
-    el('div', { class: 'pool-queue-head' }, [el('span', { text: '号池 · 按顺序使用' }), el('small', { text: `${number(ready)} / ${number(pool.accountCount)} 个有余量` })]),
+    el('div', { class: 'pool-queue-head' }, [el('span', { text: '其他账号' }), el('small', { text: `${number(ready)} / ${number(pool.accountCount)} 个有余量` })]),
     ...rows,
     more
   ]);
@@ -1043,7 +1044,7 @@ function renderOverview() {
     // 号池里当前顺位的账号当主角；全部用完就拿第一个
     const lead = pool.accounts.find(item => item.active) || pool.accounts[0];
     const report = lead ? poolReport(pool, lead) : null;
-    return stagger(quotaCard({ kind: pool.kind, key: lead?.key || pool.kind, account: report || null }, pool), i);
+    return markLayout(stagger(quotaCard({ kind: pool.kind, key: lead?.key || pool.kind, account: report || null }, pool), i), 'overview:quota:' + pool.kind);
   }));
   // DeepSeek 按量付费，没有额度窗口：它的卡片（余额、还能用几天）由 deepseek-balance.js 画，和别家并排
   for (const card of window.DeepSeekBalance?.cards() || []) $('quota-cards').append(stagger(card, $('quota-cards').children.length));
@@ -1290,8 +1291,12 @@ function drawAccountTabs(slots) {
   const tabs = $('account-tabs');
   // DeepSeek 的账号（按量付费，一个 API Key 一个）默认排在官方账号后面，见 deepseek-balance.js
   const extra = [...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])];
-  const items = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind, who: accountWho(slot.account), slot })), ...extra.map(tab => ({ key: tab.key, kind: tab.kind, who: tab.who, tab }))]);
-  const signature = items.map(item => `${item.key}:${item.who}`).join('|');
+  const all = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind, who: accountWho(slot.account), slot })), ...extra.map(tab => ({ key: tab.key, kind: tab.kind, who: tab.who, tab }))]);
+  tabLabels.clear();
+  for (const item of all) tabLabels.set(item.key, [META[item.kind]?.name || (item.kind === 'pool' ? '号池' : item.kind === 'deepseek' ? 'DeepSeek' : item.kind === 'relay' ? '第三方 Key' : ''), item.who].filter(Boolean).join(' · ') || item.key);
+  // 0.3.49：编辑布局里藏起来的标签平时不画，编辑时画成占位
+  const items = layoutEdit ? all : all.filter(item => !tabHidden(item.key));
+  const signature = items.map(item => `${item.key}:${item.who}:${tabHidden(item.key) ? 'h' : ''}`).join('|') + (layoutEdit ? '|edit' : '');
   if (tabs.dataset.signature !== signature) {
     tabs.dataset.signature = signature;
     tabs.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...items.map(({ slot, tab, who }) => {
@@ -1302,6 +1307,11 @@ function drawAccountTabs(slots) {
         who ? el('small', { class: 'tab-who', text: who, translate: 'no' }) : null
       ]);
     }));
+    if (layoutEdit) for (const button of tabs.querySelectorAll(':scope > button[data-account]')) {
+      const key = button.dataset.account, hidden = tabHidden(key), label = tabLabels.get(key) || key;
+      button.classList.toggle('tab-ghost', hidden);
+      button.append(el('span', { class: 'tab-layout', role: 'button', tabindex: '0', 'data-tab-toggle': key, title: hidden ? `显示「${label}」` : `隐藏「${label}」`, 'aria-label': (hidden ? '显示：' : '隐藏：') + label }, [icon(hidden ? 'plus' : 'close')]));
+    }
   }
   for (const button of tabs.querySelectorAll('button')) { button.classList.toggle('on', button.dataset.account === state.account); button.setAttribute('aria-pressed', button.dataset.account === state.account); }
   syncSeg(tabs);
@@ -1462,6 +1472,12 @@ function renderQuota() {
   quotaTimelineNode ??= $('quota-model-timeline');
   const host = $('quota-detail'); host.replaceChildren();
   const slots = quotaSlots();
+  if (!layoutEdit) {
+    const keys = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind })), ...[...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])].map(tab => ({ key: tab.key, kind: tab.kind }))]).map(item => item.key);
+    const selected = keys.includes(state.account) ? state.account : slots.find(item => item.kind === state.account)?.key;
+    const open = keys.filter(key => !tabHidden(key));
+    if (selected && tabHidden(selected) && open.length) state.account = open[0];
+  }
   // 选中的是 DeepSeek 的账号：按量付费，没有额度窗口，这一页由 deepseek-balance.js 画（余额、消耗、用量、时间线、速度、模型换算）
   const deepseek = Boolean(window.DeepSeekBalance?.owns(state.account));
   // 选中的是号池（0.3.44）：这一页由 pool-quota.js 画（总额度、用量、成员分摊、趋势、时间线、速度、模型、请求）
@@ -1490,7 +1506,6 @@ function renderQuota() {
   window.PulseModelStudy?.timeline(current, account?.accountId || '');
   const sessions = current.sessions[kind] || { included: 0, excluded: 0 };
   const pool = poolOf(kind);
-  if (pool?.accountCount > 1) host.append(markLayout(poolPanel(pool), 'quota:pool'));
   host.append(el('div', { class: 'quota-context' }, [
     avatar(kind),
     el('div', {}, [
@@ -2209,6 +2224,11 @@ const scrollGuard = (() => {
     },
   };
 })();
+/*
+ * 页面里的二级菜单换了一整块内容（供应商页的「转发记录」→「概览」）：和换页一样回到顶部（0.3.49）。
+ * 以前 scrollGuard 把它当成「内容变短」，垫一大块空白留在原来很深的位置，看起来整个画面是白的。
+ */
+window.PulseScroll = { top() { scroller?.scrollTo({ top: 0, behavior: 'instant' }); scrollGuard.reset(); } };
 function renderPage(snapshot) {
   if ($('app-status').getAttribute('role') !== 'alert') $('app-status').hidden = true;
   updateRange(); renderStats();
@@ -2255,97 +2275,174 @@ function showUsageView(view) {
  * 时间范围按页面各管各的：总览默认 30 天、改了会记住；用量明细每次打开都从「今天」开始（看明细一般是看今天的）。
  */
 const overviewRange = { days: 30, from: '', to: '', follow: false };
-/* ---------------- 工作空间布局（0.3.43） ---------------- */
-
+/* ---------------- 工作空间布局（0.3.43；0.3.49 重做） ---------------- */
+/*
+ * 编辑布局。侧栏的每个页面、每一页的每张卡片（总览的官方额度按家拆开）、额度详情顶上的每个账号标签，都能单独隐藏，
+ * 卡片和侧栏页面能在同一块区域里拖动换位置。
+ * - 编辑时隐藏的东西留在原处，变成一条虚线占位条「已隐藏：xx · 显示」：在哪儿藏的就在哪儿加回来。
+ * - 右边的布局面板按「侧栏页面 / 每一页 → 区域」列出全部，带开关、「前往」和「恢复默认」。
+ * - 顺序存成每个 key 的名次（ranks）：拖动只在同一个父容器里换，换完把这几个 key 原来占的名次按新顺序重新分给它们。
+ * - 很多卡片是异步画的（并发、出口、会话、余额……）：统一由一个 MutationObserver 在下一帧补上工具条、隐藏和顺序。
+ * 只记在这台电脑上（localStorage），不影响监控和通知。
+ */
 const LAYOUT_KEY = 'tokenpulse-layout';
 const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers'];
 const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', concurrency: '并发监控', sessions: '会话管理', providers: '供应商' };
-/** 每一页能单独收起的卡片。id 带页面前缀，加回时按这个顺序回到原位。 */
+/** [key, 名字, 区域]。区域只给布局面板分组；数组顺序就是默认顺序。 */
 const LAYOUT = [
-  ['overview:quota', '官方额度'], ['overview:tokens', '总 Tokens'], ['overview:cost', '参考费用'], ['overview:requests', '请求次数'], ['overview:cache', '缓存读取占比'],
-  ['overview:trend', '用量趋势'], ['overview:rhythm', '使用节奏'], ['overview:sources', '工具分布'], ['overview:ranking', '模型用量排行'],
-  ['quota:pool', '账号池'], ['quota:five', '5 小时窗口'], ['quota:week', '周额度窗口'], ['quota:probe', '降智检测'], ['quota:capacity', '额度容量趋势'],
-  ['quota:hourly', '最近 24 小时'], ['quota:samples', '本周额度采样'], ['quota:study', '模型容量排行'], ['quota:timeline', '模型与思考等级时间线'],
-  ['quota:speed', '模型速度'], ['quota:account', '这个账号的请求'], ['quota:balance', '余额'], ['quota:local', '本机用量'], ['quota:spend', '消耗趋势'],
-  ['quota:history', '余额走势'], ['quota:models', '模型换算'], ['quota:site', '站点上的 Key'], ['quota:about', '账号说明'],
-  ['quota:pool-quota', '号池总额度'], ['quota:pool-usage', '号池用量'], ['quota:pool-members', '成员分摊'], ['quota:pool-hourly', '号池最近 24 小时'],
-  ['quota:pool-daily', '号池最近 30 天'], ['quota:pool-models', '号池用过的模型'], ['quota:pool-requests', '这个号池的请求'],
-  ['usage:breakdown', 'Token 构成'], ['usage:year', '全年活跃度'], ['usage:trend', '用量趋势 · 按工具'], ['usage:tools', '工具排行'], ['usage:hours', '使用时段分布'],
-  ['usage:models', '模型排行'], ['usage:speed', '模型速度走势'], ['usage:tokensci', 'tokens.ci 上传'], ['usage:records', '用量明细'],
-  ['egress:chatgpt', 'ChatGPT 出口'], ['egress:claude', 'Claude 出口'], ['egress:grok', 'Grok 出口'], ['egress:history', '变化与告警'],
-  ['concurrency:coverage', '监控范围'], ['concurrency:requests', '活跃 AI 请求'], ['concurrency:clients', '客户端连接'], ['concurrency:upstream', '上游连接'],
-  ['concurrency:history', '并发历史'], ['concurrency:breakdown', '供应商与账号'], ['concurrency:settings', '上限与保存期限'],
-  ['sessions:list', '会话列表'], ['sessions:detail', '会话内容'],
-  ['providers:status', '本地路由状态'], ['providers:claude', 'Claude Code'], ['providers:desktop', 'Claude 桌面端'], ['providers:codex', 'Codex'], ['providers:grok', 'Grok CLI'],
+  ['overview:quota:claude', 'Claude', '官方额度'], ['overview:quota:chatgpt', 'ChatGPT', '官方额度'], ['overview:quota:grok', 'Grok', '官方额度'],
+  ['overview:quota:deepseek', 'DeepSeek', '官方额度'], ['overview:quota:relay', '第三方 Key 余额', '官方额度'],
+  ['overview:tokens', '总 Tokens', '统计小卡'], ['overview:cost', '参考费用', '统计小卡'], ['overview:requests', '请求次数', '统计小卡'], ['overview:cache', '缓存读取占比', '统计小卡'],
+  ['overview:trend', '用量趋势', '图表'], ['overview:rhythm', '使用节奏', '图表'], ['overview:sources', '工具分布', '图表'], ['overview:ranking', '模型用量排行', '图表'],
+  ['quota:five', '5 小时窗口', '官方账号'], ['quota:week', '周额度窗口', '官方账号'], ['quota:probe', '降智检测', '官方账号'], ['quota:capacity', '额度容量趋势', '官方账号'],
+  ['quota:hourly', '最近 24 小时', '官方账号'], ['quota:samples', '本周额度采样', '官方账号'], ['quota:study', '模型容量排行', '官方账号'],
+  ['quota:timeline', '模型与思考等级时间线', '各页通用'], ['quota:speed', '模型速度', '各页通用'], ['quota:account', '这个账号的请求', '官方账号'],
+  ['quota:balance', '余额', 'DeepSeek 和第三方 Key'], ['quota:local', '本机用量', 'DeepSeek 和第三方 Key'], ['quota:spend', '消耗趋势', 'DeepSeek 和第三方 Key'],
+  ['quota:history', '余额走势', 'DeepSeek 和第三方 Key'], ['quota:models', '模型换算', 'DeepSeek 和第三方 Key'], ['quota:site', '站点上的 Key', 'DeepSeek 和第三方 Key'], ['quota:about', '账号说明', 'DeepSeek 和第三方 Key'],
+  ['quota:pool-quota', '号池总额度', '号池'], ['quota:pool-usage', '号池用量', '号池'], ['quota:pool-members', '成员分摊', '号池'], ['quota:pool-hourly', '号池最近 24 小时', '号池'],
+  ['quota:pool-daily', '号池最近 30 天', '号池'], ['quota:pool-models', '号池用过的模型', '号池'], ['quota:pool-requests', '这个号池的请求', '号池'],
+  ['usage:breakdown', 'Token 构成', '卡片'], ['usage:year', '全年活跃度', '卡片'], ['usage:trend', '用量趋势 · 按工具', '卡片'], ['usage:tools', '工具排行', '卡片'], ['usage:hours', '使用时段分布', '卡片'],
+  ['usage:models', '模型排行', '卡片'], ['usage:speed', '模型速度走势', '卡片'], ['usage:tokensci', 'tokens.ci 上传', '卡片'], ['usage:records', '用量明细', '卡片'],
+  ['egress:chatgpt', 'ChatGPT 出口', '卡片'], ['egress:claude', 'Claude 出口', '卡片'], ['egress:grok', 'Grok 出口', '卡片'], ['egress:history', '变化与告警', '卡片'],
+  ['concurrency:coverage', '监控范围', '卡片'], ['concurrency:requests', '活跃 AI 请求', '卡片'], ['concurrency:clients', '客户端连接', '卡片'], ['concurrency:upstream', '上游连接', '卡片'],
+  ['concurrency:history', '并发历史', '卡片'], ['concurrency:breakdown', '供应商与账号', '卡片'], ['concurrency:settings', '上限与保存期限', '卡片'],
+  ['sessions:list', '会话列表', '卡片'], ['sessions:detail', '会话内容', '卡片'],
+  ['providers:status', '本地路由状态', '概览'], ['providers:claude', 'Claude Code', '概览'], ['providers:desktop', 'Claude 桌面端', '概览'], ['providers:codex', 'Codex', '概览'], ['providers:grok', 'Grok CLI', '概览'], ['providers:deepseek', 'DeepSeek Harness', '概览'],
 ];
-const LAYOUT_BY_KEY = Object.fromEntries(LAYOUT);
+const LAYOUT_BY_KEY = Object.fromEntries(LAYOUT.map(([key, label]) => [key, label]));
+const LAYOUT_INDEX = Object.fromEntries(LAYOUT.map(([key], i) => [key, i]));
+/** 会话页左右两栏是固定的列表 + 内容，不拖动换位置（只能藏）。 */
+const LAYOUT_FIXED = new Set(['sessions:list', 'sessions:detail']);
+const QUOTA_CARDS = LAYOUT.filter(([key]) => key.startsWith('overview:quota:')).map(([key]) => key);
 const OVERVIEW_STATS = ['overview:tokens', 'overview:cost', 'overview:requests', 'overview:cache'];
-const OVERVIEW_RANGE = [...OVERVIEW_STATS, 'overview:trend', 'overview:rhythm', 'overview:sources', 'overview:ranking'];
-const LEGACY_CARDS = { quota: ['overview:quota'], stats: OVERVIEW_STATS, trend: ['overview:trend'], rhythm: ['overview:rhythm'], sources: ['overview:sources'], ranking: ['overview:ranking'] };
+const OVERVIEW_CHARTS = ['overview:trend', 'overview:rhythm', 'overview:sources', 'overview:ranking'];
+const OVERVIEW_RANGE = [...OVERVIEW_STATS, ...OVERVIEW_CHARTS];
+/** 0.3.43 的旧 id：「官方额度」整块、「统计」四张一起。 */
+const LEGACY_CARDS = { quota: QUOTA_CARDS, 'overview:quota': QUOTA_CARDS, stats: OVERVIEW_STATS, trend: ['overview:trend'], rhythm: ['overview:rhythm'], sources: ['overview:sources'], ranking: ['overview:ranking'] };
 let layoutEdit = false;
-let hiddenNav = [];
-let hiddenCards = [];
-function navHidden(page) { return hiddenNav.includes(page); }
-function cardHidden(id) {
-  if (hiddenCards.includes(id)) return true;
-  return Boolean(id && !id.includes(':') && hiddenCards.includes('overview:' + id));
-}
+/** 藏起来的：卡片 key、'nav:<页面>'、'tab:<账号标签>'。 */
+let layoutHidden = new Set();
+/** 拖动排过的名次：key → 数字。没排过的按 LAYOUT 的默认顺序。 */
+let layoutRanks = {};
+/** 额度详情的账号标签：key → 名字（drawAccountTabs 画的时候记下，给布局面板用）。 */
+const tabLabels = new Map();
+function navHidden(page) { return layoutHidden.has('nav:' + page); }
+function tabHidden(key) { return layoutHidden.has('tab:' + key); }
 function expandCardId(id) {
-  if (LAYOUT_BY_KEY[id]) return [id];
   if (LEGACY_CARDS[id]) return LEGACY_CARDS[id];
+  if (LAYOUT_BY_KEY[id]) return [id];
   if (LAYOUT_BY_KEY['overview:' + id]) return ['overview:' + id];
-  return [];
+  return id && id.includes(':') ? [id] : [];
+}
+function cardHidden(id) {
+  const keys = expandCardId(id);
+  return keys.length > 0 && keys.every(key => layoutHidden.has(key));
+}
+function layoutLabel(key) {
+  if (key.startsWith('nav:')) return NAV_LABELS[key.slice(4)] || key;
+  if (key.startsWith('tab:')) return tabLabels.get(key.slice(4)) || '账号标签';
+  const label = LAYOUT_BY_KEY[key] || key;
+  return key.startsWith('overview:quota:') ? label + ' 额度' : label;
 }
 function layoutFirstPage() { return NAV_PAGES.find(id => !navHidden(id)) || ''; }
 function readLayout() {
+  layoutHidden = new Set(); layoutRanks = {};
   try {
     const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}');
-    hiddenNav = Array.isArray(raw.hiddenNav) ? [...new Set(raw.hiddenNav.filter(id => NAV_PAGES.includes(id)))] : [];
-    hiddenCards = Array.isArray(raw.hiddenCards) ? [...new Set(raw.hiddenCards.flatMap(expandCardId))] : [];
-  } catch { hiddenNav = []; hiddenCards = []; }
+    const keyOk = key => typeof key === 'string' && key.length <= 300;
+    if (raw.v === 2) {
+      for (const key of Array.isArray(raw.hidden) ? raw.hidden.slice(0, 1000) : []) if (keyOk(key)) layoutHidden.add(key);
+      for (const [key, rank] of Object.entries(raw.ranks || {}).slice(0, 1000)) if (keyOk(key) && Number.isFinite(rank)) layoutRanks[key] = rank;
+    } else {
+      // 0.3.43 的格式：hiddenNav + hiddenCards（「官方额度」整块藏 = 每一家都藏）
+      for (const page of Array.isArray(raw.hiddenNav) ? raw.hiddenNav : []) if (NAV_PAGES.includes(page)) layoutHidden.add('nav:' + page);
+      for (const id of Array.isArray(raw.hiddenCards) ? raw.hiddenCards : []) for (const key of expandCardId(id)) if (LAYOUT_BY_KEY[key]) layoutHidden.add(key);
+    }
+  } catch { layoutHidden = new Set(); layoutRanks = {}; }
+  // 侧栏至少留一个页面
+  if (NAV_PAGES.every(navHidden)) layoutHidden.delete('nav:' + NAV_PAGES[0]);
 }
 function writeLayout() {
-  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify({ hiddenNav, hiddenCards })); } catch { /* 记不住就只对这次生效 */ }
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify({ v: 2, hidden: [...layoutHidden], ranks: layoutRanks })); } catch { /* 记不住就只对这次生效 */ }
 }
 function setLayoutEdit(on) {
   layoutEdit = Boolean(on);
   if (!layoutEdit) closeOptionMenu();
+  if (!layoutEdit && state.page && navHidden(state.page)) { applyLayout(); return; }
+  // 账号标签要重画（编辑时藏起来的标签显示成占位）
+  if (current && state.page === 'quota') renderQuota();
   applyLayout();
 }
-function hideNav(page) {
-  if (!NAV_PAGES.includes(page) || navHidden(page)) return;
-  hiddenNav.push(page);
+/** 藏 / 显示一样东西。fromPage：在页面上点的，藏了给一个能撤销的提示。 */
+function setLayoutHidden(key, hide, { fromPage = false } = {}) {
+  if (hide === layoutHidden.has(key)) return;
+  if (hide && key.startsWith('nav:') && NAV_PAGES.filter(page => !navHidden(page)).length <= 1) { toast('侧栏至少要留一个页面', { kind: 'warning', key: 'layout-undo' }); return; }
+  if (hide && key.startsWith('tab:') && [...tabLabels.keys()].filter(tab => !tabHidden(tab)).length <= 1) { toast('额度详情至少要留一个账号标签', { kind: 'warning', key: 'layout-undo' }); return; }
+  if (hide) layoutHidden.add(key); else layoutHidden.delete(key);
   writeLayout();
-  if (state.page === page) {
-    const next = layoutFirstPage();
-    if (next) navigate(next);
-    else showLayoutEmpty();
-  } else applyLayout();
-}
-function showNav(page) {
-  if (!navHidden(page)) return;
-  hiddenNav = hiddenNav.filter(id => id !== page);
-  writeLayout();
-  if (!state.page) navigate(page);
-  else applyLayout();
-}
-function hideCard(id) {
-  const key = expandCardId(id)[0];
-  if (!key || cardHidden(key)) return;
-  hiddenCards.push(key);
-  writeLayout();
+  if (key.startsWith('tab:') && current && state.page === 'quota') renderQuota();
   applyLayout();
+  if (hide && fromPage) toast(`已隐藏「${layoutLabel(key)}」`, { key: 'layout-undo', sticky: false, ms: 5000, actions: [{ label: '撤销', primary: true, onClick: () => setLayoutHidden(key, false) }] });
 }
-function showCard(id) {
-  const keys = new Set(expandCardId(id));
-  if (![...keys].some(cardHidden)) return;
-  hiddenCards = hiddenCards.filter(item => !keys.has(item));
+function resetLayout(page) {
+  const before = { hidden: new Set(layoutHidden), ranks: { ...layoutRanks } };
+  const mine = key => !page || key.startsWith(page + ':') || (page === 'quota' && key.startsWith('tab:'));
+  layoutHidden = new Set([...layoutHidden].filter(key => !mine(key) || (page && key.startsWith('nav:'))));
+  if (!page) layoutHidden = new Set();
+  for (const key of Object.keys(layoutRanks)) if (mine(key) && (!page || !key.startsWith('nav:'))) delete layoutRanks[key];
+  if (!page) layoutRanks = {};
   writeLayout();
+  if (current && state.page === 'quota') renderQuota();
   applyLayout();
+  toast(page ? `「${NAV_LABELS[page]}」已恢复默认布局` : '已恢复默认布局', { key: 'layout-undo', sticky: false, ms: 5000, actions: [{ label: '撤销', primary: true, onClick: () => { layoutHidden = before.hidden; layoutRanks = before.ranks; writeLayout(); if (current && state.page === 'quota') renderQuota(); applyLayout(); } }] });
 }
-/** 给一块卡片打上布局标记，并放上删除按钮。按钮型卡片外包一层，避免按钮里再套按钮。 */
+/* 兼容旧的调用（设置页、通知、测试） */
+function hideNav(page) { setLayoutHidden('nav:' + page, true); }
+function showNav(page) { setLayoutHidden('nav:' + page, false); }
+function hideCard(id) { for (const key of expandCardId(id)) setLayoutHidden(key, true); }
+function showCard(id) { for (const key of expandCardId(id)) setLayoutHidden(key, false); }
+
+function rankOf(key, fallback = 0) {
+  if (Number.isFinite(layoutRanks[key])) return layoutRanks[key];
+  if (key.startsWith('nav:')) return NAV_PAGES.indexOf(key.slice(4)) * 10;
+  // 官方额度各家的先后本来由账号顺序决定（设置里能调）：没拖过就照画出来的顺序
+  return key in LAYOUT_INDEX && !key.startsWith('overview:quota:') ? LAYOUT_INDEX[key] * 10 : 100000 + fallback;
+}
+const layoutItems = zone => [...zone.children].filter(node => node.dataset?.layout);
+/** 按名次把一个容器里的卡片排好。只动卡片占的那几个位置，夹在中间的标题等不动。 */
+function sortZone(zone) {
+  const cards = layoutItems(zone);
+  if (cards.length < 2) return;
+  const sorted = cards.map((node, i) => ({ node, rank: rankOf(node.dataset.layout, i), i })).sort((a, b) => a.rank - b.rank || a.i - b.i).map(item => item.node);
+  if (sorted.every((node, i) => node === cards[i])) return;
+  const marks = cards.map(node => { const mark = document.createComment(''); node.replaceWith(mark); return mark; });
+  marks.forEach((mark, i) => mark.replaceWith(sorted[i]));
+}
+/** 拖完：这个容器里的 key 按新顺序，重新分它们原来占的名次。 */
+function saveZoneOrder(zone) {
+  const keys = layoutItems(zone).map(node => node.dataset.layout);
+  const slots = keys.map((key, i) => rankOf(key, i)).sort((a, b) => a - b);
+  // 名次有重复（都是没排过的新卡片）时拉开，免得下次排回去
+  for (let i = 1; i < slots.length; i++) if (slots[i] <= slots[i - 1]) slots[i] = slots[i - 1] + 0.5;
+  keys.forEach((key, i) => { layoutRanks[key] = slots[i]; });
+  writeLayout();
+}
+function layoutTools(key, { nav = false } = {}) {
+  const label = layoutLabel(key);
+  const tools = el('span', { class: 'layout-tools' + (nav ? ' nav' : '') }, [
+    LAYOUT_FIXED.has(key) ? null : el('button', { type: 'button', class: 'layout-grip', 'data-layout-grip': key, title: `拖动调整「${label}」的位置（也可以用方向键）`, 'aria-label': `调整位置：${label}` }, [icon('grip')]),
+    nav ? null : el('span', { class: 'layout-name', text: label }),
+    el('button', { type: 'button', class: 'layout-hide', 'data-layout-hide': key, title: `隐藏「${label}」`, 'aria-label': `隐藏：${label}` }, [icon('close')]),
+  ]);
+  const ghost = el('div', { class: 'layout-ghost-bar' + (nav ? ' nav' : '') }, [
+    el('span', { class: 'layout-ghost-text', text: `已隐藏：${label}` }),
+    el('button', { type: 'button', class: 'layout-show', 'data-layout-show': key, title: `显示「${label}」`, 'aria-label': `显示：${label}` }, [icon('plus'), el('span', { text: '显示' })]),
+  ]);
+  return [tools, ghost];
+}
+/** 给一块卡片打上布局标记、放上工具条和占位条。按钮型卡片外包一层，避免按钮里再套按钮。 */
 function markLayout(node, key) {
-  if (!node || !LAYOUT_BY_KEY[key]) return node;
+  if (!node || !key) return node;
   let host = node;
   if (node.tagName === 'BUTTON') {
     if (node.parentElement?.dataset.layout === key) host = node.parentElement;
@@ -2358,12 +2455,64 @@ function markLayout(node, key) {
     if (!node.classList.contains('layout-card')) node.className = ('layout-card ' + node.className).trim();
     node.dataset.layout = key;
   }
-  if (!host.querySelector(':scope > .layout-remove')) {
-    host.append(el('button', { type: 'button', class: 'layout-remove', 'data-layout-remove': 'card', 'data-layout-id': key, title: '移除', 'aria-label': '移除' + LAYOUT_BY_KEY[key] }, [icon('close')]));
-  }
+  if (!host.querySelector(':scope > .layout-tools')) host.append(...layoutTools(key));
+  syncCard(host);
   return host;
 }
 window.markLayout = markLayout;
+/** 一张卡片现在该怎么显示：正常 / 编辑时的占位条 / 藏起来。 */
+function syncCard(node) {
+  const key = node.dataset.layout;
+  // 总览的四张统计小卡在用量明细页上也用：只在总览上按布局藏
+  const hidden = layoutHidden.has(key) && !(OVERVIEW_STATS.includes(key) && state.page !== 'overview');
+  const ghost = hidden && layoutEdit;
+  node.classList.toggle('layout-ghost', ghost);
+  // 工具条压在卡片上沿：卡片自己 overflow: hidden（圆角裁切）的，编辑时放开；能滚动的不动
+  if (layoutEdit && !node.classList.contains('layout-overflow') && !node.hidden && getComputedStyle(node).overflow === 'hidden') node.classList.add('layout-overflow');
+  if (hidden && !ghost) { node.hidden = true; node.dataset.layoutHidden = '1'; }
+  else if (node.dataset.layoutHidden) { node.hidden = false; delete node.dataset.layoutHidden; }
+}
+let layoutDragging = null;
+let layoutSyncing = false;
+function syncCards() {
+  if (layoutSyncing) return;
+  layoutSyncing = true;
+  try {
+    const zones = new Set();
+    for (const node of $('main').querySelectorAll('[data-layout]')) {
+      if (!node.querySelector(':scope > .layout-tools')) node.append(...layoutTools(node.dataset.layout));
+      syncCard(node);
+      if (node.parentElement) zones.add(node.parentElement);
+    }
+    if (!layoutDragging) for (const zone of zones) sortZone(zone);
+  } finally { layoutSyncing = false; layoutObserver?.takeRecords(); }
+}
+/** 侧栏：每个页面一格，能藏、能拖。 */
+function syncNav() {
+  const nav = $('nav');
+  for (const page of NAV_PAGES) {
+    const slot = nav.querySelector(`[data-page="${page}"]`)?.closest('.nav-slot');
+    if (!slot) continue;
+    const key = 'nav:' + page;
+    slot.dataset.layout = key;
+    if (!slot.querySelector(':scope > .layout-tools')) slot.append(...layoutTools(key, { nav: true }));
+    const hidden = navHidden(page);
+    slot.classList.toggle('layout-ghost', hidden && layoutEdit);
+    slot.hidden = hidden && !layoutEdit;
+  }
+  if (!layoutDragging) sortZone(nav);
+}
+let layoutObserver = null;
+function watchLayout() {
+  if (layoutObserver || typeof MutationObserver !== 'function') return;
+  let queued = false;
+  layoutObserver = new MutationObserver(() => {
+    if (queued || layoutSyncing) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; syncCards(); });
+  });
+  layoutObserver.observe($('main'), { childList: true, subtree: true });
+}
 function showLayoutEmpty() {
   state.page = '';
   document.body.dataset.page = 'empty';
@@ -2382,10 +2531,6 @@ function showLayoutEmpty() {
   applyLayout();
 }
 function applyLayout() {
-  for (const page of NAV_PAGES) {
-    const slot = document.querySelector(`#nav [data-page="${page}"]`)?.closest('.nav-slot');
-    if (slot) slot.hidden = navHidden(page);
-  }
   if (layoutEdit) document.documentElement.dataset.layoutEdit = 'on';
   else delete document.documentElement.dataset.layoutEdit;
   const editBtn = $('layout-edit');
@@ -2395,64 +2540,163 @@ function applyLayout() {
   editBtn.setAttribute('aria-label', editLabel);
   editBtn.querySelector('.layout-edit-label').textContent = editLabel;
   editBtn.querySelector('use').setAttribute('href', layoutEdit ? '#i-check' : '#i-edit');
-  const add = $('layout-add');
-  add.hidden = !(layoutEdit && (hiddenNav.length || hiddenCards.length));
+  syncNav();
   if (state.page) document.body.dataset.page = state.page;
   const onOverview = state.page === 'overview';
   const onUsage = state.page === 'usage';
+  const shown = keys => layoutEdit || keys.some(key => !layoutHidden.has(key));
   const overviewBlock = $('page-overview');
-  if (overviewBlock && (state.page === 'overview' || state.page === '')) overviewBlock.hidden = !onOverview || cardHidden('overview:quota');
-  for (const node of document.querySelectorAll('[data-layout]')) {
-    const key = node.dataset.layout;
-    if (!node.querySelector(':scope > .layout-remove') && LAYOUT_BY_KEY[key]) markLayout(node, key);
-    const stat = OVERVIEW_STATS.includes(key);
-    const shouldHide = cardHidden(key) && !(stat && state.page !== 'overview');
-    if (shouldHide) { node.hidden = true; node.dataset.layoutHidden = '1'; }
-    else if (node.dataset.layoutHidden) { node.hidden = false; delete node.dataset.layoutHidden; }
-  }
+  if (overviewBlock && (state.page === 'overview' || state.page === '')) overviewBlock.hidden = !onOverview || !shown(QUOTA_CARDS);
+  syncCards();
   const analysis = document.querySelector('#overview-analysis .analysis-grid');
   const split = document.querySelector('#overview-analysis .split-grid');
-  if (analysis) analysis.hidden = !onOverview || (cardHidden('overview:trend') && cardHidden('overview:rhythm'));
-  if (split) split.hidden = !onOverview || (cardHidden('overview:sources') && cardHidden('overview:ranking'));
-  $('overview-analysis').hidden = state.page !== 'overview' || ['overview:trend', 'overview:rhythm', 'overview:sources', 'overview:ranking'].every(cardHidden);
-  const rangeOnOverview = OVERVIEW_RANGE.some(id => !cardHidden(id));
-  $('usage-filters').hidden = !(onUsage || (onOverview && rangeOnOverview));
-  $('usage-summary').hidden = !(onUsage || (onOverview && OVERVIEW_STATS.some(id => !cardHidden(id))));
+  if (analysis) analysis.hidden = !onOverview || !shown(['overview:trend', 'overview:rhythm']);
+  if (split) split.hidden = !onOverview || !shown(['overview:sources', 'overview:ranking']);
+  $('overview-analysis').hidden = state.page !== 'overview' || !shown(OVERVIEW_CHARTS);
+  $('usage-filters').hidden = !(onUsage || (onOverview && shown(OVERVIEW_RANGE)));
+  $('usage-summary').hidden = !(onUsage || (onOverview && shown(OVERVIEW_STATS)));
   const pageCards = LAYOUT.filter(([key]) => key.startsWith(state.page + ':'));
-  $('overview-layout-empty').hidden = !state.page || !pageCards.length || pageCards.some(([key]) => !cardHidden(key));
+  $('overview-layout-empty').hidden = layoutEdit || !state.page || !pageCards.length || pageCards.some(([key]) => !layoutHidden.has(key));
   $('layout-hidden-note').hidden = !(state.page && navHidden(state.page));
   $('layout-empty').hidden = state.page !== '';
   for (const button of document.querySelectorAll('[data-go]')) button.hidden = navHidden(button.dataset.go);
+  renderLayoutPanel();
   moveIndicator();
 }
-function openLayoutMenu(trigger) {
-  if (menuOwner === trigger) { closeOptionMenu(); return; }
-  closeOptionMenu();
-  const menu = $('option-menu');
-  const item = (label, pick) => {
-    const button = el('button', { type: 'button', class: 'option-item', role: 'menuitem', tabindex: -1 }, [el('span', { class: 'option-item-text' }, [el('b', { text: label })])]);
-    button.addEventListener('click', () => { closeOptionMenu(true); pick(); });
-    return button;
-  };
-  const nodes = [];
-  const pages = NAV_PAGES.filter(navHidden);
-  if (pages.length) nodes.push(el('div', { class: 'option-menu-label', text: '页面' }), ...pages.map(id => item(NAV_LABELS[id], () => showNav(id))));
-  for (const page of NAV_PAGES) {
-    const cards = LAYOUT.filter(([key]) => key.startsWith(page + ':') && cardHidden(key));
-    if (cards.length) nodes.push(el('div', { class: 'option-menu-label', text: NAV_LABELS[page] }), ...cards.map(([key, label]) => item(label, () => showCard(key))));
-  }
-  menu.setAttribute('aria-label', '添加');
-  menu.replaceChildren(...nodes);
-  menu.hidden = false;
-  menuOwner = trigger;
-  trigger.setAttribute('aria-expanded', 'true');
-  const rect = trigger.getBoundingClientRect(), width = Math.min(Math.max(rect.width, 220), window.innerWidth - 24);
-  menu.style.width = `${width}px`;
-  menu.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
-  const height = menu.offsetHeight;
-  menu.style.top = `${window.innerHeight - rect.bottom - 12 >= height ? rect.bottom + 6 : Math.max(12, rect.top - height - 6)}px`;
-  menu.querySelector('.option-item')?.focus();
+
+/* ---------- 拖动 ---------- */
+function layoutDragStart(grip, event) {
+  const item = grip.closest('[data-layout]');
+  const zone = item?.parentElement;
+  if (!item || !zone || event.button !== 0) return;
+  event.preventDefault();
+  layoutDragging = { item, zone, grip, id: event.pointerId, moved: false };
+  grip.setPointerCapture?.(event.pointerId);
+  item.classList.add('layout-dragging');
+  document.documentElement.classList.add('layout-drag-active');
 }
+function layoutDragMove(event) {
+  const drag = layoutDragging;
+  if (!drag || event.pointerId !== drag.id) return;
+  const under = document.elementsFromPoint(event.clientX, event.clientY).map(node => node.closest?.('[data-layout]')).find(node => node && node !== drag.item && node.parentElement === drag.zone);
+  if (!under) return;
+  const rect = under.getBoundingClientRect(), mine = drag.item.getBoundingClientRect();
+  // 同一行左右换：看横向过没过中线；不在同一行：看纵向
+  const sameRow = Math.abs(rect.top - mine.top) < Math.min(rect.height, mine.height) / 2;
+  const before = sameRow ? event.clientX < rect.left + rect.width / 2 : event.clientY < rect.top + rect.height / 2;
+  const ref = before ? under : under.nextSibling;
+  if (ref === drag.item || drag.item.nextSibling === ref) return;
+  drag.zone.insertBefore(drag.item, ref);
+  drag.moved = true;
+  if (drag.zone.id === 'nav') moveIndicator();
+}
+function layoutDragEnd(event, commit) {
+  const drag = layoutDragging;
+  if (!drag || (event && event.pointerId !== drag.id)) return;
+  layoutDragging = null;
+  drag.item.classList.remove('layout-dragging');
+  document.documentElement.classList.remove('layout-drag-active');
+  if (drag.moved && commit) saveZoneOrder(drag.zone);
+  applyLayout();
+}
+/** 键盘：把手上按方向键，和前一张 / 后一张换位置。 */
+function layoutDragKey(grip, event) {
+  const forward = event.key === 'ArrowDown' || event.key === 'ArrowRight';
+  if (!forward && event.key !== 'ArrowUp' && event.key !== 'ArrowLeft') return;
+  const item = grip.closest('[data-layout]');
+  const zone = item?.parentElement;
+  if (!zone) return;
+  event.preventDefault();
+  const list = layoutItems(zone), i = list.indexOf(item), other = list[forward ? i + 1 : i - 1];
+  if (!other) return;
+  if (forward) zone.insertBefore(other, item); else zone.insertBefore(item, other);
+  saveZoneOrder(zone);
+  applyLayout();
+  item.querySelector(`[data-layout-grip]`)?.focus();
+  showStatus(`「${layoutLabel(item.dataset.layout)}」已${forward ? '后移' : '前移'}`);
+}
+
+/* ---------- 右边的布局面板 ---------- */
+let layoutPanelScroll = 0;
+function renderLayoutPanel() {
+  let panel = $('layout-panel');
+  if (!layoutEdit) { if (panel) panel.hidden = true; document.body.classList.remove('layout-panel-open'); return; }
+  if (!panel) {
+    panel = el('aside', { id: 'layout-panel', class: 'layout-panel', 'aria-label': '布局面板' });
+    document.body.append(panel);
+  }
+  const body = panel.querySelector('.layout-panel-body');
+  if (body) layoutPanelScroll = body.scrollTop;
+  panel.hidden = false;
+  document.body.classList.add('layout-panel-open');
+  const toggle = (key, label, extra = '') => el('div', { class: 'layout-row' + (layoutHidden.has(key) ? ' off' : '') }, [
+    el('span', { class: 'layout-row-name', text: label }),
+    extra ? el('small', { class: 'layout-row-note', text: extra }) : null,
+    el('button', { type: 'button', class: 'layout-switch', role: 'switch', 'aria-checked': String(!layoutHidden.has(key)), 'data-layout-toggle': key, 'aria-label': `显示「${label}」` }, [el('span', { class: 'layout-switch-knob' })]),
+  ]);
+  const byRank = (keys, prefix = '') => keys.slice().sort((a, b) => rankOf(prefix + a) - rankOf(prefix + b));
+  const groups = [];
+  groups.push(el('section', { class: 'layout-group' }, [
+    el('div', { class: 'layout-group-head' }, [el('h3', { text: '侧栏页面' })]),
+    ...byRank(NAV_PAGES, 'nav:').map(page => toggle('nav:' + page, NAV_LABELS[page])),
+  ]));
+  for (const page of byRank(NAV_PAGES, 'nav:')) {
+    const entries = LAYOUT.filter(([key]) => key.startsWith(page + ':'));
+    const regions = new Map();
+    // 区域按默认顺序；区域里按现在排的先后
+    for (const [, , region] of entries) if (!regions.has(region)) regions.set(region, []);
+    for (const [key, label, region] of entries.slice().sort((a, b) => rankOf(a[0], LAYOUT_INDEX[a[0]]) - rankOf(b[0], LAYOUT_INDEX[b[0]]))) regions.get(region).push(toggle(key, label));
+    if (page === 'quota' && tabLabels.size) regions.set('账号标签', [...tabLabels].map(([tab, label]) => toggle('tab:' + tab, label)));
+    const go = el('button', { type: 'button', class: 'text-btn', 'data-layout-go': page, disabled: state.page === page ? '' : null, text: state.page === page ? '当前页' : '前往' });
+    const reset = el('button', { type: 'button', class: 'text-btn', 'data-layout-reset': page, text: '恢复默认' });
+    groups.push(el('section', { class: 'layout-group' + (state.page === page ? ' current' : '') }, [
+      el('div', { class: 'layout-group-head' }, [el('h3', { text: NAV_LABELS[page] }), el('span', { class: 'layout-group-actions' }, [go, reset])]),
+      ...[...regions].flatMap(([region, rows]) => [el('div', { class: 'layout-region', text: region }), ...rows]),
+    ]));
+  }
+  panel.replaceChildren(
+    el('div', { class: 'layout-panel-head' }, [
+      el('div', {}, [el('h2', { text: '编辑布局' }), el('p', { text: '拖动卡片上沿的把手换位置，点 × 隐藏。隐藏的东西在原处留一条虚线，点「显示」加回来。只记在这台电脑上。' })]),
+      el('button', { type: 'button', class: 'btn btn-accent', 'data-layout-done': '1' }, [icon('check'), '完成']),
+    ]),
+    el('div', { class: 'layout-panel-body' }, groups),
+    el('div', { class: 'layout-panel-foot' }, [el('button', { type: 'button', class: 'btn', 'data-layout-reset': '' }, [icon('restore'), '全部恢复默认'])]),
+  );
+  const scroller = panel.querySelector('.layout-panel-body');
+  scroller.scrollTop = layoutPanelScroll;
+  // 换了页：面板滚到这一页那一组
+  if (panel.dataset.page !== state.page) { panel.dataset.page = state.page; const group = panel.querySelector('.layout-group.current'); if (group) scroller.scrollTop = group.offsetTop - scroller.offsetTop - 6; }
+}
+document.addEventListener('click', event => {
+  const target = event.target.closest?.('[data-layout-hide], [data-layout-show], [data-layout-toggle], [data-layout-go], [data-layout-reset], [data-layout-done], [data-tab-toggle]');
+  if (!target) return;
+  if (target.dataset.layoutDone) { setLayoutEdit(false); return; }
+  if (target.dataset.layoutGo) { navigate(target.dataset.layoutGo, { force: true }); return; }
+  if (target.dataset.layoutReset !== undefined) { resetLayout(target.dataset.layoutReset || ''); return; }
+  event.preventDefault();
+  event.stopPropagation();
+  if (target.dataset.tabToggle) { const key = 'tab:' + target.dataset.tabToggle; setLayoutHidden(key, !layoutHidden.has(key), { fromPage: !layoutHidden.has(key) }); return; }
+  if (target.dataset.layoutToggle) { const key = target.dataset.layoutToggle; setLayoutHidden(key, !layoutHidden.has(key)); $('layout-panel')?.querySelector(`[data-layout-toggle="${CSS.escape(key)}"]`)?.focus(); return; }
+  if (!layoutEdit) return;
+  if (target.dataset.layoutHide) setLayoutHidden(target.dataset.layoutHide, true, { fromPage: true });
+  else setLayoutHidden(target.dataset.layoutShow, false);
+}, true);
+document.addEventListener('pointerdown', event => {
+  if (event.target.closest?.('[data-tab-toggle]')) { event.stopPropagation(); return; }
+  const grip = event.target.closest?.('[data-layout-grip]');
+  if (grip && layoutEdit) { event.stopPropagation(); layoutDragStart(grip, event); }
+}, true);
+document.addEventListener('pointermove', layoutDragMove);
+document.addEventListener('pointerup', event => layoutDragEnd(event, true));
+document.addEventListener('pointercancel', event => layoutDragEnd(event, false));
+document.addEventListener('keydown', event => {
+  const grip = event.target.closest?.('[data-layout-grip]');
+  if (grip && layoutEdit) layoutDragKey(grip, event);
+  const tab = event.target.closest?.('[data-tab-toggle]');
+  if (tab && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); tab.click(); }
+});
+// 编辑时点卡片本身（链接、按钮）照常能用；只有侧栏的页面按钮在拖动后不触发跳转
+document.addEventListener('click', event => { if (document.documentElement.classList.contains('layout-drag-active')) { event.preventDefault(); event.stopPropagation(); } }, true);
 window.layoutHidesPage = page => navHidden(page);
 window.layoutHidesCard = id => cardHidden(id);
 window.layoutFirstPage = layoutFirstPage;
@@ -2904,16 +3148,8 @@ for (const button of document.querySelectorAll('#nav [data-page], [data-go]')) b
 document.querySelector('.brand').addEventListener('click', e => { e.preventDefault(); navigate('overview'); });
 $('layout-edit').addEventListener('click', () => setLayoutEdit(!layoutEdit));
 $('layout-empty-edit').addEventListener('click', () => setLayoutEdit(true));
-$('layout-add').addEventListener('click', () => openLayoutMenu($('layout-add')));
 $('layout-restore-page').addEventListener('click', () => { if (state.page) showNav(state.page); });
-document.addEventListener('click', event => {
-  const remove = event.target.closest?.('[data-layout-remove]');
-  if (!remove || !layoutEdit) return;
-  event.preventDefault();
-  event.stopPropagation();
-  if (remove.dataset.layoutRemove === 'nav') hideNav(remove.dataset.layoutId);
-  else hideCard(remove.dataset.layoutId);
-});
+watchLayout();
 const picker = { from: '', to: '', follow: false, month: '' };
 function monthOf(day) { return day.slice(0, 7); }
 function shiftMonth(month, n) { const [y, m] = month.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
@@ -3364,9 +3600,14 @@ async function runAccountAction(action, kind, id, button) {
   const buttons = [...$('official-accounts').querySelectorAll('button')];
   const disabledBefore = new Set(buttons.filter(item => item.disabled));
   buttons.forEach(item => { item.disabled = true; });
-  $('prefs-status').textContent = action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : action === 'add-cli' ? '正在读取 CLI 的登录…' : '正在保存…';
+  $('prefs-status').textContent = action === 'switch-cli' ? '正在切换 CLI 的登录…' : action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : action === 'add-cli' ? '正在读取 CLI 的登录…' : '正在保存…';
   try {
-    if (action === 'add-cli') {
+    if (action === 'switch-cli') {
+      const result = await api.switchCliAccount(id);
+      renderOfficialAccounts(result.statuses);
+      settingsDone(result.message);
+      api.refresh().then(render).catch(() => {});
+    } else if (action === 'add-cli') {
       const result = await api.addCliAccount(kind);
       renderOfficialAccounts(result.statuses);
       settingsDone(result.added ? '已添加 CLI 登录的账号（不保存凭据），正在刷新额度' : 'CLI 登录的账号已经在列表里了');

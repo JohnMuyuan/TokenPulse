@@ -221,7 +221,8 @@
     if (next === 'logs') logPage = 0; // 转发记录每次从最新的第一页看起
     try { localStorage.setItem(SECTION_KEY, next); } catch { /* 记不住就算了 */ }
     render(true);
-    root.querySelector(`.pv-nav [data-section="${next}"]`)?.focus();
+    window.PulseScroll?.top();
+    root.querySelector(`.pv-nav [data-section="${next}"]`)?.focus({ preventScroll: true });
   }
   function sectionTitle() {
     return { overview: '概览', router: '本地路由', pass: '透明转发', logs: '转发记录', prism: 'Prism 桥', import: '导入供应商', safety: '配置保护' }[section] || appOf(section)?.name || '';
@@ -1299,6 +1300,7 @@
     editorPane = pane;
     editor = { app, provider, pool: isPool ? { strategy: provider?.pool?.strategy || 'round-robin', members: (provider?.pool?.members || []).map(m => ({ type: m.type, id: m.id })), reasoningEffort: provider?.pool?.reasoningEffort || '' } : null, icon: provider?.icon || '', avatar: provider?.avatar || '', accounts: null, upstream: provider?.upstream || NATIVE[app], keyField: provider?.apiKeyField || 'ANTHROPIC_AUTH_TOKEN', desktopMode: provider?.desktopMode || (app === 'desktop' ? 'map' : 'direct'), contextWindow: provider?.contextWindow || (app === 'grok' ? contextPreset('grok') : null), codexContextWindow: provider?.codexContextWindow || null, codexAutoCompact: provider?.codexAutoCompact || null, thinking: { supportsThinking: !!provider?.thinking?.supportsThinking, supportsEffort: !!provider?.thinking?.supportsEffort }, slots: seedSlots(app, provider), fetched: [], fetching: false };
     render(true);
+    window.PulseScroll?.top();
     editor.initial = editorFingerprint();
     showEditorPane(pane);
     if (pane === 'basic') requestAnimationFrame(() => root.querySelector('.pv-editor input[name=name]')?.focus());
@@ -1341,6 +1343,7 @@
     editor = null;
     editorPane = 'basic';
     render(false);
+    window.PulseScroll?.top();
   }
   function showEditorPane(id) {
     if (pending) return;

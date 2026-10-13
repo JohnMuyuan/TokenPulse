@@ -30,7 +30,7 @@ import { envProxyFor, setSystemProxyResolver } from "../core/upstream-proxy";
 import { tr } from "./i18n";
 import { trayIcon, windowIcon } from "./icon";
 import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
-import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf } from "./oauth";
+import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf, switchCliLogin } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
@@ -990,6 +990,12 @@ if (!app.requestSingleInstanceLock()) {
       // 名字、显示哪些账号都会变：重新汇总；删除 / 恢复还要重新查一轮额度
       backgroundRefresh(action !== "rename");
       return statuses;
+    });
+    ipcMain.handle("accounts:switch-cli", async (_event, id: unknown) => {
+      if (typeof id !== "string" || !id || id.length > 400) throw new Error("官方账号参数无效");
+      const result = await switchCliLogin(id);
+      backgroundRefresh(true);
+      return result;
     });
     ipcMain.handle("accounts:reorder", async (_event, kind: unknown, ids: unknown) => {
       if (!isOfficialAccountKind(kind) || !Array.isArray(ids) || ids.length > 50 || !ids.every((id) => typeof id === "string" && id.length <= 400)) throw new Error("官方账号参数无效");

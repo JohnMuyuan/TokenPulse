@@ -16,8 +16,10 @@ import {
   reorderOfficialAccounts,
   resolveAccountCredential,
   restoreOfficialAccount,
+  writeOfficialAccountStore,
 } from "../core/accounts";
 import { OFFICIAL_KINDS, cliDir, isExpired, readCliAccounts, type OfficialAccountKind } from "../core/credentials";
+import { readCliSnapshot, switchCliAccount } from "../core/cli-switch";
 import { dataDir } from "../core/paths";
 import { forgetQuotaAccount } from "../core/quota-history";
 import { cleanAgentEnv } from "./session-reply";
@@ -194,6 +196,13 @@ async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<
         }
         // 登录进来的账号排在这一家的最后；以前删过 / 藏过的同一个账号会恢复。
         for (const account of accounts) rememberOfficialAccount(account, true);
+        // 记下切换 CLI 登录时要一起写回的资料（scopes、oauthAccount、id_token 等，不含 token）
+        const snapshot = readCliSnapshot(kind, tempHome);
+        if (snapshot) {
+          const store = readOfficialAccountStore();
+          for (const account of accounts) { const found = store.accounts.find((item) => item.id === accountIdOf(kind, account.ref)); if (found) found.cliAuth = snapshot; }
+          writeOfficialAccountStore(store);
+        }
         return { ok: true, statuses: await listOfficialOAuthStatus() };
       }
       if (exited && graceUntil === Infinity) graceUntil = Date.now() + 3_000;
@@ -284,6 +293,12 @@ export async function manageOfficialAccount(action: "remove" | "purge" | "restor
     forgetMarks(id);
   } else removeOfficialAccount(id, readCliAccounts(target.kind).some((item) => accountIdOf(target.kind, item.ref) === id));
   return listOfficialOAuthStatus();
+}
+
+/** 一键把 CLI 的登录切到这个账号（0.3.49，见 cli-switch.ts）。 */
+export async function switchCliLogin(id: string) {
+  const result = await switchCliAccount(id);
+  return { ...result, statuses: await listOfficialOAuthStatus() };
 }
 
 /** 拖拽排序：这一家账号的新顺序。 */

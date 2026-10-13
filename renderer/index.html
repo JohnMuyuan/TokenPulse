@@ -106,14 +106,13 @@
   </div>
   <nav id="nav" aria-label="主导航">
     <span class="nav-indicator" aria-hidden="true"></span>
-    <div class="nav-slot"><button class="nav-item active" data-page="overview" title="总览"><svg class="icon"><use href="#i-overview"/></svg><span class="nav-label">总览</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="overview" aria-label="从侧栏移除总览" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <div class="nav-slot"><button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="quota" aria-label="从侧栏移除额度详情" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <div class="nav-slot"><button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="usage" aria-label="从侧栏移除用量明细" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <div class="nav-slot"><button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="egress" aria-label="从侧栏移除出口监控" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <div class="nav-slot"><button class="nav-item" data-page="concurrency" title="并发监控"><svg class="icon"><use href="#i-concurrency"/></svg><span class="nav-label">并发监控</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="concurrency" aria-label="从侧栏移除并发监控" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <div class="nav-slot"><button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="sessions" aria-label="从侧栏移除会话管理" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <div class="nav-slot"><button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button><button type="button" class="layout-remove" data-layout-remove="nav" data-layout-id="providers" aria-label="从侧栏移除供应商" title="从侧栏移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-    <button id="layout-add" type="button" class="layout-add" hidden aria-haspopup="menu" aria-expanded="false" title="添加"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span class="nav-label">添加</span></button>
+    <div class="nav-slot"><button class="nav-item active" data-page="overview" title="总览"><svg class="icon"><use href="#i-overview"/></svg><span class="nav-label">总览</span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="concurrency" title="并发监控"><svg class="icon"><use href="#i-concurrency"/></svg><span class="nav-label">并发监控</span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button></div>
   </nav>
 
   <div class="sidebar-bottom">
@@ -153,8 +152,8 @@
       <button id="layout-empty-edit" type="button" class="btn">编辑布局</button>
     </section>
 
-    <section id="page-overview" class="page layout-card" data-layout="overview:quota">
-      <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:quota" aria-label="移除官方额度" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    <section id="page-overview" class="page">
+      
       <div class="section-heading">
         <h2>官方额度<span class="section-tag">实时窗口</span></h2>
         <button class="text-btn" data-go="quota">查看完整预测<svg class="icon"><use href="#i-arrow"/></svg></button>
@@ -223,7 +222,7 @@
     <section id="overview-analysis" class="page">
       <div class="analysis-grid">
         <article class="panel layout-card" data-layout="overview:trend">
-          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:trend" aria-label="移除用量趋势" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+          
           <div class="panel-heading">
             <div><h2>用量趋势</h2><p id="chart-caption">按天汇总 · 本机时间</p></div>
             <div id="chart-metric" class="seg compact"><span class="seg-thumb" aria-hidden="true"></span><button data-metric="tokens" class="on">Tokens</button><button data-metric="costUsd">费用</button><button data-metric="requests">请求</button></div>
@@ -232,19 +231,19 @@
           <div id="chart-summary" class="chart-summary"></div>
         </article>
         <article class="panel layout-card" data-layout="overview:rhythm">
-          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:rhythm" aria-label="移除使用节奏" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+          
           <div class="panel-heading"><h2>使用节奏</h2><span class="section-tag">所选范围</span></div>
           <div id="rhythm"></div>
         </article>
       </div>
       <div class="split-grid">
         <article class="panel layout-card" data-layout="overview:sources">
-          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:sources" aria-label="移除工具分布" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+          
           <div class="panel-heading"><h2>工具分布</h2><span class="section-tag">按 Tokens</span></div>
           <div id="sources"></div>
         </article>
         <article class="panel layout-card" data-layout="overview:ranking">
-          <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="overview:ranking" aria-label="移除模型用量排行" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+          
           <div class="panel-heading"><h2>模型用量排行</h2><button class="text-btn" data-go="usage">查看明细<svg class="icon"><use href="#i-arrow"/></svg></button></div>
           <div id="model-ranking"></div>
         </article>
@@ -268,16 +267,16 @@
       </div>
       <div id="quota-detail"></div>
       <section id="quota-model-study" class="panel model-study layout-card" data-layout="quota:study" aria-label="模型容量排行">
-        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="quota:study" aria-label="移除模型容量排行" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        
       </section>
       <section id="quota-model-timeline" class="panel model-study layout-card" data-layout="quota:timeline" aria-label="模型与思考等级时间轴">
-        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="quota:timeline" aria-label="移除模型与思考等级时间线" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        
       </section>
     </section>
 
     <section id="page-usage" class="page" hidden>
       <article class="panel breakdown-panel layout-card" data-layout="usage:breakdown">
-        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="usage:breakdown" aria-label="移除 Token 构成" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        
         <div class="panel-heading"><h2>Token 构成</h2><span class="muted">输入含缓存读写，推理为输出子集</span></div>
         <div id="token-breakdown" class="breakdown-grid"></div>
       </article>
@@ -285,10 +284,10 @@
       <div id="usage-insights" class="usage-insights"></div>
       <!-- tokens.ci 自动上传的状态栏 / 介绍卡（renderer/tokens-ci.js） -->
       <section id="tokens-ci" class="panel tokens-ci layout-card" data-layout="usage:tokensci" aria-label="tokens.ci 上传" hidden>
-        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="usage:tokensci" aria-label="移除 tokens.ci" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        
       </section>
       <article class="panel records-panel usage-records layout-card" data-layout="usage:records">
-        <button type="button" class="layout-remove" data-layout-remove="card" data-layout-id="usage:records" aria-label="移除用量明细" title="移除"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        
         <div class="panel-heading">
           <div>
             <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span><span id="project-count" class="section-tag" hidden></span></h2>
@@ -405,7 +404,7 @@
       <section class="settings-panel" data-panel="accounts" role="tabpanel" hidden>
         <div class="setting-block">
           <div class="setting-title">官方账号</div>
-          <p class="setting-hint">每家可以登记多个账号，并聚合成一个账号池；列表显示额度、顺位和用完提醒。按住左边的把手拖动可以调整使用顺序，达到上限才提示切到下一个，TokenPulse 不会改写 CLI 登录。点铅笔可以给账号起名字，点「添加账号」可继续添加。</p>
+          <p class="setting-hint">每家可以登记多个账号，列表显示各自的额度和用完提醒，按住左边的把手拖动可以调整显示顺序。点铅笔可以给账号起名字。在 TokenPulse 里登录过的账号可以点「切到 CLI」，把官方 CLI 的登录换成它，不用再去终端里登出、登录。点「添加账号」可继续添加。</p>
           <div id="official-accounts" class="official-account-list"></div>
           <p class="account-security-note"><svg class="icon"><use href="#i-lock"/></svg>CLI 自己的登录只读取不复制，也不会被续期（用「本机 CLI 已登录的账号」添加的就是这种，不保存凭据）；在这里登录的账号，凭据（含续期用的 refresh token）保存在本机 official-accounts.json，仅用于查询额度，不会上传，并在过期前自动续期。</p>
         </div>

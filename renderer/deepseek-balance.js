@@ -710,13 +710,15 @@
     body.push(el('div', { class: 'quota-card-foot' }, [updated(lead) || el('span'), el('span', { class: 'ds-card-actions' }, [refresh, link])]));
     return node(worst, body);
   }
-  function cards() { return balance && !demo() ? [cardFor(PREFIX), cardFor('relay')].filter(Boolean) : []; }
+  /** 总览「官方额度」里的卡片（0.3.49：各自能在编辑布局里藏、拖动）。 */
+  const marked = kind => { const card = cardFor(kind); return card && window.markLayout ? window.markLayout(card, 'overview:quota:' + (kind === 'relay' ? 'relay' : 'deepseek')) : card; };
+  function cards() { return balance && !demo() ? [marked(PREFIX), marked('relay')].filter(Boolean) : []; }
   /** 余额刚查到、分析刚算完的时候：只换总览里这两张卡片，别的卡片不动。 */
   function renderCard() {
     const host = document.getElementById('quota-cards');
     if (!host || !balance || demo()) return;
     for (const kind of [PREFIX, 'relay']) {
-      const old = host.querySelector(`[data-ds-balance="${kind}"]`), next = cardFor(kind);
+      const old = host.querySelector(`[data-layout="overview:quota:${kind === 'relay' ? 'relay' : 'deepseek'}"]`) || host.querySelector(`[data-ds-balance="${kind}"]`), next = marked(kind);
       if (next) next.style.setProperty('--i', String(old ? [...host.children].indexOf(old) : host.children.length));
       if (old && next) old.replaceWith(next); else if (old) old.remove(); else if (next && host.children.length) host.append(next);
     }

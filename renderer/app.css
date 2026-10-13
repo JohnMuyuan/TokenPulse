@@ -256,35 +256,83 @@ input:focus, select:focus { outline: none; border-color: var(--accent); box-shad
 .layout-edit:hover { background: var(--surface-2); color: var(--text); }
 :root[data-layout-edit="on"] .layout-edit { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .nav-slot { position: relative; }
-.layout-remove {
-  display: none; place-items: center;
-  position: absolute; z-index: 2; top: 11px; right: 8px;
-  width: 22px; height: 22px; padding: 0;
-  border: 0; border-radius: 999px;
-  background: var(--surface); color: var(--muted);
-  box-shadow: 0 0 0 1px var(--line);
-}
-.layout-remove .icon { width: 13px; height: 13px; }
-.layout-remove:hover { color: var(--danger); background: var(--danger-soft); }
-:root[data-layout-edit="on"] .nav-slot > .layout-remove { display: grid; }
-:root[data-layout-edit="on"] #nav .nav-item { padding-right: 34px; }
-.layout-add {
-  display: flex; align-items: center; gap: 12px;
-  width: 100%; height: 44px; padding: 0 14px;
-  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
-  border-radius: 12px; background: transparent;
-  color: var(--accent); font-size: 14.5px; font-weight: 650;
-}
-.layout-add[hidden] { display: none; }
-.layout-add .icon { width: 18px; height: 18px; }
-.layout-add:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+/* 编辑布局（0.3.49）：卡片右上角的工具条（把手 + 名字 + 隐藏）、隐藏后的占位条、右边的布局面板 */
 .layout-card { position: relative; }
-.layout-card > .layout-remove { top: 10px; right: 10px; }
-:root[data-layout-edit="on"] .layout-card > .layout-remove { display: grid; }
+.layout-tools { display: none; position: absolute; z-index: 5; top: -14px; right: 14px; align-items: center; gap: 2px; max-width: calc(100% - 16px); padding: 2px; border-radius: 999px; background: var(--surface); box-shadow: 0 0 0 1px var(--line), var(--shadow-sm); }
+:root[data-layout-edit="on"] .layout-card > .layout-tools { display: flex; }
+:root[data-layout-edit="on"] .layout-card.layout-ghost > .layout-tools { display: none; }
+.layout-tools button { display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--muted); }
+.layout-tools .icon { width: 13px; height: 13px; }
+.layout-grip { cursor: grab; touch-action: none; }
+.layout-grip:hover, .layout-grip:focus-visible { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.layout-hide:hover, .layout-hide:focus-visible { color: var(--danger); background: var(--danger-soft); }
+.layout-name { overflow: hidden; padding: 0 4px; color: var(--muted); font-size: 11.5px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
 :root[data-layout-edit="on"] .layout-card { outline: 1px dashed color-mix(in srgb, var(--accent) 42%, transparent); outline-offset: 3px; }
-:root[data-layout-edit="on"] .layout-card > :is(.section-heading, .panel-heading, .ms-head, .cm-heading, .egress-card-head, .sw-side-head) { padding-right: 28px; }
+:root[data-layout-edit="on"] #main { padding-top: 6px; }
+:root[data-layout-edit="on"] .layout-card.layout-overflow { overflow: visible !important; }
+body.layout-panel-open #toast-stack { right: 348px; }
+@media (max-width: 1100px) { body.layout-panel-open #toast-stack { right: 18px; } }
 .layout-wrap > .pv-app-card { width: 100%; }
-.stat.layout-card > .layout-remove { top: 6px; right: 6px; }
+.layout-dragging { opacity: .55; outline-style: solid !important; }
+:root.layout-drag-active, :root.layout-drag-active * { cursor: grabbing !important; user-select: none; }
+/* 占位条：只在编辑时出现，卡片原来的内容收起来 */
+.layout-ghost-bar { display: none; }
+.layout-card.layout-ghost { min-height: 0 !important; height: auto !important; padding: 0 !important; background: transparent !important; box-shadow: none !important; border-color: transparent !important; }
+.layout-card.layout-ghost > :not(.layout-ghost-bar, .layout-tools) { display: none !important; }
+.layout-card.layout-ghost > .layout-ghost-bar { display: flex; }
+.layout-ghost-bar { align-items: center; justify-content: space-between; gap: 10px; min-height: 44px; padding: 6px 8px 6px 14px; border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--accent) 4%, transparent); color: var(--muted); font-size: 13px; }
+.layout-ghost-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.layout-show { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 28px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 999px; background: var(--surface); color: var(--accent); font-size: 12.5px; font-weight: 650; }
+.layout-show .icon { width: 12px; height: 12px; }
+.layout-show:hover { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+/* 侧栏：编辑时右边是把手和隐藏；藏起来的页面是一条虚线 */
+.nav-slot { position: relative; }
+.layout-tools.nav { top: 50%; right: 6px; transform: translateY(-50%); box-shadow: none; background: transparent; }
+:root[data-layout-edit="on"] .nav-slot > .layout-tools { display: flex; }
+:root[data-layout-edit="on"] #nav .nav-item { padding-right: 62px; }
+.nav-slot.layout-ghost > :not(.layout-ghost-bar) { display: none !important; }
+.nav-slot.layout-ghost > .layout-ghost-bar { display: flex; min-height: 40px; margin: 2px 0; }
+:root[data-sidebar="collapsed"] .layout-tools.nav { top: 2px; right: 0; transform: none; flex-direction: column; gap: 0; }
+:root[data-sidebar="collapsed"] .layout-tools.nav button { width: 18px; height: 18px; }
+:root[data-sidebar="collapsed"][data-layout-edit="on"] #nav .nav-item { padding-right: 0; }
+:root[data-sidebar="collapsed"] .layout-ghost-bar.nav { justify-content: center; padding: 4px; }
+:root[data-sidebar="collapsed"] .layout-ghost-bar.nav :is(.layout-ghost-text, .layout-show span) { display: none; }
+/* 额度详情的账号标签：编辑时每个标签带一个隐藏 / 显示的小按钮，藏起来的是虚线 */
+.tab-layout { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 6px; border-radius: 999px; color: var(--muted); }
+.tab-layout .icon { width: 11px; height: 11px; }
+.tab-layout:hover { color: var(--danger); background: var(--danger-soft); }
+#account-tabs button.tab-ghost { opacity: .6; outline: 1px dashed color-mix(in srgb, var(--accent) 50%, var(--line)); outline-offset: -3px; }
+#account-tabs button.tab-ghost .tab-layout:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* 布局面板 */
+.layout-panel { position: fixed; z-index: 900; top: 46px; right: 12px; bottom: 12px; display: flex; flex-direction: column; width: 320px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-lg); animation: layout-panel-in 200ms var(--ease) both; }
+.layout-panel[hidden] { display: none; }
+@keyframes layout-panel-in { from { opacity: 0; transform: translateX(16px); } }
+@media (prefers-reduced-motion: reduce) { .layout-panel { animation: none; } }
+body.layout-panel-open .workspace { padding-right: 336px; }
+@media (max-width: 1100px) { body.layout-panel-open .workspace { padding-right: 0; } .layout-panel { width: min(320px, calc(100vw - 24px)); } }
+.layout-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+.layout-panel-head h2 { margin: 0 0 4px; font-size: 16px; }
+.layout-panel-head p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.layout-panel-head .btn { flex: none; gap: 5px; }
+.layout-panel-body { flex: 1; overflow: auto; padding: 6px 12px 12px; }
+.layout-panel-foot { padding: 10px 16px; border-top: 1px solid var(--line); }
+.layout-panel-foot .btn { width: 100%; justify-content: center; gap: 6px; }
+.layout-group { padding: 10px 4px; border-bottom: 1px solid var(--line); }
+.layout-group:last-child { border-bottom: 0; }
+.layout-group.current .layout-group-head h3 { color: var(--accent); }
+.layout-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.layout-group-head h3 { margin: 0; font-size: 13.5px; }
+.layout-group-actions { display: flex; gap: 6px; }
+.layout-group-actions .text-btn { font-size: 12px; }
+.layout-region { margin: 8px 0 2px; color: var(--faint); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; }
+.layout-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 4px; border-radius: 8px; font-size: 13px; }
+.layout-row:hover { background: var(--surface-2); }
+.layout-row-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.layout-row.off .layout-row-name { color: var(--faint); }
+.layout-switch { position: relative; flex: none; width: 32px; height: 18px; padding: 0; border: 0; border-radius: 999px; background: var(--line); transition: background 160ms var(--ease); }
+.layout-switch[aria-checked="true"] { background: var(--accent); }
+.layout-switch-knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 999px; background: #fff; box-shadow: var(--shadow-sm); transition: transform 160ms var(--ease); }
+.layout-switch[aria-checked="true"] .layout-switch-knob { transform: translateX(14px); }
 .layout-note {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   margin: 0 0 18px; padding: 10px 14px;
@@ -1182,6 +1230,8 @@ body.modal-open { overflow: hidden; }
 .oauth-account .btn.oauth-tool.armed { width: auto; gap: 5px; padding: 0 9px; color: #fff; border-color: transparent; background: var(--danger); }
 .oauth-account .btn.oauth-restore { gap: 5px; }
 .oauth-account .btn.oauth-restore .icon { width: 13px; height: 13px; }
+.oauth-account .btn.oauth-switch { gap: 5px; white-space: nowrap; }
+.oauth-account .btn.oauth-switch .icon { width: 13px; height: 13px; }
 .oauth-account.hidden-account .oauth-account-name { color: var(--faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--faint) 60%, transparent); }
 .oauth-renew { flex: none; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 12px; }
 .account-security-note { display: flex; align-items: flex-start; gap: 6px; margin: 12px 1px 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
@@ -1368,8 +1418,6 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 :root[data-sidebar="collapsed"] .nav-head { justify-content: center; margin: 0 0 10px; }
 :root[data-sidebar="collapsed"] .layout-edit { width: 44px; height: 36px; justify-content: center; padding: 0; }
 :root[data-sidebar="collapsed"][data-layout-edit="on"] #nav .nav-item { padding-right: 0; }
-:root[data-sidebar="collapsed"] .nav-slot > .layout-remove { top: 0; right: 0; width: 18px; height: 18px; }
-:root[data-sidebar="collapsed"] .layout-add { justify-content: center; padding: 0; }
 :root[data-sidebar="collapsed"] .nav-item { justify-content: center; padding: 0; }
 :root[data-sidebar="collapsed"] .nav-indicator::before { left: -12px; }
 :root[data-sidebar="collapsed"] .nav-alert { position: absolute; top: 5px; right: 7px; min-width: 17px; height: 17px; padding: 0 4px; font-size: 10.5px; }
@@ -1386,8 +1434,10 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
   :root:not([data-sidebar="expanded"]) .nav-head { justify-content: center; margin: 0 0 10px; }
   :root:not([data-sidebar="expanded"]) .layout-edit { width: 44px; height: 36px; justify-content: center; padding: 0; }
   :root:not([data-sidebar="expanded"])[data-layout-edit="on"] #nav .nav-item { padding-right: 0; }
-  :root:not([data-sidebar="expanded"]) .nav-slot > .layout-remove { top: 0; right: 0; width: 18px; height: 18px; }
-  :root:not([data-sidebar="expanded"]) .layout-add { justify-content: center; padding: 0; }
+  :root:not([data-sidebar="expanded"]) .layout-tools.nav { top: 2px; right: 0; transform: none; flex-direction: column; gap: 0; }
+  :root:not([data-sidebar="expanded"]) .layout-tools.nav button { width: 18px; height: 18px; }
+  :root:not([data-sidebar="expanded"]) .layout-ghost-bar.nav { justify-content: center; padding: 4px; }
+  :root:not([data-sidebar="expanded"]) .layout-ghost-bar.nav :is(.layout-ghost-text, .layout-show span) { display: none; }
   :root:not([data-sidebar="expanded"]) .nav-item { justify-content: center; padding: 0; }
   :root:not([data-sidebar="expanded"]) .nav-indicator::before { left: -12px; }
   :root:not([data-sidebar="expanded"]) .nav-alert { position: absolute; top: 5px; right: 7px; min-width: 17px; height: 17px; padding: 0 4px; font-size: 10.5px; }

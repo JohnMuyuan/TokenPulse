@@ -20,7 +20,7 @@ const OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token";
 const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 export type RefreshResult =
-  | { ok: true; credential: OfficialCredential }
+  | { ok: true; credential: OfficialCredential; /** 官方原样返回的内容（Codex 的 id_token 在这里）。 */ raw?: any }
   /** permanent：refresh token 被官方拒了（撤销、过期、已被用过），只能重新登录；否则下一轮再试。 */
   | { ok: false; permanent: boolean; error: string };
 
@@ -93,7 +93,7 @@ export async function refreshCredential(kind: OfficialAccountKind, credential: O
     const { status, json } = await curlPost(url, body, headers);
     if (status >= 200 && status < 300) {
       const next = credentialFromTokenResponse(credential, json, now);
-      return next ? { ok: true, credential: next } : { ok: false, permanent: false, error: "续期响应里没有 access_token" };
+      return next ? { ok: true, credential: next, raw: json } : { ok: false, permanent: false, error: "续期响应里没有 access_token" };
     }
     return { ok: false, permanent: isPermanentFailure(status, json), error: `HTTP ${status}` };
   } catch (error) {
