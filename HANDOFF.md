@@ -1,6 +1,29 @@
-# Current handoff · 0.3.47 已正式发布（2026-10-13）
+# Current handoff · 0.3.48 已正式发布（2026-10-13）
 
 ## 新对话先看这里
+
+### 0.3.48 已正式发布（2026-10-13）
+
+- 用户测试版验收通过后发布。发布前 npm test 退出 0（0 FAIL，audit-test-final.log），npm run test:ui 退出 0（69 条 PASS，audit-ui-final.log），npm run dist 退出 0（audit-dist.log）。dist/verify-0.3.48.cjs：132 个运行时文件与源码逐字节一致，latest.yml version 0.3.48，exe ProductVersion 0.3.48.0。
+- 发布文案：dist/release-0.3.48.md（同 GitHub Release 正文）；renderer/intro.js NOTES 与 i18n.js 英文；README 版本行。
+- 提交 ea97fc9（0.3.48：Grok 接回所选供应商、换号后用量记对账号、号池避开用完的号），标签 v0.3.48，已推送 origin/main。GitHub Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.48 ，标题 TokenPulse 0.3.48，非草稿、非预发布，releases/latest 指向 v0.3.48，公开 latest.yml 为 version: 0.3.48。（第一次 gh release create 带 --target 短哈希被 422 拒绝，没有创建任何东西；改用 --verify-tag 成功。）
+- 附件均 uploaded，大小 / SHA256 与本地一致：Setup.exe 112564370 / 66aa73925376b3ec6b620b0c6bd8ea241c906366f84f6768bae1d26924f1a3ca；.blockmap 119699 / 01d577ea6b73023503a5c96c081b03d8aca13822b632390a84c1ac1f5ded2ef3；Portable.exe 112307156 / 682d33a9d560ec89fb45b8a81abf971530c725928683fc473d99907e9378b3b7；latest.yml 352 / c9198cb4a132230abcb6a317040be1945af02814cfa85d2bb9c0f30075524da1。
+- 收尾：四个附件和 win-unpacked 的 exe / app.asar 可独占打开；无残留 node / electron / 打包进程；用户安装版 TokenPulse 在跑，未关闭；未主动安装新版。
+
+以下为开发过程记录（「未提交」等字样已过期）：
+
+
+- 用户反馈：TokenPulse 里设好了 Grok 供应商，打开后 Grok 却用着别的（Grok 4.7 或自己的第三方表）。排查（真实数据只读，只看汇总）：
+  1. Grok 继续旧会话 / `/model` 会改写 `config.toml` 的 `[models].default`。以前只要这一行变了：退出时 `restoreProxy` 当外部修改，放弃接管并关掉路由开关；或者下次启动 `stillOwned` 字节比对失败，不再接回路由（提示「检测到外部配置变更，未自动接管」）。Grok 就一直停在别的模型上。
+  2. Grok 的远程上新活动（`settings_cache.json` 里的 `campaigns`，例如 `grok-4.7-launch` 带 `models.default`）会让新会话改用官方新型号，优先级高于 config 的 default，用户在 Grok 里自己改过才记进 `campaigns_state.json` 的 `dismissed_ids`。真实记录：2026-10-12 04:54 的会话就是在 default=tokenpulse_route 时以 grok-4.7 开的。
+  3. 另外两点不是 bug，告知用户即可：正在运行的 Grok 进程不会重新读配置，新开会话可能沿用进程里的模型；旧会话记着自己的模型。
+- 修复（`src/core/agent-switch.ts`）：`withoutGrokDefault` / `grokRouteTableOurs` / `dismissGrokCampaigns`。`stillOwned` 对 Grok 忽略 `[models].default` 的差异；`restoreProxy` 在路由表仍是我们的时照常还原并保留开关；`resumeAgentProxy` 在非正常退出后路由表仍是我们的时直接接回；`writeGrok` 切到第三方 / 号池后把改默认模型的活动追加进 `dismissed_ids`（只加不删，原子写）。真正的外部修改（地址、密钥等）仍然尊重。
+- 测试：新增 `scripts/test-grok-takeover.cjs` 5/5，已进 `npm test`。`npm test` 退出 0（日志 `audit-test-0348.log`）；`test-agent-switch-ui` 通过（`audit-ui-0348.log`）；完整 `test:ui` 没跑。
+- 测试版：`npx electron-builder --win dir --publish never` 退出 0，`dist/win-unpacked/TokenPulse.exe` ProductVersion 0.3.48.0，asar 里有新代码。exe / asar 可独占打开；没有残留的构建进程。用户安装版（PID 23524 等）在跑，没动。
+- 第二个问题（同一测试版里）：用户有两个 Claude 账号，用第二个的额度，用量却记到第一个。原因：`login-timeline.ts` 的 `resolveAccount` 优先用会话里 `bridge-session` 的 `ownerAccountUuid`（远程控制桥接发起账号，会话中途换登录后仍是第一个账号；真实会话里 986 行全是第一个账号），而 `session_context` 的 `userEmail` 在 10-13 09:29 已变成第二个账号。修复：ref 账号的已知邮箱和当前邮箱不一致时按邮箱归属。`usage-scan.ts` 的 `STATE_VERSION` 14→15（所有会话文件重扫一遍，重建账号小时账）；`request-log` 读时也走 `resolveAccount`，一并生效。真实会话只读试算：现在归到第二个账号。测试：`test-accounts.cjs` 加 3 条（70/70）；`test-routing-regressions.cjs` 的版本断言改为 15。
+- 第三个问题：Grok 号池不会自己避开额度用完的号。route-log 汇总：Grok 账号额度用完时回 **HTTP 402**（不是 429），以前 402 不换成员、直接把错误交给 Grok；而且轮询 / 用满再换完全不看额度。用户的号池「所有号」是轮询、4 个官方账号。修复：`agent-proxy.ts` 号池成员遇到 402 也换下一个；`agent-switch.ts` 的 `pushLog` 把 402 和 429 一样记进 `poolLimited`；新增 `spentLast`，轮询和用满再换也把用完的官方账号（额度剩不到 1%，或刚回过 429/402、还没查到新额度，最多 10 分钟）排到最后，不删除，额度恢复自动回来；`pool-order.ts` 导出 `spent`。测试：`test-pool-strategy.cjs` 加一条（6/6）。已知限制：Grok 的额度接口如果不反映这种 402，每次查到新额度后会再试一次那个号（一次 402 后自动换走，不报错给工具）。
+- 最终：`npm test` 退出 0、0 个 FAIL（`audit-test-0348.log`）；测试版重新打包退出 0，asar 内含三处修复；exe / asar 可独占打开，没有残留 node / electron 进程。
+- 没做：intro.js NOTES、i18n、README、release 文案（发布时补）；没提交 Git。
 
 ### 0.3.47 已正式发布（2026-10-13）
 
