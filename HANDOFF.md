@@ -1,12 +1,15 @@
-# Current handoff · 0.3.51 已验收，正在正式发布（2026-10-13）
+# Current handoff · 0.3.51 已正式发布（2026-10-13）
 
 ## 新对话先看这里
 
-### 0.3.51 已验收，正在正式发布（2026-10-13）
+### 0.3.51 已正式发布（2026-10-13）
 
-- **发布检查点（构建核验完成，待提交上传）**：用户已验收并明确要求发布 GitHub。npm run dist 退出0（audit-dist-0351.log）；140个运行时文件与验收版ASAR逐字节一致，包内version0.3.51，exe ProductVersion0.3.51.0。此前 npm test / 最终 npm run test:ui 已通过（88条PASS），本轮代码未改。latest.yml的版本、安装包SHA512和大小核对一致。
-- 四个本地发布附件：dist/TokenPulse-0.3.51-Setup.exe 112602875 / SHA256 903e15922b6b2b799185ffe0fb261a809004ebd16df6b957ea82dbae4dab7387；.exe.blockmap 119730 / f9c85c431eb6de5df26296f96c3f58bd48e40a3dae25bd005375c28793769c75；TokenPulse-0.3.51-Portable.exe 112345727 / dfe7a0746fedc7b84a548e8709b546eb34e68aac79be98087fa6ce614dc87fe5；latest.yml 352 / fb81ebe32bba0419da7463b9c08a215edd97dcf8118eab390bc24d3fc8ea230a。摘要记录 dist/assets-0.3.51.json；发布正文 dist/release-0.3.51.md 已冻结，并经独立只读核对PASS。
-- 四附件及win-unpacked exe/app.asar均可独占打开，句柄已Dispose；CIM确认无本轮遗留Node/Electron/打包器，用户安装版PID13948保持运行。下一步提交、推送v0.3.51与main，草稿上传四附件并核验GitHub摘要，正式发布后确认latest和公开latest.yml。当前尚未提交或上传。
+- **正式发布**：提交845e621bd34d063508229fe6204cc9892313587b（0.3.51：月报分享卡片、里程碑与号池生存分析）、标签v0.3.51已推送origin/main。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.51 ，标题TokenPulse 0.3.51，非草稿、非预发布；releases/latest已指向v0.3.51，target是上述完整SHA。发布后的交接更新单独提交。
+- 本版：月报分享卡片、16枚里程碑和徽章收集册、PNG预览/保存/复制、中英文卡片及提醒；号池生存分析；供应商页速度入口读取新记录。发布正文 dist/release-0.3.51.md 与GitHub实际正文一致，经独立只读文案核对PASS；应用NOTES、英文和README已随发布提交。
+- 验证：此前 npm test / 最终 npm run test:ui 退出0（audit-test-0351.log、audit-ui-0351-final.log，88条UI PASS）；验收后代码未改，本轮 npm run dist 退出0（audit-dist-0351.log）。140个运行时文件与源码及验收版ASAR逐字节一致，包内version0.3.51，exe ProductVersion0.3.51.0。latest.yml的版本、安装包SHA512和大小核对一致；公开releases/latest/download/latest.yml通过curl下载，与本地相同。
+- 四个发布附件均uploaded，远端大小/GitHub SHA256摘要与本地一致：dist/TokenPulse-0.3.51-Setup.exe 112602875 / 903e15922b6b2b799185ffe0fb261a809004ebd16df6b957ea82dbae4dab7387；.exe.blockmap 119730 / f9c85c431eb6de5df26296f96c3f58bd48e40a3dae25bd005375c28793769c75；TokenPulse-0.3.51-Portable.exe 112345727 / dfe7a0746fedc7b84a548e8709b546eb34e68aac79be98087fa6ce614dc87fe5；latest.yml 352 / fb81ebe32bba0419da7463b9c08a215edd97dcf8118eab390bc24d3fc8ea230a。摘要记录 dist/assets-0.3.51.json，包内核验 dist/verification-0.3.51.json。
+- 资源收尾：四附件及win-unpacked exe/app.asar可独占打开，检测句柄已Dispose；CIM确认无本轮遗留Node/Electron/打包器，工作目录项目根。发布前观察到用户安装版PID13948，本轮未关闭用户软件、未主动安装新版。
+- 无剩余发布阻塞。真实保存对话框和系统剪贴板写入仍未操作（合成数据测试mock，PNG编码已验证；用户已验收测试版）。生存预测只算官方周额度且为估算；名称开关显示所选月测速记录中的路线名。下方开发记录里的未提交/未发布/待验收都属于历史状态，以本节为准。
 
 #### 0.3.51 开发与验收记录（以下为发布前历史，发布状态以上面入口为准）
 
