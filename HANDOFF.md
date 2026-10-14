@@ -1,6 +1,17 @@
-# Current handoff · 0.3.51 已正式发布（2026-10-13）
+# Current handoff · 0.3.52 已验证打包，发布中（2026-10-13）
 
 ## 新对话先看这里
+
+### 0.3.52 发布检查点（2026-10-13，已验证打包，待推送发布）
+
+- 用户授权修复设置切换 Claude CLI 账号后的错误归属，升级补丁版本并直接发布。起点 ef9d418，原工作区干净；package.json / lock 已为0.3.52。当前代码、文案和构建就绪，尚未提交/推送/发布/安装；下一步提交main、标签v0.3.52并推送，上传4附件，核验草稿后发布并检查公开latest.yml。
+- 根因与修复：cli-switch.ts 原本只改登录文件，直到下一轮扫描才观察到换号；现在同步写入阶段记录原登录及成功读回的新登录边界，仅记录所切换的一家，失败不记录目标。login-timeline.ts 原本无条件优先旧会话身份；现在比较邮箱写入时间和后续登录变更，旧session_context/bridge owner不再盖掉后来的登录。首段观察不覆盖历史会话，更新的会话邮箱仍可识别未重启旧CLI；确切号池路由优先级保留。usage-scan.ts / request-log.ts保存身份时间，扫描版本16重算现存会话小时账及流水。
+- 回归 scripts/test-cli-attribution.cjs：修复前5项FAIL，最终7项PASS（即时边界、换号前后请求、小时账一致、新会话身份、仅桥接身份、首次观察/登出、旧账重扫去重）。已纳入npm test；test-cli-switch补失败切换不记目标边界；test-routing-regressions结构版本断言同步16。合成凭据/临时HOME，不联网、不切用户真实账号。
+- 最终验证：npm test退出0（audit-test-0352.log）；npm run test:ui退出0（audit-ui-0352-final.log，88条PASS）；npm run dist退出0（audit-dist-0352.log）。早期沙箱无法启动PowerShell，所需权限下重跑通过；引导40秒总限制两次超时，诊断脚本全断言完成，test-intro-ui改90秒总限制、保留单步短超时，整套通过，诊断脚本已删除。intro/i18n/README已更新；dist/release-0.3.52.md按历史风格冻结，经独立只读文案核对PASS。
+- 产物：dist/win-unpacked/TokenPulse.exe（FileVersion0.3.52 / ProductVersion0.3.52.0）；app.asar内version0.3.52、main build/main/index.js，140个运行时文件逐字节一致，ASAR SHA256 eefaa932118bad52df9a5e0aef45650f69dfce118d93fd0c1502044737f25dd8（dist/verification-0.3.52.json）。latest.yml版本/文件名/大小/SHA512核对通过。
+- 四附件大小/SHA256（dist/assets-0.3.52.json）：Setup.exe 112603463 / c96529726c4b8ab3bbb4a9216eacb07b9863e98d115354b711ad53a2a0ccf2d6；Setup.exe.blockmap 119716 / 01d8e2c1641bfdc92b4d413386eed6d8c99fd4dcc4dc6e1bbc35ce33d73f2e53；Portable.exe 112346257 / 6012207d752b32165b0d1688df87b96ece3dbdf69dd0ef7ae5913422e791f741；latest.yml 352 / 02eb827c87b463400742e68303acdbfd2d3bf66c5d42e6e11d10d19065bd1659。文件均在dist，安装包/便携版文件名含0.3.52。
+- 资源收尾：本轮测试/构建进程已结束，CIM按路径/命令行/启动时间核对仅见用户安装版主进程26620及其子进程；未关闭。四附件和win-unpacked exe/app.asar均可独占读取，句柄立即Dispose，工作目录项目根。未主动安装新版。
+- 限制/未执行：历史修正需要已有登录时间线和本地仍保留的会话，未记录的换号时刻无法精确恢复；登录文件并不能证明每个已运行CLI进程的实际账号，较新的会话身份仍优先。未操作真实账号切换或发收费请求。正常网页/其他设备消耗仍显示为本机以外。下方0.3.51为已发布历史。
 
 ### 0.3.51 已正式发布（2026-10-13）
 

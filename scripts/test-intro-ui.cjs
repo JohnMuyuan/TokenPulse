@@ -27,7 +27,8 @@ const fingerprint = () => {
   return out;
 };
 const demoDir = () => fs.readdirSync(os.tmpdir()).filter(name => name === `tokenpulse-demo-${process.pid}`);
-const watchdog = setTimeout(() => { console.error('FAIL intro UI timed out'); app.exit(1); }, 40000);
+// 35 步引导、演示进程和多次重载合计可能超过40秒；各步骤仍有独立的短超时。
+const watchdog = setTimeout(() => { console.error('FAIL intro UI timed out'); app.exit(1); }, 90000);
 app.on('web-contents-created', (_, contents) => contents.once('did-finish-load', async () => {
   const evaluate = code => contents.executeJavaScript(code).catch(e => { throw new Error(e.message + ' ← ' + String(code).slice(0, 160)); }), delay = ms => new Promise(r => setTimeout(r, ms));
   const until = async (code, ms = 10000) => { const end = Date.now() + ms; while (!await evaluate('Promise.resolve(' + code + ').then(v=>!!v)')) { assert.ok(Date.now() < end, 'Timed out: ' + code); await delay(40); } };

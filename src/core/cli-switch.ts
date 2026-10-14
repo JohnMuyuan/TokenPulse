@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { recordCliLogins } from "./login-timeline";
 import { accountIdOf, readOfficialAccountStore, renewStoredCredentials, writeOfficialAccountStore, type StoredOfficialAccount } from "./accounts";
 import { authFile, cliDir, isExpired, readCliAccounts, type OfficialAccountKind, type OfficialCredential } from "./credentials";
 import { dataDir } from "./paths";
@@ -152,6 +153,9 @@ async function doSwitch(id: string, home: string): Promise<SwitchResult> {
   const writes = plan(kind, target, credential, snap, home);
   const saved = backup(kind, writes.map((item) => item.file));
   const before = JSON.stringify(readOfficialAccountStore());
+  const readLogin: typeof readCliAccounts = (which) => readCliAccounts(which, home);
+  // 在同一个同步写入阶段记录换号边界，不能等下一轮扫描才发现已经换号。
+  recordCliLogins(Date.now(), readLogin, [kind]);
 
   // 换下来的账号：收下 CLI 手里最新的凭据和资料，之后由 TokenPulse 续期
   store = readOfficialAccountStore();
@@ -177,6 +181,7 @@ async function doSwitch(id: string, home: string): Promise<SwitchResult> {
   try {
     for (const item of writes) writeAtomic(item.file, item.text);
     if (!readCliAccounts(kind, home).some((item) => accountIdOf(kind, item.ref) === id)) throw new Error("写入后读回来的账号不对");
+    recordCliLogins(Date.now(), readLogin, [kind]);
   } catch (error) {
     for (const item of saved) {
       try { if (item.text === null) fs.rmSync(item.file, { force: true }); else writeAtomic(item.file, item.text); } catch { /* 尽量放回 */ }

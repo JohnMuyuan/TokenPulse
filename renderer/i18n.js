@@ -23,6 +23,10 @@
     // 0.3.51 分享卡片与号池生存分析
     "从供应商页看速度时读取新记录": "Refresh speed records from the Providers page",
     "点击「去用量明细看模型速度」会重新读取转发记录，不再沿用启动时预读的空图。": "Opening model speed from Providers rereads the route log so records added after the startup preload appear.",
+    "切换 Claude 登录后，用量跟着账号走": "Usage follows the switched Claude account",
+    "设置里切到另一个 CLI 账号时立即记录换号时间。恢复旧会话后，残留的旧邮箱和桥接账号会按后续登录变更判断归属，让请求记录和「模型与思考等级 · 时间线」对应起来。": "Switching the CLI account in Settings now records the change immediately. When resuming a session, stale emails and bridge owners are checked against later login changes so request records agree with the Model & effort timeline.",
+    "重新核对已有的账号用量": "Recheck existing account usage",
+    "升级后重新扫描本地仍保留的会话，结合已记录的登录时间线重算账号归属。没有记录的历史换号时间无法精确还原。": "After upgrading, locally retained sessions are rescanned against the recorded login timeline to rebuild account attribution. Historical switches with no recorded time cannot be reconstructed precisely.",
     "月报分享卡片": "Monthly share cards",
     "顶栏「分享卡片」可以生成任意有用量月份的月报：每天用了多少、最常用的模型、夜间用量、最快模型和缓存节省。填订阅费可以看 API 参考价值的倍数，预览后保存 PNG 或复制图片；每月初提醒查看上个月月报。": "Use Share cards in the top bar to create a report for any recorded month: daily usage, top models, nighttime usage, fastest models and cache savings. Enter a subscription cost to compare its API reference value, preview, then save a PNG or copy the image. A prompt appears early each month for the previous month's report.",
     "里程碑与徽章收集册": "Milestones and badge collection",

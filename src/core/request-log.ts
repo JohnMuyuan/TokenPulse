@@ -60,6 +60,7 @@ export type RequestRecord = {
   /** 会话里直接记下的账号（Claude Code 部分会话有）。 */
   accountRef?: string;
   accountEmail?: string;
+  accountAt?: number;
   /** 经 TokenPulse 号池发出去的：扫描时按路由账本对上的号池成员（官方账号 id）。记在流水里，账本过期清掉之后仍然知道。 */
   routedAccount?: string;
   /** 新归属已用共同响应 ID 核验；旧的时间猜测不能继续当成确证。 */
@@ -366,7 +367,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
   const account = routed ? routed :
     official === false || (record.kind === "cc-switch" && record.viaProxy)
       ? null
-      : resolveAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail }, accounts.timeline, accounts.labels);
+      : resolveAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt }, accounts.timeline, accounts.labels);
   const verdict: { status: VerifyStatus; reasons: string[]; channel: string } = record.compaction
     ? { status: "unverified", reasons: [COMPACTION_REASON], channel: "压缩上下文（估算）" }
     : verifyRequest({

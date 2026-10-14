@@ -97,9 +97,11 @@ const acct = (kind, ref, email, credential, extra = {}) => ({ id: `${kind}:${ref
     store.accounts.find(x => x.id === 'grok:grok-e').credential.token = 'key-not-jwt';
     accounts.writeOfficialAccountStore(store);
     const storeBefore = JSON.stringify(accounts.readOfficialAccountStore());
+    const timelineBefore = fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'cli-logins.json'), 'utf8');
     await assert.rejects(switchCliAccount('grok:grok-e', home), /已恢复原样/);
     assert.equal(fs.readFileSync(path.join(home, '.grok', 'auth.json'), 'utf8'), before);
     assert.equal(JSON.stringify(accounts.readOfficialAccountStore()), storeBefore);
+    assert.equal(fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'cli-logins.json'), 'utf8'), timelineBefore, '失败的切换不留下目标登录边界');
     pass('a write that does not read back as the chosen account is rolled back (CLI file and account store)');
     console.log(`test-cli-switch: ${checks} checks passed`);
   } finally {

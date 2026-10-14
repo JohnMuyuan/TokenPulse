@@ -122,6 +122,8 @@ type FileState = {
    */
   accountRef?: string;
   accountEmail?: string;
+  /** 会话邮箱最后写入的时间，用来识别换号后沿用的旧上下文。 */
+  accountAt?: number;
   /** 账本结构版本，见 STATE_VERSION。 */
   v?: number;
   /** 最近一次真实请求的型号（Claude / Grok）。压缩上下文的那次调用不写型号，按它记。 */
@@ -180,8 +182,9 @@ export type UsageRollups = {
  * 13：DeepSeek Harness 的流水补记出字时间（首字延迟、每秒 Token 数），额度详情的「模型速度」用。
  * 14：Grok 号池一轮里的每一次转发各记一条请求（时间、账号），额度时间线才能把这段上涨认作本机。
  * 15：Claude 会话中途换了登录时按当前邮箱归账号（bridge-session 的 ownerAccountUuid 不随登录变），重算账号小时账。
+ * 16：身份带上会话上下文时间；重算换号后误归到旧账号的请求及小时账。
  */
-const STATE_VERSION = 15;
+const STATE_VERSION = 16;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -782,6 +785,7 @@ function scanFile(
     state.requested = undefined;
     state.accountRef = undefined;
     state.accountEmail = undefined;
+    state.accountAt = undefined;
     state.codexRecords = undefined;
     state.lastTokenCount = undefined;
     state.lastModel = undefined;
@@ -850,7 +854,10 @@ function scanFile(
       const context = (obj.attachment as Record<string, unknown> | undefined)?.context as Record<string, unknown> | undefined;
       // 这个字段后面还跟着一句说明（实测「xxx@gmail.com. Use it only to identify the user…」），只取邮箱本身
       const email = typeof context?.userEmail === "string" ? context.userEmail.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/)?.[0] : undefined;
-      if (email) state.accountEmail = email.replace(/\.$/, "");
+      if (email) {
+        state.accountEmail = email.replace(/\.$/, "");
+        state.accountAt = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) || undefined : undefined;
+      }
     }
     if (kind === "claude-code" && obj.type === "attachment") {
       const attachment = obj.attachment as Record<string, unknown> | undefined;
@@ -1020,7 +1027,7 @@ function scanFile(
           const account = routed ?? resolveAccount(
             KIND_OF_SOURCE[source],
             row.at,
-            { ref: state.accountRef, email: state.accountEmail },
+            { ref: state.accountRef, email: state.accountEmail, at: state.accountAt },
             accountContext.timeline,
             accountContext.labels,
           );
@@ -1054,6 +1061,7 @@ function scanFile(
         ...(row.stream ? { timing: deepseekTiming(row.stream, state.turnStartAt) } : {}),
         accountRef: state.accountRef,
         accountEmail: state.accountEmail,
+        accountAt: state.accountAt,
         ...(piece.account ? { routedAccount: piece.account, routedAccountBasis: piece.basis } : {}),
         ...(piece.routeEventId ? { routeEventId: piece.routeEventId } : {}),
         ...(row.compaction ? { compaction: true } : {}),

@@ -35,10 +35,10 @@ export function readLoginTimeline(): LoginTimeline {
 }
 
 /** 记下各 CLI 当前登录的账号。没登录记一段空 id（登出之后的请求不该算到上一个账号头上）。 */
-export function recordCliLogins(now = Date.now(), read: typeof readCliAccounts = readCliAccounts): LoginTimeline {
+export function recordCliLogins(now = Date.now(), read: typeof readCliAccounts = readCliAccounts, kinds: readonly OfficialAccountKind[] = OFFICIAL_KINDS): LoginTimeline {
   const timeline = readLoginTimeline();
   let changed = false;
-  for (const kind of OFFICIAL_KINDS) {
+  for (const kind of kinds) {
     let current: { id: string; email: string; label: string };
     try {
       const account = read(kind)[0];
@@ -95,7 +95,7 @@ export function accountLabels(): AccountLabels {
 
 /**
  * 把一次请求对到账号上。
- * evidence：会话里直接记下的（Claude 的 accountUuid / 邮箱），有就以它为准。
+ * evidence：会话里记下的身份与记录时间；旧上下文不能覆盖之后观察到的登录变更。
  */
 /**
  * 号池把这次请求交给了哪个官方账号。有的话它比会话里记的、时间线上的都准：
@@ -109,11 +109,20 @@ export function routedAccount(kind: OfficialAccountKind | undefined, at: number,
 export function resolveAccount(
   kind: OfficialAccountKind | undefined,
   at: number,
-  evidence: { ref?: string; email?: string },
+  evidence: { ref?: string; email?: string; at?: number },
   timeline: LoginTimeline,
   labels: AccountLabels,
 ): RequestAccount | null {
   if (!kind) return null;
+  const spans = timeline.kinds[kind] ?? [];
+  let span: LoginSpan | undefined;
+  let index = -1;
+  spans.forEach((item, i) => { if (item.from <= at) { span = item; index = i; } });
+  // 第一段只是首次观察，不能拿它改写更早的会话身份；后续段才是已知的登录变更。
+  // bridge owner 和恢复会话沿用的 userEmail 都可能是旧身份。新写入的邮箱仍可识别尚未重启的旧 CLI 进程。
+  if (span && index > 0 && (!evidence.email || !evidence.at || evidence.at < span.from)) {
+    return span.id ? { id: span.id, label: labels.get(span.id) ?? span.label, basis: "timeline" } : null;
+  }
   if (evidence.ref) {
     const id = accountIdOf(kind, evidence.ref);
     /*
@@ -131,10 +140,7 @@ export function resolveAccount(
     const known = [...(labels.emails ?? labels)].find(([id, value]) => id.startsWith(kind + ":") && value.toLowerCase() === email);
     return { id: known?.[0] ?? `${kind}:email:${email}`, label: (known && labels.get(known[0])) || evidence.email, basis: "session" };
   }
-  const spans = timeline.kinds[kind] ?? [];
   if (!spans.length) return null;
-  let span = null as LoginSpan | null;
-  for (const item of spans) if (item.from <= at) span = item;
   if (span) return span.id ? { id: span.id, label: labels.get(span.id) ?? span.label, basis: "timeline" } : null;
   // 时间线开始之前：按最早那个账号推断
   const first = spans.find((item) => item.id);
