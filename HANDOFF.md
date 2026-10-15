@@ -1,6 +1,36 @@
-# Current handoff · 0.3.53 已正式发布（2026-10-14）
+# Current handoff · 0.3.54 已正式发布（2026-10-15）
 
 ## 新对话先看这里
+
+### 0.3.54 已正式发布（2026-10-15）
+
+- 用户要求发布。发布前 `npm test` 退出 0、`npm run test:ui` 退出 0（89 PASS），`npm run dist` 退出 0；`dist/verify-0.3.54.cjs` 142 个运行时文件逐字节一致，ASAR SHA256 与测试版相同（15341b8b…0139）。
+- 提交 706ebbc（0.3.54：替没在运行的 Claude Code 续期、续期被拒先重试、记录续期日志），标签 v0.3.54 指向它。推 main 时远端多了 github-actions 的知识库自动更新 c9e8874（只改 knowledge/models.json），没有改写提交、没有挪标签，合并成 6268768 后推送；所以安装包里的 knowledge/models.json 是 10-14 版，和标签源码一致，下次启动会自动拉新知识库。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.54 ，非草稿、非预发布，releases/latest 指向 v0.3.54，公开 latest.yml 为 0.3.54，正文 = dist/release-0.3.54.md（无会话链接）。
+- 附件均 uploaded，大小 / SHA256 与本地一致：Setup.exe 112612253 / 5413641b1333254013816b9f32ca1d450f792864190494db835bdd281b4d0b94；.blockmap 119733 / 266ee7d5c649bf2f1b9bcee8b8acba861285d3bd479f47fee2b9c3f39c01bb8b；Portable.exe 112355047 / 78e56f326e02437eb90b82e2dc59e7477c1c56d6a543213a8129f311fca8599e；latest.yml 352 / 0c490e065a84592e518ea2ec0951d8bbf8d6eae212e757d69f5724a70571f94c。
+- 收尾：无本轮遗留 node / electron / 打包器进程；用户安装版 0.3.53（PID 21264 等）未关闭、未主动安装新版（会自动提示更新）。四附件和 win-unpacked exe / asar 可独占打开，工作目录项目根。
+
+以下为发布前记录（「未提交、未发布」已过期）：
+
+### 0.3.54 测试版
+
+- 产物：`dist/win-unpacked/TokenPulse.exe`，FileVersion 0.3.54 / ProductVersion 0.3.54.0。`npx electron-builder --win dir --publish never` 退出 0（scratchpad/dir-0354.log）。`dist/verify-0.3.54.cjs`：142 个运行时文件（比 0.3.53 多 cli-renew.js、renew-log.js）与源码逐字节一致，ASAR SHA256 15341b8beb725ecdb44057d3f99e8ee4a04c164d953b29e31f661f8660f60139。
+- 收尾：无本轮遗留 node / electron / 打包器进程；用户安装版 0.3.53（PID 21264 及子进程）一直在运行，未关闭。win-unpacked 的 exe / app.asar 可独占打开（句柄已 Dispose），工作目录项目根。
+- 验收方法：从托盘退出已安装的正式版，再打开 win-unpacked 测试版（单实例）。验收后「老样子」发布（release 文案 `dist/release-0.3.54.md` 已写好）。
+- 未做的验证：没有在用户真实 `~/.claude` 上代续过（会写用户的 Claude Code 凭据，且当时 Claude Code 在运行，按设计也只会显示等待）；设置页「等 CLI 续期」状态和悬停说明没有截图 / UI 测试覆盖，只有源码和 quota 层测试。
+
+### 0.3.54 开发记录
+
+- 用户问题：托管在软件上的 Claude 账号「时不时过期」。只读诊断（不输出 token / 邮箱）：账号库里 TokenPulse 保存的号续期正常、无 renewFailed；cli-logins 显示用户每天在两个号之间「切到 CLI」约两次。根因：切到 CLI 后凭据归 Claude Code（`cli-switch.ts` 删掉自己那份），Claude Code 只在发请求时续期，超过 8 小时没用（夜里 / 刚开机）TokenPulse 读到过期凭据 → 额度提示「登录已失效，请重新登录」、号池跳过（`agent-switch.ts` poolTargets 里 expired 不进池），Claude Code 一发请求又好了。另查 claude.exe：Claude Code 续期有 `.oauth_refresh.lock` 并在续之前重读凭据文件，开着的会话不会抢 refresh token。次要隐患：`isPermanentFailure` 把任何 401、400 带 invalid_request 判死，且失败原因只记 `HTTP 400`、重新登录后清掉。
+- 用户要三条都做，版本 0.3.54，只打测试版：
+  1. 新 `src/core/cli-renew.ts`：`renewCliCredential`（只做 Claude）：CLI 凭据快过期 / 已过期，且**没有 Claude Code 进程**（`claudeCodeRunning`：Windows 用 CIM 查 claude.exe / node.exe / bun.exe，桌面版主程序 `\WindowsApps\Claude_`、`\AnthropicClaude\` 不算，桌面版自带的 claude-code 算；查不清楚当在运行）且没有 `.oauth_refresh.lock`，才用 refresh token 续，续完重读文件、没变才原子写回（只改 accessToken / refreshToken / expiresAt，官方给了才写 refreshTokenExpiresAt，保持原缩进风格）。官方明确拒绝的 refresh token 记哈希不再试（`dead`）。单飞（inflight）。`quota.ts` 的 fetchOfficialQuota（出口放行 claude 时）和 `main/oauth.ts` 的 listOfficialOAuthStatus 调用它。
+  2. 额度问题新 reason `cli-wait`（账号登录在 CLI 里、CLI 有 refresh token、不是 dead）：提示「X 登录在 Claude Code 里，凭据过期了，Claude Code 下次发请求时会自动续上，不用重新登录。」黄色；Codex / Grok CLI 同理。设置账号状态新增「等 CLI 续期」（AccountView.waitCli），状态悬停显示原因（AccountView.renewError）；供应商编辑器的账号选择同步。
+  3. `token-refresh.ts`：`errorCodeOf`；`isPermanentFailure` 只认 invalid_grant / token_expired / token_revoked / refresh_token_(reused|expired|invalidated|revoked)；失败结果带 status / code。`accounts.ts`：其他 4xx（非 429）记 `renewTrouble {since,count,error}`，连续 `RENEW_GIVE_UP`=6 次且 ≥ `RENEW_GIVE_UP_MS`=1 小时才转 renewFailed（写明次数）；续上 / 重新登录 / 切换 / 隐藏都清掉。
+  4. 新 `src/core/renew-log.ts`：`~/.tokenpulse/renew-log.jsonl`，每次续期一行（at、kind、账号 id 的 sha256 前 12 位、source stored|cli、ok、status、code、error、permanent、note），不记 token / 邮箱 / 官方说明文字，超过 1000 行留后 500。
+- 测试：新 `scripts/test-cli-renew.cjs` 17/17（已进 npm test，在 test-speed-estimate 后）；`test-accounts.cjs` 加判死收紧、重试 / 判死 / 恢复、429/5xx 不累计、续期日志无 token（79/79）；`test-quota-fetch.cjs` 加 cli-wait / dead / 续上后能查 / 出口拦住不续（37/37）。本机实测 `claudeCodeRunning()` = true（433ms，当时 Claude Code 开着）。
+- **环境变化**：用户系统显示语言现在是 en-US，`npm run test:ui` 里 Electron 跟着变英文导致 test-ui.cjs「等待新采样」断言失败（与本次改动无关）。`package.json` 的 test:ui 每个 electron 调用加了 `--lang=zh-CN`，之后 `npm test` 退出 0、`npm run test:ui` 退出 0（89 PASS）。
+- 文案：intro NOTES 0.3.54 三条 + i18n 英文、README 版本行、`dist/release-0.3.54.md`。package.json / lock 0.3.54。
+- 已知限制：只在 Claude Code 没运行时代续，开着时仍要等它下次请求；npm 版 Claude Code 靠命令行含 claude-code 识别；Codex / Grok CLI 的过期凭据只改提示，不代续；续期期间 Claude Code 恰好启动并续期时我们不写回（两边可能有一边作废，概率很低）。
 
 ### 0.3.53 已正式发布（2026-10-14）
 
