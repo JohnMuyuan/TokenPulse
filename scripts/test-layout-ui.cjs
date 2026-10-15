@@ -19,7 +19,7 @@ app.commandLine.appendSwitch('lang', 'zh-CN');
 process.argv.push('--hidden');
 require('../build/core/quota.js').fetchOfficialQuota = async () => ({});
 const watchdog = setTimeout(() => { console.error('FAIL layout UI timed out'); app.exit(1); }, 60000);
-const ORDER = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers'];
+const ORDER = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers', 'health'];
 app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async () => {
   const e = async code => { try { return await wc.executeJavaScript(code); } catch (error) { console.error('UI expression:', code); throw error; } };
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -33,7 +33,7 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
   try {
     await until("typeof navigate === 'function' && document.body.dataset.page === 'overview'");
     await until(`${card('overview:quota:claude')} && ${card('overview:quota:grok')}`);
-    assert.equal(await e(visible), JSON.stringify(ORDER), '默认七个页面都在');
+    assert.equal(await e(visible), JSON.stringify(ORDER), '默认八个页面都在');
     assert.equal(await e(`getComputedStyle(${card('overview:trend')}.querySelector('.layout-tools')).display`), 'none', '没进编辑时不出现工具条');
     assert.equal(await e("document.getElementById('layout-add')"), null, '旧的「添加」菜单没有了');
 
@@ -41,7 +41,7 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await edit(true);
     assert.equal(await e("document.getElementById('layout-panel').hidden"), false);
     assert.equal(await e(`getComputedStyle(${card('overview:quota:claude')}.querySelector('.layout-tools')).display`), 'flex', '官方额度每一家一张卡，各有工具条');
-    assert.equal(await e("document.querySelectorAll('#nav .nav-slot > .layout-tools [data-layout-grip]').length"), 7);
+    assert.equal(await e("document.querySelectorAll('#nav .nav-slot > .layout-tools [data-layout-grip]').length"), 8);
     const regions = await e("[...document.querySelectorAll('#layout-panel .layout-group')].slice(0, 2).map(g => [g.querySelector('h3').textContent, ...[...g.querySelectorAll('.layout-region')].map(r => r.textContent)])");
     assert.deepEqual(regions, [['侧栏页面'], ['总览', '官方额度', '统计小卡', '图表']], '面板按页面、区域分组');
 
@@ -98,7 +98,7 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await e("document.querySelector('#nav [data-layout-grip=\"nav:providers\"]').focus()");
     for (let i = 0; i < 6; i++) await e("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))");
     await frame();
-    assert.equal(await e(visible), JSON.stringify(['providers', ...ORDER.slice(0, 6)]), '方向键把供应商挪到最上面');
+    assert.equal(await e(visible), JSON.stringify(['providers', ...ORDER.slice(0, 6), 'health']), '方向键把供应商挪到最上面');
     await e("document.getElementById('tiles').scrollIntoView({ block: 'center', behavior: 'instant' })");
     await frame();
     const grip = await e("(() => { const r = document.querySelector('#tiles [data-layout-grip=\"overview:cache\"]').getBoundingClientRect(); const t = document.querySelector('[data-layout=\"overview:tokens\"]').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, tx: t.left + 8, ty: t.top + t.height / 2 }; })()");
@@ -118,7 +118,7 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await frame();
     assert.equal(await e(`${card('overview:sources')}.classList.contains('layout-ghost')`), false);
     assert.equal((await tiles())[0], 'overview:tokens', '这一页的顺序也恢复');
-    assert.equal(await e(visible), JSON.stringify(['providers', ...ORDER.slice(0, 6)]), '按页恢复不动侧栏');
+    assert.equal(await e(visible), JSON.stringify(['providers', ...ORDER.slice(0, 6), 'health']), '按页恢复不动侧栏');
     pass('the panel resets one page without touching the sidebar order');
 
     // 额度详情的账号标签：能藏；退出编辑后选中的那个被藏了就换到别的；最后一个不能藏
@@ -152,7 +152,7 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await until(`typeof navigate === 'function' && ${card('overview:rhythm')}`);
     assert.equal(await e("document.documentElement.hasAttribute('data-layout-edit')"), false, '编辑状态不记住');
     assert.equal(await e(`${card('overview:rhythm')}.hidden`), true);
-    assert.equal(await e(visible), JSON.stringify(['providers', ...ORDER.slice(0, 6)]));
+    assert.equal(await e(visible), JSON.stringify(['providers', ...ORDER.slice(0, 6), 'health']));
     pass('hidden items and order survive a reload; edit mode does not');
 
     // 0.3.43 的旧设置：「官方额度」整块藏 = 每家都藏

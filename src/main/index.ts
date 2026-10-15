@@ -20,7 +20,7 @@ import { updateMark } from "../core/quota-offmachine";
 import { parseModelStudyQuery } from "../core/model-study";
 import { modelCandidates, parseStudyModels } from "../core/model-catalog";
 import { FAMILY as STUDY_FAMILY } from "../core/quota-offmachine";
-import { loadDeepSeek, loadModelStudy, loadPool, loadRequests, loadSessionDetail, loadSessions, loadSnapshot } from "./snapshot";
+import { loadDeepSeek, loadModelStudy, loadPool, loadRequests, loadSessionDetail, loadSessions, loadSnapshot, searchSessionText } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
 import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerminal, resolveCli, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
@@ -35,7 +35,10 @@ import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOffi
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
-import { activateProvider, agentDrift, agentView as coreAgentView, deleteProvider, poolDef, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { autoSwitchCli, describeAutoSwitch, normalizeRule, type AutoSwitchEvent } from "../core/cli-auto-switch";
+import { switchCliAccount } from "../core/cli-switch";
+import { runHealthCheck } from "./health";
+import { activateProvider, agentDrift, agentView as coreAgentView, usesOfficialLogin, deleteProvider, poolDef, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
 import { randomUUID } from "crypto";
@@ -487,6 +490,39 @@ function maybeNotify(snapshot: Snapshot) {
   }).show();
 }
 
+/*
+ * 额度用满自动切 CLI 登录（0.3.55，见 core/cli-auto-switch.ts）：每轮额度查询之后跑一次。
+ * 切了、没有能切的号、切换失败都弹一条通知，点开是设置里的官方账号；界面开着就刷新账号列表。返回这一轮有没有真的切换。
+ */
+const AUTO_SWITCH_APP = { claude: "claude", chatgpt: "codex", grok: "grok" } as const;
+async function runAutoSwitch(): Promise<boolean> {
+  const prefs = readPrefs();
+  if (!Object.values(prefs.cliAutoSwitch ?? {}).some((rule) => rule?.on)) return false;
+  let events: AutoSwitchEvent[] = [];
+  try {
+    events = await autoSwitchCli({
+      rules: prefs.cliAutoSwitch,
+      readOnly: prefs.agentReadOnly === true,
+      usesOfficial: (kind) => usesOfficialLogin(AUTO_SWITCH_APP[kind]),
+      switchTo: (id) => switchCliAccount(id),
+    });
+  } catch (error) {
+    console.error("[TokenPulse] 自动切换 CLI 登录失败", error);
+    return false;
+  }
+  if (!events.length) return false;
+  for (const event of events) notifyAutoSwitch(event);
+  win?.webContents.send("cli-auto-switch", events);
+  return events.some((event) => event.result === "switched");
+}
+function notifyAutoSwitch(event: AutoSwitchEvent) {
+  if (!Notification.isSupported()) return;
+  const text = describeAutoSwitch(event);
+  const note = new Notification({ title: tr(text.title), body: tr(text.body), icon: windowIcon() });
+  note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "settings", tab: "accounts" }); });
+  note.show();
+}
+
 /** 已经通知过的请求，免得同一条在下一轮扫描里又弹一次。 */
 const notifiedRequests = new Set<string>();
 
@@ -656,6 +692,7 @@ async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snap
       lastQuotaNotice = issues.length ? quotaIssueNotice(issues) : quotaRefreshSummary(before, quotaGlances(snapshot));
       lastQuotaNoticeKind = issues.length ? quotaIssueTone(issues) : "success";
       if (tell) emitQuotaNotice(lastQuotaNotice, lastQuotaNoticeKind);
+      if (await runAutoSwitch()) snapshot = publishSnapshot(await loadSnapshot(false));
     } catch (error) {
       console.error("[TokenPulse] 额度接口失败", error);
       lastQuotaNotice = "官方额度没查到，请稍后重试。";
@@ -726,6 +763,10 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
     patch = { ...patch, localOnlyAccounts: [...new Set(list.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 400))].slice(0, 100) };
   }
   if ("quotaEverySeconds" in patch) patch = { ...patch, quotaEverySeconds: quotaEverySeconds(patch.quotaEverySeconds) };
+  if ("cliAutoSwitch" in patch) {
+    const raw = patch.cliAutoSwitch && typeof patch.cliAutoSwitch === "object" ? patch.cliAutoSwitch as Record<string, unknown> : {};
+    patch = { ...patch, cliAutoSwitch: Object.fromEntries((["claude", "chatgpt", "grok"] as const).filter((kind) => kind in raw).map((kind) => [kind, normalizeRule(raw[kind])])) };
+  }
   const previousEvery = readPrefs().quotaEverySeconds;
   const next = writePrefs(patch);
   // 保存之后才改定时器。这一轮不额外查，下一轮按新间隔走。
@@ -1175,7 +1216,9 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("demo:requests", (_event, query: unknown) => demoCall("requests", parseRequestQuery(query)));
     ipcMain.handle("demo:end", () => endDemo());
 
+    ipcMain.handle("health:run", () => runHealthCheck(exitMonitor));
     ipcMain.handle("sessions:list", () => loadSessions());
+    ipcMain.handle("sessions:search", (_event, query: unknown, kind: unknown) => searchSessionText(typeof query === "string" ? query.slice(0, 200) : "", typeof kind === "string" ? kind : "all"));
     ipcMain.handle("sessions:detail", (_event, kind: unknown, id: unknown) => {
       if (!isAgentKind(kind) || typeof id !== "string") throw new Error("会话参数无效");
       return loadSessionDetail(kind, id);

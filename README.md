@@ -28,7 +28,7 @@
 
 > 每个版本改了什么见 [Releases](https://github.com/JohnMuyuan/TokenPulse/releases)；软件里升级后也会弹一次「新版本有什么」。
 
-0.3.54 切到 Claude Code 的账号不再隔一夜就显示过期：Claude Code 没在运行时由 TokenPulse 替它续期；续期偶尔被拒会继续重试，不再直接要求重新登录；每次续期记进 renew-log.jsonl（不含 token）。
+0.3.55 三件事：会话管理能搜所有会话的对话内容并跳到命中处；新的「体检」页一键检查工具配置、本地路由、账号续期、网络和数据目录；额度快用完时自动切换 Claude Code / Codex / Grok CLI 的登录账号。
 
 ## 🖼️ 分享卡片与里程碑
 

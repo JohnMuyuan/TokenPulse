@@ -169,6 +169,48 @@ app.on('web-contents-created', (_, contents) => {
       // 账号列表里不能出现凭据：字段名或 JWT 形状的值。不能只搜「token / refresh」这两个词 ——
       // 「完全删除 TokenPulse 记录」和重新授权按钮的 #i-refresh 图标本来就含这两个词，会误报
       assert.doesNotMatch(await evaluate("document.getElementById('official-accounts').innerHTML"), /access_?token|refresh_?token|id_?token|accessToken|refreshToken|\beyJ[\w-]{10,}/i);
+      {
+        // 0.3.55：额度用满自动切 CLI 登录。账号列表换成假的（Claude 两个号、ChatGPT 一个号），开关的状态从真的 prefs.json 读回来
+        const prefsNow = () => JSON.parse(fs.readFileSync(path.join(dataPath, 'prefs.json'), 'utf8')).cliAutoSwitch || {};
+        const acc = (kind, ref, more = {}) => ({ id: `${kind}:${ref}`, email: `${ref}@example.com`, label: ref, alias: '', inCli: false, usable: true, autoRenew: true, needsLogin: false, waitCli: false, hidden: false, ...more });
+        let lastEvent;
+        const fakeList = () => {
+          const rule = prefsNow().claude || { on: false, at: 95 };
+          return [
+            { kind: 'claude', label: 'Claude', installed: true, accounts: [acc('claude', 'qa-a', { inCli: true }), acc('claude', 'qa-b')], autoSwitch: { ...rule, ...(lastEvent ? { last: lastEvent } : {}) } },
+            { kind: 'chatgpt', label: 'ChatGPT', installed: true, accounts: [acc('chatgpt', 'qa-c')], autoSwitch: { on: false, at: 95 } },
+            { kind: 'grok', label: 'Grok', installed: false, accounts: [], autoSwitch: { on: false, at: 95 } },
+          ];
+        };
+        ipcMain.removeHandler('accounts:list');
+        ipcMain.handle('accounts:list', () => fakeList());
+        await evaluate('loadOfficialAccounts()');
+        await until("document.querySelectorAll('#official-accounts .oauth-auto').length === 1");
+        assert.equal(await evaluate("Boolean(document.querySelector('#official-accounts [data-auto-switch=claude]'))"), true, '两个号的那家才有自动切换这一行');
+        assert.equal(await evaluate("document.querySelector('[data-auto-switch=claude]').getAttribute('aria-checked')"), 'false');
+        assert.equal(await evaluate("document.querySelector('[data-auto-at=claude]').disabled"), true, '没开时比例不能选');
+        await evaluate("document.querySelector('[data-auto-switch=claude]').click()");
+        await until("document.querySelector('[data-auto-switch=claude]')?.getAttribute('aria-checked') === 'true'");
+        assert.deepEqual(prefsNow(), { claude: { on: true, at: 95 } });
+        assert.match(await evaluate("document.querySelector('#official-accounts .oauth-auto-note').textContent"), /换号时会发通知提醒你；已经开着的 Claude Code 会话，要重新打开才会用新账号/);
+        await evaluate("(() => { const s = document.querySelector('[data-auto-at=claude]'); s.value = '99'; s.dispatchEvent(new Event('change', { bubbles: true })); })()");
+        await until("document.querySelector('[data-auto-at=claude]')?.value === '99'");
+        assert.deepEqual(prefsNow(), { claude: { on: true, at: 99 } });
+        assert.match(await evaluate("document.getElementById('prefs-status').textContent + [...document.querySelectorAll('#toast-stack .tp-toast')].map(t => t.textContent).join(' ')"), /用满时换号/);
+        // 最近一次自动切换写在这一行，悬停看原因
+        lastEvent = { at: Date.now(), result: 'switched', title: '已把 Claude Code 切到 qa-b@example.com', body: 'qa-a@example.com 的5 小时额度已用 97%，新账号剩 60%。已经开着的会话要重新打开才会用新账号。' };
+        await evaluate('loadOfficialAccounts()');
+        await until("/已把 Claude Code 切到 qa-b@example.com/.test(document.querySelector('#official-accounts .oauth-auto-note')?.textContent || '')");
+        assert.match(await evaluate("document.querySelector('#official-accounts .oauth-auto-note').title"), /新账号剩 60%/);
+        await evaluate("document.querySelector('[data-auto-switch=claude]').click()");
+        await until("document.querySelector('[data-auto-switch=claude]')?.getAttribute('aria-checked') === 'false'");
+        assert.deepEqual(prefsNow(), { claude: { on: false, at: 99 } });
+        ipcMain.removeHandler('accounts:list');
+        ipcMain.handle('accounts:list', () => require(path.join(appRoot, 'build/main/oauth.js')).listOfficialOAuthStatus());
+        await evaluate('loadOfficialAccounts()');
+        await until("document.querySelectorAll('#official-accounts .oauth-card').length === 3");
+        console.log('PASS 0.3.55 auto CLI switch row: only with two accounts, toggle and level saved to prefs, last switch shown with reason');
+      }
       await evaluate("document.querySelector('[data-settings-tab=about]').click()");
       assert.ok((await evaluate("document.querySelector('.about-name').textContent")).includes('v' + require(path.join(appRoot, 'package.json')).version));
       // 1.0 之前标「预览版」：侧栏、关于页各一个标签，关于页多一句说明

@@ -1,0 +1,41 @@
+/* ---------------- 体检（renderer/health.js，0.3.55） ---------------- */
+
+.hc-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; padding: 18px 22px; }
+.hc-summary { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.hc-summary small { display: block; margin-top: 3px; color: var(--muted); font-size: 12.5px; }
+.hc-summary b { font-size: 16px; }
+.hc-verdict { min-width: 0; }
+.hc-badge { flex: none; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; }
+.hc-badge .icon { width: 22px; height: 22px; }
+.hc-badge.ok { background: var(--accent-soft); color: var(--accent); }
+.hc-badge.warn { background: var(--warn-soft); color: var(--warn); }
+.hc-badge.bad { background: var(--danger-soft); color: var(--danger); }
+.hc-bad-text { color: var(--danger); }
+.hc-run { flex: none; }
+.hc-run.is-busy .icon { animation: spin 1s linear infinite; }
+
+.hc-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; align-items: start; }
+.hc-group .panel-heading { margin-bottom: 10px; }
+.hc-group h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; }
+.hc-group h2 .icon { width: 17px; height: 17px; color: var(--muted); }
+.hc-tag.bad { border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: var(--danger-soft); color: var(--danger); }
+.hc-tag.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: var(--warn-soft); color: var(--warn); }
+.hc-tag.ok { border-color: color-mix(in srgb, var(--accent) 30%, transparent); background: var(--accent-soft); color: var(--accent); }
+
+.hc-items { display: grid; gap: 2px; }
+.hc-item { display: flex; align-items: flex-start; gap: 11px; padding: 10px 8px; border-radius: 10px; }
+.hc-item + .hc-item { border-top: 1px solid var(--line); border-radius: 0; }
+.hc-dot { flex: none; display: grid; place-items: center; width: 24px; height: 24px; margin-top: 1px; border-radius: 50%; }
+.hc-dot .icon { width: 14px; height: 14px; }
+.hc-dot.ok { background: var(--accent-soft); color: var(--accent); }
+.hc-dot.info { background: var(--surface-2); color: var(--muted); }
+.hc-dot.warn { background: var(--warn-soft); color: var(--warn); }
+.hc-dot.bad { background: var(--danger-soft); color: var(--danger); }
+.hc-text { flex: 1; min-width: 0; }
+.hc-text b { display: block; font-size: 13.5px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.hc-text p { margin-top: 2px; color: var(--muted); font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.hc-lines { margin: 6px 0 0; padding-left: 16px; color: var(--text-2); font-size: 12px; line-height: 1.7; font-variant-numeric: tabular-nums; }
+.hc-go { flex: none; height: 30px; padding: 0 10px; font-size: 12.5px; }
+.hc-go .icon { width: 13px; height: 13px; }
+@media (max-width: 1000px) { .hc-groups { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .hc-run.is-busy .icon { animation: none; } }

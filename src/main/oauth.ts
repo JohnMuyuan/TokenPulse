@@ -21,6 +21,9 @@ import {
 import { OFFICIAL_KINDS, cliDir, isExpired, readCliAccounts, type OfficialAccountKind } from "../core/credentials";
 import { readCliSnapshot, switchCliAccount } from "../core/cli-switch";
 import { renewCliCredential } from "../core/cli-renew";
+import { describeAutoSwitch, normalizeRule, readAutoSwitchEvents } from "../core/cli-auto-switch";
+import { usesOfficialLogin } from "../core/agent-switch";
+import { readPrefs } from "./prefs";
 import { dataDir } from "../core/paths";
 import { forgetQuotaAccount } from "../core/quota-history";
 import { cleanAgentEnv } from "./session-reply";
@@ -62,7 +65,26 @@ export type OfficialOAuthStatus = {
   label: string;
   installed: boolean;
   accounts: AccountView[];
+  /** 0.3.55：额度用满自动切 CLI 登录。idle：开着但这会儿不起作用的原因；last：最近一次动作的说法。 */
+  autoSwitch: { on: boolean; at: number; idle?: string; last?: { at: number; result: string; title: string; body: string } };
 };
+
+const AUTO_APP = { claude: "claude", chatgpt: "codex", grok: "grok" } as const;
+const CLI_NAME = { claude: "Claude Code", chatgpt: "Codex", grok: "Grok CLI" } as const;
+function autoSwitchView(kind: OfficialAccountKind): OfficialOAuthStatus["autoSwitch"] {
+  const prefs = readPrefs();
+  const rule = normalizeRule(prefs.cliAutoSwitch?.[kind]);
+  let idle: string | undefined;
+  if (rule.on && prefs.agentReadOnly) idle = "供应商「只读保护」开着，不会自动切换";
+  else if (rule.on) {
+    let official = false;
+    try { official = usesOfficialLogin(AUTO_APP[kind]); } catch { /* 读不了供应商数据就当不是 */ }
+    if (!official) idle = `${CLI_NAME[kind]} 现在用的不是官方登录（第三方供应商或号池），切 CLI 登录没有用，先不切`;
+  }
+  const event = readAutoSwitchEvents().filter((item) => item.kind === kind).pop();
+  const last = event ? { at: event.at, result: event.result, ...describeAutoSwitch(event) } : undefined;
+  return { ...rule, ...(idle ? { idle } : {}), ...(last ? { last } : {}) };
+}
 
 const CANDIDATES: Record<OfficialAccountKind, string[]> = {
   grok: [path.join(os.homedir(), ".grok", "bin", "grok.exe"), "grok"],
@@ -273,7 +295,7 @@ export async function listOfficialOAuthStatus(now = Date.now()): Promise<Officia
           hidden: Boolean(item.hidden),
         };
       });
-    return { kind, label: LABELS[kind], installed: Boolean(installed[index]), accounts };
+    return { kind, label: LABELS[kind], installed: Boolean(installed[index]), accounts, autoSwitch: autoSwitchView(kind) };
   });
 }
 

@@ -8,6 +8,7 @@ import { scanLocalUsage } from "./usage-scan";
 import { ccSwitchEnabled, syncCcSwitch } from "./cc-switch";
 import { recordCliLogins } from "./login-timeline";
 import { getSession, listSessions } from "./sessions";
+import { searchSessions } from "./session-search";
 
 function localDay(at: number) {
   const d = new Date(at);
@@ -27,6 +28,8 @@ if (workerData.deepseek) {
   parentPort!.postMessage(listSessions());
 } else if (workerData.sessions === "detail") {
   parentPort!.postMessage(getSession(workerData.kind, workerData.id));
+} else if (workerData.sessions === "search") {
+  parentPort!.postMessage(searchSessions(workerData.query, workerData.kind));
 } else if (workerData.query) {
   // 请求流水查询：按月读文件、现算核验，同样放在 worker 里
   parentPort!.postMessage(queryRequests(workerData.query));

@@ -273,6 +273,7 @@ function renderOfficialAccounts(statuses = []) {
     });
     return el('div', { class: 'oauth-card' }, [
       el('div', { class: 'oauth-card-head' }, [avatar(status.kind), el('span', { class: 'oauth-card-title', text: meta.name }), poolSummary, add]),
+      visibleCount > 1 && status.installed ? autoSwitchRow(status) : null,
       rows.length ? el('div', { class: 'oauth-account-list', 'data-kind': status.kind }, rows) : el('p', { class: 'oauth-empty', text: status.installed ? '还没有登录的账号' : '安装官方 CLI 后即可添加账号' })
     ]);
   }));
@@ -411,6 +412,39 @@ function localOnlySwitch(id, name) {
     'aria-label': `只在本机用 Code，不聊天：${name}` }, [el('i', { 'aria-hidden': 'true' }), el('span', { text: '只在本机用 Code' })]);
   return button;
 }
+/*
+ * 额度用满自动切 CLI 登录（0.3.55）：每家一行，开关 + 用到多少切 + 最近一次的结果。
+ * 只在这家登记了两个以上账号时出现。偏好整份写回（主进程按家校验）。
+ */
+const CLI_OF_KIND = { claude: 'Claude Code', chatgpt: 'Codex', grok: 'Grok CLI' };
+let autoSwitchRules = {};
+function autoSwitchRow(status) {
+  const auto = status.autoSwitch || { on: false, at: 95 };
+  const cli = CLI_OF_KIND[status.kind] || 'CLI';
+  const toggle = el('button', { type: 'button', class: 'oauth-localonly oauth-auto-toggle' + (auto.on ? ' on' : ''), role: 'switch', 'aria-checked': String(auto.on), 'data-auto-switch': status.kind,
+    title: `打开后：${cli} 现在登录的账号额度用到设定比例时，自动切到 TokenPulse 托管的、剩余最多的另一个账号，并发通知。只在 ${cli} 用官方登录时起作用。`,
+    'aria-label': `额度快用完时自动切换 ${cli} 的登录` }, [el('i', { 'aria-hidden': 'true' }), el('span', { text: '额度快用完时自动切换 CLI 登录' })]);
+  const select = el('select', { class: 'oauth-auto-at', 'data-auto-at': status.kind, 'aria-label': '用到多少时切换' },
+    [90, 95, 99].map(value => el('option', { value: String(value), text: value === 99 ? '用满时' : `用到 ${value}% 时`, ...(value === auto.at ? { selected: '' } : {}) })));
+  select.disabled = !auto.on;
+  const time = at => new Date(at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const note = auto.on && auto.idle ? el('small', { class: 'oauth-auto-note warn', text: auto.idle })
+    : auto.last ? el('small', { class: 'oauth-auto-note' + (auto.last.result === 'switched' ? '' : ' warn'), title: auto.last.body }, [el('span', { class: 'num', text: time(auto.last.at) + ' ', translate: 'no' }), el('span', { text: auto.last.title })])
+    : auto.on ? el('small', { class: 'oauth-auto-note', text: `已开启：换号时会发通知提醒你；已经开着的 ${cli} 会话，要重新打开才会用新账号` })
+    : null;
+  return el('div', { class: 'oauth-auto' }, [toggle, select, note]);
+}
+async function saveAutoSwitch(kind, patch, control) {
+  const next = { ...autoSwitchRules, [kind]: { on: false, at: 95, ...autoSwitchRules[kind], ...patch } };
+  control.disabled = true;
+  try {
+    const saved = await api.writePrefs({ cliAutoSwitch: next });
+    autoSwitchRules = saved?.cliAutoSwitch || next;
+    const rule = autoSwitchRules[kind];
+    settingsDone(rule.on ? `已开启自动切换：${CLI_OF_KIND[kind]} 的账号${rule.at === 99 ? '用满' : `用到 ${rule.at}%`}时换号` : `已关闭 ${CLI_OF_KIND[kind]} 的自动切换`);
+    renderOfficialAccounts(await api.officialAccounts());
+  } catch (error) { $('prefs-status').textContent = cleanRemoteError(error, '设置没保存上，请重试'); control.disabled = false; }
+}
 async function toggleLocalOnly(button) {
   const id = button.dataset.localOnly, next = new Set(localOnly);
   if (next.has(id)) next.delete(id); else next.add(id);
@@ -426,7 +460,7 @@ async function toggleLocalOnly(button) {
 }
 async function loadOfficialAccounts() {
   $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '正在读取账号状态…' }));
-  try { localOnly = new Set((await api.readPrefs()).localOnlyAccounts || []); } catch { /* 读不到就按都没打开显示 */ }
+  try { const prefs = await api.readPrefs(); localOnly = new Set(prefs.localOnlyAccounts || []); autoSwitchRules = prefs.cliAutoSwitch || {}; } catch { /* 读不到就按都没打开显示 */ }
   try { renderOfficialAccounts(await api.officialAccounts()); }
   catch { $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' })); }
 }
@@ -2300,8 +2334,8 @@ const overviewRange = { days: 30, from: '', to: '', follow: false };
  * 只记在这台电脑上（localStorage），不影响监控和通知。
  */
 const LAYOUT_KEY = 'tokenpulse-layout';
-const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers'];
-const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', concurrency: '并发监控', sessions: '会话管理', providers: '供应商' };
+const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers', 'health'];
+const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', concurrency: '并发监控', sessions: '会话管理', providers: '供应商', health: '体检' };
 /** [key, 名字, 区域]。区域只给布局面板分组；数组顺序就是默认顺序。 */
 const LAYOUT = [
   ['overview:quota:claude', 'Claude', '官方额度'], ['overview:quota:chatgpt', 'ChatGPT', '官方额度'], ['overview:quota:grok', 'Grok', '官方额度'],
@@ -2735,7 +2769,7 @@ function navigate(page, options = {}) {
   state.page = page;
   if (page !== 'concurrency') window.PulseConcurrency?.hide();
   if (page !== 'providers') window.PulseProviders?.hide();
-  const labels = { concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI 和 DeepSeek Harness 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
+  const labels = { health: ['体检', '一键检查哪里不对', '工具配置、本地路由、官方账号续期、网络和出口、数据目录，集中检查一遍，并告诉你去哪里处理。体检只读，不改任何配置。'], concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI 和 DeepSeek Harness 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
@@ -2745,6 +2779,8 @@ function navigate(page, options = {}) {
   $('tip').hidden = true;
   enter();
   if (current) render(current);
+  // 体检（0.3.55）不依赖快照：第一次打开、或者上次体检超过 5 分钟就重新查一遍
+  if (page === 'health') window.PulseHealth?.show();
   applyLayout();
   syncSegs();
   scroller.scrollTo({ top: 0, behavior: 'instant' });
@@ -3592,9 +3628,20 @@ function disarmRemove() {
   if (button.isConnected) { button.classList.remove('armed'); button.replaceChildren(icon('trash')); }
 }
 const ACCOUNT_DONE = { remove: '已删除账号', purge: '已完全删除 TokenPulse 账号', hide: '已隐藏账号，可以随时恢复', restore: '已恢复账号，正在查询额度' };
+$('official-accounts').addEventListener('change', event => {
+  const select = event.target.closest('[data-auto-at]');
+  if (select) saveAutoSwitch(select.dataset.autoAt, { at: Number(select.value) }, select);
+});
+// 主进程自动切了号（或没有能切的号）：设置开着就刷新账号列表，再弹一条提示
+api.onCliAutoSwitch?.(events => {
+  if (!$('settings').hidden) loadOfficialAccounts();
+  if ((events || []).some(event => event.result === 'switched')) toast('已自动切换 CLI 登录，详情见设置 → 官方账号', { kind: 'success', key: 'cli-auto-switch', ms: 5600 });
+});
 $('official-accounts').addEventListener('click', async event => {
   const local = event.target.closest('[data-local-only]');
   if (local) { if (!local.disabled) toggleLocalOnly(local); return; }
+  const auto = event.target.closest('[data-auto-switch]');
+  if (auto) { if (!auto.disabled) saveAutoSwitch(auto.dataset.autoSwitch, { on: auto.getAttribute('aria-checked') !== 'true' }, auto); return; }
   const button = event.target.closest('[data-account-action]');
   if (!button || button.disabled) return;
   const { accountKind: kind, accountId: id } = button.dataset;
@@ -3711,6 +3758,8 @@ function syncQuotaBlocks(egress) {
 api.onEgressState?.(syncQuotaBlocks);
 api.egressState?.().then(syncQuotaBlocks).catch(() => {});
 api.onOpenPage?.(target => {
+  // 0.3.55：自动切换 CLI 登录的通知点开是设置里的官方账号
+  if (target?.page === 'settings') { openSettings(target.tab || 'general'); return; }
   if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
   navigate(target?.page || 'overview', { force: true });
 });

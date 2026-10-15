@@ -431,7 +431,8 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'), external);
     await until("document.body.innerText.includes('未覆盖')");
     // 主导航：默认窄窗口图标栏，手动展开 / 收起、图标导航及刷新记忆。
-    const sidebarWidth = () => evaluate("document.querySelector('.sidebar').getBoundingClientRect().width");
+    // 取整：175% 这类非整数缩放下，宽度会读成 236.00001525878906
+    const sidebarWidth = () => evaluate("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width)");
     assert.equal(await sidebarWidth(), 76);
     assert.equal(await evaluate("document.querySelector('#sidebar-toggle').getAttribute('aria-expanded')"), 'false');
     await evaluate("document.querySelector('#sidebar-toggle').click()");
@@ -476,7 +477,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(motion.focus, 'sidebar-toggle');
     await evaluate('Promise.all([...sidebarAnimations].map(animation => { animation.finish(); return animation.finished.catch(() => {}); }))');
     await until("sidebarAnimations.size === 0 && sidebarGhosts.size === 0");
-    assert.equal(await evaluate("document.querySelector('.workspace').getBoundingClientRect().left"), 236);
+    assert.equal(await evaluate("Math.round(document.querySelector('.workspace').getBoundingClientRect().left)"), 236);
     await contents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     await evaluate("document.querySelector('#sidebar-toggle').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }))");
     assert.equal(await evaluate('sidebarAnimations.size'), 0, 'reduced motion has no layout movement');

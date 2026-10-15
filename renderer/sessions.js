@@ -19,8 +19,14 @@
     run: null,
     mode: 'readonly',
     drafts: {},
-    openGroups: new Set()
+    openGroups: new Set(),
+    /**
+     * 0.3.55 全文搜索：hits 是这次搜内容命中的会话（key → { count, snippets, ids }），null = 没在搜内容；
+     * terms 是搜索词（高亮用）；jump 是正在看的会话里「第几处」：{ key, ids, index }，index -1 = 还没跳。
+     */
+    hits: null, terms: [], searching: false, searchSeq: 0, searchNote: '', jump: null
   };
+  let searchTimer = 0;
   const AGENTS = {
     claude: { name: 'Claude Code', short: 'Claude', brand: 'claude' },
     codex: { name: 'Codex CLI', short: 'Codex', brand: 'openai' },
@@ -134,7 +140,8 @@
     if (built) return;
     built = true;
     const host = $('page-sessions');
-    N.search = el('input', { type: 'search', placeholder: '搜索标题、项目或内容…', autocomplete: 'off', 'aria-label': '搜索会话' });
+    N.search = el('input', { type: 'search', placeholder: '搜索标题、项目或对话内容…', autocomplete: 'off', 'aria-label': '搜索会话', title: '同时搜对话内容：几个词用空格隔开，表示都要出现在同一段会话里' });
+    N.searchNote = el('small', { class: 'sw-search-note', role: 'status', 'aria-live': 'polite' });
     N.refresh = button('', 'refresh', 'btn icon-only sw-refresh', { title: '重新读取会话', 'aria-label': '重新读取会话' });
     N.kinds = el('div', { class: 'seg compact sw-kinds', role: 'group', 'aria-label': '按 Agent 筛选' }, [el('span', { class: 'seg-thumb', 'aria-hidden': 'true' })]);
     N.project = el('select', { class: 'sw-project', 'aria-label': '按项目筛选' });
@@ -152,6 +159,7 @@
       el('div', { class: 'sw-side-head' }, [el('h2', {}, ['会话列表 ', N.count]), N.refresh]),
       el('div', { class: 'sw-new-row' }, [N.newChat, N.newProject]),
       el('label', { class: 'search-field sw-search' }, [icon('search'), N.search]),
+      N.searchNote,
       N.kinds,
       N.project,
       N.list
@@ -159,7 +167,11 @@
     N.main = el('section', { class: 'panel sw-main', 'aria-live': 'polite' });
     host.replaceChildren(el('div', { class: 'sw' }, [markLayout(aside, 'sessions:list'), markLayout(N.main, 'sessions:detail')]));
 
-    N.search.addEventListener('input', () => { S.search = N.search.value; drawList(); });
+    N.search.addEventListener('input', () => {
+      S.search = N.search.value; drawList();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(searchContent, 350);
+    });
     N.refresh.addEventListener('click', () => loadList(true));
     N.kinds.addEventListener('click', event => {
       const hit = event.target.closest('[data-kind]'); if (!hit) return;
@@ -278,9 +290,76 @@
     if (S.project !== 'all' && item.project !== S.project) return false;
     const q = S.search.trim().toLowerCase();
     if (!q) return true;
+    if (S.hits?.has(item.key)) return true;
     return [item.title, item.project, item.cwd, item.preview, AGENTS[item.kind]?.name, ...(item.models || [])].filter(Boolean).join(' ').toLowerCase().includes(q);
   }
   function visibleItems() { return S.items.filter(matches); }
+
+  /* ---------------- 全文搜索（0.3.55） ---------------- */
+
+  async function searchContent() {
+    const q = S.search.trim();
+    const seq = ++S.searchSeq;
+    if (q.replace(/\s+/g, '').length < 2) {
+      S.hits = null; S.terms = []; S.searching = false; S.searchNote = '';
+      setJump(); drawList(); return;
+    }
+    S.searching = true; S.searchNote = '正在搜索对话内容…';
+    drawList();
+    try {
+      const result = await api.searchSessions(q, 'all');
+      if (seq !== S.searchSeq) return;
+      S.hits = new Map((result?.hits || []).map(hit => [hit.key, hit]));
+      S.terms = result?.terms || [];
+      const messages = [...S.hits.values()].reduce((sum, hit) => sum + hit.count, 0);
+      S.searchNote = S.hits.size ? `对话内容里有 ${number(S.hits.size)} 段会话命中，共 ${number(messages)} 条消息` : '对话内容里没有找到';
+      if (result?.indexed > 20) S.searchNote += `（刚整理了 ${number(result.indexed)} 段会话的文字，以后会快很多）`;
+    } catch {
+      if (seq !== S.searchSeq) return;
+      S.hits = null; S.terms = [];
+      S.searchNote = '对话内容没搜成，只按标题和项目筛选';
+    } finally {
+      if (seq === S.searchSeq) { S.searching = false; drawList(); setJump(); drawMain(false); }
+    }
+  }
+
+  /** 正在看的会话有命中：记下命中的消息，但不自动跳（不打断正在读的位置）。 */
+  function setJump(key = S.key) {
+    S.quiet = '';
+    const hit = S.search.trim() ? S.hits?.get(key) : null;
+    S.jump = hit?.ids?.length ? { key, ids: hit.ids, index: -1 } : null;
+  }
+
+  /** 把文字里的搜索词包成 <mark>。只生成 DOM 节点。 */
+  function highlight(text, terms = S.terms) {
+    if (!terms.length) return [text];
+    const re = new RegExp(terms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+    const out = [];
+    let last = 0, m;
+    while ((m = re.exec(text))) {
+      if (!m[0]) { re.lastIndex += 1; continue; }
+      if (m.index > last) out.push(text.slice(last, m.index));
+      out.push(el('mark', { class: 'sw-hl', text: m[0] }));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  }
+  /** 已经画好的消息里，把搜索词高亮出来（Markdown 画完以后再做，免得拆坏代码块和表格）。 */
+  function highlightIn(root) {
+    if (!S.terms.length || !S.search.trim() || S.quiet === S.key) return;
+    for (const box of root.querySelectorAll('.sw-plain, .sw-rich, .sw-tool-sum')) {
+      const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      for (const node of nodes) {
+        const lower = node.nodeValue.toLowerCase();
+        if (!S.terms.some(term => lower.includes(term))) continue;
+        node.replaceWith(...highlight(node.nodeValue));
+        box.closest('[data-mid]')?.classList.add('sw-hit');
+      }
+    }
+  }
 
   function drawList() {
     const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0, deepseek: 0 };
@@ -300,6 +379,8 @@
 
     const items = visibleItems();
     N.count.textContent = number(items.length);
+    N.searchNote.textContent = S.search.trim() ? S.searchNote : '';
+    N.searchNote.classList.toggle('busy', S.searching);
     if (S.loading && !S.items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note' }, [el('span', { class: 'sw-spinner' }), '正在读取本机会话…'])); return; }
     if (!S.items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note', text: S.loaded ? '还没有找到本机 Agent 的会话。' : '' })); return; }
     if (!items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note', text: '没有符合条件的会话。' })); return; }
@@ -310,15 +391,19 @@
       if (g !== group) { group = g; nodes.push(el('div', { class: 'sw-group', text: g })); }
       const active = item.key === S.key;
       const running = S.run && S.run.key === item.key;
-      nodes.push(el('button', { type: 'button', class: `sw-item${active ? ' active' : ''}`, role: 'option', 'aria-selected': String(active), 'data-key': item.key }, [
+      const hit = S.search.trim() ? S.hits?.get(item.key) : null;
+      const snippet = hit?.snippets?.[0];
+      nodes.push(el('button', { type: 'button', class: `sw-item${active ? ' active' : ''}${hit ? ' has-hit' : ''}`, role: 'option', 'aria-selected': String(active), 'data-key': item.key }, [
         mark(item.kind),
         el('span', { class: 'sw-item-body' }, [
           el('span', { class: 'sw-item-top' }, [el('b', { text: item.title, title: item.title, translate: 'no' }), el('time', { text: shortTime(item.updatedAt) })]),
           el('span', { class: 'sw-item-meta' }, [
             el('span', { class: 'sw-item-project', text: item.project, translate: 'no' }),
             el('span', { text: `${number(item.turns)} 轮` }),
+            hit ? el('span', { class: 'sw-hit-count', text: `${number(hit.count)} 处` }) : null,
             running ? el('span', { class: 'sw-live', text: '回复中' }) : null
-          ])
+          ]),
+          snippet ? el('span', { class: 'sw-item-snippet', translate: 'no', title: snippet.text }, [el('small', { text: snippet.role === 'user' ? '你：' : snippet.role === 'tool' ? '工具：' : 'AI：' }), ...highlight(snippet.text)]) : null
         ])
       ]));
     }
@@ -350,7 +435,14 @@
   async function select(key, keepScroll = false) {
     if (!key) return;
     const changed = key !== S.key;
-    if (changed) { saveDraft(); S.key = key; S.visible = 160; S.openGroups.clear(); }
+    // 搜索结果里点的正好是现在开着的这段：直接跳到第一处
+    if (!changed && S.jump?.key === key && S.jump.index < 0 && S.detail?.key === key) { S.jump.index = 0; drawMain(false); return; }
+    if (changed) {
+      saveDraft(); S.key = key; S.visible = 160; S.openGroups.clear();
+      // 从搜索结果点进来：打开后直接跳到第一处命中
+      setJump(key);
+      if (S.jump && S.search.trim()) S.jump.index = 0;
+    }
     drawList();
     const item = S.items.find(entry => entry.key === key);
     if (!item) return;
@@ -458,7 +550,7 @@
       icon('chevron', 'icon sw-tool-caret'), el('b', { text: tool.name, translate: 'no' }), el('span', { class: 'sw-tool-sum', text: tool.summary || '', translate: 'no' })
     ]);
     row.addEventListener('click', () => { const open = detail.hidden; detail.hidden = !open; row.setAttribute('aria-expanded', String(open)); });
-    return el('div', { class: 'sw-tool-wrap' }, [row, detail]);
+    return el('div', { class: 'sw-tool-wrap', 'data-mid': tool.id }, [row, detail]);
   }
 
   function toolGroup(block) {
@@ -481,7 +573,7 @@
     const copyBtn = el('button', { type: 'button', class: 'sw-copy', title: '复制', 'aria-label': '复制这条消息' }, [icon('copy')]);
     copyBtn.addEventListener('click', () => copy(message.text, '已复制'));
     const isUser = message.role === 'user';
-    return el('div', { class: `sw-row ${message.role} ${extraClass}`.trim() }, [
+    return el('div', { class: `sw-row ${message.role} ${extraClass}`.trim(), 'data-mid': message.id }, [
       isUser ? null : mark(kind, 'sw-avatar'),
       el('div', { class: 'sw-bubble' }, [
         isUser ? el('div', { class: 'sw-plain', text: message.text, translate: 'no' }) : rich(message.text),
@@ -590,16 +682,55 @@
     const previous = N.scroller;
     const offsetFromBottom = previous ? previous.scrollHeight - previous.scrollTop : 0;
     saveDraft();
+    const jump = S.jump && S.jump.key === d.key ? S.jump : null;
+    if (jump && jump.index >= 0) revealHit(d, jump.ids[jump.index]);
     N.scroller = el('div', { class: 'sw-scroll' });
     const inner = el('div', { class: 'sw-messages' });
     N.scroller.append(inner);
     drawMessages(d, inner);
+    highlightIn(inner);
     const focused = document.activeElement === N.input;
-    N.main.replaceChildren(header(d), N.scroller, composer(d));
+    N.main.replaceChildren(header(d), jump ? jumpBar(d, jump) : null, N.scroller, composer(d));
     if (focused) N.input.focus();
     requestAnimationFrame(() => {
+      if (jump && jump.index >= 0 && scrollToHit(jump.ids[jump.index])) return;
       N.scroller.scrollTop = toBottom ? N.scroller.scrollHeight : N.scroller.scrollHeight - offsetFromBottom;
     });
+  }
+
+  /** 要跳到的那条在「显示更早的」后面、或者在收起的工具组里：放出来。 */
+  function revealHit(d, id) {
+    const all = blocks(d.messages);
+    const index = all.findIndex(block => block.id === id || (block.role === 'tools' && block.items.some(tool => tool.id === id)));
+    if (index < 0) return;
+    if (index < all.length - S.visible) S.visible = all.length - index + 4;
+    if (all[index].role === 'tools') S.openGroups.add(all[index].id);
+  }
+  function scrollToHit(id) {
+    const node = id && N.scroller?.querySelector(`[data-mid="${CSS.escape(id)}"]`);
+    if (!node) return false;
+    N.scroller.querySelectorAll('.sw-hit-now').forEach(other => other.classList.remove('sw-hit-now'));
+    node.classList.add('sw-hit-now');
+    node.scrollIntoView({ block: 'center' });
+    return true;
+  }
+  /** 「搜索：第 2 / 7 处」：上一处、下一处、不看了。 */
+  function jumpBar(d, jump) {
+    const total = jump.ids.length;
+    const label = el('span', { class: 'sw-jump-label', text: jump.index >= 0 ? `「${S.search.trim()}」第 ${number(jump.index + 1)} / ${number(total)} 处` : `「${S.search.trim()}」在这段会话里有 ${number(total)} 处` });
+    const go = step => {
+      jump.index = jump.index < 0 ? (step > 0 ? 0 : total - 1) : (jump.index + step + total) % total;
+      const id = jump.ids[jump.index];
+      if (scrollToHit(id)) label.textContent = `「${S.search.trim()}」第 ${number(jump.index + 1)} / ${number(total)} 处`;
+      else drawMain(false); // 在没放出来的地方：重画一次
+    };
+    const prev = button('', 'up', 'btn icon-only', { title: '上一处', 'aria-label': '上一处' });
+    const next = button('', 'up', 'btn icon-only sw-jump-down', { title: '下一处', 'aria-label': '下一处' });
+    const close = button('', 'close', 'btn icon-only', { title: '不看搜索结果了', 'aria-label': '关闭搜索定位' });
+    prev.addEventListener('click', () => go(-1));
+    next.addEventListener('click', () => go(1));
+    close.addEventListener('click', () => { S.jump = null; S.quiet = d.key; drawMain(false); });
+    return el('div', { class: 'sw-jump', role: 'toolbar', 'aria-label': '搜索结果定位' }, [icon('search'), label, prev, next, close]);
   }
 
   /* ---------------- 回复 ---------------- */

@@ -6,6 +6,7 @@ import { Worker } from "worker_threads";
 import type { Snapshot } from "../core/report";
 import type { RequestPage, RequestQuery } from "../core/request-log";
 import type { SessionDetail, SessionSummary } from "../core/sessions";
+import type { SearchResult } from "../core/session-search";
 
 /** 一次任务一个 worker，完成后自动退出；失败会传回调用方，不留下悬空的 IPC。 */
 function runWorker<T>(workerData: Record<string, unknown>): Promise<T> {
@@ -40,6 +41,11 @@ export function loadSessions(): Promise<SessionSummary[]> {
 
 export function loadSessionDetail(kind: string, id: string): Promise<SessionDetail | null> {
   return runWorker<SessionDetail | null>({ sessions: "detail", kind, id });
+}
+
+/** 会话全文搜索（0.3.55）：第一次要把所有会话抽成文字，可能要几秒。 */
+export function searchSessionText(query: string, kind: string): Promise<SearchResult> {
+  return runWorker<SearchResult>({ sessions: "search", query, kind });
 }
 
 /** DeepSeek 账号页的分析：读余额历史和 DeepSeek Harness 的流水，同样放在 worker 里。 */

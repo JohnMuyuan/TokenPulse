@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -538,6 +539,26 @@ function parseFile(kind: AgentKind, file: string) {
   return kind === "claude" ? parseClaude(file) : kind === "codex" ? parseCodex(file) : kind === "deepseek" ? parseDeepseek(file) : parseGrok(file);
 }
 
+/**
+ * 全文搜索的文字缓存（0.3.55）：每个会话文件抽出的纯文字放在 `~/.tokenpulse/session-text/<文件路径哈希>.txt`。
+ * 定义在这里，是为了删除对话时能一起删掉（session-search.ts 也用它）。
+ */
+export function sessionTextFile(file: string) {
+  return dataFile(path.join("session-text", createHash("sha256").update(path.resolve(file).toLowerCase()).digest("hex").slice(0, 24) + ".txt"));
+}
+
+/** 全文搜索（0.3.55，session-search.ts）用：解析一个会话文件，消息 id 和详情里的一致。 */
+export function parseSessionFile(kind: AgentKind, file: string) {
+  return parseFile(kind, file);
+}
+
+/** 全文搜索用：先刷新列表索引，再给出每个会话文件和它的摘要（同一个会话可能有几份文件）。 */
+export function sessionFiles(): { file: string; size: number; mtimeMs: number; summary: SessionSummary }[] {
+  listSessions();
+  const index = readJson<SessionIndex | null>(indexFile(), null);
+  return Object.entries(index?.files ?? {}).flatMap(([file, entry]) => (entry.summary ? [{ file, size: entry.size, mtimeMs: entry.mtimeMs, summary: entry.summary }] : []));
+}
+
 function stripFile(parsed: Parsed): SessionSummary {
   const { file: _file, messages: _messages, ...summary } = parsed;
   return summary;
@@ -614,6 +635,8 @@ export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
     const transcript = path.resolve(file);
     if (!inside(transcript) || path.basename(transcript) !== `${id}.jsonl`) continue;
     fs.rmSync(transcript, { force: true });
+    // 全文搜索缓存里这段对话的文字也删掉
+    fs.rmSync(sessionTextFile(file), { force: true });
     const sidecar = path.resolve(path.dirname(transcript), id);
     if (inside(sidecar)) fs.rmSync(sidecar, { recursive: true, force: true });
     removed.push(file);

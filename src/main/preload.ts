@@ -151,6 +151,10 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   requests: (query: Record<string, unknown>) => ipcRenderer.invoke(demo ? "demo:requests" : "requests:query", query),
   /** 会话管理：列表、详情（只读本机 CLI 的会话文件）。 */
   sessions: () => ipcRenderer.invoke("sessions:list"),
+  /** 0.3.55：体检。演示模式里不读真实状态。 */
+  runHealthCheck: () => (demo ? Promise.resolve({ at: Date.now(), ms: 0, items: [], summary: { ok: 0, info: 0, warn: 0, bad: 0 } }) : ipcRenderer.invoke("health:run")),
+  /** 0.3.55：会话全文搜索。 */
+  searchSessions: (query: string, kind: string) => (demo ? Promise.resolve({ query, terms: [], hits: [], ms: 0, indexed: 0 }) : ipcRenderer.invoke("sessions:search", query, kind)),
   sessionDetail: (kind: string, id: string) => ipcRenderer.invoke("sessions:detail", kind, id),
   copySessionProject: (kind: string, id: string) => ipcRenderer.invoke("sessions:copy-project", kind, id),
   copyText: (text: string) => ipcRenderer.invoke("sessions:copy-text", text),
@@ -236,10 +240,16 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("agent-switch", listener);
   },
   /** 主进程让界面跳到某一页（点了型号不一致的通知）。 */
-  onOpenPage: (handler: (target: { page: string; status?: string }) => void) => {
-    const listener = (_event: unknown, target: { page: string; status?: string }) => handler(target);
+  onOpenPage: (handler: (target: { page: string; status?: string; tab?: string }) => void) => {
+    const listener = (_event: unknown, target: { page: string; status?: string; tab?: string }) => handler(target);
     ipcRenderer.on("open-page", listener);
     return () => ipcRenderer.off("open-page", listener);
+  },
+  /** 0.3.55：自动切换了 CLI 登录（或者没有能切的号）。设置开着时刷新账号列表。 */
+  onCliAutoSwitch: (handler: (events: unknown) => void) => {
+    const listener = (_event: unknown, events: unknown) => handler(events);
+    ipcRenderer.on("cli-auto-switch", listener);
+    return () => ipcRenderer.off("cli-auto-switch", listener);
   },
   onError: (handler: (message: string) => void) => {
     const listener = (_event: unknown, message: string) => handler(message);

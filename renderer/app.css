@@ -1553,6 +1553,12 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 .oauth-localonly:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .oauth-localonly:disabled { opacity: .6; cursor: progress; }
 @media (prefers-reduced-motion: reduce) { .oauth-localonly, .oauth-localonly i, .oauth-localonly i::after { transition: none; } }
+/* 额度用满自动切 CLI 登录（0.3.55）：卡片标题下面一行，和账号列表左边对齐 */
+.oauth-auto { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 9px; padding-left: 42px; }
+.oauth-auto-at { height: 26px; padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; }
+.oauth-auto-at:disabled { opacity: .5; }
+.oauth-auto-note { flex-basis: 100%; overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.oauth-auto-note.warn { color: var(--warn); }
 
 /* 额度容量趋势：共享额度保护下的空状态（0.3.9） */
 .capacity-locked { display: grid; justify-items: center; gap: 8px; padding: 26px 18px; line-height: 1.7; }

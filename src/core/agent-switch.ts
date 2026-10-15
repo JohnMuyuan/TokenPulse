@@ -1002,6 +1002,32 @@ export function restoreConfigBackup(kind: 'history' | 'original', id: string) {
  */
 export type AgentDrift = { app: AgentApp; mode: 'route' | 'direct'; expectedId: string; expectedName: string; liveName: string; key: string };
 export function agentBusy() { return mutationPending; }
+/**
+ * 体检（0.3.55）：工具配置还指着 TokenPulse 的本地地址（本地路由或透明转发），这个工具的路由 / 转发却没在跑——
+ * 比如 TokenPulse 被强制结束、没来得及还原。工具这时连不上。只检测，不改任何文件。
+ */
+export function localRouteLeftovers(): { app: AgentApp; kind: "route" | "pass"; url: string }[] {
+  const store = load();
+  const out: { app: AgentApp; kind: "route" | "pass"; url: string }[] = [];
+  for (const app of AGENT_APPS) {
+    try {
+      const marker = liveMarker(app);
+      if (marker?.managed && !(store.proxy.apps[app] && runtime)) out.push({ app, kind: "route", url: marker.base });
+    } catch { /* 读不了的配置不报 */ }
+  }
+  for (const app of PASS_APPS) {
+    try {
+      const raw = passRaw(app);
+      if (raw && isPassUrl(raw) && !(store.pass.apps[app] && runtime)) out.push({ app, kind: "pass", url: raw });
+    } catch { /* 读不了的配置不报 */ }
+  }
+  return out;
+}
+/** 这个工具现在用的是不是它自己的官方登录（直连、透明转发，或者本地路由到官方登录）。第三方供应商 / 号池不算。 */
+export function usesOfficialLogin(app: AgentApp) {
+  const store = load();
+  return byId(store, currentId(store, app))?.official === true;
+}
 export function agentDrift(): AgentDrift[] {
   if (mutationPending || !fs.existsSync(storeFile())) return [];
   const store = load();

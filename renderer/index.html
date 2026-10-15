@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="usage-projects.css">
 <link rel="stylesheet" href="agent-switch.css">
 <link rel="stylesheet" href="concurrency.css">
+<link rel="stylesheet" href="health.css">
 <link rel="stylesheet" href="tokens-ci.css">
 <link rel="stylesheet" href="deepseek-balance.css">
 <link rel="stylesheet" href="pool-quota.css">
@@ -65,6 +66,7 @@
   <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 7"/></symbol>
+    <symbol id="i-health" viewBox="0 0 24 24"><path d="M20 12.2 12 20l-8-7.8A4.9 4.9 0 0 1 12 6a4.9 4.9 0 0 1 8 6.2Z"/><path d="M3 12h4.5l1.5-2.8 3 5.6 1.5-2.8H21"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-sidebar-collapse" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18m7-12-3 3 3 3"/></symbol>
   <symbol id="i-sidebar-expand" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18m4-12 3 3-3 3"/></symbol>
@@ -114,6 +116,7 @@
     <div class="nav-slot"><button class="nav-item" data-page="concurrency" title="并发监控"><svg class="icon"><use href="#i-concurrency"/></svg><span class="nav-label">并发监控</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="health" title="体检"><svg class="icon"><use href="#i-health"/></svg><span class="nav-label">体检</span><span id="nav-health-alert" class="nav-alert" hidden></span></button></div>
   </nav>
 
   <div class="sidebar-bottom">
@@ -372,6 +375,7 @@
     <section id="page-egress" class="page" hidden></section>
     <section id="page-sessions" class="page" hidden></section>
     <section id="page-concurrency" class="page" hidden></section>
+    <section id="page-health" class="page" hidden></section>
     <section id="page-providers" class="page" hidden></section>
 
     <footer>
@@ -511,6 +515,7 @@
 <script src="provider-avatars.js"></script>
 <script src="agent-switch.js"></script>
 <script src="concurrency.js"></script>
+<script src="health.js"></script>
 <script src="tokens-ci.js"></script>
 <script src="deepseek-balance.js"></script>
 <script src="pool-quota.js"></script>
