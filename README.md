@@ -28,7 +28,7 @@
 
 > 每个版本改了什么见 [Releases](https://github.com/JohnMuyuan/TokenPulse/releases)；软件里升级后也会弹一次「新版本有什么」。
 
-0.3.53 不开透明转发也能按会话日志的时间戳估算速度（标「≈」）；里程碑分享卡整张按达成那天的数据画，各类成就的下半部分各不相同。
+0.3.54 切到 Claude Code 的账号不再隔一夜就显示过期：Claude Code 没在运行时由 TokenPulse 替它续期；续期偶尔被拒会继续重试，不再直接要求重新登录；每次续期记进 renew-log.jsonl（不含 token）。
 
 ## 🖼️ 分享卡片与里程碑
 

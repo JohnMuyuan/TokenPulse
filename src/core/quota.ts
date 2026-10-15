@@ -3,7 +3,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { promisify } from "util";
-import { rememberOfficialAccount, renewStoredCredentials, visibleAccounts } from "./accounts";
+import { accountIdOf, rememberOfficialAccount, renewStoredCredentials, visibleAccounts } from "./accounts";
+import { renewCliCredential, type CliRenewResult } from "./cli-renew";
 import { curlBin, curlJson } from "./curl";
 import { curlProxyArgs } from "./upstream-proxy";
 import { isExpired, readCliAccounts, type OfficialAccountKind } from "./credentials";
@@ -53,9 +54,12 @@ export type QuotaIssue = {
   kind: AccountKind;
   accountId?: string;
   who: string;
-  reason: "expired" | "auth" | "blocked" | "empty" | "error";
+  /** cli-wait（0.3.54）：账号登录在 CLI 里，CLI 的凭据过期了，等 CLI 下次发请求时自己续（不用重新登录）。 */
+  reason: "expired" | "auth" | "blocked" | "empty" | "error" | "cli-wait";
   detail?: string;
 };
+
+const CLI_NAME: Record<AccountKind, string> = { claude: "Claude Code", chatgpt: "Codex", grok: "Grok CLI" };
 
 export type QuotaFetchResult = OfficialQuotaMap & { issues: QuotaIssue[] };
 
@@ -124,6 +128,7 @@ export function quotaIssueNotice(issues: QuotaIssue[] | undefined): string | und
         return `${who} 登录已失效，请重新登录。`;
       }
       if (issue.reason === "blocked") return `${who} 的额度没查：出口 IP 不在允许列表。`;
+      if (issue.reason === "cli-wait") return `${who} 登录在 ${CLI_NAME[issue.kind]} 里，凭据过期了，${CLI_NAME[issue.kind]} 下次发请求时会自动续上，不用重新登录。`;
       if (isNetworkFailure(issue.detail)) return `${who} 的官方额度没查到，没连上官方。`;
       return `${who} 这次没问到最新额度，还是显示上次的数字。`;
     })
@@ -493,15 +498,20 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promi
   }
   // TokenPulse 自己登录的账号需要由本软件负责续期，额度查询仍只使用各账号自己的凭据。
   await renewStoredCredentials(Date.now(), undefined, allowed).catch(() => 0);
+  // 登录在 Claude Code 里的账号：Claude Code 没在运行时替它续（见 cli-renew.ts）
+  const cliRenew: CliRenewResult | undefined = allowed.includes("claude") ? await renewCliCredential().catch(() => undefined) : undefined;
   const value: OfficialQuotaMap = {};
   const query = { claude: claudeQuota, chatgpt: chatgptQuota, grok: grokQuota };
   const jobs: Promise<OfficialQuota | undefined>[] = [];
   for (const kind of allowed) {
     const targets = targetsOf(kind);
     const queryable = new Set(targets.map((target) => target.accountId));
+    const inCli = new Set(readCliAccounts(kind).filter((item) => item.credential.refreshToken).map((item) => accountIdOf(kind, item.ref)));
     for (const account of visibleAccounts(kind)) {
       if (queryable.has(account.id)) continue;
-      issues.push({ kind, accountId: account.id, who: whoOf(kind, account.id), reason: "expired" });
+      const dead = kind === "claude" && cliRenew?.dead && cliRenew.accountId === account.id;
+      const reason = inCli.has(account.id) && !dead ? "cli-wait" : "expired";
+      issues.push({ kind, accountId: account.id, who: whoOf(kind, account.id), reason });
     }
     for (const target of targets) {
       const who = whoOf(kind, target.accountId);

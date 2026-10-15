@@ -20,6 +20,7 @@ import {
 } from "../core/accounts";
 import { OFFICIAL_KINDS, cliDir, isExpired, readCliAccounts, type OfficialAccountKind } from "../core/credentials";
 import { readCliSnapshot, switchCliAccount } from "../core/cli-switch";
+import { renewCliCredential } from "../core/cli-renew";
 import { dataDir } from "../core/paths";
 import { forgetQuotaAccount } from "../core/quota-history";
 import { cleanAgentEnv } from "./session-reply";
@@ -49,6 +50,10 @@ export type AccountView = {
   autoRenew: boolean;
   /** 续期被官方拒绝，只能重新登录。 */
   needsLogin: boolean;
+  /** 0.3.54：登录在 CLI 里、CLI 的凭据过期了，等 CLI 下次请求时自己续（不用重新登录）。 */
+  waitCli: boolean;
+  /** 0.3.54：最近一次续期为什么没成（需重新登录的原因，或还在重试的被拒原因）。不含凭据。 */
+  renewError?: string;
   /** 删掉了、但 CLI 还登录着，只是藏起来（见 accounts.ts 的 hidden）。 */
   hidden: boolean;
 };
@@ -233,7 +238,11 @@ export function loginOfficialOAuth(kind: OfficialAccountKind, replaceId?: string
 
 export async function listOfficialOAuthStatus(now = Date.now()): Promise<OfficialOAuthStatus[]> {
   // 列表上的「可用 / 已过期」要反映续期之后的状态。
-  const [installed] = await Promise.all([Promise.all(OFFICIAL_KINDS.map(resolveCli)), renewStoredCredentials(now).catch(() => 0)]);
+  const [installed, , cliRenew] = await Promise.all([
+    Promise.all(OFFICIAL_KINDS.map(resolveCli)),
+    renewStoredCredentials(now).catch(() => 0),
+    renewCliCredential(now).catch(() => undefined),
+  ]);
   return OFFICIAL_KINDS.map((kind, index) => {
     const live = readCliAccounts(kind);
     for (const account of live) {
@@ -248,15 +257,19 @@ export async function listOfficialOAuthStatus(now = Date.now()): Promise<Officia
       .filter((item) => item.kind === kind)
       .map((item) => {
         const { credential, inCli } = resolveAccountCredential(item, now, live);
+        const usable = !isExpired(credential, now);
+        const cliDead = kind === "claude" && cliRenew?.dead && cliRenew.accountId === item.id;
         return {
           id: item.id,
           email: item.email,
           label: item.label,
           alias: item.alias ?? "",
           inCli,
-          usable: !isExpired(credential, now),
+          usable,
           autoRenew: Boolean(item.credential?.refreshToken) && !item.renewFailed,
-          needsLogin: Boolean(item.renewFailed) && !inCli,
+          needsLogin: (Boolean(item.renewFailed) && !inCli) || Boolean(cliDead && !usable),
+          waitCli: inCli && !usable && !cliDead && Boolean(live.find((one) => accountIdOf(kind, one.ref) === item.id)?.credential.refreshToken),
+          ...(item.renewFailed || item.renewTrouble ? { renewError: item.renewFailed || item.renewTrouble!.error } : cliDead ? { renewError: cliRenew!.error } : {}),
           hidden: Boolean(item.hidden),
         };
       });

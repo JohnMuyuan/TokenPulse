@@ -1254,7 +1254,7 @@
       box.append(el('div', { class: 'pv-empty' }, [el('p', { text: `设置里还没有 ${appOf(editor.app)?.name} 能用的官方账号。在「设置 → 账号」里用官方 CLI 登录几个账号，就能加进号池。` }), go]));
       return box;
     }
-    box.append(...editor.accounts.map(acc => pickRow({ type: 'account', id: acc.id }, avatar(kind, 'pv-pick-avatar'), acc.alias || acc.email || acc.label, acc.usable ? (acc.email && acc.alias ? acc.email : '凭据可用') : acc.needsLogin ? '需要重新登录' : '凭据已过期（TokenPulse 登录的会自动续期）', !acc.usable)));
+    box.append(...editor.accounts.map(acc => pickRow({ type: 'account', id: acc.id }, avatar(kind, 'pv-pick-avatar'), acc.alias || acc.email || acc.label, acc.usable ? (acc.email && acc.alias ? acc.email : '凭据可用') : acc.needsLogin ? '需要重新登录' : acc.waitCli ? '凭据过期了，等 CLI 下次使用时续上' : '凭据已过期（TokenPulse 登录的会自动续期）', !acc.usable)));
     return box;
   }
   function pickRow(member, lead, name, sub, warn) {

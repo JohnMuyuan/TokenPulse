@@ -158,9 +158,42 @@ try {
     const opaque = refresh.credentialFromTokenResponse({ token: "old" }, { access_token: "opaque", refresh_token: "r2", expires_in: 3600 }, NOW);
     check("不是 JWT 的 token 用 expires_in 算过期时间", opaque.expiresAt === NOW + HOUR && opaque.refreshToken === "r2");
     check(
-      "400 invalid_grant / 401 算永久失败，429 / 5xx 不算",
-      refresh.isPermanentFailure(400, { error: "invalid_grant" }) && refresh.isPermanentFailure(401, { error: { code: "token_expired" } }) && !refresh.isPermanentFailure(429, {}) && !refresh.isPermanentFailure(503, {}),
+      "官方明确说 refresh token 不行（invalid_grant / 已用过 / 已过期）才算永久失败，429 / 5xx 不算",
+      refresh.isPermanentFailure(400, { error: "invalid_grant" }) && refresh.isPermanentFailure(401, { error: { code: "token_expired" } }) && refresh.isPermanentFailure(401, { error: { code: "refresh_token_reused" } }) && !refresh.isPermanentFailure(429, {}) && !refresh.isPermanentFailure(503, {}),
     );
+    check(
+      "0.3.54：光是 401、或 400 invalid_request_error，不再直接判死",
+      !refresh.isPermanentFailure(401, null) && !refresh.isPermanentFailure(401, { error: "unauthorized" }) && !refresh.isPermanentFailure(400, { type: "error", error: { type: "invalid_request_error", message: "x" } }),
+    );
+    check("错误类型三种写法都认得", refresh.errorCodeOf({ error: "invalid_grant" }) === "invalid_grant" && refresh.errorCodeOf({ error: { code: "c" } }) === "c" && refresh.errorCodeOf({ error: { type: "t" } }) === "t" && refresh.errorCodeOf(null) === "");
+
+    // 0.3.54：被拒但没明确说失效 —— 先重试，连续 6 次且超过 1 小时才判成需要重新登录
+    seed([{ id: "grok:shaky", credential: { token: "t", refreshToken: "r-shaky", expiresAt: NOW - HOUR } }]);
+    const reject401 = fake({ ok: false, permanent: false, status: 401, error: "HTTP 401" });
+    for (let i = 0; i < 5; i++) await accounts.renewStoredCredentials(NOW + i * 5 * 60_000, reject401);
+    let shaky = accounts.readOfficialAccountStore().accounts[0];
+    check("被拒 5 次（20 分钟内）：还在重试，不判死", !shaky.renewFailed && shaky.renewTrouble?.count === 5 && shaky.renewTrouble.since === NOW, JSON.stringify(shaky.renewTrouble));
+    await accounts.renewStoredCredentials(NOW + 25 * 60_000, reject401);
+    check("第 6 次但不到 1 小时：仍不判死", !accounts.readOfficialAccountStore().accounts[0].renewFailed);
+    await accounts.renewStoredCredentials(NOW + 61 * 60_000, reject401);
+    shaky = accounts.readOfficialAccountStore().accounts[0];
+    check("连续被拒超过 1 小时：判成需要重新登录，写明次数", /HTTP 401（连续 7 次被拒）/.test(shaky.renewFailed || "") && !shaky.renewTrouble, shaky.renewFailed);
+    seed([{ id: "grok:recover", credential: { token: "t", refreshToken: "r-rec", expiresAt: NOW - HOUR } }]);
+    await accounts.renewStoredCredentials(NOW, reject401);
+    await accounts.renewStoredCredentials(NOW + 5 * 60_000, fake((c) => ({ ok: true, credential: { ...c, token: "back", expiresAt: NOW + 8 * HOUR } })));
+    const recovered = accounts.readOfficialAccountStore().accounts[0];
+    check("被拒后又续上了：清掉被拒记录", recovered.credential.token === "back" && !recovered.renewTrouble && !recovered.renewFailed);
+    seed([{ id: "grok:net", credential: { token: "t", refreshToken: "r-net", expiresAt: NOW - HOUR } }]);
+    await accounts.renewStoredCredentials(NOW, fake({ ok: false, permanent: false, status: 429, error: "HTTP 429" }));
+    await accounts.renewStoredCredentials(NOW, fake({ ok: false, permanent: false, status: 503, error: "HTTP 503" }));
+    check("429 / 5xx 不算被拒，不累计", !accounts.readOfficialAccountStore().accounts[0].renewTrouble);
+
+    // 续期日志：每次尝试一行，只有哈希和状态，没有 token
+    const { readRenewLog, renewLogFile, accountHash } = build("core/renew-log.js");
+    const log = readRenewLog(1000);
+    const logText = fs.readFileSync(renewLogFile(), "utf8");
+    check("续期日志：成功、失败都记，账号是哈希", log.some((row) => row.ok && row.source === "stored") && log.some((row) => !row.ok && row.status === 401) && log.some((row) => row.account === accountHash("grok:shaky") && row.permanent === true));
+    check("续期日志里没有 token、refresh token 和账号原文", !/r-shaky|r-rec|r1-rotated|"back"|grok:shaky/.test(logText));
   }
 
   // ---- 旧版账号库 ----

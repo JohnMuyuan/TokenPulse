@@ -19,6 +19,8 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 const build = (file) => require(path.join(__dirname, "..", "build", ...file.split("/")));
 const accounts = build("core/accounts.js");
 const curl = build("core/curl.js");
+const cliRenew = build("core/cli-renew.js");
+const origCliRenew = cliRenew.renewCliCredential;
 const { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary } = build("core/quota.js");
 const { translate } = require(path.join(__dirname, "..", "renderer", "i18n.js"));
 
@@ -138,9 +140,36 @@ curl.curlJson = async (...args) => {
     check("查到了就不报问题", ok.issues.length === 0 && ok.claude?.fiveHourPct === 100, JSON.stringify({ issues: ok.issues, five: ok.claude?.fiveHourPct }));
 
     curlCalls = 0;
+    let cliRenewCalls = 0;
+    cliRenew.renewCliCredential = async () => { cliRenewCalls += 1; return { state: "none" }; };
     const gated = await fetchOfficialQuota(true, async (kind) => kind !== "claude");
     check("出口拦住时不去问官方", curlCalls === 0, String(curlCalls));
     check("拦住时记 blocked", gated.issues.length === 1 && gated.issues[0].reason === "blocked", JSON.stringify(gated.issues));
+    check("出口拦住时也不替 Claude Code 续期", cliRenewCalls === 0);
+
+    // 0.3.54：账号登录在 Claude Code 里、CLI 凭据过期（Claude Code 在运行，等它自己续）—— 不说「请重新登录」
+    fs.mkdirSync(path.join(process.env.HOME, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(process.env.HOME, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "tok-cli", refreshToken: "r-cli", expiresAt: Date.now() - 3600_000 } }));
+    fs.writeFileSync(path.join(process.env.HOME, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "uuid-a", emailAddress: "a@example.com" } }));
+    accounts.writeOfficialAccountStore({ version: 2, accounts: [{ id: "claude:uuid-a", kind: "claude", ref: "uuid-a", email: "a@example.com", label: "Claude 账号", createdAt: 1, lastSeenAt: 1 }], active: {} });
+    cliRenew.renewCliCredential = async () => { cliRenewCalls += 1; return { state: "waiting", accountId: "claude:uuid-a" }; };
+    curlCalls = 0;
+    const waiting = await fetchOfficialQuota(true);
+    const waitText = quotaIssueNotice(waiting.issues);
+    check("登录在 Claude Code 里、凭据过期：记 cli-wait，不去问官方", cliRenewCalls === 1 && curlCalls === 0 && waiting.issues.length === 1 && waiting.issues[0].reason === "cli-wait", JSON.stringify(waiting.issues));
+    check("cli-wait 提示说等 Claude Code 续，不说重新登录、黄色", waitText === "Claude 的 a@example.com 登录在 Claude Code 里，凭据过期了，Claude Code 下次发请求时会自动续上，不用重新登录。" && quotaIssueTone(waiting.issues) === "warning", waitText);
+    check("英文：cli-wait", translate(waitText) === "Claude account a@example.com is signed in to Claude Code and its credentials expired. Claude Code renews them on its next request; no need to sign in again.", translate(waitText));
+    cliRenew.renewCliCredential = async () => ({ state: "failed", accountId: "claude:uuid-a", dead: true, error: "HTTP 400 invalid_grant" });
+    const dead = await fetchOfficialQuota(true);
+    check("CLI 的 refresh token 被官方拒了：还是说重新登录", dead.issues[0]?.reason === "expired" && /请重新登录/.test(quotaIssueNotice(dead.issues)), JSON.stringify(dead.issues));
+    cliRenew.renewCliCredential = async () => {
+      fs.writeFileSync(path.join(process.env.HOME, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "tok-cli-new", refreshToken: "r-cli-2", expiresAt: Date.now() + 8 * 3600_000 } }));
+      return { state: "renewed", accountId: "claude:uuid-a" };
+    };
+    curlCalls = 0;
+    curlImpl = async () => ({ five_hour: { utilization: 10, resets_at: "2026-10-11T14:00:00.000Z" }, seven_day: { utilization: 20, resets_at: "2026-10-14T12:00:00.000Z" } });
+    const renewedCli = await fetchOfficialQuota(true);
+    check("替 Claude Code 续上之后这一轮就能查额度", renewedCli.issues.length === 0 && curlCalls === 1 && renewedCli.claude?.fiveHourPct === 10, JSON.stringify(renewedCli.issues));
 
     const failedCount = results.filter((ok) => !ok).length;
     console.log(`\n${results.length - failedCount}/${results.length} quota-fetch checks`);
@@ -150,5 +179,7 @@ curl.curlJson = async (...args) => {
     process.exitCode = 1;
   } finally {
     curl.curlJson = origJson;
+    cliRenew.renewCliCredential = origCliRenew;
+    fs.rmSync(root, { recursive: true, force: true });
   }
 })();

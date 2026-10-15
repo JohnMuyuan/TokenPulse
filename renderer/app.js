@@ -226,10 +226,18 @@ function renderOfficialAccounts(statuses = []) {
       const name = account.alias || email;
       const pooled = poolById.get(account.id);
       const quotaText = !account.hidden && pooled ? poolQuotaText(pooled) : "";
+      const cliName = { claude: 'Claude Code', chatgpt: 'Codex', grok: 'Grok CLI' }[status.kind] || 'CLI';
       const state = account.hidden ? '已隐藏'
         : account.needsLogin ? '需重新登录'
+        : account.waitCli ? '等 CLI 续期'
         : !account.usable ? (account.autoRenew ? '等待自动续期' : '凭据已过期')
         : account.inCli ? 'CLI 当前登录' : '本软件已保存';
+      // 0.3.54：说清楚为什么是这个状态（续期被拒的原因只有状态码和错误类型，没有凭据）
+      const stateTitle = account.hidden ? ''
+        : account.needsLogin ? (account.inCli ? `官方拒绝了续期，请在 ${cliName} 里重新登录` : '官方拒绝了续期，请点「重新授权」') + (account.renewError ? `（${account.renewError}）` : '')
+        : account.waitCli ? `登录在 ${cliName} 里，凭据过期了。${cliName} 没在运行时 TokenPulse 会替它续期；正在运行时等它下次发请求自己续上，不用重新登录。`
+        : account.renewError ? `上次续期没成功，会继续重试（${account.renewError}）`
+        : '';
       const tool = (action, iconName, label, extra = {}) => el('button', {
         type: 'button', class: 'btn icon-only oauth-tool' + (action === 'remove' || action === 'purge' ? ' danger' : ''), 'data-account-action': action, 'data-account-kind': status.kind, 'data-account-id': account.id, title: label, 'aria-label': `${label}：${name}`, ...extra
       }, [icon(iconName)]);
@@ -255,7 +263,7 @@ function renderOfficialAccounts(statuses = []) {
         ]),
         account.autoRenew && !account.hidden ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，不用重新登录' }) : null,
         account.hidden ? null : localOnlySwitch(account.id, name),
-        el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: state }),
+        el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: state, ...(stateTitle ? { title: stateTitle } : {}) }),
         // 0.3.49：TokenPulse 存着这个账号能续期的登录，就能一键写进 CLI
         !account.hidden && !account.inCli && account.usable && account.autoRenew
           ? el('button', { type: 'button', class: 'btn oauth-switch', 'data-account-action': 'switch-cli', 'data-account-kind': status.kind, 'data-account-id': account.id, title: `把 ${status.label} CLI 的登录切换到这个账号` }, [icon('terminal'), '切到 CLI'])

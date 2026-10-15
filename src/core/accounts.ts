@@ -1,5 +1,6 @@
 import { dataFile, readJson, writeJson } from "./paths";
 import { refreshCredential, type RefreshResult } from "./token-refresh";
+import { logRenew } from "./renew-log";
 import {
   OFFICIAL_KINDS,
   isExpired,
@@ -17,7 +18,8 @@ export type { OfficialAccountKind, OfficialCredential };
  * 凭据只存 **TokenPulse 自己登录进来的**账号 —— 它们的 CLI 临时目录登录完就删了，这里是唯一一份，
  * 快过期时由 renewStoredCredentials 用它自己的 refresh token 续期。
  * CLI 自己正在用的账号只记名字：凭据每次现读 CLI 的文件，CLI 刷新 token 后这边自动跟上，
- * 复制一份反而会过期，还多一处泄露面；也绝不拿它去续期（会把 CLI 登出，见 credentials.ts）。
+ * 复制一份反而会过期，还多一处泄露面；这里也不拿它去续期（会把 CLI 登出，见 credentials.ts；
+ * Claude Code 没在运行时由 cli-renew.ts 替它续并写回 CLI 的文件）。
  *
  * 凭据永远不经过 IPC 到 renderer（见 main/oauth.ts 的 AccountView）。
  */
@@ -36,6 +38,11 @@ export type StoredOfficialAccount = {
   cliAuth?: Record<string, unknown>;
   /** 续期被官方拒绝（refresh token 失效）时的原因。有它就不再重试，等用户重新登录。 */
   renewFailed?: string;
+  /**
+   * 0.3.54：续期被拒、但官方没明确说 refresh token 失效（别的 400 / 401 / 403）时记在这里，下一轮照样再试；
+   * 连续被拒 RENEW_GIVE_UP 次、并且从第一次算起超过 RENEW_GIVE_UP_MS 才转成 renewFailed。续上了就删掉。
+   */
+  renewTrouble?: { since: number; count: number; error: string };
   /**
    * 在设置里删掉的 CLI 账号：CLI 还登录着它，每次读 CLI 都会重新登记回来，真删不掉，只能藏起来 ——
    * 不查额度、不在首页和额度页显示。在 TokenPulse 里重新登录这个账号，或者在设置里点「恢复」就回来。
@@ -120,6 +127,7 @@ export function rememberOfficialAccount(account: CliAccount, keepCredential: boo
     if (keepCredential) {
       found.credential = account.credential;
       delete found.renewFailed;
+      delete found.renewTrouble;
       delete found.hidden;
     }
   } else {
@@ -184,6 +192,7 @@ export function removeOfficialAccount(id: string, inCli: boolean) {
     target.hidden = true;
     delete target.credential;
     delete target.renewFailed;
+    delete target.renewTrouble;
   } else {
     store.accounts = store.accounts.filter((item) => item.id !== id);
     store.removed = [...new Set([...(store.removed ?? []), id])];
@@ -302,6 +311,9 @@ export function resolveActiveAccount(
 
 /** 离过期不到这么久就续期。额度每 5 分钟查一次，留足几轮重试的余地。 */
 export const RENEW_BEFORE_MS = 30 * 60_000;
+/** 官方没明确说 refresh token 失效的拒绝，连续这么多次、并且持续这么久才判成需要重新登录（额度 5 分钟一轮，约 1 小时）。 */
+export const RENEW_GIVE_UP = 6;
+export const RENEW_GIVE_UP_MS = 60 * 60_000;
 
 let renewing: Promise<number> | null = null;
 
@@ -326,18 +338,41 @@ export function renewStoredCredentials(
       );
       for (const account of due) {
         const result: RefreshResult = await refresh(account.kind, account.credential!, now);
-        if (!result.ok && !result.permanent) continue;
+        const rejected = !result.ok && !result.permanent && result.status != null && result.status >= 400 && result.status < 500 && result.status !== 429;
+        if (!result.ok && !result.permanent && !rejected) {
+          logRenew({ at: now, kind: account.kind, accountId: account.id, source: "stored", ok: false, status: result.status, code: result.code, error: result.error });
+          continue;
+        }
         const store = readOfficialAccountStore();
         const target = store.accounts.find((item) => item.id === account.id);
         // 这期间用户重新登录过这个账号：以新登录的为准，这次续期的结果丢掉。
-        if (!target || target.credential?.refreshToken !== account.credential!.refreshToken) continue;
+        if (!target || target.credential?.refreshToken !== account.credential!.refreshToken) {
+          logRenew({ at: now, kind: account.kind, accountId: account.id, source: "stored", ok: result.ok, note: "续期期间重新登录过，结果丢弃" });
+          continue;
+        }
+        let note: string | undefined;
         if (result.ok) {
           target.credential = result.credential;
           delete target.renewFailed;
+          delete target.renewTrouble;
           renewed += 1;
-        } else {
+        } else if (result.permanent) {
           target.renewFailed = result.error;
+          delete target.renewTrouble;
+        } else {
+          // 被拒但没说 refresh token 失效：先记着，下一轮再试；拒得够多、够久才判死
+          const trouble = target.renewTrouble ?? { since: now, count: 0, error: result.error };
+          target.renewTrouble = { since: trouble.since, count: trouble.count + 1, error: result.error };
+          if (target.renewTrouble.count >= RENEW_GIVE_UP && now - target.renewTrouble.since >= RENEW_GIVE_UP_MS) {
+            target.renewFailed = `${result.error}（连续 ${target.renewTrouble.count} 次被拒）`;
+            note = "连续被拒，判为需要重新登录";
+            delete target.renewTrouble;
+          }
         }
+        logRenew({
+          at: now, kind: account.kind, accountId: account.id, source: "stored", ok: result.ok,
+          ...(result.ok ? {} : { status: result.status, code: result.code, error: result.error, permanent: Boolean(target.renewFailed), note }),
+        });
         writeOfficialAccountStore(store);
       }
       return renewed;

@@ -22,7 +22,7 @@ const OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 export type RefreshResult =
   | { ok: true; credential: OfficialCredential; /** 官方原样返回的内容（Codex 的 id_token 在这里）。 */ raw?: any }
   /** permanent：refresh token 被官方拒了（撤销、过期、已被用过），只能重新登录；否则下一轮再试。 */
-  | { ok: false; permanent: boolean; error: string };
+  | { ok: false; permanent: boolean; error: string; /** HTTP 状态码，没连上时没有。 */ status?: number; /** 官方返回的错误类型（invalid_grant 之类），续期日志用。 */ code?: string };
 
 /** 官方返回的新 token → 新凭据。没给新 refresh token 的（不轮换的实现）沿用旧的。 */
 export function credentialFromTokenResponse(old: OfficialCredential, json: any, now = Date.now()): OfficialCredential | undefined {
@@ -39,11 +39,20 @@ export function credentialFromTokenResponse(old: OfficialCredential, json: any, 
   };
 }
 
-/** 400 / 401 且是 invalid_grant 一类：refresh token 本身不行了。429、5xx、网络错误都只是这一轮不行。 */
+/** 官方错误响应里的错误类型：OAuth 标准是 `{error: "invalid_grant"}`，OpenAI / Anthropic 也有 `{error: {code | type}}`。 */
+export function errorCodeOf(json: any): string {
+  const raw = typeof json?.error === "string" ? json.error : json?.error?.code ?? json?.error?.type ?? json?.code ?? "";
+  return String(raw).slice(0, 80);
+}
+
+/**
+ * 400 / 401 且官方**明确说 refresh token 不行了**（invalid_grant、已被用过、已过期 / 撤销）才算永久失败。
+ * 0.3.54 之前任何 401、带 invalid_request 的 400 都直接判死、以后再也不试，一次偶发的拒绝就得重新登录；
+ * 现在别的 4xx 先当这一轮不行，连续被拒够久才判死（见 accounts.ts 的 RENEW_GIVE_UP）。429、5xx、网络错误只是这一轮不行。
+ */
 export function isPermanentFailure(status: number, json: any) {
   if (status !== 400 && status !== 401) return false;
-  const code = String(json?.error?.code ?? json?.error?.type ?? json?.error ?? "");
-  return /invalid_grant|token_expired|invalid_request|unauthorized_client|refresh_token_reused|invalid_token/i.test(code) || status === 401;
+  return /^(invalid_grant|token_expired|token_revoked|refresh_token_(reused|expired|invalidated|revoked))$/i.test(errorCodeOf(json));
 }
 
 const discovery = new Map<string, Promise<string>>();
@@ -95,7 +104,8 @@ export async function refreshCredential(kind: OfficialAccountKind, credential: O
       const next = credentialFromTokenResponse(credential, json, now);
       return next ? { ok: true, credential: next, raw: json } : { ok: false, permanent: false, error: "续期响应里没有 access_token" };
     }
-    return { ok: false, permanent: isPermanentFailure(status, json), error: `HTTP ${status}` };
+    const code = errorCodeOf(json);
+    return { ok: false, permanent: isPermanentFailure(status, json), error: `HTTP ${status}${code ? ` ${code}` : ""}`, status, ...(code ? { code } : {}) };
   } catch (error) {
     return { ok: false, permanent: false, error: error instanceof Error ? error.message : String(error) };
   }

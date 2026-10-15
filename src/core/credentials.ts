@@ -28,8 +28,9 @@ export type OfficialCredential = {
   expiresAt?: number;
   /**
    * 续期用（见 token-refresh.ts）。**只有 TokenPulse 自己登录的账号会存下来并使用**：
-   * CLI 自己的登录绝不能拿来续期 —— Claude / ChatGPT 的 refresh token 用一次就换新，
-   * TokenPulse 用掉之后 CLI 手里那份作废，CLI 会被登出。
+   * CLI 正在用的登录不能随便拿来续期 —— Claude / ChatGPT 的 refresh token 用一次就换新，
+   * TokenPulse 用掉之后 CLI 手里那份作废，CLI 会被登出。唯一的例外是 cli-renew.ts：
+   * 确认 Claude Code 没在运行时替它续，并把新的那份写回 CLI 的凭据文件。
    */
   refreshToken?: string;
   /** Grok（OIDC）续期要用的签发方和 client id，auth.json 里就有。 */

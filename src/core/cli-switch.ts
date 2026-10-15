@@ -23,7 +23,7 @@ export type CliAuthSnapshot = Record<string, unknown>;
 function readJsonFile(file: string): any {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return undefined; }
 }
-function writeAtomic(file: string, text: string) {
+export function writeAtomic(file: string, text: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tokenpulse-${process.pid}.tmp`;
   fs.writeFileSync(tmp, text, { mode: 0o600 });
@@ -167,6 +167,7 @@ async function doSwitch(id: string, home: string): Promise<SwitchResult> {
       found.credential = live.credential;
       if (outgoingSnap) found.cliAuth = outgoingSnap;
       delete found.renewFailed;
+      delete found.renewTrouble;
     } else {
       const now = Date.now();
       store.accounts.push({ id: outId, kind, ref: live.ref, email: live.email, label: live.label, credential: live.credential, ...(outgoingSnap ? { cliAuth: outgoingSnap } : {}), createdAt: now, lastSeenAt: now });
