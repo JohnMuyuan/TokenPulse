@@ -1,6 +1,25 @@
-# Current handoff · 0.3.52 已正式发布（2026-10-14）
+# Current handoff · 0.3.53 已正式发布（2026-10-14）
 
 ## 新对话先看这里
+
+### 0.3.53 已正式发布（2026-10-14）
+
+- 用户验收测试版后发布。提交 5f795f5（0.3.53：里程碑卡片按达成当天的数据画、按日志时间戳估算速度），标签 v0.3.53，已推送。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.53 ，非草稿、非预发布，releases/latest 指向 v0.3.53，公开 latest.yml 为 0.3.53。发布正文 = dist/release-0.3.53.md。
+- 附件均 uploaded，大小 / SHA256 与本地一致：Setup.exe 112607811 / 7d1c9629ac78b9d67d71f3d6f630c5881fab9383c5ecab393e5a42eaadc68cf7；.blockmap 119752 / b5626d5c24d6f8ce0e35273ed080f8fc7072f446973584a8e5b93c07df9c5d00；Portable.exe 112350639 / ff3a4d6bc153c8047111436b2ecf09d4b2dc5c9c1b9897a0c96c11ca2f959527；latest.yml 352 / 80323d28f588f15b5c224e07a90476e3719ddd69dddce1ffaca265c031ff5eb9。`dist/verify-0.3.53.cjs`：140 个运行时文件逐字节一致，ASAR SHA256 8fd362a9721f07be70067e08a4a1a3457984f246c3c5f59c698fc5b112feac4a。
+- 过程：第一次 `npm run dist` 报 EBUSY（`dist\win-unpacked`）——用户正开着测试版（20:30 从 win-unpacked 启动，4 个进程）。经用户同意只结束了路径为 `dist\win-unpacked\TokenPulse.exe` 的这 4 个进程后重打成功。强制结束时测试版没来得及「退出时恢复工具配置」：`agent-switch.json` 里 grok 本地路由开、codex 透明转发开，`~/.grok/config.toml` 和 `~/.codex/config.toml` 仍指向 127.0.0.1:17621；没有手动改配置，下次打开 TokenPulse 会自动接回。已提醒用户。
+- 第一次提交命令里带了会话链接，被拦下（用户规则：提交、标签、发布说明里不放会话链接），什么都没写入；去掉后重新提交。
+- 收尾：四个附件和 win-unpacked 的 exe / asar 可独占打开；无残留 node / electron 进程。
+
+以下为开发过程记录（「未提交」等字样已过期）：
+
+### 0.3.53 开发记录
+
+- 用户两项：① 里程碑分享卡下半部分用的是最新数据，和达成当时不符，各类成就也没适配；② 不开透明转发也能估算 Token 速度（按对话日志时间戳），标「≈」。先打测试版。
+- 已做（②）：`usage-scan.ts` 新增 `estimateOf` / `callBoundary`、FileState.callStartAt、`STATE_VERSION` 17（重扫）；Claude Code：调用开始 = 上一条 user/assistant 行，结束 = 同一 message id 的最后一行（`pendingEstimate` 往后挪）；Codex：开始 = turn_context / *_output / 上一个 token_usage_record。输出 <20、<0.5s、>10 分钟、>2000 t/s 不记。`RequestRecord/RequestRow.estimate {ms, tokensPerSec}`。`pass-speed.ts` 的 `estimatedRows`（读 requests/*.jsonl，按大小+mtime 缓存）；`accountSpeed` / `speedSeries` 多一个 `withEstimates`（默认 true），估算单独成线（`estimated: true`）；月报「最快的模型」传 false。界面：用量明细折线（名字前 ≈、经由「日志估算」）、额度详情模型速度（≈ + 「估算」标签）、请求列表延迟列（≈ 用时 / 速度）、详情、CSV。真实会话副本试算：opus 中位 ≈82 t/s。还没写测试、没补 i18n。
+- 已做（①）：`share-report.ts` 新增 `momentsOf` → `MilestoneState.moments[id]`：达成当天的累计、第几天、当时陪你最久的模型、同组上一枚（隔几天）、同组下一枚（当时进度 / 后来哪天达成）、各组 focus（单日：那天用量和之前日均倍数、那天模型；连续：起止、合计、最拼一天、模型；请求：请求最多的一天；价值：花得最多的模型）、series（tokens/value/requests 画到当天的累计曲线并标同组徽章；day 画之前 30 天柱子高亮当天；streak 画那几天的柱子）。`share-card.js` 的里程碑卡整段重写（标签「达成于」、各组不同的 lede / 三个数字 / 图、「同一组的下一枚」、徽章收集册按当时点亮、页脚「截至当时已收集」），中英文由 `T(zh, en)` 直接出（一句话拆成多段，字典翻不全）；旧数据没有 moments 时退回原样。奖章文字超过 5 个字缩小。
+- 测试：`test-share-card.cjs` 加 moments 断言（6/6）；新增 `scripts/test-speed-estimate.cjs`（2/2，已进 npm test，在 test-pass-speed 后）。`test-routing-regressions.cjs` 版本断言改 17。`test-model-study-ui.cjs`：「改用实际标价」标签只在变动后 14 天内显示，知识库里 gpt-6.1-sol 的真实日期 9/30 今天（10/14）过期，0.3.52 原码同样失败——拦截里把它的变动日期固定成昨天。
+- 结果：`npm test` 退出 0（audit-test-0353.log）；`npm run test:ui` 退出 0（89 PASS，audit-ui-0353.log）；测试版 `npx electron-builder --win dir --publish never` 退出 0，exe 0.3.53.0，asar 含新代码，exe/asar 可独占打开，无本轮残留进程。intro NOTES / i18n / README 已写；未写 release 文案、未提交。截图只用合成数据（scratchpad/ms）。
+- 已知限制：估算速度含首字前等待，偏慢；Grok（按轮汇总）和 DeepSeek（自己有流式时间）不估算；旧会话要等重扫（STATE_VERSION 17，升级后首次打开）才有估算。
 
 ### 0.3.52 已正式发布（2026-10-14）
 
