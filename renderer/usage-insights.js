@@ -373,9 +373,11 @@
   const APP_SOURCE = { claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok Build' };
   const DEFAULT_LINES = 6;
   const speedView = { range: '0', metric: 'speed', app: 'all', hidden: new Set(), picked: new Set(), data: null, key: '', at: 0, loading: false, error: false };
-  const lineKey = line => [line.app, line.model, line.fast ? 'fast' : '', line.effort, line.via].join('|');
-  const lineName = line => line.model + (line.fast ? ' · 快速' : '') + (line.effort ? ` · ${line.effort}` : '');
-  const lineVia = line => line.via || '官方登录（透明转发）';
+  const lineKey = line => [line.app, line.model, line.fast ? 'fast' : '', line.effort, line.via, line.estimated ? 'estimated' : ''].join('|');
+  // 0.3.53：按日志时间戳估算的线名字前面带「≈」，经由写「日志估算」
+  const lineName = line => (line.estimated ? '≈ ' : '') + line.model + (line.fast ? ' · 快速' : '') + (line.effort ? ` · ${line.effort}` : '');
+  const lineVia = line => line.estimated ? '日志估算' : line.via || '官方登录（透明转发）';
+  const unitOf = (line, value) => (line.estimated ? '≈ ' : '') + value;
   const secondsText = ms => (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' 秒';
   let speedBody = null;
   let speedRequest = 0;
@@ -405,7 +407,7 @@
     retry.addEventListener('click', () => loadSpeedLines(true));
     const panel = el('article', { class: 'panel insight-panel speed-lines-panel' }, [
       el('div', { class: 'panel-heading' }, [
-        el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度。同一个型号用不同的思考等级、经不同的供应商分开一条线，同一个号池里的几个账号合成一条；记录永久保存，不跟上面的时间范围走。' })]),
+        el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度。同一个型号用不同的思考等级、经不同的供应商分开一条线，同一个号池里的几个账号合成一条。没经过 TokenPulse 的请求按会话日志的时间戳估算，名字前面标「≈」，比实际偏慢；记录永久保存，不跟上面的时间范围走。' })]),
         el('div', { class: 'speed-lines-tools' }, [metricSeg, rangeSeg]),
       ]),
       el('div', { class: 'speed-lines-status', role: 'status' }, [el('span'), retry]),
@@ -505,7 +507,7 @@
       cursor.setAttribute('x1', xOf(at)); cursor.setAttribute('x2', xOf(at)); cursor.setAttribute('visibility', 'visible');
       const rows = visible.map(line => [line, line.buckets.find(bucket => bucket.at === at)]).filter(([, bucket]) => bucket && valueOf(bucket) != null)
         .sort((a, b) => valueOf(b[1]) - valueOf(a[1]));
-      tipAt([stamp(at), ...rows.map(([line, bucket]) => `${lineName(line)} · ${lineVia(line)}：${unitText(valueOf(bucket))} · ${number(sampleCount(bucket))} 次`)].join('\n'), event.clientX, event.clientY);
+      tipAt([stamp(at), ...rows.map(([line, bucket]) => `${lineName(line)} · ${lineVia(line)}：${unitOf(line, unitText(valueOf(bucket)))} · ${number(sampleCount(bucket))} 次`)].join('\n'), event.clientX, event.clientY);
     });
     hit.addEventListener('pointerleave', () => { $('tip').hidden = true; cursor.setAttribute('visibility', 'hidden'); });
     node.append(cursor, hit);
@@ -514,7 +516,7 @@
     // 图例：每条线一个开关，带整段时间的中位数
     const legendNode = el('div', { class: 'speed-lines-legend', role: 'group', 'aria-label': '显示哪些线' }, all.map(line => {
       const key = lineKey(line), on = visible.includes(line);
-      const chip = el('button', { type: 'button', class: 'speed-lines-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), 'data-line': key, title: `${lineVia(line)} · ${number(sampleCount(line))} 次` }, [
+      const chip = el('button', { type: 'button', class: 'speed-lines-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), 'data-line': key, title: `${lineVia(line)} · ${number(sampleCount(line))} 次${line.estimated ? ' · 按会话日志的时间戳估算：从发出请求到回复写进日志的用时，包含首字之前的等待，比真实出字速度偏慢。打开透明转发或走本地路由能量到准确的。' : ''}` }, [
         paint(el('i', { class: 'speed-lines-swatch' }), { background: colorOfLine.get(key) }),
         miniLogo(APP_SOURCE[line.app] || line.app),
         el('span', { class: 'speed-lines-name', translate: 'no', text: lineName(line) }),

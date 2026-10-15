@@ -83,6 +83,20 @@ app.whenReady().then(async () => {
     assert.equal(state.companion.days, 146);
     pass('milestones: reached dates, broken streak, first day, speed-up, next goal, companion model');
 
+    // 0.3.53：每一枚都有达成那天的样子，卡片下半部分用它，不用今天的累计
+    const s7 = state.moments['streak-7'], s30 = state.moments['streak-30'], t1 = state.moments['tokens-1e8'];
+    const upTo = d => usage.filter(r => r.day <= d).reduce((s, r) => s + r.tokens, 0);
+    assert.equal(s7.day, '2026-05-25'); assert.equal(s7.dayIndex, 7);
+    assert.equal(s7.totals.tokens, upTo('2026-05-25'), '达成那天的累计，不是今天的');
+    assert.ok(s7.totals.tokens < state.totals.tokens);
+    assert.deepEqual([s7.focus.streak.from, s7.focus.streak.to, s7.series.kind, s7.series.points.length], ['2026-05-19', '2026-05-25', 'daily', 7]);
+    assert.deepEqual([s30.previous.label, s30.previous.gapDays], ['连续 7 天', 23]);
+    assert.deepEqual([s7.next.label, s7.next.reachedAt], ['连续 30 天', '2026-06-17'], '同组下一枚后来哪天达成');
+    assert.equal(t1.series.kind, 'cumulative'); assert.equal(t1.series.points.at(-1).day, t1.day, '累计曲线画到达成那天为止');
+    assert.ok(t1.series.marks.some(m => m.current));
+    assert.ok(!t1.series.points.some(p => p.day > t1.day));
+    pass('milestone moments: totals, streak range, previous gap and next badge are as of the day each badge was reached');
+
     fs.mkdirSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'route-log'), { recursive: true });
     const speedRows = Array.from({ length: 20 }, (_, i) => ({ at: new Date(2026, 8, 1, 1, i).getTime(), app: 'claude', pool: true, provider: 'DEMO Pool · demo', status: 200, requestModel: 'demo-fast', tokensPerSec: 155, firstTokenMs: 500 }));
     fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'route-log', '2026-09.jsonl'), speedRows.map(JSON.stringify).join('\n'));

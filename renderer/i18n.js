@@ -300,6 +300,18 @@
     "额度详情至少要留一个账号标签": "Keep at least one account tab in Quota details",
     "已恢复默认布局": "Layout reset to default",
     "本地路由状态": "Local route status",
+    // 0.3.53 更新说明
+    "不开透明转发，也能看到大概的速度": "See rough speeds without pass-through",
+    "Claude Code 和 Codex 的请求，现在会按会话日志里的时间戳估算每秒输出多少 Token。估算的数字前面都标「≈」：它包含首字之前的等待，比真实出字速度偏慢；用量明细的速度走势里单独成线，额度详情和请求列表也会显示。想要准确的，照旧打开透明转发或走本地路由。升级后第一次打开会重扫一遍会话。": "Claude Code and Codex requests now get an estimated output speed from the timestamps in their session logs. Estimates are marked with “≈”: they include the wait before the first token, so they read slower than the real streaming speed. They get their own lines in the speed chart and show up in Quota details and the request list too. For exact numbers, turn on pass-through or use the local route as before. The first launch after updating rescans your sessions.",
+    "里程碑卡片讲的是达成那天的事": "Milestone cards describe the day you earned them",
+    "以前换一枚成就，只有奖章和标题会变，下面的数字一直是今天的。现在整张卡都按达成那天来：当时的累计、第几天达成、距上一枚隔了几天、同一组下一枚当时完成了多少（后来哪天达成）、截至当时收集了几枚。不同的成就下半部分也不一样：累计 Tokens / API 价值 / 请求画到那天为止的累计曲线，单日成就画那一天之前的 30 天，连续使用画那几天每天的用量。": "Switching milestones used to change only the medal and title while the numbers below stayed at today’s totals. Now the whole card reflects the day it was reached: totals then, which day it was, how long after the previous badge, how far the next badge in the set was (and when you later reached it), and how many badges you had by then. The lower half also fits each kind: cumulative tokens, API value and requests chart up to that day, a single-day record shows the 30 days before it, and a streak shows each day of the streak.",
+    "日志估算": "Log estimate",
+    "估算": "Estimate",
+    "按会话日志的时间戳估算：从发出请求到回复写进日志的用时，包含首字之前的等待，比真实出字速度偏慢。打开透明转发或走本地路由能量到准确的。": "Estimated from session log timestamps: the time from sending the request to the reply being logged, including the wait before the first token, so it reads slower than the real streaming speed. Turn on pass-through or use the local route for exact numbers.",
+    "经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度。同一个型号用不同的思考等级、经不同的供应商分开一条线，同一个号池里的几个账号合成一条。没经过 TokenPulse 的请求按会话日志的时间戳估算，名字前面标「≈」，比实际偏慢；记录永久保存，不跟上面的时间范围走。": "Speed measured on requests that go through TokenPulse (pass-through, pools, third-party providers). One line per model, reasoning effort and provider; accounts in the same pool share one line. Requests that do not go through TokenPulse are estimated from session log timestamps and marked with “≈” — these read slower than reality. Kept for good, independent of the range above.",
+    "估算用时": "Estimated time",
+    "估算速度": "Estimated speed",
+    "按会话日志时间戳估算": "Estimated from session log timestamps",
     // 0.3.50 更新说明
     "新手引导介绍得更全了": "The onboarding tour covers much more",
     "引导分成七章：开始、总览、额度详情、用量明细、供应商、会话与监控、个性化与设置，补上了号池、透明转发、本地路由、转发记录、配置保护、并发监控、模型速度、编辑布局和一键切换 CLI 登录。卡片右上角的「目录」可以直接跳到想看的那一章。设置 → 关于 里可以随时重新打开。": "The tour now has seven chapters — Getting started, Overview, Quota details, Usage details, Providers, Sessions and monitoring, Personalize and settings — adding pools, pass-through, local routing, the forwarding log, config protection, concurrency, model speed, layout editing and one-click CLI switching. “Contents” at the top right jumps to any chapter. Reopen it any time from Settings → About.",
@@ -2471,6 +2483,7 @@
     P('本机用了 (.+)（占周期 ([\\d.]+)%）', m => `used on this PC ${v(m[1])} (${m[2]}% of cycle)`),
     P('把 (.+) CLI 的登录切换到这个账号', m => `Sign the ${m[1]} CLI in to this account`),
     P('已把 CLI 的登录切换到 (.+)。已经开着的会话要重新打开才会用新账号。', m => `Signed the CLI in to ${m[1]}. Sessions that are already open need to be reopened to use it.`),
+    P('≈ ([\\d.]+) Token/秒（按日志时间戳，偏慢）', m => `≈ ${m[1]} tokens/s (from log timestamps, reads slow)`),
     // 0.3.49：编辑布局
     P('(\\d+) 步', m => `${m[1]} steps`),
     P('已隐藏：(.+)', m => `Hidden: ${v(m[1])}`),

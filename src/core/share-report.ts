@@ -164,6 +164,37 @@ export type MilestoneState = {
   speedup: number | null;
   /** 下一个累计 Tokens 目标，和照最近 30 天的速度大约几天后达成。 */
   next: { id: string; label: string; target: number; etaDays: number | null } | null;
+  /** 每一枚已达成的里程碑在达成那天的样子（0.3.53）：分享卡片的下半部分照这个画，不用今天的数字。 */
+  moments: Record<string, MilestoneMoment>;
+};
+
+export type ModelShare = { model: string; source: string; tokens: number; costUsd: number; share: number };
+export type MilestoneMoment = {
+  day: string;
+  /** 从第一条记录算起第几天达成。 */
+  dayIndex: number;
+  /** 截至达成那天的累计。 */
+  totals: { tokens: number; costUsd: number; requests: number };
+  /** 截至那天用过天数最多的型号。 */
+  companion: { model: string; days: number; share: number } | null;
+  /** 同一组上一枚：哪天达成、隔了几天。 */
+  previous: { id: string; label: string; day: string; gapDays: number } | null;
+  /** 同一组下一枚：当时的进度，和后来哪天达成（还没达成是 null）。 */
+  next: { id: string; label: string; target: number; progress: number; reachedAt: string | null } | null;
+  analogy: Analogy | null;
+  /** 各组自己的数字，见 momentFocus。 */
+  focus: {
+    perDay: { tokens: number; costUsd: number; requests: number };
+    models: ModelShare[];
+    /** 单日：那一天的用量，和那天之前平均每天的倍数。 */
+    theDay?: { tokens: number; costUsd: number; requests: number; vsAverage: number | null };
+    /** 连续：这一段从哪天到哪天、一共用了多少、最拼的一天。 */
+    streak?: { from: string; to: string; tokens: number; costUsd: number; requests: number; best: { day: string; tokens: number } | null };
+    /** 请求最多的一天（请求次数那一组）。 */
+    busiest?: { day: string; requests: number } | null;
+  };
+  /** 下半部分的图：累计曲线（tokens / value / requests）或每天的柱子（day / streak）。 */
+  series: { kind: "cumulative" | "daily"; unit: "tokens" | "usd" | "requests"; points: { day: string; value: number }[]; highlight: { from: string; to: string } | null; marks: { label: string; day: string; value: number; current: boolean }[] };
 };
 
 function nextDay(day: string) { const d = new Date(day + "T12:00:00"); d.setDate(d.getDate() + 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
@@ -212,5 +243,99 @@ export function milestoneState(usage: UsageDetail[], now = Date.now()): Mileston
     companion: companionModel ? { model: companionModel[0], days: companionModel[1].size, share: total ? (modelTokens.get(companionModel[0]) || 0) / total : 0 } : null,
     speedup: spanDays >= 45 && firstRate > 0 ? recentRate / firstRate : null,
     next: nextToken ? { id: nextToken.id, label: nextToken.label, target: nextToken.target, etaDays: recentRate > 0 ? Math.ceil((nextToken.target - tokens) / recentRate) : null } : null,
+    moments: momentsOf(usage, reached),
   };
+}
+
+/*
+ * 每一枚已达成的里程碑在达成那天的样子（0.3.53）。以前分享卡片的上半部分是那一枚，下半部分却是今天的累计，
+ * 选一枚很早的成就时「标题和内容对不上」。这里按天往前走一遍，到达成那天就把当时的数字记下来：
+ * 累计、当时陪你最久的模型、同组上一枚隔了几天、同组下一枚当时的进度（后来哪天达成），以及各组自己要画的图。
+ */
+function momentsOf(usage: UsageDetail[], reached: Map<string, string>): Record<string, MilestoneMoment> {
+  type Day = { tokens: number; costUsd: number; requests: number; models: Map<string, ModelShare> };
+  const byDay = new Map<string, Day>();
+  for (const row of usage) {
+    if (!(row.tokens > 0) && !(row.requests > 0)) continue;
+    const day = byDay.get(row.day) ?? { tokens: 0, costUsd: 0, requests: 0, models: new Map() };
+    day.tokens += row.tokens; day.costUsd += row.costUsd; day.requests += row.requests;
+    if (row.tokens > 0) { const m = day.models.get(row.model) ?? { model: row.model, source: row.source, tokens: 0, costUsd: 0, share: 0 }; m.tokens += row.tokens; m.costUsd += row.costUsd; day.models.set(row.model, m); }
+    byDay.set(row.day, day);
+  }
+  const days = [...byDay.keys()].sort();
+  if (!days.length) return {};
+  const firstDay = days[0];
+  const index = (day: string) => Math.round((Date.parse(day + "T12:00:00") - Date.parse(firstDay + "T12:00:00")) / DAY) + 1;
+  // 达成那天的下标（同一天达成好几枚都用这一天）
+  const wanted = new Map<string, string[]>();
+  for (const [id, day] of reached) wanted.set(day, [...(wanted.get(day) ?? []), id]);
+  const out: Record<string, MilestoneMoment> = {};
+  let tokens = 0, costUsd = 0, requests = 0;
+  const modelDays = new Map<string, number>(), modelTotals = new Map<string, ModelShare>();
+  const cumulative: { day: string; tokens: number; costUsd: number; requests: number }[] = [];
+  let streakFrom = "", prevActive = "";
+  const share = (list: ModelShare[], by: "tokens" | "costUsd") => { const total = list.reduce((sum, item) => sum + item[by], 0); return list.sort((a, b) => b[by] - a[by]).slice(0, 3).map((item) => ({ ...item, share: total ? item[by] / total : 0 })); };
+  for (const day of days) {
+    const today = byDay.get(day)!;
+    tokens += today.tokens; costUsd += today.costUsd; requests += today.requests;
+    for (const m of today.models.values()) {
+      modelDays.set(m.model, (modelDays.get(m.model) || 0) + 1);
+      const total = modelTotals.get(m.model) ?? { model: m.model, source: m.source, tokens: 0, costUsd: 0, share: 0 };
+      total.tokens += m.tokens; total.costUsd += m.costUsd; modelTotals.set(m.model, total);
+    }
+    if (today.tokens > 0) { if (!(prevActive && nextDay(prevActive) === day)) streakFrom = day; prevActive = day; }
+    cumulative.push({ day, tokens, costUsd, requests });
+    for (const id of wanted.get(day) ?? []) {
+      const item = MILESTONES.find((m) => m.id === id);
+      if (!item) continue;
+      const group = MILESTONES.filter((m) => m.group === item.group);
+      const at = group.indexOf(item);
+      const prev = group.slice(0, at).reverse().find((m) => reached.has(m.id));
+      const next = group.slice(at + 1).find((m) => m.target > item.target);
+      const span = index(day);
+      const companion = [...modelDays.entries()].sort((a, b) => b[1] - a[1] || (modelTotals.get(b[0])!.tokens - modelTotals.get(a[0])!.tokens))[0];
+      const progressOf = (target: number) => Math.min(1, (item.group === "tokens" ? tokens : item.group === "value" ? costUsd : item.group === "requests" ? requests : 0) / target);
+      const moment: MilestoneMoment = {
+        day, dayIndex: span, totals: { tokens, costUsd, requests },
+        companion: companion ? { model: companion[0], days: companion[1], share: tokens ? modelTotals.get(companion[0])!.tokens / tokens : 0 } : null,
+        previous: prev ? { id: prev.id, label: prev.label, day: reached.get(prev.id)!, gapDays: index(day) - index(reached.get(prev.id)!) } : null,
+        next: next ? { id: next.id, label: next.label, target: next.target, progress: item.group === "streak" ? Math.min(1, item.target / next.target) : item.group === "day" ? today.tokens / next.target : progressOf(next.target), reachedAt: reached.get(next.id) ?? null } : null,
+        analogy: analogyOf(item.group === "day" ? today.tokens : tokens, span),
+        focus: { perDay: { tokens: tokens / span, costUsd: costUsd / span, requests: requests / span }, models: share([...modelTotals.values()].map((m) => ({ ...m })), item.group === "value" ? "costUsd" : "tokens") },
+        series: { kind: "cumulative", unit: "tokens", points: [], highlight: null, marks: [] },
+      };
+      const sameGroupMarks = (value: (point: typeof cumulative[number]) => number) => group.filter((m) => reached.has(m.id) && reached.get(m.id)! <= day).map((m) => { const point = cumulative.find((p) => p.day >= reached.get(m.id)!) ?? cumulative[cumulative.length - 1]; return { label: m.label, day: point.day, value: value(point), current: m.id === item.id }; });
+      if (item.group === "day") {
+        const before = cumulative.slice(0, -1);
+        const avg = before.length ? (tokens - today.tokens) / Math.max(1, index(day) - 1) : null;
+        moment.focus.theDay = { tokens: today.tokens, costUsd: today.costUsd, requests: today.requests, vsAverage: avg ? today.tokens / avg : null };
+        moment.focus.models = share([...today.models.values()].map((m) => ({ ...m })), "tokens");
+        const from = dayOf(Date.parse(day + "T12:00:00") - 29 * DAY);
+        moment.series = { kind: "daily", unit: "tokens", points: daysBetween(from, day).map((d) => ({ day: d, value: byDay.get(d)?.tokens ?? 0 })), highlight: { from: day, to: day }, marks: [] };
+      } else if (item.group === "streak") {
+        const list = daysBetween(streakFrom, day).map((d) => ({ day: d, ...(byDay.get(d) ?? { tokens: 0, costUsd: 0, requests: 0, models: new Map() }) }));
+        const best = list.reduce<{ day: string; tokens: number } | null>((top, d) => (!top || d.tokens > top.tokens ? { day: d.day, tokens: d.tokens } : top), null);
+        const models = new Map<string, ModelShare>();
+        for (const d of list) for (const m of d.models.values()) { const hit = models.get(m.model) ?? { ...m, tokens: 0, costUsd: 0 }; hit.tokens += m.tokens; hit.costUsd += m.costUsd; models.set(m.model, hit); }
+        moment.focus.streak = { from: streakFrom, to: day, tokens: list.reduce((s, d) => s + d.tokens, 0), costUsd: list.reduce((s, d) => s + d.costUsd, 0), requests: list.reduce((s, d) => s + d.requests, 0), best };
+        moment.focus.models = share([...models.values()], "tokens");
+        moment.series = { kind: "daily", unit: "tokens", points: list.map((d) => ({ day: d.day, value: d.tokens })), highlight: { from: streakFrom, to: day }, marks: [] };
+      } else if (item.group === "value") {
+        moment.series = { kind: "cumulative", unit: "usd", points: cumulative.map((p) => ({ day: p.day, value: p.costUsd })), highlight: null, marks: sameGroupMarks((p) => p.costUsd) };
+      } else if (item.group === "requests") {
+        const busiest = days.filter((d) => d <= day).reduce<{ day: string; requests: number } | null>((top, d) => (!top || byDay.get(d)!.requests > top.requests ? { day: d, requests: byDay.get(d)!.requests } : top), null);
+        moment.focus.busiest = busiest;
+        moment.series = { kind: "cumulative", unit: "requests", points: cumulative.map((p) => ({ day: p.day, value: p.requests })), highlight: null, marks: sameGroupMarks((p) => p.requests) };
+      } else {
+        moment.series = { kind: "cumulative", unit: "tokens", points: cumulative.map((p) => ({ day: p.day, value: p.tokens })), highlight: null, marks: sameGroupMarks((p) => p.tokens) };
+      }
+      out[id] = moment;
+    }
+  }
+  return out;
+}
+function daysBetween(from: string, to: string) {
+  const out: string[] = [];
+  for (let d = from; d <= to && out.length < 400; d = nextDay(d)) out.push(d);
+  return out;
 }

@@ -1037,6 +1037,8 @@ td small { display: flex; align-items: center; margin-top: 2px; font-size: 12.5p
 .request-tag { padding: 0 6px; border-radius: 6px; background: var(--tile-neutral); color: var(--muted); font-size: 11px; line-height: 18px; }
 .request-latency { white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; }
 .request-latency.empty { color: var(--faint); }
+.request-latency.estimated { color: var(--muted); }
+.request-latency.estimated b { font-weight: 600; }
 .request-latency > div { display: grid; gap: 1px; padding-left: 9px; border-left: 3px solid var(--line-strong); }
 .request-latency.fast > div { border-left-color: var(--accent); }
 .request-latency.mid > div { border-left-color: var(--warn); }
@@ -1591,6 +1593,8 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 .speed-name b { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; font-weight: 600; }
 .speed-name b > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .speed-fast { flex: none; margin: 0; }
+.speed-est { flex: none; margin-right: 3px; color: var(--muted); font-weight: 600; }
+.speed-est-tag { flex: none; margin: 0; color: var(--muted); background: var(--surface-2); }
 .speed-name small, .speed-value small { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .speed-scale { height: 56px; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; font-size: 11px; line-height: 1; color: var(--muted); font-variant-numeric: tabular-nums; }
 .speed-plot { position: relative; height: 56px; margin: 0 6px 0 0; cursor: crosshair; }

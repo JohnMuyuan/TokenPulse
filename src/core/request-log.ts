@@ -73,6 +73,8 @@ export type RequestRecord = {
   proxy?: { requested?: string; returned: string; declared?: string; via?: "tokenpulse" };
   /** 查询时附上的：经 TokenPulse 转发时量到的延迟和速度（见 withRoute）。不落盘。 */
   timing?: RouteTiming;
+  /** 按会话日志的时间戳估算的用时和速度（0.3.53，见 usage-scan.ts 的 estimateOf）。比真实出字速度偏慢，界面上标「≈」。 */
+  estimate?: { ms: number; tokensPerSec: number };
 };
 
 const SOURCE_NAMES: Record<RequestKind, string> = { "claude-code": "Claude Code", codex: "Codex CLI", "grok-build": "Grok Build", "deepseek-harness": "DeepSeek Harness", "cc-switch": "CC Switch" };
@@ -309,6 +311,8 @@ export type RequestRow = {
   compaction?: boolean;
   /** 经 TokenPulse 转发（透明转发 / 本地路由）时量到的延迟和速度；没经过的没有。 */
   timing?: RouteTiming;
+  /** 按会话日志时间戳估算的速度（0.3.53）：没有 timing 时界面上显示「≈」。 */
+  estimate?: { ms: number; tokensPerSec: number };
 };
 
 export type RequestPage = {
@@ -408,6 +412,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     channel: verdict.channel,
     ...(record.compaction ? { compaction: true } : {}),
     ...(record.timing ? { timing: record.timing } : {}),
+    ...(record.estimate ? { estimate: record.estimate } : {}),
   };
 }
 

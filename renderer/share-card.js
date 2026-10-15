@@ -18,6 +18,7 @@
   const svg = (tag, attrs = {}) => { const node = document.createElementNS(SVG, tag); for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value); return node; };
   const text = (attrs, value) => { const node = svg('text', attrs); node.textContent = value; return node; };
   const n = value => Math.round(value).toLocaleString('en-US');
+  const DAY_MS = 86400000;
   let english = false;
   /** 「12.3 亿」「4,860 万」；不到一万照写。 */
   const big = value => english ? value >= 1e9 ? [(value / 1e9).toFixed(1), 'B'] : value >= 1e6 ? [(value / 1e6).toFixed(1), 'M'] : value >= 1e3 ? [(value / 1e3).toFixed(1), 'K'] : [n(value), ''] : value >= 1e8 ? [(value / 1e8).toFixed(value >= 1e10 ? 0 : 1), '亿'] : value >= 1e4 ? [(value / 1e4).toFixed(value >= 1e6 ? 0 : 1), '万'] : [n(value), ''];
@@ -126,32 +127,144 @@
     if (m.group === 'value') return [usd(m.target), 'API 价值'];
     return [bigText(m.target), '次请求'];
   }
+  /** 0.3.53 起里程碑卡片的文字直接按语言出（一句话被拆成好几段，查字典翻不全）。 */
+  const T = (zh, en) => english ? en : zh;
   function milestone(state, options) {
     const chosen = state.list.find(item => item.id === options?.id && item.achievedAt) || [...state.list].filter(item => item.achievedAt).sort((a, b) => b.achievedAt.localeCompare(a.achievedAt))[0];
     if (!chosen) return el('div', { class: 'share-card ms' }, [brand(['里程碑']), el('h1', { text: '还没有达成里程碑' }), foot(stamp())]);
+    // 0.3.53：下半部分全部用达成那天的数字（state.moments），不用今天的；旧数据没有 moments 时退回今天的累计
+    const moment = state.moments?.[chosen.id] || null;
     const [mid, small] = medalText(chosen);
     const medal = el('div', { class: 'medal' }, [el('b', { class: 'num', text: mid }), el('small', { text: small })]);
-    if (mid.length > 6) medal.querySelector('b').style.fontSize = '64px';
+    if (mid.length > 5) medal.querySelector('b').style.fontSize = mid.length > 8 ? '50px' : '64px';
     const title = chosen.group === 'tokens' ? `累计用掉 ${mid} Tokens 🎉` : chosen.group === 'day' ? `一天用掉 ${mid} Tokens 🎉` : chosen.group === 'streak' ? `连续 ${chosen.target} 天都在用 AI 🎉` : chosen.group === 'value' ? `累计 API 价值突破 ${mid} 🎉` : `累计请求突破 ${mid} 次 🎉`;
-    const since = state.firstDay ? (() => { const [y, m, d] = state.firstDay.split('-').map(Number); return `${y} 年 ${m} 月 ${d} 日`; })() : '';
-    const lede = el('p', { class: 'lede' }, [state.analogy ? [analogyText(state.analogy), el('span', { class: 'rough', text: '（粗略换算）' }), el('br')] : null, since ? `从 ${since}第一条记录开始，用了 ` : '', since ? el('b', { text: `${state.days} 天` }) : null, since ? '。' : '',
-      state.speedup ? ['最近 30 天的速度，是第一个月的 ', el('b', { text: `${state.speedup.toFixed(1)} 倍` }), '。'] : null].flat());
-    const card = el('div', { class: 'share-card ms' }, [
-      brand([`新里程碑 · ${chosen.achievedAt.replace(/-/g, '.')}`]),
+    const card = el('div', { class: 'share-card ms ms-' + chosen.group }, [
+      brand([T('达成于 ', 'Reached ') + chosen.achievedAt.replace(/-/g, '.')]),
       el('div', { class: 'burst' }, [rays(), medal]),
       el('h1', { text: title }),
-      lede,
-      el('div', { class: 'ms-stats' }, [
-        stat('累计按 API 标价', usd(state.totals.costUsd), '', `累计 ${bigText(state.totals.tokens)} Tokens`),
-        stat('累计请求', n(state.totals.requests), english ? '' : '次', `和 AI 说了 ${bigText(state.totals.requests)} 次话`),
-        state.companion ? (() => { const node = stat('陪你最久的模型', state.companion.model, '', `用了 ${state.companion.days} 天，占 ${(state.companion.share * 100).toFixed(0)}%`); node.querySelector('b').classList.add('word'); return node; })() : stat('陪你最久的模型', '—', '', ''),
-      ]),
-      journeyPanel(state),
-      el('div', { class: 'collection' }, state.list.filter(item => item.achievedAt || item.group === chosen.group).slice(0, 8).map(item => el('span', { class: 'coin' + (item.id === chosen.id ? ' new' : item.achievedAt ? '' : ' locked') }, [el('i', { text: item.icon }), item.label + (item.id === chosen.id ? ' · 刚解锁' : '')]))),
-      foot(`已收集 ${state.list.filter(item => item.achievedAt).length} / ${state.list.length} 枚`),
+      moment ? momentLede(chosen, moment, state) : legacyLede(state),
+      moment ? momentStats(chosen, moment) : legacyStats(state),
+      moment ? momentChart(chosen, moment) : journeyPanel(state),
+      collection(state, chosen),
+      foot(T(`截至当时已收集 ${state.list.filter(item => item.achievedAt && item.achievedAt <= chosen.achievedAt).length} / ${state.list.length} 枚`, `${state.list.filter(item => item.achievedAt && item.achievedAt <= chosen.achievedAt).length} / ${state.list.length} badges by then`)),
     ]);
     return card;
   }
+  const dateCn = key => { const [y, m, d] = key.split('-').map(Number); return english ? new Date(key + 'T12:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : `${y} 年 ${m} 月 ${d} 日`; };
+  /** 一句话：第几天达成、和上一枚隔了多久，各组再加一句自己的。 */
+  function momentLede(item, m, state) {
+    const parts = [];
+    if (item.group === 'day' && m.focus.theDay) {
+      parts.push(T(`${day(m.day)}这一天用掉了 `, `On ${day(m.day)} you used `), el('b', { text: `${bigText(m.focus.theDay.tokens)} Tokens` }));
+      if (m.focus.theDay.vsAverage) parts.push(T('，是之前平均每天的 ', ', '), el('b', { text: T(`${m.focus.theDay.vsAverage.toFixed(1)} 倍`, `${m.focus.theDay.vsAverage.toFixed(1)}×`) }), T('', ' the daily average before'));
+      parts.push(T('。', '.'));
+    } else if (item.group === 'streak' && m.focus.streak) {
+      parts.push(T(`从 ${day(m.focus.streak.from)}到 ${day(m.focus.streak.to)}，`, `From ${day(m.focus.streak.from)} to ${day(m.focus.streak.to)}, `), el('b', { text: T(`${item.target} 天`, `${item.target} days`) }), T('每天都在用，一共用掉 ', ' in a row, '), el('b', { text: `${bigText(m.focus.streak.tokens)} Tokens` }), T('。', ' in total.'));
+    } else if (m.analogy) {
+      parts.push(analogyText(m.analogy), el('span', { class: 'rough', text: T('（粗略换算）', ' (rough estimate)') }), el('br'));
+    }
+    if (state.firstDay) parts.push(item.group === 'day' || item.group === 'streak' ? el('br') : null, T(`从 ${dateCn(state.firstDay)}第一条记录算起，第 `, `Reached on day `), el('b', { text: T(`${m.dayIndex} 天`, String(m.dayIndex)) }), T('达成', ` since the first record on ${dateCn(state.firstDay)}`));
+    if (m.previous) parts.push(...(english ? [', ', el('b', { text: `${m.previous.gapDays} days` }), ` after “${badgeName(m.previous)}”`] : ['，距上一枚「', m.previous.label, '」', el('b', { text: `${m.previous.gapDays} 天` })]));
+    parts.push(T('。', '.'));
+    return el('p', { class: 'lede' }, parts.filter(part => part != null));
+  }
+  function momentStats(item, m) {
+    const f = m.focus, top = f.models[0];
+    const modelStat = (label, model, sub) => { const node = stat(label, model ? model.model : '—', '', sub); node.querySelector('b').classList.add('word'); return node; };
+    const share = model => `${(model.share * 100).toFixed(0)}%`;
+    let boxes;
+    if (item.group === 'day' && f.theDay) boxes = [
+      stat(T('那一天按 API 标价', 'That day at API prices'), usd(f.theDay.costUsd), '', T(`那天 ${n(f.theDay.requests)} 次请求`, `${n(f.theDay.requests)} requests that day`)),
+      stat(T('达成时累计', 'Total by then'), bigText(m.totals.tokens), 'Tokens', T(`第 ${m.dayIndex} 天`, `Day ${m.dayIndex}`)),
+      modelStat(T('那天用得最多的模型', 'Top model that day'), top, top ? T(`占那天的 ${share(top)}`, `${share(top)} of that day`) : ''),
+    ];
+    else if (item.group === 'streak' && f.streak) boxes = [
+      stat(T('这几天平均每天', 'Per day in the streak'), bigText(f.streak.tokens / item.target), 'Tokens', T(`按 API 标价共 ${usd(f.streak.costUsd)}`, `${usd(f.streak.costUsd)} at API prices`)),
+      stat(T('最拼的一天', 'Busiest day'), f.streak.best ? day(f.streak.best.day) : '—', '', f.streak.best ? `${bigText(f.streak.best.tokens)} Tokens` : ''),
+      modelStat(T('这几天用得最多的模型', 'Top model in the streak'), top, top ? T(`占 ${share(top)}`, `${share(top)} of tokens`) : ''),
+    ];
+    else if (item.group === 'value') boxes = [
+      stat(T('达成时累计', 'Total by then'), bigText(m.totals.tokens), 'Tokens', T(`${n(m.totals.requests)} 次请求`, `${n(m.totals.requests)} requests`)),
+      stat(T('平均每天', 'Per day'), usd(f.perDay.costUsd), '', T(`第 ${m.dayIndex} 天达成`, `Reached on day ${m.dayIndex}`)),
+      modelStat(T('花得最多的模型', 'Biggest spender'), top, top ? T(`${usd(top.costUsd)} · 占 ${share(top)}`, `${usd(top.costUsd)} · ${share(top)}`) : ''),
+    ];
+    else if (item.group === 'requests') boxes = [
+      stat(T('达成时累计', 'Total by then'), bigText(m.totals.tokens), 'Tokens', T(`按 API 标价 ${usd(m.totals.costUsd)}`, `${usd(m.totals.costUsd)} at API prices`)),
+      stat(T('平均每天请求', 'Requests per day'), n(f.perDay.requests), english ? '' : '次', T(`第 ${m.dayIndex} 天达成`, `Reached on day ${m.dayIndex}`)),
+      stat(T('请求最多的一天', 'Busiest day'), f.busiest ? day(f.busiest.day) : '—', '', f.busiest ? T(`${n(f.busiest.requests)} 次`, `${n(f.busiest.requests)} requests`) : ''),
+    ];
+    else boxes = [
+      stat(T('达成时按 API 标价', 'At API prices by then'), usd(m.totals.costUsd), '', T(`平均每天 ${bigText(f.perDay.tokens)} Tokens`, `${bigText(f.perDay.tokens)} tokens a day`)),
+      stat(T('达成时累计请求', 'Requests by then'), n(m.totals.requests), english ? '' : '次', T(`和 AI 说了 ${bigText(m.totals.requests)} 次话`, `${bigText(m.totals.requests)} conversations with AI`)),
+      modelStat(T('当时陪你最久的模型', 'Longest companion then'), m.companion, m.companion ? T(`用了 ${m.companion.days} 天，占 ${(m.companion.share * 100).toFixed(0)}%`, `${m.companion.days} days, ${(m.companion.share * 100).toFixed(0)}% of usage`) : ''),
+    ];
+    return el('div', { class: 'ms-stats' }, boxes);
+  }
+  /** 下半部分的图：累计（Tokens / API 价值 / 请求）画曲线，单日和连续画每天的柱子。 */
+  function momentChart(item, m) {
+    const s = m.series, W = 960, H = 190, L = 58, R = 24, TOP = 22, B = 28;
+    const fmt = v => s.unit === 'usd' ? usd(v) : bigText(v) || '0';
+    const chart = svg('svg', { viewBox: `0 0 ${W} ${H}` });
+    const points = s.points;
+    const heads = english ? { tokens: ['Your journey', 'Cumulative tokens · up to that day'], value: ['Your journey', 'Cumulative API value · up to that day'], requests: ['Your journey', 'Cumulative requests · up to that day'], day: ['The 30 days up to that day', 'Tokens per day'], streak: [`These ${item.target} days`, 'Tokens per day'] }[item.group] : { tokens: ['一路走来', '累计 Tokens · 到达成那天'], value: ['一路走来', '累计 API 价值 · 到达成那天'], requests: ['一路走来', '累计请求 · 到达成那天'], day: ['那一天之前的 30 天', '每天的 Tokens'], streak: [`这 ${item.target} 天`, '每天的 Tokens'] }[item.group];
+    if (points.length) {
+      const max = Math.max(1, ...points.map(p => p.value)) * 1.12;
+      const y = v => TOP + (1 - v / max) * (H - TOP - B);
+      for (const g of [0, .25, .5, .75, 1]) { const v = max / 1.12 * g; chart.append(svg('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: '#eef0f3' }), text({ x: L - 8, y: y(v) + 4, 'text-anchor': 'end', fill: '#9aa2ae', 'font-size': 11.5 }, fmt(v))); }
+      if (s.kind === 'daily') {
+        const slot = (W - L - R) / points.length, bar = Math.max(1.5, Math.min(22, slot * .7));
+        points.forEach((p, i) => {
+          const hot = s.highlight && p.day >= s.highlight.from && p.day <= s.highlight.to && (item.group !== 'day' || p.day === s.highlight.to);
+          const x = L + i * slot + (slot - bar) / 2;
+          chart.append(svg('rect', { x, y: y(p.value), width: bar, height: Math.max(1, y(0) - y(p.value)), rx: Math.min(4, bar / 2), fill: item.group === 'day' ? (hot ? '#d19a00' : '#cfe7db') : '#14855f', opacity: item.group === 'streak' ? .85 : 1 }));
+        });
+        // 横轴：头、尾、中间各一个日期
+        for (const i of [0, Math.floor((points.length - 1) / 2), points.length - 1]) chart.append(text({ x: L + i * slot + slot / 2, y: H - 8, 'text-anchor': i === 0 ? 'start' : i === points.length - 1 ? 'end' : 'middle', fill: '#9aa2ae', 'font-size': 11.5 }, day(points[i].day)));
+        if (item.group === 'day') { const i = points.length - 1, p = points[i]; chart.append(text({ x: L + i * slot + slot / 2 - 8, y: y(p.value) - 8, 'text-anchor': 'end', fill: '#b66d0d', 'font-size': 12.5, 'font-weight': 700 }, `${day(p.day)} · ${fmt(p.value)}`)); }
+      } else {
+        const t0 = Date.parse(points[0].day + 'T12:00:00'), t1 = Date.parse(points.at(-1).day + 'T12:00:00');
+        const span = Math.max(DAY_MS, t1 - t0) * 1.04;
+        const x = key => L + (Date.parse(key + 'T12:00:00') - t0) / span * (W - L - R);
+        const defs = svg('defs'); const grad = svg('linearGradient', { id: 'jg', x1: 0, x2: 0, y1: 0, y2: 1 }); grad.append(svg('stop', { offset: 0, 'stop-color': '#14855f', 'stop-opacity': .25 }), svg('stop', { offset: 1, 'stop-color': '#14855f', 'stop-opacity': 0 })); defs.append(grad); chart.append(defs);
+        chart.append(svg('path', { d: `M${x(points[0].day)},${y(0)} ` + points.map(p => `L${x(p.day)},${y(p.value)}`).join(' ') + ` L${x(points.at(-1).day)},${y(0)} Z`, fill: 'url(#jg)' }));
+        chart.append(svg('polyline', { points: points.map(p => `${x(p.day)},${y(p.value)}`).join(' '), fill: 'none', stroke: '#14855f', 'stroke-width': 3, 'stroke-linejoin': 'round' }));
+        const start = new Date(t0); start.setDate(1); start.setMonth(start.getMonth() + 1);
+        for (let d = start; d.getTime() <= t1; d.setMonth(d.getMonth() + 1)) { const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; chart.append(text({ x: x(key), y: H - 8, 'text-anchor': 'middle', fill: '#9aa2ae', 'font-size': 11.5 }, english ? d.toLocaleDateString('en-US', { month: 'short' }) : `${d.getMonth() + 1}月`)); }
+        const marks = s.marks.slice(-4);
+        for (const mark of marks) {
+          chart.append(svg('circle', { cx: x(mark.day), cy: y(mark.value), r: mark.current ? 8 : 5, fill: mark.current ? '#d19a00' : '#fff', stroke: mark.current ? '#fff' : '#14855f', 'stroke-width': 3 }));
+          chart.append(text({ x: x(mark.day) - 10, y: y(mark.value) - 10, 'text-anchor': 'end', fill: mark.current ? '#b66d0d' : '#3f4652', 'font-size': 12.5, 'font-weight': 700 }, mark.current ? `${badgeName(mark)} · ${T(`第 ${m.dayIndex} 天`, `day ${m.dayIndex}`)}` : badgeName(mark)));
+        }
+      }
+    }
+    const next = m.next;
+    const fill = el('span'); fill.style.width = `${next ? Math.max(2, next.progress * 100) : 100}%`;
+    const nextLine = next
+      ? el('div', { class: 'next' }, [el('span', {}, [T('同一组的下一枚：', 'Next in this set: '), el('b', { text: badgeName(next) })]), el('div', { class: 'track' }, [fill]), el('span', {}, next.reachedAt ? [T('后来在 ', 'Reached later on '), el('b', { text: day(next.reachedAt) }), T(' 达成 ✓', ' ✓')] : [T('当时完成了 ', 'Progress then: '), el('b', { text: `${(next.progress * 100).toFixed(0)}%` })])])
+      : el('div', { class: 'next' }, [T('这是这一组的最后一枚 👑', 'The last badge in this set 👑')]);
+    return el('div', { class: 'panel journey' }, [el('div', { class: 'section-head' }, [el('h2', { text: heads[0] }), el('span', { text: heads[1] })]), chart, nextLine]);
+  }
+  /** 徽章：达成那天之前拿到的亮着，这一枚高亮，之后才拿到的和还没拿到的都灰着（「当时」的收集册）。 */
+  function collection(state, chosen) {
+    const had = item => item.achievedAt && item.achievedAt <= chosen.achievedAt;
+    const list = state.list.filter(item => had(item) || item.group === chosen.group).slice(0, 9);
+    return el('div', { class: 'collection' }, list.map(item => el('span', { class: 'coin' + (item.id === chosen.id ? ' new' : had(item) ? '' : ' locked') }, [el('i', { text: item.icon }), badgeName(item) + (item.id === chosen.id ? T(' · 这一枚', ' · this one') : '')])));
+  }
+  /* 旧版本存下来的数据没有 moments：照以前的样子画今天的累计 */
+  function legacyLede(state) {
+    const since = state.firstDay ? dateCn(state.firstDay) : '';
+    return el('p', { class: 'lede' }, [state.analogy ? [analogyText(state.analogy), el('span', { class: 'rough', text: '（粗略换算）' }), el('br')] : null, since ? `从 ${since}第一条记录开始，用了 ` : '', since ? el('b', { text: `${state.days} 天` }) : null, since ? '。' : ''].flat().filter(part => part != null));
+  }
+  function legacyStats(state) {
+    return el('div', { class: 'ms-stats' }, [
+      stat('累计按 API 标价', usd(state.totals.costUsd), '', `累计 ${bigText(state.totals.tokens)} Tokens`),
+      stat('累计请求', n(state.totals.requests), english ? '' : '次', `和 AI 说了 ${bigText(state.totals.requests)} 次话`),
+      state.companion ? (() => { const node = stat('陪你最久的模型', state.companion.model, '', `用了 ${state.companion.days} 天，占 ${(state.companion.share * 100).toFixed(0)}%`); node.querySelector('b').classList.add('word'); return node; })() : stat('陪你最久的模型', '—', '', ''),
+    ]);
+  }
+
+  /** 徽章名：中文原样，英文查界面字典（label 是整串，字典里有）。 */
+  function badgeName(item) { return english && window.PulseI18n ? window.PulseI18n.t(item.label) : item.label; }
   function rays() {
     const node = svg('svg', { viewBox: '0 0 420 420', 'aria-hidden': 'true' });
     for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2, r1 = 160, r2 = i % 2 ? 196 : 206; node.append(svg('line', { x1: 210 + Math.cos(a) * r1, y1: 210 + Math.sin(a) * r1, x2: 210 + Math.cos(a) * r2, y2: 210 + Math.sin(a) * r2, stroke: i % 3 ? '#14855f' : '#d19a00', 'stroke-width': i % 2 ? 3 : 5, 'stroke-linecap': 'round', opacity: i % 2 ? .35 : .7 })); }

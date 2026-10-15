@@ -143,6 +143,11 @@ type FileState = {
   turnStartAt?: number;
   lastTurnAt?: number;
   /**
+   * 估算速度（0.3.53）：这一次模型调用大概从什么时候开始。Claude Code 是上一条 user（提问或工具结果）/ 上一次回复的时间，
+   * Codex 是 turn_context、工具输出或上一次 token_usage_record 的时间。见 estimateOf。
+   */
+  callStartAt?: number;
+  /**
    * 经号池发出去的那部分，按账号拆开的小时账（0.3.42），结构同 accountHours。
    * 用号池时工具配置里填的是本地路由，文件整体记成「不是官方」，统计时整份被跳过——这一份单独留着，照样算到号池成员名下。
    */
@@ -183,8 +188,9 @@ export type UsageRollups = {
  * 14：Grok 号池一轮里的每一次转发各记一条请求（时间、账号），额度时间线才能把这段上涨认作本机。
  * 15：Claude 会话中途换了登录时按当前邮箱归账号（bridge-session 的 ownerAccountUuid 不随登录变），重算账号小时账。
  * 16：身份带上会话上下文时间；重算换号后误归到旧账号的请求及小时账。
+ * 17：流水补记按日志时间戳估算的速度（estimate，0.3.53），Claude Code 和 Codex 重扫一遍。
  */
-const STATE_VERSION = 16;
+const STATE_VERSION = 17;
 const HOUR_MS = 3_600_000;
 /** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -733,6 +739,27 @@ function deepseekStream(value: unknown, output: number): Row["stream"] {
   const ms = last - first;
   return { firstAt: first, ...(output >= 20 && ms >= 300 ? { tokensPerSec: Math.round(output / ms * 10000) / 10 } : {}) };
 }
+/*
+ * 估算速度（0.3.53）：没开透明转发、没走本地路由时，用会话日志的时间戳粗估每秒输出多少 Token。
+ * 用时 = 这次回复写进日志的时间 − 这次调用开始的时间（上一条提问 / 工具结果 / 上一次回复），
+ * 里面包含排队、首字之前的思考和网络，所以比真实的出字速度偏慢，界面上一律标「≈」。
+ * 回复太短（不到 20 个 Token）、用时不到 0.5 秒或超过 10 分钟的不算；算出来超过 2000 Token/秒的当成时间戳不可靠，也不算。
+ */
+export type SpeedEstimate = { ms: number; tokensPerSec: number };
+function estimateOf(startAt: number, endAt: number, output: number): SpeedEstimate | undefined {
+  const ms = endAt - startAt;
+  if (output < 20 || !(ms >= 500) || ms > 600_000) return undefined;
+  const tokensPerSec = Math.round(output / ms * 10000) / 10;
+  return tokensPerSec > 2000 ? undefined : { ms, tokensPerSec };
+}
+/** 哪些行算「一次模型调用的开始」（或上一次调用的结束）。 */
+function callBoundary(kind: Kind, obj: Record<string, unknown>) {
+  if (kind === "claude-code") return obj.type === "user" || obj.type === "assistant";
+  if (kind !== "codex") return false;
+  if (obj.type === "turn_context" || obj.type === "token_usage_record") return true;
+  const payload = obj.payload as Record<string, unknown> | undefined;
+  return obj.type === "response_item" && typeof payload?.type === "string" && /_output$/.test(payload.type);
+}
 /** 首字延迟 = 第一块回复的时间 − 这一步开始的时间；对不上（没记到开始、差了十分钟以上）就不记。 */
 function deepseekTiming(stream: NonNullable<Row["stream"]>, stepStartAt?: number) {
   const first = stepStartAt ? stream.firstAt - stepStartAt : -1;
@@ -795,6 +822,7 @@ function scanFile(
     state.cacheRatio = undefined;
     state.turnStartAt = undefined;
     state.lastTurnAt = undefined;
+    state.callStartAt = undefined;
   };
   if (state.v !== STATE_VERSION) {
     state.v = STATE_VERSION;
@@ -835,6 +863,8 @@ function scanFile(
   let touched = false;
   let lineEnd = state.offset;
   const rowsBefore: Row[] = [];
+  // Claude Code 一次回复拆成好几行写：记下刚记的那一条，后面同一个 id 的行到了就把估算的结束时间往后挪
+  let pendingEstimate: { id: string; startAt: number; output: number; record: RequestRecord } | null = null;
   for (const line of text.slice(0, lastBreak).split(String.fromCharCode(10))) {
     lineEnd += Buffer.byteLength(line, "utf8") + 1;
     if (packed >= 0) lineEnd = state.offset + packed;
@@ -924,6 +954,10 @@ function scanFile(
         state.effort = found?.effort; state.effortSource = found ? "update._meta." + found.source : undefined;
       }
     }
+    // 估算速度：先拿到这一行之前的「调用开始时间」，再按这一行更新它
+    const callStart = state.callStartAt;
+    const lineAt = kind === "claude-code" || kind === "codex" ? Date.parse(String(obj.timestamp || "")) || 0 : 0;
+    if (lineAt && callBoundary(kind, obj)) state.callStartAt = lineAt;
     let one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : kind === "deepseek-harness" ? deepseekRow(obj) : null;
     if (kind === "codex") {
       if (obj.type === "token_usage_record") state.codexRecords = true;
@@ -992,7 +1026,10 @@ function scanFile(
       if (model === "<synthetic>") continue;
       // 同一次响应被拆成多行、每行都带同一份 usage：只认第一行（见 FileState.lastId）。
       if (kind === "claude-code" && !row.compaction) {
-        if (row.id && row.id === state.lastId) continue;
+        if (row.id && row.id === state.lastId) {
+          if (pendingEstimate?.id === row.id) { const estimate = estimateOf(pendingEstimate.startAt, row.at, pendingEstimate.output); if (estimate) pendingEstimate.record.estimate = estimate; }
+          continue;
+        }
         state.lastId = row.id;
       }
       if (!row.compaction && model !== "未知模型") state.lastModel = model;
@@ -1066,6 +1103,13 @@ function scanFile(
         ...(piece.routeEventId ? { routeEventId: piece.routeEventId } : {}),
         ...(row.compaction ? { compaction: true } : {}),
       });
+      // 估算速度（0.3.53）：只给一条一次调用的（号池拆开的、压缩估算的不算）
+      if (!row.compaction && pieces.length === 1 && callStart && (kind === "claude-code" || kind === "codex")) {
+        const record = out.records[out.records.length - 1];
+        const estimate = estimateOf(callStart, row.at, row.usage.output);
+        if (estimate) record.estimate = estimate;
+        pendingEstimate = kind === "claude-code" && row.id ? { id: row.id, startAt: callStart, output: row.usage.output, record } : null;
+      }
       touched = true;
     }
   }

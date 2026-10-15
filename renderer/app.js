@@ -1708,7 +1708,7 @@ function drawSpeed(body, data, kind, custom = null) {
       points.forEach(([x], i) => { if (Math.abs(x - at) < Math.abs(points[nearest][0] - at)) nearest = i; });
       const bucket = points[nearest][2];
       marks.forEach((dot, i) => dot.classList.toggle('on', i === nearest));
-      tip.textContent = [`${model.model}${model.fast ? '（快速）' : ''} · ${speedBucketLabel(bucket.at, bucketMs)}`, `中位 ${bucket.median} Token/秒`, bucket.count > 1 ? `中间一半 ${bucket.low} – ${bucket.high}` : '', `${number(bucket.count)} 次请求`, bucket.firstTokenMs == null ? '' : `首字 ${speedSeconds(bucket.firstTokenMs)}`].filter(Boolean).join(String.fromCharCode(10));
+      tip.textContent = [`${model.estimated ? '≈ ' : ''}${model.model}${model.fast ? '（快速）' : ''} · ${speedBucketLabel(bucket.at, bucketMs)}`, `中位 ${model.estimated ? '≈ ' : ''}${bucket.median} Token/秒`, model.estimated ? '按会话日志时间戳估算' : '', bucket.count > 1 ? `中间一半 ${bucket.low} – ${bucket.high}` : '', `${number(bucket.count)} 次请求`, bucket.firstTokenMs == null ? '' : `首字 ${speedSeconds(bucket.firstTokenMs)}`].filter(Boolean).join(String.fromCharCode(10));
       tip.hidden = false;
       const wide = tip.offsetWidth, left = Math.min(window.innerWidth - wide - 12, Math.max(12, event.clientX + 14));
       tip.style.left = left + 'px'; tip.style.top = Math.max(12, event.clientY - tip.offsetHeight - 12) + 'px';
@@ -1718,10 +1718,10 @@ function drawSpeed(body, data, kind, custom = null) {
     const fill = el('i');
     fill.style.width = Math.max(2, Math.min(100, model.tokensPerSec / max * 100)) + '%';
     return stagger(el('div', { class: 'speed-row', role: 'row' }, [
-      el('div', { class: 'speed-name', role: 'cell' }, [el('b', { title: model.model }, [el('span', { text: model.model, translate: 'no' }), model.fast ? el('span', { class: 'section-tag speed-fast', text: '快速', title: '快速模式的请求（Codex 的 Fast / priority，Claude Code 的 /fast）单独一行，不和普通模式混着算' }) : null]), el('small', { text: `${number(model.count)} 次${model.firstTokenMs == null ? '' : ` · 首字 ${speedSeconds(model.firstTokenMs)}`}` })]),
+      el('div', { class: 'speed-name', role: 'cell' }, [el('b', { title: model.model }, [model.estimated ? el('span', { class: 'speed-est', text: '≈', title: '按会话日志的时间戳估算：从发出请求到回复写进日志的用时，包含首字之前的等待，比真实出字速度偏慢。打开透明转发或走本地路由能量到准确的。' }) : null, el('span', { text: model.model, translate: 'no' }), model.estimated ? el('span', { class: 'section-tag speed-est-tag', text: '估算', title: '按会话日志的时间戳估算：从发出请求到回复写进日志的用时，包含首字之前的等待，比真实出字速度偏慢。打开透明转发或走本地路由能量到准确的。' }) : null, model.fast ? el('span', { class: 'section-tag speed-fast', text: '快速', title: '快速模式的请求（Codex 的 Fast / priority，Claude Code 的 /fast）单独一行，不和普通模式混着算' }) : null]), el('small', { text: `${number(model.count)} 次${model.firstTokenMs == null ? '' : ` · 首字 ${speedSeconds(model.firstTokenMs)}`}` })]),
       el('div', { class: 'speed-scale', 'aria-hidden': 'true', title: `这一行走势的刻度：${floor} – ${ceil} Token/秒` }, [el('span', { text: String(ceil), translate: 'no' }), el('span', { text: String(floor), translate: 'no' })]),
       plot,
-      el('div', { class: 'speed-value', role: 'cell', title: model.count > 1 ? `中间一半请求在 ${model.low} – ${model.high} Token/秒` : null }, [el('span', {}, [el('strong', { text: String(model.tokensPerSec), translate: 'no' }), el('small', { text: 'Token/秒' })]), el('div', { class: 'speed-bar' }, [fill])]),
+      el('div', { class: 'speed-value', role: 'cell', title: model.count > 1 ? `中间一半请求在 ${model.low} – ${model.high} Token/秒` : null }, [el('span', {}, [el('strong', { text: (model.estimated ? '≈ ' : '') + model.tokensPerSec, translate: 'no' }), el('small', { text: 'Token/秒' })]), el('div', { class: 'speed-bar' }, [fill])]),
     ]), index);
   });
   const axis = el('div', { class: 'speed-row speed-axis', 'aria-hidden': 'true' }, [el('span'), el('span'), el('div', { class: 'speed-axis-labels' }, [el('span', { text: speedBucketLabel(data.from, bucketMs === 3600000 ? bucketMs : 86400000) }), el('span', { text: '现在' })]), el('span')]);
@@ -1950,6 +1950,11 @@ function latencyTone(timing) {
 }
 function latencyCell(row) {
   const t = row.timing;
+  if ((!t || (t.ms == null && t.firstByteMs == null)) && row.estimate) {
+    // 0.3.53：没经过 TokenPulse 的，按会话日志的时间戳估算（标「≈」，没有首字）
+    const line = (label, value) => el('span', {}, [el('small', { text: label }), el('b', { translate: 'no', text: value })]);
+    return el('td', { class: 'request-latency estimated', title: '按会话日志的时间戳估算：从发出请求到回复写进日志的用时，包含首字之前的等待，比真实出字速度偏慢。打开透明转发或走本地路由能量到准确的。' }, [el('div', {}, [line('用时', '≈ ' + secs(row.estimate.ms)), line('速度', `≈ ${row.estimate.tokensPerSec} t/s`)])]);
+  }
   if (!t || (t.ms == null && t.firstByteMs == null)) return el('td', { class: 'request-latency empty', title: '这次请求没有经过 TokenPulse 转发，量不到延迟。打开「供应商 → 透明转发」，或者走本地路由（第三方供应商、号池）的请求会有。', text: '—' });
   const first = t.firstTokenMs ?? t.firstByteMs;
   const line = (label, value) => el('span', {}, [el('small', { text: label }), el('b', { translate: 'no', text: value })]);
@@ -2044,7 +2049,8 @@ function requestDetail(row) {
     ...(row.effort ? [['思考等级', row.effort]] : []),
     ...(row.timing ? [['经由', row.timing.pass ? '透明转发（原样转给官方）' : `本地路由 · ${row.timing.provider || '供应商'}`], ['接口', row.timing.path || '—', true], ['类型', row.timing.stream === false ? '非流式' : '流式'],
       ['首字节', row.timing.firstByteMs == null ? '—' : secs(row.timing.firstByteMs)], ['首段内容', row.timing.firstTokenMs == null ? '—' : secs(row.timing.firstTokenMs)], ['总耗时', row.timing.ms == null ? '—' : secs(row.timing.ms)],
-      ['输出速度', row.timing.tokensPerSec == null ? '—（输出太少，不算）' : `${row.timing.tokensPerSec} Token/秒`]] : [])
+      ['输出速度', row.timing.tokensPerSec == null ? '—（输出太少，不算）' : `${row.timing.tokensPerSec} Token/秒`]] : []),
+    ...(!row.timing && row.estimate ? [['估算用时', '≈ ' + secs(row.estimate.ms)], ['估算速度', `≈ ${row.estimate.tokensPerSec} Token/秒（按日志时间戳，偏慢）`]] : [])
   ];
   return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 10 }, [
     el('div', { class: 'detail-grid' }, fields.map(([label, value, mono]) => el('div', {}, [el('small', { text: label }), el('span', { class: mono ? 'mono' : '', text: value, title: value })]))),
@@ -3419,7 +3425,7 @@ $('export-requests').addEventListener('click', async () => {
   const button = $('export-requests'); button.disabled = true;
   try {
     const page = await api.requests(requestQuery({ all: true }));
-    const rows = page.rows.map(row => ({ ...row, firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing?.tokensPerSec ?? '', routeVia: row.timing ? (row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
+    const rows = page.rows.map(row => ({ ...row, firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing?.tokensPerSec ?? (row.estimate ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
     if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
   } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
   finally { button.disabled = !requestPage?.total; }

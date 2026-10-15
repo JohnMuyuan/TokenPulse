@@ -34,7 +34,7 @@ export async function shareMonth(snapshot: SnapshotSource, month: unknown) {
   let speed = null;
   const [year, number] = pick.split("-").map(Number);
   // 月报只读附近一个月，保持按天分桶，避免全历史的周桶跨过月份边界。
-  try { speed = speedSeries(35, Math.min(Date.now(), new Date(year, number, 1).getTime() - 60_001)); } catch { /* 没有转发记录 */ }
+  try { speed = speedSeries(35, Math.min(Date.now(), new Date(year, number, 1).getTime() - 60_001), false); } catch { /* 没有转发记录 */ }
   return { months, report: monthReport({ usage: snap.usage, month: pick, hours, speed }) };
 }
 
