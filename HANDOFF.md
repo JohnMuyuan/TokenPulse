@@ -1,6 +1,43 @@
-# Current handoff · 0.3.54 已正式发布（2026-10-15）
+# Current handoff · 0.3.55 已正式发布（2026-10-15）
 
 ## 新对话先看这里
+
+### 0.3.55 已正式发布（2026-10-15）
+
+- 用户验收测试版后要求发布。发布前 `npm test` 退出 0、`npm run test:ui` 退出 0（92 PASS），`npm run dist` 退出 0；`dist/verify-0.3.55.cjs` 148 个运行时文件逐字节一致，ASAR SHA256 82ae3b5326b2e75f4b49e3e4bdb492927cec292c2af313afc09220f0fb0ea549（和验收的测试版相同）。
+- 提交 cd7dded（0.3.55：会话全文搜索、体检页、额度快用完自动切换 CLI 登录），标签 v0.3.55，已推送（推之前 fetch，远端无新提交）。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.55 ，非草稿、非预发布，releases/latest 指向 v0.3.55，公开 latest.yml 为 0.3.55；正文和 dist/release-0.3.55.md 一致（只差换行符），无会话链接。
+- 附件均 uploaded，大小 / SHA256 与本地一致：Setup.exe 112628594 / 9b066a7f802579e318d0c64e26ee4d9d9c4760a3b5177c9173bf61a84144aaa9；.blockmap 119805 / af1eee7ec24448937ecc7386b70ad8382f1fcff59f8188e3e7cc5a8c714a17d2；Portable.exe 112371385 / a4ffe0a6524055d909af9e3ccd875f1cfc93482020e8ba0acee9f3f82b455a7a；latest.yml 352 / bb291c011361695407c0e43452b24a6f8b98b80b5b580c2544244c83d4f7089c。
+- 收尾：无本轮遗留 node / electron / 打包器进程；用户安装版 0.3.54（PID 45816 等）未关闭、未主动安装新版（会自动提示更新）。四附件和 win-unpacked exe / asar 可独占打开，工作目录项目根。
+- 待做清单已清空。以下为发布前记录（「未提交、未发布」已过期）。
+
+### 待做清单（用户 2026-10-15 定下，按顺序做，做完一项划掉一项）
+
+1. ~~额度用满自动切 CLI 登录~~ —— 0.3.55 已做（测试版待验收）。
+2. ~~全部会话的全文搜索~~ —— 0.3.55 已做（测试版待验收）。
+3. ~~「体检」页~~ —— 0.3.55 已做（测试版待验收）。用户要求三项合在 0.3.55 一起发。
+
+其他备选（用户没选）：缓存命中分析、每周小结通知、号池按重置时间预排、macOS 版。用户决定不用 `claude setup-token`（只有 user:inference 权限，查不了额度、认不出账号）。
+
+### 0.3.55 测试版（待做清单第 1 项；已打好，未提交、未发布）
+
+- 用户：做待做清单第一项「额度用满自动切 CLI 登录」。版本 0.3.55 是我定的（用户说版本照旧由他定但没给，我按下一个补丁号走，回复里已说明），只打测试版。
+- 新 `src/core/cli-auto-switch.ts`：`autoSwitchCli(deps)`，每轮额度查询成功后由 `main/index.ts` 的 `runAutoSwitch` 调（只有某家开了才跑）。规则：每家开关 + 触发比例（90 / 95 / 99，默认 95，`normalizeRule` 校验）；只读保护开着、或这家工具当前供应商不是官方登录（`agent-switch.ts` 新导出 `usesOfficialLogin`；claude→claude、chatgpt→codex、grok→grok）时不动；当前 CLI 账号（`readCliAccounts`）两个窗口里用得多的那个 ≥ 触发线才动；目标 = 同家、没隐藏、有 refresh token、没 renewFailed、额度采样 30 分钟内（复用 `pool-order.ts` 的 `accountQuota` / `leftOf`）且剩余 ≥ 100−触发线+`MIN_GAIN`(10)，挑剩余最多的；切换走 `switchCliAccount`。切过（含失败）冷却 `COOLDOWN_MS` 10 分钟；没有能切的号只提醒一次（回到线下或换号后重置）。冷却 / 提醒状态在内存。事件记 `~/.tokenpulse/cli-auto-switch.json`（最近 50 条，无凭据）；`describeAutoSwitch` 出通知和设置页共用的标题 / 正文。
+- 主进程：prefs 新字段 `cliAutoSwitch`（applyPrefs 里按家校验）；通知点开 → `open-page {page:'settings', tab:'accounts'}`（renderer 的 onOpenPage 新分支调 openSettings）；新 IPC 事件 `cli-auto-switch`（preload `onCliAutoSwitch`），设置开着就刷新账号列表，真的切了弹 toast。`OfficialOAuthStatus.autoSwitch {on, at, idle?, last?}`（`main/oauth.ts` 的 autoSwitchView）。
+- 界面：设置 → 官方账号，登记 ≥2 个账号且装了 CLI 的那家卡片标题下多一行（`autoSwitchRow`）：开关（复用 `.oauth-localonly` 样式）、比例下拉（没开时禁用）、说明行（idle 原因 / 最近一次结果，悬停看正文）。CSS `.oauth-auto*` 在 app.css。i18n 英文齐全（含通知正文的正则）。
+- 测试：新 `scripts/test-cli-auto-switch.cjs` 27/27（进 npm test，在 test-cli-renew 后）；`test-ui.cjs` 加设置页这一行的检查（假账号列表、开关 / 比例写进真实 prefs.json、最近一次显示）。`npm test` 退出 0，`npm run test:ui` 退出 0（90 PASS）。
+- 文案：intro NOTES 0.3.55 + 英文、README 版本行、`dist/release-0.3.55.md`。
+- 产物：`dist/win-unpacked/TokenPulse.exe` 0.3.55 / 0.3.55.0；`dist/verify-0.3.55.cjs` 143 个运行时文件逐字节一致（多了 cli-auto-switch.js），ASAR SHA256 f75e08bdd886618c60778c29a9ab055ff411e28f0d5cc3be442ed56816bdbf5f。无本轮遗留进程，exe / asar 可独占打开。用户安装版已自动更新到 0.3.54（PID 23856 等），未关闭。
+- 未验证：没有在真实账号上触发过自动切换（要真的用到 95% 才会切，且会改用户 CLI 登录）；设置页这一行没截图看过视觉，只有 DOM 测试。
+- 已知限制：开着的会话要重开才用新账号；额度采样间隔（默认 1 分钟）内用满的，要等下一轮才切；只看 TokenPulse 托管的账号；Claude 桌面端 / 网页的消耗也算在官方百分比里。
+- **用户追加（进行中检查点）**：说明文字改成「已开启：换号时会发通知提醒你；已经开着的 X 会话，要重新打开才会用新账号」（已改，test-ui 断言同步）。用户要求把待做清单第 2、3 项也放进 0.3.55 一起发，不分三个小版本。
+- 第 2 项全文搜索（代码完成，单测过，UI 未跑）：新 `src/core/session-search.ts`（`searchSessions(query, kind)`，在 report-worker 里跑，IPC `sessions:search`，preload `searchSessions`，演示模式返回空）。文字缓存 `~/.tokenpulse/session-text/<路径哈希>.txt` + `index.json`（按大小 + mtime 增量；会话文件没了就删缓存；`sessions.ts` 新导出 `sessionTextFile` / `parseSessionFile` / `sessionFiles`，删除 Claude 对话时一起删缓存）。只进用户 / AI 文字和工具名 + 概要，不进工具输出。空格分词 = 都要出现在同一会话。`renderer/sessions.js`：输入停 350ms 搜内容，列表并入命中会话、显示「N 处」和片段（高亮），点开跳到第一处命中，顶部定位条上一处 / 下一处 / 关闭，消息里高亮。CSS 在 sessions.css。新 `scripts/test-session-search.cjs` 17/17（还没进 npm test）。真实会话只读测速（缓存指到临时目录）：144 段首次 7.9s（含列表索引），之后 55~80ms，缓存 4.9MB。
+- 第 3 项「体检」（完成）：新 `src/core/health-check.ts`（纯函数 `buildHealthReport(inputs)`，四组 tools / accounts / network / data，level ok/info/warn/bad，带「去哪一页」按钮）+ `src/main/health.ts`（`runHealthCheck(exitMonitor)` 读 agentDrift、新导出的 `localRouteLeftovers`（agent-switch.ts，只检测配置还指向本地路由 / 透明转发但没在跑）、agentView 的路由状态 + 127.0.0.1 端口连接测试、listOfficialOAuthStatus、renew-log 24 小时、出口监控 snapshot、代理来源、curl 不带账号连 api.anthropic.com / chatgpt.com / api.x.ai（先过 gateQuota，不放行就不连）、数据目录写入 / statfs / 1 小时以上的 .tmp）。IPC `health:run`，preload `runHealthCheck`（演示模式返回空）。界面 `renderer/health.js|css`，侧栏新页 `health`（NAV_PAGES / NAV_LABELS / navigate 的标题、`#i-health` 图标、`#nav-health-alert` 有问题时亮），打开时体检、5 分钟内回来不重跑。体检只读不改。
+- 界面测试环境：用户屏幕现在 175% 缩放，`test-agent-switch-ui.cjs` 侧栏宽度 / workspace left 精确比较读成 236.00001525878906，改成 Math.round 后比较（`--force-device-scale-factor=1` 下原样通过，确认是缩放问题，和本次改动无关）。`test-layout-ui.cjs` 侧栏页面加 health（8 个）。一次整套跑时 test-deepseek-balance-ui 超时，单独跑两次都过，整套重跑通过。
+- 测试：`test-session-search.cjs` 17/17、`test-health-check.cjs` 26/26（含所有文案都有英文）进 npm test；新 `scripts/test-health-ui.cjs`（体检页 + 全文搜索交互，体检结果用固定数据、不联网；`TP_SHOTS=目录` 时截图）进 test:ui。`npm test` 退出 0；`npm run test:ui` 退出 0（92 PASS）。自查截图（测试数据）：scratchpad/shots55/health.png、search.png 已看过。
+- 文案：intro NOTES 0.3.55 改为三条（sessions / health / terminal 图标）+ 英文；README 版本行；`dist/release-0.3.55.md` 重写为三项。新手引导没有加「体检」那一步（引导步数测试固定为 35 步，没动）。
+- 产物（最终）：`dist/win-unpacked/TokenPulse.exe` 0.3.55 / 0.3.55.0；`dist/verify-0.3.55.cjs` 148 个运行时文件逐字节一致，ASAR SHA256 82ae3b5326b2e75f4b49e3e4bdb492927cec292c2af313afc09220f0fb0ea549。无遗留 node / electron / 打包器进程，exe / asar 可独占打开。用户安装版 0.3.54（PID 45224 等）未关闭。未提交、未发布。
+- 未验证：体检没有在用户真实环境里跑过（会连三家官方、读真实账号状态，留给用户验收时看）；全文搜索只在真实会话上只读测过速度（缓存放临时目录）。
 
 ### 0.3.54 已正式发布（2026-10-15）
 
