@@ -188,6 +188,10 @@ try {
     "2026 年 9 月": "September 2026",
     "外观：日间": "Appearance: Light",
     "未计入 2 个窗口：2 个本机没有用量（可能用在别的设备上）。": "2 windows left out: 2 with no local usage (maybe used on another device).",
+    "预排第 2 个 · 周四 14:00 重置 · 预计作废 ≈ 12%": "Forecast #2 · Thu 14:00 reset · about 12% wasted",
+    "重置时作废 ≈ 12%": "About 12% wasted at reset",
+    "预计 周五 03:00 前后全部用完，最早的重置在 周四 14:00": "Pool runs out around Fri 03:00; earliest reset is Thu 14:00",
+    "按最近 7 天平均每小时用掉 1.25 个百分点推算。网页聊天和其他设备的用量也算在官方额度里，实际还会受 5 小时窗口和限流影响。": "Based on an average of 1.25 percentage points per hour over the last 7 days. Official quota also counts web chats and other devices, and actual use also depends on the 5-hour window and rate limits.",
   };
   const wrong = Object.entries(samples).filter(([zh, en]) => translate(zh) !== en);
   check("带变量的句子按模板翻", !wrong.length, wrong.map(([zh]) => `${zh} → ${translate(zh)}`).join(" | "));

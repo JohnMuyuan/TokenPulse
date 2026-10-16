@@ -12,7 +12,7 @@
   const S = {
     items: [], loaded: false, loading: false, listAt: 0,
     search: '', kind: 'all', project: 'all',
-    key: '', detail: null, detailLoading: false,
+    key: '', detail: null, detailLoading: false, openKey: '',
     /** 从最后往前显示多少个「块」（一段工具调用算一块）。 */
     visible: 160,
     /** 正在进行的回复：{ runId, key, prompt, text, tools, error } */
@@ -419,7 +419,11 @@
       S.items = await api.sessions();
       S.loaded = true; S.listAt = Date.now();
       drawList();
-      if (!S.key && S.items.length) select(visibleItems()[0]?.key || S.items[0].key);
+      if (S.openKey) {
+        const key = S.openKey; S.openKey = '';
+        if (S.items.some(item => item.key === key)) select(key);
+        else showStatus('找不到这个会话', true);
+      } else if (!S.key && S.items.length) select(visibleItems()[0]?.key || S.items[0].key);
       else if (S.key && force) select(S.key, true);
     } catch {
       if (!quiet) showStatus('会话读取失败，请重试。', true);
@@ -799,6 +803,21 @@
   /* ---------------- 对外 ---------------- */
 
   window.PulseSessions = {
+    open(key) {
+      const value = String(key || ''), split = value.indexOf(':');
+      const kind = split > 0 ? value.slice(0, split) : '', id = split > 0 ? value.slice(split + 1) : '';
+      if (!['claude', 'codex', 'grok', 'deepseek'].includes(kind) || !id) return;
+      S.kind = kind; S.project = 'all'; S.search = ''; S.hits = null; S.terms = []; S.openKey = value;
+      clearTimeout(searchTimer);
+      if (N.search) N.search.value = '';
+      navigate('sessions', { force: true });
+      build();
+      if (S.loaded) {
+        drawList();
+        if (S.items.some(item => item.key === value)) { S.openKey = ''; select(value); }
+        else loadList(true);
+      } else loadList();
+    },
     show() {
       build();
       drawList();

@@ -1,15 +1,15 @@
 /**
- * 分享卡片的数据（0.3.51）：月报和里程碑。
+ * 分享卡片的数据（0.3.51）：月报、周报和里程碑。
  *
  * 都从快照里那份「按日 / 工具 / 型号」的用量（report.ts 的 usage）算，口径和总览、用量明细一样：
  * Tokens = 输入 + 输出（输入含缓存读写），费用 = 会话自报的或按官方标价估的。
- * 月报另外用逐条流水按小时的汇总（夜猫子指数）和转发记录的速度（最快的模型）。
+ * 月报和周报另外用逐条流水按小时的汇总（夜猫子指数）和转发记录的速度（最快的模型）。
  * 卡片上不放邮箱、账号名、项目路径；模型名和工具名照常放（这正是大家想晒的）。
  */
 import type { UsageDetail } from "./report";
 import type { HourAggregate } from "./request-log";
 import type { SpeedLines } from "./pass-speed";
-import { priceOf } from "./model-pricing";
+import { cacheSavings } from "./model-pricing";
 
 const DAY = 86_400_000;
 
@@ -27,9 +27,13 @@ export type MonthReport = {
   hours: number[]; nightShare: number | null;
   fastest: { model: string; effort: string; tokensPerSec: number; firstTokenMs: number | null; samples: number }[];
   routes: string[];
-  /** 缓存读按输入价算本来要多花的钱（只算有标价的型号）。 */
+  /** 缓存净省下的金额，扣除缓存写入溢价（只算有标价的型号）。 */
   cacheSavingsUsd: number;
   analogy: Analogy | null;
+};
+
+export type WeekReport = Omit<MonthReport, "month" | "label" | "days"> & {
+  week: string; label: string; days: 7; cacheHitRate: number | null; cacheSavingsAvailable: boolean;
 };
 
 /* ---------------- 人话换算 ---------------- */
@@ -55,7 +59,7 @@ export function analogyOf(tokens: number, seed = 0): Analogy | null {
   return { id: pick.id, count, text: pick.text(count.toLocaleString("en-US")) };
 }
 
-/* ---------------- 月报 ---------------- */
+/* ---------------- 月报和周报 ---------------- */
 
 function monthDays(month: string) {
   const [y, m] = month.split("-").map(Number);
@@ -68,17 +72,35 @@ function shiftMonth(month: string, n: number) {
 }
 export function isMonth(value: unknown): value is string { return typeof value === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(value); }
 
-export function monthReport(input: { usage: UsageDetail[]; month: string; hours?: HourAggregate[]; speed?: SpeedLines | null }): MonthReport {
-  const { usage, month } = input;
-  const days = monthDays(month);
-  const rows = usage.filter((row) => row.day.startsWith(month + "-"));
-  const prev = shiftMonth(month, -1);
-  const prevTokens = usage.filter((row) => row.day.startsWith(prev + "-")).reduce((sum, row) => sum + row.tokens, 0);
+function dayKey(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
+function localDay(day: string) { const [y, m, d] = day.split("-").map(Number); return new Date(y, m - 1, d, 12); }
+function shiftDay(day: string, amount: number) { const date = localDay(day); date.setDate(date.getDate() + amount); return dayKey(date); }
+
+/** 返回包含这个本地日期的周的周一。日期用本地中午计算，避开夏令时的 23/25 小时日。 */
+export function weekStartOf(value: Date | number): string {
+  const date = new Date(value);
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() - (date.getDay() + 6) % 7);
+  return dayKey(date);
+}
+export function isWeek(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-(0[1-9]|1[0-2])-\d{2}$/.test(value)) return false;
+  const date = localDay(value);
+  return dayKey(date) === value && date.getDay() === 1;
+}
+
+type RangeReport = Omit<MonthReport, "month" | "label" | "days">;
+function rangeReport(input: { usage: UsageDetail[]; fromDay: string; toDay: string; previousFrom: string; previousTo: string; days: number; analogySeed: number; hours?: HourAggregate[]; speed?: SpeedLines | null }): RangeReport {
+  const { usage, fromDay, toDay, previousFrom, previousTo, days } = input;
+  const midnight = (day: string) => { const date = localDay(day); date.setHours(0, 0, 0, 0); return date.getTime(); };
+  const from = midnight(fromDay), to = midnight(shiftDay(toDay, 1));
+  const rows = usage.filter((row) => row.day >= fromDay && row.day <= toDay);
+  const prevTokens = usage.filter((row) => row.day >= previousFrom && row.day <= previousTo).reduce((sum, row) => sum + row.tokens, 0);
   const sum = (list: UsageDetail[], key: "tokens" | "costUsd" | "requests" | "input" | "cacheRead") => list.reduce((total, row) => total + (row[key] || 0), 0);
 
   const byDay = new Map<string, number>();
   for (const row of rows) byDay.set(row.day, (byDay.get(row.day) || 0) + row.tokens);
-  const daily = Array.from({ length: days }, (_, i) => { const day = `${month}-${String(i + 1).padStart(2, "0")}`; return { day, tokens: byDay.get(day) || 0 }; });
+  const daily = Array.from({ length: days }, (_, i) => { const day = shiftDay(fromDay, i); return { day, tokens: byDay.get(day) || 0 }; });
   let longest = 0, run = 0;
   for (const item of daily) { run = item.tokens > 0 ? run + 1 : 0; longest = Math.max(longest, run); }
   const best = daily.reduce<{ day: string; tokens: number } | null>((top, item) => (item.tokens > 0 && (!top || item.tokens > top.tokens) ? item : top), null);
@@ -94,12 +116,11 @@ export function monthReport(input: { usage: UsageDetail[]; month: string; hours?
 
   // 夜猫子：按本地时间的整点
   const hours = Array.from({ length: 24 }, () => 0);
-  for (const row of input.hours ?? []) if (row.hour >= Date.parse(`${month}-01T00:00:00`) && row.hour < Date.parse(`${shiftMonth(month, 1)}-01T00:00:00`)) hours[new Date(row.hour).getHours()] += row.tokens;
+  for (const row of input.hours ?? []) if (row.hour >= from && row.hour < to) hours[new Date(row.hour).getHours()] += row.tokens;
   const hourTotal = hours.reduce((a, b) => a + b, 0);
   const night = hours.reduce((total, value, hour) => total + (hour >= 22 || hour < 6 ? value : 0), 0);
 
-  // 最快的模型：这个月里量到的速度（每条线按桶的中位数、按次数加权），至少 20 次才算
-  const from = Date.parse(`${month}-01T00:00:00`), to = Date.parse(`${shiftMonth(month, 1)}-01T00:00:00`);
+  // 最快的模型：这个周期里量到的速度（每条线按桶的中位数、按次数加权），至少 20 次才算
   const fastest = (input.speed?.lines ?? []).map((line) => {
     const buckets = line.buckets.filter((bucket) => bucket.at >= from && bucket.at < to && bucket.tokensPerSec != null && bucket.speedCount > 0);
     const samples = buckets.reduce((total, bucket) => total + bucket.speedCount, 0);
@@ -111,18 +132,49 @@ export function monthReport(input: { usage: UsageDetail[]; month: string; hours?
     // 同一个型号 × 等级经不同的路线只留最快的一条
     .filter((item, i, list) => list.findIndex((other) => other.model === item.model && other.effort === item.effort) === i).slice(0, 3);
 
-  const cacheSavingsUsd = rows.reduce((total, row) => { const price = priceOf(row.model); return price ? total + row.cacheRead * Math.max(0, price.input - price.cacheRead) / 1_000_000 : total; }, 0);
-  const [y, m] = month.split("-").map(Number);
+  const cacheSavingsUsd = rows.reduce((total, row) => total + (cacheSavings(row.model, row) ?? 0), 0);
   return {
-    month, label: `${y} 年 ${m} 月`, days,
     tokens, costUsd: sum(rows, "costUsd"), requests: sum(rows, "requests"), input: sum(rows, "input"), cacheRead: sum(rows, "cacheRead"),
     previousTokens: prevTokens > 0 ? prevTokens : null,
     activeDays: daily.filter((item) => item.tokens > 0).length, longestStreak: longest,
     daily, best, models, tools,
     hours, nightShare: hourTotal > 0 ? night / hourTotal : null,
-    fastest, cacheSavingsUsd, analogy: analogyOf(tokens, y * 12 + m),
+    fastest, cacheSavingsUsd, analogy: analogyOf(tokens, input.analogySeed),
     routes: [...new Set((input.speed?.lines ?? []).filter(line => line.via && line.buckets.some(bucket => bucket.at >= from && bucket.at < to)).map(line => line.via))],
   };
+}
+
+export function monthReport(input: { usage: UsageDetail[]; month: string; hours?: HourAggregate[]; speed?: SpeedLines | null }): MonthReport {
+  const { usage, month } = input;
+  const [y, m] = month.split("-").map(Number);
+  const fromDay = `${month}-01`, toDay = `${month}-${String(monthDays(month)).padStart(2, "0")}`;
+  const previous = shiftMonth(month, -1), previousDays = monthDays(previous);
+  return { month, label: `${y} 年 ${m} 月`, days: monthDays(month), ...rangeReport({
+    ...input, fromDay, toDay, previousFrom: `${previous}-01`, previousTo: `${previous}-${String(previousDays).padStart(2, "0")}`,
+    days: monthDays(month), analogySeed: y * 12 + m,
+  }) };
+}
+
+export function weekLabel(week: string) {
+  const start = localDay(week), end = localDay(shiftDay(week, 6));
+  const part = (date: Date) => `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+  return start.getFullYear() === end.getFullYear()
+    ? `${part(start)} – ${part(end)}`
+    : `${start.getFullYear()} 年 ${part(start)} – ${end.getFullYear()} 年 ${part(end)}`;
+}
+
+export function weekReport(input: { usage: UsageDetail[]; week: string; hours?: HourAggregate[]; speed?: SpeedLines | null }): WeekReport {
+  const { usage, week } = input;
+  const endDay = shiftDay(week, 6), previousFrom = shiftDay(week, -7);
+  const report = rangeReport({ ...input, fromDay: week, toDay: endDay, previousFrom, previousTo: shiftDay(week, -1), days: 7, analogySeed: Date.parse(`${week}T12:00:00`) / DAY });
+  const rows = usage.filter((row) => row.day >= week && row.day <= shiftDay(week, 6));
+  const cacheSavingsAvailable = rows.some((row) => (row.cacheRead > 0 || row.cacheWrite > 0) && cacheSavings(row.model, row) !== null);
+  return { week, label: weekLabel(week), days: 7, ...report, cacheHitRate: report.input > 0 ? report.cacheRead / report.input : null, cacheSavingsAvailable };
+}
+
+/** 有用量的周，新的在前，最多 26 周。 */
+export function reportWeeks(usage: UsageDetail[]) {
+  return [...new Set(usage.filter((row) => row.tokens > 0).map((row) => weekStartOf(localDay(row.day))))].sort().reverse().slice(0, 26);
 }
 
 /** 有用量的月份，新的在前（月报里可以选）。 */

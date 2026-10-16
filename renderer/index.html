@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="model-study.css">
 <link rel="stylesheet" href="usage-insights.css">
 <link rel="stylesheet" href="usage-projects.css">
+<link rel="stylesheet" href="usage-cache.css">
 <link rel="stylesheet" href="agent-switch.css">
 <link rel="stylesheet" href="concurrency.css">
 <link rel="stylesheet" href="health.css">
@@ -295,14 +296,14 @@
         
         <div class="panel-heading">
           <div>
-            <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span><span id="project-count" class="section-tag" hidden></span></h2>
+            <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span><span id="project-count" class="section-tag" hidden></span><span id="cache-count" class="section-tag" hidden></span></h2>
             <p id="detail-caption">每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情</p>
           </div>
           <div class="panel-actions">
             <button id="verify-help" class="btn" aria-expanded="false" aria-controls="verify-method"><svg class="icon"><use href="#i-info"/></svg>说明</button>
             <button id="export-requests" class="btn"><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
             <button id="export-csv" class="btn" hidden><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
-            <div id="usage-view" class="seg compact" role="tablist" aria-label="明细视图"><span class="seg-thumb" aria-hidden="true"></span><button data-view="requests" class="on" aria-pressed="true">逐条请求</button><button data-view="daily" aria-pressed="false">按日汇总</button><button data-view="projects" aria-pressed="false">按项目</button></div>
+            <div id="usage-view" class="seg compact" role="tablist" aria-label="明细视图"><span class="seg-thumb" aria-hidden="true"></span><button data-view="requests" class="on" aria-pressed="true">逐条请求</button><button data-view="daily" aria-pressed="false">按日汇总</button><button data-view="projects" aria-pressed="false">按项目</button><button data-view="cache" aria-pressed="false">缓存</button></div>
           </div>
         </div>
 
@@ -345,6 +346,8 @@
         </div>
 
         <div id="view-projects" hidden></div>
+
+        <div id="view-cache" hidden></div>
 
         <div id="view-daily" hidden>
           <div class="table-toolbar">
@@ -512,6 +515,7 @@
 <script src="egress.js"></script>
 <script src="usage-insights.js"></script>
 <script src="usage-projects.js"></script>
+<script src="usage-cache.js"></script>
 <script src="provider-avatars.js"></script>
 <script src="agent-switch.js"></script>
 <script src="concurrency.js"></script>

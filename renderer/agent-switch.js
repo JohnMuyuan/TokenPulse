@@ -93,7 +93,7 @@
   const STRATEGY_OPTIONS = [
     ['round-robin', '轮询', '每个请求换下一个成员，用量摊平'],
     ['fill-first', '用满再换', '一直用第一个，出错或限流才换下一个'],
-    ['reset-first', '快重置优先', '每周额度快重置、又还剩很多的号先用，到期前尽量不浪费'],
+    ['reset-first', '快重置优先', '按重置时间预排：最早重置的号先用，到期前把额度用掉；换了也省不下额度时就不换（换号会让提示词缓存失效）'],
     ['most-left', '剩余最多', '一直用剩余额度最多的号，别的号多出 5% 以上才换'],
   ];
   const QUOTA_STRATEGY = s => s === 'reset-first' || s === 'most-left';
@@ -110,14 +110,24 @@
   /** 号池成员：名字 + 能不能用 + 这次运行转发过几次；按额度排的号池再加剩余额度，标出下一个请求交给谁。 */
   function memberChips(p) {
     const quota = QUOTA_STRATEGY(p.pool.strategy);
-    return el('div', { class: 'pv-members' }, p.pool.members.map(m => el('span', { class: 'pv-member' + (m.usable ? '' : ' off') + (quota && p.pool.next === m.id ? ' next' : ''), 'data-member': m.id, title: (m.usable ? (m.health === 'open' ? '连续失败，暂时跳过' : '可用') : m.type === 'account' ? '凭据过期或账号已删除：在设置里重新登录这个账号' : '供应商已删除或没有地址') + (quota && m.type === 'account' ? '\n' + memberQuotaText(m.quota) : quota ? '\nAPI Key 没有额度可看，排在官方账号后面当后备' : '') + (quota && p.pool.next === m.id ? '\n下一个请求先交给它' : '') + (m.requests ? `\n本次运行转发 ${m.requests} 次，成功 ${m.ok} 次${m.lastStatus ? '，最近 HTTP ' + m.lastStatus : ''}` : '') }, [
+    return el('div', { class: 'pv-members' }, p.pool.members.map(m => {
+      const planIndex = p.pool.plan?.order?.indexOf(m.id) ?? -1;
+      const planned = planIndex >= 0 ? p.pool.plan.members?.find(item => item.id === m.id) : null;
+      const forecast = planned ? `\n预排第 ${planIndex + 1} 个 · ${planned.resetAt ? `${poolPlanDate(planned.resetAt)} 重置` : '暂无周额度数据'} · ${planned.waste == null ? '作废待估' : planned.waste < 0.5 ? '预计用得完' : `预计作废 ≈ ${Math.round(planned.waste)}%`}` : planIndex >= 0 ? `\n预排第 ${planIndex + 1} 个 · 暂无周额度数据` : '';
+      return el('span', { class: 'pv-member' + (m.usable ? '' : ' off') + (quota && p.pool.next === m.id ? ' next' : ''), 'data-member': m.id, title: (m.usable ? (m.health === 'open' ? '连续失败，暂时跳过' : '可用') : m.type === 'account' ? '凭据过期或账号已删除：在设置里重新登录这个账号' : '供应商已删除或没有地址') + (quota && m.type === 'account' ? '\n' + memberQuotaText(m.quota) : quota ? '\nAPI Key 没有额度可看，排在官方账号后面当后备' : '') + (p.pool.plan && m.type === 'account' ? forecast : '') + (quota && p.pool.next === m.id ? '\n下一个请求先交给它' : '') + (m.requests ? `\n本次运行转发 ${m.requests} 次，成功 ${m.ok} 次${m.lastStatus ? '，最近 HTTP ' + m.lastStatus : ''}` : '') }, [
       el('i', { class: 'pv-dot ' + (!m.usable ? 'off' : m.health) }),
       el('span', { class: 'pv-member-kind', text: m.type === 'account' ? '账号' : 'Key' }),
       el('b', { text: m.name, translate: 'no' }),
       quota && m.type === 'account' ? el('small', { class: 'pv-member-left' + (m.quota?.limited || (m.quota?.left != null && m.quota.left < 1) ? ' spent' : ''), text: m.quota ? pctText(m.quota.left) : '—' }) : null,
       quota && p.pool.next === m.id ? el('span', { class: 'pv-member-next', text: '下一个' }) : null,
       m.requests ? el('small', { text: `${m.ok}/${m.requests}` }) : null,
-    ])));
+    ]);
+    }));
+  }
+  function poolPlanDate(at) {
+    const d = new Date(at), lang = window.PulseI18n?.lang() === 'en';
+    const days = lang ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] : ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    return `${days[d.getDay()]} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
   function healthDot(p) {
     const h = view.health[p.id] || 'ok';
@@ -1291,7 +1301,7 @@
       editor.app === 'deepseek' ? null : el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: '官方账号' }), el('small', { text: '用各账号自己的登录凭据，直接转给官方接口。是否符合各家的服务条款，请自行判断。' })]), poolAccounts()]),
       el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: 'API Key 供应商' }), el('small', { text: '同一工具下已保存的供应商，用它们自己的地址和密钥。' })]),
         keys.length ? el('div', { class: 'pv-pick-list' }, keys.map(p => pickRow({ type: 'provider', id: p.id }, providerMark(p, 'pv-mark pv-pick-avatar'), p.name, [p.model, formatName(p.upstream)].filter(Boolean).join(' · ')))) : el('p', { class: 'pv-hint', text: '这个工具下还没有 API Key 供应商。' })]),
-      el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: '顺序' }), el('small', { text: '轮询从上一次的下一个开始；用满再换总是从第一个开始。快重置优先和剩余最多按各账号最近一次查到的额度排，分数一样时按这个顺序；API Key 没有额度可看，排在官方账号后面；已经用完的排到最后。' })]), poolOrder()]),
+      el('div', { class: 'pv-pool-group' }, [el('div', { class: 'pv-pool-group-head' }, [el('b', { text: '顺序' }), el('small', { text: '轮询从上一次的下一个开始；用满再换总是从第一个开始。快重置优先按周额度重置时间预排；剩余最多按各账号最近一次查到的额度排。API Key 没有额度可看，排在官方账号后面；已经用完的排到最后。' })]), poolOrder()]),
     ]);
   }
 

@@ -10,6 +10,8 @@ export type Prefs = {
   startMinimized: boolean;
   /** 额度过线就弹通知的阈值（百分比），0 = 不提醒。 */
   notifyAt: number;
+  /** 周一 9 点后通知上周用量；软件没开时在本周首次运行补发。 */
+  weeklySummary: boolean;
   /** 界面主题。界面自己用 localStorage 记，这里再存一份给主进程：建窗口时要用它定底色。 */
   theme: "light" | "dark";
   /** 自动更新：后台下载新版本，在窗口收起时静默安装并重启。默认开。 */
@@ -53,7 +55,7 @@ export function quotaEverySeconds(value: unknown): number {
   return minutes * 60;
 }
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, cliAutoSwitch: {} };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, cliAutoSwitch: {} };
 
 function file() {
   return dataFile("prefs.json");

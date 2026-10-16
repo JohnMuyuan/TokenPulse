@@ -18,7 +18,7 @@ import { ccSwitchDbPath } from "./cc-switch";
 import { fetchUpstreamModels, probeUrl, startAgentProxy, type ProxyLog } from "./agent-proxy";
 import { canonicalLevels, claudeRoleEnv, desktopModelMap, desktopProfile, desktopRouteModels, DESKTOP_PROFILE_ID, DESKTOP_PROFILE_NAME, emptySlot, loadCodexTemplate, parseSlots, codexCatalogEntry, patchCodexCatalog, type DesktopMode, type ModelSlot, type ThinkingFlags } from "./agent-models";
 import { AGENT_APPS, AGENT_LABEL, NATIVE_UPSTREAM, POOL_KEY, POOL_OFFICIAL, POOL_STRATEGIES, PROXY_MANAGED, isAgentApp, isUpstream, type AgentApp, type PoolConfig, type PoolMember, type PoolStrategy, type ProxyTarget, type Upstream } from "./agent-types";
-import { accountQuota, leftOf, LIMIT_HOLD_MS, orderPool, spent, type MemberQuota } from "./pool-order";
+import { accountQuota, leftOf, LIMIT_HOLD_MS, orderPool, planPool, poolWeekRate, spent, type MemberQuota } from "./pool-order";
 import type { PoolDef } from "./pool-insight";
 import { readOfficialAccountStore, resolveAccountCredential } from "./accounts";
 import { setConcurrencyIdentityResolver, type ConcurrencyScope } from './concurrency';
@@ -377,11 +377,25 @@ export function agentView(): AgentView {
 function poolView(store: Store, provider: Provider) {
   const pool = provider.pool!;
   const members = pool.members.map((member) => poolMemberView(store, provider, member));
-  if (pool.strategy !== "reset-first" && pool.strategy !== "most-left") return { ...pool, members };
+  const now = Date.now();
+  const accountIds = pool.members.filter((member) => member.type === "account").map((member) => member.id);
+  const rate = poolWeekRate(accountIds, now);
   const usable = members.filter((member) => member.usable && healthOf(memberTargetId(provider, member)) !== "open");
-  const order = orderPool(pool.strategy, usable.map((member) => candidateOf(memberTargetId(provider, member), member.type === "account" ? member.id : undefined)), poolCurrent.get(provider.id));
+  const plan = accountIds.length ? (() => {
+    const planned = usable.filter((member) => member.type === "account" && member.quota?.weekLeft != null && member.quota.weekLeft >= 1)
+      .map((member) => ({ id: member.id, left: member.quota!.weekLeft!, resetAt: member.quota!.weekResetAt, period: 7 * 24 * 3600_000 }));
+    const simulation = planPool(pool.strategy, planned, rate, now);
+    return {
+      order: [...simulation.order, ...accountIds.filter((id) => !simulation.order.includes(id))],
+      members: simulation.members.map(({ id, resetAt, drainAt, waste }) => ({ id, resetAt, drainAt, waste })),
+      rate, outAt: simulation.outAt,
+    };
+  })() : undefined;
+  const base = { ...pool, members, ...(plan ? { plan } : {}) };
+  if (pool.strategy !== "reset-first" && pool.strategy !== "most-left") return base;
+  const order = orderPool(pool.strategy, usable.map((member) => candidateOf(memberTargetId(provider, member), member.type === "account" ? member.id : undefined)), poolCurrent.get(provider.id), now, rate);
   const first = order[0] && usable.find((member) => memberTargetId(provider, member) === order[0].id);
-  return { ...pool, members, ...(first ? { next: first.id } : {}) };
+  return { ...base, ...(first ? { next: first.id } : {}) };
 }
 /** 额度详情的号池页要的号池定义（pool-insight.ts）：名字、工具、轮换方式、成员。不带任何凭据。 */
 export function poolDef(id: unknown): PoolDef | null {
@@ -1273,7 +1287,9 @@ function poolTargets(store: Store, pool: Provider): ProxyTarget[] {
   if (!members.length) return members;
   if (strategy === "fill-first") return spentLast(members);
   if (strategy === "reset-first" || strategy === "most-left") {
-    const order = orderPool(strategy, members.map((target) => candidateOf(target.id, target.officialAccount)), poolCurrent.get(pool.id));
+    const now = Date.now();
+    const rate = poolWeekRate(pool.pool.members.filter((member) => member.type === "account").map((member) => member.id), now);
+    const order = orderPool(strategy, members.map((target) => candidateOf(target.id, target.officialAccount)), poolCurrent.get(pool.id), now, rate);
     return order.map((item) => members.find((target) => target.id === item.id)!);
   }
   const start = (poolCursor.get(pool.id) ?? 0) % members.length;

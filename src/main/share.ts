@@ -9,7 +9,7 @@ import fs from "fs/promises";
 import path from "path";
 import type { Snapshot } from "../core/report";
 import type { HourAggregate } from "../core/request-log";
-import { isMonth, milestoneState, monthReport, reportMonths } from "../core/share-report";
+import { isMonth, isWeek, milestoneState, monthReport, reportMonths, reportWeeks, weekReport, weekLabel } from "../core/share-report";
 import { speedSeries } from "../core/pass-speed";
 import { loadRequests } from "./snapshot";
 import { tr } from "./i18n";
@@ -19,6 +19,10 @@ type SnapshotSource = () => Promise<Snapshot>;
 function lastDayOf(month: string) {
   const [y, m] = month.split("-").map(Number);
   return `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+}
+function dayOffset(day: string, offset: number) {
+  const [y, m, d] = day.split("-").map(Number), date = new Date(y, m - 1, d + offset, 12);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 export async function shareMonth(snapshot: SnapshotSource, month: unknown) {
@@ -38,15 +42,33 @@ export async function shareMonth(snapshot: SnapshotSource, month: unknown) {
   return { months, report: monthReport({ usage: snap.usage, month: pick, hours, speed }) };
 }
 
+export async function shareWeek(snapshot: SnapshotSource, week: unknown) {
+  const snap = await snapshot();
+  const weeks = reportWeeks(snap.usage).map(value => ({ week: value, label: weekLabel(value) }));
+  const pick = isWeek(week) ? week : weeks[0]?.week;
+  if (!pick) return { weeks, report: null };
+  const toDay = dayOffset(pick, 6);
+  let hours: HourAggregate[] = [];
+  try {
+    const page = await loadRequests({ from: pick, to: toDay, source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1, aggregate: true });
+    hours = page.aggregate?.hours ?? [];
+  } catch { /* 流水读不了：周报里不画夜猫子那一块 */ }
+  let speed = null;
+  const [endYear, endMonth, endDate] = dayOffset(pick, 7).split("-").map(Number);
+  const speedEnd = new Date(endYear, endMonth - 1, endDate).getTime() - 1;
+  try { speed = speedSeries(14, Math.min(Date.now(), speedEnd), false); } catch { /* 没有转发记录 */ }
+  return { weeks, report: weekReport({ usage: snap.usage, week: pick, hours, speed }) };
+}
+
 export async function shareMilestones(snapshot: SnapshotSource) {
   const snap = await snapshot();
   return milestoneState(snap.usage, snap.now);
 }
 
-/** 画一张卡片，返回 PNG 的 data URL。kind：month / milestone。 */
+/** 画一张卡片，返回 PNG 的 data URL。kind：month / week / milestone。 */
 let rendering: Promise<string> = Promise.resolve("");
 export function renderShareCard(kind: unknown, data: unknown, options: unknown): Promise<string> {
-  if (kind !== "month" && kind !== "milestone") return Promise.reject(new Error("卡片类型无效"));
+  if (kind !== "month" && kind !== "week" && kind !== "milestone") return Promise.reject(new Error("卡片类型无效"));
   // 一次只画一张：连点两下不会开两个窗口
   rendering = rendering.catch(() => "").then(() => render(kind, data, options));
   return rendering;

@@ -39,6 +39,17 @@ export type TokenCounts = {
   cacheWrite: number;
 };
 
+/** 相比全部按输入价计费，缓存读写净省下的美元；未知型号不估价。 */
+export function cacheSavings(modelId: string, tokens: TokenCounts): number | null {
+  const price = priceOf(modelId);
+  if (!price) return null;
+  const writePrice = price.cacheWrite > 0 ? price.cacheWrite : price.input;
+  return (
+    tokens.cacheRead * (price.input - price.cacheRead) -
+    tokens.cacheWrite * (writePrice - price.input)
+  ) / 1_000_000;
+}
+
 /**
  * 估一笔花费。认不出型号就返回 0（界面上显示「—」，别编一个数出来）。
  *

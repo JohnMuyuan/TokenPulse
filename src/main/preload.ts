@@ -94,11 +94,12 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   addCliAccount: (kind: string) => ipcRenderer.invoke("accounts:add-cli", kind),
   /** 账号管理：remove 隐藏 / 普通删除，purge 完全删除 TokenPulse 记录，restore 恢复，rename 改名。 */
   manageOfficialAccount: (action: "remove" | "purge" | "restore" | "rename", id: string, alias?: string) => ipcRenderer.invoke("accounts:manage", action, id, alias),
-  /** 分享卡片（0.3.51）：月报 / 里程碑的数据，画成 PNG（data URL），保存、复制。 */
+  /** 分享卡片（0.3.51）：月报 / 周报 / 里程碑的数据，画成 PNG（data URL），保存、复制。 */
   share: {
     month: (month?: string) => demo ? blocked() : ipcRenderer.invoke("share:month", month),
+    week: (week?: string) => demo ? blocked() : ipcRenderer.invoke("share:week", week),
     milestones: () => demo ? blocked() : ipcRenderer.invoke("share:milestones"),
-    render: (kind: "month" | "milestone", data: unknown, options?: Record<string, unknown>) => demo ? blocked() : ipcRenderer.invoke("share:render", kind, data, options),
+    render: (kind: "month" | "week" | "milestone", data: unknown, options?: Record<string, unknown>) => demo ? blocked() : ipcRenderer.invoke("share:render", kind, data, options),
     save: (dataUrl: string, name: string) => demo ? blocked() : ipcRenderer.invoke("share:save", dataUrl, name),
     copy: (dataUrl: string) => demo ? blocked() : ipcRenderer.invoke("share:copy", dataUrl),
   },
@@ -240,8 +241,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("agent-switch", listener);
   },
   /** 主进程让界面跳到某一页（点了型号不一致的通知）。 */
-  onOpenPage: (handler: (target: { page: string; status?: string; tab?: string }) => void) => {
-    const listener = (_event: unknown, target: { page: string; status?: string; tab?: string }) => handler(target);
+  onOpenPage: (handler: (target: { page: string; status?: string; tab?: string; pick?: string }) => void) => {
+    const listener = (_event: unknown, target: { page: string; status?: string; tab?: string; pick?: string }) => handler(target);
     ipcRenderer.on("open-page", listener);
     return () => ipcRenderer.off("open-page", listener);
   },

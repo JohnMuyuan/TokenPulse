@@ -1,6 +1,6 @@
 /*
  * 号池按额度排（0.3.44）：快重置优先、剩余最多。
- * 先测 pool-order.ts 的纯排序（分段、分数、防抖、用完 / 没数据 / API Key 的位置、过了重置时间算满、429 标记），
+ * 先测 pool-order.ts 的纯函数（重置时间排序、预排、速度、防抖、用完 / 没数据 / API Key 的位置、429 标记），
  * 再起一个假上游，经本地路由真的发请求：额度从 quota-history.json 读，回 429 的账号换下一个并先排后面，转发记录带上号池 id。
  */
 const assert = require('node:assert/strict');
@@ -11,6 +11,7 @@ const path = require('node:path');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-pool-order-'));
 const home = path.join(root, 'home');
+process.env.HOME = process.env.USERPROFILE = home;
 process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
 process.env.AGENT_SWITCH_HOME = home;
 process.env.AGENT_SWITCH_CC_DB = path.join(root, 'missing.db');
@@ -32,17 +33,20 @@ let checks = 0;
 const pass = name => { checks++; console.log('PASS ' + name); };
 
 {
-  // 快重置优先：分数 = 每周剩余 ÷ 离重置的小时数
-  const list = [acc('far', q(90, 120)), acc('soon', q(20, 2)), acc('mid', q(60, 24))];
-  assert.equal(order.resetScore(list[0].quota, now), 90 / 120);
-  assert.deepEqual(ids(order.orderPool('reset-first', list, undefined, now)), ['soon', 'mid', 'far'], '20%/2h=10 > 60%/24h=2.5 > 90%/120h=0.75');
-  // 不知道重置时间按 7 天算
-  assert.equal(order.resetScore(q(84, null), now), 84 / 168);
+  // EDF：最早重置先用；即使 B 剩 100%、A 只剩 20%，也先用 A。
+  const list = [acc('B', q(100, 5)), acc('A', q(20, 2)), acc('far', q(90, 120))];
+  assert.deepEqual(ids(order.orderPool('reset-first', list, undefined, now)), ['A', 'B', 'far']);
+  const unknownReset = [acc('unknown-reset', q(40, null)), acc('known-reset', q(10, 120))];
+  assert.deepEqual(ids(order.orderPool('reset-first', unknownReset, undefined, now)), ['known-reset', 'unknown-reset'], '不知道重置时间按 7 天后');
+  const noWeeklyWindow = [acc('five-only', q(null, null, 40)), acc('weekly', q(20, 120))];
+  assert.deepEqual(ids(order.orderPool('reset-first', noWeeklyWindow, undefined, now)), ['weekly', 'five-only'], '没有每周窗口的账号排在可预排账号后面');
+  const sameReset = [acc('less', q(20, 24)), acc('more', q(80, 24))];
+  assert.deepEqual(ids(order.orderPool('reset-first', sameReset, undefined, now)), ['more', 'less'], '同时重置时剩得多的在前');
   // 剩余最多：两个窗口里少的那个
   const most = [acc('a', q(80, 100, 30)), acc('b', q(50, 100, 90)), acc('c', q(70, 100))];
   assert.equal(order.leftOf(most[0].quota), 30);
   assert.deepEqual(ids(order.orderPool('most-left', most, undefined, now)), ['c', 'b', 'a']);
-  pass('pool order: reset-first scores remaining ÷ hours to weekly reset; most-left uses the smaller window');
+  pass('pool order: reset-first follows earliest reset, then remaining quota and configured order; most-left uses the smaller window');
 }
 
 {
@@ -62,17 +66,64 @@ const pass = name => { checks++; console.log('PASS ' + name); };
 }
 
 {
-  // 防抖：剩余最多要多出 5 个百分点才换；快重置优先在 80% 以内继续用
+  // 防抖：剩余最多要多出 5 个百分点才换。
   const most = [acc('a', q(60, 100)), acc('b', q(64, 100))];
   assert.deepEqual(ids(order.orderPool('most-left', most, 'a', now)), ['a', 'b'], '多 4 个点不换');
   assert.deepEqual(ids(order.orderPool('most-left', [acc('a', q(60, 100)), acc('b', q(65.5, 100))], 'a', now)), ['b', 'a'], '多 5.5 个点就换');
   assert.deepEqual(ids(order.orderPool('most-left', most, undefined, now)), ['b', 'a'], '没有在用的就直接挑最多的');
-  const reset = [acc('a', q(45, 50)), acc('b', q(50, 50))];
-  assert.deepEqual(ids(order.orderPool('reset-first', reset, 'a', now)), ['a', 'b'], '0.9 ≥ 0.8 继续用');
-  assert.deepEqual(ids(order.orderPool('reset-first', [acc('a', q(30, 50)), acc('b', q(50, 50))], 'a', now)), ['b', 'a'], '0.6 < 0.8 换');
+  const close = [acc('first', q(100, 2)), acc('current', q(99, 2))];
+  assert.deepEqual(ids(order.orderPool('reset-first', close, 'current', now, 0.1)), ['current', 'first'], '已知速度，继续当前号不会多作废 2 个百分点');
+  const wasteful = [acc('first', q(80, 2)), acc('current', q(80, 20))];
+  assert.deepEqual(ids(order.orderPool('reset-first', wasteful, 'current', now, 10)), ['first', 'current'], '已知速度，继续当前号会多作废就切换');
+  assert.deepEqual(ids(order.orderPool('reset-first', [acc('first', q(50, 4)), acc('current', q(60, 8))], 'current', now)), ['current', 'first'], '速度未知且重置相差 6 小时内，继续当前号');
+  assert.deepEqual(ids(order.orderPool('reset-first', [acc('first', q(50, 4)), acc('current', q(60, 12))], 'current', now)), ['first', 'current'], '速度未知且重置相差超过 6 小时，切换');
+  assert.deepEqual(ids(order.orderPool('reset-first', [acc('five-only', q(null, null, 40)), acc('weekly', q(20, 120))], 'five-only', now, 10)), ['weekly', 'five-only'], '有速度但当前账号没有周额度窗口时不把 5 小时额度当周额度推演');
   // 在用的号已经用完：不保留
   assert.deepEqual(ids(order.orderPool('most-left', [acc('a', q(0, 100)), acc('b', q(10, 100))], 'a', now)), ['b', 'a']);
-  pass('pool order: the member in use is kept unless another has 5 points more (most-left) or scores over 1.25× (reset-first)');
+  pass('pool order: most-left keeps its 5-point margin; reset-first keeps current only when simulated waste is close or reset times are within 6 hours');
+}
+
+{
+  const at = Date.UTC(2026, 9, 11, 12), day = 24 * H;
+  const member = (id, left, hours) => ({ id, left, resetAt: at + hours * H, period: 7 * day });
+  const early = member('early', 20, 2), later = member('later', 100, 5);
+  const reset = order.planPool('reset-first', [later, early], 0.5, at);
+  assert.deepEqual(reset.order.slice(0, 2), ['early', 'later']);
+  assert.deepEqual(reset.segments.slice(0, 2).map(s => [s.id, s.from, s.to]), [['early', at, at + 2 * H], ['later', at + 2 * H, at + 5 * H]]);
+  assert.equal(reset.members.find(m => m.id === 'early').waste, 19);
+  assert.equal(reset.members.find(m => m.id === 'later').waste, 98.5);
+  assert.equal(reset.outAt, null);
+
+  const fill = order.planPool('fill-first', [member('a', 10, 2), member('b', 100, 6 * 24)], 1, at);
+  assert.equal(fill.segments[0].id, 'a');
+  assert.equal(fill.members.find(m => m.id === 'a').waste, 8, '重置时记下剩余并回满');
+  assert.equal(fill.members.find(m => m.id === 'a').drainAt, at + 102 * H);
+
+  const most = order.planPool('most-left', [member('a', 50, 6 * 24), member('b', 100, 6 * 24)], 10, at);
+  assert.equal(most.segments[0].id, 'b');
+  assert.ok(most.segments.some(s => s.id === 'a'), '另一个号多出 5 个百分点后会切换');
+
+  const round = order.planPool('round-robin', [member('a', 2, 100), member('b', 100, 120)], 2, at);
+  assert.deepEqual(round.segments.slice(0, 2).map(s => s.id), ['a', 'b'], '轮询平均分给还有额度的号');
+  assert.equal(round.members.find(m => m.id === 'a').drainAt, at + 2 * H);
+  assert.equal(round.outAt, at + 51 * H, '所有账号都见底时记录最早见底时刻');
+  const still = order.planPool('reset-first', [member('late', 20, 5), member('soon', 10, 2), { id: 'unknown', left: 30, resetAt: null, period: 7 * day }], null, at);
+  assert.deepEqual(still.order, ['soon', 'late', 'unknown']); assert.deepEqual(still.segments, []);
+  assert.ok(still.members.every(m => m.waste === null)); assert.equal(still.outAt, null);
+  assert.equal(still.members.find(m => m.id === 'soon').resetAt, at + 2 * H, '静态计划保留已知重置时间');
+  assert.equal(still.members.find(m => m.id === 'unknown').resetAt, at + 7 * 24 * H, '静态计划把未知重置时间按一个周期后展示');
+  pass('planPool: four policies allocate the week, record segments and first reset waste, detect drains, and return static order without a rate');
+}
+
+{
+  const t = Date.UTC(2026, 9, 11, 12), reset1 = new Date(t + 4 * H).toISOString(), reset2 = new Date(t + 8 * H).toISOString();
+  const rate = order.weeklyRateOf([
+    { at: t - 48 * H, week: 20, weekReset: reset1 }, { at: t - 36 * H, week: 30, weekReset: reset1 },
+    { at: t - 12 * H, week: 10, weekReset: reset2 }, { at: t - 6 * H, week: 25, weekReset: reset2 },
+  ], t);
+  assert.ok(Math.abs(rate - 25 / 42) < 1e-12, '同一重置周期里的上涨累加，跨周期下降不计');
+  assert.equal(order.weeklyRateOf([{ at: t - 12 * H, week: 5 }, { at: t - H, week: 8 }], t), null, '覆盖不足 24 小时返回 null');
+  pass('pool order: weekly percentage rate only counts same-reset increases and requires 24 hours of coverage');
 }
 
 {
@@ -175,6 +226,7 @@ function listen(handler) {
     await sw.setAppProxy('claude', false);
     await sw.waitAgentProxyClosed?.();
     fake.server.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
   console.log(`test-pool-strategy: ${checks} checks passed`);
 })().catch(error => { console.error(error); process.exit(1); });

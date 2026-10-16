@@ -18,7 +18,7 @@ const appRoot = process.env.TOKENPULSE_TEST_APP || path.resolve(__dirname, '..')
 const write = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof value === 'string' ? value : JSON.stringify(value)); };
 write(path.join(data, 'prefs.json'), { seenVersion: require(path.join(appRoot, 'package.json')).version, onboarding: 'done', ccSwitch: false });
 require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = async () => ({});
-const shots = process.env.TOKENPULSE_SHOT_DIR;
+const shots = process.env.TP_SHOTS || process.env.TOKENPULSE_SHOT_DIR;
 
 const NOW = Date.now(), MIN = 60000, H = 60 * MIN, D = 24 * H;
 const iso = ms => new Date(ms).toISOString();
@@ -88,6 +88,24 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     }
     pass('survival panel shows the weekly curve, account lanes and forecast limitations');
 
+    await until(`document.querySelectorAll('${DETAIL} .pq-plan .pq-plan-lanes > .pq-plan-lane').length === 2`);
+    const planText = await text(`${DETAIL} .pq-plan`);
+    assert.match(planText, /接下来：.*qa-b@example\.com.*qa-a@example\.com/);
+    assert.equal(await evaluate(`document.querySelectorAll('${DETAIL} .pq-plan .pq-plan-lanes > .pq-plan-lane').length`), 2, '每个官方账号一条泳道');
+    assert.deepEqual(await evaluate(`(() => { const t = document.querySelector('${DETAIL} .pq-plan .pq-plan-track').getBoundingClientRect(), a = document.querySelector('${DETAIL} .pq-plan .pq-plan-axis-scale').getBoundingClientRect(); return [Math.round(a.left - t.left), Math.round(a.right - t.right)]; })()`), [0, 0], '「现在」「7 天后」对齐时间条两端');
+    assert.ok(await evaluate(`document.querySelectorAll('${DETAIL} .pq-plan .pq-plan-bar').length > 0`), '预排画出使用时段');
+    assert.equal(await evaluate(`document.querySelectorAll('${DETAIL} .pq-plan .pq-plan-reset').length`), 2, '每个账号的重置时间画刻度');
+    // 这个号池是「剩余最多」：qa-a 先重置却排在后面，到点作废更多，要提示换成快重置优先
+    assert.match(await text(`${DETAIL} .pq-plan .pq-plan-suggestion`), /^换成「快重置优先」预计少作废约 \d+ 个百分点$/);
+    assert.ok(Number(/约 (\d+) 个/.exec(await text(`${DETAIL} .pq-plan .pq-plan-suggestion`))[1]) >= 20, '剩余最多 ≈ 138、快重置优先 ≈ 115，约少 23 个百分点');
+    assert.match(planText, /重置时作废 ≈|用得完/);
+    if (shots) {
+      await evaluate(`(() => { const target=document.querySelector('${DETAIL} .pq-plan'); for(const node of target.parentElement.children) node.hidden=node!==target; })()`);
+      await shot('plan');
+      await evaluate(`for(const node of document.querySelector('${DETAIL}').children) node.hidden=false`);
+    }
+    pass('pool forecast shows the projected order, one lane per account, reset ticks and waste estimate');
+
     // 用量：今天的 Token = 最近 24 小时那几次里今天的部分；成员分摊三行
     const today = await evaluate("(() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })()");
     const expectToday = [[50, 1200], [40, 2200], [30, 3200], [20, 1000]].filter(([ago]) => NOW - ago * MIN > today).reduce((sum, [, v]) => sum + v, 0);
@@ -132,7 +150,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
 
     // 编辑布局：号池的卡片都有布局标记
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${DETAIL} [data-layout^="quota:pool-"]')].map(n => n.dataset.layout).sort()`),
-      ['quota:pool-daily', 'quota:pool-hourly', 'quota:pool-members', 'quota:pool-models', 'quota:pool-quota', 'quota:pool-requests', 'quota:pool-survival', 'quota:pool-usage']);
+      ['quota:pool-daily', 'quota:pool-hourly', 'quota:pool-members', 'quota:pool-models', 'quota:pool-plan', 'quota:pool-quota', 'quota:pool-requests', 'quota:pool-survival', 'quota:pool-usage']);
     // 0.3.50：没拖过的卡片保持页面自己的顺序（以前时间线和模型速度被挪到最上面）
     await new Promise(resolve => setTimeout(resolve, 300));
     const order = await evaluate(`[...document.querySelectorAll('${DETAIL} > [data-layout]')].map(n => n.dataset.layout)`);
@@ -162,6 +180,8 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     await delay(150);
     const englishPanel = await text(`${DETAIL} .pq-survival`);
     assert.ok(!/[一-鿿]/.test(englishPanel), 'untranslated survival text: ' + englishPanel);
+    const englishPlan = await text(`${DETAIL} .pq-plan`);
+    assert.ok(!/[一-鿿]/.test(englishPlan), 'untranslated pool forecast text: ' + englishPlan);
     await evaluate("setThemeMode('dark')");
     await shot('survival-dark-en');
     pass('survival panel is translated in English and follows dark theme');

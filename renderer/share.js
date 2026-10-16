@@ -22,13 +22,15 @@
     const collection = el('div', { class: 'share-collection' });
     const tabs = el('div', { class: 'share-tabs', role: 'tablist', 'aria-label': tr('分享卡片') });
     const monthTab = button('月报', () => switchKind('month'));
+    const weekTab = button('周报', () => switchKind('week'));
     const medalTab = button('里程碑', () => switchKind('milestone'));
-    for (const tab of [monthTab, medalTab]) tab.setAttribute('role', 'tab');
-    tabs.append(monthTab, medalTab);
+    const reportTabs = [monthTab, weekTab, medalTab];
+    for (const tab of reportTabs) tab.setAttribute('role', 'tab');
+    tabs.append(...reportTabs);
     const save = button('保存 PNG', () => exportImage('save'), 'btn btn-accent');
     const copy = button('复制图片', () => exportImage('copy'));
     const retry = button('重试', () => refresh()); retry.hidden = true;
-    let png = '', data = null, month = '', id = '', exporting = false;
+    let png = '', data = null, month = '', week = '', id = '', exporting = false;
     const subscription = el('input', { id: 'share-subscription', type: 'number', min: 0, max: 1000000, step: '0.01', value: read('tokenpulse-share-subscription', '') });
     const showNames = el('input', { type: 'checkbox', id: 'share-names' });
     const field = (label, input) => el('label', { class: 'share-field' }, [el('span', { text: tr(label) }), input]);
@@ -38,7 +40,9 @@
     const keydown = event => {
       if (event.key === 'Escape') { event.stopPropagation(); node.close(); }
       if (event.target.getAttribute('role') === 'tab' && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
-        event.preventDefault(); switchKind(kind === 'month' ? 'milestone' : 'month'); (kind === 'month' ? monthTab : medalTab).focus();
+        event.preventDefault();
+        const index = reportTabs.findIndex(tab => tab === event.target), next = (index + (event.key === 'ArrowRight' ? 1 : -1) + reportTabs.length) % reportTabs.length;
+        switchKind(['month', 'week', 'milestone'][next]); reportTabs[next].focus();
       }
     };
     node.addEventListener('keydown', keydown);
@@ -50,7 +54,8 @@
       if (!png || exporting) return;
       exporting = true; setReady(false);
       try {
-        const result = action === 'save' ? await api.save(png, `TokenPulse-${kind === 'month' ? month : id}`) : await api.copy(png);
+        const name = kind === 'month' ? `TokenPulse-${month}` : kind === 'week' ? `TokenPulse-week-${week}` : `TokenPulse-${id}`;
+        const result = action === 'save' ? await api.save(png, name) : await api.copy(png);
         if (result.saved || result.copied) toast(tr(result.saved ? '分享卡片已保存' : '分享卡片已复制'));
       } catch (error) { toast(tr('导出失败') + ': ' + errorText(error), { kind: 'error' }); }
       finally { exporting = false; if (node.isConnected) setReady(Boolean(png)); }
@@ -66,7 +71,7 @@
         const image = await api.render(kind, data, { id, subscriptionUsd: value, showNames: showNames.checked, lang: window.PulseI18n?.lang() || 'zh' });
         if (!node.isConnected || token !== generation) return;
         png = image;
-        preview.replaceChildren(el('img', { src: image, alt: tr(kind === 'month' ? '月报预览' : '里程碑预览') }));
+        preview.replaceChildren(el('img', { src: image, alt: tr(kind === 'month' ? '月报预览' : kind === 'week' ? '周报预览' : '里程碑预览') }));
         status.textContent = tr('预览就是导出的图片。'); setReady(true);
       } catch (error) { if (node.isConnected && token === generation) { status.textContent = errorText(error); preview.replaceChildren(); retry.hidden = false; } }
       finally { if (node.isConnected && token === generation) preview.setAttribute('aria-busy', 'false'); }
@@ -75,9 +80,9 @@
       const token = ++generation;
       png = ''; data = null; setReady(false); controls.replaceChildren(); collection.replaceChildren(); retry.hidden = true;
       preview.replaceChildren(); preview.setAttribute('aria-busy', 'true'); status.textContent = tr('正在读取…');
-      monthTab.setAttribute('aria-selected', String(kind === 'month')); medalTab.setAttribute('aria-selected', String(kind === 'milestone'));
+      monthTab.setAttribute('aria-selected', String(kind === 'month')); weekTab.setAttribute('aria-selected', String(kind === 'week')); medalTab.setAttribute('aria-selected', String(kind === 'milestone'));
       try {
-        const result = kind === 'month' ? await api.month(month || undefined) : await api.milestones();
+        const result = kind === 'month' ? await api.month(month || undefined) : kind === 'week' ? await api.week(week || undefined) : await api.milestones();
         if (!node.isConnected || token !== generation) return;
         if (kind === 'month') {
           data = result.report; month = data?.month || '';
@@ -87,6 +92,13 @@
           select.addEventListener('change', () => { month = select.value; refresh(); });
           controls.append(field('月份', select), field('订阅费 $/月（可选）', subscription), field('在卡片里显示号池名／供应商名', showNames));
           write('tokenpulse-share-month-seen', month);
+        } else if (kind === 'week') {
+          data = result.report; week = data?.week || '';
+          if (!data) { status.textContent = tr('还没有用量记录，周报会在有用量后出现。'); return; }
+          const select = el('select', { id: 'share-week' }, result.weeks.map(item => el('option', { value: item.week, text: item.label })));
+          select.value = week;
+          select.addEventListener('change', () => { week = select.value; refresh(); });
+          controls.append(field('周', select), field('在卡片里显示号池名／供应商名', showNames));
         } else {
           data = result;
           const unlocked = result.list.filter(item => item.achievedAt);
@@ -105,7 +117,7 @@
     }
     function drawBadges() { for (const badge of collection.children) badge.setAttribute('aria-pressed', String(badge.dataset.id === id)); }
     function switchKind(next) { kind = next; refresh(); }
-    if (kind === 'month') month = pick; else id = pick;
+    if (kind === 'month') month = pick; else if (kind === 'week') week = pick; else id = pick;
     subscription.addEventListener('change', renderPreview); showNames.addEventListener('change', renderPreview);
     await refresh();
   }

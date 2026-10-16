@@ -9,10 +9,11 @@
  */
 import fs from "fs";
 import path from "path";
+import type { PoolStrategy } from "./agent-types";
 import { comboKey } from "./model-catalog";
 import { estimateCost } from "./model-pricing";
 import { isFastTier, speedSeriesOf, type SpeedSeries } from "./pass-speed";
-import { accountQuota } from "./pool-order";
+import { accountQuota, planPool, poolWeekRate, weeklyRateOf } from "./pool-order";
 import { readQuotaHistory, sameReset, type QuotaSample } from "./quota-history";
 import { routeLogDir } from "./route-ledger";
 
@@ -158,7 +159,7 @@ export function survivalOf(members: { key: string; name: string; samples: QuotaS
   let streak = 0;
   for (const week of past) { if (week.min > 0.05) streak++; else break; }
 
-  // 最近 14 天每天号池用掉多少（个号）：同一个周期里每周已用的上涨
+  // 最近 14 天每天号池用掉多少（个号）：给把握度比较各日节奏用
   const dayStart = (() => { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime(); })();
   const rates: { ago: number; value: number }[] = [];
   for (let i = 1; i <= 14; i++) {
@@ -174,9 +175,10 @@ export function survivalOf(members: { key: string; name: string; samples: QuotaS
     }
     if (covered) rates.push({ ago: i, value: used / 100 });
   }
-  // 往后推用最近 7 天的平均：真实用量常常是几天猛用、几天几乎不用，中位数会把猛用的那几天整个抹掉
-  const recent = rates.filter(rate => rate.ago <= 7);
-  const perDay = recent.length ? recent.reduce((sum, rate) => sum + rate.value, 0) / recent.length : null;
+  // 面板速度和预排共用每个账号的周额度速度（百分点/小时）。
+  const accountRates = list.map((member) => weeklyRateOf(member.samples, now));
+  const perDay = accountRates.length === members.length && accountRates.every((rate): rate is number => rate != null)
+    ? accountRates.reduce((sum, rate) => sum + rate, 0) * 24 / 100 : null;
   const forecastable = list.length === members.length && list.every(member => member.checkedAt != null && now - member.checkedAt <= 30 * 60_000);
 
   // 往后推 7 天：一小时一步
@@ -266,10 +268,26 @@ export function analyzePool(pool: PoolDef, rows: PoolRow[], now = Date.now()) {
   // 号池总额度：官方成员的每周剩余加起来，折成「相当于几个号的周额度」；按最近 7 天每天用掉多少算还能用几天（不算之后的重置）
   const withQuota = members.filter((member) => !member.removed && member.quota && (member.quota.weekLeft ?? member.quota.fiveLeft) != null);
   const left = sum(withQuota, (member) => member.quota!.weekLeft ?? member.quota!.fiveLeft ?? 0) / 100;
-  const firstSample = Math.min(...pool.members.filter((m) => m.type === "account").map((m) => samplesOf(m.id)[0]?.at ?? now));
-  const span = Math.min(7, Math.max(0, (now - firstSample) / DAY));
   const used7 = sum(members, (member) => member.weekUsed7 ?? 0) / 100;
-  const perDay = span >= 0.25 && used7 > 0 ? used7 / Math.max(1, span) : null;
+  const accountIds = pool.members.filter((member) => member.type === "account").map((member) => member.id);
+  const rate = poolWeekRate(accountIds, now);
+  const perDay = rate == null ? null : rate * 24 / 100;
+  const planMembers = pool.members.flatMap((member) => {
+    if (member.type !== "account") return [];
+    const quota = accountQuota(member.id, now)?.week;
+    return quota && quota.left >= 1 ? [{ id: member.id, left: quota.left, resetAt: quota.resetAt, period: WEEK }] : [];
+  });
+  const projected = planPool(pool.strategy as PoolStrategy, planMembers, rate, now);
+  const plan = {
+    order: [...projected.order, ...accountIds.filter((id) => !projected.order.includes(id))],
+    segments: projected.segments,
+    members: projected.members.map(({ id, resetAt, drainAt, waste }) => ({ id, resetAt, drainAt, waste })),
+    rate, outAt: projected.outAt, totalWaste: projected.totalWaste,
+  };
+  const compare = pool.strategy === "reset-first" ? undefined : (() => {
+    const reset = planPool("reset-first", planMembers, rate, now);
+    return { strategyWaste: projected.totalWaste, resetFirstWaste: reset.totalWaste };
+  })();
   const tracks = pool.members.filter((m) => m.type === "account").map((m) => ({
     key: m.key, name: m.name,
     points: samplesOf(m.id).filter((sample) => sample.at > now - 7 * DAY && sample.week != null).map((sample) => ({ at: sample.at, used: sample.week! })),
@@ -291,7 +309,8 @@ export function analyzePool(pool: PoolDef, rows: PoolRow[], now = Date.now()) {
     since: recent[0]?.at ?? null, lastAt: recent.at(-1)?.at ?? null,
     totals: { ...total, today: usage(recent.filter((row) => row.at > today)), d7: usage(recent.filter((row) => row.at > now - 7 * DAY)) },
     members, models, hourly, daily,
-    quota: { accounts: pool.members.filter((m) => m.type === "account").length, measured: withQuota.length, left, used7, perDay, daysLeft: perDay ? left / perDay : null, tracks },
+    quota: { accounts: accountIds.length, measured: withQuota.length, left, used7, perDay, daysLeft: perDay ? left / perDay : null, tracks },
+    plan, ...(compare ? { compare } : {}),
     survival: survivalOf(pool.members.filter((m) => m.type === "account").map((m) => ({ key: m.key, name: m.name, samples: samplesOf(m.id), share: members.find((member) => member.key === m.key)?.weekUsed7 ?? 0, checkedAt: accountQuota(m.id, now)?.at })), now),
     recent: recent.slice(-60).reverse().map((row) => ({ at: row.at, member: row.member, memberName: row.memberName, model: row.model, effort: row.effort, status: row.status, ok: row.ok, attempt: row.attempt, tokens: row.tokens, costUsd: row.costUsd, ms: row.ms, speed: row.speed || null })),
   };

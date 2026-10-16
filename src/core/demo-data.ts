@@ -86,14 +86,21 @@ export function writeDemoData(dataDir: string, now = Date.now()) {
   sessions.forEach(([from, to], index) => {
     // 一段工作时间里主要改一个项目，偶尔切到别的项目（另开一个对话）
     const main = index % PROJECTS.length;
-    for (let at = from + random() * 2 * MINUTE; at < Math.min(to, now - MINUTE); at += (1 + random() * 2.2) * MINUTE) {
-      const project = random() < 0.75 ? main : Math.floor(random() * PROJECTS.length);
-      const cwd = PROJECTS[project], file = `demo-session-${index}-${project}.jsonl`;
-      const age = (now - at) / 86400000;
-      const weights = COMBOS.map((c) => c.weight(age)), total = weights.reduce((a, b) => a + b, 0);
-      let pick = random() * total, combo = COMBOS[0];
-      for (let i = 0; i < COMBOS.length; i++) { pick -= weights[i]; if (pick <= 0) { combo = COMBOS[i]; break; } }
-      const cacheRead = Math.round(70000 + random() * 260000), fresh = Math.round(2000 + random() * 14000), cacheWrite = Math.round(random() * 12000);
+    const project = random() < 0.75 ? main : Math.floor(random() * PROJECTS.length);
+    const cwd = PROJECTS[project], file = `demo-session-${index}-${project}.jsonl`;
+    const age = (now - from) / 86400000;
+    const weights = COMBOS.map((c) => c.weight(age)), total = weights.reduce((a, b) => a + b, 0);
+    let pick = random() * total, combo = COMBOS[0];
+    for (let i = 0; i < COMBOS.length; i++) { pick -= weights[i]; if (pick <= 0) { combo = COMBOS[i]; break; } }
+    let contextTokens = 0, requests = 0, idleScheduled = false, expired = false;
+    for (let at = from + random() * 2 * MINUTE; at < Math.min(to, now - MINUTE);) {
+      const idleExpired = expired;
+      expired = false;
+      const cacheRead = idleExpired ? 0 : contextTokens;
+      const fresh = idleExpired
+        ? Math.round(contextTokens * (0.9 + random() * 0.08))
+        : requests ? Math.round(2000 + random() * 14000) : Math.round(175000 + random() * 60000);
+      const cacheWrite = Math.round(random() * 12000);
       const output = Math.round(900 + random() * (combo.effort === "xhigh" ? 12000 : 6000));
       const input = cacheRead + fresh + cacheWrite;
       const costUsd = estimateCost(combo.model, { input, output, cacheRead, cacheWrite });
@@ -102,6 +109,11 @@ export function writeDemoData(dataDir: string, now = Date.now()) {
         ...(combo.effort === "not_supported" ? {} : { effort: combo.effort, effortSource: "assistant.demo" }),
         accountRef: DEMO_ACCOUNT.ref, input, output, cacheRead, cacheWrite, reasoning: Math.round(output * 0.3), costUsd, calls: 1,
       });
+      contextTokens = Math.min(260000, (idleExpired ? 0 : contextTokens) + fresh + cacheWrite);
+      requests++;
+      const gap = !idleScheduled && requests === 15;
+      if (gap) { idleScheduled = true; expired = true; }
+      at += (gap ? 7 + random() * 2 : 1 + random() * 2.2) * MINUTE;
     }
   });
 

@@ -200,6 +200,79 @@
     return panel;
   }
 
+  /** 未来 7 天的额度排法：使用主进程按最近 7 天速度算出的成员时段。 */
+  function planPanel(provider, data) {
+    const panel = el('article', { class: 'panel pq-plan' }, [el('div', { class: 'panel-heading' }, [
+      el('h2', { text: '预排' }), el('span', { class: 'section-tag', text: `轮换方式：${STRATEGY[provider.pool.strategy] || provider.pool.strategy}` }),
+    ])]);
+    const plan = data?.plan;
+    if (!data) { panel.append(empty('正在读取…')); return panel; }
+    const accounts = provider.pool.members.filter(member => member.type === 'account');
+    const byId = new Map(accounts.map(member => [member.id, member]));
+    const order = plan?.order || [];
+    const next = el('div', { class: 'pq-plan-next' }, [span('接下来：')]);
+    order.forEach((id, i) => {
+      if (i) next.append(document.createTextNode(' → '));
+      next.append(el('span', { class: 'pq-plan-order-name', text: byId.get(id)?.name || id, translate: 'no' }));
+    });
+    panel.append(next);
+    if (!plan || plan.rate == null) {
+      panel.append(el('p', { class: 'pq-plan-unknown', text: '用量数据还不够，先按重置时间排' }));
+      return panel;
+    }
+    const now = plan?.now ?? data.now, end = now + 7 * DAY;
+    const planMembers = plan?.members || [];
+    const dateText = at => {
+      const d = new Date(at), english = window.PulseI18n?.lang() === 'en';
+      const days = english ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] : ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+      return `${days[d.getDay()]} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    };
+    const exact = at => new Date(at).toLocaleString(window.PulseI18n?.lang() === 'en' ? 'en-US' : 'zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const lanes = el('div', { class: 'pq-plan-lanes' }, accounts.map(member => {
+      const item = planMembers.find(row => row.id === member.id);
+      const resetAt = item?.resetAt ?? member.quota?.weekResetAt ?? null;
+      const title = item?.waste == null ? '作废待估' : item.waste < 0.5 ? '用得完' : `重置时作废 ≈ ${Math.round(item.waste)}%`;
+      const name = el('div', { class: 'pq-plan-member-name' }, [
+        el('b', { text: member.name, translate: 'no', title: member.name }),
+        el('small', { text: resetAt && resetAt <= end ? `${dateText(resetAt)} 重置` : item ? '7 天内不重置' : '暂无周额度数据' }),
+      ]);
+      const track = el('div', { class: 'pq-plan-track', title: member.name });
+      for (const segment of (plan?.segments || []).filter(row => row.id === member.id)) {
+        const from = Math.max(now, segment.from), to = Math.min(end, segment.to);
+        if (to <= from) continue;
+        const bar = el('i', { class: 'pq-plan-bar', title: `${member.name} · ${exact(from)} – ${exact(to)}` });
+        bar.style.setProperty('--left', `${Math.max(0, (from - now) / (7 * DAY) * 100)}%`);
+        bar.style.setProperty('--width', `${Math.max(.2, (to - from) / (7 * DAY) * 100)}%`);
+        track.append(bar);
+      }
+      if (resetAt && resetAt >= now && resetAt <= end) {
+        const tick = el('i', { class: 'pq-plan-reset', title: `${dateText(resetAt)} 重置 · ${exact(resetAt)}` });
+        tick.style.setProperty('--at', `${(resetAt - now) / (7 * DAY) * 100}%`);
+        track.append(tick);
+      }
+      if (item?.drainAt && item.drainAt >= now && item.drainAt <= end) {
+        const drain = el('i', { class: 'pq-plan-drain', text: '×', title: `预计 ${exact(item.drainAt)} 用完` });
+        drain.style.setProperty('--at', `${(item.drainAt - now) / (7 * DAY) * 100}%`);
+        track.append(drain);
+      }
+      return el('div', { class: 'pq-plan-lane' }, [name, track, el('span', { class: 'pq-plan-waste', text: item ? title : '暂无周额度数据' })]);
+    }));
+    // 刻度和泳道用同一套网格列，「现在」「7 天后」正好落在时间条的两端
+    panel.append(lanes, el('div', { class: 'pq-plan-lane pq-plan-axis' }, [el('span'), el('div', { class: 'pq-plan-axis-scale' }, [span('现在'), span('7 天后')])]));
+    if (plan?.outAt) {
+      const firstReset = planMembers.map(item => item.resetAt).filter(at => at != null && at >= now).sort((a, b) => a - b)[0];
+      panel.append(el('p', { class: 'pq-plan-out', text: firstReset
+        ? `预计 ${dateText(plan.outAt)} 前后全部用完，最早的重置在 ${dateText(firstReset)}`
+        : `预计 ${dateText(plan.outAt)} 前后全部用完，最早的重置时间暂不可知` }));
+    }
+    if (plan?.rate != null) panel.append(el('p', { class: 'pq-plan-footnote', text: `按最近 7 天平均每小时用掉 ${plan.rate.toFixed(2)} 个百分点推算。网页聊天和其他设备的用量也算在官方额度里，实际还会受 5 小时窗口和限流影响。` }));
+    // 现在的方式比快重置优先多作废 5 个百分点以上才提示
+    if (data.compare?.strategyWaste != null && data.compare.resetFirstWaste != null && data.compare.strategyWaste - data.compare.resetFirstWaste >= 5) {
+      panel.append(el('p', { class: 'pq-plan-suggestion', text: `换成「快重置优先」预计少作废约 ${Math.round(data.compare.strategyWaste - data.compare.resetFirstWaste)} 个百分点` }));
+    }
+    return panel;
+  }
+
   /*
    * 生存分析（0.3.51）：这周的额度能撑到底吗。数字在 pool-insight.ts 的 survivalOf 里算：
    * 曲线是号池剩余（个号）随时间的变化，灰线是前几周；虚线按最近 7 天平均每天用掉的量往后推，成员的重置时间到了就回满；
@@ -413,6 +486,7 @@
     ]));
     if (entry.failed && !data) host.append(el('p', { class: 'stale-note' }, [icon('alert'), span('号池的统计没有读出来，稍后会自动重试。')]));
     host.append(el('div', { class: 'quota-window-grid' }, [markLayout(quotaPanel(provider, data), 'quota:pool-quota'), markLayout(usagePanel(provider, data), 'quota:pool-usage')]));
+    if (provider.pool.members.some(member => member.type === 'account')) host.append(markLayout(planPanel(provider, data), 'quota:pool-plan'));
     if (provider.pool.members.some(member => member.type === 'account')) host.append(markLayout(survivalPanel(provider, data), 'quota:pool-survival'));
     host.append(markLayout(membersPanel(provider, data), 'quota:pool-members'));
     host.append(historyGrid(data, after));

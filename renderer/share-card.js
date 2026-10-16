@@ -71,6 +71,51 @@
     ]);
     return card;
   }
+  function week(r, options) {
+    const [value, unit] = big(r.tokens);
+    const change = r.previousTokens ? (r.tokens / r.previousTokens - 1) * 100 : null;
+    const start = new Date(r.week + 'T12:00:00'), end = new Date(r.daily[6].day + 'T12:00:00');
+    const range = english
+      ? `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}${start.getFullYear() !== end.getFullYear() ? `, ${start.getFullYear()}` : ''} – ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, ${end.getFullYear()}`
+      : r.label;
+    const lede = el('p', { class: 'lede' }, [
+      r.analogy ? analogyText(r.analogy) : english ? `${n(r.requests)} requests in total` : `一共 ${n(r.requests)} 次请求`,
+      change != null ? (english ? ` · ${Math.abs(change).toFixed(0)}% ${change >= 0 ? 'more' : 'less'} than the prior week` : `，比前一周${change >= 0 ? '多' : '少'}了 ${Math.abs(change).toFixed(0)}%`) : null,
+      r.analogy ? el('span', { class: 'rough', text: english ? '(rough estimate)' : '（粗略换算）' }) : null,
+    ]);
+    const card = el('div', { class: 'share-card weekly' }, [
+      brand([english ? `${range} · Weekly report` : `${r.label} · 周报`]),
+      el('p', { class: 'eyebrow', text: english ? 'This week, you and AI used' : '这周，你和 AI 一起用掉了' }),
+      el('div', { class: 'big num' }, [value, el('small', { text: `${unit} Tokens`.trim() })]),
+      lede,
+      el('div', { class: 'hero-stats' }, [
+        stat(english ? 'Reference cost' : '参考费用', usd(r.costUsd), '', english ? 'Reported by sessions or estimated at reference prices' : '会话自报的或按官方标价估的', 'accent'),
+        stat(english ? 'Requests' : '请求次数', n(r.requests), english ? '' : '次', english ? `${n(r.requests / 7)} per day on average` : `每天平均 ${n(r.requests / 7)} 次`),
+        stat(english ? 'Active days' : '活跃天数', String(r.activeDays), english ? '/ 7 days' : '/ 7 天', english ? `Longest streak: ${r.longestStreak} days` : `最长连续 ${r.longestStreak} 天`),
+      ]),
+      el('div', { class: 'row2' }, [weekDaysPanel(r), modelsPanel(r)]),
+      el('div', { class: 'row3' }, [nightPanel(r), fastPanel(r), cachePanel(r)]),
+      options.showNames && r.routes?.length ? el('p', { class: 'routes', text: (english ? 'Routes: ' : '经由：') + r.routes.join(' · '), translate: 'no' }) : null,
+      foot(stamp()),
+    ]);
+    return card;
+  }
+  function weekDaysPanel(r) {
+    const max = Math.max(1, ...r.daily.map(item => item.tokens));
+    const days = el('div', { class: 'week-days' }, r.daily.map(item => {
+      const bar = el('i', { class: 'week-bar' });
+      bar.style.height = `${Math.max(item.tokens > 0 ? 5 : 0, item.tokens / max * 76)}px`;
+      return el('div', { class: `week-day${r.best?.day === item.day ? ' best' : ''}` }, [
+        el('span', { class: 'week-date', text: day(item.day) }),
+        el('div', { class: 'week-track' }, [bar]),
+        el('b', { class: 'num', text: item.tokens ? bigText(item.tokens) : '—' }),
+      ]);
+    }));
+    return el('div', { class: 'panel week-panel' }, [
+      el('div', { class: 'section-head' }, [el('h2', { text: english ? 'Seven-day usage' : '七天用量' }), el('span', { text: english ? 'Tokens by day' : '每天 Tokens' })]),
+      days,
+    ]);
+  }
   function calendarPanel(r) {
     const levels = ['#eef0f3', '#cfe7db', '#8fcbad', '#3fa57a', '#14855f'];
     const max = Math.max(1, ...r.daily.map(item => item.tokens));
@@ -105,16 +150,28 @@
   }
   function fastPanel(r) {
     const top = r.fastest[0];
-    if (!top) return el('div', { class: 'panel mini' }, [el('h3', { text: '⚡ 最快的模型' }), el('b', { text: '—' }), el('p', { text: '这个月还没有量到速度。打开透明转发，或者用本地路由，就能量到。' })]);
+    if (!top) return el('div', { class: 'panel mini' }, [el('h3', { text: '⚡ 最快的模型' }), el('b', { text: '—' }), el('p', { text: r.week ? '这周还没有量到速度。打开透明转发，或者用本地路由，就能量到。' : '这个月还没有量到速度。打开透明转发，或者用本地路由，就能量到。' })]);
     const max = Math.max(...r.fastest.map(item => item.tokensPerSec));
     const rows = el('div', { class: 'speeds' }, r.fastest.map((item, i) => { const bar = el('i'); bar.style.width = `${item.tokensPerSec / max * 100}%`; bar.style.background = ['var(--accent)', 'var(--week)', 'var(--claude)'][i]; return el('div', {}, [el('span', { text: item.model + (item.effort ? ` ${item.effort}` : '') }), bar, el('b', { class: 'num', text: String(item.tokensPerSec) })]); }));
     return el('div', { class: 'panel mini' }, [el('h3', { text: '⚡ 最快的模型' }), el('b', { class: 'num' }, [String(top.tokensPerSec), el('small', { text: ' Token/秒' })]), el('p', { text: top.model + (top.effort ? ` ${top.effort}` : '') + (top.firstTokenMs ? ` · 首字 ${(top.firstTokenMs / 1000).toFixed(1)} 秒` : '') }), rows]);
   }
   function cachePanel(r) {
-    const share = r.input > 0 ? r.cacheRead / r.input : 0;
+    const share = r.week ? (r.cacheHitRate || 0) : (r.input > 0 ? r.cacheRead / r.input : 0);
     const used = el('i'); used.style.width = `${share * 100}%`;
     const fresh = el('i', { class: 'fresh' }); fresh.style.width = `${(1 - share) * 100}%`;
     const legendDot = color => { const d = el('i', { class: 'dot' }); d.style.background = color; return d; };
+    if (r.week) {
+      const known = r.cacheSavingsAvailable;
+      const savings = r.cacheSavingsUsd;
+      const saved = savings < 0 ? `-$${n(Math.abs(savings))}` : `+$${n(savings)}`;
+      return el('div', { class: 'panel mini' }, [
+        el('h3', { text: '♻️ 缓存净省下' }),
+        el('b', { class: 'num', text: known ? saved : '—' }),
+        el('p', { text: !known ? '还没有可估价的缓存用量' : savings < 0 ? `缓存命中率 ${(share * 100).toFixed(0)}% · 缓存写入成本高于读取节省` : `${(share * 100).toFixed(0)}% 的输入来自缓存读取` }),
+        el('div', { class: 'cache' }, [used, fresh]),
+        el('div', { class: 'cache-legend' }, [el('span', {}, [legendDot('var(--accent)'), `缓存读取 ${bigText(r.cacheRead)}`]), el('span', {}, [legendDot('#cfe7db'), `新内容 ${bigText(Math.max(0, r.input - r.cacheRead))}`])]),
+      ]);
+    }
     return el('div', { class: 'panel mini' }, [el('h3', { text: '♻️ 缓存帮你省下' }), el('b', { class: 'num', text: usd(r.cacheSavingsUsd) }), el('p', { text: `${(share * 100).toFixed(0)}% 的输入来自缓存读取` }), el('div', { class: 'cache' }, [used, fresh]),
       el('div', { class: 'cache-legend' }, [el('span', {}, [legendDot('var(--accent)'), `缓存读取 ${bigText(r.cacheRead)}`]), el('span', {}, [legendDot('#cfe7db'), `新内容 ${bigText(Math.max(0, r.input - r.cacheRead))}`])])]);
   }
@@ -311,7 +368,7 @@
     english = options?.lang === 'en';
     document.documentElement.lang = english ? 'en' : 'zh-CN';
     const stage = document.getElementById('stage');
-    stage.replaceChildren(kind === 'month' ? month(data, options) : milestone(data, options));
+    stage.replaceChildren(kind === 'month' ? month(data, options) : kind === 'week' ? week(data, options) : milestone(data, options));
     if (english) window.PulseI18n.apply(stage);
     return Math.ceil(document.documentElement.scrollHeight);
   };

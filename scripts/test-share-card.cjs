@@ -17,6 +17,7 @@ app.setPath('userData', path.join(dir, 'electron'));
 // 每张图的隐藏窗口会销毁；测试要等下一张，而不是最后一个窗口关闭就退出。
 app.on('window-all-closed', () => {});
 const report = require('../build/core/share-report.js');
+const { cacheSavings } = require('../build/core/model-pricing.js');
 const share = require('../build/main/share.js');
 app.on('browser-window-created', (_, win) => {
   const capture = win.webContents.capturePage.bind(win.webContents);
@@ -67,10 +68,26 @@ app.whenReady().then(async () => {
     assert.ok(Math.abs(month.nightShare - (4 * 3000 + 4 * 1000) / (4 * 3000 + 20 * 1000)) < 1e-9, '22 点到 6 点（8 个小时）');
     assert.deepEqual(month.fastest.map(f => f.model), ['grok-4.7', 'claude-opus-5'], '不到 20 次的不算');
     assert.ok(month.previousTokens > 0 && month.tokens > month.previousTokens);
+    const expectedCacheSavings = usage.filter(r => r.day.startsWith('2026-09-')).reduce((sum, row) => sum + (cacheSavings(row.model, row) ?? 0), 0);
     assert.ok(month.cacheSavingsUsd > 0);
+    assert.ok(Math.abs(month.cacheSavingsUsd - expectedCacheSavings) < 1e-9, 'monthly cache savings use the shared net formula');
     assert.ok(month.analogy && month.analogy.count >= 3);
     assert.deepEqual(report.reportMonths(usage).slice(0, 2), ['2026-10', '2026-09']);
     pass('month report: totals, active days and streak, best day, tools and models, night share, fastest model (20+ samples), cache savings, analogy');
+
+    const week = report.weekReport({ usage, week: '2026-09-07', hours, speed });
+    const weekRows = usage.filter(r => r.day >= '2026-09-07' && r.day <= '2026-09-13');
+    const previousRows = usage.filter(r => r.day >= '2026-08-31' && r.day <= '2026-09-06');
+    assert.equal(week.tokens, weekRows.reduce((sum, row) => sum + row.tokens, 0));
+    assert.equal(week.previousTokens, previousRows.reduce((sum, row) => sum + row.tokens, 0));
+    assert.equal(week.daily.length, 7);
+    assert.equal(week.activeDays, new Set(weekRows.map(row => row.day)).size);
+    assert.equal(week.cacheHitRate, week.cacheRead / week.input);
+    const expectedWeekCache = weekRows.reduce((sum, row) => sum + (cacheSavings(row.model, row) ?? 0), 0);
+    assert.ok(Math.abs(week.cacheSavingsUsd - expectedWeekCache) < 1e-9, 'weekly savings use the same net cache function as monthly savings');
+    assert.deepEqual(report.reportWeeks(usage).slice(0, 2), ['2026-10-12', '2026-10-05']);
+    assert.ok(report.reportWeeks(usage).length <= 26);
+    pass('week report: same usage totals and cache savings basis, previous week, 7-day series and latest 26 weeks');
 
     const state = report.milestoneState(usage, Date.parse('2026-10-13T20:00:00'));
     const got = Object.fromEntries(state.list.filter(m => m.achievedAt).map(m => [m.id, m.achievedAt]));
@@ -104,20 +121,24 @@ app.whenReady().then(async () => {
     assert.equal(realMonth.report.tokens, total);
     assert.equal(realMonth.report.fastest[0].samples, 20, '月初记录不能落进跨月的周桶');
     assert.deepEqual(realMonth.report.routes, ['DEMO Pool']);
+    const realWeek = await share.shareWeek(async () => ({ usage }), '2026-08-31');
+    assert.equal(realWeek.report.tokens, usage.filter(r => r.day >= '2026-08-31' && r.day <= '2026-09-06').reduce((sum, row) => sum + row.tokens, 0));
+    assert.equal(realWeek.report.fastest[0].samples, 20, '月初记录进入跨月的周报');
+    assert.deepEqual(realWeek.report.routes, ['DEMO Pool']);
     assert.deepEqual((await share.shareMilestones(async () => ({ usage, now: Date.parse('2026-10-13T20:00:00') }))).totals, state.totals);
-    pass('main share data reads the selected month and route speed with daily buckets, including the month boundary');
+    pass('main share data reads month and cross-month week usage with route speed and daily buckets');
 
     month.routes = ['DEMO Pool', 'DEMO Provider'];
-    for (const [kind, data, options] of [['month', month, { subscriptionUsd: 200, lang: 'zh' }], ['milestone', state, { lang: 'zh' }], ['month', month, { subscriptionUsd: 200, lang: 'en', showNames: true }], ['milestone', state, { lang: 'en' }]]) {
+    for (const [kind, data, options] of [['month', month, { subscriptionUsd: 200, lang: 'zh' }], ['week', week, { lang: 'zh', showNames: true }], ['milestone', state, { lang: 'zh' }], ['month', month, { subscriptionUsd: 200, lang: 'en', showNames: true }], ['week', week, { lang: 'en', showNames: true }], ['milestone', state, { lang: 'en' }]]) {
       const url = await share.renderShareCard(kind, data, options);
       const image = nativeImage.createFromDataURL(url);
       const { width, height } = image.getSize();
       assert.ok(width >= 1100 && height > 900, `${kind} ${width}x${height}`);
-      if (process.env.TOKENPULSE_SHOT_DIR) fs.writeFileSync(path.join(process.env.TOKENPULSE_SHOT_DIR, `share-${kind}-${options.lang}.png`), image.toPNG());
+      if (process.env.TP_SHOTS || process.env.TOKENPULSE_SHOT_DIR) { const shots = process.env.TP_SHOTS || process.env.TOKENPULSE_SHOT_DIR; fs.mkdirSync(shots, { recursive: true }); fs.writeFileSync(path.join(shots, `share-${kind}-${options.lang}.png`), image.toPNG()); }
     }
     await assert.rejects(share.renderShareCard('other', {}, {}), /卡片类型无效/);
     assert.equal(require('electron').BrowserWindow.getAllWindows().length, 0, '隐藏渲染窗口全部销毁');
-    pass('both cards render to PNG through the hidden window; unknown kinds are refused; windows are destroyed');
+    pass('month, week and milestone cards render to PNG in Chinese and English; unknown kinds are refused; windows are destroyed');
     const writeClipboard = clipboard.write;
     let written;
     try {

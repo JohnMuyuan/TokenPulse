@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { estimateCost, priceOf } from "./model-pricing";
+import { analyzeCache, type CacheAnalysis } from "./cache-analysis";
 import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
 import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-switch";
@@ -192,6 +193,8 @@ export type RequestQuery = {
   channel?: "all" | "official" | "api" | "unknown";
   /** 顺便按项目文件夹汇总（跟随全部筛选），给用量明细的「按项目」视图用。 */
   projects?: boolean;
+  /** 缓存命中和断档分析（跟随全部查询筛选，不受分页影响）。 */
+  cache?: boolean;
 };
 
 /** 一个项目里某个「型号 × 思考等级 × 工具」组合的用量。effort 没记录的为 "unknown"。 */
@@ -340,6 +343,8 @@ export type RequestPage = {
   accounts: { id: string; label: string; source: string; requests: number; tokens: number; costUsd: number; lastAt: number; inferred: number }[];
   /** projects 为 true 时才有，按 Token 从多到少。 */
   projects?: ProjectAggregate[];
+  /** cache 为 true 时才有，基于全部匹配行计算，不受分页影响。 */
+  cache?: CacheAnalysis;
 };
 
 function sessionOf(record: RequestRecord) {
@@ -706,6 +711,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
     query.sort === "tokens" ? b.tokens - a.tokens || b.at - a.at : query.sort === "cost" ? b.costUsd - a.costUsd || b.at - a.at : b.at - a.at,
   );
   const projectQuotas = query.projects ? projectQuota(officialParts, accountRows, Date.now()) : null;
+  const cache = query.cache ? analyzeCache(matched) : undefined;
   const pageSize = Math.max(1, query.pageSize || 20);
   const pages = Math.max(1, Math.ceil(matched.length / pageSize));
   const page = Math.min(Math.max(0, query.page || 0), pages - 1);
@@ -722,6 +728,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
     firstAt,
     accounts: [...byAccount.values()].sort((a, b) => b.requests - a.requests),
     ...(query.aggregate ? { aggregate: { rows: [...groups.values()], hours: [...hours.values()].sort((a, b) => a.hour - b.hour) } } : {}),
+    ...(cache ? { cache } : {}),
     ...(query.projects
       ? {
           projects: [...projects.values()]

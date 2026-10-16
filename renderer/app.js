@@ -992,6 +992,14 @@ function renderStats() {
       el('div', { class: 'stat-value' + (format === amount && numberMode === 'exact' && value >= 1e9 ? ' long' : ''), title: format === amount ? number(value) : '' }, [valueNode, approx ? el('small', { class: 'cn-approx', text: approx }) : null]),
       el('div', { class: 'stat-sub' }, sub)
     ]);
+    if (name === 'cache' && state.page === 'overview') {
+      card.classList.add('stat-clickable');
+      card.setAttribute('role', 'button');
+      card.tabIndex = 0;
+      const openCache = () => { showUsageView('cache'); navigate('usage'); };
+      card.addEventListener('click', event => { if (!event.target.closest('button') && document.documentElement.dataset.layoutEdit !== 'on') openCache(); });
+      card.addEventListener('keydown', event => { if ((event.key === 'Enter' || event.key === ' ') && document.documentElement.dataset.layoutEdit !== 'on') { event.preventDefault(); openCache(); } });
+    }
     return state.page === 'overview' ? markLayout(card, 'overview:' + name) : card;
   }));
 }
@@ -1801,6 +1809,7 @@ function renderUsage() {
   }));
   window.PulseInsights?.render(analysis, entering());
   window.PulseProjects?.render();
+  window.PulseCache?.render();
   renderRecords();
   revealDetailResults();
 }
@@ -2306,13 +2315,14 @@ function requestsVisible() { return state.page === 'usage' && state.usageView ==
 const USAGE_VIEWS = {
   requests: '每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情',
   daily: '按日期、工具、模型聚合；费用为参考估算',
-  projects: '按项目文件夹汇总：多少个 Agent 对话、多少 Token 和额度，由哪些模型和思考等级组成。点开看构成'
+  projects: '按项目文件夹汇总：多少个 Agent 对话、多少 Token 和额度，由哪些模型和思考等级组成。点开看构成',
+  cache: '缓存读取 ÷ 输入（输入含缓存读写）；查看净省下、命中率和缓存断档原因。'
 };
 function showUsageView(view) {
   state.usageView = USAGE_VIEWS[view] ? view : 'requests';
-  const requests = state.usageView === 'requests', daily = state.usageView === 'daily', projects = state.usageView === 'projects';
-  $('view-requests').hidden = !requests; $('view-daily').hidden = !daily; $('view-projects').hidden = !projects;
-  $('request-count').hidden = !requests; $('record-count').hidden = !daily; $('project-count').hidden = !projects;
+  const requests = state.usageView === 'requests', daily = state.usageView === 'daily', projects = state.usageView === 'projects', cache = state.usageView === 'cache';
+  $('view-requests').hidden = !requests; $('view-daily').hidden = !daily; $('view-projects').hidden = !projects; $('view-cache').hidden = !cache;
+  $('request-count').hidden = !requests; $('record-count').hidden = !daily; $('project-count').hidden = !projects; $('cache-count').hidden = !cache;
   // 标题栏上的按钮跟着视图换：说明和逐条导出只属于逐条请求，按日导出只属于按日汇总
   $('verify-help').hidden = $('export-requests').hidden = !requests; $('export-csv').hidden = !daily;
   $('detail-caption').textContent = USAGE_VIEWS[state.usageView];
@@ -2347,7 +2357,7 @@ const LAYOUT = [
   ['quota:timeline', '模型与思考等级时间线', '各页通用'], ['quota:speed', '模型速度', '各页通用'], ['quota:account', '这个账号的请求', '官方账号'],
   ['quota:balance', '余额', 'DeepSeek 和第三方 Key'], ['quota:local', '本机用量', 'DeepSeek 和第三方 Key'], ['quota:spend', '消耗趋势', 'DeepSeek 和第三方 Key'],
   ['quota:history', '余额走势', 'DeepSeek 和第三方 Key'], ['quota:models', '模型换算', 'DeepSeek 和第三方 Key'], ['quota:site', '站点上的 Key', 'DeepSeek 和第三方 Key'], ['quota:about', '账号说明', 'DeepSeek 和第三方 Key'],
-  ['quota:pool-quota', '号池总额度', '号池'], ['quota:pool-usage', '号池用量', '号池'], ['quota:pool-survival', '生存分析', '号池'], ['quota:pool-members', '成员分摊', '号池'], ['quota:pool-hourly', '号池最近 24 小时', '号池'],
+  ['quota:pool-quota', '号池总额度', '号池'], ['quota:pool-plan', '预排', '号池'], ['quota:pool-usage', '号池用量', '号池'], ['quota:pool-survival', '生存分析', '号池'], ['quota:pool-members', '成员分摊', '号池'], ['quota:pool-hourly', '号池最近 24 小时', '号池'],
   ['quota:pool-daily', '号池最近 30 天', '号池'], ['quota:pool-models', '号池用过的模型', '号池'], ['quota:pool-requests', '这个号池的请求', '号池'],
   ['usage:breakdown', 'Token 构成', '卡片'], ['usage:year', '全年活跃度', '卡片'], ['usage:trend', '用量趋势 · 按工具', '卡片'], ['usage:tools', '工具排行', '卡片'], ['usage:hours', '使用时段分布', '卡片'],
   ['usage:models', '模型排行', '卡片'], ['usage:speed', '模型速度走势', '卡片'], ['usage:tokensci', 'tokens.ci 上传', '卡片'], ['usage:records', '用量明细', '卡片'],
@@ -2905,7 +2915,10 @@ const PREF_ROWS = {
       { value: 95, label: '已用 95% 时提醒', hint: '快用完才提醒' }] },
     { key: 'notifyMismatch', title: '型号核验提醒', hint: '新请求的返回型号和请求的对不上、或者响应格式不像官方时，发一条系统通知，点开直接跳到请求记录。', options: [
       { value: true, label: '发现就提醒', hint: '默认' },
-      { value: false, label: '不提醒', hint: '只在请求记录页和侧栏红点里显示' }] }
+      { value: false, label: '不提醒', hint: '只在请求记录页和侧栏红点里显示' }] },
+    { key: 'weeklySummary', title: '每周小结', hint: '每周一 9 点以后发一条系统通知，概括上周（周一到周日）的用量、和前一周的对比、用得最多的模型和缓存省下的钱；那时软件没开，就在这周第一次打开时补发。点开可以生成周报卡片。', options: [
+      { value: true, label: '每周一提醒', hint: '默认' },
+      { value: false, label: '不提醒', hint: '周报仍可以在分享卡片里随时查看' }] }
   ]
 };
 function settingRow(title, hint, control) {
@@ -3760,6 +3773,7 @@ api.egressState?.().then(syncQuotaBlocks).catch(() => {});
 api.onOpenPage?.(target => {
   // 0.3.55：自动切换 CLI 登录的通知点开是设置里的官方账号
   if (target?.page === 'settings') { openSettings(target.tab || 'general'); return; }
+  if (target?.page === 'share') { window.PulseShare?.open(target.tab || 'month', target.pick || ''); return; }
   if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
   navigate(target?.page || 'overview', { force: true });
 });

@@ -69,7 +69,7 @@ export type ProxyTarget = {
 
 /**
  * 号池：同一工具的多个官方账号 / API Key 供应商轮流用。
- * reset-first：快重置优先；most-left：剩余最多（0.3.44，见 pool-order.ts）。
+ * reset-first：按每周重置时间预排；most-left：剩余最多（见 pool-order.ts）。
  */
 export type PoolStrategy = "round-robin" | "fill-first" | "reset-first" | "most-left";
 export const POOL_STRATEGIES: PoolStrategy[] = ["round-robin", "fill-first", "reset-first", "most-left"];

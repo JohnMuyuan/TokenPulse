@@ -6,7 +6,8 @@ import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
 import { countRouteLog, passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
 import { accountSpeed, speedSeries } from "../core/pass-speed";
-import { copyShareCard, renderShareCard, saveShareCard, shareMilestones, shareMonth } from "./share";
+import { copyShareCard, renderShareCard, saveShareCard, shareMilestones, shareMonth, shareWeek } from "./share";
+import { maybeWeeklySummary } from "../core/weekly-summary";
 import { lastProbes, runProbe } from "./codex-state-probe";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import fsSync from "fs";
@@ -579,6 +580,7 @@ function parseRequestQuery(value: unknown): RequestQuery {
     channel: ["official", "api", "unknown"].includes(String(input.channel)) ? input.channel as RequestQuery["channel"] : "all",
     until: Number.isFinite(input.until) ? Number(input.until) : undefined,
     projects: input.projects === true,
+    cache: input.cache === true,
   };
 }
 
@@ -590,6 +592,20 @@ let initialSnapshot: Promise<Snapshot> | null = null;
 
 function publishSnapshot(snapshot: Snapshot): Snapshot {
   lastSnapshot = snapshot;
+  if (snapshot.scannedAt) {
+    try {
+      maybeWeeklySummary({
+        now: snapshot.now, usage: snapshot.usage, enabled: readPrefs().weeklySummary,
+        notify: notice => {
+          if (!Notification.isSupported()) return;
+          const notification = new Notification({ title: tr(notice.title), body: tr(notice.body), icon: windowIcon() });
+          notification.on("click", notice.onClick);
+          notification.show();
+        },
+        openPage: target => { revealWindow(); win?.webContents.send("open-page", target); },
+      });
+    } catch (error) { console.error("[TokenPulse] 每周小结处理失败", error); }
+  }
   updateTrayTip(snapshot);
   pushTrayPanel();
   // 窗口收着的时候不往界面推（推了它就要把整页重画一遍，没人看）；再打开时补上最新的
@@ -752,6 +768,7 @@ function appVersion(): string {
 
 function applyPrefs(patch: Partial<Prefs>): Prefs {
   if ("agentReadOnly" in patch) patch = { ...patch, agentReadOnly: patch.agentReadOnly === true };
+  if ("weeklySummary" in patch) patch = { ...patch, weeklySummary: patch.weeklySummary === true };
   if ("studyModels" in patch) {
     const raw = patch.studyModels && typeof patch.studyModels === "object" ? patch.studyModels as Record<string, unknown> : {};
     patch = { ...patch, studyModels: Object.fromEntries((["claude", "chatgpt", "grok"] as const).map((kind) => [kind, parseStudyModels(raw[kind])]).filter(([, list]) => (list as unknown[]).length)) };
@@ -1106,9 +1123,10 @@ if (!app.requestSingleInstanceLock()) {
     });
     // 全部模型的速度走势（用量明细的折线图，0.3.39）；days：0 = 全部
     ipcMain.handle("pass-speed:series", (_event, days: unknown) => { try { return speedSeries(Math.max(0, Math.min(3650, Number(days) || 0))); } catch { return null; } });
-    // 分享卡片（0.3.51）：月报、里程碑的数据，画成 PNG，保存 / 复制（见 share.ts）
+    // 分享卡片（0.3.51）：月报、周报、里程碑的数据，画成 PNG，保存 / 复制（见 share.ts）
     const shareSnapshot = () => getInitialSnapshot();
     ipcMain.handle("share:month", (_event, month: unknown) => shareMonth(shareSnapshot, month));
+    ipcMain.handle("share:week", (_event, week: unknown) => shareWeek(shareSnapshot, week));
     ipcMain.handle("share:milestones", () => shareMilestones(shareSnapshot));
     ipcMain.handle("share:render", (_event, kind: unknown, data: unknown, options: unknown) => renderShareCard(kind, data, options));
     ipcMain.handle("share:save", (_event, dataUrl: unknown, name: unknown) => saveShareCard(win, dataUrl, name));

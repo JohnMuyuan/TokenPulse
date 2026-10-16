@@ -23,6 +23,31 @@
 .pq-limited { padding: 0 6px; border-radius: 5px; background: var(--warn-soft); color: var(--warn); font-size: 10.5px; font-weight: 600; }
 .pq-none { display: grid; justify-items: center; gap: 6px; padding: 40px 18px; line-height: 1.7; }
 
+/* 号池未来 7 天预排 */
+.pq-plan { margin-bottom: 18px; }
+.pq-plan-next { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 2px 0 8px; font-size: 16px; font-weight: 650; }
+.pq-plan-order-name { color: var(--accent); }
+.pq-plan-unknown, .pq-plan-footnote { margin: 6px 0 12px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.pq-plan-unknown { color: var(--warn); }
+.pq-plan-lanes { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; }
+.pq-plan-lane { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(160px, 2.4fr) minmax(120px, 1fr); gap: 12px; align-items: center; min-height: 38px; }
+.pq-plan-member-name { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.pq-plan-member-name b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.pq-plan-member-name small { color: var(--muted); font-size: 10.5px; }
+.pq-plan-track { position: relative; height: 17px; overflow: visible; border-radius: 6px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+.pq-plan-bar { position: absolute; top: 3px; bottom: 3px; left: var(--left); width: var(--width); min-width: 3px; border-radius: 4px; background: var(--accent); }
+.pq-plan-reset { position: absolute; z-index: 1; top: -3px; bottom: -3px; left: var(--at); width: 2px; border-radius: 2px; background: var(--ring-week); }
+.pq-plan-drain { position: absolute; z-index: 2; top: 50%; left: var(--at); display: grid; place-items: center; width: 16px; height: 16px; transform: translate(-50%, -50%); border-radius: 50%; background: var(--danger); color: #fff; font-size: 12px; font-style: normal; font-weight: 800; line-height: 1; }
+.pq-plan-waste { color: var(--text-2); font-size: 11.5px; text-align: right; }
+.pq-plan-lane.pq-plan-axis { min-height: 0; margin-top: 5px; color: var(--faint); font-size: 10.5px; }
+.pq-plan-axis-scale { display: flex; justify-content: space-between; }
+.pq-plan-out, .pq-plan-suggestion { margin: 12px 0 4px; color: var(--warn); font-size: 12.5px; line-height: 1.55; }
+.pq-plan-suggestion { color: var(--accent); font-weight: 600; }
+@media (max-width: 700px) {
+  .pq-plan-lane { grid-template-columns: minmax(80px, .8fr) minmax(100px, 1.4fr); gap: 8px; }
+  .pq-plan-waste { grid-column: 2; text-align: left; margin-top: -4px; }
+}
+
 /* 成员分摊 */
 #quota-detail > .pq-members, #quota-detail > .pq-models, #quota-detail > .pq-requests { margin-top: 18px; }
 .pq-member-head, .pq-member { display: grid; grid-template-columns: 12px minmax(160px, 1.2fr) minmax(170px, 1.2fr) minmax(110px, .7fr) minmax(100px, .6fr) minmax(120px, .7fr); gap: 14px; align-items: center; }
