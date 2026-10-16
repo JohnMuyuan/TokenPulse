@@ -1,6 +1,39 @@
-# Current handoff · 0.3.55 已正式发布（2026-10-15）
+# Current handoff · 0.3.56 已正式发布（2026-10-16）
 
 ## 新对话先看这里
+
+### 0.3.56 已正式发布（2026-10-16）
+
+- 用户没有逐项验收，说「预览版有问题也正常」，直接要求发布。发布前 `npm test` 退出 0、`npm run test:ui` 退出 0（97 PASS），`npm run dist` 退出 0；`dist/verify-0.3.56.cjs` 152 个运行时文件逐字节一致，ASAR SHA256 38d3b7d990e3685dc4ac10fc6088c687833f65986fee7a059a005e8aedde81c6（和测试版相同）。
+- 提交 eb001e6（0.3.56：缓存命中分析、每周小结和周报、号池按重置时间预排），标签 v0.3.56 指向它。远端有 github-actions 的知识库自动更新 74a7268，没改写提交、没挪标签，合并成 8431971 后推 main；安装包里的 knowledge 是标签源码那份，软件启动后会自动拉新知识库。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.56 ，非草稿、非预发布，releases/latest 指向 v0.3.56，公开 latest.yml 为 0.3.56；正文和 dist/release-0.3.56.md 一致，无会话链接。
+- 附件均 uploaded，大小 / SHA256 与本地一致：Setup.exe 112643297 / 5d12fa2b6aa1747edd768fb4e2503d6763a7ab44dd92c578854c281c59e11648；.blockmap 119812 / 64b7b38661750076e494b0ee7d33332f2fa706a70d7b0edb1ec93f39abb995dd；Portable.exe 112386077 / a3fd34fc2248a04cb2bdab248d62538e043a1681dea0d593ee842ecc1dafaae4；latest.yml 352 / 6c44a794e65a8a511d4d642f8c9de2dcf5ddb7fb0d875ed2445787fb53a00b84。
+- 收尾：无遗留 node / electron / 打包器 / codex 进程；用户安装版 0.3.55（PID 25404 等）未关闭、未主动安装新版。四附件和 win-unpacked exe / asar 可独占打开，工作目录项目根。
+- 分工：用户 2026-10-16 改主意，以后所有工作由 Claude 自己做，不再交给 Codex（luna 太慢）。
+- 仍未在真实数据上验证的（见下）：三个新界面、周一的每周小结通知、新号池排法的真实转发。
+
+### 0.3.56 发布前状态（测试版；「未提交、未发布」已过期）
+
+- 三项都做完并通过审查和测试，**未提交、未打标签、未发布**。工作区里 0.3.56 的全部改动都还没进 Git（基线 main = eb3797d）。
+- 产物：`dist/win-unpacked/TokenPulse.exe`，FileVersion 0.3.56 / ProductVersion 0.3.56.0（`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0）。`dist/verify-0.3.56.cjs`：152 个运行时文件和源码逐字节一致（比 0.3.55 多 cache-analysis.js、weekly-summary.js、usage-cache.js、usage-cache.css），ASAR SHA256 38d3b7d990e3685dc4ac10fc6088c687833f65986fee7a059a005e8aedde81c6。发布说明 `dist/release-0.3.56.md` 已写。
+- 最终测试（全部改动之后一次跑完）：`npm test` 退出 0；`npm run test:ui` 里的 19 个 Electron 测试逐个跑全部退出 0（752 行 PASS）。逐个跑是因为 test-ui.cjs 在整条串里偶发超时过一次（单独重跑通过，和本轮改动无关）。
+- ③ 审查时 Claude 自己改的：额度详情「预排」面板的「现在 / 7 天后」刻度没对齐时间条（用估算外边距），改成和泳道同一网格列，test-pool-quota-ui 加对齐断言；**「换成快重置优先能少作废」提示的判断条件写反了**（该提示时不提示），已改正并加断言（测试数据：剩余最多 ≈138、快重置优先 ≈115，提示「少作废约 23 个百分点」）；脚注改成句号分句，英文不再出现分号后大写；i18n 删掉新增的重复键「现在」；pool-insight.ts 的内联 `import(...)` 类型改成顶部 `import type`。
+- 自查截图（只用测试数据）：缓存视图、周报卡片（中 / 英）、分享对话框、号池预排面板都看过，存于 `%TEMP%\tokenpulse-0356\shots`（临时目录）。
+- 没验证的：没在用户真实数据上看过三个新界面；每周小结通知没有真的在周一弹过（只有 `maybeWeeklySummary` 注入通知的单测和周报卡片 UI 测试）；号池新排法没在真实号池上转发过（端到端测试用假上游）。
+- 已知限制：Claude 的 5 分钟 / 1 小时缓存不区分（闲置一律按 5 分钟判断，不改解析器、不升 STATE_VERSION）；Grok 一行是一轮；断档的「冷启动」以筛选范围内会话的第一条算；号池只推演每周窗口，不模拟 5 小时窗口和限流；号池速度要求所有官方成员都有 ≥24 小时采样，否则回退到「重置时间相差 6 小时内不换号」。
+- 收尾：没有测试 / 打包遗留进程；`dist/win-unpacked` 的 exe 和 app.asar 可独占打开；工作目录在项目根。用户安装的正式版 0.3.55（PID 26384 等，19:36 启动）未关闭。本轮测试在 %TEMP% 留下的 132 个合成数据目录（Codex 12 个 + 测试 120 个，都在 20:53 以后创建）已删；更早几轮留下的约 3500 个 tokenpulse-* 目录来源不明，未动。Codex 运行时（broker PID 14024、app-server 23916 及每个任务的 MCP 子进程，本会话 20:53 起启动）还在，留着备验收后修改；Codex 插件的 SessionEnd 钩子会在会话结束时关掉整棵进程树。
+- 验收方法：从托盘退出已安装的正式版，再打开 `dist/win-unpacked/TokenPulse.exe`（单实例）。看：用量明细 →「缓存」；设置 → 提醒 →「每周小结」；分享卡片 →「周报」；额度详情 → 号池标签 →「预排」；供应商页号池成员悬停。验收后按老流程 `npm run dist`、提交、打标签、发布（发布说明用 `dist/release-0.3.56.md`，提交 / 标签 / 发布说明里不放会话链接）。
+
+### 0.3.56 开发记录（下面的「进行中」字样都已过期）
+
+- 用户 2026-10-15：三项一起做，版本 0.3.56 —— ① 缓存命中分析 ② 每周小结通知 ③ 号池按重置时间预排。分工：Claude 规划和审查，实现交给 Codex（gpt-6-luna xhigh），Claude 审 diff、跑测试、写交接。
+- 基线 main = eb3797d，package.json 0.3.55。方案已定，分三次派给 Codex，顺序 ①→②→③（② 复用 ① 的省钱函数；③ 最后并做版本收尾）。任务书全文在 `%TEMP%\tokenpulse-0356\brief-{1-cache,2-weekly,3-pool}.md`（临时目录，可能被清；要点如下）。
+- ① 缓存命中分析：新 `src/core/cache-analysis.ts`（纯函数，按 source+session 排序比较相邻请求：`base=min(prev.input,cur.input)≥4096` 且 `cur.cacheRead<base×0.5` 算断档；原因优先级 compaction→model→account→idle(>5 分钟)→unknown；会话第一条算冷启动）；`model-pricing.ts` 新 `cacheSavings`（净省下，扣 Claude 写入溢价），月报省钱改用它；`RequestQuery.cache` + `parseRequestQuery` 白名单；用量明细页第 4 个视图「缓存」（renderer/usage-cache.js/css：四张小卡、每日命中率、断档原因、按工具 / 型号、断档最多的会话 + 最近断档）；演示数据的缓存读取改成随会话增长。不改解析器、不升 STATE_VERSION（Claude 5 分钟 / 1 小时缓存不区分，已知限制）。
+- ② 每周小结：`share-report.ts` 抽出按日期范围的共用部分，新 `weekReport` / `reportWeeks`；新 `src/core/weekly-summary.ts`（`weeklyDue`：周一 09:00 后、上一周未处理；周一没开就在本周第一次运行补发；状态 `weekly-summary.json` 先写后发；0 用量不发）；prefs `weeklySummary` 默认开、设置「提醒」加一行；通知点开 `open-page {page:'share', tab:'week', pick}`；分享对话框加「周报」标签和卡片。
+- ③ 号池预排：`pool-order.ts` 新账号速度（7 天每周额度上涨，百分点 / 小时，survival 的 perDay 改用同一函数）+ `planPool`（四种方式往后推 7 天：segments / waste / drainAt / outAt）；reset-first 改成最早重置先用（EDF），当前号「用到底再按重置时间」不多作废 2 个百分点以上就不换（速度未知：重置时间相差 6 小时内不换）；`poolView` / `analyzePool` 带 plan（非 reset-first 另给 compare）；额度详情号池页新「预排」面板（7 天泳道、作废、见底）、供应商卡片悬停显示预排第几个。收尾：package.json 0.3.56、intro NOTES、README；发布说明由 Claude 写。
+- 进度：① Codex 已交回（task-mvafn2vk-3kmb5q，22 分钟）。Codex 沙箱不能启动 PowerShell 子进程和 Electron，整套测试由 Claude 跑；②③ 的任务书已加上这条说明。Claude 审查后自己改了：i18n 去掉 Codex 加的两条宽模板 `(.+) 次` / `(.+) 分钟`（会抢走后面「含压缩 N 次」「([\d,]+) 次」「(\d+) 分钟」「每 N 分钟」的翻译），小卡数值不再带「次」，间隔改成分钟 / 小时 / 天小时；`cache-analysis.ts` 的合计 / 按天 / 工具 / 型号改为包含压缩估算行（和其他页面口径一致，断档检测仍跳过它），CC Switch 导入行（key 以 `cc-switch\0` 开头）只进合计、不当一条一个的会话；test-cache-analysis / test-cache-ui 断言同步。`npm test` 退出 0（缓存分析 10/10）。test-cache-ui 另修：等待条件返回了 `window.PulseCache` 对象（不能跨进程克隆，Codex 没跑过所以没发现）、英文缺「原因」（顺手去掉 Codex 加的重复键 `"次"`，已有 `'次': 'count'`）、截图前 showInactive + 滚到明细视图。UI 测试：整套第一遍 test-ui.cjs 偶发超时（同一份代码上一遍整套时通过、单独重跑通过），其余 18 个逐个跑全部退出 0；缓存视图截图（测试数据）已看过。Codex 留在 %TEMP% 的 12 个合成数据目录（20:53–21:16 创建，和它报告的数量一致）已删；%TEMP% 里另有约 3500 个更早几轮留下的 tokenpulse-* 测试目录，来源不明，未动。
+- ② Codex 已交回（task-mvagwy6s-ptuh28）：`share-report.ts` 抽出 `rangeReport`，新 `weekReport` / `reportWeeks` / `weekLabel` / `weekStartOf` / `isWeek`；新 `src/core/weekly-summary.ts`（`weeklyDue` / `describeWeekly` / `maybeWeeklySummary`，状态 `weekly-summary.json` 先写后发、0 用量记 sent:false）；`main/index.ts` 的 `publishSnapshot` 在 scannedAt 存在时调用；prefs `weeklySummary` 默认 true；设置「提醒」新行；`open-page {page:'share', tab:'week', pick}`；分享对话框三个标签 + 周下拉（周报不显示订阅费）；`share-card.js` 新 `week()` 布局。Claude 审查后改：i18n 新增的 5 个重复键删掉（其中 `"间隔": "Gap"` 会覆盖原有 `"Interval"`），补「♻️ 缓存净省下」英文（test-share-card 英文卡片断言抓到的），share.js 一处缩进。`npm test` 退出 0（每周小结 6/6）；UI 19 个逐个跑：第一遍只有 test-share-card 因上面的英文失败，修后重跑 7 项全 PASS，其余 18 个退出 0。周报卡片截图（测试数据）已看过。
+- ③ Codex 已交回（task-mvahm8xe-ynq0iv）：`pool-order.ts` 新 `weeklyRateOf`（纯函数）/ `accountWeekRate` / `poolWeekRate`（和 accountQuota 共用 mtime 缓存，每小时重算）/ `planPool`；删掉 `resetScore` / `KEEP_RATIO`；`orderPool` 多一个 rate 参数，reset-first 按重置时间排、用 planPool 比较「先用当前号」和「直接按重置时间」的总作废；`agent-switch.ts` 的 `poolView`（所有带官方账号的号池都给 plan）和 `poolTargets` 传速度；`pool-insight.ts` 的 survival perDay 和 quota.perDay 都改用同一速度、`analyzePool` 出 plan / compare；`pool-quota.js` 新「预排」面板；`agent-switch.js` 悬停「预排第 N 个 …」和新说明；版本 0.3.56、intro NOTES、README。10 个成员一次 planPool 约 0.087 ms。审查修改见上面「当前状态」。
 
 ### 0.3.55 已正式发布（2026-10-15）
 
