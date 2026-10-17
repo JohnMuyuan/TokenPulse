@@ -77,10 +77,17 @@ export function searchSessions(query: unknown, kind?: unknown): SearchResult {
   if (!terms.length || terms.join("").length < 2) return { query: text, terms, hits: [], ms: 0, indexed: 0 };
 
   const all = sessionFiles();
-  const files = all.filter((item) => !kind || kind === "all" || item.summary.kind === kind);
+  // 和列表、详情保持一致：同一个会话只搜索详情会打开的最新文件。
+  const latest = new Map<string, (typeof all)[number]>();
+  for (const item of all) {
+    const previous = latest.get(item.summary.key);
+    if (!previous || (item.summary.updatedAt ?? 0) > (previous.summary.updatedAt ?? 0)) latest.set(item.summary.key, item);
+  }
+  const files = [...latest.values()].filter((item) => !kind || kind === "all" || item.summary.kind === kind);
   const stored = readJson<CacheIndex | null>(cacheIndexFile(), null);
-  const cache: CacheIndex = stored?.version === VERSION ? stored : { version: VERSION, files: {} };
-  let changed = stored?.version !== VERSION;
+  const valid = stored?.version === VERSION && stored.files != null && typeof stored.files === "object" && !Array.isArray(stored.files);
+  const cache: CacheIndex = valid ? stored : { version: VERSION, files: {} };
+  let changed = !valid;
   let indexed = 0;
   for (const item of files) {
     const hit = cache.files[item.file];
@@ -106,8 +113,7 @@ export function searchSessions(query: unknown, kind?: unknown): SearchResult {
   for (const item of files) {
     let body: string;
     try { body = fs.readFileSync(sessionTextFile(item.file), "utf8"); } catch { continue; }
-    const lowerBody = body.toLowerCase();
-    if (!terms.every((term) => lowerBody.includes(term))) continue;
+    const matchedTerms = new Set<string>();
     const ids: string[] = [];
     const scored: { score: number; order: number; snippet: SearchSnippet }[] = [];
     let count = 0;
@@ -118,17 +124,16 @@ export function searchSessions(query: unknown, kind?: unknown): SearchResult {
       const lower = message.toLowerCase();
       const found = terms.filter((term) => lower.includes(term));
       if (!found.length) return;
+      for (const term of found) matchedTerms.add(term);
       count += 1;
       const id = line.slice(0, first);
       if (ids.length < MAX_IDS) ids.push(id);
       scored.push({ score: found.length, order, snippet: { id, role: line.slice(first + 1, second) as SearchSnippet["role"], text: snippetOf(message, lower, found) } });
     });
+    if (matchedTerms.size !== terms.length) continue;
     const snippets = scored.sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 3).sort((a, b) => a.order - b.order).map((entry) => entry.snippet);
     const updatedAt = item.summary.updatedAt ?? 0;
-    const previous = byKey.get(item.summary.key);
-    // 同一个会话有几份文件（Codex 续过的会话）：片段和跳转用最新那份（详情读的就是它），条数加起来
-    if (previous && previous.updatedAt >= updatedAt) { previous.count += count; continue; }
-    byKey.set(item.summary.key, { key: item.summary.key, kind: item.summary.kind, id: item.summary.id, count: count + (previous?.count ?? 0), snippets, ids, updatedAt });
+    byKey.set(item.summary.key, { key: item.summary.key, kind: item.summary.kind, id: item.summary.id, count, snippets, ids, updatedAt });
   }
   const hits = [...byKey.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_HITS).map(({ updatedAt: _updatedAt, ...hit }) => hit);
   return { query: text, terms, hits, ms: Date.now() - started, indexed };

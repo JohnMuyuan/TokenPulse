@@ -1,6 +1,18 @@
-# Current handoff · 0.3.56 已正式发布（2026-10-16）
+# Current handoff · 0.3.57 后端审查与修复进行中（2026-10-17）
 
 ## 新对话先看这里
+
+### 0.3.57 进行中
+
+- 用户授权检查后端、修复问题、升级补丁版本并发布 GitHub Release，文案沿用历史风格。本轮独立完成。
+- 基线 main ff15cc7，package.json 0.3.56，接手工作区干净；已 fetch，远端没有新增提交。
+- 已审查会话搜索、worker 调度、周报触发、自动换号、额度采样与排序。确认搜索元数据误命中、损坏索引导致搜索异常、续接会话命中旧文件但详情打开新文件三项；修改 src/core/session-search.ts，回归用合成会话。
+- scripts/test-session-search.cjs 已先复现失败（18/23）；修复后 24/24 通过。npm test 完整执行退出 0（日志 test-backend-0357.log）。补充审查了本地路由请求生命周期和 curl 调用，本轮未改动这些模块。
+- package.json / package-lock.json 已升级 0.3.57，README、intro 与英文说明同步；dist/release-0.3.57.md 已按旧 Release 风格写好。npm run test:ui 完整执行退出 0（97 条 PASS，日志 test-ui-0357.log）。npm run dist 退出 0（build-0357.log）。产物 dist/TokenPulse-0.3.57-Setup.exe、Portable.exe、Setup.exe.blockmap、latest.yml。node dist/verify-0.3.57.cjs：152 个运行时文件逐字节一致，ASAR SHA256 d644142cd3ff0895069e709a743518ae2633e7a8c085b4ba217804a836e3662d；两 exe 产品版本 0.3.57。四附件与 win-unpacked exe / asar 均可独占只读打开，检测句柄已释放；未发现本轮测试/打包残留进程，用户安装版未关闭。待做：提交、推送及 Release 和远端核验。未发布、未安装。
+
+- 验证限制：本轮使用合成会话与假上游，没有触碰真实账号登录/续期，没有执行真实上游切换、安装升级或自动更新端到端验证。本轮是重点后端审查，不代表全部代码不存在缺陷。续接会话仅搜索详情使用的最新文件，旧文件独有内容暂不展示。
+
+## 历史记录（以下各节只适用于标明的旧版本）
 
 ### 0.3.56 已正式发布（2026-10-16）
 

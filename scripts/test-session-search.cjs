@@ -68,6 +68,24 @@ write(codexFile, [
     check("搜到 Codex 会话，长消息的片段截短、两头加省略号", result.hits[0]?.key === "codex:codex-1" && result.hits[0].snippets[0].text.length < 170 && result.hits[0].snippets[0].text.endsWith("…"), result.hits[0]?.snippets[0]?.text);
     check("按工具筛选", searchSessions("webpack", "codex").hits.length === 0 && searchSessions("migration", "codex").hits.length === 1);
     check("第二次搜索不再重抽", searchSessions("webpack").indexed === 0);
+    check("角色名和消息 ID 不算正文命中", searchSessions("assistant").hits.length === 0 && searchSessions("m0").hits.length === 0);
+    check("多词搜索不能用角色名凑齐条件", searchSessions("webpack assistant").hits.length === 0);
+    const cacheIndex = path.join(process.env.TOKENPULSE_DATA_DIR, "session-text", "index.json");
+    for (const files of [null, [], "broken"]) {
+      fs.writeFileSync(cacheIndex, JSON.stringify({ version: 1, files }));
+      let recovered = false;
+      try { recovered = searchSessions("webpack").hits.length === 1; } catch {}
+      check(`损坏的缓存索引自动重建：${JSON.stringify(files)}`, recovered);
+    }
+    fs.rmSync(cacheIndex, { force: true });
+    const resumed = path.join(codexDir, "sessions", "2026", "09", "26", "rollout-resumed.jsonl");
+    write(resumed, [
+      { type: "session_meta", timestamp: "2026-09-26T11:00:00Z", payload: { id: "codex-1", cwd: project } },
+      { type: "response_item", timestamp: "2026-09-26T11:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "继续检查新的内容" }] } },
+    ]);
+    check("续接会话只搜详情实际打开的文件，避免无法跳转的旧命中", searchSessions("migration").hits.length === 0);
+    fs.rmSync(resumed);
+    check("移除续接文件后可以搜索剩下的原会话", searchSessions("migration").hits.length === 1);
 
     // 会话里新说了一句：只重抽这一个文件
     fs.appendFileSync(claudeFile, JSON.stringify({ type: "user", uuid: "u3", timestamp: "2026-09-24T10:05:00Z", message: { content: "再加一个 vite 的版本" } }) + "\n");

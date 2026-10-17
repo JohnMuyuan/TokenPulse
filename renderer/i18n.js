@@ -310,6 +310,11 @@
     "额度详情至少要留一个账号标签": "Keep at least one account tab in Quota details",
     "已恢复默认布局": "Layout reset to default",
     "本地路由状态": "Local route status",
+    // 0.3.57 更新说明
+    "会话搜索更准确": "More accurate conversation search",
+    "搜索只匹配对话文字和工具概要，修复角色名、消息编号造成的误命中；续接会话使用和详情相同的文件，避免点开找不到匹配内容。": "Search matches conversation text and tool summaries, fixing false matches from roles and message IDs. Resumed sessions use the same file as the detail view so matching content can be found when opened.",
+    "搜索缓存异常时自动重建": "Rebuild invalid search indexes automatically",
+    "搜索缓存索引的结构损坏时会重新整理，不再让整个搜索失败。": "An invalid search cache index is rebuilt automatically instead of causing the entire search to fail.",
     // 0.3.56 更新说明
     "缓存命中分析": "Cache hit analysis",
     "用量明细新增「缓存」视图：查看缓存命中率、净节省、断档原因，以及按工具、模型和会话的分布。": "Usage details adds a Cache view for hit rate, net savings, interruption reasons, and breakdowns by tool, model and session.",
