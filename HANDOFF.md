@@ -1,16 +1,19 @@
-# Current handoff · 0.3.58 用户验收通过，正式发布进行中（2026-10-18）
+# Current handoff · 0.3.58 已正式发布（2026-10-18）
 
 ## 新对话先看这里
 
 
-### 0.3.58 正式发布进行中（2026-10-18）
+### 0.3.58 已正式发布（2026-10-18）
 
 - 用户已验收测试版，并明确授权发布同一 0.3.58。main 基线 acc4ce6，fetch 后远端无新增提交。
 - 发布前 npm test 退出 0（667 条 PASS，test-release-backend-0358.log），npm run test:ui 全串退出 0（20 个 Electron 脚本、100 条 PASS，test-release-ui-0358.log）。测试沿用隔离 HOME/数据和假 Key/网关。
 - npm run dist 退出 0（build-release-0358.log），Setup / Portable 版本均为 0.3.58。node dist/verify-0.3.58.cjs：153 运行时文件逐字节一致，ASAR SHA256 bb3fe7e33b516041559372bfd1d04b8039b68f8e3aa9a040a49ef92baf8f02d2，与用户验收的测试版相同。
 - 发布附件 dist/TokenPulse-0.3.58-Setup.exe、Setup.exe.blockmap、Portable.exe、latest.yml；完整大小/SHA256 清单 dist/assets-0.3.58.json。发布正文 dist/release-0.3.58.md，已按旧 Release 风格核对，SHA256 07671df69ca63924d6ba99361f2b62e91b41a94cdb5fc6394c1cc70b8931d1ed。
 - 四附件与 win-unpacked exe / asar 可独占只读打开，句柄已释放；测试和构建进程已结束。用户安装版保持运行，未主动安装新版。
-- 待做：提交、推送 main 与 v0.3.58 标签，上传并核验附件，正式发布，核对远端 latest 与正文，更新本节。无当前阻塞。
+- 代码提交 7b898bd，main 和标签 v0.3.58 已推送。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.58 （ID 416574476）已正式发布，非草稿、非预发布；releases/latest 指向 v0.3.58，公开 latest.yml 与本地逐字一致；发布正文与 dist/release-0.3.58.md 一致。
+- 四附件均 uploaded，GitHub API digest / 大小与本地 SHA256 / 大小一致：Setup.exe 112647117 / 8bc4a662edbb0bb0de121dc4f75b08851542cc9eaa9d197f1a7a0390742ec66c；Portable.exe 112389961 / 6897855443baa5952df08916cf957ae6dac42bf91b4fb26e71e28e78c632270e；Setup.exe.blockmap 119682 / 76cff4a36e9ca4a502b1d77d2705dacc9761c19b2e8cf82ca9fa53fcebe572cf；latest.yml 352 / 995218b6f96e079eb4ed0e6455a5e9a0dd2838a6f1e032fe8f8a2569446991c6。
+- 发布后再次检查：四附件、win-unpacked exe / asar 均可独占只读打开，检测句柄已释放；未发现本轮测试/构建遗留进程，工作目录为项目根。用户安装版未关闭，未主动安装新版。测试与发布完成，无当前阻塞。
+- 验证范围与已知限制沿用下方测试版记录：pi 的三种协议/路由用本机真实 CLI 与隔离假网关验证；没有使用真实 Key 做请求测试，没有执行真实登录/上游/安装升级端到端验证。pi 本轮支持会话管理和供应商切换；旧会话或项目级配置的模型选择规则见下方。
 
 ### 0.3.58 测试版验收记录（此前的「未发布」状态只适用于验收前）
 
