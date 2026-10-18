@@ -28,7 +28,7 @@
 
 > 每个版本改了什么见 [Releases](https://github.com/JohnMuyuan/TokenPulse/releases)；软件里升级后也会弹一次「新版本有什么」。
 
-0.3.57 修复会话全文搜索的误命中、续接会话搜索与详情不一致，以及缓存索引异常导致搜索失败的问题。
+0.3.58 新增 pi 支持：会话列表、详情、全文搜索、在终端继续，以及一键切换模型供应商。
 
 ## 🖼️ 分享卡片与里程碑
 
@@ -415,6 +415,13 @@ node_modules/app-builder-bin/win/x64/app-builder.exe download-artifact --name wi
 ```
 
 </details>
+
+### pi
+
+- 会话读取 `~/.pi/agent/sessions`；可用官方环境变量 `PI_CODING_AGENT_DIR` 指定目录。
+- 供应商页支持 OpenAI Chat、OpenAI Responses、Anthropic 直连，也可使用本地路由。切换前提供配置差异预览并备份，保留 `auth.json` 和其他供应商。
+- 切换更新新会话的默认供应商和模型；已打开或恢复的会话请在 pi 中用 `/model` 选择模型；项目级 `.pi/settings.json` 也可覆盖全局默认值。切回「pi 原有配置」可恢复接管前的默认选择。
+- pi 会话可查看、搜索并在终端继续；应用内回复和删除暂未提供。本版未增加 pi 的用量扫描或官方额度查询。
 
 <div align="center">
 <br>

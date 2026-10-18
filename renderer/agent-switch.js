@@ -39,8 +39,9 @@
     { id: 'codex', name: 'Codex', kind: 'chatgpt' },
     { id: 'grok', name: 'Grok CLI', kind: 'grok' },
     { id: 'deepseek', name: 'DeepSeek Harness', kind: 'deepseek' },
+    { id: 'pi', name: 'pi', kind: 'pi' },
   ];
-  const NATIVE = { claude: 'anthropic', desktop: 'anthropic', codex: 'openai-responses', grok: 'openai-responses', deepseek: 'openai-chat' };
+  const NATIVE = { claude: 'anthropic', desktop: 'anthropic', codex: 'openai-responses', grok: 'openai-responses', deepseek: 'openai-chat', pi: 'openai-chat' };
   const CLAUDE_ROLES = [['sonnet', 'Sonnet', true], ['opus', 'Opus', true], ['fable', 'Fable', true], ['haiku', 'Haiku', false], ['subagent', '子代理', true]];
   const DESKTOP_ROLES = [['sonnet', 'Sonnet', true], ['opus', 'Opus', true], ['fable', 'Fable', true], ['haiku', 'Haiku', true]];
   const LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
@@ -48,7 +49,7 @@
   const HUES = ['#4f7fd9', '#d9774f', '#10a37f', '#8b5cf6', '#c9832f', '#e05a8a', '#0ea5a4', '#65a30d'];
   const SECTION_KEY = 'tokenpulse-providers-section';
 
-  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'deepseek', 'router', 'pass', 'logs', 'prism', 'import', 'safety'];
+  const SECTIONS = ['overview', 'claude', 'desktop', 'codex', 'grok', 'deepseek', 'pi', 'router', 'pass', 'logs', 'prism', 'import', 'safety'];
   /** 能建号池的工具（桌面端用自己的网关配置，不支持）。DeepSeek 的号池只有 API Key 供应商。 */
   const POOL_APPS = ['claude', 'codex', 'grok', 'deepseek'];
   let view = null, signature = '', section = 'overview', editor = null, editorPane = 'basic', dragging = null, entered = false;
@@ -211,7 +212,7 @@
     const main = el('div', { class: 'pv-main', role: 'tabpanel', 'aria-label': editor ? '编辑供应商' : sectionTitle() });
     if (editor) main.append(editorForm());
     else {
-      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), deepseek: () => appSection('deepseek'), router, pass: passSection, logs, prism: prismSection, import: importSection, safety: safetySection }[section]();
+      const body = { overview, claude: () => appSection('claude'), desktop: () => appSection('desktop'), codex: () => appSection('codex'), grok: () => appSection('grok'), deepseek: () => appSection('deepseek'), pi: () => appSection('pi'), router, pass: passSection, logs, prism: prismSection, import: importSection, safety: safetySection }[section]();
       main.append(...[].concat(body));
     }
     const layout = el('div', { class: 'pv' }, [editor ? editorNav() : nav(), main]);
@@ -308,7 +309,7 @@
     const card = el('button', { type: 'button', class: `pv-app-card ${a.id}` }, [
       el('div', { class: 'pv-app-card-top' }, [appMark(a.id), el('b', { text: a.name }), el('span', { class: 'pv-mode ' + (routed ? 'route' : 'direct'), text: routed ? '本地路由' : '直连' })]),
       el('div', { class: 'pv-app-current' }, cur
-        ? [el('small', { text: '当前供应商' }), el('strong', { text: cur.name, translate: 'no' }), el('span', { translate: 'no', text: cur.official ? '官方登录' : cur.pool ? poolSummary(cur) : [cur.model, formatName(cur.upstream)].filter(Boolean).join(' · ') })]
+        ? [el('small', { text: '当前供应商' }), el('strong', { text: cur.name, translate: 'no' }), el('span', { translate: 'no', text: cur.official ? (cur.app === 'pi' ? 'pi 原有配置' : '官方登录') : cur.pool ? poolSummary(cur) : [cur.model, formatName(cur.upstream)].filter(Boolean).join(' · ') })]
         : [el('small', { text: '当前供应商' }), el('strong', { class: 'muted', text: '没有识别到' }), el('span', { text: '工具配置里的地址没有对上任何一家' })]),
       el('div', { class: 'pv-app-card-foot' }, [
         el('span', { text: `${providersOf(a.id).length} 家供应商` }),
@@ -347,7 +348,7 @@
   }
   function currentCard(p, routed) {
     const facts = p.official
-      ? [fact('登录', '使用工具自己的官方登录')]
+      ? [fact('登录', p.app === 'pi' ? 'pi 原有配置' : '使用工具自己的官方登录')]
       : p.pool
         ? [fact('号池', `${p.pool.members.length} 个成员 · ${STRATEGY[p.pool.strategy]}`), fact('模型', p.model || '由工具自己选', true), fact('可用成员', `${p.pool.members.filter(m => m.usable).length} / ${p.pool.members.length}`)]
         : [fact('请求地址', p.baseUrl, true), fact('模型', p.model || '—', true), fact('接口格式', formatName(p.upstream) + (p.cross ? '（和工具不同，经本地路由转换）' : '')), fact('密钥', p.hasKey ? `••••${p.keyHint}` : '未填', true)];
@@ -372,7 +373,7 @@
   function providerRow(p, i) {
     const queueIndex = view.proxy.apps[p.app] ? queueOf(p.app).indexOf(p) : -1;
     const lastProbe = probes.get(p.id);
-    const sub = p.official ? '官方登录' : p.locked ? '登录凭证由原来的工具保存' : p.pool ? [poolSummary(p), p.model].filter(Boolean).join(' · ') : [p.model, formatName(p.upstream), p.hasKey ? `••••${p.keyHint}` : null].filter(Boolean).join(' · ');
+    const sub = p.official ? (p.app === 'pi' ? 'pi 原有配置' : '官方登录') : p.locked ? '登录凭证由原来的工具保存' : p.pool ? [poolSummary(p), p.model].filter(Boolean).join(' · ') : [p.model, formatName(p.upstream), p.hasKey ? `••••${p.keyHint}` : null].filter(Boolean).join(' · ');
     const row = el('div', { class: 'pv-row', role: 'listitem', tabindex: '0', 'data-id': p.id, draggable: 'true', 'aria-label': p.name }, [
       el('span', { class: 'pv-grip', title: '拖动排序（也可以按 Alt + ↑ / ↓）', 'aria-hidden': 'true' }, [icon('grip')]),
       providerMark(p),
@@ -983,7 +984,7 @@
     return row;
   }
   function presetSection(app) {
-    const items = app === 'deepseek'
+    const items = app === 'pi' ? [['openai-chat', 'OpenAI Chat', 'pi 原生支持'], ['openai-responses', 'OpenAI Responses', 'pi 原生支持'], ['anthropic', 'Anthropic', 'pi 原生支持']] : app === 'deepseek'
       ? [['openai-chat', 'OpenAI Chat', '直连时按这个协议写；本地路由也用它'], ['openai-responses', 'OpenAI Responses', '直连时按这个协议写，本地路由会转成 Chat'], ['anthropic', 'Anthropic', '直连时按这个协议写，本地路由会转成 Chat']]
       : app === 'claude' || app === 'desktop' ? [['anthropic', 'Anthropic 原生', '原生 Messages API'], ['openai-chat', 'OpenAI Chat 兼容', '需要本地路由转换'], ['openai-responses', 'OpenAI Responses 兼容', '需要本地路由转换']] : [['openai-responses', 'OpenAI Responses', 'Codex / Grok 原生'], ['openai-chat', 'OpenAI Chat 兼容', '需要本地路由转换']];
     const box = el('div', { class: 'pv-preset-strip' }, [el('span', { class: 'pv-section-copy-label', text: '快速预设' }), ...items.map(([id, label, note]) => { const b = button(label, () => { editor.upstream = id; root.querySelectorAll('.pv-editor [data-key=upstream] .pv-chip').forEach(chip => { const on = chip.dataset.value === id; chip.classList.toggle('on', on); chip.setAttribute('aria-checked', String(on)); }); showFeedback(label + ' 已应用，请继续填写地址和模型。', 'success'); showEditorPane('connect'); }, 'pv-chip'); b.title = note; return b; })]);
@@ -1013,6 +1014,7 @@
     if (app === 'claude') return JSON.stringify({ cli: 'Claude Code', provider: common, env: { ANTHROPIC_BASE_URL: common.baseUrl, [editor?.keyField || 'ANTHROPIC_AUTH_TOKEN']: common.apiKey, ANTHROPIC_MODEL: common.model, roles: models }, advanced: { headers: data.requestHeaders || '{}', body: data.requestBody || '{}', envOverrides: data.envOverrides || '{}' } }, null, 2);
     if (app === 'desktop') return JSON.stringify({ cli: 'Claude Desktop', provider: common, profile: { inferenceProvider: 'gateway', inferenceGatewayBaseUrl: common.baseUrl, inferenceGatewayApiKey: common.apiKey, inferenceModels: models.map(row => ({ name: row.role === 'catalog' ? row.model : 'claude-' + row.role + '-5', labelOverride: row.displayName, supports1m: row.oneM })) }, mode: editor?.desktopMode || 'map' }, null, 2);
     if (app === 'codex') return JSON.stringify({ cli: 'Codex', provider: common, config: { model_provider: 'tokenpulse_route', model: common.model, model_reasoning_effort: models[0]?.defaultReasoningLevel || 'auto', ...(editor?.codexContextWindow ? { model_context_window: editor.codexContextWindow } : {}), ...(editor?.codexAutoCompact ? { model_auto_compact_token_limit: editor.codexAutoCompact } : {}), model_catalog: models, model_providers: { tokenpulse_route: { base_url: common.baseUrl, wire_api: editor?.upstream === 'openai-chat' ? 'chat' : 'responses', experimental_bearer_token: common.apiKey, requires_openai_auth: false } } } }, null, 2);
+    if (app === 'pi') return JSON.stringify({ cli: 'pi', models: { providers: { tokenpulse_route: { baseUrl: common.baseUrl, apiKey: common.apiKey, api: editor.upstream === 'anthropic' ? 'anthropic-messages' : editor.upstream === 'openai-responses' ? 'openai-responses' : 'openai-completions', models: [{ id: common.model }] } } }, settings: { defaultProvider: 'tokenpulse_route', defaultModel: common.model } }, null, 2);
     return JSON.stringify({ cli: 'Grok CLI', provider: common, config: { models: { default: 'tokenpulse_route' }, model: { tokenpulse_route: { model: common.model, base_url: common.baseUrl, api_backend: editor?.upstream === 'openai-chat' ? 'chat' : 'responses', context_window: editor?.contextWindow || contextPreset('grok') } } } }, null, 2);
   }
   function advancedSection(app, provider, field) {
@@ -1063,7 +1065,7 @@
   }
   function modelSection(app, provider) {
     const box = el('div', { class: 'pv-models' });
-    const hint = app === 'codex'
+    const hint = app === 'pi' ? 'pi 支持三种接口直连；新会话用这里选择的模型，旧会话请在 /model 中切换。' : app === 'codex'
       ? '每一行是 Codex 菜单里的一个模型。点击勾选或取消思考等级，再从下拉菜单选择默认等级。'
       : app === 'desktop'
         ? '直连只接受 claude-sonnet / opus / haiku / fable 开头的模型名。映射模式把这些角色转到真实模型，请求走本地路由。'
@@ -1088,7 +1090,7 @@
           const chip = el('button', { type: 'button', class: 'pv-level', text: id });
           chip.translate = false;
           chip.addEventListener('click', () => {
-            if (app === 'grok') {
+            if (app === 'grok' || app === 'pi') {
               const input = box.querySelector('input[name=model]');
               input.value = id;
               input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1125,13 +1127,13 @@
       }
       box.append(modes);
     }
-    if (app === 'grok') {
+    if (app === 'grok' || app === 'pi') {
       box.append(el('label', { class: 'pv-field' }, [el('span', { text: '模型' }), el('input', { name: 'model', autocomplete: 'off', spellcheck: 'false', translate: 'no', value: provider?.model || '', required: '' })]));
       const contextInput = el('input', { type: 'number', min: '1', value: provider?.contextWindow || contextPreset(app, { oneM: false }), placeholder: '例如 128000' });
       contextInput.addEventListener('input', () => { editor.contextWindow = Number(contextInput.value) || null; });
       box.append(el('label', { class: 'pv-field' }, [el('span', { text: '上下文窗口' }), contextInput]));
       const thinking = el('div', { class: 'pv-levels' });
-      for (const [key, label] of [['supportsThinking', '支持思考'], ['supportsEffort', '支持思考等级']]) {
+      for (const [key, label] of (app === 'pi' ? [['supportsThinking', '支持思考']] : [['supportsThinking', '支持思考'], ['supportsEffort', '支持思考等级']])) {
         const b = el('button', { type: 'button', class: 'pv-level' + (editor.thinking[key] ? ' on' : ''), text: label, 'aria-pressed': String(editor.thinking[key]) });
         b.addEventListener('click', () => { editor.thinking[key] = !editor.thinking[key]; b.classList.toggle('on', editor.thinking[key]); b.setAttribute('aria-pressed', String(editor.thinking[key])); });
         thinking.append(b);
@@ -1446,7 +1448,7 @@
         notes,
       ),
       pane('connect',
-        el('div', { class: 'pv-field' }, [el('span', { text: '接口格式' }), chips(FORMATS.map(([id, label]) => [id, label, id === NATIVE[app] ? '原生' : '需要本地路由']), editor.upstream, 'upstream'), el('small', { text: `${a.name} 自己说的是 ${formatName(NATIVE[app])}；选别的格式时由本地路由转换。` })]),
+        el('div', { class: 'pv-field' }, [el('span', { text: '接口格式' }), chips(FORMATS.map(([id, label]) => [id, label, app === 'pi' || id === NATIVE[app] ? '原生' : '需要本地路由']), editor.upstream, 'upstream'), el('small', { text: app === 'pi' ? 'pi 原生支持这三种接口；切换会更新新会话的默认供应商和模型。' : `${a.name} 自己说的是 ${formatName(NATIVE[app])}；选别的格式时由本地路由转换。` })]),
         field('baseUrl', '请求地址', { value: provider?.baseUrl || '', placeholder: 'https://api.example.com/v1', translate: 'no' }),
         field('apiKey', 'API Key', { type: 'password', placeholder: provider?.hasKey ? `留空就用原来的密钥（••••${provider.keyHint}）` : '' }),
         app === 'claude' ? el('div', { class: 'pv-field' }, [el('span', { text: '密钥写进哪个变量' }), chips([['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN', '多数中转站'], ['ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY', '官方 API Key']], editor.keyField, 'keyField')]) : null,

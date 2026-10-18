@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { cliDir } from "./credentials";
-import { dataFile, readJson, writeJson } from "./paths";
+import { dataFile, piDir, readJson, writeJson } from "./paths";
 import { zstdFrames } from "./zstd-frames";
 
 /**
@@ -30,7 +30,7 @@ import { zstdFrames } from "./zstd-frames";
  * 只读，不改 CLI 的任何文件。
  */
 
-export type AgentKind = "claude" | "codex" | "grok" | "deepseek";
+export type AgentKind = "claude" | "codex" | "grok" | "deepseek" | "pi";
 
 export type SessionMessage =
   | { id: string; role: "user" | "assistant"; text: string; at?: number }
@@ -137,10 +137,11 @@ function projectName(cwd: string | undefined, fallback: string) {
 
 function commandOf(kind: AgentKind, id: string) {
   if (kind === "deepseek") return "";
+  if (kind === "pi") return `pi --session ${id}`;
   return kind === "codex" ? `codex resume ${id}` : `${kind === "claude" ? "claude" : "grok"} --resume ${id}`;
 }
 
-const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex CLI", grok: "Grok Build", deepseek: "DeepSeek Harness" };
+const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex CLI", grok: "Grok Build", deepseek: "DeepSeek Harness", pi: "pi" };
 
 function readLines(file: string) {
   try {
@@ -467,6 +468,48 @@ function parseDeepseek(file: string): Parsed | null {
   return parsed;
 }
 
+/* ---------------- pi ---------------- */
+
+function parsePi(file: string): Parsed | null {
+  const rows = readLines(file).map(parseLine).filter((row): row is Record<string, any> => !!row);
+  const header = rows.find(row => row.type === "session");
+  if (!header || !str(header.id)) return null;
+  const b = new Builder();
+  let title = "";
+  // pi 用 parentId 保存分支；从末尾的叶节点回溯，避免把废弃分支串成一段对话。
+  const entries = rows.filter(row => row.type !== "session");
+  const byId = new Map(entries.filter(row => str(row.id)).map(row => [row.id, row]));
+  const branch: Record<string, any>[] = [];
+  const seen = new Set<string>();
+  let leaf = entries.at(-1);
+  if (leaf && str(leaf.id)) {
+    while (leaf && !seen.has(leaf.id)) {
+      seen.add(leaf.id); branch.push(leaf);
+      leaf = leaf.parentId ? byId.get(leaf.parentId) : undefined;
+    }
+    branch.reverse();
+  } else branch.push(...entries); // v1 会话尚未引入树结构。
+  for (const row of entries) if (row.type === "session_info" && typeof row.name === "string") title = row.name;
+  for (const row of branch) {
+    const at = timestamp(row.timestamp);
+    if (row.type === "model_change") { if (str(row.modelId)) b.models.add(row.modelId); }
+    else if (row.type === "compaction" || row.type === "branch_summary") b.event(`${row.type === "compaction" ? "上下文压缩" : "分支摘要"}：${clip(str(row.summary), MAX_TEXT)}`, at);
+    else if (row.type === "message") {
+      const m = row.message;
+      if (!m || typeof m !== "object") continue;
+      if (m.role === "user") b.text("user", textOf(m.content), at);
+      else if (m.role === "assistant") {
+        if (str(m.model)) b.models.add(m.model);
+        b.text("assistant", typeof m.content === "string" ? m.content : blockText(m.content, type => type === "text"), at);
+        for (const part of Array.isArray(m.content) ? m.content : []) {
+          if (part?.type === "toolCall") b.tool(str(part.id), str(part.name), part.arguments, at);
+        }
+      } else if (m.role === "toolResult") b.toolResult(str(m.toolCallId), m.content, m.isError === true);
+    }
+  }
+  return summarize("pi", header.id, b, str(header.cwd) || undefined, title, file);
+}
+
 /* ---------------- 汇总 ---------------- */
 
 function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefined, cliTitle: string, file: string): Parsed | null {
@@ -532,11 +575,12 @@ function sources(): { kind: AgentKind; files: string[] }[] {
     { kind: "codex", files: walk(path.join(cliDir("chatgpt"), "sessions"), (file) => file.endsWith(".jsonl")) },
     { kind: "grok", files: walk(path.join(cliDir("grok"), "sessions"), (file) => path.basename(file) === "updates.jsonl") },
     { kind: "deepseek", files: walk(path.join(dshRoot(), "sessions"), (file) => path.basename(file) === "session.v4.jsonl.zstd") },
+    { kind: "pi", files: walk(path.join(piDir(), "sessions"), file => file.endsWith(".jsonl")) },
   ];
 }
 
 function parseFile(kind: AgentKind, file: string) {
-  return kind === "claude" ? parseClaude(file) : kind === "codex" ? parseCodex(file) : kind === "deepseek" ? parseDeepseek(file) : parseGrok(file);
+  return kind === "claude" ? parseClaude(file) : kind === "codex" ? parseCodex(file) : kind === "deepseek" ? parseDeepseek(file) : kind === "pi" ? parsePi(file) : parseGrok(file);
 }
 
 /**
@@ -656,7 +700,7 @@ export function deleteClaudeSession(id: string) {
 
 /** 详情：只读这一个会话文件。索引里没有（新会话）就先刷新一遍列表。 */
 export function getSession(kind: unknown, id: unknown): SessionDetail | null {
-  if ((kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "deepseek") || typeof id !== "string" || !id || id.length > 200) return null;
+  if ((kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "deepseek" && kind !== "pi") || typeof id !== "string" || !id || id.length > 200) return null;
   let file = fileOf(kind, id);
   if (!file || !fs.existsSync(file)) {
     listSessions();

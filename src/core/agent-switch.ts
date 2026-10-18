@@ -43,7 +43,7 @@ setConcurrencyIdentityResolver((app, headers) => {
   const matches = (concurrencyIdentities.get(crypto.createHash('sha256').update(token).digest('hex')) || []).filter(item => item.app === app && (!headers['chatgpt-account-id'] || item.workspace === headers['chatgpt-account-id']));
   return matches.length === 1 ? matches[0].scope : null;
 });
-import { dataDir, dataFile, readJson, writeJson } from "./paths";
+import { dataDir, dataFile, piDir, readJson, writeJson } from "./paths";
 
 type Endpoint = { baseUrl: string; apiKey: string; model: string; upstream: Upstream };
 
@@ -95,6 +95,7 @@ type Store = {
   proxyWritten: Partial<Record<AgentApp, FileSnapshot>>;
   route: Partial<Record<AgentApp, string>>;
   exclusive: Partial<Record<AgentApp, Record<string, string | number | boolean>>>;
+  piDefaults?: { provider?: unknown; model?: unknown };
   proxy: { port: number; apps: Record<AgentApp, boolean> };
   /** 透明转发（见下面 setAppPass）：哪些工具开着；before / written 是开之前和我们写完之后那一个配置文件的内容，关的时候原样放回去。 */
   pass: { apps: Partial<Record<AgentApp, boolean>>; before: Partial<Record<AgentApp, string | null>>; written: Partial<Record<AgentApp, string | null>> };
@@ -213,13 +214,13 @@ function emptyStore(): Store {
     direct: {}, owned: {}, restore: {}, proxyWritten: {},
     route: {},
     exclusive: {},
-    proxy: { port: 17621, apps: { claude: false, desktop: false, codex: false, grok: false, deepseek: false } },
+    proxy: { port: 17621, apps: { claude: false, desktop: false, codex: false, grok: false, deepseek: false, pi: false } },
     pass: { apps: {}, before: {}, written: {} },
   };
 }
 
 function seedOfficials(store: Store) {
-  const rows: [AgentApp, string][] = [["claude", "Claude 官方"], ["desktop", "Claude 桌面端官方"], ["codex", "OpenAI 官方"], ["grok", "Grok 官方"], ["deepseek", "DeepSeek 官方"]];
+  const rows: [AgentApp, string][] = [["claude", "Claude 官方"], ["desktop", "Claude 桌面端官方"], ["codex", "OpenAI 官方"], ["grok", "Grok 官方"], ["deepseek", "DeepSeek 官方"], ["pi", "pi 原有配置"]];
   rows.forEach(([app, name], sort) => {
     if (store.providers.some((item) => item.id === `official-${app}`)) return;
     store.providers.push(officialSeed(app, name, sort));
@@ -239,6 +240,7 @@ function normalize(raw: Store): Store {
   store.owned = known(raw.owned); store.restore = known(raw.restore); store.proxyWritten = known(raw.proxyWritten);
   store.route = known(raw.route);
   store.exclusive = known(raw.exclusive);
+  if (raw.piDefaults && typeof raw.piDefaults === "object") store.piDefaults = raw.piDefaults;
   store.proxy.port = Number(raw.proxy?.port) || 17621;
   for (const app of AGENT_APPS) store.proxy.apps[app] = raw.proxy?.apps?.[app] === true;
   for (const app of PASS_APPS) {
@@ -334,7 +336,7 @@ export function agentView(): AgentView {
           failover: provider.failover,
           active: provider.id === activeId,
           direct: provider.id === store.direct[provider.app],
-          cross: !!endpoint && endpoint.upstream !== NATIVE_UPSTREAM[provider.app],
+          cross: provider.app !== "pi" && !!endpoint && endpoint.upstream !== NATIVE_UPSTREAM[provider.app],
           baseUrl: endpoint?.baseUrl || "",
           model: endpoint?.model || "",
           upstream: endpoint?.upstream || "",
@@ -461,7 +463,7 @@ function saveProviderImpl(input: unknown) {
   if (existing?.official || existing?.locked) throw new Error("官方供应商不能改成第三方配置");
   if (existing && existing.app !== parsed.app) throw new Error("不能改变供应商所属工具，请在目标工具下新增");
   if (existing && !!existing.pool !== !!parsed.pool) throw new Error("号池和普通供应商不能互相转换，请新建");
-  const needsProxy = !!parsed.pool || parsed.upstream !== NATIVE_UPSTREAM[parsed.app] || (parsed.app === "desktop" && parsed.desktopMode === "map");
+  const needsProxy = !!parsed.pool || (parsed.app !== "pi" && parsed.upstream !== NATIVE_UPSTREAM[parsed.app]) || (parsed.app === "desktop" && parsed.desktopMode === "map");
   if (existing && !store.proxy.apps[parsed.app] && currentId(store, parsed.app) === existing.id && needsProxy) {
     throw new Error("当前供应商正在直连。请先开启本地路由，再修改接口格式或模型映射。");
   }
@@ -599,7 +601,7 @@ function objectMap(value: unknown) { const obj = asObj(value); return Object.fro
 function rejectLoopback(baseUrl: string) {
   const url = new URL(baseUrl);
   const local = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-  if (local && /^\/(claude|desktop|codex|grok|deepseek)(\/|$)/.test(url.pathname)) throw new Error("这个地址是本地路由自己，不能当作供应商");
+  if (local && /^\/(claude|desktop|codex|grok|deepseek|pi)(\/|$)/.test(url.pathname)) throw new Error("这个地址是本地路由自己，不能当作供应商");
 }
 
 function nextSort(store: Store, app: AgentApp) {
@@ -647,7 +649,7 @@ export async function activateProvider(id: string) {
     if (provider.official && store.proxy.apps[app]) throw new Error('请先关闭本地路由，再切回官方登录');
     await precheckCodex(provider);
     // Harness 自己能说这三种协议，直连时按供应商的协议写，不强迫走本地路由。号池和别的工具格式不同时才必须转换。
-    const cross = !!provider.endpoint && (!!provider.pool || (app !== "deepseek" && provider.endpoint.upstream !== NATIVE_UPSTREAM[app]) || (app === "desktop" && provider.desktopMode === "map"));
+    const cross = !!provider.endpoint && (!!provider.pool || (app !== "deepseek" && app !== "pi" && provider.endpoint.upstream !== NATIVE_UPSTREAM[app]) || (app === "desktop" && provider.desktopMode === "map"));
     if (cross || store.proxy.apps[app]) {
       await enableProxy(app, id, true);
       return { message: '已启用 ' + provider.name + (provider.pool ? '（号池，经本地路由轮流转发）' : '（本地路由）') + resumeHint(app), restart: app !== 'claude' };
@@ -1080,6 +1082,7 @@ function grokDefaultName() {
 }
 /** 切换成功时顺带说明各工具的坑：Grok 继续旧会话会换回旧模型。 */
 function resumeHint(app: AgentApp) {
+  if (app === "pi") return "。提示：新会话使用新供应商；旧会话请在 /model 中重新选择模型";
   if (app === "grok") return "。提示：Grok 继续旧会话时会换回那个会话记住的模型，请新开会话，或在会话里输入 /model " + GROK_TABLE;
   if (app === "deepseek") return "。提示：只对新会话生效，已经打开的会话仍用它自己记住的模型";
   return "";
@@ -1347,6 +1350,7 @@ function applyProxy(app: AgentApp) {
   else if (app === "desktop") writeDesktop(provider, proxyBase(app, port), PROXY_MANAGED, true);
   else if (app === "codex") writeCodex(store, provider, proxyBase(app, port), PROXY_MANAGED, true);
   else if (app === "deepseek") writeDeepseek(provider, proxyBase(app, port), PROXY_MANAGED, true);
+  else if (app === "pi") writePi(store, provider, proxyBase(app, port), PROXY_MANAGED, true);
   else writeGrok(provider, proxyBase(app, port), PROXY_MANAGED, true);
   store.owned[app] = snapshotFiles(app); store.proxyWritten[app] = snapshotFiles(app);
   save(store);
@@ -1362,6 +1366,7 @@ function applyDirect(provider: Provider) {
   else if (provider.app === "desktop") writeDesktop(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "codex") writeCodex(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else if (provider.app === "deepseek") writeDeepseek(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
+  else if (provider.app === "pi") writePi(store, provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   else writeGrok(provider, provider.endpoint?.baseUrl || "", provider.endpoint?.apiKey || "", false);
   // 透明转发开着：切到第三方供应商就关掉；重新写了一遍官方登录的配置（把那一行也清掉了）就再加回去
   if (isPassApp(provider.app) && store.pass.apps[provider.app]) {
@@ -1370,6 +1375,47 @@ function applyDirect(provider: Provider) {
   }
   store.owned[provider.app] = snapshotFiles(provider.app);
   save(store);
+}
+
+const PI_PROVIDER = "tokenpulse_route";
+function piFiles() { return [path.join(piDir(), "models.json"), path.join(piDir(), "settings.json")]; }
+function piApi(upstream: Upstream) { return upstream === "anthropic" ? "anthropic-messages" : upstream === "openai-responses" ? "openai-responses" : "openai-completions"; }
+// pi 支持 !command 和 $ENV；这里输入的是字面密钥/请求头，不能当命令或环境引用执行。
+function piLiteral(value: string) { return value.replace(/\$/g, () => "$$").replace(/^!/, "$!"); }
+function writePi(store: Store, provider: Provider, baseUrl: string, apiKey: string, proxy: boolean) {
+  const [modelsFile, settingsFile] = piFiles();
+  const models = readObject(modelsFile), settings = readObject(settingsFile);
+  if (models.providers !== undefined && (!models.providers || typeof models.providers !== "object" || Array.isArray(models.providers))) throw new Error("pi providers 格式不正确，已停止写入");
+  const providers = asObj(models.providers);
+  if (provider.official) {
+    if (!store.piDefaults) return;
+    // 只撤销本软件的默认选择，保留用户后来在 pi 中选择的新默认值。
+    if (settings.defaultProvider === PI_PROVIDER) {
+      for (const [key, value] of [["defaultProvider", store.piDefaults.provider], ["defaultModel", store.piDefaults.model]] as const) {
+        if (value === undefined) delete settings[key]; else settings[key] = value;
+      }
+    }
+    delete providers[PI_PROVIDER];
+    delete store.piDefaults;
+  } else {
+    const auth = readJson<Record<string, unknown> | null>(path.join(piDir(), "auth.json"), null);
+    if (auth && Object.hasOwn(auth, PI_PROVIDER)) throw new Error("pi 中已有同名 tokenpulse_route 登录，请先改名以免误用凭据");
+    if (!store.piDefaults) {
+      if (Object.hasOwn(providers, PI_PROVIDER)) throw new Error("pi 中已有同名 tokenpulse_route 供应商，请先改名以免覆盖");
+      store.piDefaults = { provider: settings.defaultProvider, model: settings.defaultModel };
+    }
+    providers[PI_PROVIDER] = {
+      baseUrl, api: piApi(proxy ? "openai-chat" : provider.endpoint!.upstream), apiKey: piLiteral(apiKey),
+      ...(proxy || !Object.keys(provider.requestHeaders).length ? {} : { headers: Object.fromEntries(Object.entries(provider.requestHeaders).map(([key, value]) => [key, piLiteral(value)])) }),
+      models: [{ id: provider.endpoint!.model, name: provider.name, reasoning: provider.thinking.supportsThinking,
+        input: ["text"], ...(provider.contextWindow ? { contextWindow: provider.contextWindow } : {}) }],
+    };
+    settings.defaultProvider = PI_PROVIDER;
+    settings.defaultModel = provider.endpoint!.model;
+  }
+  models.providers = providers;
+  writeObject(modelsFile, models);
+  writeObject(settingsFile, settings);
 }
 
 function writeClaude(store: Store, provider: Provider, baseUrl: string, apiKey: string, proxy: boolean) {
@@ -1849,7 +1895,7 @@ function snapshotLive(app: AgentApp): Provider | null {
     createdAt: Date.now(),
     endpoint,
     apiKeyField: app === 'claude' && asObj(readObject(claudeFile()).env).ANTHROPIC_API_KEY && !asObj(readObject(claudeFile()).env).ANTHROPIC_AUTH_TOKEN ? 'ANTHROPIC_API_KEY' : 'ANTHROPIC_AUTH_TOKEN',
-    extra: extractExtra(app, app === "claude" ? readObject(claudeFile()) : { config: readText(app === "codex" ? codexFile() : app === "deepseek" ? deepseekPatchFile() : grokFile()) }),
+    extra: app === "pi" ? {} : extractExtra(app, app === "claude" ? readObject(claudeFile()) : { config: readText(app === "codex" ? codexFile() : app === "deepseek" ? deepseekPatchFile() : grokFile()) }),
     slots: app === 'claude' ? slotsFromImport(app, readObject(claudeFile())) : [],
     desktopMode: 'direct', contextWindow: null,
     thinking: { supportsThinking: false, supportsEffort: false }, ...ADVANCED_DEFAULTS,
@@ -1872,6 +1918,15 @@ function slotsFromImport(app: AgentApp, settings: unknown): ModelSlot[] {
 
 function endpointFromLive(app: AgentApp): Endpoint | null {
   if (app === "desktop") return null;
+  if (app === "pi") {
+    const [modelsFile, settingsFile] = piFiles();
+    const settings = readObject(settingsFile);
+    // 只识别本软件管理的供应商，不读取或执行 pi 的 auth / 环境变量 / !command 凭据。
+    if (settings.defaultProvider !== PI_PROVIDER) return null;
+    const p = asObj(asObj(readObject(modelsFile).providers)[PI_PROVIDER]);
+    const upstream = p.api === "anthropic-messages" ? "anthropic" : p.api === "openai-responses" ? "openai-responses" : "openai-chat";
+    return { baseUrl: str(p.baseUrl), apiKey: str(p.apiKey).replace(/^\$!/, "!").replace(/\$\$/g, "$"), model: str(settings.defaultModel), upstream };
+  }
   if (app === "deepseek") {
     const read = readDeepseekLive();
     return { baseUrl: notPass(read.baseUrl), apiKey: read.apiKey, model: read.model, upstream: read.upstream };
@@ -1889,7 +1944,7 @@ function liveMarker(app: AgentApp) {
   try {
     const endpoint = endpointFromLive(app);
     if (!endpoint?.baseUrl) return null;
-    return { base: endpoint.baseUrl, managed: endpoint.apiKey === PROXY_MANAGED || /127\.0\.0\.1:\d+\/(claude|desktop|codex|grok|deepseek)(\/|$)/.test(endpoint.baseUrl) };
+    return { base: endpoint.baseUrl, managed: endpoint.apiKey === PROXY_MANAGED || /127\.0\.0\.1:\d+\/(claude|desktop|codex|grok|deepseek|pi)(\/|$)/.test(endpoint.baseUrl) };
   } catch {
     return null;
   }
@@ -2044,6 +2099,7 @@ function filesForApp(app: AgentApp) {
   if (app === 'codex') return [codexFile(), path.join(path.dirname(codexFile()), 'tokenpulse-model-catalog.json')];
   if (app === 'grok') return [grokFile()];
   if (app === 'deepseek') return [deepseekPatchFile(), deepseekCredFile()];
+  if (app === 'pi') return piFiles();
   return [path.join(desktopDir(), 'configLibrary', DESKTOP_PROFILE_ID + '.json'), path.join(desktopDir(), 'configLibrary', '_meta.json')];
 }
 configureConfigFiles(() => [storeFile(), ...AGENT_APPS.flatMap(filesForApp)]);
@@ -2101,7 +2157,7 @@ function restoreProxy(store: Store, app: AgentApp) {
       const stripped = file.endsWith(".credentials.yaml") ? editCredentialRef(live, null) : spliceMarked(live, null);
       configWrite(file, stripped.trim() ? stripped : null);
     }
-    else if (file.endsWith('settings.json') || file.endsWith('claude.json')) {
+    else if (file.endsWith('settings.json') || file.endsWith('claude.json') || app === 'pi') {
       const restored = reverseJson(JSON.parse(live), original === null ? undefined : JSON.parse(original), JSON.parse(ours));
       configWrite(file, restored === undefined ? null : JSON.stringify(restored, null, 2) + '\n');
     } else if (app === 'desktop' && file.endsWith('_meta.json')) {

@@ -1,12 +1,12 @@
 /** 供应商切换和本地路由共用的类型。 */
 
 /** 用户不用 Gemini（2026-09-28）：Gemini CLI 和 Gemini 上游都不支持，旧数据里的 Gemini 供应商读入时丢掉。 */
-export type AgentApp = "claude" | "desktop" | "codex" | "grok" | "deepseek";
+export type AgentApp = "claude" | "desktop" | "codex" | "grok" | "deepseek" | "pi";
 
 /** 上游接口。和客户端自己说的协议可以不同，不同时由本地路由转换。 */
 export type Upstream = "anthropic" | "openai-chat" | "openai-responses";
 
-export const AGENT_APPS: AgentApp[] = ["claude", "desktop", "codex", "grok", "deepseek"];
+export const AGENT_APPS: AgentApp[] = ["claude", "desktop", "codex", "grok", "deepseek", "pi"];
 
 export const AGENT_LABEL: Record<AgentApp, string> = {
   claude: "Claude Code",
@@ -14,6 +14,7 @@ export const AGENT_LABEL: Record<AgentApp, string> = {
   codex: "Codex",
   grok: "Grok CLI",
   deepseek: "DeepSeek Harness",
+  pi: "pi",
 };
 
 /** 各工具自己发出的协议。桌面端和 Claude Code 一样发 Anthropic Messages。Harness 走本地路由时用 OpenAI Chat，直连时按供应商自己的协议写。 */
@@ -23,6 +24,7 @@ export const NATIVE_UPSTREAM: Record<AgentApp, Upstream> = {
   codex: "openai-responses",
   grok: "openai-responses",
   deepseek: "openai-chat",
+  pi: "openai-chat",
 };
 
 export const UPSTREAM_LABEL: Record<Upstream, string> = {
@@ -88,7 +90,7 @@ export const POOL_OFFICIAL: Partial<Record<AgentApp, { kind: "claude" | "chatgpt
 export const POOL_KEY = "TOKENPULSE_POOL";
 
 export function isAgentApp(value: unknown): value is AgentApp {
-  return value === "claude" || value === "desktop" || value === "codex" || value === "grok" || value === "deepseek";
+  return value === "claude" || value === "desktop" || value === "codex" || value === "grok" || value === "deepseek" || value === "pi";
 }
 
 export function isUpstream(value: unknown): value is Upstream {

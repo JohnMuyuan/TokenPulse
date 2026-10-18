@@ -48,7 +48,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     await until("document.querySelector('[data-page=providers]')");
     await evaluate("navigate('providers')");
     // 概览：二级菜单 + 三家工具卡，没有 Gemini
-    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 12 && document.querySelectorAll('${P} .pv-app-card').length === 5`);
+    await until(`document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 13 && document.querySelectorAll('${P} .pv-app-card').length === 6`);
     assert.equal(await evaluate(`document.querySelector('${P}').innerText.includes('Gemini')`), false, '页面上不能再有 Gemini');
     assert.equal(await evaluate(`document.querySelector('${P} .pv-nav-item.on').dataset.section`), 'overview');
     // 转发记录（0.3.34）：永久保存，说明卡里能打开记录文件夹；0.3.38 起一页 20 条，翻到还没读的页再去读更早的；0.3.39 起有页码、能直接跳页
@@ -251,7 +251,7 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), true);
     await evaluate(`${removeButton}.click()`);
     // 删完之后这一页和导航里的入口都没了，回到概览
-    await until(`!document.querySelector('${P} .pv-nav [data-section=prism]') && !document.querySelector('${P} .pv-prism-remove') && document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 11`);
+    await until(`!document.querySelector('${P} .pv-nav [data-section=prism]') && !document.querySelector('${P} .pv-prism-remove') && document.querySelectorAll('${P} .pv-nav .pv-nav-item').length === 12`);
     assert.equal(fs.existsSync(path.join(root, 'data', 'prism-bridge')), false, '数据目录里的 prism-bridge 整个删掉');
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'data', 'agent-switch.json'), 'utf8')).providers.some(p => p.name === 'Prism 桥'), false, 'Codex 里的供应商也去掉');
     await nav('desktop');

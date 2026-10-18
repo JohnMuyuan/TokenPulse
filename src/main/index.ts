@@ -97,7 +97,7 @@ function concurrencyState(): ConcurrencyLiveState {
     const view = coreAgentView();
     concurrencyMonitor.register(view.providers.map(provider => ({ id: 'provider:' + provider.id, label: provider.name, kind: 'provider' as const })));
     concurrencyMonitor.register(readOfficialAccountStore().accounts.filter(account => !account.hidden).map(account => ({ id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' as const })));
-    concurrencyMonitor.register(['claude', 'codex', 'grok', 'deepseek'].flatMap(app => providerScopes(app)));
+    concurrencyMonitor.register(['claude', 'codex', 'grok', 'deepseek', 'pi'].flatMap(app => providerScopes(app)));
     concurrencyCoverage = Object.keys(view.proxy.apps).map(app => ({ app, monitored: view.proxy.running && (view.proxy.apps[app as keyof typeof view.proxy.apps] || (view.pass[app as keyof typeof view.pass]?.on && view.pass[app as keyof typeof view.pass]?.connected) || false) }));
     concurrencyMonitor.setAvailable(concurrencyCoverage.some(item => item.monitored));
   }
@@ -818,7 +818,7 @@ function isOfficialAccountKind(value: unknown): value is OfficialAccountKind {
 }
 
 function isAgentKind(value: unknown): value is AgentKind {
-  return value === "claude" || value === "codex" || value === "grok" || value === "deepseek";
+  return value === "claude" || value === "codex" || value === "grok" || value === "deepseek" || value === "pi";
 }
 
 /** 找到会话并确认参数：id 来自界面，只收三家之一、长度有限的字符串。 */
@@ -831,13 +831,14 @@ async function sessionOf(kind: unknown, id: unknown) {
 
 /** 在 TokenPulse 里直接回复（见 session-reply.ts）。必须在原项目目录里跑：Agent 读写的是这个目录。 */
 async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unknown) {
+  if (kind === "pi") throw new Error("pi 会话请在终端里继续。");
   const hit = await sessionOf(kind, id);
   if (typeof prompt !== "string" || !prompt.trim()) throw new Error("回复内容是空的");
   if (prompt.length > 100_000) throw new Error("回复内容太长");
   const cwd = hit.session.cwd;
   if (!cwd || !fsSync.existsSync(cwd)) throw new Error("这个会话的项目目录已经不在了，没法在原目录里继续");
   // 0.3.16：凡是 TokenPulse 启动的 CLI，设了出口 IP 白名单就先测出口，不在白名单不启动。Harness 这版不做出口监控。
-  if (hit.kind !== "deepseek") {
+  if (hit.kind !== "deepseek" && hit.kind !== "pi") {
     const gate = await exitMonitor.gateLaunch(CLI_PROVIDER[hit.kind], CLI_NAME[hit.kind]);
     if (!gate.ok) throw new Error(gate.message);
   }
@@ -854,7 +855,7 @@ async function openInTerminal(kind: unknown, id: unknown) {
   const session = hit.session;
   const cwd = session.cwd && fsSync.existsSync(session.cwd) ? session.cwd : undefined;
   // 终端里的 CLI 走的是那个 PowerShell 的网络环境：出口检测放在终端里做（见 session-reply.ts 的 exitGuardScript）
-  const guard = exitMonitor.launchRule(CLI_PROVIDER[hit.kind]);
+  const guard = hit.kind === "pi" ? null : exitMonitor.launchRule(CLI_PROVIDER[hit.kind]);
   openTerminal(hit.kind, hit.id, cwd, guard);
   return { ok: true, command: sessionCommand(hit.kind, hit.id), guarded: guardMode(guard) };
 }
@@ -863,8 +864,8 @@ const CLI_PROVIDER = { claude: "claude", codex: "chatgpt", grok: "grok" } as con
 const CLI_NAME = { claude: "Claude Code", codex: "Codex", grok: "Grok" } as const;
 /** 本机装了哪几家的 CLI（新对话只能用装了的）；guarded：哪几家设了出口 IP 白名单（启动前会先测出口）。 */
 function installedClis() {
-  const kinds = ["claude", "codex", "grok"] as const;
-  return { ...Object.fromEntries(kinds.map((kind) => [kind, resolveCli(kind) !== null])), guarded: Object.fromEntries(kinds.map((kind) => [kind, guardMode(exitMonitor.launchRule(CLI_PROVIDER[kind]))])) };
+  const kinds = ["claude", "codex", "grok", "pi"] as const;
+  return { ...Object.fromEntries(kinds.map((kind) => [kind, resolveCli(kind) !== null])), guarded: Object.fromEntries(kinds.map((kind) => [kind, kind === "pi" ? null : guardMode(exitMonitor.launchRule(CLI_PROVIDER[kind]))])) };
 }
 /** 项目文件夹：必须是已经存在的目录的绝对路径。 */
 function projectFolder(value: unknown) {
@@ -878,10 +879,10 @@ function projectFolder(value: unknown) {
 /** 开一个新对话（0.3.16）：在项目文件夹里打开终端，启动选的那个 CLI。新会话由 CLI 自己建，之后会出现在会话列表里。 */
 function startConversation(kind: unknown, folder: unknown) {
   if (kind === "deepseek") throw new Error("DeepSeek Harness 的新任务不从终端开始。打开已有会话后可以在这里回复。");
-  if (kind !== "claude" && kind !== "codex" && kind !== "grok") throw new Error("请选择一个工具");
+  if (kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "pi") throw new Error("请选择一个工具");
   const cwd = projectFolder(folder);
   if (!resolveCli(kind)) throw new Error("没有找到这个工具的命令行程序，请先安装它的 CLI");
-  const guard = exitMonitor.launchRule(CLI_PROVIDER[kind]);
+  const guard = kind === "pi" ? null : exitMonitor.launchRule(CLI_PROVIDER[kind]);
   openTerminal(kind, null, cwd, guard);
   return { ok: true, cwd, guarded: guardMode(guard) };
 }
@@ -894,6 +895,7 @@ async function pickProjectFolder(start: unknown) {
 }
 /** 永久删除一段对话：先由主进程弹确认框，再调用各家 CLI（Claude 走本地文件回退）。 */
 async function deleteConversation(kind: unknown, id: unknown) {
+  if (kind === "pi") throw new Error("请在 pi 中管理会话文件。");
   const hit = await sessionOf(kind, id);
   const method = hit.kind === "claude"
     ? "Claude Code 没有普通对话删除命令；TokenPulse 会删除本机的会话记录文件和同名附属目录。此操作无法撤销。"

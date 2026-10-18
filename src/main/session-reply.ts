@@ -75,6 +75,21 @@ function bundledCodex(): string[] {
 /** 找到这家 CLI 的可执行文件，返回 spawn 用的 [程序, 前置参数, 额外环境变量]。 */
 export function resolveCli(kind: AgentKind): { file: string; prefix: string[]; env?: Record<string, string> } | null {
   const home = os.homedir();
+  if (kind === "pi") {
+    const npm = path.join(process.env.APPDATA || "", "npm", "node_modules");
+    for (const candidate of [
+      path.join(npm, "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+      path.join(npm, "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js"),
+      path.join(npm, "@mariozechner", "pi-coding-agent", "dist", "cli.js"),
+      ...where("pi.exe"), ...where("pi.cmd"),
+    ]) {
+      if (!fs.existsSync(candidate)) continue;
+      if (/\.exe$/i.test(candidate)) return { file: candidate, prefix: [] };
+      const js = unwrapNpm(candidate);
+      if (js) return { file: process.execPath, prefix: [js], env: { ELECTRON_RUN_AS_NODE: "1" } };
+    }
+    return null;
+  }
   if (kind === "codex") {
     const npm = path.join(process.env.APPDATA || "", "npm");
     const candidates = [
@@ -153,7 +168,7 @@ export const quotePs = (value: string) => `'${value.replace(/['‘’‚‛]/g, 
  */
 export type ExitGuard = { host: string; allowedIps: string[]; allowedRegions: string[] };
 export const guardMode = (guard?: ExitGuard | null): "ip" | "region" | null => guard?.allowedIps.length ? "ip" : guard?.allowedRegions.length ? "region" : null;
-const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok", deepseek: "DeepSeek Harness" };
+const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok", deepseek: "DeepSeek Harness", pi: "pi" };
 
 /**
  * 启动 CLI 之前，在**同一个 PowerShell 窗口里**测一次出口：符合白名单才往下走，否则打印原因、不启动。
@@ -213,9 +228,9 @@ export function exitGuardScript(kind: AgentKind, guard: ExitGuard) {
 }
 
 export function terminalScript(kind: AgentKind, id: string | null, cwd?: string, fallbackExe?: string, guard?: ExitGuard | null) {
-  const name = kind === "claude" ? "claude" : kind === "codex" ? "codex" : "grok";
+  const name = kind === "pi" ? "pi" : kind === "claude" ? "claude" : kind === "codex" ? "codex" : "grok";
   // id 为 null：开一个新对话（0.3.16），不带任何参数，和用户自己在这个目录里敲命令一样
-  const args = id === null ? "" : (kind === "codex" ? ["resume", id] : ["--resume", id]).map(quotePs).join(" ");
+  const args = id === null ? "" : (kind === "codex" ? ["resume", id] : [kind === "pi" ? "--session" : "--resume", id]).map(quotePs).join(" ");
   return [
     cwd ? `Set-Location -LiteralPath ${quotePs(cwd)}` : "",
     // 设了出口白名单（IP 优先，没有 IP 就看地区）：先测，不符合就到此为止（脚本里的 return），下面两行不会执行
@@ -252,6 +267,7 @@ export function terminalHome(cwd?: string) {
 
 /** 命令行参数（不含提示词本身）。单独导出给测试。 */
 export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFile?: string) {
+  if (kind === "pi") throw new Error("pi 会话请在终端里继续。");
   // headless 文档：dsh --profile headless --json --session-id <id>，任务用 - 从 stdin 读。新任务不带 session-id。
   if (kind === "deepseek") return ["--profile", "headless", "--json", ...(id ? ["--session-id", id] : []), "-"];
   if (kind === "claude") {

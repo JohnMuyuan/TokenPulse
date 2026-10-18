@@ -817,7 +817,7 @@ app.on('web-contents-created', (_, contents) => {
         assert.equal(await evaluate("document.getElementById('sw-new-title').textContent"), '在新项目里开始');
         assert.equal(await evaluate("document.querySelector('#sw-new .sw-new-path').textContent"), path.join(temp, 'My New ‘Project’'));
         assert.equal(await evaluate("document.querySelector('#sw-new .sw-new-folder').selectedOptions[0].textContent"), 'My New ‘Project’', '下拉里显示文件夹名');
-        assert.deepEqual(await evaluate("[...document.querySelectorAll('#sw-new .sw-new-tool')].map(b => b.dataset.kind + ':' + b.disabled + ':' + b.querySelector('small').textContent)"), ['claude:false:已安装', 'codex:false:已安装', 'grok:true:没有找到 CLI']);
+        assert.deepEqual(await evaluate("[...document.querySelectorAll('#sw-new .sw-new-tool')].map(b => b.dataset.kind + ':' + b.disabled + ':' + b.querySelector('small').textContent)"), ['claude:false:已安装', 'codex:false:已安装', 'grok:true:没有找到 CLI', 'pi:true:没有找到 CLI']);
         // 设了出口 IP 白名单的工具：对话框里说明启动前会先在终端里检测
         await evaluate("document.querySelector('#sw-new .sw-new-tool[data-kind=claude]').click()");
         assert.match(await evaluate("document.querySelector('#sw-new .sw-new-note').textContent"), /这个工具设了出口 IP 白名单：启动前会先在终端里检测出口 IP，不在白名单就不会启动。/);

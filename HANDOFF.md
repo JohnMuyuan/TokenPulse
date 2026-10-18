@@ -1,6 +1,34 @@
-# Current handoff · 0.3.57 已正式发布（2026-10-17）
+# Current handoff · 0.3.58 用户验收通过，正式发布进行中（2026-10-18）
 
 ## 新对话先看这里
+
+
+### 0.3.58 正式发布进行中（2026-10-18）
+
+- 用户已验收测试版，并明确授权发布同一 0.3.58。main 基线 acc4ce6，fetch 后远端无新增提交。
+- 发布前 npm test 退出 0（667 条 PASS，test-release-backend-0358.log），npm run test:ui 全串退出 0（20 个 Electron 脚本、100 条 PASS，test-release-ui-0358.log）。测试沿用隔离 HOME/数据和假 Key/网关。
+- npm run dist 退出 0（build-release-0358.log），Setup / Portable 版本均为 0.3.58。node dist/verify-0.3.58.cjs：153 运行时文件逐字节一致，ASAR SHA256 bb3fe7e33b516041559372bfd1d04b8039b68f8e3aa9a040a49ef92baf8f02d2，与用户验收的测试版相同。
+- 发布附件 dist/TokenPulse-0.3.58-Setup.exe、Setup.exe.blockmap、Portable.exe、latest.yml；完整大小/SHA256 清单 dist/assets-0.3.58.json。发布正文 dist/release-0.3.58.md，已按旧 Release 风格核对，SHA256 07671df69ca63924d6ba99361f2b62e91b41a94cdb5fc6394c1cc70b8931d1ed。
+- 四附件与 win-unpacked exe / asar 可独占只读打开，句柄已释放；测试和构建进程已结束。用户安装版保持运行，未主动安装新版。
+- 待做：提交、推送 main 与 v0.3.58 标签，上传并核验附件，正式发布，核对远端 latest 与正文，更新本节。无当前阻塞。
+
+### 0.3.58 测试版验收记录（此前的「未发布」状态只适用于验收前）
+
+- 用户本轮要求：会话列表和一键切换模型供应商支持 pi，完成后只给本地测试版；测试严禁使用本机真实 Key。已全部用隔离 HOME / PI_CODING_AGENT_DIR、合成会话、假 Key 和 127.0.0.1 假网关验证。本机 pi 1.3.0 仅作为可执行程序加载，子进程环境使用白名单，不继承真实 API Key。
+- 基线 main acc4ce6 / 0.3.57；本轮工作未提交、未打标签、未推送、未安装、未发布。正式 Release 仍是 v0.3.57，dist 中旧 Setup/Portable/latest.yml 不属于本轮测试版。
+- 会话：src/core/{paths,sessions}.ts 增加 pi 默认目录 ~/.pi/agent 与 PI_CODING_AGENT_DIR、JSONL 树分支解析（当前叶节点回溯）、会话名/模型/用户与助手文字/工具调用和结果/压缩事件；复用列表、详情、全文搜索。在终端继续用 pi --session <id>，新对话也能选 pi；src/main/{index,session-reply}.ts 识别新旧 npm 包及本机实际 dist/bundle/cli.js 安装布局。
+- 供应商：src/core/{agent-types,agent-switch,agent-proxy}.ts 增加 pi，Chat / Responses / Anthropic 三种接口原生直连及本地路由；写 models.json 的 tokenpulse_route 和 settings.json 的默认项，保留其他供应商/设置，不修改 auth.json；切回「pi 原有配置」恢复默认选择。沿用事务、配置差异确认、备份、只读保护与路由退出恢复。拒绝同名供应商或同名 auth 凭据，密钥/请求头的 !/$ 按字面转义，避免 pi 将其解释为命令或环境引用。
+- 界面与说明：renderer/{agent-switch,sessions,app,brand,i18n,intro}.js、sessions.css、README；会话筛选改为两行三列，新对话工具选择为两列。审图时发现原会话页 replaceChildren 将空定位栏渲染为字面 null，已过滤空节点并加断言。package.json / lock 为 0.3.58。
+- 用户提供图标：从 C:/Users/7ipny/Downloads/piicon/pi.svg 复制至 renderer/brand/presets/pi.svg，源和副本 SHA256 相同；renderer/brand.js 使用该 SVG 的两条路径，深浅主题均随前景色显示。没有改动源下载目录，用户可以删除它；pi-color.svg 实为 404 文本，未使用。
+- 测试：npm test 退出 0，667 条 PASS（test-backend-0358.log）；最后修改 pi 凭据冲突检查后 npm run compile、node scripts/test-pi.cjs、node scripts/test-session-search.cjs 再通过。设置 TOKENPULSE_TEST_PI_CLI 为本机程序路径运行 node scripts/test-pi.cjs，6 组通过（test-pi-0358.log）：实际 pi 发 Chat / Responses / Anthropic 请求、Chat→Anthropic 路由、!/$ 字面密钥、恢复原有配置、碰撞、只读/预览保护。
+- UI：全部 20 个 Electron 脚本已验证通过。npm run test:ui 最后一轮前 19 项通过，最后 pi UI 的隐藏窗口颜色过渡断言失败；修正测试为明确设置 light/dark 并移除过渡类后，node node_modules/electron/cli.js --lang=zh-CN scripts/test-pi-ui.cjs 单独重跑退出 0、3 组通过（test-pi-ui-0358.log），未再从头重跑整串。更早两轮旧测试菜单/新对话工具数量断言已随 pi 更新。首轮后端因父级 CLI 目录变量干扰旧 HOME 夹具失败，清除父级覆盖、保留隔离 HOME 后整套通过。
+- 截图自查：dist/shots-0.3.58/{pi-providers,pi-sessions,pi-sessions-en,pi-sessions-dark}.png，仅合成数据，已查看；DOM 校验用户 SVG 路径、搜索跳转、密钥遮盖、窄窗口筛选不截字、英语提示与深浅主题。
+- 最新测试包：D:/CodePorject/Tools/TokenPulse/dist/win-unpacked/TokenPulse.exe，FileVersion 0.3.58 / ProductVersion 0.3.58.0。npm run icons、npm run compile、node node_modules/electron-builder/out/cli/cli.js --win dir --publish never 退出 0；最后刷新包纳入空节点修复。node dist/verify-0.3.58.cjs：153 运行时文件逐字节一致，ASAR SHA256 bb3fe7e33b516041559372bfd1d04b8039b68f8e3aa9a040a49ef92baf8f02d2（dist/verification-0.3.58.json），exe SHA256 118918190676d50cb496ebe6f0c6cffebc0df6d890096726eee8013f2067fbed。打包日志 build-0358-preview.log。
+- 资源收尾：本轮 Electron/Node 测试、pi CLI 和打包进程均已结束；按项目路径/命令行检查未发现相关残留。win-unpacked exe / app.asar 可独占只读打开，检测句柄均释放。dir 包没有 NSIS 用的 resources/elevate.exe，不作为待解锁文件。工作目录项目根；用户安装版 TokenPulse（主 PID 21600，安装目录下）未关闭。
+- 已知范围：pi 在应用内回复/删除、用量扫描、官方额度查询、号池和透明转发本轮未实现；会话可在终端继续。本轮更新全局默认模型，旧会话或项目级 .pi/settings.json 可以覆盖它，需在 pi /model 中重选。未用真实上游验证，未操作真实登录或启动正式配置下的 pi，没有安装升级验证。
+- 验收：用户从托盘退出当前正式版，再运行上面的测试程序（单实例）；查看会话管理的 pi 筛选/详情/搜索和更多菜单里的终端继续；供应商→pi→添加/启用，确认差异后看新 pi 会话，旧会话用 /model 切换。测试版已可交付，无当前阻塞，等待用户验收。
+
+## 历史：0.3.57 及以前
 
 ### 0.3.57 已正式发布（2026-10-17）
 

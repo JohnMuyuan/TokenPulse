@@ -125,6 +125,7 @@ export function lineDiff(before: string | null, after: string | null, context = 
 export function toolOf(file: string) {
   const normalized = file.replace(/\\/g, "/").toLowerCase();
   if (normalized.includes("/claude-3p/")) return "Claude 桌面端";
+  if (normalized.includes("/.pi/") || normalized.includes("/pi/")) return "pi";
   if (normalized.includes("/.claude") || normalized.endsWith("/settings.json")) return "Claude Code";
   if (normalized.includes("/.codex") || normalized.includes("codex")) return "Codex";
   if (normalized.includes("/.grok") || normalized.includes("grok")) return "Grok CLI";

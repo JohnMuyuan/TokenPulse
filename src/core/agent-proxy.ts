@@ -114,7 +114,7 @@ function readBody(req: http.IncomingMessage) {
 export function appOfPath(pathname: string): { app: AgentApp; rest: string } | null {
   const parts = pathname.split("/").filter(Boolean);
   const head = parts[0];
-  if (head !== "claude" && head !== "desktop" && head !== "codex" && head !== "grok" && head !== "deepseek") return null;
+  if (head !== "claude" && head !== "desktop" && head !== "codex" && head !== "grok" && head !== "deepseek" && head !== "pi") return null;
   return { app: head, rest: `/${parts.slice(1).join("/")}` };
 }
 

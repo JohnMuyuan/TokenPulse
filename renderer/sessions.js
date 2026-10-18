@@ -31,7 +31,8 @@
     claude: { name: 'Claude Code', short: 'Claude', brand: 'claude' },
     codex: { name: 'Codex CLI', short: 'Codex', brand: 'openai' },
     grok: { name: 'Grok Build', short: 'Grok', brand: 'grok' },
-    deepseek: { name: 'DeepSeek Harness', short: 'DeepSeek', brand: 'deepseek' }
+    deepseek: { name: 'DeepSeek Harness', short: 'DeepSeek', brand: 'deepseek' },
+    pi: { name: 'pi', short: 'pi', brand: 'pi' }
   };
   const DAY = 86400000;
   /** 0.3.16：这一家设了出口 IP 白名单时，TokenPulse 启动的 CLI 会先测出口。 */
@@ -215,7 +216,7 @@
     const folders = knownFolders();
     let chosen = folder || currentFolder() || folders[0]?.cwd || '';
     const currentKind = S.detail?.kind || S.items.find(item => item.key === S.key)?.kind;
-    let kind = [currentKind, 'claude', 'codex', 'grok'].find(k => k && clis[k]) || '';
+    let kind = [currentKind, 'claude', 'codex', 'grok', 'pi'].find(k => k && clis[k]) || '';
 
     const select = el('select', { class: 'sw-new-folder', 'aria-label': '项目文件夹' });
     const path = el('p', { class: 'sw-new-path', translate: 'no' });
@@ -228,7 +229,7 @@
     };
     const browse = button('选择文件夹…', 'folder', 'btn', { 'data-action': 'browse' });
     const tools = el('div', { class: 'sw-new-tools', role: 'radiogroup', 'aria-label': '用哪个工具' });
-    const drawTools = () => tools.replaceChildren(...['claude', 'codex', 'grok'].map(k => {
+    const drawTools = () => tools.replaceChildren(...['claude', 'codex', 'grok', 'pi'].map(k => {
       const b = el('button', { type: 'button', class: 'sw-new-tool' + (kind === k ? ' on' : ''), role: 'radio', 'aria-checked': String(kind === k), 'data-kind': k, disabled: clis[k] ? null : '' }, [
         mark(k), el('b', { text: AGENTS[k].name, translate: 'no' }), el('small', { text: clis[k] ? '已安装' : '没有找到 CLI' })
       ]);
@@ -242,7 +243,7 @@
     function sync() {
       start.disabled = !chosen || !kind;
       note.classList.remove('bad');
-      note.textContent = !['claude', 'codex', 'grok'].some(k => clis[k]) ? '本机没有找到 Claude Code、Codex 或 Grok 的命令行程序，请先安装。' : !chosen ? '先选一个项目文件夹。' : guardNote(clis.guarded?.[kind]) ? (clis.guarded[kind] === 'region' ? '这个工具设了出口地区白名单：' : '这个工具设了出口 IP 白名单：') + guardNote(clis.guarded[kind]) : '';
+      note.textContent = !['claude', 'codex', 'grok', 'pi'].some(k => clis[k]) ? '本机没有找到 Claude Code、Codex、Grok 或 pi 的命令行程序，请先安装。' : !chosen ? '先选一个项目文件夹。' : guardNote(clis.guarded?.[kind]) ? (clis.guarded[kind] === 'region' ? '这个工具设了出口地区白名单：' : '这个工具设了出口 IP 白名单：') + guardNote(clis.guarded[kind]) : '';
     }
     const card = el('section', { class: 'modal-card sw-new-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'sw-new-title' }, [
       el('header', { class: 'sw-new-head' }, [el('div', {}, [
@@ -362,9 +363,9 @@
   }
 
   function drawList() {
-    const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0, deepseek: 0 };
+    const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0, deepseek: 0, pi: 0 };
     for (const item of S.items) counts[item.kind] = (counts[item.kind] || 0) + 1;
-    N.kinds.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...['all', 'claude', 'codex', 'grok', 'deepseek'].map(kind =>
+    N.kinds.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...['all', 'claude', 'codex', 'grok', 'deepseek', 'pi'].map(kind =>
       el('button', { type: 'button', 'data-kind': kind, class: S.kind === kind ? 'on' : '', 'aria-pressed': String(S.kind === kind), title: `${kind === 'all' ? '全部' : AGENTS[kind].short} · ${number(counts[kind] || 0)} 个会话` }, [
         kind === 'all' ? '全部' : AGENTS[kind].short, el('small', { text: number(counts[kind] || 0) })
       ])));
@@ -486,7 +487,7 @@
         mark(d.kind, 'sw-mark lg'),
         el('div', { class: 'sw-head-text' }, [el('h2', { text: d.title, title: d.title, translate: 'no' }), el('div', { class: 'sw-chips' }, chips)])
       ]),
-      el('div', { class: 'sw-actions' }, [copyPath, reply, more])
+      el('div', { class: 'sw-actions' }, [copyPath, d.kind === 'pi' ? null : reply, more])
     ]);
   }
 
@@ -496,7 +497,7 @@
       d.kind === 'deepseek' ? null : { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
       d.resumeCommand ? { value: 'command', label: '复制继续命令', hint: d.resumeCommand } : null,
       { value: 'id', label: '复制会话 ID', hint: d.id },
-      d.kind === 'deepseek' ? null : { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
+      ['deepseek', 'pi'].includes(d.kind) ? null : { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
     ].filter(Boolean);
     openOptionMenu(anchor, '更多操作', menu, null, async value => {
       if (value === 'command') copy(d.resumeCommand, '继续命令已复制');
@@ -630,6 +631,7 @@
   }
 
   function composer(d) {
+    if (d.kind === 'pi') { N.input = null; return el('div', { class: 'sw-composer' }, [el('small', { text: 'pi 会话请在终端里继续。' })]); }
     const running = S.run && S.run.key === d.key;
     const otherRunning = S.run && !running && !S.run.done;
     N.input = el('textarea', { rows: '1', placeholder: `回复 ${AGENTS[d.kind].short}…（Enter 发送，Shift + Enter 换行）`, 'aria-label': '回复内容' });
@@ -674,7 +676,7 @@
       N.main.replaceChildren(el('div', { class: 'sw-empty' }, [
         el('span', { class: 'sw-empty-icon' }, [icon('sessions')]),
         el('h2', { text: S.loaded ? '选择一个会话' : '正在读取会话…' }),
-        el('p', { text: '左边是本机 Claude Code、Codex CLI 和 Grok Build 的对话历史。选中后可以查看完整对话、复制项目地址，或者直接回复。' })
+        el('p', { text: '左边是本机 Claude Code、Codex CLI、Grok Build、DeepSeek Harness 和 pi 的对话历史。选中后可以查看完整对话、复制项目地址或继续会话。' })
       ]));
       return;
     }
@@ -694,8 +696,8 @@
     drawMessages(d, inner);
     highlightIn(inner);
     const focused = document.activeElement === N.input;
-    N.main.replaceChildren(header(d), jump ? jumpBar(d, jump) : null, N.scroller, composer(d));
-    if (focused) N.input.focus();
+    N.main.replaceChildren(...[header(d), jump ? jumpBar(d, jump) : null, N.scroller, composer(d)].filter(Boolean));
+    if (focused) N.input?.focus();
     requestAnimationFrame(() => {
       if (jump && jump.index >= 0 && scrollToHit(jump.ids[jump.index])) return;
       N.scroller.scrollTop = toBottom ? N.scroller.scrollHeight : N.scroller.scrollHeight - offsetFromBottom;
@@ -806,7 +808,7 @@
     open(key) {
       const value = String(key || ''), split = value.indexOf(':');
       const kind = split > 0 ? value.slice(0, split) : '', id = split > 0 ? value.slice(split + 1) : '';
-      if (!['claude', 'codex', 'grok', 'deepseek'].includes(kind) || !id) return;
+      if (!['claude', 'codex', 'grok', 'deepseek', 'pi'].includes(kind) || !id) return;
       S.kind = kind; S.project = 'all'; S.search = ''; S.hits = null; S.terms = []; S.openKey = value;
       clearTimeout(searchTimer);
       if (N.search) N.search.value = '';

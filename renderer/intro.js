@@ -14,6 +14,10 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.58': [
+      ['sessions', '支持 pi 会话', '会话管理新增 pi：查看对话和工具记录、全文搜索，并在终端继续会话。'],
+      ['route', '一键切换 pi 供应商', '供应商页新增 pi，支持三种接口直连和本地路由；保留其他配置，可切回原有默认供应商。'],
+    ],
     '0.3.57': [
       ['sessions', '会话搜索更准确', '搜索只匹配对话文字和工具概要，修复角色名、消息编号造成的误命中；续接会话使用和详情相同的文件，避免点开找不到匹配内容。'],
       ['check', '搜索缓存异常时自动重建', '搜索缓存索引的结构损坏时会重新整理，不再让整个搜索失败。'],
@@ -299,7 +303,7 @@
     { chapter: '用量明细', page: 'usage', before: () => usageView('requests'), target: '#page-usage .usage-records', title: '每一次请求', text: '逐条看每次请求用了多少 Token、占了多少额度、是哪个账号发的；请求的型号和实际回复的型号对不上、响应可疑会直接标出来，侧栏上也会亮红点。也可以按日汇总、导出 CSV。' },
     { chapter: '用量明细', page: 'usage', before: () => usageView('projects'), target: '#page-usage .usage-records', wait: '#view-projects .pj-card', title: '按项目看用量', text: '每个项目文件夹被几个 Agent 对话改过、用了多少 Token 和额度，由哪些模型 × 思考等级组成。' },
 
-    { chapter: '供应商', page: 'providers', before: providers('overview'), target: '#page-providers .pv-nav [data-section="overview"]', title: '供应商 · 一键切换', text: '为 Claude Code、Claude 桌面端、Codex、Grok CLI 和 DeepSeek Harness 切换模型供应商：官方登录、第三方 API Key，或者你建的号池。每家工具的模型候选和思考等级分开设置；改工具配置前都会先给你看逐行对比，确认后才写，并自动备份。' },
+    { chapter: '供应商', page: 'providers', before: providers('overview'), target: '#page-providers .pv-nav [data-section="overview"]', title: '供应商 · 一键切换', text: '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换模型供应商：官方登录、第三方 API Key，或者你建的号池。每家工具的模型候选和思考等级分开设置；改工具配置前都会先给你看逐行对比，确认后才写，并自动备份。' },
     { chapter: '供应商', page: 'providers', before: providers('overview'), target: '#page-providers .pv-nav [data-section="claude"]', title: '添加供应商和号池', text: '在某个工具下面点「添加供应商」：填地址、Key 和模型就行，接口格式不一样（比如让 Claude Code 用 OpenAI 格式的模型）也能用，本地路由会自动转换。号池能把几个官方账号或 API Key 放在一起轮流用，有四种轮换方式：轮询、用满再换、快重置优先、剩余最多；额度用完的号会自动避开。' },
     { chapter: '供应商', page: 'providers', before: providers('router'), target: '#page-providers .pv-nav [data-section="router"]', title: '本地路由', text: '第三方供应商、跨格式和号池都经过本机的本地路由转发：真实 Key 只留在 TokenPulse 里，工具配置里写的是占位。一家出错可以自动换备用的；退出 TokenPulse 时工具配置会还原成直连。' },
     { chapter: '供应商', page: 'providers', before: providers('pass'), target: '#page-providers .pv-nav [data-section="pass"]', title: '透明转发：量官方模型有多快', text: '用官方登录时，打开透明转发，请求原样经过本机一下：只计时、读回复里的 Token 数，凭据还是工具自己的。这样官方模型也能画出速度走势。' },

@@ -12,6 +12,7 @@ const grokDir = path.join(root, 'grok');
 process.env.CLAUDE_CONFIG_DIR = claudeDir;
 process.env.CODEX_HOME = codexDir;
 process.env.GROK_HOME = grokDir;
+process.env.PI_CODING_AGENT_DIR = path.join(root, 'pi');
 process.env.TOKENPULSE_DSH_HOME = path.join(root, 'dsh');
 process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
 const write = (file, rows) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, rows.map(row => typeof row === 'string' ? row : JSON.stringify(row)).join('\n') + '\n'); };

@@ -12,6 +12,11 @@ export function dataFile(name: string) {
   return path.join(dataDir(), name);
 }
 
+/** pi 官方目录覆盖；测试也沿用供应商模块的隔离主目录。 */
+export function piDir() {
+  return process.env.PI_CODING_AGENT_DIR || path.join(process.env.AGENT_SWITCH_HOME || os.homedir(), ".pi", "agent");
+}
+
 /**
  * 原子写：先写同目录的临时文件再 rename。
  * 账本文件是「整份读、整份写」的，写到一半被杀进程就全没了。
