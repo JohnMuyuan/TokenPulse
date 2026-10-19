@@ -188,6 +188,49 @@ try {
     check("有休息时限制近期趋势的放大倍数", near(w.ratePerH, 1) && w.runsOutBeforeReset, String(w.ratePerH));
   }
 
+  // ---- 9c. 预测压力：只差一点点就用完不变色，断档够长才变色 ----
+  {
+    // 剩 72 小时；最近每小时 0.6 点、已用 60%：约 67 小时后到顶，重置前只断 5 小时（7%）
+    const mild = analyzeAccount("claude", hourlySamples(10, 54, 60), steadyRows(), NOW).week;
+    check("按趋势会提前用完（预测事实保留）", mild.runsOutBeforeReset && mild.etaAt < RESET, JSON.stringify({ eta: mild.etaAt, reset: RESET }));
+    check("断档不到 1/4 时只是 watch，不变色", mild.pressure === "watch" && mild.lockoutShare > 0 && mild.lockoutShare < 0.25, `${mild.pressure} ${mild.lockoutShare}`);
+    const mildReport = analyzeAccount("claude", hourlySamples(10, 54, 60), steadyRows(), NOW);
+    check("watch 时健康徽标是「用量偏高」而不是「压力较高」", mildReport.health.level === "warning" && mildReport.health.reason === "tight", JSON.stringify(mildReport.health));
+
+    // 最近每小时 1 点、已用 50%：50 小时后到顶，重置前断 22 小时（30%）
+    const heavy = analyzeAccount("claude", hourlySamples(10, 40, 50), steadyRows(), NOW).week;
+    check("断档超过 1/4 才是 high", heavy.pressure === "high" && near(heavy.lockoutShare, 22 / 72, 0.01), `${heavy.pressure} ${heavy.lockoutShare}`);
+
+    // 已用不到 10%：5 小时窗口刚开 20 分钟就用了 9%，外推 3.4 小时到顶（断档 27%），但基数太小只作文字参考
+    const fiveReset = NOW + (5 * HOUR_MS - 20 * 60_000);
+    const earlySamples = [0, 5, 10, 15, 20].map((minute) => ({ at: NOW - (20 - minute) * 60_000, five: (9 * minute) / 20, fiveReset: iso(fiveReset) }));
+    const early = analyzeAccount("claude", earlySamples, [], NOW).five;
+    check("已用不到 10% 时预测不变色", early.runsOutBeforeReset && early.lockoutShare > 0.25 && early.pressure === "watch", `${early.pressure} ${early.lockoutShare} ${early.projectedAtReset}`);
+
+    // 不会用完：none，没有断档比例
+    const fine = analyzeAccount("claude", hourlySamples(10, 30, 32), steadyRows(), NOW).week;
+    check("不会用完时 pressure = none", fine.pressure === "none" && fine.lockoutShare === undefined && !fine.runsOutBeforeReset, `${fine.pressure}`);
+
+    // 宽松程度交给用户（quota-pressure.ts）：严格 = 以前的行为，不变色 = 只有用完才变色
+    const strict = analyzeAccount("claude", hourlySamples(10, 54, 60), steadyRows(), NOW, undefined, false, { week: "strict", five: "relaxed" }).week;
+    check("周窗口设为严格：只差一点点也变色", strict.pressure === "high", strict.pressure);
+    const off = analyzeAccount("claude", hourlySamples(10, 40, 50), steadyRows(), NOW, undefined, false, { week: "off", five: "relaxed" }).week;
+    check("周窗口设为不变色：断档三成也只是 watch", off.pressure === "watch" && off.runsOutBeforeReset, off.pressure);
+    // 5 小时窗口默认宽松：1 小时用了 40%，还剩 4 小时，按 40%/h 1.5 小时后用完、断档 62% → high；断档 40% 的只算 watch
+    const fiveReset2 = NOW + 4 * HOUR_MS;
+    const fiveSeries = (pct) => [0, 15, 30, 45, 60].map((minute) => ({ at: NOW - (60 - minute) * 60_000, five: (pct * minute) / 60, fiveReset: iso(fiveReset2) }));
+    const fiveHigh = analyzeAccount("claude", fiveSeries(40), [], NOW).five;
+    check("5 小时窗口断档过半：默认也变色", fiveHigh.pressure === "high" && fiveHigh.lockoutShare > 0.5, `${fiveHigh.pressure} ${fiveHigh.lockoutShare}`);
+    const fiveWatch = analyzeAccount("claude", fiveSeries(30), [], NOW).five;
+    check("5 小时窗口断档四成：默认宽松，只是 watch", fiveWatch.pressure === "watch" && fiveWatch.lockoutShare > 0.25 && fiveWatch.lockoutShare < 0.5, `${fiveWatch.pressure} ${fiveWatch.lockoutShare}`);
+    const fiveStd = analyzeAccount("claude", fiveSeries(30), [], NOW, undefined, false, { week: "default", five: "default" }).five;
+    check("5 小时窗口改成标准：断档四成就变色", fiveStd.pressure === "high", fiveStd.pressure);
+
+    // 已经用完：high
+    const done = analyzeAccount("claude", hourlySamples(10, 95, 100), steadyRows(), NOW).week;
+    check("已用完时 pressure = high", done.pressure === "high", done.pressure);
+  }
+
   // ---- 10. 真实场景回归（2026-09-16 的 Claude 账号）----
   {
     // 窗口 09-15 起，28.8 小时里用掉 9%，还剩 139 小时才重置。

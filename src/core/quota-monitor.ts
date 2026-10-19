@@ -21,6 +21,7 @@
  * - 采样之后已经到点重置、接口还没再问过：按新窗口从 0 算，不拿上个窗口的百分比吓人。
  */
 
+import { PRESSURE_DEFAULTS, pressureRule, type PressurePrefs, type PressureRule } from "./quota-pressure";
 import type { AccountKind } from "./quota";
 import type { QuotaSample } from "./quota-history";
 
@@ -56,8 +57,17 @@ export type WindowReport = {
   etaAt?: number;
   /** 按当前预测速度到重置那一刻会是多少。可以超过 100。 */
   projectedAtReset?: number;
-  /** 已经用完，或者 ETA 早于当前窗口重置时间。 */
+  /** 已经用完，或者 ETA 早于当前窗口重置时间。这是预测事实，界面变色看 pressure。 */
   runsOutBeforeReset: boolean;
+  /**
+   * 预测压力，决定界面要不要变色：
+   * - none：重置前不会用完；
+   * - watch：按趋势会提前用完，但只差一点点（重置前断档不到四分之一），或者已用太少、预测还不可靠 —— 只用文字说明，不变色；
+   * - high：已用完，或重置前会有相当长一段时间（≥ 1/4 的剩余时间）没额度可用。
+   */
+  pressure: Pressure;
+  /** 按趋势用完后到重置之间会「断档」多久，占剩余时间的比例（0–1）。不会用完时没有。 */
+  lockoutShare?: number;
   usedTokens: number;
   usedCostUsd: number;
   /** 整个窗口（100%）大约折合多少。 */
@@ -67,6 +77,11 @@ export type WindowReport = {
 };
 
 export type Confidence = "low" | "medium" | "high";
+export type Pressure = "none" | "watch" | "high";
+
+/** 默认规则：断档 ≥ 1/4 且已用 ≥ 10% 才变色。实际按窗口从设置里取（quota-pressure.ts）。 */
+export const PRESSURE_LOCKOUT_SHARE = pressureRule("default", "default").lockoutShare;
+export const PRESSURE_MIN_USED = pressureRule("default", "default").minUsed;
 
 /**
  * 一个（已结束或进行中的）额度窗口折算出的「整窗能用多少」。画历史折线用。
@@ -399,6 +414,8 @@ export function analyzeWindow(
     current: number;
     /** 内部完整数据集前提；普通账号池无法自动确认，默认不折算。 */
     completeLocalOnly?: boolean;
+    /** 「达到上限」什么时候变色（quota-pressure.ts）。不传用默认规则。 */
+    pressureRule?: PressureRule;
     startAt?: number;
     resetAt?: number;
     points: Point[];
@@ -448,6 +465,18 @@ export function analyzeWindow(
   const projectedHigh = fastPerH != null && leftH != null ? current + fastPerH * leftH : undefined;
   // 只有 ETA 早于当前窗口重置时间才标记为重置前会达到上限。
   const runsOutBeforeReset = exhausted || (etaAt != null && resetAt != null && etaAt < resetAt);
+  const rule = input.pressureRule ?? pressureRule("default", "default");
+  const lockoutShare =
+    !exhausted && runsOutBeforeReset && etaAt != null && resetAt != null && resetAt > now
+      ? Math.max(0, Math.min(1, (resetAt - etaAt) / (resetAt - now)))
+      : undefined;
+  const pressure: Pressure = exhausted
+    ? "high"
+    : !runsOutBeforeReset
+      ? "none"
+      : lockoutShare != null && lockoutShare >= rule.lockoutShare && current >= rule.minUsed
+        ? "high"
+        : "watch";
 
   const used = startAt != null ? sumRows(rows, startAt, now, now) : { tokens: 0, costUsd: 0 };
   let capacity: WindowReport["capacity"];
@@ -477,6 +506,8 @@ export function analyzeWindow(
     projectedAtReset,
     projectedHigh,
     runsOutBeforeReset,
+    pressure,
+    lockoutShare,
     usedTokens: used.tokens,
     usedCostUsd: used.costUsd,
     ...(input.completeLocalOnly === true ? {} : { capacityReason: "unattributed" as const }),
@@ -488,12 +519,13 @@ function healthOf(week: WindowReport | null, five: WindowReport | null, now: num
   const main = week ?? five;
   if (!main) return { level: "unknown", reason: "no-data" };
   if ((week && week.used >= 100) || (five && five.used >= 100)) return { level: "critical", reason: "exhausted" };
-  if (main.runsOutBeforeReset) {
+  // 只差一点点就用完（pressure = watch）不算压力高，落到下面的「用量偏高」。
+  if (main.pressure === "high") {
     const soon = main === week ? 24 * HOUR_MS : HOUR_MS;
     if (main.etaAt != null && main.etaAt - now < soon) return { level: "critical", reason: "runs-out-soon" };
     return { level: "serious", reason: "runs-out" };
   }
-  if ((main.projectedAtReset ?? 0) >= 85 || (main.projectedHigh ?? 0) >= 100) {
+  if (main.runsOutBeforeReset || (main.projectedAtReset ?? 0) >= 85 || (main.projectedHigh ?? 0) >= 100) {
     return { level: "warning", reason: "tight" };
   }
   if (week && five && five.used >= 80) return { level: "warning", reason: "five-hour-high" };
@@ -508,6 +540,8 @@ export function analyzeAccount(
   checked?: { at: number; account?: string },
   /** 用户声明这个账号只在本机用 Code（见 quota-calibration.ts 的 localOnlyAccounts）。 */
   localOnly = false,
+  /** 两个窗口的「达到上限」宽松程度；不传用默认值（周 default、5 小时 relaxed）。 */
+  pressure: PressurePrefs = PRESSURE_DEFAULTS,
 ): AccountReport {
   const sorted = input.filter((sample) => Number.isFinite(sample.at) && sample.at <= now).sort((a, b) => a.at - b.at);
   /*
@@ -549,6 +583,7 @@ export function analyzeAccount(
         minSpanMs: 2 * HOUR_MS,
         minElapsedMs: 4 * HOUR_MS,
         completeLocalOnly: localOnly,
+        pressureRule: pressureRule(pressure.week, PRESSURE_DEFAULTS.week),
       },
       scopedRows,
       now,
@@ -573,6 +608,7 @@ export function analyzeAccount(
         minSpanMs: 15 * 60_000,
         minElapsedMs: 30 * 60_000,
         completeLocalOnly: localOnly,
+        pressureRule: pressureRule(pressure.five, PRESSURE_DEFAULTS.five),
       },
       scopedRows,
       now,

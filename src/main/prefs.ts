@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { dataFile, readJson, writeJson } from "../core/paths";
+import { PRESSURE_DEFAULTS, type PressureLevel } from "../core/quota-pressure";
 
 export type Prefs = {
   /** 开机自启。默认开 —— 这个工具的意义就是「电脑开着就一直记」。 */
@@ -39,6 +40,9 @@ export type Prefs = {
   quotaEverySeconds: number;
   /** 额度用满自动切 CLI 登录（0.3.55），按家分开，见 core/cli-auto-switch.ts。没有就是关。 */
   cliAutoSwitch: Partial<Record<"claude" | "chatgpt" | "grok", { on: boolean; at: number }>>;
+  /** 额度预测「达到上限」什么时候变色（0.3.59），周窗口 / 5 小时窗口分开；见 core/quota-pressure.ts，worker 直接读。 */
+  pressureWeek: PressureLevel;
+  pressureFive: PressureLevel;
 };
 
 /** 额度查询间隔的边界（秒）。界面滑块和主进程校验用同一组数：1 到 10 分钟。 */
@@ -55,7 +59,7 @@ export function quotaEverySeconds(value: unknown): number {
   return minutes * 60;
 }
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, cliAutoSwitch: {} };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, cliAutoSwitch: {}, pressureWeek: PRESSURE_DEFAULTS.week, pressureFive: PRESSURE_DEFAULTS.five };
 
 function file() {
   return dataFile("prefs.json");

@@ -10,7 +10,7 @@ const now = Date.now();
 const snapshot = {
   totals: { today: { tokens: 1234567, costUsd: 3.5 } },
   accounts: [
-    { kind: 'claude', plan: 'max', lastCheckedAt: now - 1000, accountLabel: 'secret@example.com', five: { used: 36.4, resetAt: now + 3600000, etaAt: now + 60000, runsOutBeforeReset: true, elapsedH: 4, leftH: 1 }, week: { used: 140, resetAt: now + 86400000, runsOutBeforeReset: false } },
+    { kind: 'claude', plan: 'max', lastCheckedAt: now - 1000, accountLabel: 'secret@example.com', five: { used: 36.4, resetAt: now + 3600000, etaAt: now + 60000, runsOutBeforeReset: true, pressure: 'high', elapsedH: 4, leftH: 1 }, week: { used: 140, resetAt: now + 86400000, runsOutBeforeReset: false, pressure: 'none' } },
     { kind: 'grok', lastSampleAt: now - 5000, week: { used: -3 } },
     { kind: 'chatgpt' },
   ],

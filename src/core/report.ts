@@ -5,6 +5,7 @@ import type { RequestRow } from "./request-log";
 import { accountLabels } from "./login-timeline";
 import { readOfficialAccountStore } from "./accounts";
 import { localOnlyAccounts } from "./quota-calibration";
+import { readPressurePrefs } from "./quota-pressure";
 import { accountRows, cleanCapacity, readMarks } from "./quota-offmachine";
 import { queryRequests } from "./request-log";
 import type { QuotaSample } from "./quota-history";
@@ -335,6 +336,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   const store = readOfficialAccountStore();
   // 没采到过额度的账号不显示：没有百分比，就谈不上监控。
   const localOnly = new Set(localOnlyAccounts());
+  const pressure = readPressurePrefs();
   /*
    * 共享额度的账号（默认）：容量只用「同期有本机请求」的采样区间折算，本机以外的涨幅和用户标注的时段不参与。
    * 要逐条请求的时间，按天的账切不出来，所以读一次全部官方请求流水（在 worker 里，几千条约一百毫秒）。
@@ -365,7 +367,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
     const reports = groups
       .map(({ id, samples }) => {
         const checked = id && checks.accounts?.[id] != null ? { at: checks.accounts[id], account: id } : checks[kind]?.account === id ? checks[kind] : undefined;
-        const report = analyzeAccount(kind, samples, rows[kind], now, checked, !!id && localOnly.has(id));
+        const report = analyzeAccount(kind, samples, rows[kind], now, checked, !!id && localOnly.has(id), pressure);
         return id && !localOnly.has(id) ? applyClean(report, kind, samples, id) : report;
       })
       .filter((report) => report.sampleCount > 0)

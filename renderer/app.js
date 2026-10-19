@@ -626,6 +626,8 @@ function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms
 /** 成功消息一律走右上角的提示，设置页底部那行只留「正在…」和失败原因。 */
 function settingsDone(message) { $('prefs-status').textContent = ''; showStatus(message); }
 function empty(message) { return el('div', { class: 'empty', text: message }); }
+/** 预测压力高才变色；按趋势会提前一点点用完的（watch）只用文字说明。老快照没有 pressure 字段时退回 runsOutBeforeReset。 */
+function pressured(win) { return Boolean(win && (win.pressure ? win.pressure === 'high' : win.runsOutBeforeReset)); }
 function track(pct, warning = false, label = '已用额度', identity = '') {
   // identity：双环卡片里进度条用和环一样的身份色（5 小时 / 周），预警改由文字颜色表达；快用完（≥90%）仍然变红。
   const tone = pct >= 90 ? ' critical' : identity ? ` ${identity}` : warning ? ' warning' : '';
@@ -642,7 +644,8 @@ function prediction(window, account) {
   if (waitingReset(account, window)) return '窗口已重置，等待新采样确认';
   if (isStale(account)) return '采样已过期，刷新后再判断';
   if (window.used >= 100) return '额度已用完，请等待重置';
-  if (window.runsOutBeforeReset && window.etaAt) return `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限`;
+  // 只差一点点就用完（pressure = watch）：说清楚只差多少，稍微放慢就能撑到重置，不用警示色。
+  if (window.runsOutBeforeReset && window.etaAt) return pressured(window) ? `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限` : `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限，距重置只差 ${duration(window.resetAt - window.etaAt)}，稍微放慢即可`;
   if (window.ratePerH === 0) return '近期没有新增用量，暂不估计达到上限的时间';
   if (window.projectedAtReset != null) return `按最近趋势，重置时预计使用 ${percent(window.projectedAtReset)}`;
   return '采样跨度还不够，暂不估计达到上限的时间';
@@ -669,7 +672,7 @@ function ring({ five, week, account } = {}) {
    * 双环时颜色只表示「哪个窗口」（外环 5 小时、内环周），预警交给右上角的状态和「已用」文字；
    * 以前两种含义叠在一起，ChatGPT 两个环都变成橙色，外环 / 内环的图例对不上。快用完（≥90%）仍然变红。
    */
-  const tone = (win) => !win || waitingReset(account, win) ? '' : win.used >= 90 ? 'critical' : !both && win.runsOutBeforeReset ? 'warning' : '';
+  const tone = (win) => !win || waitingReset(account, win) ? '' : win.used >= 90 ? 'critical' : !both && pressured(win) ? 'warning' : '';
   const add = (name, win, radius, circumference) => {
     const remaining = win && !waitingReset(account, win) ? Math.max(0, 100 - win.used) : null;
     node.append(svg('circle', { class: `ring-track ring-${name}`, cx: 50, cy: 50, r: radius }));
@@ -835,7 +838,7 @@ function quotaCard({ kind, key, account }, pool = null) {
       const pending = waitingReset(account, win);
       // 双环时标题前的圆点就是图例：颜色和对应的环一致。
       const title = both ? el('span', { class: 'mini-label' }, [el('i', { class: `win-dot ${name}`, 'aria-hidden': true }), label, el('small', { text: ring })]) : el('span', { text: label });
-      const usedClass = 'num' + (!pending && win.used < 90 && win.runsOutBeforeReset ? ' warn-text' : '');
+      const usedClass = 'num' + (!pending && win.used < 90 && pressured(win) ? ' warn-text' : '');
       const left = !pending && !stale ? byCapacity(win, 100 - win.used) : null;
       const usedText = el('span', { class: 'mini-used' }, [
         el('span', { class: usedClass, text: pending ? '等待确认' : `已用 ${percent(win.used)}` }),
@@ -843,7 +846,7 @@ function quotaCard({ kind, key, account }, pool = null) {
       ]);
       body.push(el('div', { class: 'quota-mini' }, [
         el('div', { class: 'quota-mini-head' }, [title, usedText]),
-        pending ? el('div', { class: 'track' }) : track(win.used, win.runsOutBeforeReset, '已用额度', both ? name : ''),
+        pending ? el('div', { class: 'track' }) : track(win.used, pressured(win), '已用额度', both ? name : ''),
         el('div', { class: 'mini-reset' }, [icon('clock'), pending ? '旧窗口已结束，正在等待新数据' : win.resetAt ? `${duration(win.resetAt - Date.now())}后重置 · ${date(win.resetAt)}` : '接口未提供重置时间'])
       ]));
     }
@@ -1162,9 +1165,9 @@ function windowPanel(label, report, account) {
   if (!report) { panel.append(empty('接口未提供此窗口')); return panel; }
   const pending = waitingReset(account, report), stale = isStale(account), unknown = stale || pending;
   panel.append(el('div', { class: 'window-number' }, [el('strong', { text: pending ? '—' : percent(Math.max(0, 100 - report.used)) }), el('span', { text: stale ? '上次采样剩余' : '剩余额度' })]));
-  const bar = pending ? el('div', { class: 'track' }) : track(report.used, report.runsOutBeforeReset); bar.classList.add('window-track'); panel.append(bar);
+  const bar = pending ? el('div', { class: 'track' }) : track(report.used, pressured(report)); bar.classList.add('window-track'); panel.append(bar);
   panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { text: report.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' })]));
-  const caution = report.runsOutBeforeReset || unknown;
+  const caution = pressured(report) || unknown;
   panel.append(el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(report, account)]));
   // 这个窗口是重置卡之后开始的：本窗口用量、容量、平均速度都从重置那一刻算
   if (report.startedByReset && !pending) panel.append(el('p', { class: 'reset-card-note' }, [icon('refresh'), `${RESET_CARD[report.startedByReset]} · 从 ${date(report.startAt)} 起算`]));
@@ -1181,13 +1184,13 @@ function windowPanel(label, report, account) {
   const willRunOut = !unknown && report.used < 100 && report.etaAt && report.runsOutBeforeReset;
   const limit = unknown ? metric('预计达到上限', '—', { sub: waitText })
     : report.used >= 100 ? metric('预计达到上限', '已用完', { sub: '等待重置', tone: 'warn' })
-    : willRunOut ? metric('预计达到上限', date(report.etaAt), { sub: `约 ${duration(report.etaAt - Date.now())}后`, tone: 'warn' })
+    : willRunOut ? metric('预计达到上限', date(report.etaAt), { sub: pressured(report) ? `约 ${duration(report.etaAt - Date.now())}后` : `约 ${duration(report.etaAt - Date.now())}后 · 距重置只差 ${duration(report.resetAt - report.etaAt)}`, tone: pressured(report) ? 'warn' : '' })
     : metric('预计达到上限', report.ratePerH === 0 ? '暂无新增' : '不会', { sub: report.ratePerH === 0 ? '近期没有新增用量' : '重置前不会达到上限' });
   panel.append(metricGroup('预测', 'trend', [
     limit,
-    metric('重置时预计使用', unknown || report.projectedAtReset == null ? '—' : percent(report.projectedAtReset), { sub: unknown ? waitText : report.projectedAtReset == null ? '暂无法估计' : '按最近趋势', tone: !unknown && report.projectedAtReset >= 100 ? 'warn' : '' }),
+    metric('重置时预计使用', unknown || report.projectedAtReset == null ? '—' : percent(report.projectedAtReset), { sub: unknown ? waitText : report.projectedAtReset == null ? '暂无法估计' : '按最近趋势', tone: !unknown && report.projectedAtReset >= 100 && pressured(report) ? 'warn' : '' }),
     unknown || report.projectedAtReset == null ? metric('重置时预计用量', '—', { sub: unknown ? waitText : '暂无法估计' })
-      : tokenMetric('重置时预计用量', byCapacity(report, report.projectedAtReset), report.projectedAtReset > 100 ? { chip: { tone: 'warn', text: '会用满' } } : {})
+      : tokenMetric('重置时预计用量', byCapacity(report, report.projectedAtReset), report.projectedAtReset > 100 ? { chip: { tone: pressured(report) ? 'warn' : 'medium', text: pressured(report) ? '会用满' : '略超' } } : {})
   ]));
 
   const speed = n => n == null || unknown ? '—' : n.toFixed(2);
@@ -2892,6 +2895,13 @@ const THEME_OPTIONS = [
   { value: 'dark', label: '夜间', hint: '一直用深色' },
   { value: 'system', label: '跟随系统', hint: '跟着 Windows 的深浅色走，系统一换这边立刻跟着变' }
 ];
+/** 额度预测「达到上限」什么时候变色（core/quota-pressure.ts）；两个窗口默认值不同，默认那项标出来。 */
+const PRESSURE_OPTIONS = fallback => [
+  { value: 'strict', label: '严格', hint: '按趋势会在重置前用完就变色' },
+  { value: 'default', label: '标准', hint: '断档超过剩余时间的 1/4、且已用超过 10% 才变色' },
+  { value: 'relaxed', label: '宽松', hint: '断档超过剩余时间的一半、且已用超过 10% 才变色' },
+  { value: 'off', label: '不变色', hint: '只有已经用完才变色，其余只用文字说明' }
+].map(option => option.value === fallback ? { ...option, hint: option.hint + '（默认）' } : option);
 /** 存进 prefs.json 的设置项。外观不在这里：它要在读 prefs 之前就生效，存在 localStorage。 */
 const PREF_ROWS = {
   general: [
@@ -2913,6 +2923,8 @@ const PREF_ROWS = {
       { value: 85, label: '已用 85% 时提醒', hint: '默认' },
       { value: 90, label: '已用 90% 时提醒' },
       { value: 95, label: '已用 95% 时提醒', hint: '快用完才提醒' }] },
+    { key: 'pressureWeek', title: '周额度「达到上限」提示', hint: '按最近趋势会在重置前用完时，进度条和徽标什么时候变色。「断档」指用完之后到重置之间没额度可用的那段时间占剩余时间的比例。只影响颜色和文字语气，预测本身照常显示。', options: PRESSURE_OPTIONS('default') },
+    { key: 'pressureFive', title: '5 小时额度「达到上限」提示', hint: '同上，单独给 5 小时窗口设。这个窗口本来就是拿来用完的，默认比周额度宽松。', options: PRESSURE_OPTIONS('relaxed') },
     { key: 'notifyMismatch', title: '型号核验提醒', hint: '新请求的返回型号和请求的对不上、或者响应格式不像官方时，发一条系统通知，点开直接跳到请求记录。', options: [
       { value: true, label: '发现就提醒', hint: '默认' },
       { value: false, label: '不提醒', hint: '只在请求记录页和侧栏红点里显示' }] },

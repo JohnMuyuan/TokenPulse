@@ -44,7 +44,7 @@ export function setupTrayPanel(next: Options) { options = next; }
 /** 从快照里挑出面板要用的那几项；不带邮箱以外的任何账号信息。 */
 export function trayPanelData(snapshot: Snapshot | null, theme: "light" | "dark", title: (account: Snapshot["accounts"][number]) => string, agents: TrayPanelAgent[] = []): TrayPanelData {
   const pick = (window: Snapshot["accounts"][number]["five"]): TrayPanelWindow | null => window
-    ? { used: Math.max(0, Math.min(100, window.used)), resetAt: window.resetAt ?? 0, etaAt: window.etaAt ?? 0, runsOut: !!window.runsOutBeforeReset,
+    ? { used: Math.max(0, Math.min(100, window.used)), resetAt: window.resetAt ?? 0, etaAt: window.etaAt ?? 0, runsOut: window.pressure === "high",
         pace: window.elapsedH != null && window.leftH != null && window.elapsedH + window.leftH > 0 ? Math.max(0, Math.min(100, window.elapsedH / (window.elapsedH + window.leftH) * 100)) : -1 }
     : null;
   return {

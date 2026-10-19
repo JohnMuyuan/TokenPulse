@@ -27,6 +27,7 @@ import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerm
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
 import type { RequestQuery } from "../core/request-log";
 import { prefsExist, quotaEverySeconds, readPrefs, writePrefs, type Prefs } from "./prefs";
+import { PRESSURE_DEFAULTS, isPressureLevel } from "../core/quota-pressure";
 import { demoCall, endDemo } from "./demo";
 import { envProxyFor, setSystemProxyResolver } from "../core/upstream-proxy";
 import { tr } from "./i18n";
@@ -789,7 +790,7 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
   // 保存之后才改定时器。这一轮不额外查，下一轮按新间隔走。
   if (next.quotaEverySeconds !== previousEvery) scheduleQuotaChecks();
   // 容量怎么折算变了：不重新查额度，只按新的口径重算一遍快照
-  if ("localOnlyAccounts" in patch) backgroundRefresh(false);
+  if ("localOnlyAccounts" in patch || "pressureWeek" in patch || "pressureFive" in patch) backgroundRefresh(false);
   /*
    * 只有打好包的版本才去动开机启动项。
    * 开发时（`npm start`）跑的是 node_modules 里的 electron.exe，把它登记进启动项，
