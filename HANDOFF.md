@@ -1,7 +1,171 @@
-# Current handoff · 0.3.58 已正式发布（2026-10-18）
+# 当前接手入口 · TokenPulse 0.3.59（2026-10-19 发布）
 
-## 新对话先看这里
+> 新接手的 AI 先读本节，再读 AGENTS.md 和实际代码。下方保留的开发/发布流水仅适用于标明的版本和阶段；其中「进行中」「未提交」「待验收」不代表当前状态。
 
+## 0.3.59 已正式发布 · 额度预测「达到上限」提示降敏 + 宽松程度设置（2026-10-19）
+
+用户反馈：额度详情里只要按趋势算出来会在重置前用完，进度条就从绿变黄，太敏感、让人焦虑。本轮改为**分级**：预测事实照旧保留，只有真正会"断档"一段时间才变色。
+
+**规则（`src/core/quota-monitor.ts`）**：每个窗口新增 `pressure: "none" | "watch" | "high"` 和 `lockoutShare`（按趋势用完后到重置之间没额度的时间 ÷ 剩余时间）。
+
+- `none`：重置前不会用完。
+- `watch`：会提前用完，但断档不到 1/4（`PRESSURE_LOCKOUT_SHARE = 0.25`），或已用不到 10%（`PRESSURE_MIN_USED`，整数百分比舍入误差太大）→ 只用文字说明，不变色。
+- `high`：已用完，或断档 ≥ 1/4 且已用 ≥ 10% → 原来的黄色/警示。
+- `runsOutBeforeReset`、`etaAt`、`projectedAtReset` 字段及含义不变（号池预排 `report.ts` 继续用它们）。`healthOf` 的「重置前压力较高 / 当前窗口紧张」改为只在 `pressure === "high"` 触发，watch 落到「用量偏高」。
+
+**界面（`renderer/app.js`）**：新增 `pressured(win)` 帮助函数（老快照没有 pressure 字段时退回 runsOutBeforeReset）。进度条 `track()`、环色、「已用」文字、预测行底色、「预计达到上限」「重置时预计使用」的警示色都改为按 `pressured()`。watch 时预测行写成「按最近趋势，预计约 X 后达到上限，距重置只差 Y，稍微放慢即可」，「会用满」芯片改为中性的「略超」。`src/main/tray-panel.ts` 的 `runsOut` 也改为 pressure high。`renderer/i18n.js` 补了对应英文模式串；`renderer/index.html` 与 i18n 中额度页说明补了这条规则。
+
+**测试**：
+
+- `scripts/test-quota-monitor.cjs` 新增 9c 组（7 条）：watch / high / 已用不到 10% / none / 已用完；`scripts/test-tray-panel.cjs` 夹具补 pressure 字段。
+- 新增 `scripts/test-quota-pressure-ui.cjs`（已加入 `npm run test:ui`，排在 pool-quota 之后）：两个假 Claude 账号，核对详情页进度条 class、预测行、指标警示色，总览卡片徽标/进度条，以及英文翻译；`TP_SHOTS` 可截图。
+- 实际结果：`npm test` 退出 0（674 条 PASS，比 0.3.58 多 7 条）；`test-quota-pressure-ui`、`test-ui`（26 PASS）、`test-pool-quota-ui`、`test-tray-panel-ui` 单独运行均退出 0。未重跑其余 UI 脚本的全串、未打包。合成数据截图在 `dist/shots-quota-pressure/`（watch 绿条 + 绿色说明、high 黄条 + 警示，核对过）。
+- 测试结束后按命令行核对，没有本轮遗留的 Electron/Node 进程；没有触碰 `dist` 中的 0.3.58 产物。
+
+**第二阶段（用户确认阈值后）**：宽松程度交给用户，按窗口分开，默认 5 小时更宽松。
+
+- 新文件 `src/core/quota-pressure.ts`：`PressureLevel = strict | default | relaxed | off`，规则 strict={0,0}（= 以前行为）、default={0.25,10}、relaxed={0.5,10}、off={∞,0}；`PRESSURE_DEFAULTS = { week: "default", five: "relaxed" }`；`readPressurePrefs()` 直接读 prefs.json（worker 用）。
+- `quota-monitor.ts` 的 `analyzeWindow` 接 `pressureRule`，`analyzeAccount` 第 7 个参数 `pressure: PressurePrefs`；`report.ts` 读设置传入。
+- `src/main/prefs.ts` 新增 `pressureWeek`/`pressureFive`；`index.ts` 的 applyPrefs 校验非法值回默认，并和 localOnlyAccounts 一样触发 `backgroundRefresh(false)` 重算快照。
+- 设置 → 提醒新增两行（`renderer/app.js` 的 `PRESSURE_OPTIONS`，key pressureWeek/pressureFive），i18n 已补；`renderer/intro.js` 新增 0.3.59 更新说明两条；README 加一句。
+- 测试：test-quota-monitor 再加 6 条（严格/不变色/5 小时默认宽松/改标准）；test-quota-pressure-ui 加设置改 off/strict 后快照重算的两步，并截 settings 图。
+- `npm version 0.3.59 --no-git-tag-version` 已执行（package.json / package-lock.json）。
+
+**0.3.59 测试版验证结果（2026-10-19，实际执行）**：
+
+| 命令 | 结果 | 证据 |
+|---|---|---|
+| `npm test` | 退出 0，679 条 PASS（0.3.58 为 667，新增 12 条） | `test-backend-0359.log` |
+| `npm run test:ui` | 全串退出 0，21 个 Electron 脚本、106 条 PASS（含新脚本） | `test-ui-0359.log` |
+| `npm run icons` → `npm run compile` → `electron-builder --win dir --publish never` | 退出 0 | `build-0359.log` |
+
+- 测试版产物：`dist/win-unpacked/TokenPulse.exe`，产品版本 **0.3.59.0**（已覆盖原 0.3.58 的 win-unpacked；dist 里的 Setup/Portable/latest.yml 仍是 0.3.58 正式版，未重新生成）。
+- 合成数据截图：`dist/shots-quota-pressure/`（watch / high / overview / settings）。
+- 中途一个坑：`renderer/intro.js`、`renderer/i18n.js` 是 CRLF，第一次用含 `
+` 的多行锚点替换没有命中，导致 test-intro-ui 列不出 v0.3.58 分隔行；改用 `
+` 锚点后已修复并重跑全串。后续改这两个文件要注意换行符。
+- 收尾核对：按命令行只剩用户安装目录的正式版 0.3.58（PID 6748 及其子进程）在运行，未动；本轮测试/打包进程均已退出。
+
+**发布（用户验收测试版后明确授权）**：
+
+- `npm run dist` 退出 0（`build-release-0359.log`）。`node dist/verify-0.3.59.cjs`（由 0.3.58 的验证脚本改版本号而来）：154 个运行时文件与 build/renderer/knowledge 逐字节一致，ASAR SHA256 `de2092b6557568fd193e040fe26533dd922bb2b53f9e844980a0bd05a67441bb`。
+- 附件 SHA256 清单 `dist/assets-0.3.59.sha256`：Setup 112649557 字节、Portable 112392405、blockmap 119928、latest.yml 352。发布正文 `dist/release-0.3.59.md`。
+- 代码提交 `a9270c3`，标签 `v0.3.59`，推送前 fetch 过远端无新提交；main 与标签已推送。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.59 ：非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.59；公开 `latest.yml` 与本地 diff 为空。
+- 收尾：四个产物与 win-unpacked exe / asar 可独占打开（句柄已释放）；无本轮遗留的 Node/Electron/打包进程；用户安装目录的正式版 0.3.58 仍在运行，未主动安装/升级。
+- 本文件的更新是发布后的单独一次提交。
+
+**状态**：0.3.59 已发布。当前没有进行中的工程任务。
+
+**未验证项**：真实官方账号的采样数据下的实际观感（只用合成采样验证）；托盘面板 `runsOut` 改为 pressure high 只有单元测试，未在真实托盘上对比。
+
+## 30 秒了解当前状态
+
+| 项目 | 当前事实 |
+|---|---|
+| 软件 | Windows 桌面应用 TokenPulse，当前版本 **0.3.59**，已于 2026-10-19 正式发布 |
+| Git | 分支 `main`；发布代码提交 `a9270c3` = 标签 `v0.3.59`，已推送；本文件更新作为其后的单独提交 |
+| 发布代码 | `v0.3.59` → `a9270c3`；上一版 `v0.3.58` → `7b898bd` |
+| GitHub | [v0.3.59 Release](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.59)，非草稿、非预发布；`releases/latest` 和公开 `latest.yml` 均为 0.3.59 |
+| 本机运行 | 安装目录中的 **0.3.58.0** 仍在运行（主 PID 本次 `6748`），未升级；它会通过自动更新收到 0.3.59。PID 只用于本次核对 |
+| 当前工程任务 | 0.3.59 已发布；当前没有进行中的功能或已确认阻塞，等待用户下一项需求 |
+| 本轮工作 | 2026-10-19：实现、测试、打包并发布 0.3.59（见下一节）；dist 内 0.3.58 的 Setup/Portable 仍保留，latest.yml 已是 0.3.59 |
+
+远端状态通过 `git ls-remote` 和 GitHub API 于本轮重新核对，不仅依据本地的 origin/main 缓存。不要把当前 HEAD 与发布标签不同误判为漏发代码。
+
+## 项目是什么、代码从哪里接手
+
+TokenPulse 常驻托盘，汇总本机 AI 工具用量、监控官方额度，并提供供应商切换、本地路由/号池、会话管理、速度/并发/出口监控、分享卡片和提醒。各工具的支持范围不同，尤其 pi 的支持边界见下一节。
+
+技术结构：Electron 主进程承担本地后端，统计/会话查询由 worker 处理；界面为原生 HTML/JavaScript/CSS。TypeScript 编译输出到 `build/`，electron-builder 生成 `dist/`。主要发布目标是 Windows x64，包含 NSIS 安装版和 Portable 版。
+
+| 要处理的事情 | 优先阅读 |
+|---|---|
+| 启动、托盘、IPC 注册、刷新生命周期 | `src/main/index.ts`、`src/main/preload.ts` |
+| 后台统计与查询调度 | `src/main/snapshot.ts`、`src/core/report-worker.ts` |
+| CLI 用量扫描、流水、聚合 | `src/core/usage-scan.ts`、`request-log.ts`、`report.ts`、`route-ledger.ts` |
+| 会话列表/详情/搜索/终端继续 | `src/core/sessions.ts`、`session-search.ts`、`src/main/session-reply.ts` |
+| 供应商模型与配置切换 | `src/core/agent-types.ts`、`agent-switch.ts`、`agent-models.ts` |
+| 配置事务、只读保护、备份和恢复 | `src/core/agent-config.ts`、`agent-history.ts`、`agent-toml.ts`；改切换逻辑先看这些 |
+| 本地转发、协议转换、代理、并发 | `src/core/agent-proxy.ts`、`agent-convert.ts`、`upstream-proxy.ts`、`concurrency.ts` |
+| 官方账号、登录、续期、CLI 换号 | `src/core/accounts.ts`、`credentials.ts`、`token-refresh.ts`、`cli-switch.ts`、`cli-renew.ts`、`cli-auto-switch.ts`、`src/main/oauth.ts` |
+| 额度历史、预测与号池 | `src/core/quota*.ts`、`pool-order.ts`、`pool-insight.ts` |
+| 周报/月报/里程碑和缓存分析 | `src/core/share-report.ts`、`weekly-summary.ts`、`cache-analysis.ts`、`src/main/share.ts` |
+| 页面与中英文 | `renderer/app.js`、`agent-switch.js`、`sessions.js` 及对应 CSS；词典 `renderer/i18n.js` 同时供主进程使用 |
+| 演示与自动化验证 | `src/main/demo.ts`、`scripts/test-*.cjs`、`scripts/audit-agent-config-safety.cjs` |
+
+用户数据默认在 `~/.tokenpulse`，入口 `src/core/paths.ts`；测试可通过 `TOKENPULSE_DATA_DIR` 重定向。真实账号、工具登录配置和用户会话不属于仓库夹具，不要打印或复制到交接/发布文案中。
+
+模型知识库：当前仓库 `knowledge/models.json` 版本为 **2026.10.16**。手动规则写在 `knowledge/manual.json`，生成器是 `scripts/update-knowledge.cjs`，工作流 `.github/workflows/knowledge.yml` 可产生新的 main 提交。接手和推送前要重新看远端，不能覆盖自动更新；生成文件的内容以生成器和手动规则为准。
+
+## 0.3.58 刚完成的 pi 支持
+
+- **会话**：读取 `~/.pi/agent/sessions`，支持 `PI_CODING_AGENT_DIR`。解析 JSONL 当前叶节点的祖先分支，显示标题、模型、对话、工具调用及结果、压缩事件；接入列表、详情和全文搜索。新对话/新项目可选 pi，已有会话通过终端 `pi --session <id>` 继续。
+- **供应商**：在 pi 页面保存并切换 OpenAI Chat、OpenAI Responses、Anthropic，三种接口都能直连，也能走本地路由。配置落在 pi 的 `models.json` 和 `settings.json`，本软件占用供应商名 `tokenpulse_route`；原默认选择保存在 TokenPulse 的 `piDefaults` 中，选择「pi 原有配置」可恢复。
+- **配置安全**：沿用事务、预览确认、备份和只读保护，保留其他供应商/设置；不修改 pi 的 `auth.json`。同名供应商或同名 auth 登录会阻止接管；Key/请求头中的 `!`、`$` 做字面转义，避免被 pi 当作命令/环境引用。
+- **关键实现**：`src/core/paths.ts` 的 `piDir()`，`sessions.ts` 的 `parsePi()`，`agent-switch.ts` 的 `writePi()`；`src/main/session-reply.ts` 识别 `@earendil-works` / `@mariozechner` 的 npm 安装和实际 `dist/bundle/cli.js` 布局。
+- **界面与图标**：`renderer/agent-switch.js`、`sessions.js`；工具筛选两行三列，新对话工具两列。用户提供的图标已放入 `renderer/brand/presets/pi.svg`，`renderer/brand.js` 内联同一组路径；不再依赖 Downloads 原件。会话详情空定位栏出现字面 `null` 的问题一并修复。
+- **测试**：`scripts/test-pi.cjs`、`scripts/test-pi-ui.cjs` 已加入完整测试脚本。实际 pi CLI 1.3.0 的三种协议和路由曾在隔离环境中验证。
+
+## 已知范围和限制
+
+1. pi 当前支持会话管理与供应商切换；**应用内回复/删除、pi 用量扫描、官方额度查询、号池和透明转发尚未实现**，这是当前能力范围，不是已经排期的新增任务。
+2. pi 切换更新全局默认模型；已打开/恢复的会话和项目级 `.pi/settings.json` 可覆盖它，旧会话需在 pi `/model` 中重选。会话页通过终端继续。
+3. 同一会话存在多份文件时，全文搜索使用详情会打开的最新文件；只在旧文件里的内容暂不返回，避免匹配后无法跳转。
+4. Claude 缓存分析暂不区分 5 分钟与 1 小时缓存；闲置判断采用 5 分钟。Grok 的会话用量一行代表一轮，可能包含多个调用。
+5. 号池未来 7 天预排按周额度推演，不模拟 5 小时窗口和限流；速率采样覆盖不足一天时使用回退规则。
+6. 真实上游切换、真实账号登录/续期、安装升级端到端和真实周一通知触发没有因本轮盘点而重新验证；模拟验证不能写成真实环境端到端通过。
+
+## 验证事实：区分本轮与发布时
+
+**本轮 2026-10-19 已执行并通过：**
+
+- `node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json`：退出 0，保持已有 `build/` 内容。
+- 清除可选 `TOKENPULSE_TEST_PI_CLI` 后运行 `node scripts/test-pi.cjs`：退出 0，5 组通过；使用脚本自建临时目录、假 Key、本地假上游，未启动真实配置下的 pi。
+- `node dist/verify-0.3.58.cjs`：153 个运行时文件与当前 `build/renderer/knowledge` 逐字节一致，ASAR SHA256 见下表。
+- 本地四附件大小/SHA256 与 `dist/assets-0.3.58.json` 一致；GitHub 四附件均为 uploaded、digest/大小一致；线上发布正文与本地说明一致，公开 `latest.yml` 与本地逐字一致。
+- 独占只读检查四附件与 `win-unpacked` 的 exe / asar 均成功，句柄已立即释放；按项目路径/命令行检查未发现相关测试/打包进程。当前正式软件继续运行。
+
+**0.3.58 发布前最后完整验证（2026-10-18）：**
+
+| 命令 | 实际结果 | 本地证据 |
+|---|---|---|
+| `npm test` | 退出 0，667 条 PASS | `test-release-backend-0358.log` |
+| `npm run test:ui` | 全串退出 0，20 个 Electron 脚本、100 条 PASS | `test-release-ui-0358.log` |
+| `npm run dist` | 退出 0 | `build-release-0358.log` |
+| 可选真实 pi 程序 + 隔离假网关测试 | 三种 API、协议转换、特殊字符 Key 等 6 组通过 | `test-pi-0358.log` |
+
+本轮只更新文档并做上述轻量核对，没有重跑完整后端/UI、重新打包或重新发布。旧开发阶段的失败已在发布前修正；当前发布验证以本表和本轮结果为准。
+
+## 产物和 Git 状态
+
+| 用途 | 路径/标识 |
+|---|---|
+| 安装版 | `dist/TokenPulse-0.3.58-Setup.exe`（112647117 字节） |
+| 免安装版 | `dist/TokenPulse-0.3.58-Portable.exe`（112389961 字节） |
+| 自动更新 | `dist/TokenPulse-0.3.58-Setup.exe.blockmap`、`dist/latest.yml` |
+| 解压运行目录 | `dist/win-unpacked/TokenPulse.exe`，产品版本 0.3.58.0 |
+| 完整附件校验清单 | `dist/assets-0.3.58.json` |
+| 应用归档 SHA256 | `bb3fe7e33b516041559372bfd1d04b8039b68f8e3aa9a040a49ef92baf8f02d2` |
+| 运行时校验脚本/报告 | `dist/verify-0.3.58.cjs`、`dist/verification-0.3.58.json` |
+| 发布正文 | `dist/release-0.3.58.md` |
+| 合成数据自查图 | `dist/shots-0.3.58/` |
+
+`build/`、`dist/`、`node_modules/`、`*.log` 均被 Git 忽略：上面的产物/报告/截图是**本机证据**，其他机器克隆仓库不会自动得到。复现时依赖仓库中的源码/测试；新构建会覆盖产物，先核对版本及占用。
+
+本轮开始时工作区干净，程序代码与 `main`/`v0.3.58` 一致；本轮结束时预期只有 `HANDOFF.md` 修改。没有新增版本、提交、推送、安装或发布动作。
+
+## 后续接手的操作顺序
+
+1. 重读 `AGENTS.md` 与此入口，再核对 `package.json`、`git status -sb`、本地/远端提交；以用户最新需求决定下一步，旧历史里的备选不自动变成待办。
+2. 用上面的代码地图定位真实调用链；文档目录里的 0.3.9 配置审计是历史背景，当前行为需核对源码。
+3. 测试统一使用临时 HOME/USERPROFILE、`TOKENPULSE_DATA_DIR` 和 pi 目录、合成会话、假 Key、本地假网关，截图也只用测试数据。完整套件不要继承父级 `CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`GROK_HOME` 等覆盖测试自己的 HOME 夹具；移除真实 Key 环境变量，保留各脚本自己设置的隔离路径。
+4. 快速检查可使用本轮的无输出编译与 `node scripts/test-pi.cjs`；相关功能改动后跑对应测试，交付前跑需要的完整验证。pi UI 命令：`node node_modules/electron/cli.js --lang=zh-CN scripts/test-pi-ui.cjs`。`TOKENPULSE_TEST_PI_CLI` 仅指定待测程序路径，子进程仍必须用测试脚本的隔离配置/白名单环境。
+5. 本地测试版按已验证流程 `npm run icons`、`npm run compile`、`node node_modules/electron-builder/out/cli/cli.js --win dir --publish never`；正式打包用 `npm run dist`。下一版本号按用户最新要求，验收/发布授权按当次任务处理；发布说明参考上一条 Release。
+6. 编译目录是 `build/`，打包目录是 `dist/`。进程/句柄检查要识别 PID、路径、命令行与创建时间，只处理本轮拥有的资源；用户正式软件不能擅自关闭。`dist` 占用时先诊断，不要删整个目录或笼统杀 Node/Electron。独立输出目录是规避，不能称原目录已解锁。
+7. 每个阶段更新此入口，最终回复前记录实际测试、未验证项、产物/版本、Git/安装/发布状态；下方历史保留原文。
+
+## 历史发布与开发记录（以下不作为当前待办）
 
 ### 0.3.58 已正式发布（2026-10-18）
 
