@@ -6,11 +6,11 @@
 
 **Your AI usage, at a glance.**
 
-一个常驻托盘的桌面小工具：记下本机所有 AI CLI 的 token 消耗，<br>
-盯住各家官方订阅的 5 小时 / 周额度，按最近趋势估计达到上限的时间，并显示重置时预计使用比例。<br>
-还能一键切换供应商、组号池轮换账号、量模型速度、管理会话，以及监控出口和并发。
+A desktop tray companion for local AI CLI token usage,<br>
+official five-hour and weekly subscription quotas, recent consumption trends,<br>
+provider switching, account pools, model speed, sessions, egress, and concurrency.
 
-> 目前是预览版（0.x）：功能还在快速增加和调整，所以更新比较频繁。正式版会从 1.0 开始。
+> TokenPulse is currently a 0.x preview. Features change frequently; stable releases will start at 1.0.
 
 [![Release](https://img.shields.io/github/v/release/JohnMuyuan/TokenPulse?style=flat-square&color=34735e)](https://github.com/JohnMuyuan/TokenPulse/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/JohnMuyuan/TokenPulse/total?style=flat-square&color=34735e)](https://github.com/JohnMuyuan/TokenPulse/releases)
@@ -18,414 +18,314 @@
 ![Electron](https://img.shields.io/badge/Electron-44-47848f?style=flat-square&logo=electron&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?style=flat-square&logo=typescript&logoColor=white)
 
-[**下载安装**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) · [功能](#-功能) · [截图](#-截图) · [工作原理](#-工作原理) · [隐私](#-数据与隐私) · [开发](#-开发)
+[**Download**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) · [Features](#features) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Privacy](#data-and-privacy) · [Development](#development)
 
-<img src="artifacts/ui/overview-light.png" alt="TokenPulse 总览" width="880">
+<img src="artifacts/ui/overview-light.png" alt="TokenPulse overview" width="880">
 
 </div>
 
----
+See [Releases](https://github.com/JohnMuyuan/TokenPulse/releases) for version-by-version changes. The app also shows a one-time introduction after upgrading.
 
-> 每个版本改了什么见 [Releases](https://github.com/JohnMuyuan/TokenPulse/releases)；软件里升级后也会弹一次「新版本有什么」。
+**0.3.59** makes quota-limit warnings less sensitive: a small projected overrun is explained in text; warning colors appear when a longer gap before reset is expected. Configure tolerance for each quota window in Settings → Notifications.
 
-0.3.59 让额度「达到上限」提示不再那么敏感：只差一点点就用完的只用文字说明，重置前会断档较长时间才变色；宽松程度可在设置 → 提醒里按窗口选择。
+**0.3.58** adds pi sessions, details, full-text search, terminal continuation, and provider switching.
 
-0.3.58 新增 pi 支持：会话列表、详情、全文搜索、在终端继续，以及一键切换模型供应商。
+## Share cards and milestones
 
-## 🖼️ 分享卡片与里程碑
+The top-bar Share card opens monthly reports for any month with usage. Reports include an activity calendar, model rankings, nighttime usage, fastest model, cache savings, and approximate everyday equivalents. Enter monthly subscription costs to compare against estimated API list-price value. A reminder appears on days 1–7 for the previous month. Milestones cover cumulative tokens, daily usage, streaks, reference API value, and request counts; achievements appear in the badge collection. The first opening records existing badges without replaying their notifications.
 
-顶栏「分享卡片」可以查看任意有用量月份的月报，包含活跃日历、模型排行、夜间用量、最快模型、缓存节省和粗略的人话换算。可填每月订阅费，对比按 API 参考标价估算的价值；每月 1–7 日提醒查看上个月的月报。累计 Tokens、单日用量、连续使用、API 参考价值和请求次数各有里程碑，达成后提示，徽章收集册可查看所有目标。首次打开只记录已有徽章。
+Cards follow the interface language, with a preview before saving PNG or copying the image. Emails, account names, project paths, and conversation bodies are excluded. Pool/provider names are optional and hidden by default. Images are generated locally and shared by you. API value and cache savings are estimates.
 
-卡片按界面语言生成中文或英文，先预览再保存 PNG 或复制图片。邮箱、账号名、项目路径和会话正文不进卡片；号池名／供应商名由预览里的开关选择，默认隐藏。图片在本机生成，分享由你自己完成。API 价值与缓存节省为参考估算。
+Pool quota pages include survival analysis: remaining weekly quota, member exhaustion and resets, comparisons with previous weeks, and a seven-day simulation based on average usage over the last seven days. Missing or stale samples suppress predictions. Confidence is the proportion of historical daily-usage simulations that lasted. Only official members' weekly quotas are modeled, including web and other-device consumption; API-key members can still forward requests.
 
-号池页新增「生存分析」：本周剩余曲线、各账号的见底与重置、过去各周对比，按最近 7 天的平均用量模拟未来 7 天。缺测或额度陈旧时不预测；显示的把握是历史日用量模拟中撑住的比例。只看官方成员的每周额度，网页和其他设备的消耗也包括在内，API Key 成员仍可继续转发。
+Version 0.3.50 expanded the seven-chapter onboarding tour and combined members of each account pool into one model-speed series.
 
-0.3.50 扩写新手引导（分七章，可以按目录跳转），号池的多个账号在「模型速度走势」里合成一条线。
+## Provider switching and local routing
 
-## 🔀 供应商切换与本地路由
+The Providers page has sections for Overview, Claude Code, Claude Desktop, Codex, Grok CLI, DeepSeek Harness, Routing service, Forwarding records, Import providers, and Configuration protection. Save multiple providers per tool, click Enable to switch, edit through a step-by-step sidebar, and drag to reorder. Switching changes endpoint, credentials, and model settings while preserving plugins, hooks, MCP, and comments.
 
-侧边栏的「供应商」页面左边是二级菜单：**概览**（各工具现在用谁、直连还是本地路由）、**Claude Code / Claude 桌面端 / Codex / Grok CLI / DeepSeek Harness**（各自的供应商列表）、**路由服务**、**转发记录**、**导入供应商**、**配置保护**。每个工具可以保存多家供应商，点「启用」就切换；新增和编辑按左侧的步骤菜单一步步填，列表可以拖动排序。切换只改请求地址、密钥和模型，插件、Hook、MCP 和注释留在原处。
+When tool and API formats differ, the tool connects to `127.0.0.1`; TokenPulse forwards to the selected provider and translates text and function calls between Anthropic, OpenAI Chat, and OpenAI Responses. Fallback providers can take over after 429 or 5xx responses. Providers can also be switched from the tray. Exiting restores direct configuration; the next launch reconnects routing.
 
-接口和工具不一致时会打开本地路由：工具只访问 `127.0.0.1`，TokenPulse 在后台把请求转到当前供应商，并在 Anthropic、OpenAI Chat、OpenAI Responses 之间转换文本和函数调用。备用供应商在当前一家返回 429 或 5xx 时接上。托盘菜单可以按工具切换。退出 TokenPulse 时配置写回直连，下次启动再接回路由。
+Provider switching preserves the tool's official login. Import existing CC Switch providers. To change the official account used by a CLI, use Settings → Official accounts → Switch to CLI.
 
-切换供应商不碰工具自己的官方登录（官方登录仍由各工具保存）。已有的 CC Switch 供应商可以导入。想换 CLI 登录的是哪个官方账号，到「设置 → 官方账号」点「切到 CLI」（见下面「官方额度，掌握节奏」一节）。
+**Proxies:** outbound routing, quota checks, egress detection, and updates use environment proxies such as `HTTPS_PROXY`, then the system proxy, then direct access. Local addresses always connect directly. Local routing supports HTTP proxies; SOCKS proxies fall back to direct access. CLIs launched by TokenPulse inherit their normal terminal network environment.
 
-**代理**：软件里往外发的请求（本地路由转发、查额度、出口检测、自动更新等）用同一条规则——环境变量里有代理（`HTTPS_PROXY` 等）就用它，没有就用系统代理，都没有才直连；本机地址永远直连。本地路由转发只支持 HTTP 代理（SOCKS 代理按直连）。TokenPulse 启动的 CLI 不额外加代理，和你自己在终端里运行时走同一条路。
+- **Provider icons:** match by name/address, choose from 25 built-in vendor icons sourced from AllAi, or upload an image resized to 128px.
+- **Account pools:** Claude Code, Codex, and Grok CLI pools combine registered official accounts and saved API-key providers. DeepSeek Harness pools use API-key providers. Strategies are round-robin, use-until-full, reset-soonest, and most-remaining. Failover handles 401, 402 (including Grok quota exhaustion), 403, 429, 5xx, and connectivity errors; repeatedly failing members pause for 60 seconds. Official accounts below 1% remaining or recently returning 402/429 go last and rejoin automatically after recovery. Reset-soonest prioritizes weekly windows approaching reset with quota remaining. Most-remaining switches only when another member has over five percentage points more. Samples older than 30 minutes are treated as unknown. Each pool has a quota page with totals, usage, allocation, timelines, and requests; tabs can be reordered. Official members change authentication only, preserving CLI request content. Pool credentials are never written to tool configuration, and pools require local routing. Check provider terms when rotating multiple subscriptions.
+- **Transparent forwarding:** disabled by default. For official Claude Code, Codex, and Grok logins, it measures time to first token, output tokens per second, usage, and returned model while forwarding headers, credentials, and content unchanged. It listens only on `127.0.0.1` and does not save credentials or message content. Claude uses `ANTHROPIC_BASE_URL`; Codex uses top-level `openai_base_url` while retaining its built-in provider; Grok uses `[endpoints] cli_chat_proxy_base_url` and per-official-model `base_url` entries, preserving custom endpoints. Grok auxiliary calls are forwarded, with only chat and errors recorded. Disabling or exiting removes the added configuration; restarting restores an enabled setting. Switching to a third-party provider or pool disables transparent forwarding. Reopen existing sessions after configuration changes. Claude Code Remote Control is unavailable while its endpoint is redirected; disable forwarding before using it.
+- **Model-speed charts:** local routing already measures speed. Usage details show output speed or first-token latency by model, provider, and reasoning level, combining members of the same pool. Choose 24 hours, 7 days, 30 days, or all time; filter by tool and toggle series. Account quota pages show per-model trends, median speed, comparable bars, and separate fast-mode rows. Records are retained indefinitely.
+- **Configuration preview:** open a provider's preview step directly from its row or active-provider card. Secrets are masked.
+- **Pool attribution:** Claude Code and newer Codex requests are matched to accounts using shared response IDs, never guessed by time alone. Grok logs aggregate whole turns without response IDs, so forwarding records within the turn distribute usage proportionally. Single-member turns receive that account label; mixed turns contribute to hourly account totals without a single request account. Forwarding records and speed charts show actual members.
+- **Codex 1M context:** enable `model_context_window = 1000000` and `model_auto_compact_token_limit = 900000`, or enter custom values.
 
-- **头像**：编辑供应商的第一步可以选头像：按名称和地址自动匹配，或者从 25 个预设厂商图标里选（图标来自 AllAi），也可以上传图片（自动缩到 128px）。
-- **号池**：Claude Code、Codex、Grok CLI 可以把「设置 → 账号」里登录的多个官方账号，和已保存的 API Key 供应商组成号池。DeepSeek Harness 的号池只放 API Key 供应商。本地路由按「轮询」「用满再换」「快重置优先」或「剩余最多」在成员间转发；某个成员返回 401、402（Grok 额度用完回这个）、403、429、5xx 或连不上时换下一个，连续失败的暂停 60 秒。不管哪种方式，额度用完（剩不到 1%）或刚回过 402 / 429 的官方账号都排到最后，不用手动剔除，额度恢复后自动回到轮换里。「快重置优先」先用每周额度快要重置、又还剩很多的号；「剩余最多」一直用剩得最多的号，别的号多出 5% 以上才换。这两种按各账号最近一次查到的额度排，超过 30 分钟没更新的当没数据，已经用完的排到最后。额度详情里每个号池有自己的一页：总额度、用量、成员分摊、时间线和最近的请求，标签可以拖动排序。官方账号成员只换认证信息，请求仍是 CLI 自己发出的原样内容。号池只能经本地路由使用，账号凭据不会写进任何工具配置。用号池轮换多个订阅账号是否符合各家服务条款，请自行判断。
-- **透明转发**（供应商 → 透明转发，默认关闭）：想知道模型出字有多快时，给 Claude Code、Codex 或 Grok 打开。打开后只在工具配置里加「接口地址 = 本机」（Claude Code 是 `ANTHROPIC_BASE_URL`，Codex 是顶层的 `openai_base_url`，内置供应商不变；Grok 是 `[endpoints] cli_chat_proxy_base_url`，外加每个官方型号一行 `base_url`，因为它的对话地址按型号分开，你自己给某个型号配了别的地址的不动；Grok 每轮还有十几个附带请求，照样原样转发，但只记对话请求和出错的），官方登录的请求经 TokenPulse 原样转给官方：请求头、登录凭据、内容都不改，不保存凭据和内容，只在 `127.0.0.1` 监听。TokenPulse 只计时（首字延迟、每秒输出多少 Token）、读回复里的 Token 数和上游实际用的型号。关闭或退出时拿掉加的那些行恢复直连，下次启动接着开；只对官方登录有效，切到第三方供应商或号池时自动关闭。开关之后、以及退出 TokenPulse 之后，已经开着的会话要重新打开才生效。注意：给 Claude Code 打开期间，它的 Remote Control 用不了（Claude Code 只在接口地址是 api.anthropic.com 时才允许），要用时先关掉。走本地路由的请求（号池、第三方供应商）本来就经过 TokenPulse，不用开透明转发也同样会量速度。量到的速度画在「用量明细」的「模型速度走势」折线图里：速度或首字可切换，同一个型号经不同的供应商、用不同的思考等级分开一条线（等级高的每秒 Token 数差不多，但首字会慢很多），同一个号池里的几个账号合成一条，可以看最近 24 小时 / 7 天 / 30 天或全部、按工具筛、点图例开关每条线；也画在「额度详情」每个账号下面的「模型速度」里：一个模型一行，中间是它自己的走势，右边是中位速度和按同一刻度画的对比条；快速模式的请求单独一行；记录永久保存。
-- **配置预览**：每家供应商的行上和当前供应商卡片上都有「配置预览」，直接打开编辑页的预览步骤，查看切换后工具会看到的配置（密钥已脱敏）。
-- **号池用量归属**：Claude Code 和新版 Codex 用会话与转发记录共同保存的响应 ID 对上实际账号；没有共同 ID 时不按时间猜测。Grok 只保存整轮用量汇总，没有响应 ID：按这一轮的时间范围查转发记录，号池把请求交给了谁、各占多少 Token，就按这个比例把这一轮的用量分给他们；一轮全部交给同一个账号时，这条请求也标上账号，交给两个以上账号的只进各自的小时用量、不标单个账号。转发记录和账号的模型速度按实际转发成员显示。
-- **Codex 1M 上下文**：编辑 Codex 供应商时可以一键放开到 1M（写入 `model_context_window = 1000000`、`model_auto_compact_token_limit = 900000`），也可以自己填。
+### Configuration protection
 
-### 配置保护：不怕改坏工具配置
+- Preview masked line-by-line differences before writing Claude/Codex/Grok configuration. If another process changes the file after confirmation, the write is refused. Formatting, comments, and unrelated settings are preserved.
+- Restore any of the last 50 changes in Providers → Configuration protection; restores can also be undone. The original file from before TokenPulse's first change is kept permanently.
+- Read-only protection blocks configuration writes, provider switching, and enabling routing. Disabling routing and restoring backups remain available.
 
-- **改动前先确认**：要改 Claude / Codex / Grok 的配置文件时，先列出每个文件的逐行对比（密钥打码），点「确认写入」才写；确认之后文件又被别的程序改了，就不写。写入时保留你原来的缩进、注释和其他设置。
-- **每次改动都有备份**：最近 50 次改动都能在「供应商 → 配置保护」里一键还原，还原本身也能撤回；TokenPulse 第一次改某个文件之前的原件永久保留，随时可以恢复。
-- **只读保护**：打开后 TokenPulse 完全不改工具配置，切换供应商、启用路由都会被拦下；关闭路由、还原备份仍然可以做。
+### Configuration drift notifications
 
-### 配置被改走时提醒
+When another tool changes a previously managed endpoint, or Grok resumes a session with an older model, TokenPulse explains the affected tool, current destination, and likely reason, with a Switch back action using the same diff confirmation. Tray mode uses system notifications. Each change is reported once. Ordinary permission/theme changes and `/model` changes within the same provider are ignored.
 
-TokenPulse 切换过的 Claude Code、Claude 桌面端、Codex、Grok CLI，如果配置又被改走了（别的工具改了地址，或者 Grok 继续旧会话时换回那个会话记住的模型），TokenPulse 会在右上角说明是哪个工具、现在连的是谁、可能的原因，并给出「切回」按钮（同样先看对比再确认）；窗口在托盘里时发系统通知。同一次改动只提醒一次。CLI 自己改其他设置（权限、主题、在同一家里用 /model 换模型）不算。
+Grok may write a default model when resuming or running `/model`; official promotions may also select a new model. TokenPulse treats default-model changes as Grok activity, reconnects your selected provider at startup, and disables model-changing promotions when switching to a third-party provider or pool. Reopen Grok windows to load changes.
 
-Grok 自己会改默认模型（继续旧会话、用 `/model` 切换时写进 `config.toml`），官方的上新活动也会临时把新会话换成新型号。TokenPulse 只把「默认模型被换了」当成 Grok 自己的动作：下次启动照样接回你选的供应商；切到第三方或号池时，顺带把改默认模型的活动标成已关闭。已经开着的 Grok 窗口要重开才会读新配置。
+Grok's `/model` list identifies routing as `TokenPulse · Provider name`. **For a Grok pool, start a new session or run `/model tokenpulse_route` in the old session**, otherwise resuming may restore the old model.
 
-Grok 的 `/model` 列表里，TokenPulse 的路由显示为「TokenPulse · 供应商名」。**用 Grok 号池时请新开会话，或者在旧会话里输入 `/model tokenpulse_route`**，否则继续旧会话会换回旧模型。
+### Codex configuration validation
 
-### 写给 Codex 的配置，先让 Codex 试读
+Before switching providers or enabling routing, the installed Codex reads the proposed model catalog in an isolated temporary directory, without network access or the real `~/.codex` directory. If a Codex update rejects the format, TokenPulse skips writing that catalog and explains the problem; Codex can still start with its built-in list. Startup can repair invalid catalogs left by older versions, with a backup; read-only protection permits a warning only.
 
-切到第三方或开启本地路由之前，TokenPulse 会让本机的 Codex 在临时目录里试读一遍要写的模型目录（只加载配置、不联网、不碰真实的 `~/.codex`）。Codex 更新后格式变了、读不了时，就不写这份目录并提示——Codex 照样能进，只是模型列表用它自带的。启动时还会自动修复旧版本留下的坏配置（有备份，只读保护开着就只提示）。
+### Retired Prism bridge
 
-### Prism 桥（已下线）
+The bridge formerly let Codex use full models through your Prism account. After Prism removed 6.1 Sol, 5.6 Sol, and 5.6 Terra in early October 2026, leaving only 6 Luna, the feature was retired and is hidden for users who never installed it.
 
-Prism 桥曾经用来在 ChatGPT 账号被「降智」时，让 Codex 经你自己的 Prism 账号用回完整的模型。Prism 在 2026 年 10 月初陆续撤掉了 6.1 Sol、5.6 Sol 和 5.6 Terra，现在只剩 6 Luna，这条路已经解决不了降智，所以这个功能下线了：**没有装过的人不会再看到它。**
+Existing installations retain a Prism bridge page under local routing with the retirement notice. The service can still start with 6 Luna. The double-confirmed Delete all action stops it and removes its runtime, installation-downloaded Chromium, login data, logs, and Codex provider, switching Codex to official login first if necessary. The page then disappears. Existing system Python and TokenPulse are preserved.
 
-以前装过的人，供应商 → 本地路由下面还会有「Prism 桥」这一页，顶部写着下线说明：
-- 服务仍然可以启动，只有 6 Luna 可用。
-- 不想留着：页面最下面的「全部删除」（要点两次确认）会停掉服务，删掉运行环境、这次安装下载的 Chromium、登录信息和日志，Codex 里那家供应商也一起去掉（Codex 正在用它的话先切回官方登录）。删完这一页就消失。你电脑上本来的 Python、TokenPulse 本身不会动。
+Based on Prism Bridge by [@yyyllllming](https://github.com/yyyllllming), MIT; source and modification notices are in `vendor/prism-bridge/` and its `NOTICE.md`.
 
-程序来自开源项目 Prism Bridge（作者 [@yyyllllming](https://github.com/yyyllllming)，MIT 协议），源码在 `vendor/prism-bridge/`，TokenPulse 对它的改动见同目录的 `NOTICE.md`。
+## Usage outside this computer
 
-## 🧭 本机以外的使用
+Official quotas cover the whole account, including web, apps, and other computers. TokenPulse compares quota-sampling intervals:
 
-官方额度是整个账号的：网页 / App 聊天、别的电脑也在用。TokenPulse 按额度采样的时间段来区分：
+- Quota increases without local Code requests are classified as outside-computer usage, excluded from capacity conversion, and shown on a separate model/reasoning timeline track.
+- Increases alongside local Code requests are used for local capacity estimates; simultaneous chat cannot be separated and may make capacity look smaller.
+- Split, delete, restore, or annotate outside-computer segments with where, model, and reasoning level; right-drag to select an interval. Annotated periods are excluded from conversion and translated into approximate tokens using that model/level's full-window capacity.
 
-- 额度涨了、同期本机没有任何 Code 请求：识别为「本机以外」的使用，不计入容量折算，并标在「模型与思考等级 · 时间线」的「本机以外」轨道上；
-- 额度涨了、同期本机有 Code 请求：按本机用量折算整窗容量（同一时刻也在聊天的话分不出来，会让容量略微偏小）；
-- 点时间线上的「本机以外」色块，可以像剪视频一样分割、删除（不算本机以外）、恢复，或者标注这段时间在哪里、用了什么模型、什么思考等级；也可以按住右键拖选一段来标注。标注过的时段不进折算，并按这个模型 × 等级的整窗容量换算成大约多少 Token。
+Zoom via right-drag selection, Ctrl+wheel around the pointer, or controls; left-drag to pan when zoomed. The question-mark legend explains tracks and markers. Capacity trends and model comparisons use the same attribution rules.
 
-时间线可以放大：按住右键拖选一段再点「放大到这段」，Ctrl + 滚轮以鼠标位置缩放，或者用右上角的按钮；放大后左键拖动平移。周期标题旁的圆圈问号里有每种颜色、竖条的说明。额度容量趋势、整窗容量折算、「换一种模型，整窗能用多少」都按这个口径计算。
+For accounts used only for Code on this computer, enable Only use Code locally in Settings → Accounts for direct local-usage/used-percentage conversion.
 
-如果某个账号只在这台电脑上用 Code、不在网页或 App 里聊天，也可以在「设置 → 账号」里打开「只在本机用 Code」：这个账号按「本机用量 ÷ 已用百分比」直接折算。
+## Models and reasoning levels
 
-## 🧠 模型 × 思考等级
+- Quota details ranks available model/reasoning combinations for both five-hour and weekly windows: full-window tokens, calls, and remaining capacity. Sort by capacity, requests, frequency, or name and filter by reasoning level.
+- The last 30 days of samples estimate an API-equivalent full-window budget, including mixed-model intervals, then convert using reference token prices. Sufficient pure intervals use directly measured values labeled Measured.
+- Current and historical model/reasoning timelines show a track per combination with the official used-percentage curve. Filter by a combination and browse prior windows.
+- Requests routed to another vendor by tools such as CC Switch are excluded from the original provider's quota. Unknown historical reasoning levels stay unknown; retained logs are backfilled where possible.
+- Row details explain both window capacities, input/cache-read/cache-write/output prices and sources, token-mix weighting, reasoning multipliers, call counts, remaining calls, and approximate new content rather than repeatedly cached context.
+- Price labels distinguish official discounts, conflicting price tables (using LiteLLM), official increases/decreases with itemized changes, and replacement of family estimates by actual model prices.
+- Add unused models for estimates. Sparse reasoning data uses your measurements first, then [Epoch AI](https://epoch.ai/data/ai-benchmarking-dashboard) benchmarks (CC BY 4.0).
+- Catalog entries come from local caches, official documentation, and logs; they do not guarantee model entitlement. API-equivalent value is not subscription credit.
 
-- **额度详情 → 换一种模型，整窗能用多少**：5 小时和周两个窗口一起列出全部可用的模型和思考等级，每个组合换算成「整窗约多少 Tokens、约多少次调用、本周期还剩多少」，用条形图排行；可按容量、请求次数、常用程度、名称排序，按等级筛选。
-- 换算口径：先用本账号最近 30 天的额度采样算出「整窗预算」（API 等价费用 ÷ 官方已用百分点 × 100，混用模型的区间也能用），再按每个组合的每 Token 参考单价换算。实测表明官方额度大体按 API 等价费用消耗；有足够纯区间的组合直接用实测值，标「实测」。
-- **模型与思考等级时间线**（在额度详情里，跟随账号标签）：当前 5 小时周期和本周周期两条时间线，每个组合一条轨道，连续使用连成一段，上方叠加官方额度已用曲线；可翻看以前的周期，点一个组合只看它。
-- 经 CC Switch 等把 CLI 指到别家模型的请求不计入这一家的额度。旧日志没记录的思考等级保持未知，不从当前配置回填；首次运行会为仍保留的日志补采等级。
-- **点一行看详情**：两个整窗各能用多少、四项标价（输入 / 缓存读 / 缓存写 / 输出）和来源、综合单价是怎么按你的 Token 结构算出来的、思考等级倍数的出处。每格下面写着调用次数、本周期还剩多少，以及「其中新内容约多少」（Tokens 里绝大部分是每次调用重读整段对话的缓存）。
-- **单价标签**：官方优惠价标「优惠价」；两个价格表对不上标「标价不同」（按 LiteLLM 算）；官方调价标「刚降价 / 刚涨价」并在详情里逐项写涨跌幅；只是从按型号家族估算换成这个型号自己的标价的，标「改用实际标价」。
-- **添加模型**：右上角「添加模型」可以把没用过的型号加进表格，按单价和思考等级消耗估算。没用够的思考等级优先按你自己的实测推算，其次参考 [Epoch AI](https://epoch.ai/data/ai-benchmarking-dashboard) 的基准数据（CC BY 4.0）。
-- 目录来自本机缓存、官方文档和日志，不保证目标账号的模型权限；API 等价费用不是订阅余额。
+## Egress monitoring
 
-## 🌐 出口监控
+Open Egress monitoring, run Check now, enter allowed IPs or add the current IP, save, and enable. Check selected official domains every 5–60 seconds (default 10), with multiple IPv4/IPv6 addresses and optional region allowlists. Two consecutive anomalies notify once per incident. Pause monitoring or review the latest 50 changes.
 
-在侧边栏打开「出口监控」，先「立即检测」，为每家填写允许的出口 IP（或点击「加入当前 IP」），保存后开启监控。按设定的间隔（5 到 60 秒，默认 10 秒）检测选定官方域名的出口，支持 IPv4/IPv6 多个允许地址及可选的地区白名单。连续两次异常发出通知，同一异常不重复提醒；支持暂停和查看最近 50 条变化记录。
+- Detection uses each domain's trace information, without account tokens or model/quota API calls. It represents that domain through TokenPulse's network configuration, rather than every application's routing.
+- ChatGPT, OpenAI API, and Claude have separately verified official region lists, with source and verification date; lists become unverified after 90 days. Grok's complete list is unverified, so use custom regions.
+- Unknown regions, detection failures, and subregional restrictions are reported explicitly; detected IP/region does not guarantee account access.
+- Cards show flag, IP, city, ASN, network type, and public risk/VPN/proxy/datacenter information from proxycheck.io, ip-api.com, ipinfo.io, and ipapi.is. Lookups occur when the egress IP changes and cache for 12 hours. They disclose that IP to these services and can be disabled at the page top.
+- Before quota checks or credential refresh for providers with an IP allowlist, TokenPulse verifies the egress IP. A mismatch or unknown IP pauses these operations and raises an alert, shown on overview and quota pages.
+- When monitoring is enabled, CLI launches from TokenPulse—including new chats/projects, terminal continuation, and in-app replies—check the provider allowlist first. An IP list takes precedence; otherwise a region list applies. Failed or indeterminate checks block launch. With neither list, or monitoring disabled, launch proceeds. Terminal checks run in that PowerShell environment and display red/green results there.
+- Configuration and recent alerts stay local. Monitoring continues in the tray and stops on exit.
 
-- 使用供应商域名自己的 trace 信息，不携带账号 token，不调用模型或额度接口；仅代表所选域名经 TokenPulse 当前网络配置的出口，不等同于全部分流规则或其他程序。
-- ChatGPT / OpenAI API / Claude 使用分别核实的官方地区清单；规则显示来源与核实日期，超过 90 天按未核实处理。Grok 官方完整清单暂未核实，可设置自定义允许地区。
-- 地区未知、检测失败或存在子地区限制均明确提示，不当作正常或确定不支持。IP/地区来自目标站点的出口识别，不能保证具体账号一定可用。
-- 每家一张卡片：国旗、出口 IP、城市、ASN、线路类型（家宽 / 机房 / 企业 / 移动），以及 proxycheck.io、ip-api.com、ipinfo.io、ipapi.is 几个公开 IP 数据库给的风险分和 VPN / 代理 / 机房标记。出口 IP 变了才查、结果缓存 12 小时；这会把出口 IP 发给这几家，可以在页面顶部关掉。
-- **向官方查额度之前先核对出口 IP**：设了白名单的那家，出口 IP 不在白名单里（或确认不了出口）就不查额度、不续期凭据，并弹警报；首页和额度页会写明「额度查询已暂停」。
-- **启动 CLI 之前先核对出口**：出口监控开着时，凡是 TokenPulse 启动的 CLI（新对话、新项目、在终端里继续、在软件里回复）都按那一家的白名单核对，不符合或测不出来就不启动。设了 IP 白名单只看 IP；没设 IP、设了地区白名单看地区；两个都没设或监控关着就直接启动。终端里的检测就在那个终端窗口里做（终端里的 CLI 走的是那个 PowerShell 的网络环境），结果用红 / 绿字写在终端里。
-- 监控配置与最近告警仅保存在本机；托盘运行期间继续监控，退出软件即停止。
+## Concurrency monitoring
 
-## 🚦 并发监控
+Track active AI requests, client connections, and upstream connections, with per-interval peak history and provider/account breakdowns. Set provider limits to notify or reject new requests with 429 for tool retries. History retention is configurable; gaps mean monitoring or the application was inactive. Only local routing, pools, and transparent forwarding are visible; direct tool connections are outside this monitor.
 
-侧边栏的「并发监控」看清经过本机的 AI 请求同时有多少个、各连到哪：活跃 AI 请求、客户端连接、上游连接三块实时数字，下面是并发历史（每个时间段的峰值）和按供应商、账号分开的明细。可以给每家设上限：超了先提醒，或者直接拒绝新请求（返回 429，工具会自己重试）。历史保存多久可以设置，空白表示那段时间没在监控或软件没运行。只统计经过 TokenPulse 的请求（本地路由、号池、透明转发），工具自己直连官方的请求看不到。
+## Features
 
-## ✨ 功能
+### Local usage
 
-<table>
-<tr>
-<td width="50%" valign="top">
+Incrementally read CLI session logs, including terminal, IDE extension, and other frontend activity. Usage scanning itself does not modify Base URLs, install a proxy, or intercept traffic.
 
-### 📊 本机用量，一笔不漏
-增量读取各家 CLI 自己写下的会话记录。终端里跑的、IDE 插件跑的、别的壳子跑的，都算在内。**不改 Base URL，不挂代理，也不拦截网络请求。**
+### Official quotas and account switching
 
-</td>
-<td width="50%" valign="top">
+Reuse CLI credentials for five-hour/weekly quotas, remaining capacity, reset countdowns, recent-trend exhaustion estimates, and projected usage at reset. Add either the CLI's current login (read fresh without saving a copy) or separate TokenPulse logins with stored credentials and automatic renewal. Registered logins can replace Claude Code, Codex, or Grok CLI accounts via Switch to CLI; the previous account remains available in TokenPulse. Multiple accounts have separate quotas; create pools explicitly on the Providers page.
 
-### ⏱️ 官方额度，掌握节奏
-复用 CLI 已保存的登录凭据查询官方 5 小时 / 周额度，不用再登录一次。显示双窗口剩余、重置倒计时、按最近趋势估计的达到上限时间和重置时预计使用比例。 账号可以两种方式添加：直接用本机 CLI 已经登录的那个（TokenPulse 不保存凭据，每次现读 CLI 的登录），或者在 TokenPulse 里登录（保存凭据并自动续期，可以登记多个）。在 TokenPulse 里登录过的账号能一键「切到 CLI」：把 Claude Code、Codex 或 Grok 的登录换成这个账号，不用再去终端里登出登录；换下来的账号由 TokenPulse 接着保存，随时能切回去。同一家的多个账号只是各自显示额度，不会被当成号池；号池在供应商页自己建。
+### Usage details and export
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+Inspect individual requests or daily/tool/model aggregates, including tokens, estimated quota share, origin, and model checks. Date ranges include today, rolling 24 hours, 7/14/30/90 days, all time, or calendar-selected endpoints. Data is retained indefinitely. Numbers show exact units, with an additional compact approximation in Chinese. Searchable exact model multiselect combines with project, account, channel, verification, and keyword filters; filters persist between request and daily views. Sorting, pagination, summary cards, and CSV follow filters; export includes **all** matching records. Failed queries can retry with their filters intact.
 
-### 🔍 明细可查，随时导出
-逐条看每一次请求：用了多少 Token、约占多少 5 小时 / 周额度、谁发的、型号对不对；也能切到按日期 + 工具 + 模型聚合。时间选择器支持今天 / 一天（过去 24 小时）/ 7 / 14 / 30 / 90 天 / 全部，也可以在月历上点选任意起止日期；数据永久保存，范围不设上限。数字默认精确到个位，中文界面再附一个「≈30.3亿」方便读。支持统计型号精确多选（候选列表可搜索），并按项目、账号、渠道、型号核验结论和关键词组合筛选；筛选条件在逐条请求与按日汇总间保留。可排序、分页，统计卡片与 CSV 导出跟随筛选；导出包含**全部**匹配记录，不受分页限制。查询失败可保留条件重试。还有完整的用量分析：**全年活跃度**（一格一天的贡献图，最近一年或任选一年，按 Tokens / 费用 / 请求分深浅，写出最努力的一天和最长连续天数，点某一天整页就只看那一天）、按工具分色的用量趋势、全部工具和全部型号的排行（不截断，可按 Tokens / 费用 / 请求排序）、一天中各时段和星期 × 时段的使用分布。总览选「今天」时趋势按小时。 经 TokenPulse 转发的请求（透明转发，或本地路由里的第三方供应商、号池）每行还有「延迟」一列：首字延迟、总耗时、每秒输出多少 Token；点开详情能看到接口、是否流式和经由谁转发。没经过转发的显示「—」；Grok 的会话记录按轮汇总，对不上单次请求，这一列也是「—」。 用量明细上方还可以打开 **tokens.ci 自动上传**：第一次用有向导（检查 Node.js → 选公开上榜还是隐私模式、在浏览器里用 GitHub 授权 → 预览会传什么 → 设间隔），之后由 TokenPulse 自己计时（10 分钟到一天一次，默认 1 小时，可选打开软件时先传一次），不往系统里加计划任务；默认固定一个 tokens-cli 版本，不会每次自动换成新代码。
+Analysis includes yearly daily activity colored by tokens/cost/requests, busiest day, longest streak, clickable days, per-tool trends, complete tool/model rankings, hourly patterns, and weekday-by-hour distributions. Today uses hourly trends. Forwarded requests include first-token latency, total duration, output speed, endpoint, streaming state, and forwarding provider. Non-forwarded records and unmatched Grok turn aggregates show no per-request latency.
 
-</td>
-<td valign="top">
+Optional tokens.ci upload has a first-run wizard: check Node.js, choose public leaderboard or privacy mode, authorize GitHub in the browser, preview disclosure, and select an interval. TokenPulse schedules every 10 minutes to one day (default hourly), optionally on launch, without system scheduled tasks. It pins a tokens-cli version by default.
 
-### 🪶 安静地待在托盘
-关掉窗口也不退出，开机自启，悬停托盘图标就能看到当前额度。在托盘图标上点右键会弹出一张额度小面板：每个官方账号的 5 小时额度和周额度各一条进度条，写着已用多少、什么时候重置，进度条上的小竖线是「时间走到哪了」，一眼能看出是不是用得太快；按现在的速度会提前用完的会有提醒。账号多于三个时在面板里滚动。面板里还能看到各个工具现在用的是哪家供应商，点开可以切换；右上角是刷新和退出。外观支持日间 / 夜间 / 跟随系统，扫描放在后台线程，不卡界面。
+### Tray and appearance
 
-</td>
-</tr>
-<tr>
-<td colspan="2" valign="top">
+Closing the window keeps TokenPulse in the tray. Optional startup login integration, hover quota summary, and a right-click panel show each account's five-hour and weekly progress, reset time, time-elapsed marker, and pressure warning. Scroll with more than three accounts. Switch providers per tool; refresh and exit are at the top right. Light, dark, and system themes are available. Scanning runs in a worker thread.
 
-### 🧾 每一次请求，都能核对型号
-「用量明细」逐条列出本机的每一次 API 请求：时间、项目、**发出的账号**、型号、token、费用、响应 ID；额度详情里每个账号下面也能看到它自己的请求。并核对**你要的型号**和**上游返回的型号**是不是同一个 ——
-对不上标「型号不一致」，型号名对得上但响应格式不像官方（比如号称 Claude、响应 ID 却是 OpenAI 格式）标「响应存疑」，发现就发系统通知。Grok Build 计费名上的 `-build`（`grok-4.6` 和 `grok-4.6-build`）算同一个型号。侧栏上的红点是还没看过的不一致，打开用量明细后清掉。只读本机记录，不额外发请求、不花额度。Codex 自己不记上游返回的型号，平时只能核对响应格式；经过 TokenPulse 的 Codex 请求（透明转发，或本地路由里的中转站、号池）会在转发时读出返回的型号，照样能核验。
+### Model verification
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+Request records include time, project, account, requested model, tokens, cost, and response ID. Compare requested and returned models; mismatches and suspicious response formats raise system notifications and an unread sidebar dot cleared on opening details. Grok `-build` billing names are treated as equivalent. Verification reads local data without extra model calls. Ordinary Codex logs lack returned-model names, so only response format can be checked; forwarding captures returned models for the same checks.
 
-### 💬 会话管理，接着聊
-自动读取 Claude Code、Codex CLI、Grok Build 和 DeepSeek Harness 的本机会话历史，左边列表、右边对话，按 Agent、项目、关键词筛选。一键复制项目地址；直接在 TokenPulse 里回复，回答实时流出来。Claude Code、Codex 和 Grok 可以选只读或允许改文件，不需要的对话可以确认后永久删除；DeepSeek Harness 的会话可以查看和回复。列表上方的「新对话」「新项目」可以选一个项目文件夹和工具，直接在终端里开始一段新对话。
+### Sessions
 
-</td>
-<td valign="top">
+Browse Claude Code, Codex CLI, Grok Build, and DeepSeek Harness histories with agent/project/keyword filters, copy project paths, and reply with streaming output. Claude/Codex/Grok support read-only or file-edit permissions and confirmed permanent deletion. DeepSeek sessions support viewing and replies. New chat/project launches the chosen tool in a project terminal. Injected environment/system information and subagent logs are filtered, tools collapse into rows, and titles come from the CLI. Cached indexes open in tens of milliseconds.
 
-### 🧩 干净的对话，不是日志
-CLI 注入的环境信息、系统提示、子代理记录都滤掉，工具调用折叠成一行；标题用 CLI 自己起的。索引缓存后打开只要几十毫秒。
+### Layout and onboarding
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+Edit layout exposes drag handles and hide buttons on cards and sidebar pages, with undo, in-place restore placeholders, a per-page layout panel, and reset defaults. Provider quota groups and account tabs can be hidden independently. Preferences stay local.
 
-### 🧩 布局随你摆
-点侧栏「编辑布局」：每张卡片和侧栏的每一页上沿都有把手和 ×，拖动换位置、点 × 隐藏，能撤销。总览的官方额度按家拆开，额度详情的账号标签也能单独藏。藏起来的东西在原处留一条虚线，点「显示」回到原位；右边的布局面板按页面列出全部，每页都能恢复默认。只记在这台电脑上。
+The seven-chapter first-run tour covers getting started, overview, quotas, usage, providers, sessions/monitoring, and personalization/settings, with direct chapter navigation. Fictional demo accounts are confined to the tour, then real data returns. Reopen it in Settings → About.
 
-</td>
-<td valign="top">
+### CC Switch history and model knowledge
 
-### 🎓 分章节的新手引导
-第一次打开会用一个虚构的演示账号带你走一遍，分七章：开始、总览、额度详情、用量明细、供应商、会话与监控、个性化与设置，「目录」可以直接跳到某一章。演示数据只在引导里出现，结束后自动换回你的数据；设置 → 关于 里随时能重新打开。
+Read-only import from [CC Switch](https://github.com/farion1231/cc-switch) recovers older cleared CLI sessions and tools not directly scanned, such as OpenCode. Overlapping tool/day data is counted once. Upstream model information from its local proxy can inform verification.
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+`knowledge/models.json` stores prices, model equivalences, reasoning rules, and consumption factors. Daily GitHub Actions updates use LiteLLM with OpenRouter cross-checks and Epoch AI reasoning data (CC BY 4.0); the app downloads updates daily. Manual overrides live in `knowledge/manual.json`. English and Simplified Chinese apply to the interface, tray, and notifications.
 
-### 🔄 CC Switch 历史，一并补上
-只读 [CC Switch](https://github.com/farion1231/cc-switch) 的本地库，补上 CLI 早已清掉的老会话和 OpenCode 这类 TokenPulse 不扫描的工具。同一天同一个工具两边都有时只算一份，不会重复。走它本地代理的请求，还会用代理看到的上游型号来核验。
+### Supported tools
 
-</td>
-<td valign="top">
-
-### 📚 模型知识库 · 🌐 English
-单价、型号等价规则、思考等级规则和各等级的 token 消耗放在 `knowledge/models.json`，**每天由 GitHub Actions 自动同步**（单价来自 LiteLLM、用 OpenRouter 交叉核对；等级消耗来自 Epoch AI，CC BY 4.0），TokenPulse 每天自动下载，新型号不用等新版本就能认出来、算出费用。手动维护的部分在 `knowledge/manual.json`。界面支持简体中文和 English，托盘菜单和通知一起切换。
-
-</td>
-</tr>
-</table>
-
-### 支持的工具
-
-| CLI | 本机用量 | 官方账号 | 额度信息 |
-|-----|:---:|------|------|
-| **Claude Code** | ✅ | Claude | 5 小时 + 周已用百分比、重置时间 |
-| **Codex CLI** | ✅ | ChatGPT | 5 小时 + 周已用百分比、订阅档位、手动重置次数 |
-| **Grok Build** | ✅ | Grok | 周额度百分比、计费周期、剩余重置次数 |
-| **DeepSeek Harness** | ✅ | — | 按量付费，没有订阅额度窗口；填 API Key 监控余额（可以填多个账号），账号页有消耗趋势、还能用几天、时间线、模型速度和「余额换成每个模型能用多少」。供应商页可以切换到 API Key 供应商或号池，会话管理可以查看和回复 |
-| **第三方中转站的 Key** | — | — | 填站点地址和 Key 监控余额（sub2api、new-api / one-api 搭的站）：余额、Key 的额度和限速窗口、到期时间、每天的用量 |
+| CLI or source | Local usage | Official account | Quota information |
+| --- | :---: | --- | --- |
+| **Claude Code** | ✅ | Claude | Five-hour and weekly percentages/reset times |
+| **Codex CLI** | ✅ | ChatGPT | Five-hour and weekly percentages, subscription tier, manual resets |
+| **Grok Build** | ✅ | Grok | Weekly percentage, billing cycle, remaining resets |
+| **DeepSeek Harness** | ✅ | — | Pay-as-you-go balance with multiple API keys, spending trend, remaining days, timelines, speed, and per-model capacity; provider/pool switching and session viewing/replies |
+| **Third-party relay keys** | — | — | sub2api, new-api/one-api balance, key quotas/rate windows, expiry, and daily usage |
 
 > [!NOTE]
-> Gemini CLI / Qwen / iFlow / Copilot 目前**不在本地写每次请求的 usage**，所以没有数据可统计。
-> 等它们写了，在 `src/core/usage-scan.ts` 的 `roots()` 和解析函数里加一档就能支持。
+> Gemini CLI, Qwen, iFlow, and Copilot currently do not write per-request usage locally. Once available, support can be added in `roots()` and parsers in `src/core/usage-scan.ts`.
 
-## 📸 截图
+## Screenshots
 
-> 截图里全部是软件自带的**演示数据**（虚构的「演示账号」，和新手引导用的是同一份）；出口监控是文档专用地址段的示意数据；供应商页是几家虚构的示例供应商（示例域名、假 Key）。不含任何真实账号、用量或出口信息。
+All screenshots use built-in fictional demo data, documentation-only egress addresses, and fictional providers/domains/keys. They contain no real accounts, usage, or egress information.
 
-<table>
-<tr>
-<td><img src="artifacts/ui/quota-light.png" alt="额度详情"><p align="center"><sub>额度详情：达到上限预测、Token 与费用折算</sub></p></td>
-<td><img src="artifacts/ui/capacity-light.png" alt="额度容量趋势"><p align="center"><sub>额度容量趋势：历史窗口的总额度走势</sub></p></td>
-</tr>
-<tr>
-<td><img src="artifacts/ui/models-light.png" alt="换一种模型，整窗能用多少"><p align="center"><sub>换一种模型，整窗能用多少：全部模型 × 思考等级的容量排行</sub></p></td>
-<td><img src="artifacts/ui/detail-light.png" alt="模型详情"><p align="center"><sub>点开一行看详情：四项标价、来源、综合单价怎么算的</sub></p></td>
-</tr>
-<tr>
-<td><img src="artifacts/ui/timeline-light.png" alt="模型与思考等级时间线"><p align="center"><sub>模型与思考等级时间线：每个组合用了多久，「本机以外」可以分割、标注</sub></p></td>
-<td><img src="artifacts/ui/egress-light.png" alt="出口监控"><p align="center"><sub>出口监控：检测间隔、国旗、ASN、线路类型与 IP 数据库评分</sub></p></td>
-</tr>
-<tr>
-<td><img src="artifacts/ui/usage-light.png" alt="用量趋势"><p align="center"><sub>用量明细：按工具分色的用量趋势与工具排行</sub></p></td>
-<td><img src="artifacts/ui/insights-light.png" alt="使用时段分布"><p align="center"><sub>使用时段分布与完整的型号排行</sub></p></td>
-</tr>
-<tr>
-<td><img src="artifacts/ui/providers-light.png" alt="供应商"><p align="center"><sub>供应商：每个工具的供应商列表、号池和本地路由（示例供应商）</sub></p></td>
-<td><img src="artifacts/ui/layout-light.png" alt="编辑布局"><p align="center"><sub>编辑布局：拖动换位置、单独隐藏，右边是布局面板</sub></p></td>
-</tr>
-<tr>
-<td><img src="artifacts/ui/tour-light.png" alt="新手引导"><p align="center"><sub>新手引导：分七章，「目录」直接跳到某一章</sub></p></td>
-<td><img src="artifacts/ui/settings-light.png" alt="设置"><p align="center"><sub>设置：外观、官方账号、额度查询间隔、提醒与自动更新</sub></p></td>
-</tr>
-<tr>
-<td><img src="artifacts/ui/overview-dark.png" alt="深色主题"><p align="center"><sub>深色主题</sub></p></td>
-<td><img src="artifacts/ui/compact-light.png" alt="窄窗口"><p align="center"><sub>窄窗口：侧栏自动收成图标</sub></p></td>
-</tr>
-</table>
+| Quotas | Capacity |
+| --- | --- |
+| ![Quota details and forecasts](artifacts/ui/quota-light.png) | ![Historical quota capacity](artifacts/ui/capacity-light.png) |
+| ![Model and reasoning capacity rankings](artifacts/ui/models-light.png) | ![Prices, sources, and weighted costs](artifacts/ui/detail-light.png) |
+| ![Model/reasoning timeline](artifacts/ui/timeline-light.png) | ![Egress monitoring](artifacts/ui/egress-light.png) |
+| ![Usage trends and tools](artifacts/ui/usage-light.png) | ![Time distributions and model rankings](artifacts/ui/insights-light.png) |
+| ![Providers, pools, and routing](artifacts/ui/providers-light.png) | ![Layout editing](artifacts/ui/layout-light.png) |
+| ![Onboarding tour](artifacts/ui/tour-light.png) | ![Settings](artifacts/ui/settings-light.png) |
+| ![Dark theme](artifacts/ui/overview-dark.png) | ![Compact window](artifacts/ui/compact-light.png) |
 
-## 📦 安装
+## Installation
 
-到 [**Releases**](https://github.com/JohnMuyuan/TokenPulse/releases/latest) 下载最新版本：
+Download from [Releases](https://github.com/JohnMuyuan/TokenPulse/releases/latest):
 
-| 文件 | 说明 |
-|------|------|
-| `TokenPulse-x.y.z-Setup.exe` | **安装版（推荐）**。可选安装路径，自动创建开始菜单快捷方式 |
-| `TokenPulse-x.y.z-Portable.exe` | 免安装单文件，双击即用 |
+| File | Description |
+| --- | --- |
+| `TokenPulse-x.y.z-Setup.exe` | Recommended installer; selectable directory and Start menu shortcut |
+| `TokenPulse-x.y.z-Portable.exe` | Single-file portable edition |
 
-启动后 TokenPulse 会常驻系统托盘。关闭窗口只会收回托盘，**退出请在托盘图标上点右键，再点面板右上角的退出按钮**。
+Closing the window returns to the tray. **To exit, right-click the tray icon and click Exit at the top right of the panel.**
 
-**自动更新**：安装版会在后台检查并下载新版本，等窗口收进托盘或最小化时静默安装、自动重启，不需要手动操作；可在「设置 → 关于」里改成「只提醒」或手动检查。便携版不支持自动更新，请到 Releases 下载新版本。
+The installed edition checks and downloads updates in the background, then silently installs and restarts when the window is minimized or returned to the tray. Settings → About offers notification-only mode and manual checks. Portable users download updates manually.
 
 > [!TIP]
-> 安装包没有代码签名，Windows SmartScreen 第一次运行时可能拦截，点「更多信息 → 仍要运行」即可。
+> Installers are unsigned. Windows SmartScreen may require More info → Run anyway on first launch.
 
-**前提**：本机至少用过一个支持的 CLI。要看官方额度，还需要在对应 CLI 里登录过官方账号。哪家凭据过期或没登录，那家就不显示，不影响其他几家。
+Use at least one supported CLI locally first. Official quotas require a corresponding official login; missing/expired credentials affect only that provider.
 
-## 🧠 工作原理
+## How it works
 
-<details open>
-<summary><b>用量从哪来</b></summary>
+### Usage sources
 
-<br>
+CLIs record usage after API calls. TokenPulse reads their session files incrementally by byte offset, avoiding repeated full reads of large logs.
 
-每家 CLI 在每次 API 请求后都会往自己的会话文件里写一条 usage。这是本机唯一一份「全都算上」的账。TokenPulse 按字节偏移增量读取这些文件，几百兆的会话文件也不会每次重读。
-
-| CLI | 会话文件 |
-|-----|----------|
-| Claude Code | `~/.claude/projects/<项目>/<会话>.jsonl` |
-| Codex CLI | `~/.codex/sessions/<日期>/rollout-*.jsonl` |
+| CLI | Session files |
+| --- | --- |
+| Claude Code | `~/.claude/projects/<project>/<session>.jsonl` |
+| Codex CLI | `~/.codex/sessions/<date>/rollout-*.jsonl` |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` |
-| DeepSeek Harness | `~/.dsh/sessions/<工作目录>/session-<id>/session.v4.jsonl.zstd` |
+| DeepSeek Harness | `~/.dsh/sessions/<workdir>/session-<id>/session.v4.jsonl.zstd` |
 
-去重、缓存 token 口径和「官方账号 / 中转站」归属判断都做了专门处理，细节见 [HANDOFF.md](HANDOFF.md) §4。
+Deduplication, cache token accounting, and official/relay attribution have dedicated handling; see §4 of [HANDOFF.md](HANDOFF.md).
 
-</details>
+### Forecasts
 
-<details open>
-<summary><b>预测怎么算</b></summary>
+Official APIs provide current used percentages rather than historical samples or token capacities. TokenPulse samples every minute by default, configurable from 1–10 minutes.
 
-<br>
+- Exhaustion estimates use weighted medians across recent sample spans: the last 24 hours for weekly windows and one hour for five-hour windows, falling back to a full-window average when needed. No recent consumption means no invented exhaustion time.
+- Recent 24-hour speed provides an earliest-possible estimate rather than a definitive conclusion.
+- Full-window capacity divides local tokens by quota used: 98 million tokens at 24% implies roughly 400 million for the week. Estimates are suppressed below 2% and show confidence.
+- Capacity converts percentages into remaining tokens/cost and projected usage at reset. Historical capacity charts exclude windows below 2% or without local usage; below 5% is flagged as less reliable.
+- Samples before automatic/manual resets are excluded. When a reset has passed without a fresh API query, the new window starts from zero rather than reusing old values.
 
-官方接口只给出**当前时刻**的已用百分比，既没有历史，也不说额度到底是多少 token。所以 TokenPulse 默认每 1 分钟采一次样（设置里可以改成 1 到 10 分钟），自己积累历史：
+Overview rings show the window with the least remaining quota, with projected usage at reset or time to exhaustion below.
 
-- **达到上限的时间以最近趋势为主**：在最近 24 小时（5 小时窗口取最近 1 小时）里，用多个采样跨度计算加权中位数，降低单次跳点的影响；近期跨度不足时才退回整窗平均。近期没有新增用量时不输出虚假的耗尽时间。
-- **最近 24 小时的速度**只用来提示「最快可能什么时候用完」，不当作结论。
-- **整窗容量折算**：比如这周用了 9800 万 token、官方显示已用 24%，折算下来整周大约 4 亿 token。已用不到 2% 时不给出这个数，已用越多越准，界面上会标出可信度。
-- **Token 与费用预测**：用整窗容量把百分比换成 Token 和费用——剩余还能用多少、按当前趋势到重置时会用多少。额度详情里还有「额度容量趋势」折线，看每个历史窗口折算出的总额度有没有变化；用得太少（< 2%）或本机没有用量的窗口不计入，已用不到 5% 的标为偏差较大。
-- **跨越重置**：到点重置或手动重置之前的样本不计入。如果已经过了重置时间、接口还没再查过，就按新窗口从 0 开始算，不会沿用上个窗口的数字。
+### Costs
 
-总览卡片上的圆环显示**剩余最少的那个窗口**，避免周额度充足时掩盖了 5 小时窗口快要用完；卡片底部直接给出「重置时预计已用多少」或「约多久后用完」。
+**Costs are estimates, not bills.** Grok-reported session costs are used directly. Claude/Codex tokens use public prices in `src/core/model-pricing.ts`; unknown prices are labeled Unpriced. Subscription accounting excludes API-key and relay sessions, with counts shown.
 
-</details>
+## Data and privacy
 
-<details>
-<summary><b>关于费用</b></summary>
+Data is stored locally under `~/.tokenpulse/`. TokenPulse's own network requests query official quotas and renew stored logins; query DeepSeek/configured relay balances; detect egress and optionally consult public IP databases; download model knowledge daily; and check updates. Routing and transparent forwarding send requests that the tools would already make.
 
-<br>
+Optional **tokens.ci upload**, disabled by default, runs `npx tokens-cli … submit` on your schedule. That tool determines its own scanned token/model/time payload, excluding conversation content; TokenPulse does not pass its ledger or read the tool's login credentials. `tokens-ci.json` stores settings, last run/result, and a short redacted output tail.
 
-**费用是估算，不是账单。** Grok 在会话文件里自报了花费，直接采用。Claude Code 和 Codex 的会话文件里只有 token，只能按公开单价估算（见 `src/core/model-pricing.ts`）。未识别定价的模型显示为「未定价」，不会被当作免费。
+| File | Contents | If deleted |
+| --- | --- | --- |
+| `usage-rollups.json` | Session scan offsets and totals | Rescan existing logs |
+| `quota-history.json` | Permanent official quota samples | Forecast history is lost; official APIs cannot restore it |
+| `cc-switch.json` | Read-only imported database cache | Reimport on next scan |
+| `cli-logins.json` | Account IDs/emails and login dates, without credentials | Future attribution continues; older records use earliest-known account inference |
+| `knowledge.json` | Downloaded model knowledge | Fall back to bundled data |
+| `requests/<year-month>.jsonl` | Request time, model, tokens, response ID, working directory; no body | Recover records whose CLI sessions still exist |
+| `official-accounts.json` | Registered accounts, selection, and separately added login credentials including refresh tokens | Fall back to current CLI accounts; separately added accounts need re-adding |
+| `prefs.json` | Startup, tray, and notification preferences | Restore defaults |
 
-额度监控只统计**走官方登录账号**的会话。用 API Key 或中转站跑的请求不占订阅额度，会被排除，界面上会写明排除了多少个会话。
+Usage analysis/export concerns metadata rather than conversation bodies; session management displays conversations separately. Normal CLI logins are read without copying. Switch to CLI saves the previous login in `official-accounts.json` for renewal, writes the chosen login to CLI credentials, and backs up the old file in `~/.tokenpulse/backups/cli-switch`. Separately added OAuth credentials are stored locally in `official-accounts.json`, used for account features, and renewed before expiry. Protect it like a password file. TokenPulse does not renew the CLI's own unmanaged login, avoiding unexpected logout. Startup integration uses `HKCU\...\Run\com.tokenpulse.app` and can be disabled.
 
-</details>
-
-## 🔒 数据与隐私
-
-所有数据都只保存在本机的 `~/.tokenpulse/`，**不会上传到任何地方**。TokenPulse 自己发出的网络请求只有这些：向各家官方接口查询额度和续期 TokenPulse 保存的登录、查 DeepSeek 和你填的第三方站点的余额、出口监控的检测（以及你没关掉时的公开 IP 数据库查询）、每天下载一次模型知识库、检查更新。本地路由和透明转发只是把工具本来就要发的请求转出去。
-
-例外是你自己打开的 **tokens.ci 自动上传**（默认关闭）：TokenPulse 只是按你设的间隔运行 tokens.ci 的官方工具（`npx tokens-cli … submit`），上传什么由那个工具自己扫描决定（Token 数、型号和时间，不含对话内容），TokenPulse 不把自己的账本交给它，也不读它的登录凭据。`tokens-ci.json` 只记设置、上一次的时间和结果、输出的最后一小段（令牌已遮掉）。
-
-| 文件 | 内容 | 删除后 |
-|------|------|--------|
-| `usage-rollups.json` | 每个会话文件的扫描进度和统计结果 | 从头重扫一遍，几秒钟，不丢数据 |
-| `quota-history.json` | 官方额度采样历史（永久保留） | 速度和预测要重新积累，**官方不提供历史，删了就找不回来** |
-| `cc-switch.json` | 从 CC Switch 库里读出来的副本（只读它的库，不改） | 下次扫描重新读 |
-| `cli-logins.json` | 各 CLI 登录过哪些账号、从什么时候开始（只有账号 id 和邮箱，不含凭据），用来把请求对到账号上 | 以后的请求照常对；之前的按最早的账号推断 |
-| `knowledge.json` | 从 GitHub 下载的新版模型知识库（单价、型号等价规则、思考等级规则） | 回到安装包内置的那份 |
-| `requests/<年-月>.jsonl` | 每一次请求的元数据（时间、型号、token、响应 ID、工作目录，不含正文） | 会话文件还在的部分下次扫描补回；CLI 已经清掉的会话就找不回来了 |
-| `official-accounts.json` | 登记过的官方账号、活动选择，以及在 TokenPulse 里添加的账号的凭据（含 refresh token） | 回到使用各 CLI 当前登录的账号；在 TokenPulse 里添加的账号需要重新添加 |
-| `prefs.json` | 开机自启、关窗收进托盘、提醒阈值 | 恢复默认设置 |
-
-明细只按「日期 + 工具 + 模型」聚合，不读取、展示或导出会话正文。官方 CLI 自己的登录平时只读取、不复制；只有你在设置里点「切到 CLI」时，CLI 原来那个账号的登录才收进 `official-accounts.json`（之后由 TokenPulse 续期），新账号的登录写进 CLI 的凭据文件，写之前把原文件备份到 `~/.tokenpulse/backups/cli-switch`；在设置里额外添加的 OAuth 账号，凭据（access token 和续期用的 refresh token）保存在本机 `~/.tokenpulse/official-accounts.json`，仅用于额度查询、不会上传，并在过期前自动续期；这个文件应按密码文件保护。CLI 自己的登录不会被 TokenPulse 续期，免得把 CLI 登出。唯一的系统级副作用是开机启动项（`HKCU\...\Run\com.tokenpulse.app`），可以在设置里关闭。
-
-## 🛠 开发
+## Development
 
 ```bash
 npm install
-npm run icons         # 生成 packaging/icon.png 和 tray.png
-npm run dist:portable # 只编译免安装版，供本机测试
-npm start             # 编译并启动
-npm test              # 额度、扫描、看板、官方账号、请求流水与型号核验、知识库 / CC Switch / 英文词典
-npm run test:ui       # Electron 界面测试：预测、筛选、主题、导出、布局与失败恢复
-npm run test:update   # 自动更新：本地假更新服务器上走完检查 → 下载 → 校验 → 静默安装触发
-npm run dist          # 重新生成图标并打包安装版与免安装版到 dist/（不会自动发布）
+npm run icons         # Generate packaging/icon.png and tray.png
+npm run dist:portable # Build portable edition for local testing
+npm start             # Compile and launch
+npm test              # Backend, scanning, accounts, requests, knowledge, and dictionaries
+npm run test:ui       # Electron UI, forecasts, filters, themes, export, layout, recovery
+npm run test:update   # Local fake server: check, download, verify, silent-install trigger
+npm run dist          # Generate icons and installer/portable packages; does not publish
 ```
 
-打开「设置 → 官方账号」即可添加多个官方账号。点击「添加账号」后，TokenPulse 调用对应的官方 CLI，在你的**默认浏览器**里打开官方授权页（浏览器里已登录的账号可以直接确认）；登录写进一个隔离的临时目录，不会动 CLI 自己的登录。**所有账号的额度都会查询**，首页和额度详情里一个账号一张卡片；在设置里可以拖动调整顺序、给账号起名字、删除不要的账号（CLI 还登录着的账号只能隐藏，随时可以恢复），在 TokenPulse 里登录过的账号还能一键「切到 CLI」。
+Settings → Official accounts supports multiple accounts. Add account launches the official CLI's authorization page in your default browser with an isolated temporary login directory, preserving the CLI's existing login. All registered accounts are queried and displayed individually. Reorder, rename, remove added accounts, hide/restore current CLI accounts, and switch registered accounts into the CLI.
 
-TypeScript 编译到 `build/`，安装包输出到 `dist/`。开发模式下**不会写入开机启动项**，只有打包版才会真正设置自启。
+TypeScript outputs to `build/`; packages go to `dist/`. Development mode does not write startup registration.
 
-<details>
-<summary><b>项目结构</b></summary>
+### Structure
 
-```
-src/core/            纯逻辑，不依赖 Electron，可以单独 require 测试
-  usage-scan.ts      增量扫描会话文件 → 按天 / 按小时的账
-  quota.ts           查询三家官方额度接口
-  quota-history.ts   额度采样历史
-  quota-monitor.ts   速度、预测、健康度（纯函数）
-  model-pricing.ts   模型单价表
-  report.ts          汇总成界面使用的快照
-  request-log.ts     每一次请求的流水（按月追加、去重、查询）
-  request-verify.ts  型号核验规则（纯函数）
-  cc-switch.ts       只读导入 CC Switch 的用量（node:sqlite）
-  knowledge.ts       模型知识库：单价、型号等价规则、思考等级规则（knowledge/models.json，每天在线更新）
-  report-worker.ts   在后台线程执行扫描与汇总
-src/main/            Electron 主进程：托盘、定时器、IPC、通知
-renderer/            界面：原生 JS、无构建步骤，图表为手写内联 SVG
-  data.js            日期筛选、聚合、对比与 CSV 编码（浏览器 / Node 共用）
-  brand.js           官方品牌图标（Claude / OpenAI / Grok）的 SVG 路径
-scripts/             测试、截图与图标生成
-```
-
-`scripts/capture-ui.cjs` 生成 README 的截图到 `artifacts/ui/`（`npx electron scripts/capture-ui.cjs`）：**不读本机的任何真实数据**——数据目录和用户主目录都指向新建的临时目录，界面切到软件自带的演示数据（虚构账号，和新手引导同一份），出口监控用文档专用地址段的示意数据，供应商页用存在临时目录里的几家虚构供应商，也不向官方查额度。每张图截完会检查页面上有没有邮箱、本机用户名或主目录路径，有就停下、不写文件。
-
-</details>
-
-<details>
-<summary><b>打包卡在 winCodeSign？</b></summary>
-
-<br>
-
-Windows 上第一次打包可能报：
-
-```
-ERROR: Cannot create symbolic link : 客户端没有所需的特权
-  ...\Cache\winCodeSign\<随机数>\darwin\10.12\lib\libcrypto.dylib
+```text
+src/core/            Electron-independent logic
+  usage-scan.ts      Incremental daily/hourly session accounting
+  quota.ts           Official quota APIs
+  quota-history.ts   Quota samples
+  quota-monitor.ts   Rate, forecasts, health
+  model-pricing.ts   Model prices
+  report.ts          UI snapshots
+  request-log.ts     Monthly request append/deduplication/query
+  request-verify.ts  Model verification rules
+  cc-switch.ts       Read-only CC Switch import via node:sqlite
+  knowledge.ts       Daily-updated model knowledge
+  report-worker.ts   Background scanning and aggregation
+src/main/            Electron tray, timers, IPC, notifications
+renderer/            Vanilla JavaScript and inline SVG charts
+  data.js            Shared date/filter/aggregate/CSV utilities
+  brand.js           Official brand SVG paths
+scripts/             Tests, screenshots, icon generation
 ```
 
-electron-builder 下载的 winCodeSign 压缩包里带了 macOS 符号链接，Windows 没开「开发者模式」时建不了，整个解压就会失败。项目不做签名，只需要其中的 `rcedit`。手动解压一次、跳过 macOS 部分即可：
+`npx electron scripts/capture-ui.cjs` writes README screenshots to `artifacts/ui/`. It isolates the data directory and home directory in temporary locations, uses built-in fictional tour accounts and providers, documentation egress addresses, and no official quota calls. Each capture checks for emails, the local username, and home paths; a match aborts saving.
+
+### winCodeSign packaging issue
+
+On first Windows packaging, winCodeSign extraction may fail with `Cannot create symbolic link: A required privilege is not held by the client`, referring to `...\Cache\winCodeSign\<id>\darwin\10.12\lib\libcrypto.dylib`.
+
+The archive includes macOS symlinks that Windows cannot create without Developer Mode. This unsigned project only needs `rcedit`; extract once while excluding macOS files:
 
 ```bash
 CACHE="$LOCALAPPDATA/electron-builder/Cache/winCodeSign"
-# 先跑一次 npm run dist，让它把 .7z 下载下来（解压会失败，没关系）
+# First run npm run dist to download the .7z; extraction may fail.
 SRC=$(ls -S "$CACHE"/*.7z | head -1)
 node_modules/7zip-bin/win/x64/7za.exe x -bd "$SRC" -o"$CACHE/winCodeSign-2.6.0" '-x!darwin*'
 rm -f "$CACHE"/*.7z
 ```
 
-目录名必须正好是 `winCodeSign-2.6.0`。版本号可以用下面的命令查：
+Use the exact directory `winCodeSign-2.6.0`. Check the artifact version with:
 
 ```bash
 node_modules/app-builder-bin/win/x64/app-builder.exe download-artifact --name winCodeSign
 ```
 
-</details>
-
 ### pi
 
-- 会话读取 `~/.pi/agent/sessions`；可用官方环境变量 `PI_CODING_AGENT_DIR` 指定目录。
-- 供应商页支持 OpenAI Chat、OpenAI Responses、Anthropic 直连，也可使用本地路由。切换前提供配置差异预览并备份，保留 `auth.json` 和其他供应商。
-- 切换更新新会话的默认供应商和模型；已打开或恢复的会话请在 pi 中用 `/model` 选择模型；项目级 `.pi/settings.json` 也可覆盖全局默认值。切回「pi 原有配置」可恢复接管前的默认选择。
-- pi 会话可查看、搜索并在终端继续；应用内回复和删除暂未提供。本版未增加 pi 的用量扫描或官方额度查询。
+- Sessions are read from `~/.pi/agent/sessions`, overridable with `PI_CODING_AGENT_DIR`.
+- Providers support direct OpenAI Chat, OpenAI Responses, and Anthropic, or local routing. Diff previews and backups precede changes; `auth.json` and other providers are preserved.
+- Switching changes the default provider/model for new sessions. Existing/resumed sessions need `/model`; project `.pi/settings.json` may override global defaults. Restore pi original configuration to recover the previous selection.
+- View, search, and resume pi sessions in a terminal. In-app replies/deletion, pi usage scanning, and official quota queries are not included in this release.
 
-<div align="center">
-<br>
-<sub>Made with ☕ for people who live in the terminal.</sub>
-</div>
+<div align="center"><br><sub>Made with ☕ for people who live in the terminal.</sub></div>
