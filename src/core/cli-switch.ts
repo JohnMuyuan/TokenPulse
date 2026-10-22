@@ -3,7 +3,7 @@ import path from "path";
 import os from "os";
 import { recordCliLogins } from "./login-timeline";
 import { accountIdOf, readOfficialAccountStore, renewStoredCredentials, writeOfficialAccountStore, type StoredOfficialAccount } from "./accounts";
-import { authFile, cliDir, isExpired, readCliAccounts, type OfficialAccountKind, type OfficialCredential } from "./credentials";
+import { authFile, claudeProfileFile, isExpired, readCliAccounts, type OfficialAccountKind, type OfficialCredential } from "./credentials";
 import { dataDir } from "./paths";
 import { refreshCredential } from "./token-refresh";
 
@@ -31,11 +31,6 @@ export function writeAtomic(file: string, text: string) {
 }
 const without = (obj: Record<string, unknown> | undefined, keys: string[]) => Object.fromEntries(Object.entries(obj || {}).filter(([key]) => !keys.includes(key)));
 
-/** Claude 的 .claude.json：设了 CLAUDE_CONFIG_DIR 时在那个目录里，否则在 home 下（和 credentials.ts 读的顺序一样）。 */
-function claudeProfileFile(home: string) {
-  const inDir = path.join(cliDir("claude", home), ".claude.json");
-  return fs.existsSync(inDir) ? inDir : path.join(home, ".claude.json");
-}
 function grokRow(home: string) {
   const parsed = readJsonFile(authFile("grok", home));
   if (!parsed || typeof parsed !== "object") return undefined;

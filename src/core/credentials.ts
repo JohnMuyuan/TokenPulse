@@ -54,6 +54,16 @@ export function cliDir(kind: OfficialAccountKind, home = os.homedir()) {
   return (own && process.env.GROK_HOME) || path.join(home, ".grok");
 }
 
+/**
+ * Claude Code 的 .claude.json（账号资料 oauthAccount 在这里）：设了 CLAUDE_CONFIG_DIR 时在那个目录里，否则**只认** ~/.claude.json。
+ * 0.3.60：以前只要 ~/.claude/.claude.json 存在就优先用它，可没设 CLAUDE_CONFIG_DIR 时 Claude Code 根本不读那个文件
+ * （本机实测有一份别的工具留下的）。结果切换账号把资料写错地方，Claude Code 继续报旧邮箱，用量被归到上一个账号。
+ */
+export function claudeProfileFile(home = os.homedir()) {
+  const configDir = home === os.homedir() ? process.env.CLAUDE_CONFIG_DIR : undefined;
+  return path.join(configDir || home, ".claude.json");
+}
+
 export function authFile(kind: OfficialAccountKind, home = os.homedir()) {
   const dir = cliDir(kind, home);
   if (kind === "claude") return path.join(dir, ".credentials.json");
@@ -99,10 +109,7 @@ function claudeAccounts(home: string): CliAccount[] {
   const oauth = readJsonFile(authFile("claude", home))?.claudeAiOauth;
   const token = str(oauth?.accessToken);
   if (!token) return [];
-  // 默认在 ~/.claude.json；设了 CLAUDE_CONFIG_DIR 时在那个目录里。
-  const profile =
-    readJsonFile(path.join(cliDir("claude", home), ".claude.json"))?.oauthAccount ??
-    readJsonFile(path.join(home, ".claude.json"))?.oauthAccount;
+  const profile = readJsonFile(claudeProfileFile(home))?.oauthAccount;
   const email = str(profile?.emailAddress);
   const ref = str(profile?.accountUuid) || tokenRef(str(oauth?.refreshToken) || token);
   const expiresAt = typeof oauth?.expiresAt === "number" ? oauth.expiresAt : undefined;

@@ -314,6 +314,9 @@
     "会话管理新增 pi：查看对话和工具记录、全文搜索，并在终端继续会话。": "Sessions now supports pi: read conversations and tool calls, search their text, and continue in the terminal.",
     "一键切换 pi 供应商": "Switch pi providers",
     "供应商页新增 pi，支持三种接口直连和本地路由；保留其他配置，可切回原有默认供应商。": "Providers now supports pi with three native APIs and local routing. Other settings are preserved, and you can restore the original defaults.",
+    // 0.3.60 更新说明
+    "切换 Claude 账号后，用量记到新账号": "Usage follows the Claude account you switch to",
+    "设置里一键切换 Claude CLI 登录时，账号资料以前可能写进 Claude Code 不读的文件，新会话仍报旧账号，用量被记到上一个号。现在按 Claude Code 实际使用的位置读写。": "Switching the Claude CLI login could write the account profile to a file Claude Code never reads, so new sessions kept reporting the old account and usage was booked to it. TokenPulse now reads and writes the file Claude Code actually uses.",
     // 0.3.59 更新说明
     "「达到上限」提示不再那么敏感": "Less twitchy \"limit ahead\" warnings",
     "按趋势只是提前一点点用完的，进度条保持绿色，只用文字说明还差多少；只有重置前会断档较长时间才变黄。": "If the trend only runs out a little before the reset, the bar stays green and the gap is explained in text; it turns amber only when you would be without quota for a good while before the reset.",

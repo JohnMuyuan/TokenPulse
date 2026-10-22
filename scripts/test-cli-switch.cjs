@@ -33,6 +33,10 @@ const acct = (kind, ref, email, credential, extra = {}) => ({ id: `${kind}:${ref
     const claudeCreds = path.join(home, '.claude', '.credentials.json'), claudeJson = path.join(home, '.claude.json');
     write(claudeCreds, { claudeAiOauth: { accessToken: 'at-a', refreshToken: 'rt-a', expiresAt: later, scopes: ['user:inference'], subscriptionType: 'pro' } });
     write(claudeJson, { numStartups: 7, projects: { x: 1 }, oauthAccount: { accountUuid: 'uuid-a', emailAddress: 'a@example.com', organizationUuid: 'org-a' } });
+    // 别的工具留下的 ~/.claude/.claude.json：没设 CLAUDE_CONFIG_DIR 时 Claude Code 不读它，TokenPulse 也不能读写它
+    const strayJson = path.join(home, '.claude', '.claude.json');
+    write(strayJson, { userID: 'stray', oauthAccount: { accountUuid: 'uuid-stray', emailAddress: 'stray@example.com' } });
+    assert.equal(readCliAccounts('claude', home)[0].ref, 'uuid-a', '身份按 ~/.claude.json 认');
     // Codex：CLI 现在是 C；D 只有 TokenPulse 的登录和记下的 id_token
     write(path.join(home, '.codex', 'auth.json'), { auth_mode: 'chatgpt', OPENAI_API_KEY: null, tokens: { id_token: jwt({ email: 'c@example.com', 'https://api.openai.com/auth': { chatgpt_user_id: 'user-c', chatgpt_account_id: 'ws' } }), access_token: jwt({ exp: later / 1000 }), refresh_token: 'rt-c', account_id: 'ws' }, last_refresh: 'old' });
     const dId = jwt({ email: 'd@example.com', 'https://api.openai.com/auth': { chatgpt_user_id: 'user-d', chatgpt_account_id: 'ws' } });
@@ -59,6 +63,7 @@ const acct = (kind, ref, email, credential, extra = {}) => ({ id: `${kind}:${ref
     assert.equal(a.credential.refreshToken, 'rt-a', '换下来的账号收下 CLI 最新的凭据');
     assert.equal(a.cliAuth.account.organizationUuid, 'org-a');
     assert.equal(readCliAccounts('claude', home)[0].ref, 'uuid-b');
+    assert.equal(read(strayJson).oauthAccount.accountUuid, 'uuid-stray', '不写 Claude Code 不读的文件');
     assert.ok(fs.readdirSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'backups', 'cli-switch')).length >= 1, '有备份');
     pass('Claude: token and profile of the chosen account written, other .claude.json content kept, outgoing account kept by TokenPulse, incoming one handed to the CLI');
 
