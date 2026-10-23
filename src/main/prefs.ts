@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import { dataFile, readJson, writeJson } from "../core/paths";
 import { PRESSURE_DEFAULTS, type PressureLevel } from "../core/quota-pressure";
+import { DESK_PET_DEFAULTS, type DeskPetPrefs } from "../core/desk-pet-model";
 
-export type Prefs = {
+/** 桌宠的设置（0.3.61）见 core/desk-pet-model.ts 的 DeskPetPrefs。 */
+export type Prefs = DeskPetPrefs & {
   /** 开机自启。默认开 —— 这个工具的意义就是「电脑开着就一直记」。 */
   autoLaunch: boolean;
   /** 关窗口时收进托盘而不是退出。 */
@@ -59,7 +61,7 @@ export function quotaEverySeconds(value: unknown): number {
   return minutes * 60;
 }
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, cliAutoSwitch: {}, pressureWeek: PRESSURE_DEFAULTS.week, pressureFive: PRESSURE_DEFAULTS.five };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, cliAutoSwitch: {}, pressureWeek: PRESSURE_DEFAULTS.week, pressureFive: PRESSURE_DEFAULTS.five, ...DESK_PET_DEFAULTS };
 
 function file() {
   return dataFile("prefs.json");

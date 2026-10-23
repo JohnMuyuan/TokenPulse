@@ -10,6 +10,9 @@ import { copyShareCard, renderShareCard, saveShareCard, shareMilestones, shareMo
 import { maybeWeeklySummary } from "../core/weekly-summary";
 import { lastProbes, runProbe } from "./codex-state-probe";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
+import { deskPetBubbleAction, deskPetBubbleData, deskPetClick, deskPetDrag, deskPetHit, deskPetMenu, deskPetReady, deskPetSnapshotChanged, deskPetView, deskPetWindows, destroyDeskPet, resetDeskPetPosition, resizeDeskPetBubble, setupDeskPet, syncDeskPet } from "./desk-pet";
+import { accountKey, normalizeDeskPet } from "../core/desk-pet-model";
+import { importPetPack, listPetPacks, petPackImages, removePetPack } from "../core/pet-pack";
 import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
@@ -168,6 +171,8 @@ function createWindow() {
   });
   next.on("closed", () => {
     if (win === next) win = null;
+    // 「关窗口就退出」：桌宠窗口还开着的话，window-all-closed 不会来，软件就退不掉
+    if (!quitting && !readPrefs().closeToTray) destroyDeskPet();
   });
   // 用户不在看窗口了：下载好的更新趁这个时候静默装上（见 updater.ts）。
   next.on("hide", onWindowAway);
@@ -609,6 +614,7 @@ function publishSnapshot(snapshot: Snapshot): Snapshot {
   }
   updateTrayTip(snapshot);
   pushTrayPanel();
+  deskPetSnapshotChanged();
   // 窗口收着的时候不往界面推（推了它就要把整页重画一遍，没人看）；再打开时补上最新的
   if (windowAway) snapshotHeld = true;
   else win?.webContents.send("snapshot", snapshot);
@@ -785,8 +791,12 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
     const raw = patch.cliAutoSwitch && typeof patch.cliAutoSwitch === "object" ? patch.cliAutoSwitch as Record<string, unknown> : {};
     patch = { ...patch, cliAutoSwitch: Object.fromEntries((["claude", "chatgpt", "grok"] as const).filter((kind) => kind in raw).map((kind) => [kind, normalizeRule(raw[kind])])) };
   }
+  const petKeys = Object.keys(patch).filter((key) => key.startsWith("deskPet"));
+  if (petKeys.length) patch = { ...patch, ...normalizeDeskPet(patch as Record<string, unknown>) };
   const previousEvery = readPrefs().quotaEverySeconds;
   const next = writePrefs(patch);
+  // 桌宠：开关、大小、透明度、换宠物都要落到窗口上；设置页开着的话也要知道（比如在宠物的右键菜单里点了隐藏）
+  if (petKeys.length || "theme" in patch) { syncDeskPet(); win?.webContents.send("desk-pet-changed"); }
   // 保存之后才改定时器。这一轮不额外查，下一轮按新间隔走。
   if (next.quotaEverySeconds !== previousEvery) scheduleQuotaChecks();
   // 容量怎么折算变了：不重新查额度，只按新的口径重算一遍快照
@@ -964,6 +974,18 @@ if (!app.requestSingleInstanceLock()) {
     relaunchHidden = consumeRelaunchHidden();
     initTray();
     createWindow();
+    // 桌宠（0.3.61）：默认关；开着时建宠物窗口、开始看会话状态
+    setupDeskPet({
+      preload: path.join(__dirname, "preload.js"),
+      prefs: () => readPrefs(),
+      savePos: (pos) => { writePrefs({ deskPetPos: pos }); },
+      hide: () => applyPrefs({ deskPet: false }),
+      snapshot: () => lastSnapshot,
+      title: accountTitle,
+      openMain: (target) => { revealWindow(); if (target) win?.webContents.send("open-page", target); },
+      openSettings: () => { revealWindow(); win?.webContents.send("open-page", { page: "pet" }); },
+      refresh: () => backgroundRefresh(true, true),
+    });
     initUpdater({ window: () => win, autoUpdate: readPrefs().autoUpdate });
     // 知识库更新了（新型号的单价）：重算一遍，界面上的费用跟着变
     scheduleKnowledgeChecks(() => backgroundRefresh(false));
@@ -1068,7 +1090,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("theme", (_event, theme: unknown) => {
       if (theme !== "light" && theme !== "dark") return;
       win?.setBackgroundColor(BACKGROUND[theme]);
-      if (readPrefs().theme !== theme) writePrefs({ theme });
+      if (readPrefs().theme !== theme) { writePrefs({ theme }); syncDeskPet(); }
     });
     ipcMain.handle("open-data-dir", () => shell.openPath(dataDir()));
     ipcMain.handle("window:minimize", () => win?.minimize());
@@ -1101,6 +1123,32 @@ if (!app.requestSingleInstanceLock()) {
       else if (action === "quit") { quitting = true; app.quit(); }
       else if (action === "close") hideTrayPanel();
     });
+    // 桌宠（0.3.61）：宠物窗口、点开的卡片、「桌宠」设置页
+    ipcMain.handle("desk-pet:ready", () => deskPetReady());
+    ipcMain.on("desk-pet:hit", (_event, on: unknown) => deskPetHit(on === true));
+    ipcMain.on("desk-pet:drag", (_event, phase: unknown) => { if (phase === "start" || phase === "end") deskPetDrag(phase); });
+    ipcMain.on("desk-pet:click", () => deskPetClick());
+    ipcMain.on("desk-pet:menu", () => deskPetMenu());
+    ipcMain.handle("desk-pet:bubble-data", () => deskPetBubbleData());
+    ipcMain.on("desk-pet:bubble-size", (_event, width: unknown, height: unknown) => resizeDeskPetBubble(Number(width), Number(height)));
+    ipcMain.on("desk-pet:bubble-action", (_event, action: unknown, value: unknown) => deskPetBubbleAction(action, value));
+    ipcMain.handle("desk-pet:status", () => ({ on: readPrefs().deskPet, view: deskPetView(), shown: !!deskPetWindows().pet }));
+    ipcMain.handle("desk-pet:accounts", () => (lastSnapshot?.accounts ?? []).filter((account) => account.five || account.week).map((account) => ({ id: accountKey(account), name: accountTitle(account) })));
+    ipcMain.handle("desk-pet:packs", () => listPetPacks());
+    ipcMain.handle("desk-pet:pack-images", (_event, id: unknown) => petPackImages(id));
+    ipcMain.handle("desk-pet:remove-pack", (_event, id: unknown) => {
+      const removed = removePetPack(id);
+      if (removed && readPrefs().deskPetKind === id) applyPrefs({ deskPetKind: "squirrel" });
+      return listPetPacks();
+    });
+    ipcMain.handle("desk-pet:import-pack", async () => {
+      const options = { title: tr("选择宠物文件夹（里面有 pet.json）"), properties: ["openDirectory" as const] };
+      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
+      try { return { ok: true as const, pack: importPetPack(picked.filePaths[0]), packs: listPetPacks() }; }
+      catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "导入失败" }; }
+    });
+    ipcMain.handle("desk-pet:reset-position", () => { resetDeskPetPosition(); return true; });
     ipcMain.handle("knowledge:state", () => knowledgeState());
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
@@ -1303,6 +1351,7 @@ if (!app.requestSingleInstanceLock()) {
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
     destroyTrayPanel();
+    destroyDeskPet();
     if (agentQuitReady) { quitting = true; concurrencyService.stop(); exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;

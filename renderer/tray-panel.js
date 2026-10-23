@@ -136,12 +136,17 @@
     $('tp-refresh').classList.remove('spin');
     // 内容高度告诉主进程，窗口跟着调。直接量（会触发一次排版），不等下一帧：窗口被挡住时下一帧可能迟迟不来
     api.trayPanelSize(Math.ceil($('tp').getBoundingClientRect().height));
+    // 英文界面里 i18n.js 的 MutationObserver 会在这之后把文字换掉，换行可能变多：排在它后面再量一次
+    // （不能只靠 ResizeObserver：窗口被挡住或在屏幕外时浏览器不排版，它不会触发）
+    queueMicrotask(() => api.trayPanelSize(Math.ceil($('tp').getBoundingClientRect().height)));
   }
 
   $('tp-open').addEventListener('click', () => api.trayPanelAction('open'));
   $('tp-quit').addEventListener('click', () => api.trayPanelAction('quit'));
   $('tp-refresh').addEventListener('click', () => { $('tp-refresh').classList.add('spin'); api.trayPanelAction('refresh'); setTimeout(() => $('tp-refresh').classList.remove('spin'), 8000); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') api.trayPanelAction('close'); });
+  // 内容高度画完之后还会变（英文界面里 i18n.js 把文字换掉、换行变多）：变了就再告诉主进程一次
+  new ResizeObserver(() => api.trayPanelSize(Math.ceil($('tp').getBoundingClientRect().height))).observe($('tp'));
   api.onTrayPanel(draw);
   api.trayPanelData().then(draw).catch(() => undefined);
   // 开着的时候「几分钟后重置」会过时：每半分钟按当前时间重画一次

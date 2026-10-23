@@ -1,0 +1,51 @@
+/* 桌宠窗口：透明底，宠物贴着窗口底边居中，上面留一条放悬停提示。不加载 app.css（这个窗口一直开着，越轻越好）。 */
+:root {
+  --dp-surface: #ffffff;
+  --dp-text: #14171c;
+  --dp-muted: #697281;
+  --dp-line: #e6e8ed;
+  --dp-accent: #14855f;
+  --dp-warn: #b66d0d;
+  --dp-danger: #cf3f36;
+  --dp-shadow: 0 4px 14px -4px #11182740;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+}
+:root[data-theme="dark"] {
+  --dp-surface: #1c2027;
+  --dp-text: #eceef2;
+  --dp-muted: #8d95a3;
+  --dp-line: #2f353f;
+  --dp-accent: #3fcf8e;
+  --dp-warn: #e8b04f;
+  --dp-danger: #f2766c;
+  --dp-shadow: 0 6px 18px -6px #000c;
+}
+[hidden] { display: none !important; }
+html.dp-html, body.dp-body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; -webkit-user-select: none; user-select: none; }
+body.dp-body { position: relative; }
+.dp-stage { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); }
+.dp-stage canvas, .dp-stage img { display: block; image-rendering: pixelated; }
+.dp-stage img { object-fit: contain; object-position: 50% 100%; image-rendering: auto; }
+body.hover .dp-stage { cursor: grab; }
+body.dragging .dp-stage { cursor: grabbing; }
+
+.dp-hint {
+  position: absolute; left: 50%; bottom: 120px; max-width: calc(100% - 8px); box-sizing: border-box;
+  overflow: hidden; padding: 3px 10px; border: 1px solid var(--dp-line); border-radius: 8px;
+  background: var(--dp-surface); color: var(--dp-text); box-shadow: var(--dp-shadow);
+  font-size: 12px; line-height: 1.5; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums;
+  opacity: 0; transform: translate(-50%, 4px); transition: opacity .15s, transform .15s; pointer-events: none;
+}
+body.hover .dp-hint { opacity: 1; transform: translate(-50%, 0); }
+body.dragging .dp-hint, body.talking .dp-hint { opacity: 0; }
+
+/* 自定义宠物画不出额度：右下角一个小标签写剩余和任务数 */
+.dp-badge {
+  position: absolute; right: -4px; bottom: 2px; padding: 0 6px; border: 1px solid var(--dp-line); border-radius: 999px;
+  background: var(--dp-surface); color: var(--dp-accent); font-size: 11px; font-weight: 650; line-height: 17px;
+  box-shadow: var(--dp-shadow); font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.dp-badge.tight { color: var(--dp-warn); }
+.dp-badge.empty { color: var(--dp-danger); }
+
+@media (prefers-reduced-motion: reduce) { .dp-hint { transition: none; } }

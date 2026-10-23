@@ -123,6 +123,10 @@ Open Egress monitoring, run Check now, enter allowed IPs or add the current IP, 
 
 Track active AI requests, client connections, and upstream connections, with per-interval peak history and provider/account breakdowns. Set provider limits to notify or reject new requests with 429 for tool retries. History retention is configurable; gaps mean monitoring or the application was inactive. Only local routing, pools, and transparent forwarding are visible; direct tool connections are outside this monitor.
 
+## Desk pet
+
+Off by default; turn it on from the Desk pet page. A small pixel squirrel, hamster, or octopus sits on your desktop and shows the remaining quota of the official account you're using (acorn pile, cheeks, or body color) and whether Claude Code or Codex is running a task on this computer. Click it and a pixel speech bubble shows that account's 5-hour and weekly quota; drag it anywhere, or right-click to see running tasks and more. Task status is inferred read-only from local session files; no tool configuration is changed. You can also import your own pet: a folder with `pet.json` and PNG, GIF, WebP, or JPEG images per state.
+
 ## Features
 
 ### Local usage

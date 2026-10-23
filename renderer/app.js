@@ -2347,8 +2347,8 @@ const overviewRange = { days: 30, from: '', to: '', follow: false };
  * 只记在这台电脑上（localStorage），不影响监控和通知。
  */
 const LAYOUT_KEY = 'tokenpulse-layout';
-const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers', 'health'];
-const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', concurrency: '并发监控', sessions: '会话管理', providers: '供应商', health: '体检' };
+const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers', 'health', 'pet'];
+const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', concurrency: '并发监控', sessions: '会话管理', providers: '供应商', health: '体检', pet: '桌宠' };
 /** [key, 名字, 区域]。区域只给布局面板分组；数组顺序就是默认顺序。 */
 const LAYOUT = [
   ['overview:quota:claude', 'Claude', '官方额度'], ['overview:quota:chatgpt', 'ChatGPT', '官方额度'], ['overview:quota:grok', 'Grok', '官方额度'],
@@ -2782,7 +2782,8 @@ function navigate(page, options = {}) {
   state.page = page;
   if (page !== 'concurrency') window.PulseConcurrency?.hide();
   if (page !== 'providers') window.PulseProviders?.hide();
-  const labels = { health: ['体检', '一键检查哪里不对', '工具配置、本地路由、官方账号续期、网络和出口、数据目录，集中检查一遍，并告诉你去哪里处理。体检只读，不改任何配置。'], concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
+  if (page !== 'pet') window.PulseDeskPet?.hide();
+  const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '工具配置、本地路由、官方账号续期、网络和出口、数据目录，集中检查一遍，并告诉你去哪里处理。体检只读，不改任何配置。'], concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
@@ -2794,6 +2795,7 @@ function navigate(page, options = {}) {
   if (current) render(current);
   // 体检（0.3.55）不依赖快照：第一次打开、或者上次体检超过 5 分钟就重新查一遍
   if (page === 'health') window.PulseHealth?.show();
+  if (page === 'pet') window.PulseDeskPet?.show();
   applyLayout();
   syncSegs();
   scroller.scrollTo({ top: 0, behavior: 'instant' });

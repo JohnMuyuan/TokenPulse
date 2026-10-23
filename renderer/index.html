@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="pool-quota.css">
 <link rel="stylesheet" href="intro.css">
 <link rel="stylesheet" href="share.css">
+<link rel="stylesheet" href="desk-pet-settings.css">
 </head>
 <body>
 
@@ -68,6 +69,7 @@
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 4v16M4 12h16"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19 7"/></symbol>
     <symbol id="i-health" viewBox="0 0 24 24"><path d="M20 12.2 12 20l-8-7.8A4.9 4.9 0 0 1 12 6a4.9 4.9 0 0 1 8 6.2Z"/><path d="M3 12h4.5l1.5-2.8 3 5.6 1.5-2.8H21"/></symbol>
+  <symbol id="i-pet" viewBox="0 0 24 24"><path d="M12 13.5c-3 0-5.5 2.6-5.5 4.6 0 1.4 1 2.2 2.4 2.2 1.2 0 2-.6 3.1-.6s1.9.6 3.1.6c1.4 0 2.4-.8 2.4-2.2 0-2-2.5-4.6-5.5-4.6Z"/><circle cx="6" cy="10.5" r="1.8"/><circle cx="9.6" cy="6.4" r="1.9"/><circle cx="14.4" cy="6.4" r="1.9"/><circle cx="18" cy="10.5" r="1.8"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-sidebar-collapse" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18m7-12-3 3 3 3"/></symbol>
   <symbol id="i-sidebar-expand" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18m4-12 3 3-3 3"/></symbol>
@@ -118,6 +120,7 @@
     <div class="nav-slot"><button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="health" title="体检"><svg class="icon"><use href="#i-health"/></svg><span class="nav-label">体检</span><span id="nav-health-alert" class="nav-alert" hidden></span></button></div>
+    <div class="nav-slot"><button class="nav-item" data-page="pet" title="桌宠"><svg class="icon"><use href="#i-pet"/></svg><span class="nav-label">桌宠</span></button></div>
   </nav>
 
   <div class="sidebar-bottom">
@@ -379,6 +382,7 @@
     <section id="page-sessions" class="page" hidden></section>
     <section id="page-concurrency" class="page" hidden></section>
     <section id="page-health" class="page" hidden></section>
+    <section id="page-pet" class="page" hidden></section>
     <section id="page-providers" class="page" hidden></section>
 
     <footer>
@@ -525,5 +529,7 @@
 <script src="pool-quota.js"></script>
 <script src="intro.js"></script>
 <script src="share.js"></script>
+<script src="pet-engine.js"></script>
+<script src="desk-pet-settings.js"></script>
 </body>
 </html>

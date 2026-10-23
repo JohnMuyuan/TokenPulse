@@ -1,0 +1,100 @@
+/*
+ * 桌宠的对话气泡（desk-pet-bubble.html）。像素风：2 像素的描边在四个角各缺一格，右下角一道阶梯投影，尾巴用像素块拼（在 SVG 里画）。
+ * 窗口透明；气泡四周留 6 像素（BUBBLE_EDGE）给描边和投影，尾巴那一边再留 12 像素（BUBBLE_TAIL），和 core/desk-pet-model.ts 对得上。
+ */
+:root {
+  --bb-paper: #fffbf2;
+  --bb-bevel: #efe4cf;
+  --bb-ink: #2b211b;
+  --bb-shade: #2b211b38;
+  --bb-text: #2b211b;
+  --bb-muted: #7b6d62;
+  --bb-hover: #f3e9d6;
+  --bb-off: #e6dccb;
+  --bb-ok: #3aa864;
+  --bb-warn: #e09a2b;
+  --bb-danger: #df4f45;
+  --bb-claude: #d97757;
+  --bb-chatgpt: #10a37f;
+  --bb-grok: #6f7782;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+}
+:root[data-theme="dark"] {
+  --bb-paper: #2a2d34;
+  --bb-bevel: #22252b;
+  --bb-ink: #0c0d10;
+  --bb-shade: #00000066;
+  --bb-text: #eeeae3;
+  --bb-muted: #a59d93;
+  --bb-hover: #353943;
+  --bb-off: #41454e;
+  --bb-ok: #4fc97f;
+  --bb-warn: #efb24f;
+  --bb-danger: #f2766c;
+}
+[hidden] { display: none !important; }
+html.bb-html, body.bb-body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; -webkit-user-select: none; user-select: none; }
+body.bb-body { position: relative; color: var(--bb-text); font-size: 12px; line-height: 1.45; }
+
+.bb {
+  position: absolute; left: 6px; top: 6px; box-sizing: border-box; width: 236px; padding: 9px 11px 10px;
+  background: var(--bb-paper);
+  box-shadow: 0 -2px 0 0 var(--bb-ink), 0 2px 0 0 var(--bb-ink), -2px 0 0 0 var(--bb-ink), 2px 0 0 0 var(--bb-ink),
+    2px 4px 0 0 var(--bb-shade), 4px 2px 0 0 var(--bb-shade), inset -2px -2px 0 0 var(--bb-bevel);
+  outline: none;
+}
+.bb.tasks { width: 312px; }
+.bb.pop { animation: bb-pop .16s steps(3, end); }
+@keyframes bb-pop { from { transform: scale(.82); opacity: .4; } to { transform: none; opacity: 1; } }
+
+.bb-tail { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; shape-rendering: crispEdges; }
+.bb-tail .k { fill: var(--bb-ink); }
+.bb-tail .p { fill: var(--bb-paper); }
+
+/* 宠物说的话 */
+.bb-say { margin: 0 0 7px; font-size: 13px; font-weight: 700; letter-spacing: .01em; }
+.bb-say.tight { color: var(--bb-warn); }
+.bb-say.empty { color: var(--bb-danger); }
+
+.bb-acc { display: flex; align-items: center; gap: 6px; min-width: 0; margin-bottom: 6px; }
+.bb-acc b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.bb-kind { flex: none; width: 8px; height: 8px; background: var(--bb-grok); box-shadow: 0 0 0 1px var(--bb-ink); }
+.bb-kind.claude { background: var(--bb-claude); }
+.bb-kind.chatgpt { background: var(--bb-chatgpt); }
+.bb-plan { flex: none; padding: 0 4px; border: 1px solid var(--bb-muted); color: var(--bb-muted); font-size: 10.5px; line-height: 14px; }
+
+/* 一个窗口：名字、10 格（剩多少亮多少）、剩余百分比；下面一行写什么时候重置 */
+.bb-meter { display: grid; grid-template-columns: 44px auto 1fr; align-items: center; gap: 7px; margin-top: 4px; }
+.bb-label { color: var(--bb-muted); }
+.bb-cells { display: flex; gap: 2px; }
+.bb-cells i { width: 8px; height: 10px; background: var(--bb-off); }
+.bb-cells.ok i.on { background: var(--bb-ok); }
+.bb-cells.tight i.on { background: var(--bb-warn); }
+.bb-cells.empty i.on { background: var(--bb-danger); }
+.bb-pct { justify-self: end; font-variant-numeric: tabular-nums; font-weight: 700; }
+.bb-reset { display: block; margin: 1px 0 0 51px; color: var(--bb-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.bb-note { margin: 7px 0 0; color: var(--bb-muted); font-size: 11px; }
+
+/* 任务：气泡里一行摘要；右键「查看任务」是整张列表 */
+.bb-line { display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 8px; padding: 4px 6px; box-sizing: border-box; border: 0; border-top: 2px dashed var(--bb-off); background: transparent; color: var(--bb-text); font: inherit; text-align: left; }
+button.bb-line { cursor: pointer; }
+button.bb-line:hover, button.bb-line:focus-visible { background: var(--bb-hover); outline: none; }
+.bb-line.none { color: var(--bb-muted); }
+.bb-line span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bb-line em { color: var(--bb-muted); font-style: normal; }
+.bb-dot { flex: none; width: 6px; height: 6px; background: var(--bb-ok); }
+.bb-dot.waiting { background: var(--bb-warn); }
+.bb-dot.done { background: var(--bb-off); }
+
+.bb-list { display: grid; gap: 2px; }
+.bb-task { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; padding: 4px 5px; border: 0; background: transparent; color: var(--bb-text); font: inherit; text-align: left; cursor: pointer; }
+.bb-task:hover, .bb-task:focus-visible { background: var(--bb-hover); outline: none; }
+.bb-task-main { display: grid; min-width: 0; }
+.bb-task-main b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.bb-task-main small { overflow: hidden; color: var(--bb-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bb-chip { padding: 0 5px; border: 1px solid currentColor; color: var(--bb-ok); font-size: 10.5px; font-style: normal; line-height: 15px; white-space: nowrap; }
+.bb-task.waiting .bb-chip { color: var(--bb-warn); }
+.bb-task.done { opacity: .8; }
+.bb-task.done .bb-chip { color: var(--bb-muted); }
+
+@media (prefers-reduced-motion: reduce) { .bb.pop { animation: none; } }

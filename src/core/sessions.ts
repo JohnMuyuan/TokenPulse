@@ -244,7 +244,7 @@ class Builder {
 /* ---------------- Claude Code ---------------- */
 
 /** 用户那条里 CLI 自己加的东西去掉；整条都是 CLI 加的返回空。 */
-function claudeUserText(raw: string): { text: string; event?: string } {
+export function claudeUserText(raw: string): { text: string; event?: string } {
   let text = raw;
   const command = text.match(/<command-name>([^<]*)<\/command-name>/);
   if (command) {
@@ -310,7 +310,7 @@ function parseClaude(file: string): Parsed | null {
 /* ---------------- Codex ---------------- */
 
 /** Codex 塞进 user 角色的环境、指令、中断标记。 */
-function codexUserText(raw: string): { text: string; event?: string } {
+export function codexUserText(raw: string): { text: string; event?: string } {
   const text = raw.trim();
   if (/^<turn_aborted>/.test(text)) return { text: "", event: "已中断" };
   if (/^# AGENTS\.md instructions/.test(text)) return { text: "" };
