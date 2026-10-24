@@ -3724,7 +3724,7 @@ async function runAccountAction(action, kind, id, button) {
   }
 }
 $('open-data').addEventListener('click', async () => { try { const error = await api.openDataDir(); if (error) $('prefs-status').textContent = '无法打开数据目录：' + error; } catch { $('prefs-status').textContent = '无法打开数据目录'; } });
-$('open-login-log').addEventListener('click', async () => { try { if (!await api.openLoginLog()) $('prefs-status').textContent = '还没有登录日志：在「官方账号」里登录一次后才会有'; } catch { $('prefs-status').textContent = '无法打开登录日志'; } });
+$('open-log').addEventListener('click', async () => { try { if (!await api.openLog()) $('prefs-status').textContent = '还没有日志：TokenPulse 运行一会儿后才会有'; } catch { $('prefs-status').textContent = '无法打开日志'; } });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && layoutEdit && !menuOwner && $('settings').hidden && $('range-popover').hidden) {
     event.preventDefault();

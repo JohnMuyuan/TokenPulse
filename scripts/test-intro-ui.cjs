@@ -21,8 +21,9 @@ const prefsFile = () => JSON.parse(fs.readFileSync(path.join(root, 'data', 'pref
 const crypto = require('node:crypto');
 const fingerprint = () => {
   const out = {};
-  // 并发监控在后台按自己的节奏写历史（和引导无关，0.3.50 引导变长后有时正好赶上），不算「演示数据写进了真实目录」
-  const walk = dir => { for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (name === 'concurrency-history') continue; if (fs.statSync(file).isDirectory()) walk(file); else if (name !== 'prefs.json') out[path.relative(root, file)] = crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex'); } };
+  // 并发监控在后台按自己的节奏写历史（和引导无关，0.3.50 引导变长后有时正好赶上），不算「演示数据写进了真实目录」；
+  // 统一运行日志（logs/）只追加界面操作和请求记录，也不算，它的内容另外查（不能出现演示数据）
+  const walk = dir => { for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (name === 'concurrency-history' || name === 'logs') continue; if (fs.statSync(file).isDirectory()) walk(file); else if (name !== 'prefs.json') out[path.relative(root, file)] = crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex'); } };
   for (const dir of ['data', 'home']) if (fs.existsSync(path.join(root, dir))) walk(path.join(root, dir));
   return out;
 };
@@ -137,6 +138,8 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.equal(demoDir().length, 0, '演示临时目录已删除');
     assert.deepEqual(fingerprint(), before, '真实数据目录没有变化');
     assert.ok(!JSON.stringify(fingerprint()).includes('demo'), '真实数据目录里没有演示文件');
+    const runLog = path.join(root, 'data', 'logs', 'tokenpulse.log');
+    assert.ok(!fs.existsSync(runLog) || !fs.readFileSync(runLog, 'utf8').includes('claude:demo'), '运行日志里没有演示账号');
     // 重新加载：不再弹引导，也不弹更新说明
     await reload(); await delay(1200);
     assert.equal(await evaluate("document.querySelector('.tour, #whatsnew')"), null, '走过引导后不再自动弹');

@@ -2,6 +2,7 @@ import { app, type BrowserWindow } from "electron";
 import fs from "fs";
 import path from "path";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
+import { errorText, log } from "../core/app-log";
 import { dataFile, readJson, writeJson } from "../core/paths";
 
 /**
@@ -117,7 +118,11 @@ export function initUpdater(options: { window: () => BrowserWindow | null; autoU
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
   autoUpdater.logger = null;
-  autoUpdater.on("checking-for-update", () => publish({ status: "checking", error: undefined }));
+  autoUpdater.on("checking-for-update", () => { log.info("update", "检查更新"); publish({ status: "checking", error: undefined }); });
+  autoUpdater.on("update-available", (info: UpdateInfo) => log.info("update", `有新版本 ${info.version}`));
+  autoUpdater.on("update-not-available", () => log.info("update", "已是最新版"));
+  autoUpdater.on("update-downloaded", (info: UpdateInfo) => log.info("update", `新版本 ${info.version} 下载好了`));
+  autoUpdater.on("error", (error: Error) => log.warn("update", `更新出错：${errorText(error)}`));
   autoUpdater.on("update-available", (info: UpdateInfo) => publish({ status: state.autoUpdate ? "downloading" : "available", version: info.version, progress: 0 }));
   autoUpdater.on("update-not-available", () => publish({ status: "latest", version: undefined, checkedAt: Date.now() }));
   autoUpdater.on("download-progress", (p) => publish({ status: "downloading", progress: Math.round(p.percent) }));

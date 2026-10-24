@@ -1,3 +1,4 @@
+import { errorText, log, logUrl } from "../core/app-log";
 import { net } from "electron";
 import { acceptKnowledge, KNOWLEDGE_URL, knowledgeInfo, readKnowledgeCheck, writeKnowledgeCheck, type KnowledgeInfo } from "../core/knowledge";
 
@@ -33,6 +34,7 @@ export function checkKnowledge(onUpdated?: () => void): Promise<KnowledgeState> 
     const checkedAt = Date.now();
     try {
       const response = await net.fetch(`${KNOWLEDGE_URL}?t=${checkedAt}`, { signal: AbortSignal.timeout(20_000), headers: { "Cache-Control": "no-cache" } });
+      log[response.ok ? "info" : "warn"]("net", `GET ${logUrl(KNOWLEDGE_URL)} → ${response.status}（知识库，${Date.now() - checkedAt} ms）`);
       if (!response.ok) {
         const error = friendly(null, response.status);
         writeKnowledgeCheck({ checkedAt, error });
@@ -47,6 +49,7 @@ export function checkKnowledge(onUpdated?: () => void): Promise<KnowledgeState> 
       return { ...result.info, checkedAt, error: result.error, updated: result.updated };
     } catch (error) {
       const message = error instanceof SyntaxError ? "知识库格式不对，已忽略" : friendly(error);
+      log.warn("net", `知识库更新失败：${message}（${errorText(error)}）`);
       writeKnowledgeCheck({ checkedAt, error: message });
       return { ...knowledgeInfo(), checkedAt, error: message };
     }

@@ -1,3 +1,5 @@
+// 必须第一个：之后注册的 IPC 都要被日志包上（见 app-log-setup.ts）
+import { logAppStart } from "./app-log-setup";
 import { ExitMonitor } from "./egress-monitor";
 import { ConcurrencyService } from './concurrency-monitor';
 import { concurrencyMonitor, providerScopes, type ConcurrencyLiveState } from '../core/concurrency';
@@ -17,7 +19,7 @@ import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
 import { dataDir } from "../core/paths";
-import { loginLogFile } from "../core/login-log";
+import { appLogFile, log } from "../core/app-log";
 import { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, type QuotaGlance } from "../core/quota";
 import type { Snapshot } from "../core/report";
 import { updateCalibration } from "../core/quota-calibration";
@@ -678,6 +680,7 @@ function emitQuotaNotice(notice: string | undefined, kind: "success" | "warning"
   lastQuotaNoticeKind = kind;
   if (!notice || quotaNoticeSent === notice) return;
   quotaNoticeSent = notice;
+  (kind === "success" ? log.info : log.warn)("refresh", `提示：${notice}`);
   const channel = kind === "error" ? "refresh-error" : kind === "warning" ? "refresh-warn" : "refresh-ok";
   win?.webContents.send(channel, tr(notice));
 }
@@ -958,6 +961,7 @@ if (!app.requestSingleInstanceLock()) {
      * 用同一个 ID 就会建出指向它的「Electron.lnk」，正式版的任务栏图标从此变成 Electron 的原子图标。
      * 所以没打包时换一个 ID，和正式版互不影响。
      */
+    void logAppStart(appVersion());
     if (process.platform === "win32") app.setAppUserModelId(app.isPackaged ? "com.tokenpulse.app" : "com.tokenpulse.app.dev");
     // 0.3.3：Grok 账号改用用户 ID 当身份，旧数据搬一次（见 grok-migrate.ts）。必须在读账号、刷新之前。
     try {
@@ -1095,7 +1099,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("open-data-dir", () => shell.openPath(dataDir()));
     // 还没登录过就没有日志文件：打开数据目录，返回 false 让界面说一句
-    ipcMain.handle("open-login-log", () => { const file = loginLogFile(); if (fsSync.existsSync(file)) { shell.showItemInFolder(file); return true; } void shell.openPath(dataDir()); return false; });
+    ipcMain.handle("open-log", () => { const file = appLogFile(); if (fsSync.existsSync(file)) { shell.showItemInFolder(file); return true; } void shell.openPath(dataDir()); return false; });
     ipcMain.handle("window:minimize", () => win?.minimize());
     ipcMain.handle("window:toggle-maximize", () => (win?.isMaximized() ? win.unmaximize() : win?.maximize()));
     // 走 close() 而不是 destroy()：「关闭窗口时」的设置（收进托盘 / 直接退出）在 close 事件里处理。

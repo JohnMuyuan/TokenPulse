@@ -4,8 +4,9 @@ import os from "os";
 import path from "path";
 import { promisify } from "util";
 import { accountIdOf, rememberOfficialAccount, renewStoredCredentials, visibleAccounts } from "./accounts";
+import { log, errorText, logUrl } from "./app-log";
 import { renewCliCredential, type CliRenewResult } from "./cli-renew";
-import { curlBin, curlJson } from "./curl";
+import { curlBin, curlJson, HttpError } from "./curl";
 import { curlProxyArgs } from "./upstream-proxy";
 import { isExpired, readCliAccounts, type OfficialAccountKind } from "./credentials";
 import { recordQuotaSamples } from "./quota-history";
@@ -54,9 +55,14 @@ export type QuotaIssue = {
   kind: AccountKind;
   accountId?: string;
   who: string;
-  /** cli-wait（0.3.54）：账号登录在 CLI 里，CLI 的凭据过期了，等 CLI 下次发请求时自己续（不用重新登录）。 */
-  reason: "expired" | "auth" | "blocked" | "empty" | "error" | "cli-wait";
+  /**
+   * cli-wait（0.3.54）：账号登录在 CLI 里，CLI 的凭据过期了，等 CLI 下次发请求时自己续（不用重新登录）。
+   * rate-limited：官方回了 429，或者还在上次 429 之后的冷却里（冷却期间不发请求）。
+   */
+  reason: "expired" | "auth" | "blocked" | "empty" | "error" | "cli-wait" | "rate-limited";
   detail?: string;
+  /** rate-limited：冷却到什么时候，之后的定时查询才会再问。 */
+  retryAt?: number;
 };
 
 const CLI_NAME: Record<AccountKind, string> = { claude: "Claude Code", chatgpt: "Codex", grok: "Grok CLI" };
@@ -114,14 +120,24 @@ function isNetworkFailure(raw?: string): boolean {
     text.includes("enotfound") ||
     text.includes("econn") ||
     text.includes("exit") ||
-    text.includes("curl")
+    text.includes("curl") ||
+    text.includes("超时") ||
+    text.includes("命令失败")
   );
 }
+
+function clock(at: number) {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+const LOG_HINT = "详细原因已记在日志（设置 →「数据」→「打开日志」）。";
 
 /** 给刷新按钮 / 托盘刷新用的整句。没有问题就没有这句话。 */
 export function quotaIssueNotice(issues: QuotaIssue[] | undefined): string | undefined {
   if (!issues?.length) return undefined;
-  return issues
+  let hint = false;
+  const text = issues
     .map((issue) => {
       const who = quotaAccountTitle(issue.kind, issue.who);
       if (issue.reason === "expired" || issue.reason === "auth" || isAuthFailure(issue.detail)) {
@@ -129,10 +145,21 @@ export function quotaIssueNotice(issues: QuotaIssue[] | undefined): string | und
       }
       if (issue.reason === "blocked") return `${who} 的额度没查：出口 IP 不在允许列表。`;
       if (issue.reason === "cli-wait") return `${who} 登录在 ${CLI_NAME[issue.kind]} 里，凭据过期了，${CLI_NAME[issue.kind]} 下次发请求时会自动续上，不用重新登录。`;
+      if (issue.reason === "rate-limited") {
+        const when = issue.retryAt ? `约 ${clock(issue.retryAt)} ` : "过几分钟";
+        return `${who} 被官方限流了（HTTP 429），${when}再自动查，先显示上次的数字。`;
+      }
+      hint = true;
+      const status = Number(/^http (\d{3})/.exec(issue.detail || "")?.[1]);
+      if (status >= 500) return `${who} 的额度没查到：官方服务器出错（HTTP ${status}），先显示上次的数字。`;
+      if (status >= 400) return `${who} 的额度没查到：官方返回 HTTP ${status}，先显示上次的数字。`;
+      if (issue.detail === "not json") return `${who} 的额度没查到：官方返回的不是额度数据，可能被代理或网络拦截了，先显示上次的数字。`;
+      if (issue.reason === "empty") return `${who} 的额度没查到：官方返回里没有额度数字，先显示上次的数字。`;
       if (isNetworkFailure(issue.detail)) return `${who} 的官方额度没查到，没连上官方。`;
       return `${who} 这次没问到最新额度，还是显示上次的数字。`;
     })
     .join("");
+  return hint ? `${text}${LOG_HINT}` : text;
 }
 
 /** 登录失效用红色；问不到数字、没连上、出口被拦用黄色，不是额度没变。 */
@@ -190,11 +217,20 @@ function tmpName(prefix: string) {
 
 async function curlBinary(url: string, headers: string[], bodyFile: string) {
   const out = tmpName("tokenpulse-quota");
-  const args = ["-sS", "-m", "15", ...(await curlProxyArgs(url)), "-X", "POST", "-o", out, "--data-binary", `@${bodyFile}`, url];
+  const args = ["-sS", "-m", "15", ...(await curlProxyArgs(url)), "-X", "POST", "-o", out, "-w", "%{http_code}", "--data-binary", `@${bodyFile}`, url];
   for (const header of headers) args.push("-H", header);
+  const started = Date.now();
   try {
-    await execFileAsync(curlBin(), args, { timeout: 18000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
-    return fs.readFileSync(out);
+    const { stdout } = await execFileAsync(curlBin(), args, { timeout: 18000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
+    const status = Number(String(stdout).trim());
+    const buf = fs.readFileSync(out);
+    const line = `POST ${logUrl(url)} → ${Number.isFinite(status) ? status : "?"}（${Date.now() - started} ms，${buf.length} 字节）`;
+    if (status >= 400) log.warn("net", line);
+    else log.info("net", line);
+    return buf;
+  } catch (error) {
+    log.warn("net", `POST ${logUrl(url)} 失败（${Date.now() - started} ms）：${errorText(error)}`);
+    throw error;
   } finally {
     fs.unlink(out, () => undefined);
   }
@@ -485,6 +521,35 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
  */
 export type QuotaGate = (kind: AccountKind) => Promise<boolean>;
 
+/**
+ * 限流冷却：官方回 429 后，到 until 之前这个账号不再发请求（手动刷新也不发，发了只会把限流拖得更久）。
+ * 等多久：官方 Retry-After 和自己的退避取大的；退避从 2 分钟起，连续 429 每次翻倍，封顶 15 分钟。查到一次就清零。
+ * 以前每分钟照问不误，撞上限流就一直「没问到最新额度」。
+ */
+const cooldowns = new Map<string, { until: number; strikes: number }>();
+const COOLDOWN_BASE_MS = 2 * 60_000;
+const COOLDOWN_MAX_MS = 15 * 60_000;
+const RETRY_AFTER_MAX_MS = 60 * 60_000;
+
+export function rateLimitWaitMs(strikes: number, retryAfterMs?: number) {
+  const backoff = Math.min(COOLDOWN_MAX_MS, COOLDOWN_BASE_MS * 2 ** Math.max(0, strikes - 1));
+  return Math.max(backoff, Math.min(RETRY_AFTER_MAX_MS, retryAfterMs ?? 0));
+}
+
+/** 测试用：清掉所有冷却。 */
+export function resetQuotaCooldowns() {
+  cooldowns.clear();
+}
+
+function quotaLine(quota: OfficialQuota) {
+  const bits = [
+    quota.fiveHourPct != null ? `5 小时 ${quota.fiveHourPct.toFixed(1)}%` : "",
+    quota.weekPct != null ? `周 ${quota.weekPct.toFixed(1)}%` : "",
+    quota.resetCredits != null ? `重置次数 ${quota.resetCredits}` : "",
+  ].filter(Boolean);
+  return bits.join("，") || "有数据";
+}
+
 export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promise<QuotaFetchResult> {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return { ...cache.value, issues: [] };
   const kinds: AccountKind[] = ["claude", "chatgpt", "grok"];
@@ -515,21 +580,35 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promi
     }
     for (const target of targets) {
       const who = whoOf(kind, target.accountId);
+      const cooling = cooldowns.get(target.accountId);
+      if (cooling && Date.now() < cooling.until) {
+        issues.push({ kind, accountId: target.accountId, who, reason: "rate-limited", retryAt: cooling.until, detail: "冷却中" });
+        continue;
+      }
       jobs.push(
         query[kind](target).then(
           (quota) => {
+            cooldowns.delete(target.accountId);
             if (quota) return { ...quota, kind };
             issues.push({ kind, accountId: target.accountId, who, reason: "empty" });
             return undefined;
           },
           (error: unknown) => {
             const detail = error instanceof Error ? error.message : String(error);
+            if (error instanceof HttpError && error.status === 429) {
+              const strikes = (cooldowns.get(target.accountId)?.strikes ?? 0) + 1;
+              const until = Date.now() + rateLimitWaitMs(strikes, error.retryAfterMs);
+              cooldowns.set(target.accountId, { until, strikes });
+              issues.push({ kind, accountId: target.accountId, who, reason: "rate-limited", retryAt: until, detail: detail.slice(0, 80) });
+              return undefined;
+            }
             issues.push({
               kind,
               accountId: target.accountId,
               who,
               reason: isAuthFailure(detail) ? "auth" : "error",
-              detail: detail.slice(0, 80),
+              // execFile 的 message 是整条命令行（带 token），取 curl 自己的报错
+              detail: errorText(error).slice(0, 80),
             });
             return undefined;
           },
@@ -539,6 +618,11 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promi
   }
   const all: OfficialQuota[] = [];
   for (const quota of await Promise.all(jobs)) if (quota) all.push(quota);
+  for (const quota of all) log.info("quota", `${quotaAccountTitle(quota.kind || "claude", quota.accountId ? whoOf(quota.kind || "claude", quota.accountId) : undefined)}：${quotaLine(quota)}`);
+  for (const issue of issues) {
+    const until = issue.retryAt ? `，冷却到 ${clock(issue.retryAt)}` : "";
+    log.warn("quota", `${quotaAccountTitle(issue.kind, issue.who)}：没查到（${issue.reason}${issue.detail ? `：${issue.detail}` : ""}${until}）`);
+  }
   value.all = all;
   for (const quota of all) if (quota.kind && !value[quota.kind]) value[quota.kind] = quota;
   cache = { at: Date.now(), value };

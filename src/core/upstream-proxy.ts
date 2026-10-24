@@ -2,6 +2,7 @@ import http from "http";
 import https from "https";
 import tls from "tls";
 import type { Duplex } from "stream";
+import { log, logUrl } from "./app-log";
 
 /*
  * 本地路由（和「获取模型列表」「检测地址」）往上游发请求时走代理。
@@ -183,10 +184,34 @@ export function uncertainDelivery(req: http.ClientRequest, error: unknown) {
  * 发上游请求：有代理就走代理，没有就直连。用法和 http(s).request(url, options, callback) 一样。
  */
 export function upstreamRequest(target: URL, proxy: UpstreamProxy | null, options: http.RequestOptions, callback?: (res: http.IncomingMessage) => void): http.ClientRequest {
-  if (!proxy) return (target.protocol === "https:" ? https : http).request(target, options, callback);
-  if (target.protocol === "https:") return https.request(target, { ...options, agent: tunnelAgent(proxy) }, callback);
+  let req: http.ClientRequest;
+  if (!proxy) req = (target.protocol === "https:" ? https : http).request(target, options, callback);
+  else if (target.protocol === "https:") req = https.request(target, { ...options, agent: tunnelAgent(proxy) }, callback);
   // 明文 http 上游：把完整地址交给代理
-  return http.request({ ...options, host: proxy.host, port: proxy.port, path: target.href, headers: { ...(options.headers as http.OutgoingHttpHeaders), host: target.host, ...(proxy.auth ? { "proxy-authorization": proxy.auth } : {}) } }, callback);
+  else req = http.request({ ...options, host: proxy.host, port: proxy.port, path: target.href, headers: { ...(options.headers as http.OutgoingHttpHeaders), host: target.host, ...(proxy.auth ? { "proxy-authorization": proxy.auth } : {}) } }, callback);
+  return logRequest(req, target, proxy, options.method || "GET", Boolean(callback));
+}
+
+/**
+ * 统一日志里记一行：方法、域名+路径、状态码、多久收到响应头、走没走代理。不记请求头和请求体。
+ * 本机地址（比如 prism 的健康检查）成功时不记，免得刷屏。
+ * 只在调用方给了 callback 时才听 response：没人听 response 时 Node 会自己丢掉响应，多听一个就丢不掉了。
+ */
+function logRequest(req: http.ClientRequest, target: URL, proxy: UpstreamProxy | null, method: string, hasCallback: boolean) {
+  const started = Date.now();
+  const where = `${method} ${logUrl(target)}${proxy ? `（代理 ${proxy.host}:${proxy.port}）` : ""}`;
+  const local = LOOPBACK.test(target.hostname);
+  if (hasCallback) {
+    req.once("response", (res) => {
+      const status = res.statusCode ?? 0;
+      const line = `${where} → ${status}（${Date.now() - started} ms 收到响应头）`;
+      if (status >= 400) log.warn("net", line);
+      else if (!local) log.info("net", line);
+    });
+  }
+  // 调用方都自己接了 error；这里只旁观
+  req.on("error", (error) => log.warn("net", `${where} 失败（${Date.now() - started} ms）：${describeNetError(error, Boolean(proxy))}`));
+  return req;
 }
 
 /**

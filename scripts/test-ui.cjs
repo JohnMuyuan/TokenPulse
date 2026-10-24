@@ -928,7 +928,7 @@ app.on('web-contents-created', (_, contents) => {
       require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = async () => ({ issues: [{ kind: 'claude', who: 'Claude', reason: 'empty' }] });
       await evaluate("document.querySelectorAll('.tp-toast').forEach(node => node.remove()); document.getElementById('refresh').click()");
       await until("!document.getElementById('refresh').disabled && document.querySelector('.tp-toast.warning')");
-      assert.match(await evaluate("document.querySelector('.tp-toast.warning .tp-toast-message').textContent"), /这次没问到最新额度/);
+      assert.match(await evaluate("document.querySelector('.tp-toast.warning .tp-toast-message').textContent"), /官方返回里没有额度数字/);
       assert.equal(await evaluate("document.querySelector('.tp-toast.error')"), null, '问不到数字不是红色错误');
       await evaluate("document.querySelector('.tp-toast.warning .tp-toast-close').click()");
       await until("!document.querySelector('.tp-toast.warning')");

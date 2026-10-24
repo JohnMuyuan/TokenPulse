@@ -242,7 +242,7 @@ export function describeLoginDir(kind: OfficialAccountKind, tempHome: string) {
 
 type LoginResult = { ok: true; statuses: OfficialOAuthStatus[] } | { ok: false; error: string };
 
-const LOG_HINT = "详细过程已记在登录日志（设置 →「数据」→「打开登录日志」）。";
+const LOG_HINT = "详细过程已记在日志（设置 →「数据」→「打开日志」）。";
 
 async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<LoginResult> {
   const log = startLoginLog(kind);

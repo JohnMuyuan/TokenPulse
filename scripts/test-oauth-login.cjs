@@ -85,9 +85,9 @@ const readLog = () => { try { return fs.readFileSync(loginLog.loginLogFile(), "u
 /** 一次登录的日志行（按记录器 id 过滤）。 */
 const attemptLines = (marker) => {
   const text = readLog();
-  const ids = [...new Set([...text.matchAll(/\[([a-z]+#[0-9a-f]{4})\]/g)].map((m) => m[1]))];
-  const id = ids.reverse().find((one) => text.split("\n").some((line) => line.includes(`[${one}]`) && line.includes(marker)));
-  return text.split("\n").filter((line) => id && line.includes(`[${id}]`)).join("\n");
+  const ids = [...new Set([...text.matchAll(/\[login ([a-z]+#[0-9a-f]{4})\]/g)].map((m) => m[1]))];
+  const id = ids.reverse().find((one) => text.split("\n").some((line) => line.includes(`[login ${one}]`) && line.includes(marker)));
+  return text.split("\n").filter((line) => id && line.includes(`[login ${id}]`)).join("\n");
 };
 const waitFor = async (fn, ms = 5000) => { const until = Date.now() + ms; while (Date.now() < until) { if (fn()) return true; await sleep(100); } return fn(); };
 
@@ -138,7 +138,7 @@ try {
   const started = Date.now();
   result = await loginOfficialOAuth("claude");
   lines = attemptLines("CLI 报错");
-  check("CLI 失败退出：提示没检测到，并指向登录日志", !result.ok && /没有检测到 OAuth 登录成功/.test(result.error) && /登录日志/.test(result.error) && Date.now() - started < 15_000, result.error);
+  check("CLI 失败退出：提示没检测到，并指向日志", !result.ok && /没有检测到 OAuth 登录成功/.test(result.error) && /「打开日志」/.test(result.error) && Date.now() - started < 15_000, result.error);
   check("失败日志：系统代理已补给 CLI、CLI 的报错（去掉颜色）、退出码、临时目录状态",
     /按系统代理补上 HTTPS_PROXY=http:\/\/127\.0\.0\.1:7890/.test(lines) && /CLI 输出: proxy=http:\/\/127\.0\.0\.1:7890 no_proxy=.*localhost/.test(lines)
     && /CLI 报错: OAuth error: Request failed with status code 403.*Request not allowed/.test(lines) && !lines.includes("\u001b")

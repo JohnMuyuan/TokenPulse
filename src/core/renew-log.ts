@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import fs from "fs";
+import { appLog } from "./app-log";
 import { dataFile } from "./paths";
 
 /**
@@ -39,6 +40,8 @@ export function logRenew(entry: Omit<RenewLogEntry, "account"> & { accountId: st
   const { accountId, ...rest } = entry;
   const row: RenewLogEntry = { ...rest, account: accountHash(accountId) };
   if (row.error) row.error = row.error.slice(0, 160);
+  const bits = [row.status != null ? `HTTP ${row.status}` : "", row.code, row.error, row.permanent ? "官方判定永久失效" : "", row.note].filter(Boolean).join("，");
+  appLog(row.ok ? "INFO" : "WARN", "renew", `${row.kind} 账号 ${row.account}（${row.source === "cli" ? "CLI 的凭据" : "TokenPulse 保存的凭据"}）续期${row.ok ? "成功" : "失败"}${bits ? `：${bits}` : ""}`);
   try {
     const file = renewLogFile();
     fs.appendFileSync(file, JSON.stringify(row) + "\n", { mode: 0o600 });

@@ -108,8 +108,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   /** 拖拽排序：这一家账号的新顺序。 */
   reorderOfficialAccounts: (kind: string, ids: string[]) => ipcRenderer.invoke("accounts:reorder", kind, ids),
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
-  /** 官方账号 OAuth 登录日志（login-log.txt）：在文件夹里选中它；还没有日志时打开数据目录、返回 false。 */
-  openLoginLog: () => ipcRenderer.invoke("open-login-log"),
+  /** 统一运行日志（logs/tokenpulse.log，含登录过程）：在文件夹里选中它；还没有日志时打开数据目录、返回 false。 */
+  openLog: () => ipcRenderer.invoke("open-log"),
   /** 版本号从 package.json 来，界面上不再手写（以前每次发版都要记得改 index.html）。 */
   version: () => ipcRenderer.invoke("app:version"),
   agentOpenRouteLog: () => ipcRenderer.invoke("agent:open-route-log"),

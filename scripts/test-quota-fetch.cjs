@@ -21,7 +21,8 @@ const accounts = build("core/accounts.js");
 const curl = build("core/curl.js");
 const cliRenew = build("core/cli-renew.js");
 const origCliRenew = cliRenew.renewCliCredential;
-const { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary } = build("core/quota.js");
+const { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, rateLimitWaitMs, resetQuotaCooldowns } = build("core/quota.js");
+const appLog = build("core/app-log.js");
 const { translate } = require(path.join(__dirname, "..", "renderer", "i18n.js"));
 
 const results = [];
@@ -68,15 +69,34 @@ curl.curlJson = async (...args) => {
     check("英文写出公司和账号", translate(auth) === "Claude account a@example.com sign-in has expired. Please sign in again.");
 
     const empty = quotaIssueNotice([{ kind: "claude", who: "a@example.com", reason: "empty" }]);
-    check("读不出额度时写出是哪家哪个账号", empty === "Claude 的 a@example.com 这次没问到最新额度，还是显示上次的数字。", empty);
-    check("英文：读不出额度", translate(empty) === "Claude account a@example.com could not get the latest quota this time. Still showing the last numbers.");
+    check("读不出额度时写出是哪家哪个账号", empty === "Claude 的 a@example.com 的额度没查到：官方返回里没有额度数字，先显示上次的数字。详细原因已记在日志（设置 →「数据」→「打开日志」）。", empty);
+    const odd = quotaIssueNotice([{ kind: "claude", who: "a@example.com", reason: "error", detail: "something odd" }]);
+    check("认不出的错误：用兜底句", odd.startsWith("Claude 的 a@example.com 这次没问到最新额度，还是显示上次的数字。"), odd);
+    check("英文：兜底句", translate(odd).startsWith("Claude account a@example.com could not get the latest quota this time. Still showing the last numbers."), translate(odd));
     check("登录失效是红色，问不到数字是黄色", quotaIssueTone([{ kind: "claude", who: "Claude", reason: "auth" }]) === "error" && quotaIssueTone([{ kind: "claude", who: "Claude", reason: "empty" }]) === "warning");
 
     const blocked = quotaIssueNotice([{ kind: "claude", who: "Claude", reason: "blocked" }]);
     check("出口拦下的提示写明没查", /出口 IP 不在允许列表/.test(blocked), blocked);
 
     const net = quotaIssueNotice([{ kind: "claude", who: "Claude", reason: "error", detail: "not json" }]);
-    check("接口内容看不懂时不把原始错误甩出来", net === "Claude 这次没问到最新额度，还是显示上次的数字。", net);
+    check("接口内容看不懂时说清是返回的不是额度数据，并指向日志", net === "Claude 的额度没查到：官方返回的不是额度数据，可能被代理或网络拦截了，先显示上次的数字。详细原因已记在日志（设置 →「数据」→「打开日志」）。", net);
+    check("英文：不是额度数据 + 日志", translate(net) === "Claude quota was not fetched: the response was not quota data (a proxy or network filter may have intercepted it). Showing the last numbers for now. The exact reason is in the log (Settings → “Data” → “Open log”).", translate(net));
+
+    // 0.3.63 起各种「没问到」分开说：限流 / 服务器出错 / 其它 HTTP / 没有额度数字；剩下认不出的才用老的兜底句
+    const at = new Date(2026, 9, 23, 20, 15).getTime();
+    const limited = quotaIssueNotice([{ kind: "claude", who: "a@example.com", reason: "rate-limited", retryAt: at, detail: "http 429" }]);
+    check("429：说被限流、几点再查，不指向日志、黄色", limited === "Claude 的 a@example.com 被官方限流了（HTTP 429），约 20:15 再自动查，先显示上次的数字。" && quotaIssueTone([{ kind: "claude", who: "a", reason: "rate-limited" }]) === "warning", limited);
+    check("英文：429", translate(limited) === "Claude account a@example.com is rate-limited by the official API (HTTP 429). It will be checked again automatically around 20:15; showing the last numbers for now.", translate(limited));
+    const server = quotaIssueNotice([{ kind: "claude", who: "a@example.com", reason: "error", detail: "http 503" }]);
+    check("5xx：说官方服务器出错", server.startsWith("Claude 的 a@example.com 的额度没查到：官方服务器出错（HTTP 503），先显示上次的数字。") && /打开日志/.test(server), server);
+    check("英文：5xx", translate(server).startsWith("Claude account a@example.com quota was not fetched: the official server had an error (HTTP 503)."), translate(server));
+    const other = quotaIssueNotice([{ kind: "chatgpt", who: "b@example.com", reason: "error", detail: "http 404" }]);
+    check("其它 4xx：写出状态码", other.startsWith("ChatGPT 的 b@example.com 的额度没查到：官方返回 HTTP 404，先显示上次的数字。"), other);
+    const nothing = quotaIssueNotice([{ kind: "claude", who: "a@example.com", reason: "empty" }]);
+    check("empty：说返回里没有额度数字", nothing.startsWith("Claude 的 a@example.com 的额度没查到：官方返回里没有额度数字，先显示上次的数字。"), nothing);
+    check("英文：empty", translate(nothing).startsWith("Claude account a@example.com quota was not fetched: the response had no quota numbers."), translate(nothing));
+    check("两个账号都被限流：两句都在", (quotaIssueNotice([{ kind: "claude", who: "a@example.com", reason: "rate-limited", retryAt: at }, { kind: "claude", who: "b@example.com", reason: "rate-limited" }]) || "").includes("b@example.com 被官方限流了（HTTP 429），过几分钟再自动查"));
+    check("退避：2 分钟起翻倍、封顶 15 分钟；Retry-After 更长时听官方的", rateLimitWaitMs(1) === 120_000 && rateLimitWaitMs(2) === 240_000 && rateLimitWaitMs(9) === 900_000 && rateLimitWaitMs(1, 30_000) === 120_000 && rateLimitWaitMs(1, 1_800_000) === 1_800_000 && rateLimitWaitMs(1, 99 * 3600_000) === 3600_000);
     check("没有问题就没有这句话", quotaIssueNotice([]) === undefined && quotaIssueNotice(undefined) === undefined);
 
     const none = quotaRefreshSummary([{ id: "claude:a", who: "Claude", five: 40, week: 20 }], [{ id: "claude:a", who: "Claude", five: 40, week: 20 }]);
@@ -116,7 +136,36 @@ curl.curlJson = async (...args) => {
     };
     const failed = await fetchOfficialQuota(true);
     check("接口报错记一条 error", failed.issues.length === 1 && failed.issues[0].reason === "error", JSON.stringify(failed.issues));
-    check("报错提示可读", /Claude 的 a@example.com 这次没问到最新额度|没连上官方/.test(quotaIssueNotice(failed.issues)), quotaIssueNotice(failed.issues));
+    check("报错提示可读", /Claude 的 a@example.com 的额度没查到：官方返回的不是额度数据/.test(quotaIssueNotice(failed.issues)), quotaIssueNotice(failed.issues));
+
+    // ---- 429 冷却 ----
+    curlCalls = 0;
+    curlImpl = async () => { throw new curl.HttpError(429, 300_000, "rate_limit_error"); };
+    const hit = await fetchOfficialQuota(true);
+    const cooling = hit.issues[0];
+    check("429：记 rate-limited，冷却到 Retry-After（5 分钟）之后", hit.issues.length === 1 && cooling.reason === "rate-limited" && Math.abs(cooling.retryAt - Date.now() - 300_000) < 5000 && curlCalls === 1, JSON.stringify(hit.issues));
+    curlImpl = async () => ({ five_hour: { utilization: 1, resets_at: "2026-10-11T14:00:00.000Z" }, seven_day: { utilization: 2, resets_at: "2026-10-14T12:00:00.000Z" } });
+    const still = await fetchOfficialQuota(true);
+    check("冷却中再刷新：不发请求，还是说限流、时间不变", curlCalls === 1 && still.issues[0]?.reason === "rate-limited" && still.issues[0].retryAt === cooling.retryAt, JSON.stringify(still.issues));
+    resetQuotaCooldowns();
+    const back = await fetchOfficialQuota(true);
+    check("冷却过了就再问，查到了不报问题", curlCalls === 2 && back.issues.length === 0 && back.claude?.fiveHourPct === 1, JSON.stringify(back.issues));
+    curlImpl = async () => { throw new curl.HttpError(429); };
+    const twice = [await fetchOfficialQuota(true)];
+    resetQuotaCooldowns();
+    check("查到一次后冷却清零：再 429 从 2 分钟重新算", Math.abs(twice[0].issues[0].retryAt - Date.now() - 120_000) < 5000, JSON.stringify(twice[0].issues));
+    curlImpl = async () => { throw new curl.HttpError(503); };
+    const down = await fetchOfficialQuota(true);
+    check("503：记 error 和状态码，不进冷却", down.issues[0]?.reason === "error" && down.issues[0].detail === "http 503" && /官方服务器出错（HTTP 503）/.test(quotaIssueNotice(down.issues)), JSON.stringify(down.issues));
+    curlCalls = 0;
+    await fetchOfficialQuota(true);
+    check("503 之后下一轮照常问", curlCalls === 1);
+    curlImpl = async () => { const error = new Error("Command failed: curl.exe -sS -H Authorization: Bearer tok-a"); error.stderr = "curl: (28) Operation timed out after 12001 milliseconds"; throw error; };
+    const slow = await fetchOfficialQuota(true);
+    check("curl 超时：detail 取 curl 自己的报错（不带命令行），提示没连上官方", slow.issues[0]?.detail.startsWith("curl: (28)") && !slow.issues[0].detail.includes("tok-a") && /没连上官方/.test(quotaIssueNotice(slow.issues)), JSON.stringify(slow.issues));
+    const logged = fs.readFileSync(appLog.appLogFile(), "utf8");
+    check("每轮结果写进统一日志：查到的数字、限流冷却、失败原因；邮箱打码、不带 token",
+      /\[quota\] Claude 的 a\*\*\*@example\.com：5 小时 1\.0%，周 2\.0%/.test(logged) && /没查到（rate-limited：http 429，冷却到 \d{2}:\d{2}）/.test(logged) && /没查到（error：curl: \(28\)/.test(logged) && !logged.includes("a@example.com") && !logged.includes("tok-a"), logged.split("\n").slice(-4).join(" | "));
 
     curlCalls = 0;
     curlImpl = async () => ({ type: "error", error: { type: "authentication_error", message: "invalid token" } });
