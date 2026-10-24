@@ -19,7 +19,7 @@
   const BUILT_IN = ['squirrel', 'hamster', 'octopus'];
 
   let view = null, pack = null, ctl = null, grid = null, scale = 2, pixel = 2, hovering = false, shownKey = '';
-  let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0;
+  let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0, tilt = 0, origin = { x: 0, y: 0 }, customBox = null;
   const clicks = new Pet.Clicks(300);
 
   function ctx() {
@@ -34,14 +34,52 @@
     hint.style.bottom = Pet.H * scale + 2 + 'px';
   }
 
-  /** 摆宠物：平时在窗口底边中间；极简模式贴右边，只露 show（探出来时 peek）那么宽。 */
+  /** 宠物身体占的格子 [左, 上, 右, 下]：内置的写在 pet-engine.js；自定义的按 idle 图里不透明的范围量（还没量好先用画面中间一块）。 */
+  function bodyBox() {
+    return custom() ? (customBox || [18, 20, 53, 55]) : Pet.BODY[view.pet];
+  }
+  function measurePack() {
+    customBox = null;
+    const src = pack?.images?.idle;
+    if (!src) return;
+    const probe = new Image();
+    probe.onload = () => {
+      if (pack?.images?.idle !== src || !probe.naturalWidth) return;
+      const c = document.createElement('canvas');
+      c.width = probe.naturalWidth; c.height = probe.naturalHeight;
+      const g = c.getContext('2d');
+      g.drawImage(probe, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 16) { const p = (i - 3) / 4, x = p % c.width, y = Math.floor(p / c.width); if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      if (x1 < 0) return;
+      // 图片按 object-fit: contain 贴底居中放进 Pet.W × Pet.H 格的框里
+      const k = Math.min(Pet.W / c.width, Pet.H / c.height), ox = (Pet.W - c.width * k) / 2, oy = Pet.H - c.height * k;
+      customBox = [ox + x0 * k, oy + y0 * k, ox + (x1 + 1) * k - 1, oy + (y1 + 1) * k - 1];
+      layout();
+    };
+    probe.src = src;
+  }
+
+  /**
+   * 摆宠物：平时在窗口底边中间。极简模式像躲在屏幕边后面探头：以身体的脚底中点为轴往左歪 tilt 度，头先探出来，
+   * 探出屏幕的宽度是身宽的 show 倍（矮胖的、高瘦的都探出差不多的比例）；鼠标移上来换成 peek 的姿势，探得更出来。
+   * 窗口外的部分本来就看不见。
+   */
   function layout() {
     const mini = view?.mini;
     document.body.classList.toggle('mini', !!mini);
     stage.dataset.mini = mini ? (peeking ? 'peek' : 'tuck') : '';
-    if (!mini) { stage.style.left = ''; return; }
-    const width = Pet.W * scale, show = peeking ? mini.peek : mini.show;
-    stage.style.left = Math.round(window.innerWidth - width * show) + 'px';
+    if (!mini) { tilt = 0; stage.style.left = ''; stage.style.transform = ''; stage.style.transformOrigin = ''; return; }
+    const pose = peeking ? mini.peek : mini.tuck, [x0, y0, x1, y1] = bodyBox();
+    const width = (x1 - x0 + 1) * scale, height = (y1 - y0 + 1) * scale, a = pose.tilt * Math.PI / 180;
+    // 歪过去以后，身体左上角离轴有多远（最先探出屏幕的就是这个角）
+    const reach = width / 2 * Math.cos(a) + height * Math.sin(a);
+    origin = { x: (x0 + x1 + 1) / 2 * scale, y: (y1 + 1) * scale };
+    tilt = pose.tilt;
+    stage.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+    stage.style.left = Math.round(window.innerWidth + reach - width * pose.show - origin.x) + 'px';
+    stage.style.transform = `rotate(${-pose.tilt}deg)`;
   }
   /** 极简模式下探出来；ms 毫秒后自己缩回去（鼠标还在上面、气泡还开着就不缩）。不给 ms 等鼠标移开。 */
   function peek(on, ms = 0) {
@@ -101,7 +139,11 @@
   function hintText() {
     const left = view.quota == null ? L('还没有额度数据', 'No quota data yet') : L(`剩余 ${view.quota}%`, `${view.quota}% left`);
     const quota = (view.account ? view.account + ' ' : '') + left;
-    if (view.mode === 'work') return L(`${view.tasks} 个任务进行中`, `${view.tasks} task${view.tasks === 1 ? '' : 's'} running`) + (view.waiting ? L(`（${view.waiting} 个可能在等你）`, ` (${view.waiting} may need you)`) : '') + ' · ' + quota;
+    if (view.mode === 'work') {
+      const asking = view.asking || 0, waiting = Math.max(0, (view.waiting || 0) - asking);
+      const notes = [asking ? L(`${asking} 个在问你`, `${asking} asking you`) : '', waiting ? L(`${waiting} 个可能在等你`, `${waiting} may need you`) : ''].filter(Boolean);
+      return L(`${view.tasks} 个任务进行中`, `${view.tasks} task${view.tasks === 1 ? '' : 's'} running`) + (notes.length ? L(`（${notes.join('，')}）`, ` (${notes.join(', ')})`) : '') + ' · ' + quota;
+    }
     if (view.mood === 'empty') return L('额度用完了', 'Quota used up') + (view.account ? ' · ' + view.account : '');
     const state = ctl ? ctl.stateOf(ctx()) : view.mode;
     if (state === 'sleep') return L('在睡觉', 'Sleeping') + ' · ' + quota;
@@ -119,6 +161,7 @@
     // 状态切换的过渡（睡前打哈欠，醒来揉眼睛）在 Controller 里
     ctl.setMode(view.mode);
     if (wasMini !== !!view.mini) { peeking = false; peekUntil = 0; clearTimeout(tuckTimer); }
+    syncSounds();
     layout();
     draw();
   }
@@ -126,11 +169,17 @@
   /* 鼠标在不在宠物身上：画出来的像素（周围放宽一格）才算；自定义宠物按图片的范围算 */
   function hitAt(x, y) {
     if (!view) return false;
-    const box = stage.getBoundingClientRect();
-    if (x < box.left || x >= box.right || y < box.top || y >= box.bottom) return false;
+    const width = Pet.W * scale, height = Pet.H * scale;
+    let lx, ly;
+    if (tilt) {
+      // 极简模式歪着：把鼠标位置绕脚底中点转回去，再按没歪的样子判断
+      const a = tilt * Math.PI / 180, dx = x - (stage.offsetLeft + origin.x), dy = y - (stage.offsetTop + origin.y);
+      lx = dx * Math.cos(a) - dy * Math.sin(a) + origin.x; ly = dx * Math.sin(a) + dy * Math.cos(a) + origin.y;
+    } else { const box = stage.getBoundingClientRect(); lx = x - box.left; ly = y - box.top; }
+    if (lx < 0 || ly < 0 || lx >= width || ly >= height) return false;
     if (custom()) return true;
     if (!grid) return false;
-    const gx = Math.floor((x - box.left) / scale), gy = Math.floor((y - box.top) / scale);
+    const gx = Math.floor(lx / scale), gy = Math.floor(ly / scale);
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
       const cx = gx + dx, cy = gy + dy;
       if (cx >= 0 && cy >= 0 && cx < Pet.W && cy < Pet.H && grid.c[cy * Pet.W + cx]) return true;
@@ -179,6 +228,28 @@
       api.drag('end');
     } else if (clicked) tap();
   }
+  /** 提示音（设置里能关）。几件事前后脚一起来只响一声。 */
+  let soundAt = 0;
+  function chime(kind) {
+    if (!view?.sound || view.mute?.includes(kind)) return;
+    const now = Date.now();
+    if (now - soundAt < 1500) return;
+    soundAt = now;
+    stage.dataset.sound = kind;
+    window.PulsePetSound?.play(kind, (view.volume ?? 70) / 100);
+  }
+  /** 换成自己音频的提示音：导入时间变了（或恢复默认了）就重新要一次数据交给 pet-sound.js 解码。 */
+  let loadedSounds = {};
+  function syncSounds() {
+    const want = view?.sounds || {}, Sound = window.PulsePetSound;
+    if (!Sound) return;
+    for (const kind of Sound.KINDS) {
+      if (want[kind] === loadedSounds[kind]) continue;
+      if (!want[kind]) Sound.setCustom(kind, null);
+      else api.soundData(kind).then(data => { if (view?.sounds?.[kind] === want[kind]) return Sound.setCustom(kind, data?.data || null); }).catch(() => undefined);
+    }
+    loadedSounds = { ...want };
+  }
   /** 点了一下：算连点的第几下。双击戳一下，四下东张西望；只点一下的，等确定不是双击再打开气泡。 */
   function tap() {
     const n = clicks.press(Date.now());
@@ -195,7 +266,7 @@
   document.addEventListener('contextmenu', event => { event.preventDefault(); if (hitAt(event.clientX, event.clientY)) api.menu(); });
 
   api.onState(apply);
-  api.onPack(next => { pack = next; shownKey = ''; draw(); });
+  api.onPack(next => { pack = next; shownKey = ''; measurePack(); draw(); });
   api.onCursor(rel => ctl?.aim(rel.x, rel.y));
   window.addEventListener('resize', layout);
   api.onIdle(seconds => { idleSec = seconds; ctl?.idle(seconds); });
@@ -208,13 +279,20 @@
       return;
     }
     if (!ctl) return;
-    if (event.type === 'celebrate') { ctl.trigger('celebrate'); if (view?.mini) peek(true, 4000); }
+    if (event.type === 'celebrate') { ctl.trigger('celebrate'); chime('done'); if (view?.mini) peek(true, 4000); }
+    else if (event.type === 'alert') {
+      // 出错停下吓一跳；在问你、可能在等你确认就挥挥手叫你；额度用完只响一声（样子已经是没精神的了）
+      if (event.kind === 'error') ctl.trigger('startle');
+      else if (event.kind === 'waiting' || event.kind === 'ask') ctl.trigger('wave');
+      chime(event.kind);
+      if (view?.mini) peek(true, 4000);
+    }
     else if (event.type === 'restock') ctl.trigger('restock', event.from);
     else if (event.type === 'fly') ctl.trigger('drag');
     else if (event.type === 'landed') { clearTimeout(landTimer); ctl.trigger('land'); }
     draw();
   });
-  api.ready().then(data => { pack = data?.pack || null; apply(data?.view); }).catch(() => undefined);
+  api.ready().then(data => { pack = data?.pack || null; measurePack(); apply(data?.view); }).catch(() => undefined);
 
   // 每秒 10 帧；系统开了「减少动画」时每秒 2 帧、不做随机小动作。窗口被藏起来的时候不画
   let last = 0;

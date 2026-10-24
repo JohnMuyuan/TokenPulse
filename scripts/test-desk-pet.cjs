@@ -50,6 +50,13 @@ check('desk pet: Claude Code turn states from the session tail', () => {
   // 下一轮开始：since 换成新的提问时间
   const next = activity.inferClaude([prompt, claudeAsst(4, [{ type: 'text', text: 'a' }], 'end_turn'), claudeUser(60, '再加个测试')]);
   assert.equal(next.status, 'thinking'); assert.equal(next.since, T0 + 60000); assert.equal(next.doneAt, undefined);
+  assert.equal(next.ended, undefined, '还在跑：没有结束方式');
+  // 这一轮怎么结束的：做完、用户中断、API 报错（提示音按这个分）
+  assert.equal(done.ended, 'ok');
+  assert.equal(activity.inferClaude([prompt, tool, claudeUser(12, '[Request interrupted by user for tool use]')]).ended, 'interrupted');
+  const apiError = activity.inferClaude([prompt, tool, toolResult(9), claudeAsst(10, [{ type: 'text', text: 'API Error: 529 overloaded' }], 'stop_sequence', { isApiErrorMessage: true })]);
+  assert.deepEqual([apiError.status, apiError.ended, apiError.doneAt], ['done', 'error', T0 + 10000]);
+  assert.equal(activity.inferClaude([prompt, claudeAsst(10, [], 'stop_sequence', { isApiErrorMessage: true }), claudeUser(30, '重试一下')]).ended, undefined, '出错后又问了一轮：重新算');
 });
 
 check('desk pet: Codex turn states from task_started / task_complete and pending tool calls', () => {
@@ -67,6 +74,13 @@ check('desk pet: Codex turn states from task_started / task_complete and pending
   assert.equal(activity.inferCodex([started, ev(5, 'task_complete'), item(6, { type: 'message', role: 'assistant', content: [] })]).status, 'done', '结束之后的零碎行不重新算在跑');
   assert.equal(activity.inferCodex([item(1, { type: 'reasoning' })]).status, 'thinking', '尾巴从一轮中间开始');
   assert.equal(activity.inferCodex([line({ type: 'session_meta', payload: {} })]), null);
+  // 结束方式：做完、中断、出错（出错后跟着的 task_complete 仍算出错；stream_error 只是在重试）
+  assert.equal(activity.inferCodex([started, ev(9, 'task_complete')]).ended, 'ok');
+  assert.equal(activity.inferCodex([started, ev(5, 'turn_aborted')]).ended, 'interrupted');
+  const failed = activity.inferCodex([started, call(2, 'a', 'shell'), ev(4, 'error'), ev(5, 'task_complete')]);
+  assert.deepEqual([failed.status, failed.ended, failed.doneAt], ['done', 'error', T0 + 4000]);
+  assert.equal(activity.inferCodex([started, ev(3, 'stream_error'), call(4, 'a', 'shell')]).status, 'tool', 'stream_error 不算结束');
+  assert.equal(activity.inferCodex([started, ev(4, 'error'), ev(5, 'task_complete'), ev(9, 'task_started')]).ended, undefined, '下一轮开始：重新算');
 });
 
 check('desk pet: live status — stale turns drop out, long tool calls may be waiting for the user', () => {
@@ -85,6 +99,39 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
   const codex = activity.codexHead([line({ type: 'session_meta', payload: { id: 'x-9', cwd: '/home/me/proj' } }), line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>env</environment_context>' }, { type: 'input_text', text: '补单元测试' }] } })]);
   assert.deepEqual(codex, { id: 'x-9', cwd: '/home/me/proj', prompt: '补单元测试', side: false });
   assert.equal(activity.codexHead([line({ type: 'session_meta', payload: { id: 's', parent_thread_id: 'p' } })]).side, true);
+});
+
+check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / ExitPlanMode, Codex request_user_input', () => {
+  const prompt = claudeUser(0, '额度卡片怎么提示');
+  const question = { question: '用哪种方式提示？', header: '方案', multiSelect: false, options: [{ label: '分级颜色', description: '按剩余额度变色' }, { label: '弹通知', description: '' }] };
+  const asking = claudeAsst(5, [{ type: 'text', text: '先确认一下' }, { type: 'tool_use', id: 'ask-1', name: 'AskUserQuestion', input: { questions: [question] } }], 'tool_use');
+  const pending = activity.inferClaude([prompt, asking]);
+  assert.equal(pending.status, 'tool');
+  assert.deepEqual(pending.ask, { id: 'ask-1', tool: 'AskUserQuestion', at: T0 + 5000, questions: [{ header: '方案', question: '用哪种方式提示？', multi: false, options: [{ label: '分级颜色', description: '按剩余额度变色' }, { label: '弹通知', description: '' }] }] });
+  const answered = line({ type: 'user', timestamp: at(30), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'ask-1', content: '用户选了分级颜色' }] } });
+  assert.equal(activity.inferClaude([prompt, asking, answered]).ask, undefined, '回答了就不算在问');
+  assert.equal(activity.inferClaude([prompt, asking, toolResult(9)]).ask?.id, 'ask-1', '别的工具的结果不算回答');
+  assert.equal(activity.inferClaude([prompt, asking, claudeUser(12, '[Request interrupted by user for tool use]')]).ask, undefined, '中断了：这一轮结束');
+  assert.equal(activity.inferClaude([prompt, asking, claudeUser(40, '换个问题')]).ask, undefined, '新的一轮');
+  const plan = activity.inferClaude([prompt, claudeAsst(6, [{ type: 'tool_use', id: 'plan-1', name: 'ExitPlanMode', input: { plan: '# 计划\n1. 改卡片\n2. 补测试' } }], 'tool_use')]);
+  assert.deepEqual([plan.ask.tool, plan.ask.plan, plan.ask.questions], ['ExitPlanMode', '# 计划\n1. 改卡片\n2. 补测试', []]);
+  assert.equal(activity.inferClaude([prompt, claudeAsst(6, [{ type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'ls' } }], 'tool_use')]).ask, undefined, '普通工具不是提问');
+  // 不像样的输入不算提问；长文字截短、个数有上限
+  assert.equal(activity.askOf('AskUserQuestion', { questions: [{ header: 'x' }] }, 'a', 0), null);
+  assert.equal(activity.askOf('request_user_input', '{not json', 'a', 0), null);
+  const big = activity.askOf('AskUserQuestion', { questions: Array(9).fill({ question: '问'.repeat(500), multiSelect: true, options: Array(12).fill({ label: '选\u0007项' }) }) }, 'a', 0);
+  assert.deepEqual([big.questions.length, big.questions[0].question.length, big.questions[0].options.length, big.questions[0].options[0].label, big.questions[0].multi], [4, 300, 6, '选项', true]);
+  // Codex：request_user_input 的参数是 JSON 字符串；有了 output 就回答了
+  const ev = (s, type) => line({ type: 'event_msg', timestamp: at(s), payload: { type } });
+  const call = line({ type: 'response_item', timestamp: at(3), payload: { type: 'function_call', call_id: 'q1', name: 'request_user_input', arguments: JSON.stringify({ questions: [{ id: 'mode', header: '模式', question: '先做哪个？', options: [{ label: '前端', description: '先改界面' }] }] }) } });
+  const codexAsk = activity.inferCodex([ev(0, 'task_started'), call]);
+  assert.deepEqual([codexAsk.ask.id, codexAsk.ask.tool, codexAsk.ask.questions[0].question, codexAsk.ask.questions[0].options[0].label], ['q1', 'request_user_input', '先做哪个？', '前端']);
+  assert.equal(activity.inferCodex([ev(0, 'task_started'), call, line({ type: 'response_item', timestamp: at(9), payload: { type: 'function_call_output', call_id: 'q1', output: '{}' } })]).ask, undefined);
+  // 在问你：马上算「在等你」；文件一小时没动才当终端关了
+  const now = T0 + 3600_000;
+  assert.equal(activity.liveStatus({ status: 'tool', since: 0, at: 0, ask: pending.ask }, now - 5000, now), 'waiting');
+  assert.equal(activity.liveStatus({ status: 'tool', since: 0, at: 0, ask: pending.ask }, now - activity.STALE_MS - 1, now), 'waiting', '人走开一会儿：还在等');
+  assert.equal(activity.liveStatus({ status: 'tool', since: 0, at: 0, ask: pending.ask }, now - activity.ASK_STALE_MS - 1, now), null);
 });
 
 (async () => {
@@ -122,6 +169,12 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
     assert.deepEqual(second.recent.map(t => t.key), ['claude:c-1', 'claude:c-2'], '最近做完的在前');
     const third = await scanner.scan();
     assert.deepEqual(third.finished, [], '只报一次');
+    assert.deepEqual([third.failed, third.needsYou], [[], []]);
+    // Codex 这一轮出错停下：报在 failed 里，不算做完（不庆祝）
+    fs.appendFileSync(codexFile, line({ type: 'event_msg', timestamp: new Date().toISOString(), payload: { type: 'error', message: 'stream disconnected' } }) + '\n');
+    const fourth = await scanner.scan();
+    assert.deepEqual([fourth.finished, fourth.failed], [[], ['codex:x-1']]);
+    assert.deepEqual((await scanner.scan()).failed, [], '出错也只报一次');
     // 大文件只读两头：标题在开头、状态在结尾
     const big = path.join(claude, 'D--work-demo-app', 'c-3.jsonl');
     const filler = line({ type: 'progress', data: 'x'.repeat(2000) });
@@ -130,6 +183,26 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
     const scanned = await fresh.scan();
     const bigTask = scanned.running.find(t => t.key === 'claude:c-3');
     assert.ok(bigTask, '大文件也认出来'); assert.equal(bigTask.title, '很长的会话'); assert.equal(bigTask.tool, 'Grep');
+    // 工具调用卡了 90 秒以上：刚变成「可能在等你」报一次
+    const stuck = new Date(Date.now() - activity.WAITING_MS - 10_000); fs.utimesSync(big, stuck, stuck);
+    const waiting = await fresh.scan();
+    assert.deepEqual(waiting.needsYou, ['claude:c-3']);
+    assert.equal(waiting.running.find(t => t.key === 'claude:c-3').status, 'waiting');
+    assert.deepEqual((await fresh.scan()).needsYou, [], '只报一次');
+    // 问你问题：刚问的报在 asked 里（不在 needsYou 里）、任务带着问题；同一个问题只报一次；回答了问题就没了
+    fs.appendFileSync(big, line({ type: 'assistant', timestamp: new Date().toISOString(), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'ask-9', name: 'AskUserQuestion', input: { questions: [{ question: '要不要顺便补测试？', options: [{ label: '要' }, { label: '不要' }] }] } }] } }) + '\n');
+    const asked = await fresh.scan();
+    assert.deepEqual([asked.asked, asked.needsYou], [['claude:c-3'], []]);
+    const askTask = asked.running.find(t => t.key === 'claude:c-3');
+    assert.deepEqual([askTask.status, askTask.ask.id, askTask.ask.questions[0].question], ['waiting', 'ask-9', '要不要顺便补测试？']);
+    assert.deepEqual((await fresh.scan()).asked, [], '只报一次');
+    fs.appendFileSync(big, line({ type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'tool_result', tool_use_id: 'ask-9', content: '要' }] } }) + '\n');
+    const replied = await fresh.scan();
+    assert.equal(replied.running.find(t => t.key === 'claude:c-3').ask, undefined);
+    assert.equal(replied.running.find(t => t.key === 'claude:c-3').status, 'thinking');
+    // 启动时已经在问的：第一次扫描不报（不一启动就响），但任务上带着问题（卡片照样弹）
+    const restart = await new activity.ActivityScanner({ claude, codex, codexIndex: path.join(home, '.codex', 'session_index.jsonl') }).scan();
+    assert.deepEqual(restart.asked, []);
     // 目录不存在不报错
     assert.deepEqual((await new activity.ActivityScanner({ claude: path.join(root, 'none'), codex: path.join(root, 'none'), codexIndex: path.join(root, 'none.jsonl') }).scan()).running, []);
   });
@@ -143,8 +216,68 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
     assert.deepEqual(model.normalizeDeskPet({ deskPetKind: 'pet-0a1b2c3d', deskPetScale: '3', deskPetOpacity: 85.4, deskPetPos: { x: 100.6, y: -200.2 } }), { deskPetKind: 'pet-0a1b2c3d', deskPetScale: 3, deskPetOpacity: 85, deskPetPos: { x: 101, y: -200 } });
     assert.deepEqual(model.normalizeDeskPet({ theme: 'dark' }), {}, '不认识的字段不动');
     assert.equal(prefs.deskPetMini, false, '极简模式默认关');
+    assert.equal(prefs.deskPetSound, true, '提示音默认开');
+    assert.deepEqual(model.normalizeDeskPet({ deskPetSound: 0 }), { deskPetSound: true }, '只有明确的 false 才算关');
+    assert.deepEqual(model.normalizeDeskPet({ deskPetSound: false }), { deskPetSound: false });
     assert.deepEqual(model.normalizeDeskPet({ deskPetMini: 'true' }), { deskPetMini: false });
     assert.deepEqual(model.normalizeDeskPet({ deskPetMini: true }), { deskPetMini: true });
+    // 音量、单独关掉的提示音、问题卡片
+    assert.deepEqual([prefs.deskPetVolume, prefs.deskPetMute, prefs.deskPetAsk], [70, [], true]);
+    assert.deepEqual(model.normalizeDeskPet({ deskPetVolume: 140, deskPetMute: ['ask', 'nope', 'done', 'ask'], deskPetAsk: 0 }), { deskPetVolume: 100, deskPetMute: ['done', 'ask'], deskPetAsk: true });
+    assert.deepEqual(model.normalizeDeskPet({ deskPetVolume: 'x', deskPetMute: 'done', deskPetAsk: false }), { deskPetVolume: 70, deskPetMute: [], deskPetAsk: false });
+    assert.deepEqual(model.normalizeDeskPet({ deskPetVolume: -3.4 }), { deskPetVolume: 0 });
+  });
+
+  check('desk pet: the question card sits in the bottom-right corner and steps around the pet', () => {
+    const work = { x: 0, y: 0, width: 1920, height: 1040 }, box = { width: 332, height: 200 };
+    assert.deepEqual(model.askBounds(box, work, null), { x: 1576, y: 828, width: 332, height: 200 }, '右下角，留 12 像素');
+    assert.deepEqual(model.askBounds(box, work, { x: 100, y: 900, width: 144, height: 112 }), { x: 1576, y: 828, width: 332, height: 200 }, '宠物在别处：不动');
+    // 宠物就在右下角：挪到它头顶
+    assert.deepEqual(model.askBounds(box, work, { x: 1700, y: 900, width: 144, height: 112 }), { x: 1576, y: 692, width: 332, height: 200 });
+    // 头顶放不下（卡片很高）：放到宠物左边
+    assert.deepEqual(model.askBounds({ width: 332, height: 990 }, work, { x: 1700, y: 300, width: 144, height: 112 }), { x: 1360, y: 38, width: 332, height: 990 });
+    // 副屏、卡片比屏幕还大：收进屏幕
+    assert.deepEqual(model.askBounds({ width: 900, height: 900 }, { x: 1920, y: 0, width: 800, height: 600 }, null), { x: 1932, y: 12, width: 776, height: 576 });
+  });
+
+  check('desk pet: custom sounds — audio files are recognized by their header, copied in, listed and removed', () => {
+    const sounds = require('../build/core/pet-sound-file');
+    const hex = text => Buffer.from(text, 'hex');
+    assert.equal(sounds.audioType(Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt ', 'latin1')), 'wav');
+    assert.equal(sounds.audioType(Buffer.from('ID3\x04\x00', 'latin1')), 'mp3');
+    assert.equal(sounds.audioType(hex('fffb9064')), 'mp3', '没有 ID3 的 MP3 帧');
+    assert.equal(sounds.audioType(Buffer.from('OggS\x00\x02', 'latin1')), 'ogg');
+    assert.equal(sounds.audioType(Buffer.from('fLaC\x00\x00', 'latin1')), 'flac');
+    assert.equal(sounds.audioType(Buffer.from('\x00\x00\x00\x20ftypM4A \x00', 'latin1')), 'm4a');
+    assert.equal(sounds.audioType(Buffer.from('<html><script>', 'latin1')), null);
+    assert.equal(sounds.audioType(hex('89504e470d0a1a0a')), null, '图片不算');
+    const dir = path.join(root, 'sound-src'); fs.mkdirSync(dir, { recursive: true });
+    const wav = path.join(dir, 'ding.wav'), fake = path.join(dir, 'fake.mp3'), huge = path.join(dir, 'huge.wav');
+    fs.writeFileSync(wav, Buffer.concat([Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt ', 'latin1'), Buffer.alloc(64)]));
+    fs.writeFileSync(fake, 'not audio at all');
+    fs.writeFileSync(huge, Buffer.concat([Buffer.from('RIFF\x24\x00\x00\x00WAVE', 'latin1'), Buffer.alloc(sounds.SOUND_FILE_MAX)]));
+    assert.deepEqual(sounds.SOUND_KINDS, ['done', 'ask', 'waiting', 'error', 'empty']);
+    assert.deepEqual(sounds.listPetSounds(), {});
+    assert.throws(() => sounds.importPetSound('done', fake), /不是 WAV、MP3、OGG、FLAC 或 M4A 音频/);
+    assert.throws(() => sounds.importPetSound('done', huge), /超过 2 MB/);
+    assert.throws(() => sounds.importPetSound('../x', wav), /不认识的提示音/);
+    assert.throws(() => sounds.importPetSound('done', dir), /不是普通文件/);
+    const item = sounds.importPetSound('ask', wav);
+    assert.deepEqual([item.name, item.type, item.size], ['ding.wav', 'wav', 80]);
+    fs.rmSync(wav);
+    const data = sounds.petSoundData('ask');
+    assert.equal(data.type, 'audio/wav'); assert.equal(data.data.length, 80, '用的是复制进来的那份，原文件删了也能放');
+    assert.deepEqual(Object.keys(sounds.listPetSounds()), ['ask']);
+    assert.ok(fs.existsSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'pet-sounds', 'ask.wav')));
+    // 同一种换成别的格式：旧文件删掉
+    const ogg = path.join(dir, 'b.ogg'); fs.writeFileSync(ogg, Buffer.from('OggS\x00\x02rest', 'latin1'));
+    assert.equal(sounds.importPetSound('ask', ogg).type, 'ogg');
+    assert.equal(fs.existsSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'pet-sounds', 'ask.wav')), false);
+    assert.equal(sounds.petSoundData('done'), null, '没换过的');
+    assert.equal(sounds.petSoundData('nope'), null);
+    assert.equal(sounds.removePetSound('ask'), true);
+    assert.equal(sounds.removePetSound('ask'), false);
+    assert.deepEqual(sounds.listPetSounds(), {});
   });
 
   check('desk pet: flinging, the right-edge mini mode and the jump into it', () => {
@@ -177,8 +310,10 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
     const mini = model.miniBounds({ x: 500, y: 600 }, size, work);
     assert.deepEqual(mini, { x: 1920 - 240, y: 600 - 142, width: 240, height: 142 });
     assert.equal(model.miniBounds(null, size, work).x, 1680);
-    assert.equal(model.miniSpriteCenter(work, sprite), Math.round(1920 - 144 * model.MINI_SHOW / 2), '气泡对着露出来的那截');
-    assert.ok(model.MINI_SHOW < model.MINI_PEEK && model.MINI_PEEK < 1, '平时露一半，探出来多一些，但不整个出来');
+    assert.equal(model.miniSpriteCenter(work, sprite), 1920 - 36, '气泡对着探出来的那截');
+    const { tuck, peek } = model.MINI_POSE;
+    assert.ok(tuck.show < peek.show && peek.show < 1, '平时只探出头，鼠标移上来探出更多，但不整个出来');
+    assert.ok(tuck.tilt > peek.tilt && peek.tilt > 0, '躲着的时候歪得多（只有头探出来），探出来时身子直一些');
     assert.equal(model.reachesRightEdge(model.petBounds(null, size, work), sprite, work), false, '默认位置不算贴边');
     assert.equal(model.reachesRightEdge({ x: 1920 - 240 + 40, y: 0, width: 240, height: 142 }, sprite, work), true, '拖得伸出屏幕右边：贴边');
     assert.equal(model.reachesRightEdge({ x: 1920 - 240 + 4, y: 0, width: 240, height: 142 }, sprite, work), false, '离右边还远');
@@ -366,6 +501,77 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
     const late = new Pet.Controller('squirrel');
     late.setMode('sleep');
     assert.equal(late.action, null); assert.equal(late.drowse, 'asleep');
+  });
+
+  check('desk pet: alert sounds are short synthesized tunes, each kind with its own notes', () => {
+    // 假的 Web Audio：记下每个音的频率、开始和停止时间
+    const notes = [];
+    class FakeContext {
+      constructor() { this.currentTime = 10; this.state = 'running'; this.destination = {}; }
+      createGain() { return { gain: { value: 1, setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+      createOscillator() { const o = { type: '', frequency: { value: 0 }, connect() {}, start(at) { o.at = at; }, stop(end) { o.end = end; notes.push(o); } }; return o; }
+    }
+    const saved = globalThis.AudioContext;
+    globalThis.AudioContext = FakeContext;
+    try {
+      delete require.cache[require.resolve('../renderer/pet-sound.js')];
+      require('../renderer/pet-sound.js');
+      const Sound = globalThis.PulsePetSound;
+      assert.deepEqual(Sound.KINDS, ['done', 'ask', 'waiting', 'error', 'empty']);
+      const tune = kind => { notes.length = 0; assert.equal(Sound.play(kind), true); return notes.map(n => [Math.round(n.frequency.value), n.type]); };
+      const done = tune('done');
+      assert.ok(done.length >= 3 && done.filter(n => n[1] === 'sine').length === done.length, '做完：正弦波小铃铛');
+      const base = done.filter((_, i) => i % 2 === 0).map(n => n[0]);
+      assert.deepEqual(base, [...base].sort((a, b) => a - b), '做完：往上走');
+      const error = tune('error').map(n => n[0]);
+      assert.ok(error[0] > error[1], '出错：往下走');
+      assert.ok(Math.max(...notes.map(n => n.end)) - 10 < 0.8, '都很短');
+      assert.notDeepEqual(tune('waiting'), tune('empty'));
+      const ask = tune('ask').filter((_, i) => i % 2 === 0).map(n => n[0]);
+      assert.ok(ask.length === 2 && ask[0] < ask[1], '在问你：一低一高');
+      assert.notDeepEqual(tune('ask'), tune('waiting'));
+      assert.equal(Sound.play('nope'), false, '不认识的不响');
+      globalThis.AudioContext = undefined;
+      delete require.cache[require.resolve('../renderer/pet-sound.js')];
+      require('../renderer/pet-sound.js');
+      assert.equal(globalThis.PulsePetSound.play('done'), false, '没有 Web Audio：不响也不报错');
+    } finally { globalThis.AudioContext = saved; }
+  });
+
+  await checkAsync('desk pet: a custom sound plays instead of the tune, at the chosen volume, cut off with a fade after 5 seconds', async () => {
+    const played = [];
+    class FakeContext {
+      constructor() { this.currentTime = 10; this.state = 'running'; this.destination = {}; }
+      createGain() { const g = { ramps: [], gain: { value: 1, setValueAtTime(v, t) { g.ramps.push(['set', v, t]); }, linearRampToValueAtTime(v, t) { g.ramps.push(['ramp', v, t]); }, exponentialRampToValueAtTime() {} }, connect() {} }; return g; }
+      createOscillator() { const o = { frequency: {}, connect() {}, start() {}, stop() { played.push('tone'); } }; return o; }
+      createBufferSource() { const s = { connect: out => { s.out = out; }, start(at) { s.at = at; }, stop(end) { s.end = end; played.push(s); } }; return s; }
+      async decodeAudioData(buffer) { const bytes = new Uint8Array(buffer); if (bytes[0] !== 0x52) throw new Error('bad'); return { duration: bytes[1] }; }
+    }
+    const saved = globalThis.AudioContext;
+    globalThis.AudioContext = FakeContext;
+    try {
+      delete require.cache[require.resolve('../renderer/pet-sound.js')];
+      require('../renderer/pet-sound.js');
+      const Sound = globalThis.PulsePetSound;
+      const bytes = new Uint8Array([0x52, 2, 0, 0]);
+      assert.equal(await Sound.setCustom('ask', bytes), true);
+      assert.equal(bytes.length, 4, '交进去的字节不被占用');
+      assert.equal(Sound.hasCustom('ask'), true);
+      assert.equal(Sound.play('ask', 0.5), true);
+      const short = played.pop();
+      assert.equal(typeof short, 'object', '放的是自己的音频，不是合成的调子');
+      assert.deepEqual([short.end - short.at, short.out.ramps], [2, [['set', 0.5, short.at]]], '短的原样放完、按音量');
+      await Sound.setCustom('done', new Uint8Array([0x52, 9]));
+      Sound.play('done', 1);
+      const long = played.pop();
+      assert.equal(Math.round((long.end - long.at) * 10) / 10, Sound.CUSTOM_MAX_S, '太长的只放 5 秒');
+      assert.deepEqual(long.out.ramps.at(-1)[0], 'ramp', '最后淡出');
+      assert.equal(await Sound.setCustom('error', new Uint8Array([1, 2])), false, '解不出来：返回 false');
+      Sound.play('error'); assert.equal(played.pop(), 'tone', '仍用默认的');
+      await Sound.setCustom('ask', null);
+      Sound.play('ask'); assert.equal(played.pop(), 'tone', '恢复默认');
+      assert.equal(await Sound.setCustom('nope', bytes), false);
+    } finally { globalThis.AudioContext = saved; delete require.cache[require.resolve('../renderer/pet-sound.js')]; }
   });
 
   check('desk pet: clicks — one opens the bubble after the double-click gap, two pokes, four look around', () => {

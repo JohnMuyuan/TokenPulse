@@ -1,5 +1,6 @@
 import type { Snapshot } from "./report";
 import type { ActivityState } from "./agent-activity";
+import { SOUND_KINDS, type SoundKind } from "./pet-sound-file";
 
 /*
  * 桌宠（0.3.61）里不碰窗口的部分：设置项、宠物跟哪份额度、该干活还是睡觉、窗口和对话气泡放在哪。
@@ -28,10 +29,18 @@ export type DeskPetPrefs = {
   deskPetBadge: boolean;
   /** 宠物脚下中点的屏幕坐标；null = 主屏右下角。 */
   deskPetPos: { x: number; y: number } | null;
-  /** 极简模式：贴在屏幕右边缘，只露出一半（位置只看 deskPetPos 的高度）。 */
+  /** 极简模式：躲在屏幕右边后面探头（位置只看 deskPetPos 的高度）。 */
   deskPetMini: boolean;
+  /** 任务做完、在问你、出错停下、可能在等你、额度用完时响一声提示音。 */
+  deskPetSound: boolean;
+  /** 提示音音量，0 到 100。 */
+  deskPetVolume: number;
+  /** 单独关掉的几种提示音（SOUND_KINDS 里的）。 */
+  deskPetMute: SoundKind[];
+  /** Agent 问你问题（选择题、计划等你批准）时，在屏幕右下角弹出问题卡片。 */
+  deskPetAsk: boolean;
 };
-export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false };
+export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false, deskPetSound: true, deskPetVolume: 70, deskPetMute: [], deskPetAsk: true };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 export const PACK_ID = /^pet-[a-f0-9]{8}$/;
@@ -48,6 +57,10 @@ export function normalizeDeskPet(patch: Record<string, unknown>): Partial<DeskPe
   if ("deskPetFidget" in patch) out.deskPetFidget = patch.deskPetFidget !== false;
   if ("deskPetBadge" in patch) out.deskPetBadge = patch.deskPetBadge !== false;
   if ("deskPetMini" in patch) out.deskPetMini = patch.deskPetMini === true;
+  if ("deskPetSound" in patch) out.deskPetSound = patch.deskPetSound !== false;
+  if ("deskPetVolume" in patch) { const value = Math.round(Number(patch.deskPetVolume)); out.deskPetVolume = Number.isFinite(value) ? clamp(value, 0, 100) : DESK_PET_DEFAULTS.deskPetVolume; }
+  if ("deskPetMute" in patch) out.deskPetMute = Array.isArray(patch.deskPetMute) ? SOUND_KINDS.filter((kind) => (patch.deskPetMute as unknown[]).includes(kind)) : [];
+  if ("deskPetAsk" in patch) out.deskPetAsk = patch.deskPetAsk !== false;
   if ("deskPetPos" in patch) {
     const pos = patch.deskPetPos as { x?: unknown; y?: unknown } | null;
     const x = Number(pos?.x), y = Number(pos?.y);
@@ -115,20 +128,20 @@ export function petBounds(anchor: { x: number; y: number } | null, size: { width
 export const anchorOf = (bounds: Rect) => ({ x: Math.round(bounds.x + bounds.width / 2), y: bounds.y + bounds.height });
 
 /*
- * 极简模式：窗口贴着屏幕可用区域的右边，宠物画在窗口右边、身子有一截伸出窗口（也就是屏幕边外）看不见。
- * 平时露 MINI_SHOW，鼠标移上来探出到 MINI_PEEK（比例按宠物宽度算，桌宠窗口 desk-pet.js 照这个摆）。
+ * 极简模式：窗口贴着屏幕可用区域的右边，宠物像躲在屏幕边后面探头——以脚底中点为轴往左歪 tilt 度，
+ * 探出屏幕的宽度是身宽的 show 倍，其余在窗口（也就是屏幕边）外看不见。平时是 tuck，鼠标移上来换成 peek（桌宠窗口 desk-pet.js 照这个摆）。
  * 窗口本身一直完整地在这块屏幕里：右边如果还接着一块屏幕，也不会露到那块屏幕上去。
  */
-export const MINI_SHOW = 0.45, MINI_PEEK = 0.85;
+export const MINI_POSE = { tuck: { tilt: 30, show: 0.55 }, peek: { tilt: 20, show: 0.75 } } as const;
 /** 松手时宠物右边离屏幕右边不到这么多（或者已经伸出去了）就贴边藏起来。 */
 export const MINI_SNAP = 8;
 export function miniBounds(anchor: { x: number; y: number } | null, size: { width: number; height: number }, work: Rect): Rect {
   const normal = petBounds(anchor, size, work);
   return { ...normal, x: work.x + work.width - size.width };
 }
-/** 极简模式下露出来的那截宠物的中心（对话气泡对着它）。 */
+/** 极简模式下探出来的那截宠物大约在哪（对话气泡对着它；开着气泡时宠物是 peek 的姿势，探出来大约半个画面宽）。 */
 export function miniSpriteCenter(work: Rect, sprite: { width: number }) {
-  return Math.round(work.x + work.width - (sprite.width * MINI_SHOW) / 2);
+  return Math.round(work.x + work.width - sprite.width / 4);
 }
 /** 窗口放在 bounds 时，宠物的右边是不是已经到了（或伸出了）屏幕右边。 */
 export function reachesRightEdge(bounds: Rect, sprite: { width: number }, work: Rect) {
@@ -203,4 +216,20 @@ export function bubbleBounds(pet: Rect, sprite: { width: number; height: number 
   if (toRight + sideWidth <= work.x + work.width - M) return { x: Math.round(toRight), y, width: sideWidth, height: sideHeight, side: "left", at };
   const x = Math.round(clamp(left + sprite.width * 0.1 - sideWidth, work.x + M, work.x + work.width - sideWidth - M));
   return { x, y, width: sideWidth, height: sideHeight, side: "right", at };
+}
+
+/**
+ * 问题卡片（Agent 在问你）放在哪：屏幕可用区域的右下角。会挡住宠物（avoid，宠物画出来的那块）就挪到宠物头顶，
+ * 头顶放不下放到宠物左边。box 是卡片窗口的大小。
+ */
+export function askBounds(box: { width: number; height: number }, work: Rect, avoid: Rect | null): Rect {
+  const M = 12, GAP = 8;
+  const width = Math.min(box.width, work.width - M * 2), height = Math.min(box.height, work.height - M * 2);
+  let x = work.x + work.width - width - M, y = work.y + work.height - height - M;
+  const hits = (ax: number, ay: number) => !!avoid && ax < avoid.x + avoid.width && ax + width > avoid.x && ay < avoid.y + avoid.height && ay + height > avoid.y;
+  if (hits(x, y)) {
+    if (avoid!.y - GAP - height >= work.y + M) y = avoid!.y - GAP - height;
+    else x = Math.max(work.x + M, avoid!.x - GAP - width);
+  }
+  return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
 }

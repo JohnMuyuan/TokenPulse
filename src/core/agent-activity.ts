@@ -14,19 +14,33 @@ import { claudeUserText, codexUserText } from "./sessions";
  * 只读文件开头（会话 id、工作目录、是不是子会话、第一句提问）和结尾（最近的状态、Claude 的 ai-title），各 64 KB。
  * 目录 30 秒全扫一次，记下两小时内动过的文件；之间每次只 stat 这些文件，变了才重读。
  * 子代理（Claude 的 subagents/、isSidechain；Codex 带 parent_thread_id 的子会话）不算单独的任务。
+ *
+ * 在问你（askOf）：Claude 的 AskUserQuestion（选择题）、ExitPlanMode（计划等你批准），Codex 的 request_user_input，
+ * 调用已经写进会话文件、还没有结果，就是在等你回答。只拿来显示，回答还是在终端里。
  */
 
 export type TaskStatus = "thinking" | "tool" | "waiting" | "done";
 export type TaskKind = "claude" | "codex";
-export type AgentTask = { key: string; kind: TaskKind; agent: string; id: string; title: string; project: string; status: TaskStatus; tool?: string; since: number; updatedAt: number; doneAt?: number };
-/** finished：上一次看还在跑、这一次结束了的任务（桌宠据此庆祝一下）。第一次扫描不算，免得一启动就庆祝。 */
-export type ActivityState = { at: number; running: AgentTask[]; recent: AgentTask[]; finished: string[] };
-export type Inferred = { status: TaskStatus; since: number; at: number; tool?: string; doneAt?: number };
+export type AskQuestion = { header: string; question: string; options: { label: string; description: string }[]; multi: boolean };
+/** 一个等你回答的提问。id 是那次工具调用的 id，回答了（有了结果）就没了。 */
+export type AgentAsk = { id: string; tool: string; at: number; questions: AskQuestion[]; plan?: string };
+export type AgentTask = { key: string; kind: TaskKind; agent: string; id: string; title: string; project: string; status: TaskStatus; tool?: string; since: number; updatedAt: number; doneAt?: number; ask?: AgentAsk };
+/** 一轮是怎么结束的：正常做完、用户自己中断、出错（API 报错之类）。 */
+export type TurnEnd = "ok" | "interrupted" | "error";
+/**
+ * 和上一次看相比的变化（第一次扫描都不算，免得一启动就庆祝、响提示音）：
+ * finished 正常做完的任务（桌宠庆祝一下）；failed 出错结束的；needsYou 刚变成「可能在等你」的；asked 刚问了你新问题的（不再算进 needsYou）。
+ * 用户自己中断的哪边都不算。
+ */
+export type ActivityState = { at: number; running: AgentTask[]; recent: AgentTask[]; finished: string[]; failed: string[]; needsYou: string[]; asked: string[] };
+export type Inferred = { status: TaskStatus; since: number; at: number; tool?: string; doneAt?: number; ended?: TurnEnd; ask?: AgentAsk };
 
 /** 一轮没结束、文件却这么久没动：多半是终端关了或者进程崩了，不再算在跑。 */
 export const STALE_MS = 10 * 60_000;
 /** 工具调用发出去这么久还没结果：可能在等用户确认，也可能只是工具跑得久，界面上写「可能在等你」。 */
 export const WAITING_MS = 90_000;
+/** 问了你问题、文件这么久没动还算在等（人可能走开了一会儿）；再久就当终端关了。 */
+export const ASK_STALE_MS = 60 * 60_000;
 /** 任务列表里「刚完成」保留多久。 */
 export const RECENT_MS = 10 * 60_000;
 const FULL_SCAN_MS = 30_000;
@@ -50,14 +64,37 @@ function stamp(value: unknown): number {
 const str = (value: unknown) => (typeof value === "string" ? value : "");
 const DONE_STOPS = new Set(["end_turn", "max_tokens", "stop_sequence", "refusal"]);
 
+const ASK_LIMITS = { questions: 4, options: 6, header: 40, question: 300, label: 80, description: 160, plan: 1200 };
+const cut = (value: unknown, max: number) => { const text = str(value).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim(); return text.length > max ? text.slice(0, max - 1) + "…" : text; };
+/** 工具调用是不是在问你；是的话收成要显示的样子（字数、个数都有上限）。不是返回 null。 */
+export function askOf(tool: string, input: unknown, id: string, at: number): AgentAsk | null {
+  let value = input;
+  if (typeof value === "string") { try { value = JSON.parse(value); } catch { return null; } }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Row;
+  if (tool === "ExitPlanMode") return { id, tool, at, questions: [], plan: cut(raw.plan, ASK_LIMITS.plan) };
+  if (tool !== "AskUserQuestion" && tool !== "request_user_input") return null;
+  const questions: AskQuestion[] = [];
+  for (const item of (Array.isArray(raw.questions) ? raw.questions.slice(0, ASK_LIMITS.questions) : []) as Row[]) {
+    if (!item || typeof item !== "object") continue;
+    const question = cut(item.question, ASK_LIMITS.question);
+    if (!question) continue;
+    const options = ((Array.isArray(item.options) ? item.options.slice(0, ASK_LIMITS.options) : []) as Row[])
+      .map((option) => ({ label: cut(option?.label, ASK_LIMITS.label), description: cut(option?.description, ASK_LIMITS.description) }))
+      .filter((option) => option.label);
+    questions.push({ header: cut(item.header, ASK_LIMITS.header), question, options, multi: item.multiSelect === true });
+  }
+  return questions.length ? { id, tool, at, questions } : null;
+}
+
 /** Claude Code：按文件结尾的若干行推出这一轮的状态。读不出任何对话行返回 null。 */
 export function inferClaude(lines: string[]): Inferred | null {
-  let status = null as TaskStatus | null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined;
+  let status = null as TaskStatus | null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined, ended: TurnEnd | undefined, ask: AgentAsk | undefined;
   for (const row of rows(lines)) {
     if (row.isSidechain || row.isMeta) continue;
     const t = stamp(row.timestamp) || at;
     if (row.type === "system") {
-      if ((row.subtype === "turn_duration" || row.subtype === "stop_hook_summary") && status && status !== "done") { status = "done"; doneAt = t; tool = undefined; }
+      if ((row.subtype === "turn_duration" || row.subtype === "stop_hook_summary") && status && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "ok"; }
       continue;
     }
     if (row.type !== "user" && row.type !== "assistant") continue;
@@ -67,39 +104,49 @@ export function inferClaude(lines: string[]): Inferred | null {
     const blocks = (Array.isArray(content) ? content : [{ type: "text", text: str(content) }]) as Row[];
     if (row.type === "user") {
       if (blocks.some((block) => block?.type === "tool_result")) {
+        if (ask && blocks.some((block) => block?.type === "tool_result" && block.tool_use_id === ask!.id)) ask = undefined;
         if (status !== "done") { status = "thinking"; tool = undefined; }
         continue;
       }
       for (const block of blocks) {
         if (block?.type !== "text") continue;
         const cleaned = claudeUserText(str(block.text));
-        if (cleaned.event === "已中断") { status = "done"; doneAt = t; tool = undefined; }
-        else if (cleaned.text) { status = "thinking"; since = t; tool = undefined; doneAt = undefined; }
+        if (cleaned.event === "已中断") { status = "done"; doneAt = t; tool = undefined; ended = "interrupted"; }
+        else if (cleaned.text) { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; ask = undefined; }
       }
       continue;
     }
-    if (DONE_STOPS.has(str(message.stop_reason))) { status = "done"; doneAt = t; tool = undefined; continue; }
+    // API 报错（限流、过载、额度用完……）：Claude Code 写一条 isApiErrorMessage 的回复，这一轮就停了
+    if (row.isApiErrorMessage === true) { status = "done"; doneAt = t; tool = undefined; ended = "error"; continue; }
+    if (DONE_STOPS.has(str(message.stop_reason))) { status = "done"; doneAt = t; tool = undefined; ended = "ok"; continue; }
     // 这一轮的提问在读到的范围之前：以第一条回复为准
-    if (status === null || status === "done") { status = "thinking"; since = t; doneAt = undefined; }
-    const use = blocks.filter((block) => block?.type === "tool_use").at(-1);
+    if (status === null || status === "done") { status = "thinking"; since = t; doneAt = undefined; ended = undefined; ask = undefined; }
+    const uses = blocks.filter((block) => block?.type === "tool_use");
+    for (const block of uses) ask = askOf(str(block.name), block.input, str(block.id), t) ?? ask;
+    const use = uses.at(-1);
     if (use) { status = "tool"; tool = str(use.name) || undefined; }
     else if (status === "tool") { status = "thinking"; tool = undefined; }
   }
   if (!status) return null;
-  return { status, since: since || first, at, tool, doneAt };
+  return { status, since: since || first, at, tool, doneAt, ...(status === "done" && ended ? { ended } : {}), ...(status !== "done" && ask ? { ask } : {}) };
 }
 
 /** Codex：task_started / task_complete 之间算在跑；有没回结果的工具调用就是在跑工具。 */
 export function inferCodex(lines: string[]): Inferred | null {
-  let status: TaskStatus | null = null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined;
+  let status: TaskStatus | null = null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined, ended: TurnEnd | undefined, ask: AgentAsk | undefined;
   const pending = new Map<string, string>();
   for (const row of rows(lines)) {
     const t = stamp(row.timestamp) || at;
     if (t) { at = t; first ||= t; }
     const payload = (row.payload ?? {}) as Row;
     if (row.type === "event_msg") {
-      if (payload.type === "task_started") { status = "thinking"; since = t; tool = undefined; doneAt = undefined; pending.clear(); }
-      else if (payload.type === "task_complete" || payload.type === "turn_aborted") { status = "done"; doneAt = t; tool = undefined; pending.clear(); }
+      if (payload.type === "task_started") { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; ask = undefined; pending.clear(); }
+      // error 是这一轮出错停下（stream_error 只是在重试，不算）；出错后可能还会跟一条 task_complete，仍算出错
+      else if (payload.type === "error" && status && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "error"; pending.clear(); }
+      else if (payload.type === "task_complete" || payload.type === "turn_aborted") {
+        if (status !== "done" || ended !== "error") ended = payload.type === "turn_aborted" ? "interrupted" : "ok";
+        status = "done"; doneAt ||= t; tool = undefined; pending.clear();
+      }
       continue;
     }
     if (row.type !== "response_item" || status === "done") continue;
@@ -107,19 +154,22 @@ export function inferCodex(lines: string[]): Inferred | null {
     if (payload.type === "function_call" || payload.type === "custom_tool_call") {
       pending.set(str(payload.call_id), str(payload.name));
       status = "tool"; tool = str(payload.name) || undefined;
+      ask = askOf(str(payload.name), payload.arguments, str(payload.call_id), t) ?? ask;
     } else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
       pending.delete(str(payload.call_id));
+      if (ask && ask.id === str(payload.call_id)) ask = undefined;
       if (!pending.size) { status = "thinking"; tool = undefined; }
       else { status = "tool"; tool = [...pending.values()].at(-1) || undefined; }
     }
   }
   if (!status) return null;
-  return { status, since: since || first, at, tool, doneAt };
+  return { status, since: since || first, at, tool, doneAt, ...(status === "done" && ended ? { ended } : {}), ...(status !== "done" && ask ? { ask } : {}) };
 }
 
-/** 推出来的状态再看文件多久没动：太久没动的不算在跑；工具调用卡太久写成「可能在等你」。 */
+/** 推出来的状态再看文件多久没动：太久没动的不算在跑；工具调用卡太久写成「可能在等你」；在问你的马上就是在等你。 */
 export function liveStatus(inferred: Inferred, mtimeMs: number, now: number): TaskStatus | null {
   if (inferred.status === "done") return "done";
+  if (inferred.ask) return now - mtimeMs > ASK_STALE_MS ? null : "waiting";
   if (now - mtimeMs > STALE_MS) return null;
   if (inferred.status === "tool" && now - mtimeMs > WAITING_MS) return "waiting";
   return inferred.status;
@@ -162,7 +212,7 @@ export function codexHead(lines: string[]) {
   return { id, cwd, prompt, side };
 }
 
-type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null };
+type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string };
 export type ActivityRoots = { claude: string; codex: string; codexIndex: string };
 export function defaultRoots(): ActivityRoots {
   return { claude: path.join(cliDir("claude"), "projects"), codex: path.join(cliDir("chatgpt"), "sessions"), codexIndex: path.join(cliDir("chatgpt"), "session_index.jsonl") };
@@ -250,7 +300,7 @@ export class ActivityScanner {
   async scan(): Promise<ActivityState> {
     const now = this.now();
     if (now - this.lastFull >= FULL_SCAN_MS) { this.lastFull = now; await this.discover(now); }
-    const running: AgentTask[] = [], recent: AgentTask[] = [], finished: string[] = [];
+    const running: AgentTask[] = [], recent: AgentTask[] = [], finished: string[] = [], failed: string[] = [], needsYou: string[] = [], asked: string[] = [];
     for (const entry of [...this.entries.values()]) {
       let stat;
       try { stat = await fs.stat(entry.file); } catch { this.entries.delete(entry.file); continue; }
@@ -260,18 +310,26 @@ export class ActivityScanner {
       }
       const status = entry.inferred ? liveStatus(entry.inferred, entry.mtimeMs, now) : null;
       if (entry.task && entry.inferred && status) {
-        const task: AgentTask = { ...entry.task, status, tool: status === "done" ? undefined : entry.inferred.tool, since: entry.inferred.since, updatedAt: entry.mtimeMs, doneAt: entry.inferred.doneAt };
+        const ask = status === "done" ? undefined : entry.inferred.ask;
+        const task: AgentTask = { ...entry.task, status, tool: status === "done" ? undefined : entry.inferred.tool, since: entry.inferred.since, updatedAt: entry.mtimeMs, doneAt: entry.inferred.doneAt, ...(ask ? { ask } : {}) };
         if (status !== "done") running.push(task);
         else if (task.doneAt && now - task.doneAt <= RECENT_MS) recent.push(task);
-        if (status === "done" && entry.last && entry.last !== "done") finished.push(task.key);
+        if (status === "done" && entry.last && entry.last !== "done") {
+          if (entry.inferred.ended === "error") failed.push(task.key);
+          else if (entry.inferred.ended !== "interrupted") finished.push(task.key);
+        }
+        // 第一次扫描（entry.last 还是 undefined）不算：免得一启动就响
+        if (ask && entry.last !== undefined && entry.lastAsk !== ask.id) asked.push(task.key);
+        else if (!ask && status === "waiting" && entry.last && entry.last !== "waiting") needsYou.push(task.key);
       }
       entry.last = status;
+      entry.lastAsk = status && status !== "done" ? entry.inferred?.ask?.id : undefined;
       if (now - entry.mtimeMs > KEEP_MS) this.entries.delete(entry.file);
     }
     // 同一个会话可能有几份文件（Claude 续接旧会话）：只留最新的那份
     const unique = (tasks: AgentTask[]) => [...new Map(tasks.sort((a, b) => a.updatedAt - b.updatedAt).map((task) => [task.key, task])).values()];
     const live = unique(running).sort((a, b) => b.updatedAt - a.updatedAt);
     const busy = new Set(live.map((task) => task.key));
-    return { at: now, running: live, recent: unique(recent).filter((task) => !busy.has(task.key)).sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0)).slice(0, 3), finished: [...new Set(finished)].filter((key) => !busy.has(key)) };
+    return { at: now, running: live, recent: unique(recent).filter((task) => !busy.has(task.key)).sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0)).slice(0, 3), finished: [...new Set(finished)].filter((key) => !busy.has(key)), failed: [...new Set(failed)].filter((key) => !busy.has(key)), needsYou: [...new Set(needsYou)], asked: [...new Set(asked)] };
   }
 }

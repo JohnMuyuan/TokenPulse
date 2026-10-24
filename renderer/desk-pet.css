@@ -29,8 +29,8 @@ body.dp-body { position: relative; }
 .dp-stage img { object-fit: contain; object-position: 50% 100%; image-rendering: auto; -webkit-user-drag: none; pointer-events: none; }
 body.hover .dp-stage { cursor: grab; }
 body.dragging .dp-stage { cursor: grabbing; }
-/* 极简模式：宠物贴着窗口右边，left 由 desk-pet.js 按露出多少算；探出来、缩回去滑一下 */
-body.mini .dp-stage { transform: none; transition: left .22s cubic-bezier(.3, 1.4, .6, 1); }
+/* 极简模式：躲在屏幕右边后面探头。位置和歪的角度由 desk-pet.js 算，以脚底中点为轴；探出来、缩回去带一点回弹 */
+body.mini .dp-stage { transform-origin: 50% 100%; transition: left .28s cubic-bezier(.3, 1.4, .6, 1), transform .28s cubic-bezier(.3, 1.4, .6, 1); }
 body.mini.dragging .dp-stage { transition: none; }
 body.mini .dp-hint { left: auto; right: 4px; transform: translateY(4px); }
 body.mini.hover .dp-hint { transform: none; }

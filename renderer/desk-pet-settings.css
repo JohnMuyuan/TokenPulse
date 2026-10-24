@@ -59,3 +59,19 @@
   .dps-stage { min-width: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .dps-switch, .dps-switch .dps-knob, .dps-choice { transition: none; } }
+
+/* 每种提示音：开关、名字（换过的写自己的文件名）、恢复默认 / 试听 / 换成自己的 */
+.dps-sounds { display: grid; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.dps-sound { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 10px 14px; }
+.dps-sound + .dps-sound { border-top: 1px solid var(--line); }
+.dps-sound-text { display: grid; gap: 1px; min-width: 0; }
+.dps-sound-text b { font-size: 14px; font-weight: 600; }
+.dps-sound-text small { overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.dps-sound-text small.mine { color: var(--accent); }
+.dps-sound.muted .dps-sound-text { opacity: .55; }
+.dps-sound-actions { display: flex; align-items: center; gap: 8px; }
+.dps-sound-actions .text-btn { font-size: 12.5px; }
+.dps-switch.small { width: 36px; height: 20px; }
+.dps-switch.small .dps-knob { width: 14px; height: 14px; }
+.dps-switch.small.on .dps-knob { transform: translateX(16px); }
+@media (max-width: 720px) { .dps-sound { grid-template-columns: auto minmax(0, 1fr); } .dps-sound-actions { grid-column: 2; } }

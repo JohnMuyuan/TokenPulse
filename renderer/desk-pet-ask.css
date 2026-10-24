@@ -1,0 +1,47 @@
+/*
+ * 问题卡片（desk-pet-ask.html）：和对话气泡同一套像素风（颜色变量、描边、阶梯投影都来自 desk-pet-bubble.css），没有尾巴。
+ * 一个窗口里竖着摆几张卡片，最新的在下面、挨着屏幕右下角。窗口四周留 6 像素给描边和投影。
+ */
+.ak { position: absolute; left: 6px; top: 6px; display: grid; gap: 12px; width: 320px; }
+
+.ak-card {
+  box-sizing: border-box; padding: 9px 11px 8px;
+  background: var(--bb-paper);
+  box-shadow: 0 -2px 0 0 var(--bb-ink), 0 2px 0 0 var(--bb-ink), -2px 0 0 0 var(--bb-ink), 2px 0 0 0 var(--bb-ink),
+    2px 4px 0 0 var(--bb-shade), 4px 2px 0 0 var(--bb-shade), inset -2px -2px 0 0 var(--bb-bevel);
+}
+.ak-card.pop { animation: ak-pop .18s steps(3, end); }
+@keyframes ak-pop { from { transform: translateY(10px); opacity: .3; } to { transform: none; opacity: 1; } }
+
+.ak-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ak-head b { flex: none; font-weight: 700; }
+.ak-head span { flex: 1; min-width: 0; overflow: hidden; color: var(--bb-muted); text-overflow: ellipsis; white-space: nowrap; }
+.ak-x { flex: none; width: 18px; height: 18px; padding: 0; border: 0; background: transparent; color: var(--bb-muted); font: inherit; font-size: 14px; line-height: 18px; cursor: pointer; }
+.ak-x:hover, .ak-x:focus-visible { background: var(--bb-hover); color: var(--bb-text); outline: none; }
+
+.ak-say { margin: 5px 0 6px; color: var(--bb-warn); font-size: 12px; font-weight: 700; }
+.ak-q { margin: 0 0 6px; }
+.ak-q + .ak-q { padding-top: 6px; border-top: 2px dashed var(--bb-off); }
+.ak-question { display: flex; align-items: baseline; gap: 6px; margin: 0 0 4px; font-size: 13px; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
+.ak-question .bb-chip { flex: none; color: var(--bb-muted); font-weight: 400; }
+
+.ak-opts { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.ak-opts li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 4px; padding: 2px 4px; background: var(--bb-bevel); }
+.ak-opts li i { color: var(--bb-muted); font-style: normal; font-variant-numeric: tabular-nums; }
+.ak-opts li b { font-weight: 600; overflow-wrap: anywhere; }
+.ak-opts li small { display: block; color: var(--bb-muted); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.ak-multi { margin: 3px 0 0; color: var(--bb-muted); font-size: 11px; }
+
+.ak-plan { max-height: 9.5em; margin: 0 0 6px; padding: 4px 6px; overflow: hidden; background: var(--bb-bevel); font: inherit; font-size: 11.5px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere;
+  -webkit-mask-image: linear-gradient(#000 75%, transparent); mask-image: linear-gradient(#000 75%, transparent); }
+
+.ak-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding-top: 6px; border-top: 2px dashed var(--bb-off); }
+.ak-foot small { flex: 1; min-width: 0; color: var(--bb-muted); font-size: 11px; }
+.ak-btn { flex: none; padding: 1px 8px; border: 0; background: var(--bb-off); color: var(--bb-text); font: inherit; font-size: 11.5px; cursor: pointer;
+  box-shadow: 0 2px 0 0 var(--bb-ink), 0 -2px 0 0 var(--bb-ink), 2px 0 0 0 var(--bb-ink), -2px 0 0 0 var(--bb-ink); margin: 2px; }
+.ak-btn:hover, .ak-btn:focus-visible { background: var(--bb-hover); outline: none; }
+.ak-more { margin: 0; padding: 4px 8px; background: var(--bb-paper); color: var(--bb-muted); font-size: 11px;
+  box-shadow: 0 -2px 0 0 var(--bb-ink), 0 2px 0 0 var(--bb-ink), -2px 0 0 0 var(--bb-ink), 2px 0 0 0 var(--bb-ink); display: flex; align-items: center; gap: 8px; }
+.ak-more span { flex: 1; }
+
+@media (prefers-reduced-motion: reduce) { .ak-card.pop { animation: none; } }

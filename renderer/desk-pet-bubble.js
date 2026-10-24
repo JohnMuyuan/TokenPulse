@@ -106,7 +106,7 @@
     const row = el('button', { type: 'button', class: 'bb-task' + (done ? ' done' : '') + (task.status === 'waiting' ? ' waiting' : ''), 'data-key': task.key, title: task.tool ? `${task.title} · ${task.tool}` : task.title }, [
       el('i', { class: 'bb-dot' + (done ? ' done' : task.status === 'waiting' ? ' waiting' : '') }),
       el('span', { class: 'bb-task-main' }, [el('b', { text: task.title }), el('small', { text: [task.agent, task.project, when].filter(Boolean).join(' · ') })]),
-      el('i', { class: 'bb-chip', text: STATUS[task.status] || '' }),
+      el('i', { class: 'bb-chip', text: task.asking ? L('在问你', 'Asking you') : STATUS[task.status] || '' }),
     ]);
     row.addEventListener('click', () => api.bubbleAction('sessions', task.key));
     return row;

@@ -248,7 +248,8 @@
   }
   function squirrel(g, c) {
     const P = SQ, mood = moodOf(c), a = c.action, at = c.at;
-    if (a === 'restock') {
+    // 极简模式躲在屏幕边后面探头：橡果堆留在屏幕外，不跟着歪
+    if (c.mini) { /* 不画橡果堆 */ } else if (a === 'restock') {
       const from = Math.round(clamp(c.from || 0, 0, 100) / 100 * 6);
       for (let i = 0; i < 6; i++) {
         if (i < from) { acorn(g, PILE[i][0], PILE[i][1], P); continue; }
@@ -257,7 +258,7 @@
         acorn(g, px, k >= 8 ? py - (k === 8 ? 2 : k === 9 ? 1 : 0) : -8 + (py + 8) * (k / 8) * (k / 8), P);
       }
     } else for (let i = 0; i < Math.round(c.quota / 100 * 6); i++) acorn(g, PILE[i][0], PILE[i][1], P);
-    if (mood === 'empty' && a !== 'restock') { put(g, 6, 52, P.acornD); put(g, 11, 51, P.cap); put(g, 15, 52, P.acornL); put(g, 19, 52, P.acornD); }
+    if (mood === 'empty' && a !== 'restock' && !c.mini) { put(g, 6, 52, P.acornD); put(g, 11, 51, P.cap); put(g, 15, 52, P.acornL); put(g, 19, 52, P.acornD); }
     if (c.state === 'work' && !OVERRIDE.has(a)) return squirrelSide(g, c, mood);
     const p = basePose(c, mood);
     switch (a) {
@@ -635,6 +636,9 @@
     return g;
   }
 
+  /** 身体占的格子 [左, 上, 右, 下]（含边，不算松鼠身边的橡果堆）：极简模式探头时绕脚底中点歪、按身宽算探出去多少。 */
+  const BODY = { squirrel: [23, 7, 64, 54], hamster: [18, 22, 53, 54], octopus: [15, 8, 54, 46] };
+
   const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
   const LABELS = { nibble: '啃橡果', groom: '洗脸', look: '张望', tail: '理尾巴', scratch: '挠耳朵', wash: '洗脸', stuff: '塞腮帮', stretch: '伸懒腰', bubbles: '吐泡泡', shimmer: '变色', wave: '打招呼', startle: '吓一跳', drag: '被拎起来', land: '落地', celebrate: '庆祝', yawn: '打哈欠', wake: '揉眼睛', restock: '补满额度', poke: '被戳了一下', lookaround: '东张西望', flop: '倒头就睡' };
 
@@ -741,5 +745,5 @@
     for (let i = 0; i < W * H; i++) { const c = g.c[i]; if (!c) continue; ctx.fillStyle = c; ctx.fillRect((i % W) * scale, Math.floor(i / W) * scale, scale, scale); }
   }
 
-  root.PulsePet = { W, H, drawPet, FIDGETS, OVERRIDE, LABELS, durOf, Controller, Clicks, DOZE_AFTER, DOZE_MS, paint };
+  root.PulsePet = { W, H, BODY, drawPet, FIDGETS, OVERRIDE, LABELS, durOf, Controller, Clicks, DOZE_AFTER, DOZE_MS, paint };
 })(typeof window !== 'undefined' ? window : globalThis);

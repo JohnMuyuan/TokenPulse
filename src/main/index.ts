@@ -12,7 +12,8 @@ import { copyShareCard, renderShareCard, saveShareCard, shareMilestones, shareMo
 import { maybeWeeklySummary } from "../core/weekly-summary";
 import { lastProbes, runProbe } from "./codex-state-probe";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
-import { deskPetBubbleAction, deskPetBubbleData, deskPetClick, deskPetDrag, deskPetHit, deskPetMenu, deskPetReady, deskPetSnapshotChanged, deskPetView, deskPetWindows, destroyDeskPet, resetDeskPetPosition, resizeDeskPetBubble, setupDeskPet, syncDeskPet } from "./desk-pet";
+import { deskPetAskAction, deskPetAskData, deskPetBubbleAction, deskPetBubbleData, deskPetClick, deskPetDrag, deskPetHit, deskPetMenu, deskPetReady, deskPetSnapshotChanged, deskPetView, deskPetWindows, destroyDeskPet, resetDeskPetPosition, resizeDeskPetAsk, resizeDeskPetBubble, setupDeskPet, syncDeskPet } from "./desk-pet";
+import { importPetSound, listPetSounds, petSoundData, removePetSound } from "../core/pet-sound-file";
 import { accountKey, normalizeDeskPet } from "../core/desk-pet-model";
 import { importPetPack, listPetPacks, petPackImages, removePetPack } from "../core/pet-pack";
 import fsSync from "fs";
@@ -1157,6 +1158,20 @@ if (!app.requestSingleInstanceLock()) {
       catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "导入失败" }; }
     });
     ipcMain.handle("desk-pet:reset-position", () => { resetDeskPetPosition(); return true; });
+    // 问题卡片（Agent 在问你）和自己选的提示音
+    ipcMain.handle("desk-pet:ask-data", () => deskPetAskData());
+    ipcMain.on("desk-pet:ask-size", (_event, width: unknown, height: unknown) => resizeDeskPetAsk(Number(width), Number(height)));
+    ipcMain.on("desk-pet:ask-action", (_event, action: unknown, value: unknown) => deskPetAskAction(action, value));
+    ipcMain.handle("desk-pet:sounds", () => listPetSounds());
+    ipcMain.handle("desk-pet:sound-data", (_event, kind: unknown) => petSoundData(kind));
+    ipcMain.handle("desk-pet:import-sound", async (_event, kind: unknown) => {
+      const options = { title: tr("选择提示音（WAV、MP3、OGG、FLAC、M4A，2 MB 以内）"), properties: ["openFile" as const], filters: [{ name: tr("音频"), extensions: ["wav", "mp3", "ogg", "oga", "flac", "m4a", "aac", "mp4"] }] };
+      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
+      try { const sound = importPetSound(kind, picked.filePaths[0]); syncDeskPet(); return { ok: true as const, sound, sounds: listPetSounds() }; }
+      catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "导入失败" }; }
+    });
+    ipcMain.handle("desk-pet:remove-sound", (_event, kind: unknown) => { removePetSound(kind); syncDeskPet(); return listPetSounds(); });
     ipcMain.handle("knowledge:state", () => knowledgeState());
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));

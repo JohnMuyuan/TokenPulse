@@ -41,7 +41,7 @@ const live = () => BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
 const petOf = () => live().find(w => w.webContents.getURL().includes('desk-pet.html'));
 const bubbleOf = () => live().find(w => w.webContents.getURL().includes('desk-pet-bubble.html'));
 const mainOf = () => live().find(w => w.webContents.getURL().includes('index.html'));
-setTimeout(() => { console.error('FAIL desk pet UI timed out'); app.exit(1); }, 90000);
+setTimeout(() => { console.error('FAIL desk pet UI timed out'); app.exit(1); }, 150000);
 
 app.whenReady().then(async () => {
   let failed = false;
@@ -209,19 +209,109 @@ app.whenReady().then(async () => {
     await until(() => js("document.getElementById('dp-stage').dataset.action === 'wake' && document.getElementById('dp-stage').dataset.state === 'idle'"), '有人动了：揉眼睛醒来');
     console.log('PASS desk pet UI: after a minute without input the pet yawns and dozes, and wakes when the user is back');
 
-    // 极简模式：贴屏幕右边只露一截，鼠标移上去探出来打招呼；从边上拖出来恢复
+    // 提示音：做完、出错、可能在等你各响各的；挨得太近只响一声；设置里关掉就不响（动作照做）。测试里不真的放声音，记下要放哪个
+    await js("window.__sounds = []; window.PulsePetSound.play = kind => (window.__sounds.push(kind), true); true");
+    const sounds = () => js('window.__sounds.slice()');
+    pet.webContents.send('desk-pet-state', { ...awake, sound: true });
+    await until(() => js("!document.getElementById('dp-stage').dataset.action"), '先把手上的动作做完', 6000);
+    pet.webContents.send('desk-pet-event', { type: 'alert', kind: 'error' });
+    await until(async () => (await sounds()).join() === 'error', '出错：响一声');
+    assert.equal(await js("document.getElementById('dp-stage').dataset.action"), 'startle', '出错：吓一跳');
+    pet.webContents.send('desk-pet-event', { type: 'celebrate' });
+    await delay(300);
+    assert.deepEqual(await sounds(), ['error'], '挨得太近：只响一声');
+    await delay(1400);
+    pet.webContents.send('desk-pet-event', { type: 'celebrate' });
+    await until(async () => (await sounds()).join() === 'error,done', '做完：响做完的调子');
+    await delay(1600);
+    pet.webContents.send('desk-pet-event', { type: 'alert', kind: 'waiting' });
+    await until(async () => (await sounds()).join() === 'error,done,waiting', '可能在等你');
+    assert.equal(await js("document.getElementById('dp-stage').dataset.action"), 'wave', '在等你：挥手叫你');
+    await delay(1600);
+    pet.webContents.send('desk-pet-state', { ...awake, sound: false });
+    await delay(100);
+    pet.webContents.send('desk-pet-event', { type: 'alert', kind: 'error' });
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'startle'"), '关了提示音动作照做');
+    await delay(300);
+    assert.deepEqual(await sounds(), ['error', 'done', 'waiting'], '关了就不响');
+    assert.equal(await js("typeof window.PulsePetSound === 'object' && document.querySelector('script[src=\"pet-sound.js\"]') !== null"), true);
+    console.log('PASS desk pet UI: finished, failed and waiting tasks play their own short sounds, close calls play once, and turning sounds off keeps the moves but stays quiet');
+
+    // 单独关掉一种：动作照做、不响；音量按设置
+    await js("window.__sounds = []; window.PulsePetSound.play = (kind, volume) => (window.__sounds.push(kind + '@' + volume), true); true");
+    await delay(1600);
+    pet.webContents.send('desk-pet-state', { ...awake, sound: true, volume: 40, mute: ['ask'] });
+    await delay(100);
+    pet.webContents.send('desk-pet-event', { type: 'alert', kind: 'ask' });
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'wave'"), '在问你：挥手叫你');
+    await delay(300);
+    assert.deepEqual(await sounds(), [], '关掉的那种不响');
+    await delay(1600);
+    pet.webContents.send('desk-pet-state', { ...awake, sound: true, volume: 40, mute: ['done'] });
+    await delay(100);
+    pet.webContents.send('desk-pet-event', { type: 'alert', kind: 'ask' });
+    await until(async () => (await sounds()).join() === 'ask@0.4', '在问你：响「嗯？」，按音量');
+    console.log('PASS desk pet UI: each sound can be muted on its own (the pet still waves) and plays at the chosen volume');
+
+    // 问题卡片：会话里写进一个还没回答的 AskUserQuestion → 屏幕右下角弹卡片（测试时在屏幕外），写着问题和选项，不抢焦点
+    const askOf = () => live().find(w => w.webContents.getURL().includes('desk-pet-ask.html'));
+    const c1 = path.join(claudeDir, 'c-1.jsonl');
+    await delay(1600);
+    await js('window.__sounds = []');
+    fs.appendFileSync(c1, line({ type: 'assistant', timestamp: ago(0), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'ask-1', name: 'AskUserQuestion', input: { questions: [{ header: '方案', question: '额度紧张时用哪种提示？', multiSelect: true, options: [{ label: '分级颜色', description: '按剩余额度变色' }, { label: '弹通知', description: '' }] }] } }] } }) + '\n');
+    const askWin = await until(() => { const w = askOf(); return w && w.isVisible() ? w : null; }, '问题卡片', 15000);
+    const ajs = code => askWin.webContents.executeJavaScript(code);
+    assert.equal(askWin.isFocusable(), false, '卡片不抢焦点');
+    await until(() => ajs("document.querySelectorAll('.ak-card').length === 1"), '卡片画出来');
+    assert.deepEqual(await ajs("[document.querySelector('.ak-head b').textContent, document.querySelector('.ak-head span').textContent, document.querySelector('.ak-say').textContent, document.querySelector('.ak-question').textContent, [...document.querySelectorAll('.ak-opts li')].map(li => li.textContent), document.querySelector('.ak-multi').textContent, document.querySelector('.ak-foot small').textContent]"),
+      ['Claude Code', 'demo-app · 额度卡片分级提示', '有个问题想问你', '方案额度紧张时用哪种提示？', ['1分级颜色按剩余额度变色', '2弹通知'], '可以多选', '回到终端里回答']);
+    await until(() => { const b = askWin.getBounds(); return b.width === 332 && b.height > 100; }, '窗口大小 = 卡片 + 描边投影');
+    await until(async () => (await sounds()).some(item => item.startsWith('ask@')), '主进程发来「在问你」：响一声').catch(async error => { console.error('heard', await sounds()); throw error; });
+    await until(() => js("/1 个在问你/.test(document.getElementById('dp-hint').textContent)"), '悬停提示写着在问你');
+    // 点「知道了」：卡片收起；同一个问题不会再弹
+    await ajs("document.querySelector('.ak-btn').click()");
+    await until(() => !askOf(), '知道了：收起');
+    await delay(4500);
+    assert.equal(askOf(), undefined, '同一个问题不再弹');
+    // 回答了，接着又写好计划等你批准：新卡片
+    fs.appendFileSync(c1, [line({ type: 'user', timestamp: ago(0), message: { content: [{ type: 'tool_result', tool_use_id: 'ask-1', content: '分级颜色' }] } }), line({ type: 'assistant', timestamp: ago(0), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'plan-1', name: 'ExitPlanMode', input: { plan: '# 计划\n1. 改额度卡片\n2. 补测试' } }] } })].join('\n') + '\n');
+    const planWin = await until(() => { const w = askOf(); return w && w.isVisible() ? w : null; }, '计划卡片', 15000);
+    const pjs = code => planWin.webContents.executeJavaScript(code);
+    await until(() => pjs("document.querySelector('.ak-card')?.dataset.tool === 'ExitPlanMode'"), '计划卡片画出来');
+    assert.deepEqual(await pjs("[document.querySelector('.ak-say').textContent, document.querySelector('.ak-plan').textContent, document.querySelector('.ak-foot small').textContent]"), ['计划写好了，等你批准', '# 计划\n1. 改额度卡片\n2. 补测试', '回到终端里批准或修改']);
+    // 在终端里批准了（有了结果）：卡片自己收起
+    fs.appendFileSync(c1, line({ type: 'user', timestamp: ago(0), message: { content: [{ type: 'tool_result', tool_use_id: 'plan-1', content: 'approved' }] } }) + '\n');
+    await until(() => !askOf(), '回答了：卡片自己收起', 15000);
+    console.log('PASS desk pet UI: a pending question pops a card with the question and options (without taking focus), "Got it" puts it away, a plan waiting for approval gets its own card and answering in the terminal closes it');
+
+    // 极简模式：躲在屏幕右边后面探头（以脚为轴往左歪），鼠标移上去探得更出来、打招呼；从边上拖出来恢复
     const prefsNow = () => JSON.parse(fs.readFileSync(path.join(root, 'data', 'prefs.json'), 'utf8'));
     deskPetMain.setDeskPetMini(true);
     assert.equal(prefsNow().deskPetMini, true, '记住极简模式');
     await until(() => js("document.body.classList.contains('mini') && document.getElementById('dp-stage').dataset.mini === 'tuck'"), '贴边藏着');
-    const shown = () => js("Math.round(innerWidth - document.getElementById('dp-stage').getBoundingClientRect().left)");
-    await until(async () => Math.abs(await shown() - Math.round(144 * 0.45)) <= 1, '只露 45%');
+    const angle = () => js("(() => { const m = new DOMMatrix(getComputedStyle(document.getElementById('dp-stage')).transform); return Math.round(Math.atan2(m.b, m.a) * 180 / Math.PI); })()");
+    // 画面上宠物从屏幕右边探出来多宽（CSS 像素）：截窗口，找最左边一列有颜色的（只看提示条下面）
+    const outWidth = async () => {
+      const image = await pet.webContents.capturePage(), { width, height } = image.getSize(), bits = image.toBitmap(), k = width / (await js('innerWidth'));
+      for (let x = 0; x < width; x++) for (let y = Math.round(34 * k); y < height; y++) if (bits[(y * width + x) * 4 + 3] > 40) return Math.round((width - x) / k);
+      return 0;
+    };
+    await until(async () => await angle() === -30, '平时歪 30 度，只有头探出来');
+    const tucked = await outWidth();
+    // 测试用的是松鼠：身体 42 格宽，放大两倍是 84 像素；平时探出 55%
+    assert.ok(tucked > 84 * 0.4 && tucked < 84 * 0.7, `平时探出一点，实际 ${tucked}`);
     await until(() => js("getComputedStyle(document.getElementById('dp-stage')).transitionDuration !== '0s'"), '探出来有过渡');
     await until(() => js("!document.getElementById('dp-stage').dataset.action"), '揉完眼睛、落地做完', 6000);
-    const edge = await spot();
-    assert.equal(await hover(edge.x, edge.y), true, '露出来的那截能悬停');
+    // 从屏幕边往里一格一格移鼠标，碰到宠物就算悬停上了（歪着的宠物要按转回去的位置判断）
+    const edge = await js(`(() => { for (let y = innerHeight - 4; y > 40; y -= 4) for (let x = innerWidth - 2; x > innerWidth - 90; x -= 3) {
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
+      if (document.body.classList.contains('hover')) return { x, y }; } return null; })()`);
+    assert.ok(edge, '探出来的头能悬停');
+    assert.equal(await hover(2, 2), false, '透明的地方不算');
+    await hover(edge.x, edge.y);
     await until(() => js("document.getElementById('dp-stage').dataset.mini === 'peek'"), '探出来');
-    await until(async () => Math.abs(await shown() - Math.round(144 * 0.85)) <= 1, '探出 85%');
+    await until(async () => await angle() === -20, '探出来时身子直一些');
+    await until(async () => await outWidth() > tucked + 8, '探得更出来');
     assert.equal(await js("document.getElementById('dp-stage').dataset.action"), 'wave', '打招呼');
     assert.equal(await hover(2, 2), false);
     await until(() => js("document.getElementById('dp-stage').dataset.mini === 'tuck'"), '鼠标移开缩回去');
@@ -257,6 +347,50 @@ app.whenReady().then(async () => {
     assert.equal(await mjs("document.querySelector('.dps-choice.on').dataset.kind"), 'hamster', '正在用的标出来');
     assert.equal(await mjs("document.getElementById('page-pet').textContent.includes('null')"), false, '没有把空值写成「null」');
     assert.ok(await mjs("document.querySelectorAll('#page-pet canvas').length") >= 4, '有会动的预览');
+    // 提示音开关：关掉存下来；打开时试听一下（测试里记下要放哪个，不真放）
+    await mjs("window.__played = []; window.PulsePetSound.play = kind => (window.__played.push(kind), true); true");
+    const pickSound = label => mjs(`(async () => { document.getElementById('dps-sound').click(); await new Promise(r => setTimeout(r, 50));
+      const item = [...document.querySelectorAll('#option-menu .option-item')].find(b => b.textContent.trim().startsWith('${label}')); item.click(); })()`);
+    assert.match(await mjs("document.getElementById('dps-sound').textContent"), /^开/);
+    await pickSound('关');
+    await until(() => JSON.parse(fs.readFileSync(path.join(root, 'data', 'prefs.json'), 'utf8')).deskPetSound === false, '关掉提示音存下来');
+    assert.deepEqual(await mjs('window.__played'), [], '关的时候不试听');
+    await pickSound('开');
+    await until(() => JSON.parse(fs.readFileSync(path.join(root, 'data', 'prefs.json'), 'utf8')).deskPetSound === true, '打开提示音存下来');
+    assert.deepEqual(await mjs('window.__played'), ['done'], '打开时试听一下');
+    // 问题卡片开关、音量、每种提示音单独关掉 / 换成自己的音频 / 恢复默认
+    const prefsFile = () => JSON.parse(fs.readFileSync(path.join(root, 'data', 'prefs.json'), 'utf8'));
+    const pickOption = (id, label) => mjs(`(async () => { document.getElementById('${id}').click(); await new Promise(r => setTimeout(r, 50));
+      const item = [...document.querySelectorAll('#option-menu .option-item')].find(b => b.textContent.trim().startsWith('${label}')); item.click(); })()`);
+    await pickOption('dps-ask', '不弹');
+    await until(() => prefsFile().deskPetAsk === false, '不弹问题卡片存下来');
+    await pickOption('dps-ask', '弹出卡片');
+    await until(() => prefsFile().deskPetAsk === true, '弹问题卡片存下来');
+    await pickOption('dps-volume', '50%');
+    await until(() => prefsFile().deskPetVolume === 50, '音量存下来');
+    assert.deepEqual(await mjs("[...document.querySelectorAll('.dps-sound')].map(row => row.dataset.kind)"), ['done', 'ask', 'waiting', 'error', 'empty']);
+    await mjs("document.querySelector('[data-mute=waiting]').click()");
+    await until(() => prefsFile().deskPetMute?.join() === 'waiting', '单独关掉「可能在等你」');
+    await until(() => mjs("document.querySelector('.dps-sound[data-kind=waiting]').classList.contains('muted') && document.querySelector('[data-play=waiting]').disabled"), '关掉的那一行变灰、不能试听');
+    // 换成自己的音频：一段 0.1 秒的 WAV（Chromium 解得出来）
+    const wavFile = path.join(root, 'ding.wav'), samples = 800, wav = Buffer.alloc(44 + samples * 2);
+    wav.write('RIFF', 0, 'latin1'); wav.writeUInt32LE(36 + samples * 2, 4); wav.write('WAVEfmt ', 8, 'latin1'); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36, 'latin1'); wav.writeUInt32LE(samples * 2, 40);
+    for (let i = 0; i < samples; i++) wav.writeInt16LE(Math.round(Math.sin(i / 4) * 8000), 44 + i * 2);
+    fs.writeFileSync(wavFile, wav);
+    const pickFolder = dialog.showOpenDialog;
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [wavFile] });
+    try {
+      await mjs("window.__played = []; document.querySelector('[data-pick=done]').click()");
+      await until(() => mjs("document.querySelector('.dps-sound[data-kind=done] small.mine')?.textContent === '自己的音频：ding.wav'"), '换成自己的音频');
+      await until(() => mjs("window.PulsePetSound.hasCustom('done') && window.__played.join() === 'done'"), '设置页解码好、试听一下');
+      assert.ok(fs.existsSync(path.join(root, 'data', 'pet-sounds', 'done.wav')), '复制到数据目录');
+      await until(() => js("window.PulsePetSound.hasCustom('done')"), '桌宠窗口也换上了');
+    } finally { dialog.showOpenDialog = pickFolder; }
+    await mjs("document.querySelector('[data-reset=done]').click()");
+    await until(() => mjs("!document.querySelector('[data-reset=done]') && !window.PulsePetSound.hasCustom('done')"), '恢复默认');
+    await until(() => js("!window.PulsePetSound.hasCustom('done')"), '桌宠窗口也恢复默认');
+    assert.equal(fs.existsSync(path.join(root, 'data', 'pet-sounds', 'done.wav')), false);
     assert.equal(await mjs("document.getElementById('page-title').textContent"), '额度和任务，看一眼桌面就知道');
     await mjs("document.querySelector('.dps-choice[data-kind=octopus] .dps-pick').click()");
     await until(() => js("document.getElementById('dp-stage').dataset.pet === 'octopus'"), '换成章鱼');

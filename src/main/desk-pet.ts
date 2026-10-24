@@ -7,22 +7,27 @@
  * - 气泡是单独的透明窗口（desk-pet-bubble.html）：点宠物出来的是额度，右键「查看任务」出来的是任务列表。
  *   失焦、再点宠物、按 Esc 收起，鼠标不在上面 8 秒自己收起（在页面里计时）；收起两分钟后销毁。
  * 位置存的是宠物脚下的中点，换大小、换屏幕后都从这一点放回去，并保证整只在屏幕的可用区域里。
+ * - 问题卡片（desk-pet-ask.html）：Agent 在问你（选择题、计划等你批准）时弹在屏幕右下角，写着问题和选项；回答了、点「知道了」就收起。
+ *   不抢焦点（你多半正在终端里打字），挡住宠物时挪到宠物头顶。回答还是在终端里：TokenPulse 只读会话文件，不往 CLI 里写东西。
  */
 import { BrowserWindow, Menu, powerMonitor, screen } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import type { Snapshot } from "../core/report";
-import { ActivityScanner, type ActivityState, type AgentTask } from "../core/agent-activity";
+import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask } from "../core/agent-activity";
+import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
-import { anchorOf, bubbleBounds, flingPath, GRID, jumpPoint, MINI_PEEK, MINI_SHOW, miniBounds, miniSpriteCenter, PACK_ID, petBounds, petMode, petQuota, petWindowSize, pickPetAccount, reachesRightEdge, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetMood, type PetUsing } from "../core/desk-pet-model";
+import { anchorOf, askBounds, bubbleBounds, flingPath, GRID, jumpPoint, MINI_POSE, miniBounds, miniSpriteCenter, PACK_ID, petBounds, petMode, petQuota, petWindowSize, pickPetAccount, reachesRightEdge, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetMood, type PetUsing } from "../core/desk-pet-model";
 import { petPackImages } from "../core/pet-pack";
 import { tr } from "./i18n";
 
 type Account = Snapshot["accounts"][number];
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 
-type TaskBrief = Pick<AgentTask, "key" | "kind" | "agent" | "title" | "project" | "status" | "tool" | "since" | "doneAt">;
+type TaskBrief = Pick<AgentTask, "key" | "kind" | "agent" | "title" | "project" | "status" | "tool" | "since" | "doneAt"> & { asking: boolean };
+export type AskCard = Pick<AgentTask, "key" | "kind" | "agent" | "title" | "project"> & { ask: AgentAsk };
+export type DeskPetAskData = { now: number; theme: "light" | "dark"; cards: AskCard[]; more: number };
 type BubbleWindow = { used: number; resetAt: number; high: boolean };
 export type BubbleView = "quota" | "tasks";
 export type DeskPetBubbleData = {
@@ -57,11 +62,17 @@ const TASK_ACCOUNT = { claude: "claude", codex: "chatgpt" } as const;
 let options: Options | null = null;
 let pet: BrowserWindow | null = null;
 let bubble: BrowserWindow | null = null;
+let askWin: BrowserWindow | null = null;
+/** 问题卡片的大小（页面量好告诉主进程）；点了「知道了」的提问（任务 key|调用 id），回答了就从这里清掉。 */
+let askBox = { width: 340, height: 180 }, lastAsk = "";
+const dismissed = new Set<string>();
+/** 卡片里最多同时摆几个提问，多的写「还有 N 个」。 */
+const ASK_CARDS = 3;
 let scanner: ActivityScanner | null = null;
 let activity: ActivityState | null = null;
 let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null, flyTimer: NodeJS.Timeout | null = null;
 let scanning = false, listening = false, interactive = false, bubbleShown = false;
-let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number } | null = null, lastKind = "";
+let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "";
 /** 最近一次有任务的是哪家（任务做完十分钟后不在 activity 里了，靠它记住「最近用的」）。 */
 let lastUsedKind: Account["kind"] | null = null;
 let bubbleBox = { width: 236, height: 120 }, bubbleView: BubbleView = "quota", bubbleOpened = 0, bubbleHiddenAt = 0;
@@ -96,6 +107,7 @@ function placePet() {
   const bounds = prefs.deskPetMini ? miniBounds(prefs.deskPetPos, size, work) : petBounds(prefs.deskPetPos, size, work);
   pet.setBounds(OFFSCREEN() ? { ...bounds, x: -20000, y: -20000 } : bounds);
   if (bubbleVisible()) placeBubble();
+  placeAsk();
 }
 
 function createPet() {
@@ -138,6 +150,7 @@ export function syncDeskPet() {
   applyLook();
   pushDeskPet(true);
   if (bubbleVisible()) pushBubble();
+  syncAsk(true);
 }
 
 function startTimers() {
@@ -150,9 +163,14 @@ function startTimers() {
       const before = activity;
       activity = await scanner.scan();
       lastUsedKind = usingKinds()[0] ?? lastUsedKind;
+      // 和上一次比：做完了庆祝；出错停下、刚变成「可能在等你」的提醒一下（宠物窗口按设置响提示音）
       if (before && activity.finished.length) sendEvent({ type: "celebrate" });
+      if (before && activity.failed.length) sendEvent({ type: "alert", kind: "error" });
+      if (before && activity.asked.length) sendEvent({ type: "alert", kind: "ask" });
+      if (before && activity.needsYou.length) sendEvent({ type: "alert", kind: "waiting" });
       pushDeskPet();
       if (bubbleVisible()) pushBubble();
+      syncAsk();
     } catch (error) { console.error("[TokenPulse] 桌宠读取会话状态失败", error); }
     finally { scanning = false; }
   };
@@ -218,9 +236,12 @@ export function deskPetView() {
   const running = activity?.running ?? [];
   return {
     pet: prefs.deskPetKind, scale: prefs.deskPetScale, theme: prefs.theme, fidget: prefs.deskPetFidget, badge: prefs.deskPetBadge,
-    mini: prefs.deskPetMini ? { show: MINI_SHOW, peek: MINI_PEEK } : null,
+    sound: prefs.deskPetSound, volume: prefs.deskPetVolume, mute: prefs.deskPetMute,
+    // 换成自己音频的提示音：种类 → 导入时间（变了宠物窗口重新要一次数据）
+    sounds: Object.fromEntries(Object.entries(listPetSounds()).map(([kind, item]) => [kind, item!.at])),
+    mini: prefs.deskPetMini ? MINI_POSE : null,
     quota: quota.quota, mood: quota.mood, account: quota.account,
-    mode: petMode(activity, idleSeconds()), tasks: running.length, waiting: running.filter((task) => task.status === "waiting").length,
+    mode: petMode(activity, idleSeconds()), tasks: running.length, waiting: running.filter((task) => task.status === "waiting").length, asking: running.filter((task) => task.ask).length,
   };
 }
 
@@ -232,7 +253,9 @@ export function pushDeskPet(force = false) {
   if (view.quota != null) {
     const id = options.prefs().deskPetAccount + "|" + view.account;
     if (lastQuota && lastQuota.id === id && view.quota - lastQuota.quota >= 30) sendEvent({ type: "restock", from: lastQuota.quota });
-    lastQuota = { id, quota: view.quota };
+    // 同一个账号的额度刚用完：提醒一下
+    if (lastQuota && lastQuota.id === id && view.mood === "empty" && lastQuota.mood !== "empty") sendEvent({ type: "alert", kind: "empty" });
+    lastQuota = { id, quota: view.quota, mood: view.mood };
   }
   if (view.pet !== lastKind) { lastKind = view.pet; pet.webContents.send("desk-pet-pack", PACK_ID.test(view.pet) ? petPackImages(view.pet) : null); }
   const json = JSON.stringify(view);
@@ -241,7 +264,8 @@ export function pushDeskPet(force = false) {
   pet.webContents.send("desk-pet-state", view);
 }
 
-function sendEvent(event: { type: "celebrate" } | { type: "restock"; from: number } | { type: "bubble"; open: boolean } | { type: "fly" } | { type: "landed" }) {
+export type PetAlert = "error" | "ask" | "waiting" | "empty";
+function sendEvent(event: { type: "celebrate" } | { type: "restock"; from: number } | { type: "bubble"; open: boolean } | { type: "fly" } | { type: "landed" } | { type: "alert"; kind: PetAlert }) {
   if (pet && !pet.isDestroyed()) pet.webContents.send("desk-pet-event", event);
 }
 
@@ -392,7 +416,7 @@ function placeBubble() {
 }
 
 function brief(task: AgentTask): TaskBrief {
-  return { key: task.key, kind: task.kind, agent: task.agent, title: task.title, project: task.project, status: task.status, tool: task.tool, since: task.since, doneAt: task.doneAt };
+  return { key: task.key, kind: task.kind, agent: task.agent, title: task.title, project: task.project, status: task.status, tool: task.tool, since: task.since, doneAt: task.doneAt, asking: !!task.ask };
 }
 function bubbleWindow(window: Account["five"]): BubbleWindow | null {
   return window ? { used: clamp(window.used, 0, 100), resetAt: window.resetAt ?? 0, high: window.pressure === "high" } : null;
@@ -485,13 +509,89 @@ export function deskPetSnapshotChanged() {
   if (bubbleVisible()) pushBubble();
 }
 
+/* ---------------- 问题卡片 ---------------- */
+
+const askKey = (task: AgentTask) => `${task.key}|${task.ask?.id ?? ""}`;
+function asking() { return (activity?.running ?? []).filter((task) => task.ask).sort((a, b) => b.ask!.at - a.ask!.at); }
+
+export function deskPetAskData(): DeskPetAskData | null {
+  if (!options) return null;
+  const list = asking().filter((task) => !dismissed.has(askKey(task)));
+  return {
+    now: Date.now(), theme: options.prefs().theme, more: Math.max(0, list.length - ASK_CARDS),
+    cards: list.slice(0, ASK_CARDS).map((task) => ({ key: task.key, kind: task.kind, agent: task.agent, title: task.title, project: task.project, ask: task.ask! })),
+  };
+}
+
+/** 卡片挨着宠物所在的屏幕右下角；宠物（画出来的那块，极简模式下是露出来的那截）在那儿就让开。 */
+function placeAsk() {
+  if (!askWin || askWin.isDestroyed() || !pet || pet.isDestroyed()) return;
+  if (OFFSCREEN()) { askWin.setBounds({ x: -20000, y: -22000, ...askBox }); return; }
+  const real = pet.getBounds(), work = screen.getDisplayMatching(real).workArea, sprite = spriteSize();
+  const center = options?.prefs().deskPetMini ? miniSpriteCenter(work, sprite) : real.x + real.width / 2;
+  const avoid = { x: Math.round(center - sprite.width / 2), y: real.y + real.height - sprite.height, ...sprite };
+  askWin.setBounds(askBounds(askBox, work, avoid));
+}
+
+/** 扫描、设置变了：有没回答的提问就开卡片、更新内容；都回答了（或都点了知道了）就关掉。 */
+function syncAsk(force = false) {
+  if (!options || !pet || pet.isDestroyed()) return;
+  // 回答过的提问不会再回来：「知道了」只记还在等的
+  const live = new Set(asking().map(askKey));
+  for (const key of dismissed) if (!live.has(key)) dismissed.delete(key);
+  const data = options.prefs().deskPetAsk ? deskPetAskData() : null;
+  if (!data || !data.cards.length) { closeAsk(); return; }
+  const json = JSON.stringify({ ...data, now: 0 });
+  if (askWin && !askWin.isDestroyed()) {
+    if (force || json !== lastAsk) { lastAsk = json; askWin.webContents.send("desk-pet-ask", data); }
+    return;
+  }
+  lastAsk = json;
+  const next = new BrowserWindow({
+    ...askBox, show: false, frame: false, transparent: true, backgroundColor: "#00000000", hasShadow: false,
+    resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
+    skipTaskbar: true, focusable: false, alwaysOnTop: true, title: "TokenPulse",
+    webPreferences: { preload: options.preload, contextIsolation: true, nodeIntegration: false, spellcheck: false },
+  });
+  askWin = next;
+  next.setMenuBarVisibility(false);
+  next.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  next.loadFile(path.join(__dirname, "..", "..", "renderer", "desk-pet-ask.html"), { query: { theme: options.prefs().theme } });
+  next.once("ready-to-show", () => { if (next.isDestroyed()) return; placeAsk(); next.setAlwaysOnTop(true, "pop-up-menu"); next.showInactive(); });
+  next.on("closed", () => { if (askWin === next) { askWin = null; lastAsk = ""; } });
+  placeAsk();
+}
+
+function closeAsk() {
+  if (askWin && !askWin.isDestroyed()) askWin.destroy();
+  askWin = null; lastAsk = "";
+}
+
+/** 页面量好的卡片大小（含投影）。 */
+export function resizeDeskPetAsk(width: number, height: number) {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  const next = { width: clamp(Math.round(width), 200, 420), height: clamp(Math.round(height), 60, 720) };
+  if (next.width === askBox.width && next.height === askBox.height) return;
+  askBox = next;
+  placeAsk();
+}
+
+/** 卡片上的按钮：dismiss 收起一个提问（value = 任务 key|调用 id），dismiss-all 全部收起，sessions 打开会话管理。 */
+export function deskPetAskAction(action: unknown, value?: unknown) {
+  if (!options) return;
+  if (action === "dismiss" && typeof value === "string" && value.length < 600) { dismissed.add(value); syncAsk(true); }
+  else if (action === "dismiss-all") { for (const task of asking()) dismissed.add(askKey(task)); syncAsk(true); }
+  else if (action === "sessions") options.openMain({ page: "sessions" });
+}
+
 export function destroyDeskPet() {
   stopTimers();
   if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null; }
   if (bubble && !bubble.isDestroyed()) bubble.destroy();
   if (pet && !pet.isDestroyed()) pet.destroy();
+  closeAsk(); dismissed.clear();
   bubble = pet = null; bubbleShown = false;
   activity = null; scanner = null; lastView = ""; lastCursor = ""; lastQuota = null; lastKind = ""; interactive = false; bubblePlace = null;
 }
 
-export function deskPetWindows() { return { pet, bubble }; }
+export function deskPetWindows() { return { pet, bubble, ask: askWin }; }

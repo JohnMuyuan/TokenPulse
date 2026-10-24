@@ -147,6 +147,16 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     importPack: () => (demo ? blocked() : ipcRenderer.invoke("desk-pet:import-pack")),
     removePack: (id: string) => (demo ? blocked() : ipcRenderer.invoke("desk-pet:remove-pack", id)),
     resetPosition: () => ipcRenderer.invoke("desk-pet:reset-position"),
+    /** 问题卡片（desk-pet-ask.html）：Agent 在问你的问题和选项。 */
+    askData: () => ipcRenderer.invoke("desk-pet:ask-data"),
+    askSize: (width: number, height: number) => ipcRenderer.send("desk-pet:ask-size", width, height),
+    askAction: (action: "dismiss" | "dismiss-all" | "sessions", value?: string) => ipcRenderer.send("desk-pet:ask-action", action, value),
+    onAsk: (handler: (data: unknown) => void) => { const listener = (_event: unknown, data: unknown) => handler(data); ipcRenderer.on("desk-pet-ask", listener); return () => ipcRenderer.off("desk-pet-ask", listener); },
+    /** 换成自己音频的提示音。 */
+    sounds: () => ipcRenderer.invoke("desk-pet:sounds"),
+    soundData: (kind: string) => ipcRenderer.invoke("desk-pet:sound-data", kind),
+    importSound: (kind: string) => (demo ? blocked() : ipcRenderer.invoke("desk-pet:import-sound", kind)),
+    removeSound: (kind: string) => (demo ? blocked() : ipcRenderer.invoke("desk-pet:remove-sound", kind)),
     onChanged: (handler: () => void) => { const listener = () => handler(); ipcRenderer.on("desk-pet-changed", listener); return () => ipcRenderer.off("desk-pet-changed", listener); },
   },
   updateState: () => ipcRenderer.invoke("update:state"),
