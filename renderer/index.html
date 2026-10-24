@@ -430,6 +430,8 @@
           <div class="setting-title">数据位置</div>
           <p class="setting-hint">用量账本、额度采样历史和设置都只保存在本机 <code>~/.tokenpulse/</code>，不会上传。删掉用量账本会从头重扫、不丢数据；额度采样历史官方不提供，删了就找不回来。</p>
           <button id="open-data" class="btn"><svg class="icon"><use href="#i-folder"/></svg>打开数据目录</button>
+          <button id="open-login-log" class="btn" type="button"><svg class="icon"><use href="#i-folder"/></svg>打开登录日志</button>
+          <p class="setting-hint">官方账号登录不成功时，把登录日志 <code>login-log.txt</code> 发给帮你排查的人：里面是登录命令的输出、代理设置和判定过程，token、授权码和链接参数已去掉，邮箱已打码。</p>
         </div>
         <div class="setting-block">
           <div class="setting-title">tokens.ci 自动上传</div>

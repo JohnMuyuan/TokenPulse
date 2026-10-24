@@ -349,6 +349,11 @@
     "会话管理新增 pi：查看对话和工具记录、全文搜索，并在终端继续会话。": "Sessions now supports pi: read conversations and tool calls, search their text, and continue in the terminal.",
     "一键切换 pi 供应商": "Switch pi providers",
     "供应商页新增 pi，支持三种接口直连和本地路由；保留其他配置，可切回原有默认供应商。": "Providers now supports pi with three native APIs and local routing. Other settings are preserved, and you can restore the original defaults.",
+    // 0.3.62 更新说明
+    "只开了系统代理也能登录官方账号": "Official sign-in works with just a system proxy",
+    "以前浏览器里授权成功了，Claude 的命令行换登录凭据时却不走系统代理，被官方拒绝，设置里只提示「没有检测到 OAuth 登录成功」。现在会把系统代理带给登录用的命令行；新登录的 Claude 账号也能正确显示邮箱了。": "Authorizing in the browser used to succeed while the Claude CLI skipped the system proxy when exchanging for credentials, got rejected, and Settings only said sign-in wasn’t detected. The system proxy is now passed to the sign-in CLI, and newly signed-in Claude accounts show their email again.",
+    "登录日志": "Sign-in log",
+    "登录不成功时，可以在设置 →「数据」→「打开登录日志」找到日志，发给帮你排查的人。里面没有 token 和授权码，邮箱已打码。": "If sign-in fails, open Settings → “Data” → “Open sign-in log” and send the log to whoever is helping you. It contains no tokens or authorization codes, and email addresses are masked.",
     // 0.3.60 更新说明
     "切换 Claude 账号后，用量记到新账号": "Usage follows the Claude account you switch to",
     "设置里一键切换 Claude CLI 登录时，账号资料以前可能写进 Claude Code 不读的文件，新会话仍报旧账号，用量被记到上一个号。现在按 Claude Code 实际使用的位置读写。": "Switching the Claude CLI login could write the account profile to a file Claude Code never reads, so new sessions kept reporting the old account and usage was booked to it. TokenPulse now reads and writes the file Claude Code actually uses.",
@@ -2530,6 +2535,10 @@
     '数据位置': 'Data location', '用量账本、额度采样历史和设置都只保存在本机': 'The usage ledger, quota history and settings are stored only on this computer in',
     '，不会上传。删掉用量账本会从头重扫、不丢数据；额度采样历史官方不提供，删了就找不回来。': ', never uploaded. Deleting the usage ledger just triggers a rescan; quota history can’t be recovered once deleted.',
     '打开数据目录': 'Open data folder', '无法打开数据目录': 'Can’t open the data folder', '无法打开数据目录：': 'Can’t open the data folder: ',
+    '打开登录日志': 'Open sign-in log', '无法打开登录日志': 'Can’t open the sign-in log', '还没有登录日志：在「官方账号」里登录一次后才会有': 'No sign-in log yet. It appears after you sign in once under “Official accounts”.',
+    '详细过程已记在登录日志（设置 →「数据」→「打开登录日志」）。': 'Details are in the sign-in log (Settings → “Data” → “Open sign-in log”).',
+    '官方账号登录不成功时，把登录日志': 'If signing in to an official account fails, send the sign-in log',
+    '发给帮你排查的人：里面是登录命令的输出、代理设置和判定过程，token、授权码和链接参数已去掉，邮箱已打码。': 'to whoever is helping you. It has the sign-in command’s output, proxy settings and how the result was judged; tokens, authorization codes and link parameters are removed, and email addresses are masked.',
     '从 CC Switch 导入': 'Import from CC Switch', '只读 CC Switch 的本地库，补上 TokenPulse 自己没有的那部分：CLI 已经清掉的老会话、OpenCode 这类不扫描的工具。同一天同一个工具两边都有时只算 TokenPulse 自己的，不会重复。走 CC Switch 代理的请求还会用它记下的上游返回型号来核验。': 'Reads CC Switch’s local database (read-only) to fill in what TokenPulse doesn’t have: old sessions the CLIs already deleted, and tools like OpenCode it doesn’t scan. When both have the same tool on the same day, only TokenPulse’s own data counts. Requests through the CC Switch proxy are also checked against the model it saw in the upstream response.',
     '自动导入': 'Import automatically', '默认。检测到 CC Switch 就补上缺的记录': 'Default. Fill in missing records when CC Switch is found', '不导入': 'Don’t import', '只统计 TokenPulse 自己扫描到的': 'Only count what TokenPulse scans itself',
     '已关闭导入': 'Import is off', '统计里只有 TokenPulse 自己扫描到的记录': 'Stats include only what TokenPulse scans itself', '没有找到 CC Switch': 'CC Switch not found', '读取 CC Switch 失败': 'Could not read CC Switch',

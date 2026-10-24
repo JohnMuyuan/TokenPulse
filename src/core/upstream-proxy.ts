@@ -108,6 +108,24 @@ export async function curlProxyArgs(url: string): Promise<string[]> {
   return proxy ? ["--proxy", `http://${proxy.host}:${proxy.port}`] : [];
 }
 
+/**
+ * 给官方 CLI 的登录子进程用（同 curlProxyArgs 的道理）：Claude Code 只认环境变量里的代理，不读 Windows 系统代理
+ * （本机 2.1.310 的 claude.exe 里没有读 Internet Settings 的代码）。只开了系统代理的机器上，浏览器能授权，
+ * CLI 拿授权码换 token 却是直连，被官方 403 拒掉后退出 —— 界面只看到「没有检测到 OAuth 登录成功」。
+ * 环境变量里没设代理、而系统代理对 url 开着时，返回要补进子进程环境的变量；其余情况返回空对象。
+ * NO_PROXY 补上本机地址：浏览器回调的是 CLI 自己在 localhost 开的端口，不能被送进代理。
+ */
+export async function systemProxyEnv(url: string, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
+  let target: URL;
+  try { target = new URL(url); } catch { return {}; }
+  if (LOOPBACK.test(target.hostname) || envHasProxy(target, env)) return {};
+  const proxy = await systemProxy(target);
+  if (!proxy) return {};
+  const value = `http://${proxy.host}:${proxy.port}`;
+  const noProxy = [env.NO_PROXY || env.no_proxy, "localhost", "127.0.0.1", "::1"].filter(Boolean).join(",");
+  return { HTTPS_PROXY: value, HTTP_PROXY: value, NO_PROXY: noProxy };
+}
+
 /*
  * 经 HTTP 代理的 CONNECT 隧道连 https 上游。连接用完留着给下一个请求（0.3.38）：
  * 以前每个请求都重新 CONNECT + TLS 握手，经代理连官方实测每次约 0.6 秒，既拖慢请求，也算进了首字和总耗时。

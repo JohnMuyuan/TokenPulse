@@ -17,6 +17,7 @@ import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
 import { dataDir } from "../core/paths";
+import { loginLogFile } from "../core/login-log";
 import { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, type QuotaGlance } from "../core/quota";
 import type { Snapshot } from "../core/report";
 import { updateCalibration } from "../core/quota-calibration";
@@ -1093,6 +1094,8 @@ if (!app.requestSingleInstanceLock()) {
       if (readPrefs().theme !== theme) { writePrefs({ theme }); syncDeskPet(); }
     });
     ipcMain.handle("open-data-dir", () => shell.openPath(dataDir()));
+    // 还没登录过就没有日志文件：打开数据目录，返回 false 让界面说一句
+    ipcMain.handle("open-login-log", () => { const file = loginLogFile(); if (fsSync.existsSync(file)) { shell.showItemInFolder(file); return true; } void shell.openPath(dataDir()); return false; });
     ipcMain.handle("window:minimize", () => win?.minimize());
     ipcMain.handle("window:toggle-maximize", () => (win?.isMaximized() ? win.unmaximize() : win?.maximize()));
     // 走 close() 而不是 destroy()：「关闭窗口时」的设置（收进托盘 / 直接退出）在 close 事件里处理。

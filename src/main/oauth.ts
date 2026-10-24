@@ -18,7 +18,9 @@ import {
   restoreOfficialAccount,
   writeOfficialAccountStore,
 } from "../core/accounts";
-import { OFFICIAL_KINDS, cliDir, isExpired, readCliAccounts, type OfficialAccountKind } from "../core/credentials";
+import { OFFICIAL_KINDS, authFile, claudeProfileFile, cliDir, isExpired, readCliAccounts, type OfficialAccountKind } from "../core/credentials";
+import { pipeToLoginLog, startLoginLog } from "../core/login-log";
+import { systemProxyEnv } from "../core/upstream-proxy";
 import { readCliSnapshot, switchCliAccount } from "../core/cli-switch";
 import { renewCliCredential } from "../core/cli-renew";
 import { describeAutoSwitch, normalizeRule, readAutoSwitchEvents } from "../core/cli-auto-switch";
@@ -182,34 +184,116 @@ function killTree(proc: ChildProcess) {
 }
 
 function signature(kind: OfficialAccountKind, home: string) {
-  return readCliAccounts(kind, home).map((item) => `${item.ref}:${item.credential.token.slice(-12)}`).sort().join("|");
+  return readCliAccounts(kind, home, true).map((item) => `${item.ref}:${item.credential.token.slice(-12)}`).sort().join("|");
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** 各家 CLI 拿授权码换 token 的地址：按它判断登录子进程要不要补系统代理（见 upstream-proxy.ts 的 systemProxyEnv）。 */
+const TOKEN_URL: Record<OfficialAccountKind, string> = {
+  claude: "https://platform.claude.com/v1/oauth/token",
+  chatgpt: "https://auth.openai.com/oauth/token",
+  grok: "https://auth.x.ai/",
+};
+const PROXY_KEYS = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
+/** 日志里的代理只记地址，去掉账号密码。 */
+const proxyHost = (value: string) => value.replace(/\/\/[^@/]*@/, "//***@");
+
+function appVersion() {
+  try { return String(JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")).version || "?"); } catch { return "?"; }
+}
+
+/**
+ * 临时目录里 CLI 写了什么（给登录日志用）：文件名和大小、凭据文件能不能解析、有没有 token、Claude 有没有账号资料。
+ * 只看结构，不读出任何值。
+ */
+export function describeLoginDir(kind: OfficialAccountKind, tempHome: string) {
+  const files: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (files.length >= 40) return;
+      const full = path.join(dir, entry.name), rel = path.relative(tempHome, full).replace(/\\/g, "/");
+      if (entry.isDirectory()) { if (depth < 3) walk(full, depth + 1); continue; }
+      let size = -1;
+      try { size = fs.statSync(full).size; } catch { /* 正在写 */ }
+      files.push(`${rel}(${size})`);
+    }
+  };
+  walk(tempHome, 0);
+  const auth = authFile(kind, tempHome);
+  let authState = "不存在";
+  if (fs.existsSync(auth)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(auth, "utf8"));
+      const hasToken = kind === "claude" ? Boolean(parsed?.claudeAiOauth?.accessToken)
+        : kind === "chatgpt" ? Boolean(parsed?.tokens?.access_token)
+        : Object.values<any>(parsed || {}).some((row) => typeof row?.key === "string" && row.key);
+      authState = `可解析，${hasToken ? "有" : "没有"} token，顶层字段 ${Object.keys(parsed || {}).slice(0, 8).join("/") || "无"}`;
+    } catch { authState = "存在但不是有效 JSON"; }
+  }
+  let profile = "";
+  if (kind === "claude") {
+    try { profile = `；账号资料 oauthAccount：${JSON.parse(fs.readFileSync(claudeProfileFile(tempHome, true), "utf8"))?.oauthAccount ? "有" : "没有"}`; } catch { profile = "；账号资料 .claude.json：读不到"; }
+  }
+  return `凭据文件 ${path.relative(tempHome, auth).replace(/\\/g, "/")}：${authState}${profile}；临时目录文件：${files.join(", ") || "（空）"}`;
+}
+
 type LoginResult = { ok: true; statuses: OfficialOAuthStatus[] } | { ok: false; error: string };
 
+const LOG_HINT = "详细过程已记在登录日志（设置 →「数据」→「打开登录日志」）。";
+
 async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<LoginResult> {
+  const log = startLoginLog(kind);
+  const started = Date.now();
+  log.write(`开始登录 ${LABELS[kind]}${replaceId ? "（重新授权已有账号）" : ""}；TokenPulse ${appVersion()}，${process.platform} ${os.release()} ${process.arch}`);
   const command = await resolveCli(kind);
-  if (!command) return { ok: false, error: `没有找到 ${LABELS[kind]} CLI，请先安装官方命令行。` };
+  if (!command) {
+    log.write(`没有找到 CLI（找过：${CANDIDATES[kind].join("、")}）`);
+    return { ok: false, error: `没有找到 ${LABELS[kind]} CLI，请先安装官方命令行。` };
+  }
   // 放在数据目录下而不是系统 Temp：Codex 拒绝在 Temp 下建辅助程序，会打一串警告。
   fs.mkdirSync(dataDir(), { recursive: true });
   const tempHome = fs.mkdtempSync(path.join(dataDir(), "oauth-login-"));
   let proc: ChildProcess | undefined;
+  const fail = (error: string, why: string): LoginResult => {
+    log.write(`失败（${Math.round((Date.now() - started) / 1000)} 秒）：${why}`);
+    log.write(describeLoginDir(kind, tempHome));
+    return { ok: false, error: `${error}${LOG_HINT}` };
+  };
   try {
     for (const k of OFFICIAL_KINDS) fs.mkdirSync(cliDir(k, tempHome), { recursive: true });
     const before = signature(kind, tempHome);
+    const env = isolatedEnv(tempHome);
+    const added = await systemProxyEnv(TOKEN_URL[kind], env).catch(() => ({} as Record<string, string>));
+    if (added.NO_PROXY) delete env.no_proxy;
+    Object.assign(env, added);
+    const proxyNote = added.HTTPS_PROXY ? `按系统代理补上 HTTPS_PROXY=${added.HTTPS_PROXY}`
+      : PROXY_KEYS.filter((key) => env[key] || env[key.toLowerCase()]).map((key) => `${key}=${proxyHost(String(env[key] || env[key.toLowerCase()]))}`).join("，") || "没有代理，直连（环境变量里没设；系统代理没开，或者不是 HTTP 代理）";
+    log.write(`CLI：${command}；代理：${proxyNote}`);
     const inv = invocation(command, loginArgs(kind));
+    // 版本号单独问一次，只为写进日志，不等它。用另一个空目录：别和登录抢着写同一份 .claude.json
+    const ver = invocation(command, ["--version"]);
+    const probeHome = path.join(tempHome, "version-probe");
+    for (const k of OFFICIAL_KINDS) fs.mkdirSync(cliDir(k, probeHome), { recursive: true });
+    execFile(ver.file, ver.args, { env: { ...isolatedEnv(probeHome), ...added }, cwd: probeHome, windowsHide: true, timeout: 15_000, windowsVerbatimArguments: ver.windowsVerbatimArguments }, (error, stdout) => {
+      log.write(`CLI 版本：${error ? `读不到（${error.message}）` : String(stdout).trim() || "（空）"}`);
+    });
     proc = spawn(inv.file, inv.args, {
       cwd: tempHome,
-      env: isolatedEnv(tempHome),
+      env,
       windowsHide: true,
-      stdio: "ignore",
+      // 输出只进日志；stdin 仍然关着，CLI 要用户粘贴授权码时直接失败而不是卡住
+      stdio: ["ignore", "pipe", "pipe"],
       windowsVerbatimArguments: inv.windowsVerbatimArguments,
     });
+    log.write(`已启动登录命令：${[path.basename(command), ...loginArgs(kind)].join(" ")}（pid ${proc.pid ?? "?"}）`);
+    pipeToLoginLog(log, "CLI 输出", proc.stdout);
+    pipeToLoginLog(log, "CLI 报错", proc.stderr);
     let exited = false;
-    proc.once("exit", () => { exited = true; });
-    proc.once("error", () => { exited = true; });
+    proc.once("exit", (code, signal) => { exited = true; log.write(`CLI 退出：code ${code}${signal ? `，signal ${signal}` : ""}`); });
+    proc.once("error", (error) => { exited = true; log.write(`CLI 启动失败：${error.message}`); });
 
     // 凭据文件出现变化就算成功；CLI 退出后再多等 3 秒，有的 CLI 退出时才落盘。
     const deadline = Date.now() + LOGIN_TIMEOUT_MS;
@@ -217,29 +301,41 @@ async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<
     while (Date.now() < Math.min(deadline, graceUntil)) {
       const current = signature(kind, tempHome);
       if (current && current !== before) {
-        const accounts = readCliAccounts(kind, tempHome);
+        log.write("检测到新凭据");
+        // CLI 写完凭据一般马上自己退出：等它退（最多 3 秒），免得杀在它收尾的半路，日志里也有真实的退出码。
+        // Claude 的账号资料（邮箱、accountUuid）在凭据之后才写：没写好就最多等到 10 秒，不然身份会退回 token 哈希
+        const settle = Date.now();
+        while (!exited && Date.now() - settle < 10_000) {
+          if (Date.now() - settle >= 3_000 && (kind !== "claude" || readCliAccounts(kind, tempHome, true).every((account) => account.email))) break;
+          await sleep(200);
+        }
+        const accounts = readCliAccounts(kind, tempHome, true);
         if (replaceId && !accounts.some((account) => accountIdOf(kind, account.ref) === replaceId)) {
-          return { ok: false, error: "重新授权登录的账号与目标账号不一致，原账号没有改变。" };
+          return fail("重新授权登录的账号与目标账号不一致，原账号没有改变。", "登录进来的不是要重新授权的那个账号");
         }
         // 登录进来的账号排在这一家的最后；以前删过 / 藏过的同一个账号会恢复。
         for (const account of accounts) rememberOfficialAccount(account, true);
         // 记下切换 CLI 登录时要一起写回的资料（scopes、oauthAccount、id_token 等，不含 token）
-        const snapshot = readCliSnapshot(kind, tempHome);
+        const snapshot = readCliSnapshot(kind, tempHome, true);
         if (snapshot) {
           const store = readOfficialAccountStore();
           for (const account of accounts) { const found = store.accounts.find((item) => item.id === accountIdOf(kind, account.ref)); if (found) found.cliAuth = snapshot; }
           writeOfficialAccountStore(store);
         }
+        log.write(`成功（${Math.round((Date.now() - started) / 1000)} 秒）：${accounts.length} 个账号，${accounts.map((account) => (account.email ? "有邮箱" : "没有邮箱") + (account.ref.startsWith("token:") ? "、身份取自 token" : "")).join("；")}`);
         return { ok: true, statuses: await listOfficialOAuthStatus() };
       }
       if (exited && graceUntil === Infinity) graceUntil = Date.now() + 3_000;
       await sleep(exited ? 500 : 1_000);
     }
-    return {
-      ok: false,
-      error: exited ? "没有检测到 OAuth 登录成功，请完成浏览器授权后再试一次。" : "OAuth 登录等待超时，请回到浏览器完成授权后再试一次。",
-    };
+    return exited
+      ? fail("没有检测到 OAuth 登录成功，请完成浏览器授权后再试一次。", "CLI 已退出，临时目录里没有读到新凭据")
+      : fail("OAuth 登录等待超时，请回到浏览器完成授权后再试一次。", `等了 ${LOGIN_TIMEOUT_MS / 1000} 秒 CLI 还没完成`);
+  } catch (error) {
+    log.write(`出错：${error instanceof Error ? error.message : String(error)}`);
+    throw error;
   } finally {
+    if (proc && proc.exitCode == null && proc.pid != null) log.write("登录命令还在运行，结束它");
     if (proc) killTree(proc);
     // 临时目录里是明文 token，不管成功失败都要删。CLI 进程刚被杀时文件可能还占着，重试几次。
     fs.rm(tempHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }, () => undefined);

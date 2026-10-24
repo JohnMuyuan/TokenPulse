@@ -37,12 +37,12 @@ function grokRow(home: string) {
   return Object.entries<any>(parsed).find(([, row]) => typeof row?.key === "string" && row.key);
 }
 
-/** CLI 当前登录的 cliAuth（不含 access / refresh token）。 */
-export function readCliSnapshot(kind: OfficialAccountKind, home = os.homedir()): CliAuthSnapshot | undefined {
+/** CLI 当前登录的 cliAuth（不含 access / refresh token）。isolated 见 credentials.ts 的 claudeProfileFile。 */
+export function readCliSnapshot(kind: OfficialAccountKind, home = os.homedir(), isolated = false): CliAuthSnapshot | undefined {
   if (kind === "claude") {
     const oauth = readJsonFile(authFile("claude", home))?.claudeAiOauth;
     if (!oauth) return undefined;
-    return { oauth: without(oauth, ["accessToken", "refreshToken", "expiresAt", "refreshTokenExpiresAt"]), account: readJsonFile(claudeProfileFile(home))?.oauthAccount };
+    return { oauth: without(oauth, ["accessToken", "refreshToken", "expiresAt", "refreshTokenExpiresAt"]), account: readJsonFile(claudeProfileFile(home, isolated))?.oauthAccount };
   }
   if (kind === "chatgpt") {
     const auth = readJsonFile(authFile("chatgpt", home));

@@ -58,8 +58,12 @@ export function cliDir(kind: OfficialAccountKind, home = os.homedir()) {
  * Claude Code 的 .claude.json（账号资料 oauthAccount 在这里）：设了 CLAUDE_CONFIG_DIR 时在那个目录里，否则**只认** ~/.claude.json。
  * 0.3.60：以前只要 ~/.claude/.claude.json 存在就优先用它，可没设 CLAUDE_CONFIG_DIR 时 Claude Code 根本不读那个文件
  * （本机实测有一份别的工具留下的）。结果切换账号把资料写错地方，Claude Code 继续报旧邮箱，用量被归到上一个账号。
+ *
+ * isolated：home 是 OAuth 登录的临时目录，CLI 是按 CLAUDE_CONFIG_DIR=cliDir 跑的（见 main/oauth.ts 的 isolatedEnv），
+ * 资料就在 cliDir 里。0.3.60～0.3.61 这里读成了临时目录根下的 .claude.json，新登录的账号没邮箱、身份退回 token 哈希。
  */
-export function claudeProfileFile(home = os.homedir()) {
+export function claudeProfileFile(home = os.homedir(), isolated = false) {
+  if (isolated) return path.join(cliDir("claude", home), ".claude.json");
   const configDir = home === os.homedir() ? process.env.CLAUDE_CONFIG_DIR : undefined;
   return path.join(configDir || home, ".claude.json");
 }
@@ -105,11 +109,11 @@ export function tokenRef(token: string) {
   return "token:" + createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 
-function claudeAccounts(home: string): CliAccount[] {
+function claudeAccounts(home: string, isolated: boolean): CliAccount[] {
   const oauth = readJsonFile(authFile("claude", home))?.claudeAiOauth;
   const token = str(oauth?.accessToken);
   if (!token) return [];
-  const profile = readJsonFile(claudeProfileFile(home))?.oauthAccount;
+  const profile = readJsonFile(claudeProfileFile(home, isolated))?.oauthAccount;
   const email = str(profile?.emailAddress);
   const ref = str(profile?.accountUuid) || tokenRef(str(oauth?.refreshToken) || token);
   const expiresAt = typeof oauth?.expiresAt === "number" ? oauth.expiresAt : undefined;
@@ -172,9 +176,9 @@ function grokAccounts(home: string): CliAccount[] {
   return out;
 }
 
-/** 某个 home 下该 CLI 当前登录的账号。默认读本机真实登录；OAuth 登录时传隔离的临时目录。 */
-export function readCliAccounts(kind: OfficialAccountKind, home = os.homedir()): CliAccount[] {
-  if (kind === "claude") return claudeAccounts(home);
+/** 某个 home 下该 CLI 当前登录的账号。默认读本机真实登录；OAuth 登录时传隔离的临时目录和 isolated（见 claudeProfileFile）。 */
+export function readCliAccounts(kind: OfficialAccountKind, home = os.homedir(), isolated = false): CliAccount[] {
+  if (kind === "claude") return claudeAccounts(home, isolated);
   if (kind === "chatgpt") return chatgptAccounts(home);
   return grokAccounts(home);
 }
