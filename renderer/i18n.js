@@ -367,6 +367,9 @@
     "会话管理新增 pi：查看对话和工具记录、全文搜索，并在终端继续会话。": "Sessions now supports pi: read conversations and tool calls, search their text, and continue in the terminal.",
     "一键切换 pi 供应商": "Switch pi providers",
     "供应商页新增 pi，支持三种接口直连和本地路由；保留其他配置，可切回原有默认供应商。": "Providers now supports pi with three native APIs and local routing. Other settings are preserved, and you can restore the original defaults.",
+    // 0.3.66 更新说明
+    "自定义宠物不再一直冒汗": "Custom pets no longer sweat nonstop",
+    "额度有点紧时，自己导入的宠物以前会一直播放「紧张」的图片，看起来一直在流汗。现在和内置宠物一样：平时照常待着，隔二三十秒才紧张一下。": "When quota was getting tight, imported pets used to play their “tight” image the whole time, so they looked like they were sweating nonstop. Now they behave like the built-in pets: calm most of the time, with a brief nervous moment every 20 to 30 seconds.",
     // 0.3.65 更新说明
     "Agent 问你问题时弹出卡片": "A card pops up when an agent asks you something",
     "Claude Code 用选择题问你、计划写好等你批准，或者 Codex 向你要信息时，屏幕右下角弹出一张卡片，写着问题和选项，桌宠挥手叫你；在终端里回答后卡片自己收起。不想要可以在「桌宠」页关掉。": "When Claude Code asks you a multiple-choice question or has a plan waiting for approval, or Codex asks you for input, a card with the question and options pops up in the bottom-right corner and the desk pet waves at you. It goes away once you answer in the terminal. You can turn it off on the Desk pet page.",

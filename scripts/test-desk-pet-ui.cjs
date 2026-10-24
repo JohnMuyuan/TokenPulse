@@ -32,7 +32,7 @@ const petFolder = path.join(root, 'my-cat');
 fs.mkdirSync(petFolder, { recursive: true });
 fs.writeFileSync(path.join(petFolder, 'idle.png'), Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4a00000000049454e44ae426082', 'hex'));
 fs.writeFileSync(path.join(petFolder, 'work.gif'), Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00;', 'latin1'));
-fs.writeFileSync(path.join(petFolder, 'pet.json'), JSON.stringify({ name: '测试猫', author: 'QA', states: { idle: 'idle.png', work: 'work.gif' } }));
+fs.writeFileSync(path.join(petFolder, 'pet.json'), JSON.stringify({ name: '测试猫', author: 'QA', states: { idle: 'idle.png', work: 'work.gif', tight: 'work.gif' } }));
 dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [petFolder] });
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -398,6 +398,13 @@ app.whenReady().then(async () => {
     await until(() => mjs("document.querySelectorAll('.dps-choice[data-kind^=pet-]').length === 1"), '导入的宠物出现在列表里');
     await until(() => js("document.getElementById('dp-stage').dataset.pet.startsWith('pet-') && !document.getElementById('dp-img').hidden && document.getElementById('dp-img').src.startsWith('data:image/')"), '桌宠换成自定义的图');
     await until(() => js("document.getElementById('dp-badge').hidden === false && document.getElementById('dp-canvas').hidden"), '自定义宠物有额度标签');
+    // 额度紧张：自定义宠物和内置的一样，平时用 idle 图，隔一阵紧张一下才换 tight 图（以前一直放 tight 图，看着一直在冒汗）
+    const custom = await js("document.getElementById('dp-stage').dataset.pet");
+    pet.webContents.send('desk-pet-state', { pet: custom, scale: 3, theme: 'light', fidget: false, badge: true, sound: false, quota: 12, mood: 'tight', account: '', mode: 'idle', tasks: 0, waiting: 0, mini: null });
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle'"), '紧张时平时照常待着');
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'tight'"), '隔一阵紧张一下', 5000);
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle'"), '两三秒后恢复平静', 5000);
+    deskPetMain.pushDeskPet(true);
     // 自定义宠物是 <img>：浏览器不能把图片拖走（以前按住一拖是拖出一张图片的虚影），按住拖动拖的是宠物窗口
     assert.deepEqual(await js("(() => { const i = document.getElementById('dp-img'), s = getComputedStyle(i), e = new DragEvent('dragstart', { bubbles: true, cancelable: true }); i.dispatchEvent(e); return [i.draggable, s.pointerEvents, s.webkitUserDrag, e.defaultPrevented]; })()"), [false, 'none', 'none', true]);
     let pointer = { x: -19000, y: -19000 };

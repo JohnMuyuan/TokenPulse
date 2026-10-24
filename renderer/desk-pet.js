@@ -109,7 +109,8 @@
     if (view.mini && has('peek')) return 'peek';
     if (view.mood === 'empty') return pick('empty', 'tight');
     if (view.mode === 'work') return pick('work');
-    if (view.mood === 'tight') return pick('tight');
+    // 额度紧张：和内置宠物一样，平时照常待着，隔一阵紧张一下（ctl.nervous，两三秒）才换成 tight 图，不一直冒汗
+    if (view.mood === 'tight' && ctl.nervous) return pick('tight');
     return 'idle';
   }
 
@@ -123,6 +124,7 @@
     if (custom()) {
       canvas.hidden = true; img.hidden = !pack;
       const key = imageKey();
+      stage.dataset.image = key;
       if (pack && key !== shownKey) { shownKey = key; img.src = pack.images[key] || pack.images.idle || ''; }
       badge.hidden = !view.badge;
       if (view.badge) {
