@@ -165,11 +165,13 @@
         el('li', { text: '剩余额度：松鼠看身边的橡果堆，仓鼠看腮帮子，章鱼看身体颜色。额度紧张时皱着眉，隔一阵冒一下汗；用完会发呆；额度重置时补满一下。' }),
         el('li', { text: '任务：本机的 Claude Code 或 Codex 有任务在跑时，宠物开始干活；任务做完会庆祝一下。只读会话文件，不改任何工具的配置。' }),
         el('li', { text: '工具调用 90 秒还没有结果时，任务上写「可能在等你」：可能是在等你确认，也可能只是工具跑得久。' }),
-        el('li', { text: '电脑 5 分钟没人用、也没有任务在跑时，它会去睡觉；回来时揉揉眼睛醒过来。' }),
+        el('li', { text: '电脑 1 分钟没人用、也没有任务在跑时，它会打哈欠、打盹，再过半分钟倒头睡着；你一回来它就醒，睡熟了会先吓一跳。' }),
+        el('li', { text: '点一下冒出额度气泡；双击戳它一下，连点四下它会东张西望。拖着用力一甩，它会滑出去、碰到屏幕边弹回来。' }),
+        el('li', { text: '极简模式：把它拖（或甩）到屏幕右边，或者在右键菜单里选，它会躲在屏幕边上只露半个身子，鼠标移上去探出来打招呼。从边上拖出来就恢复。' }),
       ]),
       el('details', { class: 'dps-format' }, [
         el('summary', { text: '自定义宠物的格式' }),
-        el('p', { class: 'setting-hint', text: '准备一个文件夹，放一个 pet.json 和各个状态的图片。只有 idle（空闲）是必须的，缺的状态用 idle 代替。可用的状态：idle 空闲、work 干活、sleep 睡觉、celebrate 庆祝、tight 额度紧张、empty 额度用完、drag 被拖着、startle 受惊。图片支持 PNG、GIF、WebP、JPEG，单张不超过 5 MB、整套不超过 20 MB。导入时复制一份到数据目录，原文件夹之后删改都不影响。' }),
+        el('p', { class: 'setting-hint', text: '准备一个文件夹，放一个 pet.json 和各个状态的图片。只有 idle（空闲）是必须的，缺的状态用 idle 代替。可用的状态：idle 空闲、work 干活、sleep 睡觉、celebrate 庆祝、tight 额度紧张、empty 额度用完、drag 被拖着、startle 受惊、poke 被戳（缺了用 startle）、doze 打盹（缺了用 sleep）、look 东张西望、wave 打招呼、peek 极简模式贴边时。图片支持 PNG、GIF、WebP、JPEG，单张不超过 5 MB、整套不超过 20 MB。导入时复制一份到数据目录，原文件夹之后删改都不影响。' }),
         el('pre', { class: 'dps-code', translate: 'no', text: example }),
       ]),
     );

@@ -142,6 +142,51 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
       { deskPet: false, deskPetKind: 'squirrel', deskPetScale: 2, deskPetOpacity: 30, deskPetOnTop: true, deskPetAccount: '', deskPetFidget: false, deskPetBadge: true, deskPetPos: null });
     assert.deepEqual(model.normalizeDeskPet({ deskPetKind: 'pet-0a1b2c3d', deskPetScale: '3', deskPetOpacity: 85.4, deskPetPos: { x: 100.6, y: -200.2 } }), { deskPetKind: 'pet-0a1b2c3d', deskPetScale: 3, deskPetOpacity: 85, deskPetPos: { x: 101, y: -200 } });
     assert.deepEqual(model.normalizeDeskPet({ theme: 'dark' }), {}, '不认识的字段不动');
+    assert.equal(prefs.deskPetMini, false, '极简模式默认关');
+    assert.deepEqual(model.normalizeDeskPet({ deskPetMini: 'true' }), { deskPetMini: false });
+    assert.deepEqual(model.normalizeDeskPet({ deskPetMini: true }), { deskPetMini: true });
+  });
+
+  check('desk pet: flinging, the right-edge mini mode and the jump into it', () => {
+    const work = { x: 0, y: 0, width: 1920, height: 1040 }, size = model.petWindowSize(2), sprite = { width: 144, height: 112 };
+    // 松手速度：最后一个点和它之前 40～120 毫秒的点
+    const trail = [{ x: 0, y: 0, t: 0 }, { x: 40, y: 0, t: 20 }, { x: 100, y: 10, t: 50 }, { x: 160, y: 20, t: 80 }];
+    const v = model.releaseVelocity(trail, 90);
+    assert.ok(Math.abs(v.x - 2) < 1e-9 && Math.abs(v.y - 1 / 3) < 1e-9, `用 t=80 和 t=20 的点算，实际 ${JSON.stringify(v)}`);
+    assert.deepEqual(model.releaseVelocity(trail, 200), { x: 0, y: 0 }, '停了一会儿才松手：只是放下');
+    assert.deepEqual(model.releaseVelocity([{ x: 0, y: 0, t: 0 }, { x: 10, y: 0, t: 50 }], 55), { x: 0, y: 0 }, '太慢不算甩');
+    assert.deepEqual(model.releaseVelocity([{ x: 0, y: 0, t: 0 }], 5), { x: 0, y: 0 }, '只有一个点');
+    const fast = model.releaseVelocity([{ x: 0, y: 0, t: 0 }, { x: 0, y: 1000, t: 50 }], 50);
+    assert.ok(Math.abs(Math.hypot(fast.x, fast.y) - 4) < 1e-9, '太快的按上限算');
+    // 甩出去：越来越慢、停在屏幕里；碰边弹回来；用力撞右边就停在右边
+    const box = { minX: 0, maxX: work.width - size.width, minY: 0, maxY: work.height - size.height };
+    const slide = model.flingPath({ x: 500, y: 400 }, { x: 1, y: 0 }, box);
+    assert.equal(slide.hitRight, false);
+    assert.ok(slide.points.length > 5 && slide.points.length <= 150);
+    const steps = slide.points.map((p, i) => p.x - (i ? slide.points[i - 1].x : 500));
+    for (let i = 1; i < steps.length; i++) assert.ok(steps[i] <= steps[i - 1] + 1, '一帧比一帧慢（取整差一像素）');
+    assert.ok(steps[steps.length - 1] < steps[0] / 4, '最后慢下来');
+    const bounce = model.flingPath({ x: 100, y: 400 }, { x: -2, y: 0 }, box);
+    assert.ok(bounce.points.some(p => p.x === 0), '碰到左边');
+    assert.ok(bounce.points[bounce.points.length - 1].x > 0, '弹回来一点');
+    for (const p of model.flingPath({ x: 900, y: 500 }, { x: 0.5, y: 3 }, box).points) assert.ok(p.y >= box.minY && p.y <= box.maxY, '一直在屏幕里');
+    const hit = model.flingPath({ x: 1500, y: 400 }, { x: 3, y: 0 }, box);
+    assert.equal(hit.hitRight, true); assert.equal(hit.points[hit.points.length - 1].x, box.maxX);
+    assert.equal(model.flingPath({ x: 1200, y: 400 }, { x: 0, y: 0 }, box).points.length, 0, '没有速度不动');
+    // 极简模式：窗口贴屏幕右边（整个窗口还在这块屏幕里），高度跟着原来的位置
+    const mini = model.miniBounds({ x: 500, y: 600 }, size, work);
+    assert.deepEqual(mini, { x: 1920 - 240, y: 600 - 142, width: 240, height: 142 });
+    assert.equal(model.miniBounds(null, size, work).x, 1680);
+    assert.equal(model.miniSpriteCenter(work, sprite), Math.round(1920 - 144 * model.MINI_SHOW / 2), '气泡对着露出来的那截');
+    assert.ok(model.MINI_SHOW < model.MINI_PEEK && model.MINI_PEEK < 1, '平时露一半，探出来多一些，但不整个出来');
+    assert.equal(model.reachesRightEdge(model.petBounds(null, size, work), sprite, work), false, '默认位置不算贴边');
+    assert.equal(model.reachesRightEdge({ x: 1920 - 240 + 40, y: 0, width: 240, height: 142 }, sprite, work), true, '拖得伸出屏幕右边：贴边');
+    assert.equal(model.reachesRightEdge({ x: 1920 - 240 + 4, y: 0, width: 240, height: 142 }, sprite, work), false, '离右边还远');
+    // 跳过去：两头准、中间高
+    const from = { x: 100, y: 500 }, to = { x: 400, y: 500 };
+    assert.deepEqual(model.jumpPoint(from, to, 0, 80), from); assert.deepEqual(model.jumpPoint(from, to, 1, 80), to);
+    assert.deepEqual(model.jumpPoint(from, to, 0.5, 80), { x: 250, y: 420 }, '最高处比两头高 arc');
+    assert.deepEqual(model.jumpPoint(from, to, 3, 80), to, 'u 超出范围按 1 算');
   });
 
   check('desk pet: which quota the pet shows, and when it sleeps', () => {
@@ -273,6 +318,87 @@ check('desk pet: session heads give the title, project and subagent flag', () =>
     assert.equal(run('squirrel', { state: 'idle', quota: 60, mood: 'ok', tasks: 0 }).spans.length, 0, '额度够用：不紧张');
     assert.equal(run('squirrel', { state: 'sleep', quota: 20, mood: 'tight', tasks: 0 }).spans.length, 0, '睡觉时不紧张');
     assert.equal(run('squirrel', { state: 'idle', quota: 0, mood: 'empty', tasks: 0 }).share, 0, '额度用完：累趴着，不冒汗');
+  });
+
+  check('desk pet: sleep sequence (yawn, doze, flop) and waking up', () => {
+    const Pet = globalThis.PulsePet;
+    const ctx = { state: 'idle', quota: 70, mood: 'ok', tasks: 0, fidget: false };
+    const play = (ctl, frames, now, c = ctx) => { for (let i = 0; i < frames; i++) ctl.tick(c, now + i * 100); };
+    const ctl = new Pet.Controller('squirrel');
+    ctl.setMode('idle'); ctl.idle(5);
+    play(ctl, 5, 0);
+    assert.equal(ctl.action, null); assert.equal(ctl.stateOf(ctx), 'idle');
+    ctl.idle(Pet.DOZE_AFTER);
+    ctl.tick(ctx, 1000);
+    assert.equal(ctl.action, 'yawn', '一分钟没人动：打哈欠'); assert.equal(ctl.stateOf(ctx), 'doze');
+    play(ctl, 30, 1100);
+    assert.equal(ctl.action, null, '哈欠打完接着打盹'); assert.equal(ctl.stateOf(ctx), 'doze');
+    ctl.idle(Pet.DOZE_AFTER + 20); ctl.tick(ctx, 1000 + Pet.DOZE_MS - 100);
+    assert.equal(ctl.stateOf(ctx), 'doze', '打盹还没满半分钟');
+    ctl.idle(Pet.DOZE_AFTER + 30); ctl.tick(ctx, 1000 + Pet.DOZE_MS);
+    assert.equal(ctl.action, 'flop', '一头栽倒'); assert.equal(ctl.stateOf(ctx), 'sleep');
+    play(ctl, 20, 40_000);
+    assert.equal(ctl.action, null); assert.equal(ctl.stateOf(ctx), 'sleep', '主进程还说 idle，宠物自己已经睡着了');
+    ctl.idle(0);
+    assert.equal(ctl.action, 'startle', '睡熟了被吵醒：先吓一跳');
+    play(ctl, Pet.durOf('squirrel', 'startle'), 50_000);
+    assert.equal(ctl.action, 'wake', '然后揉眼睛'); assert.equal(ctl.stateOf(ctx), 'idle');
+    // 打盹时有人动：揉揉眼睛就醒
+    const doze = new Pet.Controller('hamster');
+    doze.setMode('idle'); doze.idle(70); doze.tick(ctx, 0);
+    assert.equal(doze.stateOf(ctx), 'doze');
+    doze.idle(2);
+    assert.equal(doze.action, 'wake'); assert.equal(doze.stateOf(ctx), 'idle');
+    // 有任务在跑、极简模式贴边时不犯困
+    const busy = new Pet.Controller('octopus'), work = { ...ctx, state: 'work', tasks: 1 };
+    busy.setMode('work'); busy.idle(200); play(busy, 50, 0, work);
+    assert.equal(busy.stateOf(work), 'work'); assert.notEqual(busy.action, 'yawn');
+    const edge = new Pet.Controller('squirrel'), mini = { ...ctx, mini: true };
+    edge.setMode('idle'); edge.idle(200); play(edge, 50, 0, mini);
+    assert.equal(edge.stateOf(mini), 'idle');
+    // 主进程说睡了（5 分钟没人动）：没睡的先打哈欠；醒来吓一跳
+    const main = new Pet.Controller('squirrel');
+    main.setMode('idle'); main.setMode('sleep');
+    assert.equal(main.action, 'yawn'); assert.equal(main.stateOf({ ...ctx, state: 'sleep' }), 'sleep');
+    main.setMode('idle');
+    assert.equal(main.action, 'startle');
+    // 打开窗口时已经在睡：直接睡着，不打哈欠
+    const late = new Pet.Controller('squirrel');
+    late.setMode('sleep');
+    assert.equal(late.action, null); assert.equal(late.drowse, 'asleep');
+  });
+
+  check('desk pet: clicks — one opens the bubble after the double-click gap, two pokes, four look around', () => {
+    const Pet = globalThis.PulsePet;
+    const clicks = new Pet.Clicks(300);
+    assert.equal(clicks.press(1000), 1);
+    assert.equal(clicks.settle(1200), 0, '还没过 300 毫秒：可能是双击');
+    assert.equal(clicks.settle(1301), 1, '单击');
+    assert.equal(clicks.settle(1400), 0, '读过就清零');
+    assert.equal(clicks.press(2000), 1); assert.equal(clicks.press(2250), 2, '双击');
+    assert.equal(clicks.settle(2400), 0); assert.equal(clicks.settle(2600), 2);
+    for (const [t, n] of [[3000, 1], [3200, 2], [3400, 3], [3600, 4]]) assert.equal(clicks.press(t), n);
+    assert.equal(clicks.settle(4000), 4);
+    assert.equal(clicks.press(5000), 1); assert.equal(clicks.press(5400), 1, '隔太久：重新数');
+  });
+
+  check('desk pet: the new actions and states draw for every built-in pet', () => {
+    const Pet = globalThis.PulsePet;
+    const base = { quota: 70, mood: 'ok', tasks: 0, t: 5, look: { x: 0, y: 0 }, from: 0 };
+    for (const name of ['squirrel', 'hamster', 'octopus']) {
+      const key = g => g.c.join(',');
+      const idle = key(Pet.drawPet(name, { ...base, state: 'idle', action: null, at: 0 }));
+      assert.notEqual(key(Pet.drawPet(name, { ...base, state: 'doze', action: null, at: 0 })), idle, `${name} 打盹和平时不一样`);
+      for (const action of ['poke', 'lookaround', 'flop', 'wave']) {
+        const frames = new Set();
+        for (let at = 0; at < Pet.durOf(name, action); at += 3) frames.add(key(Pet.drawPet(name, { ...base, state: action === 'flop' ? 'sleep' : 'idle', action, at, t: at })));
+        assert.ok(frames.size >= 2, `${name}/${action} 是会动的`);
+        assert.ok(![...frames].includes(idle), `${name}/${action} 看得出在做动作`);
+        assert.ok(Pet.LABELS[action], `${name}/${action} 有名字`);
+      }
+      // 影子：平时有，被拎着、贴边时没有
+      assert.notEqual(key(Pet.drawPet(name, { ...base, state: 'idle', action: null, at: 0, mini: true })), idle, `${name} 贴边时不画影子`);
+    }
   });
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录删不掉不影响结果 */ }

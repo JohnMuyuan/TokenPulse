@@ -15,7 +15,7 @@ import type { Snapshot } from "../core/report";
 import { ActivityScanner, type ActivityState, type AgentTask } from "../core/agent-activity";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
-import { anchorOf, bubbleBounds, GRID, PACK_ID, petBounds, petMode, petQuota, petWindowSize, pickPetAccount, type BubblePlace, type DeskPetPrefs, type PetMood, type PetUsing } from "../core/desk-pet-model";
+import { anchorOf, bubbleBounds, flingPath, GRID, jumpPoint, MINI_PEEK, MINI_SHOW, miniBounds, miniSpriteCenter, PACK_ID, petBounds, petMode, petQuota, petWindowSize, pickPetAccount, reachesRightEdge, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetMood, type PetUsing } from "../core/desk-pet-model";
 import { petPackImages } from "../core/pet-pack";
 import { tr } from "./i18n";
 
@@ -38,6 +38,8 @@ type Options = {
   preload: string;
   prefs: () => DeskPetPrefs & { theme: "light" | "dark" };
   savePos: (pos: { x: number; y: number } | null) => void;
+  /** 进出极简模式（贴屏幕右边）。 */
+  saveMini: (on: boolean) => void;
   hide: () => void;
   snapshot: () => Snapshot | null;
   title: (account: Account) => string;
@@ -57,14 +59,16 @@ let pet: BrowserWindow | null = null;
 let bubble: BrowserWindow | null = null;
 let scanner: ActivityScanner | null = null;
 let activity: ActivityState | null = null;
-let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null;
+let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null, flyTimer: NodeJS.Timeout | null = null;
 let scanning = false, listening = false, interactive = false, bubbleShown = false;
 let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number } | null = null, lastKind = "";
 /** 最近一次有任务的是哪家（任务做完十分钟后不在 activity 里了，靠它记住「最近用的」）。 */
 let lastUsedKind: Account["kind"] | null = null;
 let bubbleBox = { width: 236, height: 120 }, bubbleView: BubbleView = "quota", bubbleOpened = 0, bubbleHiddenAt = 0;
 let bubblePlace: BubblePlace | null = null;
-let drag: { dx: number; dy: number; size: { width: number; height: number }; at: { x: number; y: number; width: number; height: number } } | null = null;
+let drag: { dx: number; dy: number; size: { width: number; height: number }; at: { x: number; y: number; width: number; height: number }; trail: DragSample[] } | null = null;
+/** 上次发给宠物窗口的「电脑多久没人动」（秒）。 */
+let lastIdle = -1;
 
 export function setupDeskPet(next: Options) {
   options = next;
@@ -85,9 +89,11 @@ function spriteSize() { const scale = options?.prefs().deskPetScale ?? 2; return
 
 function placePet() {
   if (!options || !pet || pet.isDestroyed()) return;
+  if (flyTimer) return;
   const prefs = options.prefs();
   const size = petWindowSize(prefs.deskPetScale);
-  const bounds = petBounds(prefs.deskPetPos, size, workAreaFor(prefs.deskPetPos));
+  const work = workAreaFor(prefs.deskPetPos);
+  const bounds = prefs.deskPetMini ? miniBounds(prefs.deskPetPos, size, work) : petBounds(prefs.deskPetPos, size, work);
   pet.setBounds(OFFSCREEN() ? { ...bounds, x: -20000, y: -20000 } : bounds);
   if (bubbleVisible()) placeBubble();
 }
@@ -155,6 +161,8 @@ function startTimers() {
   // 眼睛跟着鼠标：只发宠物身体中心到鼠标的相对位置，变了才发
   cursorTimer = setInterval(() => {
     if (!pet || pet.isDestroyed() || !pet.isVisible() || drag) return;
+    // 睡眠序列要知道电脑多久没人动（键盘鼠标都算）；变了才发，最多一秒一次。测试时（屏幕外）由测试自己发
+    if (!OFFSCREEN()) { const idle = idleSeconds(); if (idle !== lastIdle) { lastIdle = idle; pet.webContents.send("desk-pet-idle", idle); } }
     const point = screen.getCursorScreenPoint(), bounds = pet.getBounds(), sprite = spriteSize();
     const rel = { x: Math.round(point.x - (bounds.x + bounds.width / 2)), y: Math.round(point.y - (bounds.y + bounds.height - sprite.height * 0.55)) };
     const key = `${Math.round(rel.x / 4)},${Math.round(rel.y / 4)}`;
@@ -165,9 +173,9 @@ function startTimers() {
 }
 
 function stopTimers() {
-  for (const timer of [scanTimer, cursorTimer, dragTimer]) if (timer) clearInterval(timer);
-  scanTimer = cursorTimer = dragTimer = null;
-  drag = null;
+  for (const timer of [scanTimer, cursorTimer, dragTimer, flyTimer]) if (timer) clearInterval(timer);
+  scanTimer = cursorTimer = dragTimer = flyTimer = null;
+  drag = null; lastIdle = -1;
 }
 
 function idleSeconds() { try { return powerMonitor.getSystemIdleTime(); } catch { return 0; } }
@@ -210,6 +218,7 @@ export function deskPetView() {
   const running = activity?.running ?? [];
   return {
     pet: prefs.deskPetKind, scale: prefs.deskPetScale, theme: prefs.theme, fidget: prefs.deskPetFidget, badge: prefs.deskPetBadge,
+    mini: prefs.deskPetMini ? { show: MINI_SHOW, peek: MINI_PEEK } : null,
     quota: quota.quota, mood: quota.mood, account: quota.account,
     mode: petMode(activity, idleSeconds()), tasks: running.length, waiting: running.filter((task) => task.status === "waiting").length,
   };
@@ -232,7 +241,7 @@ export function pushDeskPet(force = false) {
   pet.webContents.send("desk-pet-state", view);
 }
 
-function sendEvent(event: { type: "celebrate" } | { type: "restock"; from: number } | { type: "bubble"; open: boolean }) {
+function sendEvent(event: { type: "celebrate" } | { type: "restock"; from: number } | { type: "bubble"; open: boolean } | { type: "fly" } | { type: "landed" }) {
   if (pet && !pet.isDestroyed()) pet.webContents.send("desk-pet-event", event);
 }
 
@@ -257,11 +266,15 @@ export function deskPetDrag(phase: "start" | "end") {
   if (phase === "start") {
     if (drag) return;
     hideBubble();
+    stopFlying();
     const point = screen.getCursorScreenPoint(), bounds = pet.getBounds();
     // 大小用算出来的，不用 getBounds()：屏幕缩放 150% 这类非整数倍时，把读回来的大小再设回去，窗口每次会大一像素，
     // 宠物画在底边中间，光标停着不动也会一直漂。光标没动就不碰窗口
     const size = petWindowSize(options.prefs().deskPetScale);
-    drag = { dx: point.x - bounds.x, dy: point.y - bounds.y, size, at: { x: bounds.x, y: bounds.y, ...size } };
+    let dx = point.x - bounds.x;
+    // 从屏幕边上拽出来：退出极简模式，宠物回到窗口中间，抓着的就是它的身子中间
+    if (options.prefs().deskPetMini) { options.saveMini(false); pushDeskPet(true); dx = Math.round(size.width / 2); }
+    drag = { dx, dy: point.y - bounds.y, size, at: { x: bounds.x, y: bounds.y, ...size }, trail: [{ x: bounds.x, y: bounds.y, t: Date.now() }] };
     pet.setIgnoreMouseEvents(false); interactive = true;
     dragTimer = setInterval(() => {
       if (!pet || pet.isDestroyed() || !drag) return;
@@ -269,16 +282,69 @@ export function deskPetDrag(phase: "start" | "end") {
       const x = point.x - drag.dx, y = point.y - drag.dy;
       if (x === drag.at.x && y === drag.at.y) return;
       drag.at = { x, y, ...drag.size };
+      drag.trail.push({ x, y, t: Date.now() });
+      if (drag.trail.length > 12) drag.trail.shift();
       pet.setBounds(drag.at);
     }, 16);
     return;
   }
   if (!drag) return;
   if (dragTimer) clearInterval(dragTimer);
-  const dropped = drag.at;
+  const dropped = drag.at, trail = drag.trail;
   dragTimer = null; drag = null;
-  options.savePos(anchorOf(dropped));
+  const velocity = OFFSCREEN() ? { x: 0, y: 0 } : releaseVelocity(trail, Date.now());
+  if (!velocity.x && !velocity.y) { settle(dropped, false); return; }
+  // 甩出去：按速度滑一段，碰边弹回来；用力甩到右边就贴边藏起来
+  const work = screen.getDisplayNearestPoint(anchorOf(dropped)).workArea;
+  const { points, hitRight } = flingPath(dropped, velocity, { minX: work.x, maxX: work.x + work.width - dropped.width, minY: work.y, maxY: work.y + work.height - dropped.height });
+  let i = 0;
+  flyTimer = setInterval(() => {
+    if (!pet || pet.isDestroyed()) { stopFlying(); return; }
+    const point = points[i++];
+    if (point) pet.setBounds({ x: point.x, y: point.y, width: dropped.width, height: dropped.height });
+    if (i >= points.length) { stopFlying(); settle({ ...dropped, ...(points[points.length - 1] ?? dropped) }, hitRight); }
+  }, 16);
+}
+
+function stopFlying() {
+  if (flyTimer) clearInterval(flyTimer);
+  flyTimer = null;
+}
+
+/** 停下来了：记住位置；宠物到了（或伸出了）屏幕右边就贴边藏起来。宠物窗口收到 landed 播落地。 */
+function settle(at: { x: number; y: number; width: number; height: number }, toEdge: boolean) {
+  if (!options) return;
+  const work = screen.getDisplayNearestPoint(anchorOf(at)).workArea;
+  options.savePos(anchorOf(at));
+  if (toEdge || (!OFFSCREEN() && reachesRightEdge(at, spriteSize(), work))) options.saveMini(true);
+  sendEvent({ type: "landed" });
   placePet();
+  pushDeskPet(true);
+}
+
+/**
+ * 右键菜单进出极简模式：抛物线跳过去。进的时候跳到右边贴好再藏；出的时候先探出来，往左跳一段落地。
+ * 测试时（屏幕外）不跳，直接换。
+ */
+export function setDeskPetMini(on: boolean) {
+  if (!pet || pet.isDestroyed() || !options || drag) return;
+  const o = options, prefs = o.prefs();
+  if (prefs.deskPetMini === on) return;
+  hideBubble();
+  stopFlying();
+  const size = petWindowSize(prefs.deskPetScale), from = pet.getBounds(), work = screen.getDisplayMatching(from).workArea;
+  const to = on ? miniBounds(prefs.deskPetPos, size, work) : petBounds({ x: work.x + work.width - Math.round(spriteSize().width * 1.4), y: from.y + size.height }, size, work);
+  if (!on) { o.saveMini(false); pushDeskPet(true); }
+  const done = () => { o.savePos(anchorOf(to)); if (on) o.saveMini(true); sendEvent({ type: "landed" }); placePet(); pushDeskPet(true); };
+  if (OFFSCREEN()) { done(); return; }
+  sendEvent({ type: "fly" });
+  const start = Date.now(), ms = 520, arc = Math.round(size.height * 0.6);
+  flyTimer = setInterval(() => {
+    if (!pet || pet.isDestroyed()) { stopFlying(); return; }
+    const u = Math.min(1, (Date.now() - start) / ms), point = jumpPoint(from, to, u, arc);
+    pet.setBounds({ ...point, width: size.width, height: size.height });
+    if (u >= 1) { stopFlying(); done(); }
+  }, 16);
 }
 
 export function deskPetClick() { toggleBubble("quota"); }
@@ -291,6 +357,7 @@ export function deskPetMenu() {
     { label: tr("查看任务"), click: () => openDeskPetBubble("tasks") },
     { label: tr("立即刷新"), click: () => o.refresh() },
     { type: "separator" },
+    { label: o.prefs().deskPetMini ? tr("退出极简模式") : tr("极简模式（贴到屏幕右边）"), click: () => setDeskPetMini(!o.prefs().deskPetMini) },
     { label: tr("桌宠设置"), click: () => o.openSettings() },
     { label: tr("打开 TokenPulse"), click: () => o.openMain() },
     { type: "separator" },
@@ -301,8 +368,11 @@ export function deskPetMenu() {
 /** 把宠物放回主屏右下角（找不到宠物的时候用）。 */
 export function resetDeskPetPosition() {
   if (!options) return;
+  stopFlying();
   options.savePos(null);
+  if (options.prefs().deskPetMini) options.saveMini(false);
   placePet();
+  pushDeskPet(true);
 }
 
 /* ---------------- 对话气泡 ---------------- */
@@ -311,8 +381,10 @@ function bubbleVisible() { return !!bubble && !bubble.isDestroyed() && bubble.is
 
 function placeBubble() {
   if (!bubble || bubble.isDestroyed() || !pet || pet.isDestroyed()) return;
-  const bounds = pet.getBounds(), work = screen.getDisplayMatching(bounds).workArea;
-  const place = bubbleBounds(bounds, spriteSize(), bubbleBox, work);
+  const real = pet.getBounds(), work = screen.getDisplayMatching(real).workArea, sprite = spriteSize();
+  // 极简模式：宠物只露出右边一截，气泡对着露出来的那截
+  const bounds = options?.prefs().deskPetMini ? { ...real, x: Math.round(miniSpriteCenter(work, sprite) - real.width / 2) } : real;
+  const place = bubbleBounds(bounds, sprite, bubbleBox, work);
   const moved = !bubblePlace || bubblePlace.side !== place.side || bubblePlace.at !== place.at;
   bubblePlace = place;
   bubble.setBounds(OFFSCREEN() ? { x: -20000, y: -21000, width: place.width, height: place.height } : { x: place.x, y: place.y, width: place.width, height: place.height });

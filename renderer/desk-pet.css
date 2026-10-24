@@ -25,9 +25,16 @@ html.dp-html, body.dp-body { width: 100%; height: 100%; margin: 0; overflow: hid
 body.dp-body { position: relative; }
 .dp-stage { position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); }
 .dp-stage canvas, .dp-stage img { display: block; image-rendering: pixelated; }
-.dp-stage img { object-fit: contain; object-position: 50% 100%; image-rendering: auto; }
+/* 自定义宠物是图片：不让浏览器把它当图片拖走（按住一拖会拖出一张图片的虚影、拖不动窗口），鼠标事件交给外面的 stage */
+.dp-stage img { object-fit: contain; object-position: 50% 100%; image-rendering: auto; -webkit-user-drag: none; pointer-events: none; }
 body.hover .dp-stage { cursor: grab; }
 body.dragging .dp-stage { cursor: grabbing; }
+/* 极简模式：宠物贴着窗口右边，left 由 desk-pet.js 按露出多少算；探出来、缩回去滑一下 */
+body.mini .dp-stage { transform: none; transition: left .22s cubic-bezier(.3, 1.4, .6, 1); }
+body.mini.dragging .dp-stage { transition: none; }
+body.mini .dp-hint { left: auto; right: 4px; transform: translateY(4px); }
+body.mini.hover .dp-hint { transform: none; }
+body.mini .dp-badge { right: auto; left: -4px; }
 
 .dp-hint {
   position: absolute; left: 50%; bottom: 120px; max-width: calc(100% - 8px); box-sizing: border-box;
@@ -48,4 +55,4 @@ body.dragging .dp-hint, body.talking .dp-hint { opacity: 0; }
 .dp-badge.tight { color: var(--dp-warn); }
 .dp-badge.empty { color: var(--dp-danger); }
 
-@media (prefers-reduced-motion: reduce) { .dp-hint { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dp-hint, body.mini .dp-stage { transition: none; } }

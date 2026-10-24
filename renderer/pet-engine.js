@@ -110,6 +110,11 @@
     for (let i = 0; i < 3; i++) put(g, x + 3 + i * 2, y + 3, '#6B7280');
   }
   function exclaim(g, x, y) { layer(g, '#6B4500', null, l => { rect(l, x, y, 2, 5, '#FFD84A', true); rect(l, x, y + 7, 2, 2, '#FFD84A', true); }); }
+  // 东张西望时头顶的问号；被戳时的「气鼓鼓」十字
+  function question(g, x, y) { layer(g, '#6B4500', null, l => ['0110', '1001', '0001', '0010', '0100', '0000', '0100'].forEach((r, j) => [...r].forEach((b, i) => { if (b === '1') put(l, x + i, y + j, '#FFD84A', true); }))); }
+  function anger(g, x, y) { layer(g, '#7A1F1F', null, l => ['01010', '11011', '00000', '11011', '01010'].forEach((r, j) => [...r].forEach((b, i) => { if (b === '1') put(l, x + i, y + j, '#FF6B6B', true); }))); }
+  /** 地面上的影子：身体朝鼠标那边歪的时候，影子往那边拉长一点。 */
+  function shadow(g, cx, lean, y = 54.6) { ell(g, cx + lean * 1.5, y, 13 + Math.abs(lean) * 1.6, 1.7, 'rgba(20,24,32,0.18)', false); }
   function dust(g, x, y, k) { const c = '#C3C9D3'; for (const s of [-1, 1]) { put(g, x + s * (10 + k * 2), y - (k > 2 ? 1 : 0), c); put(g, x + s * (11 + k * 2), y - 1 - (k > 3 ? 1 : 0), c); if (k < 4) put(g, x + s * (9 + k), y, c); } }
   function confetti(g, at) {
     const cols = ['#FF6B8B', '#FFC93C', '#5BD08F', '#6FA8FF', '#C78BFF'];
@@ -131,7 +136,18 @@
       case 'closed': put(g, x, y + h - 2, P.o); for (let i = 1; i < w - 1; i++) put(g, x + i, y + h - 1, P.o); put(g, x + w - 1, y + h - 2, P.o); break;
       case 'happy': put(g, x, y + 2, P.o); for (let i = 1; i < w - 1; i++) put(g, x + i, y + 1, P.o); put(g, x + w - 1, y + 2, P.o); break;
       case 'wide': layer(g, P.o, null, l => ell(l, x + w / 2, y + h / 2, w / 2 + 0.8, h / 2 + 0.8, P.w)); rect(g, x + Math.floor((w - 1) / 2), y + 1, w > 3 ? 2 : 1, h - 2, P.eye); break;
+      // 被戳时眯成 > <：左眼尖朝右、右眼尖朝左
+      case 'squeezeL': case 'squeezeR': {
+        const m = Math.max(1, Math.floor(h / 2));
+        for (let i = 0; i <= m; i++) { const d = Math.round(i * (w - 1) / m), xx = mode === 'squeezeL' ? x + d : x + w - 1 - d; put(g, xx, y + i, P.o); put(g, xx, y + h - 1 - i, P.o); }
+        break;
+      }
     }
+  }
+  /** 两只眼睛一起画；squeeze 拆成左右两种。 */
+  function eyes2(g, lx, rx, y, w, h, mode, P) {
+    eye(g, lx, y, w, h, mode === 'squeeze' ? 'squeezeL' : mode, P);
+    eye(g, rx, y, w, h, mode === 'squeeze' ? 'squeezeR' : mode, P);
   }
   function brows(g, l, r, w, y, kind, col) {
     for (let i = 0; i < w; i++) {
@@ -154,7 +170,8 @@
   }
 
   /* ---------- behaviour shared by the two furry pets ---------- */
-  const OVERRIDE = new Set(['startle', 'drag', 'land', 'celebrate', 'restock', 'yawn', 'wake']);
+  // 这些动作在干活、睡觉时也照样播（盖过干活 / 睡觉的样子）
+  const OVERRIDE = new Set(['startle', 'drag', 'land', 'celebrate', 'restock', 'yawn', 'wake', 'poke', 'lookaround', 'flop', 'wave']);
   const JUMP = [0, -3, -6, -7, -7, -6, -4, -2, 0, 1, 0, 0, 0, 0];
   const moodOf = c => c.mood || (c.quota <= 0 ? 'empty' : c.quota < 25 ? 'tight' : 'ok');
   function basePose(c, mood) {
@@ -162,10 +179,18 @@
     const p = { dx: 0, dy: 0, sq: Math.floor(t / 12) % 2 ? 0.4 : 0, tall: 0, hx: 0, lx: look.x, ly: look.y,
       eyes: t % 41 === 0 ? 'blink' : t % 41 === 1 ? 'half' : 'open', brows: null, mouth: 'smile', paws: 'rest', puff: 0, ears: 0,
       tailAmp: 1, tailSpeed: 0.22, wrap: false, feet: 'sit', headDrop: 0, yawn: 0, fx: [], blush: true, wink: false };
+    // 待机时身体朝鼠标那边微微一歪（头挪一格），影子跟着拉长
+    p.lean = state === 'idle' && !a && mood !== 'empty' ? clamp(Math.round(look.x * 0.5), -1, 1) : 0;
+    p.hx = p.lean;
     // 额度紧张：平时只是皱眉；隔一阵紧张一下（c.nervous，节奏在 Controller）才冒汗、喘气、抖一抖
     if (mood === 'tight') { p.brows = 'worry'; p.mouth = 'flat'; if (c.nervous) { p.fx.push('sweat'); p.mouth = t % 6 < 3 ? 'open' : 'small'; p.sq = t % 4 < 2 ? 0.8 : 0; if (!a && t % 12 < 3) p.dx = t % 2 ? 1 : -1; } }
     if (mood === 'empty') { p.eyes = 'tired'; p.mouth = 'frown'; p.sq = 1.2; p.ears = 2; p.tailAmp = 0.2; p.fx.push('dots'); p.blush = false; }
     if (state === 'sleep' && !a) Object.assign(p, { eyes: 'closed', mouth: 'small', paws: 'none', wrap: true, feet: 'none', headDrop: 3, ears: 1, tailAmp: 0, sq: 1.4 + (Math.floor(t / 12) % 2) * 0.6, lx: 0, ly: 0, fx: ['zzz'], brows: null, dx: 0 });
+    // 打盹：头一点一点往下掉，掉到底猛地抬一下，眼睛半睁半闭
+    if (state === 'doze' && !a) {
+      const f = t % 40, nod = f < 30 ? Math.min(3, f / 8) : 0;
+      Object.assign(p, { eyes: f < 10 ? 'half' : f < 29 ? 'closed' : f < 33 ? 'open' : 'half', mouth: 'small', headDrop: Math.round(nod), sq: 0.6 + nod * 0.2, ears: 1, tailAmp: 0.3, tailSpeed: 0.12, lx: 0, ly: 0.5, brows: null, fx: f > 14 && f < 29 ? ['zsmall'] : [], dx: 0, hx: 0, lean: 0 });
+    }
     switch (a) {
       case 'startle': Object.assign(p, { dy: JUMP[at] || 0, eyes: 'wide', mouth: 'o', puff: Math.max(0, 1 - at / 14), ears: -2, fx: ['exclaim'], brows: null, tailAmp: 0, dx: 0 }); break;
       case 'drag': Object.assign(p, { dy: -4 + Math.round(Math.sin(t * 0.5)), paws: 'dangle', feet: 'dangle', eyes: 'open', brows: 'worry', mouth: 'o', sq: -1.2, tailAmp: 2, tailSpeed: 0.5, fx: [], dx: 0 }); break;
@@ -175,6 +200,14 @@
       case 'wake': Object.assign(p, { paws: 'eyes', eyes: at < 10 ? 'closed' : 'blink', mouth: 'small', fx: [], brows: null, dx: 0 }); break;
       case 'restock': Object.assign(p, { lx: -1.5, ly: -1.5, eyes: at > 20 ? 'happy' : 'open', mouth: 'open', ears: -1, fx: ['sparkles'], brows: null, sq: 0, dx: 0 }); break;
       case 'look': Object.assign(p, { tall: Math.max(0, Math.min(at, 3, 30 - at)), ears: -1, lx: at < 12 ? -2 : at < 24 ? 2 : 0, ly: -0.5, mouth: 'small', tailAmp: 0.3, dx: 0 }); break;
+      // 双击：被戳了一下，压扁、眯成 > <、抖两下，头上冒个气鼓鼓的十字
+      case 'poke': Object.assign(p, { sq: [2.6, 2.2, 1.6, 1, 0.5, 0.2, 0, 0, 0, 0, 0, 0][at] ?? 0, eyes: at < 8 ? 'squeeze' : 'open', mouth: at < 4 ? 'o' : 'frown', brows: at >= 8 ? 'worry' : null, dx: at < 6 ? (at % 2 ? 1 : -1) : 0, hx: 0, lean: 0, ears: at < 6 ? 1 : 0, fx: ['anger'], tailAmp: 2, tailSpeed: 0.7, blush: false }); break;
+      // 连点四下：左看右看好几回，头顶一个问号
+      case 'lookaround': Object.assign(p, { tall: Math.max(0, Math.min(at, 2, 32 - at)), ears: -1, lx: [-2, -2, 2, 2, -2, 2, -2, 0][Math.floor(at / 4)] ?? 0, ly: -0.5, mouth: 'o', brows: null, tailAmp: 1.5, hx: 0, lean: 0, fx: ['question'] }); break;
+      // 困到撑不住，一头栽倒（之后就是睡觉的样子）
+      case 'flop': Object.assign(p, { eyes: 'closed', mouth: 'small', sq: Math.min(1.6, at * 0.16), headDrop: Math.min(3, Math.round(at * 0.35)), dy: at < 5 ? -Math.round(at / 2) : 0, ears: 1, tailAmp: 0, lx: 0, ly: 0, brows: null, hx: 0, lean: 0, fx: at >= 9 ? ['dust'] : [] }); break;
+      // 极简模式里鼠标移过来：探出身子挥挥手
+      case 'wave': Object.assign(p, { paws: 'hi', eyes: 'happy', mouth: 'open', brows: null, lx: -2, ly: -0.5, tailAmp: 1.8, tailSpeed: 0.5, hx: 0, lean: 0 }); break;
     }
     return p;
   }
@@ -184,7 +217,10 @@
       case 'dots': bubble(g, at.dots[0], at.dots[1], P.o); break;
       case 'exclaim': exclaim(g, at.exclaim[0], Math.max(1, at.exclaim[1])); break;
       case 'zzz': zzz(g, at.zzz[0], at.zzz[1], c.t); break;
-      case 'dust': dust(g, at.dust[0], 53, c.at); break;
+      case 'zsmall': glyph(g, Z4, at.zzz[0], at.zzz[1] - ((c.t >> 3) % 2), '#8C97B0'); break;
+      case 'dust': dust(g, at.dust[0], 53, c.action === 'flop' ? c.at - 9 : c.at); break;
+      case 'question': question(g, at.exclaim[0], Math.max(1, at.exclaim[1] + ((c.t >> 2) % 2))); break;
+      case 'anger': anger(g, at.exclaim[0] - 1, Math.max(1, at.exclaim[1] + 2)); break;
       case 'sparkles': sparkles(g, c.t, [[5, 8], [27, 3], [63, 5], [67, 25], [4, 27]]); break;
       case 'confetti': confetti(g, c.at); break;
     }
@@ -262,7 +298,7 @@
     ell(g, F, hy + 4.5 + fy, 4.6, 3, P.belly, false);
     const ey = Math.round(hy - 3 + fy), lx = F - 7, rx = F + 4;
     if (p.wink) { eye(g, lx, ey, 3, 4, 'happy', P); eye(g, rx, ey, 3, 4, 'open', P); }
-    else { eye(g, lx, ey, 3, 4, p.eyes, P); eye(g, rx, ey, 3, 4, p.eyes, P); }
+    else eyes2(g, lx, rx, ey, 3, 4, p.eyes, P);
     if (p.brows) brows(g, lx, rx, 3, ey - 2, p.brows, P.o);
     const ny = Math.round(hy + 1 + fy);
     rect(g, F - 2, ny, 4, 1, P.nose); rect(g, F - 1, ny + 1, 2, 1, P.nose); put(g, F - 2, ny, P.noseL);
@@ -280,6 +316,8 @@
       case 'up': layer(g, P.o, sh, l => { for (const s of [-1, 1]) arm(l, [[cx + s * 8, sY, 2], [cx + s * 14, hy + 3, 2], [cx + s * 16, hy - 6, 2.4]]); }); break;
       case 'stretch': layer(g, P.o, sh, l => { for (const s of [-1, 1]) arm(l, [[cx + s * 8, sY, 2], [cx + s * 13, hy - 2, 2], [cx + s * 14, hy - 10, 2.4]]); }); break;
       case 'dangle': layer(g, P.o, sh, l => { for (const s of [-1, 1]) arm(l, [[cx + s * 8, sY, 2], [cx + s * 13, hy + 4, 2], [cx + s * 15, hy - 1, 2.4]]); }); break;
+      // 左手举高左右摆（挥手），右手放着
+      case 'hi': { const sway = [-2, -1, 0, 1, 2, 1, 0, -1][(c.t >> 1) % 8]; layer(g, P.o, sh, l => { arm(l, [[cx - 8, sY, 2], [cx - 13, hy + 1, 2], [cx - 14 + sway, hy - 9, 2.4]]); ell(l, cx + 3.5, 39 + dy, 2.3, 1.9, P.fur); }); break; }
     }
     if (p.wrap) bushyTail(g, P, TAIL_WRAP, cx, dy, t, 0.4, 0.15, 0);
     if (p.fx.includes('crumbs')) for (let k = 0; k < 3; k++) put(g, F - 2 + k * 2, ny + 9 + ((at + k * 3) % 9), P.acornL);
@@ -382,7 +420,7 @@
     ell(g, A - 11, hy + 4 + cr * 0.35, cr * 0.7, cr * 0.4, P.cream, false); ell(g, A + 11, hy + 4 + cr * 0.35, cr * 0.7, cr * 0.4, P.cream, false);
     if (cr >= 3.5 && p.blush) [A - 12, A - 11].forEach(x => { put(g, x, hy + 4, P.pink); put(g, mA(x), hy + 4, P.pink); });
     const ey = hy - 4 + fy, lx = F - 9, rxE = F + 6;
-    eye(g, lx, ey, 3, 3, p.eyes, P); eye(g, rxE, ey, 3, 3, p.eyes, P);
+    eyes2(g, lx, rxE, ey, 3, 3, p.eyes, P);
     if (p.brows) brows(g, lx, rxE, 3, ey - 2, p.brows, P.o);
     rect(g, F - 1, hy + fy, 2, 1, P.pinkD);
     mouthAt(g, F, hy + 1 + fy, p.mouth, P, p.yawn, false);
@@ -398,6 +436,7 @@
       case 'up': layer(g, P.o, { [P.fur]: P.furD }, l => { for (const s of [-1, 1]) arm(l, cx + s * 12, by - 3, cx + s * 17, by - 10); }); break;
       case 'stretch': layer(g, P.o, { [P.fur]: P.furD }, l => { for (const s of [-1, 1]) arm(l, cx + s * 11, by - 6, cx + s * 14, top - 3); }); break;
       case 'dangle': layer(g, P.o, { [P.fur]: P.furD }, l => { for (const s of [-1, 1]) arm(l, cx + s * 13, by - 2, cx + s * 18, by - 6); }); break;
+      case 'hi': { const sway = [-2, -1, 0, 1, 2, 1, 0, -1][(t >> 1) % 8]; layer(g, P.o, { [P.fur]: P.furD }, l => { arm(l, cx - 12, by - 3, cx - 16 + sway, by - 13); paw(l, cx + 4.5, by + 2); }); break; }
     }
     if (a === 'restock') for (let k = 0; k < 8; k++) {
       const age = at - k * 3; if (age < 0 || age >= 12) continue;
@@ -489,6 +528,7 @@
     if (mood === 'tight') { brow = 'worry'; mouth = 'flat'; if (c.nervous) { fx.push('sweat'); mouth = t % 6 < 3 ? 'open' : 'small'; sq = t % 4 < 2 ? 0.8 : 0; } }
     if (mood === 'empty') { eyes = 'tired'; mouth = 'frown'; dy = 4; sq = 1.5; wave = 0.1; fx.push('puddle', 'dots'); }
     if (sleep) { eyes = 'closed'; mouth = 'small'; dy = 4; sq = 1 + breath; wave = 0; fx = ['zzz']; lx = 0; ly = 0; brow = null; }
+    if (c.state === 'doze' && !a) { const f = t % 40, nod = f < 30 ? Math.min(3, f / 8) : 0; eyes = f < 10 ? 'half' : f < 29 ? 'closed' : f < 33 ? 'open' : 'half'; mouth = 'small'; dy = 1 + Math.round(nod); wave = 0.15; lx = 0; ly = 0.5; brow = null; fx = f > 14 && f < 29 ? ['zsmall'] : []; }
     if (work) { wave = 0.9; dy = Math.floor(t / 4) % 2; const w = Math.floor(t / 10) % n; lx = [-2, 2, 2][w]; ly = [-1, -1, 1.5][w]; if (n >= 2 && mood === 'ok') brow = 'focus'; }
     switch (a) {
       case 'bubbles': mouth = 'o'; fx.push('bubbles'); break;
@@ -502,8 +542,13 @@
       case 'yawn': { const s = Math.sin(Math.PI * Math.min(1, at / 15)); eyes = 'closed'; mouth = 'yawn'; yawn = s * 3; dy = Math.round(at / 18 * 4); fx = []; brow = null; break; }
       case 'wake': eyes = at < 10 ? 'closed' : 'open'; raise.push('rub'); mouth = 'small'; fx = []; dy = 4 - Math.round(at / 14 * 4); brow = null; break;
       case 'restock': eyes = at > 18 ? 'happy' : 'open'; mouth = 'open'; fx = ['sparkles']; brow = null; dy = 0; sq = 0; break;
+      case 'poke': sq = [2.6, 2.2, 1.6, 1, 0.5, 0.2][at] ?? 0; eyes = at < 8 ? 'squeeze' : 'open'; mouth = at < 4 ? 'o' : 'frown'; brow = at >= 8 ? 'worry' : null; fx = ['anger']; wave = 1.2; break;
+      case 'lookaround': lx = [-2, -2, 2, 2, -2, 2, -2, 0][Math.floor(at / 4)] ?? 0; ly = -0.5; mouth = 'o'; brow = null; fx = ['question']; break;
+      case 'flop': eyes = 'closed'; mouth = 'small'; dy = Math.min(4, Math.round(at * 0.4)); sq = Math.min(1.5, at * 0.15); wave = 0; brow = null; fx = at >= 9 ? ['dust'] : []; break;
     }
-    const cx = 36 + (mood === 'tight' && c.nervous && !a && t % 12 < 3 ? (t % 2 ? 1 : -1) : 0), cy = 21 + dy;
+    const shake = (mood === 'tight' && c.nervous && !a && t % 12 < 3) || (a === 'poke' && at < 6) ? (t % 2 ? 1 : -1) : 0;
+    const lean = c.state === 'idle' && !a && mood !== 'empty' ? clamp(Math.round(lx * 0.4), -1, 1) : 0;
+    const cx = 36 + shake + lean, cy = 21 + dy;
     const F = cx + Math.round(lx * 0.6), fy = Math.round(ly * 0.6), mF = x => 2 * F - 1 - x;
     const baseY = cy + 10 - sq, tips = [], cups = [];
     if (fx.includes('puddle')) { ell(g, 36, 53.6, 18, 2.4, P.ink, false); rect(g, 26, 53, 6, 1, P.inkL); }
@@ -546,7 +591,7 @@
       layer(g, P.o, null, l => { rect(l, lxE, ey, 4, 5, P.w, true); rect(l, rxE, ey, 4, 5, P.w, true); });
       const px = clamp(Math.round(1 + lx * 0.6), 0, 2), py = clamp(Math.round(1 + ly * 0.8), 0, 2);
       for (const x of [lxE, rxE]) { rect(g, x + px, ey + py, 2, 3, P.eye); put(g, x + px, ey + py, P.w); }
-    } else { eye(g, lxE, ey, 4, 5, eyes, P); eye(g, rxE, ey, 4, 5, eyes, P); }
+    } else eyes2(g, lxE, rxE, ey, 4, 5, eyes, P);
     if (brow) brows(g, lxE, rxE, 4, ey - 2, brow, P.o);
     mouthAt(g, F, cy + 6 + fy, mouth, P, yawn, false);
     [F - 12, F - 11].forEach(x => { put(g, x, cy + 3 + fy, P.pink); put(g, mF(x), cy + 3 + fy, P.pink); });
@@ -560,28 +605,56 @@
       case 'sweat': sweat(g, cx + 15, cy - 10); break;
       case 'dots': bubble(g, cx + 9, cy - 20, P.o); break;
       case 'zzz': zzz(g, cx + 14, cy - 10, t); break;
+      case 'zsmall': glyph(g, Z4, cx + 14, cy - 10 - ((t >> 3) % 2), '#8C97B0'); break;
       case 'exclaim': exclaim(g, cx + 17, Math.max(1, cy - 16)); break;
+      case 'question': question(g, cx + 16, Math.max(1, cy - 18 + ((t >> 2) % 2))); break;
+      case 'anger': anger(g, cx + 14, Math.max(1, cy - 14)); break;
       case 'bubbles': for (let b = 0; b < 3; b++) { const age = at - b * 8; if (age >= 0 && age < 20) ring(g, Math.round(F + 3 + b + Math.sin(age * 0.5) * 1.5), Math.round(cy + 6 - age * 1.3), age > 8 ? 2 : 1); } break;
       case 'hearts': heart(g, cx + 16, Math.max(1, cy - 16) + ((t >> 1) % 2)); heart(g, cx - 21, Math.max(1, cy - 10) + ((t >> 1) % 2 ? 0 : 1)); break;
       case 'sparkles': sparkles(g, t, [[6, 8], [64, 6], [66, 30], [5, 34]]); break;
       case 'confetti': confetti(g, at); break;
-      case 'dust': dust(g, cx, 53, at); break;
+      case 'dust': dust(g, cx, 53, a === 'flop' ? at - 9 : at); break;
     }
   }
 
   const PETS = { squirrel, hamster, octopus };
   const DUR = {
-    common: { startle: 14, land: 6, celebrate: 36, yawn: 18, wake: 14, restock: 40, look: 30 },
+    common: { startle: 14, land: 6, celebrate: 36, yawn: 18, wake: 14, restock: 40, look: 30, poke: 12, lookaround: 32, flop: 14, wave: 26 },
     squirrel: { nibble: 36, groom: 28, tail: 26, scratch: 22 },
     hamster: { wash: 28, stuff: 30, stretch: 22 },
     octopus: { bubbles: 30, shimmer: 24, wave: 26, stretch: 24 },
   };
   const FIDGETS = { squirrel: ['nibble', 'groom', 'look', 'tail', 'scratch'], hamster: ['wash', 'stuff', 'stretch', 'look'], octopus: ['bubbles', 'shimmer', 'wave', 'stretch'] };
   function durOf(name, a) { return DUR[name][a] ?? DUR.common[a] ?? 0; }
-  function drawPet(name, c) { const g = grid(); PETS[name](g, c); return g; }
+  function drawPet(name, c) {
+    const g = grid(), a = c.action;
+    // 影子：被拎着、贴边藏着、侧着跑来跑去（松鼠搬橡果、仓鼠跑轮子）的时候不画
+    const running = c.state === 'work' && !OVERRIDE.has(a) && name !== 'octopus';
+    if (a !== 'drag' && !c.mini && !running) shadow(g, name === 'squirrel' ? 37 : 36, c.state === 'idle' && !a ? clamp(Math.round((c.look?.x || 0) * 0.5), -1, 1) : 0, name === 'octopus' ? 48.6 : 54.6);
+    PETS[name](g, c);
+    return g;
+  }
 
   const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
-  const LABELS = { nibble: '啃橡果', groom: '洗脸', look: '张望', tail: '理尾巴', scratch: '挠耳朵', wash: '洗脸', stuff: '塞腮帮', stretch: '伸懒腰', bubbles: '吐泡泡', shimmer: '变色', wave: '打招呼', startle: '吓一跳', drag: '被拎起来', land: '落地', celebrate: '庆祝', yawn: '打哈欠', wake: '揉眼睛', restock: '补满额度' };
+  const LABELS = { nibble: '啃橡果', groom: '洗脸', look: '张望', tail: '理尾巴', scratch: '挠耳朵', wash: '洗脸', stuff: '塞腮帮', stretch: '伸懒腰', bubbles: '吐泡泡', shimmer: '变色', wave: '打招呼', startle: '吓一跳', drag: '被拎起来', land: '落地', celebrate: '庆祝', yawn: '打哈欠', wake: '揉眼睛', restock: '补满额度', poke: '被戳了一下', lookaround: '东张西望', flop: '倒头就睡' };
+
+  /*
+   * 睡眠序列：电脑 DOZE_AFTER 秒没人动（键盘鼠标都算，主进程每秒报一次）→ 打哈欠 → 打盹点头 DOZE_MS → 一头栽倒 → 睡觉。
+   * 一有动静：睡着的先吓一跳再揉眼睛，打盹的揉揉眼睛就醒了。有任务在跑不犯困。
+   * 主进程那边电脑 5 分钟没人动会直接给 sleep（petMode），这里一样按睡着处理。
+   */
+  const DOZE_AFTER = 60, DOZE_MS = 30_000;
+
+  /**
+   * 点击计数：两下之间不超过 gap 毫秒算连点。第 2 下是双击（戳一下），第 4 下东张西望；
+   * 只点了一下要等 gap 过去、确定不是双击才算单击（打开对话气泡）。
+   */
+  class Clicks {
+    constructor(gap = 300) { this.gap = gap; this.n = 0; this.last = -Infinity; }
+    press(now) { this.n = now - this.last <= this.gap ? this.n + 1 : 1; this.last = now; return this.n; }
+    /** gap 过去之后：这一串一共点了几下（还没过 gap 返回 0）；读过就清零。 */
+    settle(now) { if (!this.n || now - this.last <= this.gap) return 0; const n = this.n; this.n = 0; return n; }
+  }
 
   /** 一只宠物的动作节奏：正在做的动作做到第几帧、下一个随机小动作还有多久、眼睛看向哪里。 */
   class Controller {
@@ -590,13 +663,49 @@
       this.look = { x: 0, y: 0 }; this.target = { x: 0, y: 0 }; this.aimedAt = 0;
       this.fidgetIn = rand(60, 140); this.fidgetIdx = rand(0, 4);
       this.now = 0; this.nervousAt = 0; this.nervousUntil = 0;
+      /** awake / doze / asleep：睡眠序列走到哪了。idleSec 是主进程报来的电脑没人动的秒数（没报过就一直醒着）。 */
+      this.drowse = 'awake'; this.dozeSince = 0; this.idleSec = 0; this.mode = null;
+      /** 当前动作做完接着做的（吓醒之后揉眼睛）。 */
+      this.queue = [];
+    }
+    /** 主进程报来电脑多久没人动了。秒数变小＝有人动了：犯困的醒过来。 */
+    idle(seconds) {
+      const active = seconds < this.idleSec || seconds < 1;
+      this.idleSec = seconds;
+      if (active) this.rouse();
+    }
+    /** 醒过来：睡着的吓一跳再揉眼睛，打盹的揉揉眼睛。 */
+    rouse() {
+      if (this.drowse === 'asleep') { this.trigger('startle'); this.queue = ['wake']; }
+      else if (this.drowse === 'doze') this.trigger('wake');
+      this.drowse = 'awake';
+    }
+    /** 主进程给的模式变了：idle / work / sleep。 */
+    setMode(mode) {
+      const prev = this.mode;
+      this.mode = mode;
+      if (prev == null) { if (mode === 'sleep') this.drowse = 'asleep'; return; }
+      if (prev === mode) return;
+      if (mode === 'sleep') { if (this.drowse !== 'asleep') { this.trigger('yawn'); this.queue = []; } this.drowse = 'asleep'; }
+      else if (prev === 'sleep' || mode === 'work') this.rouse();
+    }
+    /** 画哪种状态：主进程说干活就干活；说睡觉或者自己已经睡着了就睡；在打盹就打盹。 */
+    stateOf(ctx) {
+      if (ctx.state === 'work') return 'work';
+      if (ctx.state === 'sleep' || this.drowse === 'asleep') return 'sleep';
+      return this.drowse === 'doze' ? 'doze' : ctx.state;
+    }
+    drowseTick(ctx, now) {
+      if (ctx.state !== 'idle' || ctx.mini || this.action) return;
+      if (this.drowse === 'awake' && this.idleSec >= DOZE_AFTER) { this.trigger('yawn'); this.drowse = 'doze'; this.dozeSince = now; }
+      else if (this.drowse === 'doze' && now - this.dozeSince >= DOZE_MS) { this.trigger('flop'); this.drowse = 'asleep'; }
     }
     /**
      * 额度紧张时隔一阵紧张一下：冒汗、喘气 2～3 秒，然后恢复平静。刚变紧张时过一两秒来一次，之后每 20～40 秒一次，
      * 剩不到 10% 时 15～25 秒一次。睡觉、做动作（拖动、庆祝……）的时候不插进来。按真实时间算，「减少动画」时节奏也一样。
      */
     nervousTick(ctx, now) {
-      if (moodOf(ctx) !== 'tight' || ctx.state === 'sleep') { this.nervousAt = this.nervousUntil = 0; return; }
+      if (moodOf(ctx) !== 'tight' || this.stateOf(ctx) === 'sleep') { this.nervousAt = this.nervousUntil = 0; return; }
       if (!this.nervousAt) this.nervousAt = now + rand(1000, 2500);
       if (now < this.nervousAt || this.action) return;
       this.nervousUntil = now + rand(2000, 3000);
@@ -613,15 +722,16 @@
       if (this.action) {
         this.at++;
         const d = durOf(this.name, this.action);
-        if (d && this.at >= d) { this.action = null; this.at = 0; }
-      } else if (ctx.fidget !== false && ctx.state === 'idle' && moodOf(ctx) !== 'empty' && --this.fidgetIn <= 0) this.fidget();
+        if (d && this.at >= d) { this.action = null; this.at = 0; if (this.queue.length) this.trigger(this.queue.shift()); }
+      } else if (ctx.fidget !== false && this.stateOf(ctx) === 'idle' && !ctx.mini && moodOf(ctx) !== 'empty' && --this.fidgetIn <= 0) this.fidget();
       this.now = now;
+      this.drowseTick(ctx, now);
       this.nervousTick(ctx, now);
       // 鼠标几秒没动：偶尔自己东张西望
       if (now - this.aimedAt > 4000 && this.t % 40 === 0) this.target = Math.random() < 0.5 ? { x: 0, y: 0 } : { x: Math.random() * 3 - 1.5, y: Math.random() - 0.6 };
       this.look.x += (this.target.x - this.look.x) * 0.3; this.look.y += (this.target.y - this.look.y) * 0.3;
     }
-    frame(ctx) { return drawPet(this.name, { ...ctx, t: this.t, action: this.action, at: this.at, look: this.look, from: this.from, nervous: ctx.nervous ?? this.nervous }); }
+    frame(ctx) { return drawPet(this.name, { ...ctx, state: this.stateOf(ctx), t: this.t, action: this.action, at: this.at, look: this.look, from: this.from, nervous: ctx.nervous ?? this.nervous }); }
   }
 
   /** 把一帧画到 canvas 上：每个像素格画成 scale × scale 的方块。 */
@@ -631,5 +741,5 @@
     for (let i = 0; i < W * H; i++) { const c = g.c[i]; if (!c) continue; ctx.fillStyle = c; ctx.fillRect((i % W) * scale, Math.floor(i / W) * scale, scale, scale); }
   }
 
-  root.PulsePet = { W, H, drawPet, FIDGETS, OVERRIDE, LABELS, durOf, Controller, paint };
+  root.PulsePet = { W, H, drawPet, FIDGETS, OVERRIDE, LABELS, durOf, Controller, Clicks, DOZE_AFTER, DOZE_MS, paint };
 })(typeof window !== 'undefined' ? window : globalThis);

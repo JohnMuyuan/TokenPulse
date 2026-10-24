@@ -12,6 +12,8 @@ process.env.AGENT_SWITCH_HOME = process.env.HOME = process.env.USERPROFILE = hom
 process.env.TOKENPULSE_DESK_PET_OFFSCREEN = '1';
 for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'GROK_HOME']) delete process.env[key];
 app.setPath('userData', path.join(root, 'electron')); app.commandLine.appendSwitch('lang', 'zh-CN'); process.argv.push('--hidden');
+// 窗口放在屏幕外，Windows 有时把它算成被挡住（visibilityState = hidden），宠物页面就停下动画不走帧；测试里关掉遮挡计算
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const appRoot = process.env.TOKENPULSE_TEST_APP || path.resolve(__dirname, '..');
 fs.mkdirSync(path.join(root, 'data'), { recursive: true });
 fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require(path.join(appRoot, 'package.json')).version, onboarding: 'done', theme: 'light', deskPet: true }));
@@ -179,6 +181,66 @@ app.whenReady().then(async () => {
     await until(() => js("document.getElementById('dp-stage').dataset.action === 'yawn'"), '睡前打哈欠');
     console.log('PASS desk pet UI: celebrate event, quota-empty hint, theme and the yawn before sleeping');
 
+    // 双击戳一下，不开气泡；连点四下东张西望
+    const awake = { pet: 'squirrel', scale: 2, theme: 'light', fidget: false, badge: true, quota: 60, mood: 'ok', account: '', mode: 'idle', tasks: 0, waiting: 0, mini: null };
+    pet.webContents.send('desk-pet-state', awake);
+    await until(() => js("document.getElementById('dp-stage').dataset.mode === 'idle'"), '醒过来');
+    const spot = () => js(`(() => { const c = document.getElementById('dp-canvas'), r = c.getBoundingClientRect(), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      for (let i = Math.floor(d.length / 2 / 4) * 4 + 3; i < d.length; i += 4) if (d[i]) { const p = (i - 3) / 4, x = r.left + (p % c.width + 0.5) * r.width / c.width; if (x > 2 && x < innerWidth - 2) return { x, y: r.top + (Math.floor(p / c.width) + 0.5) * r.height / c.height }; } })()`);
+    const tap = async () => { const at = await spot(); await js(`(() => { const s = document.getElementById('dp-stage'), o = { clientX: ${at.x}, clientY: ${at.y}, screenX: 0, screenY: 0, button: 0, buttons: 1, pointerId: 7, bubbles: true }; s.dispatchEvent(new PointerEvent('pointerdown', o)); s.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); })()`); };
+    await tap(); await delay(80); await tap();
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'poke'"), '双击：戳一下');
+    await delay(600);
+    assert.equal(!!bubbleOf()?.isVisible(), false, '双击不开气泡');
+    await delay(900);
+    for (let i = 0; i < 4; i++) { await tap(); await delay(60); }
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'lookaround'"), '连点四下：东张西望');
+    await delay(600);
+    assert.equal(!!bubbleOf()?.isVisible(), false, '连点不开气泡');
+    console.log('PASS desk pet UI: a double click pokes the pet and four clicks make it look around, without opening the bubble');
+
+    // 电脑一分钟没人动：打哈欠、打盹；有人动了醒过来
+    pet.webContents.send('desk-pet-idle', 5);
+    await until(() => js("!document.getElementById('dp-stage').dataset.action"), '东张西望做完', 6000);
+    pet.webContents.send('desk-pet-idle', 70);
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'yawn' && document.getElementById('dp-stage').dataset.state === 'doze'"), '打哈欠、打盹');
+    await until(() => js("document.getElementById('dp-hint').textContent.startsWith('在打盹')"), '提示写在打盹');
+    pet.webContents.send('desk-pet-idle', 0);
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'wake' && document.getElementById('dp-stage').dataset.state === 'idle'"), '有人动了：揉眼睛醒来');
+    console.log('PASS desk pet UI: after a minute without input the pet yawns and dozes, and wakes when the user is back');
+
+    // 极简模式：贴屏幕右边只露一截，鼠标移上去探出来打招呼；从边上拖出来恢复
+    const prefsNow = () => JSON.parse(fs.readFileSync(path.join(root, 'data', 'prefs.json'), 'utf8'));
+    deskPetMain.setDeskPetMini(true);
+    assert.equal(prefsNow().deskPetMini, true, '记住极简模式');
+    await until(() => js("document.body.classList.contains('mini') && document.getElementById('dp-stage').dataset.mini === 'tuck'"), '贴边藏着');
+    const shown = () => js("Math.round(innerWidth - document.getElementById('dp-stage').getBoundingClientRect().left)");
+    await until(async () => Math.abs(await shown() - Math.round(144 * 0.45)) <= 1, '只露 45%');
+    await until(() => js("getComputedStyle(document.getElementById('dp-stage')).transitionDuration !== '0s'"), '探出来有过渡');
+    await until(() => js("!document.getElementById('dp-stage').dataset.action"), '揉完眼睛、落地做完', 6000);
+    const edge = await spot();
+    assert.equal(await hover(edge.x, edge.y), true, '露出来的那截能悬停');
+    await until(() => js("document.getElementById('dp-stage').dataset.mini === 'peek'"), '探出来');
+    await until(async () => Math.abs(await shown() - Math.round(144 * 0.85)) <= 1, '探出 85%');
+    assert.equal(await js("document.getElementById('dp-stage').dataset.action"), 'wave', '打招呼');
+    assert.equal(await hover(2, 2), false);
+    await until(() => js("document.getElementById('dp-stage').dataset.mini === 'tuck'"), '鼠标移开缩回去');
+    deskPetMain.setDeskPetMini(false);
+    assert.equal(prefsNow().deskPetMini, false);
+    await until(() => js("!document.body.classList.contains('mini') && document.getElementById('dp-stage').dataset.mini === ''"), '退出极简模式');
+    deskPetMain.setDeskPetMini(true);
+    await until(() => js("document.body.classList.contains('mini')"), '再进极简模式');
+    screen.getCursorScreenPoint = () => ({ x: -19000, y: -19000 });
+    try {
+      await js("window.tokenpulse.deskPet.drag('start')");
+      assert.equal(prefsNow().deskPetMini, false, '从边上拽出来：退出极简模式');
+      await until(() => js("!document.body.classList.contains('mini')"), '宠物回到窗口中间');
+      await js("window.tokenpulse.deskPet.drag('end')");
+      await until(() => js("document.getElementById('dp-stage').dataset.action === 'land'"), '落地');
+    } finally { screen.getCursorScreenPoint = realCursor; }
+    assert.equal(prefsNow().deskPetMini, false, '测试时不按屏幕边自动贴边');
+    console.log('PASS desk pet UI: mini mode tucks the pet at the right edge, peeks out with a wave on hover, and dragging it out leaves mini mode');
+
     // 设置从主窗口改：大小、宠物、透明度都落到宠物窗口上
     const main = mainOf(), mjs = code => main.webContents.executeJavaScript(code);
     await until(() => mjs('typeof window.PulseDeskPet === "object"'), '主窗口加载好');
@@ -202,6 +264,23 @@ app.whenReady().then(async () => {
     await until(() => mjs("document.querySelectorAll('.dps-choice[data-kind^=pet-]').length === 1"), '导入的宠物出现在列表里');
     await until(() => js("document.getElementById('dp-stage').dataset.pet.startsWith('pet-') && !document.getElementById('dp-img').hidden && document.getElementById('dp-img').src.startsWith('data:image/')"), '桌宠换成自定义的图');
     await until(() => js("document.getElementById('dp-badge').hidden === false && document.getElementById('dp-canvas').hidden"), '自定义宠物有额度标签');
+    // 自定义宠物是 <img>：浏览器不能把图片拖走（以前按住一拖是拖出一张图片的虚影），按住拖动拖的是宠物窗口
+    assert.deepEqual(await js("(() => { const i = document.getElementById('dp-img'), s = getComputedStyle(i), e = new DragEvent('dragstart', { bubbles: true, cancelable: true }); i.dispatchEvent(e); return [i.draggable, s.pointerEvents, s.webkitUserDrag, e.defaultPrevented]; })()"), [false, 'none', 'none', true]);
+    let pointer = { x: -19000, y: -19000 };
+    screen.getCursorScreenPoint = () => ({ ...pointer });
+    try {
+      const before = pet.getBounds();
+      await js(`(() => { const s = document.getElementById('dp-stage'), r = s.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+        const at = el => document.elementFromPoint(x, y) === el;
+        if (!at(s)) throw new Error('图片中间点下去应当落在 stage 上');
+        s.dispatchEvent(new PointerEvent('pointerdown', { clientX: x, clientY: y, screenX: 100, screenY: 100, button: 0, buttons: 1, pointerId: 9, bubbles: true }));
+        s.dispatchEvent(new PointerEvent('pointermove', { clientX: x + 30, clientY: y + 10, screenX: 130, screenY: 110, buttons: 1, pointerId: 9, bubbles: true })); })()`);
+      await until(() => js("document.body.classList.contains('dragging') && document.getElementById('dp-stage').dataset.action === 'drag'"), '自定义宠物拖得动');
+      pointer = { x: -19000 + 60, y: -19000 + 20 };
+      await until(() => { const b = pet.getBounds(); return b.x !== before.x || b.y !== before.y; }, '窗口跟着光标走');
+      await js("document.getElementById('dp-stage').dispatchEvent(new PointerEvent('pointerup', { pointerId: 9, bubbles: true }))");
+      await until(() => js("!document.body.classList.contains('dragging')"), '松手');
+    } finally { screen.getCursorScreenPoint = realCursor; }
     assert.match(await mjs("document.querySelector('.dps-choice[data-kind^=pet-] b').textContent"), /^测试猫$/);
     // 删除要点两下；删掉正在用的那只，回到松鼠
     await mjs("document.querySelector('.dps-remove').click()");

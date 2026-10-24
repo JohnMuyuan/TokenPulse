@@ -16,7 +16,7 @@ import { dataFile, writeJson } from "./paths";
  * - 导入时复制到 ~/.tokenpulse/pets/<id>/，之后只用这份副本，原文件夹删了改了都不影响。
  */
 
-export const PET_STATES = ["idle", "work", "sleep", "celebrate", "tight", "empty", "drag", "startle"] as const;
+export const PET_STATES = ["idle", "work", "sleep", "celebrate", "tight", "empty", "drag", "startle", "poke", "doze", "look", "wave", "peek"] as const;
 export type PetState = (typeof PET_STATES)[number];
 export type PetPack = { id: string; name: string; author: string; states: Partial<Record<PetState, string>> };
 type ImageType = "png" | "gif" | "webp" | "jpeg";

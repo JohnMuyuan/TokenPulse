@@ -134,6 +134,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     onState: (handler: (view: unknown) => void) => { const listener = (_event: unknown, view: unknown) => handler(view); ipcRenderer.on("desk-pet-state", listener); return () => ipcRenderer.off("desk-pet-state", listener); },
     onEvent: (handler: (event: unknown) => void) => { const listener = (_event: unknown, value: unknown) => handler(value); ipcRenderer.on("desk-pet-event", listener); return () => ipcRenderer.off("desk-pet-event", listener); },
     onPack: (handler: (pack: unknown) => void) => { const listener = (_event: unknown, pack: unknown) => handler(pack); ipcRenderer.on("desk-pet-pack", listener); return () => ipcRenderer.off("desk-pet-pack", listener); },
+    onIdle: (handler: (seconds: number) => void) => { const listener = (_event: unknown, seconds: number) => handler(Number(seconds) || 0); ipcRenderer.on("desk-pet-idle", listener); return () => ipcRenderer.off("desk-pet-idle", listener); },
     onCursor: (handler: (rel: { x: number; y: number }) => void) => { const listener = (_event: unknown, rel: { x: number; y: number }) => handler(rel); ipcRenderer.on("desk-pet-cursor", listener); return () => ipcRenderer.off("desk-pet-cursor", listener); },
     bubbleData: () => ipcRenderer.invoke("desk-pet:bubble-data"),
     bubbleSize: (width: number, height: number) => ipcRenderer.send("desk-pet:bubble-size", width, height),

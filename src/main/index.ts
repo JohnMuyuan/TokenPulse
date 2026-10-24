@@ -984,6 +984,7 @@ if (!app.requestSingleInstanceLock()) {
       preload: path.join(__dirname, "preload.js"),
       prefs: () => readPrefs(),
       savePos: (pos) => { writePrefs({ deskPetPos: pos }); },
+      saveMini: (on) => { writePrefs({ deskPetMini: on }); win?.webContents.send("desk-pet-changed"); },
       hide: () => applyPrefs({ deskPet: false }),
       snapshot: () => lastSnapshot,
       title: accountTitle,
