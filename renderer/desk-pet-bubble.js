@@ -85,12 +85,14 @@
 
   function quotaView(data) {
     const account = data.account, now = data.now;
-    const stale = account?.checkedAt && now - account.checkedAt > 30 * 60000;
+    // 后台账号（「后台账号少查一点」）半小时才查一次：45 分钟没更新才算过期
+    const limit = account?.quiet ? 45 : 30;
+    const stale = account?.checkedAt && now - account.checkedAt > limit * 60000;
     return [
       el('p', { class: 'bb-say' + (data.mood === 'ok' || !account ? '' : ' ' + data.mood), text: say(data) }),
       account ? el('div', { class: 'bb-acc' }, [el('i', { class: 'bb-kind ' + account.kind }), el('b', { text: account.name, title: account.name }), account.plan ? el('span', { class: 'bb-plan', text: account.plan }) : null]) : null,
       ...(account ? [...meter('five', L('5 小时', '5-hour'), account.five, now), ...meter('week', L('周', 'Weekly'), account.week, now)] : [el('p', { class: 'bb-note', text: L('在 TokenPulse 里登录 Claude 或 ChatGPT 官方账号后，这里会显示额度。', 'Sign in to an official Claude or ChatGPT account in TokenPulse to see quota here.') })]),
-      stale ? el('p', { class: 'bb-note', text: L('额度超过 30 分钟没有更新', 'Quota not updated for over 30 minutes') }) : null,
+      stale ? el('p', { class: 'bb-note', text: L(`额度超过 ${limit} 分钟没有更新`, `Quota not updated for over ${limit} minutes`) }) : null,
       taskLine(data),
     ];
   }

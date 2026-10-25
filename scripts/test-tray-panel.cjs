@@ -27,7 +27,10 @@ assert.deepEqual(data.accounts[0], { kind: 'claude', name: 'T-claude', plan: 'ma
 assert.deepEqual(data.accounts[1], { kind: 'grok', name: 'T-grok', plan: '', checkedAt: now - 5000, five: null, week: { used: 0, resetAt: 0, etaAt: 0, runsOut: false, pace: -1 } });
 assert.equal(JSON.stringify(data).includes('secret@example.com'), false, '只带名字，不带快照里别的账号字段');
 assert.deepEqual(trayPanelData(null, 'light', () => '').accounts, []); assert.deepEqual(trayPanelData(null, 'light', () => '').agents, []);
-console.log('PASS tray panel: data picked from the snapshot, clamped, accounts without quota skipped');
+// 后台账号（「后台账号少查一点」）带上 quiet，面板放宽过期判断；别的账号没有这一项
+const quietData = trayPanelData({ ...snapshot, accounts: [{ ...snapshot.accounts[0], quiet: true }, snapshot.accounts[1]] }, 'light', () => '');
+assert.equal(quietData.accounts[0].quiet, true); assert.equal('quiet' in quietData.accounts[1], false);
+console.log('PASS tray panel: data picked from the snapshot, clamped, accounts without quota skipped, background accounts marked');
 
 const size = { width: 340, height: 400 }, work = { x: 0, y: 0, width: 1920, height: 1040 };
 // 任务栏在下：面板在图标正上方，贴着可用区域的底边

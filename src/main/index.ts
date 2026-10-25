@@ -44,10 +44,12 @@ import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOffi
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
 import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
-import { autoSwitchCli, describeAutoSwitch, normalizeRule, type AutoSwitchEvent } from "../core/cli-auto-switch";
+import { autoSwitchCli, autoSwitchStale, describeAutoSwitch, normalizeRule, type AutoSwitchDeps, type AutoSwitchEvent } from "../core/cli-auto-switch";
+import { foregroundAccounts, quietPick } from "../core/quota-quiet";
+import { readQuotaChecks } from "../core/quota-history";
 import { switchCliAccount } from "../core/cli-switch";
 import { runHealthCheck } from "./health";
-import { activateProvider, agentDrift, agentView as coreAgentView, usesOfficialLogin, deleteProvider, poolDef, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { activateProvider, agentDrift, agentView as coreAgentView, usesOfficialLogin, poolAccountIds, deleteProvider, poolDef, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
 import { randomUUID } from "crypto";
@@ -506,17 +508,22 @@ function maybeNotify(snapshot: Snapshot) {
  * 切了、没有能切的号、切换失败都弹一条通知，点开是设置里的官方账号；界面开着就刷新账号列表。返回这一轮有没有真的切换。
  */
 const AUTO_SWITCH_APP = { claude: "claude", chatgpt: "codex", grok: "grok" } as const;
+/** 自动切号要的东西；哪家都没开返回 null。 */
+function autoSwitchDeps(prefs = readPrefs()): AutoSwitchDeps | null {
+  if (!Object.values(prefs.cliAutoSwitch ?? {}).some((rule) => rule?.on)) return null;
+  return {
+    rules: prefs.cliAutoSwitch,
+    readOnly: prefs.agentReadOnly === true,
+    usesOfficial: (kind) => usesOfficialLogin(AUTO_SWITCH_APP[kind]),
+    switchTo: (id) => switchCliAccount(id),
+  };
+}
 async function runAutoSwitch(): Promise<boolean> {
-  const prefs = readPrefs();
-  if (!Object.values(prefs.cliAutoSwitch ?? {}).some((rule) => rule?.on)) return false;
+  const deps = autoSwitchDeps();
+  if (!deps) return false;
   let events: AutoSwitchEvent[] = [];
   try {
-    events = await autoSwitchCli({
-      rules: prefs.cliAutoSwitch,
-      readOnly: prefs.agentReadOnly === true,
-      usesOfficial: (kind) => usesOfficialLogin(AUTO_SWITCH_APP[kind]),
-      switchTo: (id) => switchCliAccount(id),
-    });
+    events = await autoSwitchCli(deps);
   } catch (error) {
     console.error("[TokenPulse] 自动切换 CLI 登录失败", error);
     return false;
@@ -600,7 +607,29 @@ let lastSnapshot: Snapshot | null = null;
 let refreshing: Promise<Snapshot> | null = null;
 let initialSnapshot: Promise<Snapshot> | null = null;
 
+/**
+ * 现在在用的官方账号：各家 CLI 当前登录的、号池里的、桌宠固定看的（「后台账号少查一点」照常查它们）。
+ * 每次发快照都要用，~/.claude.json 可能有好几 MB：10 秒内复用上次的结果。
+ */
+let foregroundMemo: { at: number; ids: Set<string> } | null = null;
+function foregroundNow() {
+  if (!foregroundMemo || Date.now() - foregroundMemo.at > 10_000) foregroundMemo = { at: Date.now(), ids: foregroundAccounts([...poolAccountIds(), readPrefs().deskPetAccount]) };
+  return foregroundMemo.ids;
+}
+
+/** 「后台账号少查一点」开着时给后台账号标上 quiet：界面按半小时一查放宽「过期」，不误报。 */
+function markQuiet(snapshot: Snapshot) {
+  const on = readPrefs().quotaQuietBackground === true;
+  const foreground = on ? foregroundNow() : null;
+  for (const account of snapshot.accounts ?? []) {
+    const quiet = !!foreground && !!account.accountId && !foreground.has(account.accountId);
+    if (quiet) account.quiet = true;
+    else delete account.quiet;
+  }
+}
+
 function publishSnapshot(snapshot: Snapshot): Snapshot {
+  markQuiet(snapshot);
   lastSnapshot = snapshot;
   if (snapshot.scannedAt) {
     try {
@@ -638,7 +667,7 @@ let quotaTimer: ReturnType<typeof setInterval> | undefined;
 function scheduleQuotaChecks() {
   if (quotaTimer) clearInterval(quotaTimer);
   const every = readPrefs().quotaEverySeconds * 1000;
-  quotaTimer = setInterval(() => backgroundRefresh(true), every);
+  quotaTimer = setInterval(() => backgroundRefresh(true, false, true), every);
   quotaTimer.unref?.();
   deepseekBalance.reschedule(every);
 }
@@ -661,8 +690,15 @@ function getInitialSnapshot(): Promise<Snapshot> {
   return initialSnapshot;
 }
 
-function backgroundRefresh(withQuota: boolean, notifyQuota = false) {
+/**
+ * 下一轮额度查询是不是定时器发起的。「后台账号少查一点」只管定时的那轮：
+ * 手动刷新、登录 / 切换 / 恢复账号之后的那轮照常全查（后发起的会把它清掉）。
+ */
+let quotaScheduled = false;
+
+function backgroundRefresh(withQuota: boolean, notifyQuota = false, scheduled = false) {
   lastScanAt = Date.now();
+  if (withQuota) quotaScheduled = scheduled;
   void refresh(withQuota, notifyQuota).catch((error) => {
     console.error("[TokenPulse] 刷新失败", error);
     win?.webContents.send("refresh-error", tr("刷新失败，请重试并检查数据目录是否可写。"));
@@ -712,11 +748,19 @@ async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snap
     const tell = notifyQuota || quotaNoticePending;
     quotaNoticePending = false;
     const before = quotaGlances(lastSnapshot);
+    const quiet = quotaScheduled && !notifyQuota && readPrefs().quotaQuietBackground === true;
+    quotaScheduled = false;
     try {
       // 设了出口 IP 白名单的那家，出口不对就不去问官方（见 egress-monitor.ts 的 gateQuota）
-      const result = await fetchOfficialQuota(true, (kind) => exitMonitor.gateQuota(kind));
+      const gate = (kind: Parameters<typeof exitMonitor.gateQuota>[0]) => exitMonitor.gateQuota(kind);
+      // 后台账号少查一点：在用的照查，后台的半小时一次（见 core/quota-quiet.ts）
+      const result = await fetchOfficialQuota(true, gate, quiet ? quietPick(foregroundNow(), readQuotaChecks().accounts) : undefined);
+      const issues = [...(result.issues ?? [])];
+      // 这一轮要自动切号、候选账号的额度又是半小时前的：先临时查一次候选账号
+      const deps = quiet ? autoSwitchDeps() : null;
+      const stale = deps ? autoSwitchStale(deps) : [];
+      if (stale.length) issues.push(...((await fetchOfficialQuota(true, gate, (_kind, id) => stale.includes(id))).issues ?? []));
       snapshot = publishSnapshot(await loadSnapshot(false));
-      const issues = result.issues ?? [];
       lastQuotaNotice = issues.length ? quotaIssueNotice(issues) : quotaRefreshSummary(before, quotaGlances(snapshot));
       lastQuotaNoticeKind = issues.length ? quotaIssueTone(issues) : "success";
       if (tell) emitQuotaNotice(lastQuotaNotice, lastQuotaNoticeKind);
@@ -743,6 +787,8 @@ let queuedQuota: Promise<Snapshot> | null = null;
 function refresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
   if (notifyQuota) {
     quotaNoticePending = true;
+    // 手动刷新排进了定时的那轮：那轮也要全查
+    quotaScheduled = false;
     if (!refreshing) quotaNoticeSent = undefined;
   }
   if (refreshing) {
@@ -792,6 +838,7 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
     patch = { ...patch, localOnlyAccounts: [...new Set(list.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 400))].slice(0, 100) };
   }
   if ("quotaEverySeconds" in patch) patch = { ...patch, quotaEverySeconds: quotaEverySeconds(patch.quotaEverySeconds) };
+  if ("quotaQuietBackground" in patch) patch = { ...patch, quotaQuietBackground: patch.quotaQuietBackground === true };
   if ("cliAutoSwitch" in patch) {
     const raw = patch.cliAutoSwitch && typeof patch.cliAutoSwitch === "object" ? patch.cliAutoSwitch as Record<string, unknown> : {};
     patch = { ...patch, cliAutoSwitch: Object.fromEntries((["claude", "chatgpt", "grok"] as const).filter((kind) => kind in raw).map((kind) => [kind, normalizeRule(raw[kind])])) };
@@ -806,6 +853,7 @@ function applyPrefs(patch: Partial<Prefs>): Prefs {
   if (next.quotaEverySeconds !== previousEvery) scheduleQuotaChecks();
   // 容量怎么折算变了：不重新查额度，只按新的口径重算一遍快照
   if ("localOnlyAccounts" in patch || "pressureWeek" in patch || "pressureFive" in patch) backgroundRefresh(false);
+  // 后台账号少查一点：不额外查，下一轮定时查询按新设置走；哪些是后台账号在下一次发快照时重新标
   /*
    * 只有打好包的版本才去动开机启动项。
    * 开发时（`npm start`）跑的是 node_modules 里的 electron.exe，把它登记进启动项，
@@ -1151,7 +1199,7 @@ if (!app.requestSingleInstanceLock()) {
       return listPetPacks();
     });
     ipcMain.handle("desk-pet:import-pack", async () => {
-      const options = { title: tr("选择宠物文件夹（里面有 pet.json）"), properties: ["openDirectory" as const] };
+      const options = { title: tr("选择宠物文件夹（里面有 pet.json 或 theme.json）"), properties: ["openDirectory" as const] };
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
       try { return { ok: true as const, pack: importPetPack(picked.filePaths[0]), packs: listPetPacks() }; }

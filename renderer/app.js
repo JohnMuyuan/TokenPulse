@@ -637,7 +637,9 @@ function track(pct, warning = false, label = '已用额度', identity = '') {
 }
 /** 最后一次查询成功的时间。采样历史数值不变时 15 分钟才记一条，不能拿它判断过期。 */
 function checkedAt(account) { return account?.lastCheckedAt ?? account?.lastSampleAt; }
-function isStale(account) { return !checkedAt(account) || Date.now() - checkedAt(account) > 15 * 60000; }
+/** 采样过期：15 分钟没查到。后台账号（「后台账号少查一点」开着，半小时才查一次）放宽到 45 分钟。 */
+function staleAfter(account) { return (account?.quiet ? 45 : 15) * 60000; }
+function isStale(account) { return !checkedAt(account) || Date.now() - checkedAt(account) > staleAfter(account); }
 function waitingReset(account, window) { return window?.startAt != null && checkedAt(account) < window.startAt; }
 function prediction(window, account) {
   if (!window) return '暂无窗口数据';
@@ -1580,7 +1582,8 @@ function renderQuota() {
   }
   const blocked = blockNote(kind, true);
   if (blocked) host.append(blocked);
-  if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `最后一次成功查询是 ${date(checkedAt(account), true)}，已超过 15 分钟（可能是网络不通或凭据过期）。以下是历史记录，当前剩余额度需刷新确认。`]));
+  if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `最后一次成功查询是 ${date(checkedAt(account), true)}，已超过 ${staleAfter(account) / 60000} 分钟（可能是网络不通或凭据过期）。以下是历史记录，当前剩余额度需刷新确认。`]));
+  else if (account.quiet) host.append(el('p', { class: 'quiet-note' }, [icon('info'), `后台账号，每 30 分钟查一次（设置里开了「后台账号少查一点」）。上次查到是 ${date(checkedAt(account), true)}，点「刷新数据」可以马上查。`]));
   host.append(el('div', { class: 'quota-window-grid' }, [markLayout(windowPanel('5 小时窗口', account.five, account), 'quota:five'), markLayout(windowPanel('周额度窗口', account.week, account), 'quota:week')]));
   if (kind === 'chatgpt') host.append(markLayout(probePanel(account), 'quota:probe'));
   const capacity = capacityPanel(account);
@@ -2905,6 +2908,10 @@ const PRESSURE_OPTIONS = fallback => [
   { value: 'off', label: '不变色', hint: '只有已经用完才变色，其余只用文字说明' }
 ].map(option => option.value === fallback ? { ...option, hint: option.hint + '（默认）' } : option);
 /** 存进 prefs.json 的设置项。外观不在这里：它要在读 prefs 之前就生效，存在 localStorage。 */
+/** 后台账号少查一点（见 core/quota-quiet.ts）：放在额度查询间隔下面。 */
+const QUIET_ROW = { key: 'quotaQuietBackground', title: '后台账号少查一点', hint: '定时查询只查在用的官方账号（各家 CLI 当前登录的、号池里的、桌宠固定看的），其他账号每 30 分钟查一次。手动刷新照常全查；开了额度用满自动切换时，切之前会先查一次候选账号。它只减少请求次数，不能防止在用的账号被官方限流。', options: [
+  { value: false, label: '全部账号按间隔查', hint: '默认' },
+  { value: true, label: '后台账号每 30 分钟查一次', hint: '少发请求，后台账号的额度会旧一些' }] };
 const PREF_ROWS = {
   general: [
     { key: 'closeToTray', title: '关闭窗口时', hint: '收进托盘后照常每分钟记录用量，额度按设置里的间隔继续查。真正退出请用托盘图标的右键菜单。', options: [
@@ -3173,6 +3180,7 @@ function renderSettings(prefs) {
       onChange: async next => { await savePref('language', next); window.PulseI18n?.setMode(next); }
     })),
     quotaIntervalRow(prefs),
+    prefRow(QUIET_ROW, prefs),
     ...PREF_ROWS.general.map(row => prefRow(row, prefs)));
   $('settings-alerts').replaceChildren(...PREF_ROWS.alerts.map(row => prefRow(row, prefs)));
   renderCcSwitch(current?.ccSwitch, prefs);

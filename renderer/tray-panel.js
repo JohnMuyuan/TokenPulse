@@ -75,13 +75,15 @@
     const five = account.five, week = account.week;
     // 按最近的速度，会在重置之前用完的那个窗口（两个都会就取先到的）
     const soon = [[L('5 小时', '5-hour'), five], [L('周', 'Weekly'), week]].filter(([, w]) => w && w.runsOut && w.etaAt > now).sort((a, b) => a[1].etaAt - b[1].etaAt)[0];
-    const stale = account.checkedAt && now - account.checkedAt > 30 * 60000;
+    // 后台账号（「后台账号少查一点」）半小时才查一次：45 分钟没更新才算过期
+    const limit = account.quiet ? 45 : 30;
+    const stale = account.checkedAt && now - account.checkedAt > limit * 60000;
     return el('section', { class: 'tp-card' + (stale ? ' stale' : ''), role: 'listitem', 'data-kind': account.kind }, [
       el('div', { class: 'tp-name' }, [avatar(account.kind), el('b', { text: account.name || NAMES[account.kind] || account.kind, title: account.name, translate: 'no' }), account.plan ? el('span', { class: 'tp-plan', text: account.plan, translate: 'no' }) : null]),
       bar('five', '5 小时', five, now),
       bar('week', '周', week, now),
       soon ? el('div', { class: 'tp-warn', translate: 'no', text: L(`按现在的速度，${soon[0]}额度约 ${until(soon[1].etaAt, now)}用完`, `At this pace the ${soon[0].toLowerCase()} quota runs out ${until(soon[1].etaAt, now)}`) }) : null,
-      stale ? el('div', { class: 'tp-warn', text: '额度超过 30 分钟没有更新' }) : null,
+      stale ? el('div', { class: 'tp-warn', text: `额度超过 ${limit} 分钟没有更新` }) : null,
     ]);
   }
 

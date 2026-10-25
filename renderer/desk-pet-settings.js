@@ -121,10 +121,11 @@
         }
         pet.removePack(pack.id).then(packs => { S.packs = packs; delete S.images[pack.id]; return load(); }).catch(() => toast('删除失败，请检查数据目录权限', { kind: 'warning' }));
       });
-      return choiceCard(pack.id, pack.name, pack.author ? `作者：${pack.author}` : '自己导入的宠物', current === pack.id, [remove]);
+      const by = pack.author ? L(`作者：${pack.author}`, `By ${pack.author}`) : pack.kind === 'theme' ? L('导入的主题包', 'Imported theme') : L('自己导入的宠物', 'Your imported pet');
+      return choiceCard(pack.id, pack.name, by, current === pack.id, [remove]);
     });
     const add = el('button', { type: 'button', class: 'dps-choice dps-add', id: 'dps-import' }, [
-      icon('plus'), el('b', { text: '导入自己的宠物' }), el('small', { text: '选一个放着 pet.json 和图片的文件夹' }),
+      icon('plus'), el('b', { text: '导入自己的宠物' }), el('small', { text: '选一个放着 pet.json 和图片的文件夹，或者 Clawd on Desk 格式的主题文件夹' }),
     ]);
     add.addEventListener('click', importPack);
     N.choices.replaceChildren(...BUILT_IN.map(item => choiceCard(item.id, item.name, item.line, current === item.id)), ...custom, add);
@@ -244,15 +245,20 @@
         el('li', { text: '任务：本机的 Claude Code 或 Codex 有任务在跑时，宠物开始干活；任务做完会庆祝一下。只读会话文件，不改任何工具的配置。' }),
         el('li', { text: '工具调用 90 秒还没有结果时，任务上写「可能在等你」：可能是在等你确认，也可能只是工具跑得久。' }),
         el('li', { text: '电脑 1 分钟没人用、也没有任务在跑时，它会打哈欠、打盹，再过半分钟倒头睡着；你一回来它就醒，睡熟了会先吓一跳。' }),
-        el('li', { text: '点一下冒出额度气泡；双击戳它一下，连点四下它会东张西望。拖着用力一甩，它会滑出去、碰到屏幕边弹回来。' }),
+        el('li', { text: '点一下冒出额度气泡；双击戳它一下，连点四下它会东张西望。拖着用力一甩，它会滑出去、碰到屏幕边弹回来。鼠标绕着它转两圈，它会转晕一会儿。' }),
+        el('li', { text: '任务在等模型回复时，宠物头上冒一个想法泡泡；在跑工具时专心干活。' }),
         el('li', { text: '极简模式：把它拖（或甩）到屏幕右边，或者在右键菜单里选，它会躲到屏幕边后面，只探出个脑袋看着你；鼠标移上去它探出身子打招呼。从边上拖出来就恢复。' }),
         el('li', { text: '问题卡片：Claude Code 用选择题问你、计划写好等你批准，或者 Codex 向你要信息时，屏幕右下角弹出卡片，写着问题和选项，宠物挥手叫你。在终端里回答后卡片自己收起，也可以点「知道了」先收起来。' }),
         el('li', { text: '提示音：任务做完、在问你、出错停下、可能在等你确认、额度用完时响一声，各有各的调子；每种都可以单独关掉，或者换成你自己的音频。' }),
       ]),
       el('details', { class: 'dps-format' }, [
         el('summary', { text: '自定义宠物的格式' }),
-        el('p', { class: 'setting-hint', text: '准备一个文件夹，放一个 pet.json 和各个状态的图片。只有 idle（空闲）是必须的，缺的状态用 idle 代替。可用的状态：idle 空闲、work 干活、sleep 睡觉、celebrate 庆祝、tight 额度紧张、empty 额度用完、drag 被拖着、startle 受惊、poke 被戳（缺了用 startle）、doze 打盹（缺了用 sleep）、look 东张西望、wave 打招呼、peek 极简模式贴边时。图片支持 PNG、GIF、WebP、JPEG，单张不超过 5 MB、整套不超过 20 MB。导入时复制一份到数据目录，原文件夹之后删改都不影响。' }),
+        el('p', { class: 'setting-hint', text: '准备一个文件夹，放一个 pet.json 和各个状态的图片。只有 idle（空闲）是必须的，缺的状态用 idle 代替。可用的状态：idle 空闲、work 干活、think 在想（缺了用 work）、sleep 睡觉、celebrate 庆祝、tight 额度紧张、empty 额度用完、drag 被拖着、startle 受惊、poke 被戳（缺了用 startle）、doze 打盹（缺了用 sleep）、look 东张西望、wave 打招呼、peek 极简模式贴边时、dizzy 转晕了（有这张才会晕）。图片支持 PNG、GIF、WebP、JPEG，单张不超过 5 MB、整套不超过 20 MB。导入时复制一份到数据目录，原文件夹之后删改都不影响。' }),
         el('pre', { class: 'dps-code', translate: 'no', text: example }),
+      ]),
+      el('details', { class: 'dps-format' }, [
+        el('summary', { text: 'Clawd on Desk 格式的主题包' }),
+        el('p', { class: 'setting-hint', text: '也可以导入 Clawd on Desk 格式的主题包：选放着 theme.json 的那个文件夹（动画放在文件夹里、assets 或 assets/svg 里都行）。会用到它的待机、思考、干活（按任务数换姿势）、在问你、庆祝、出错、打哈欠、打盹、睡觉、醒来、转晕，以及拖动、点左右、双击、连点的反应；待机时眼睛跟着鼠标转。SVG 会先去掉脚本、外部链接这类内容再保存，最多 150 个动画、整套不超过 20 MB。TokenPulse 不带任何主题素材，导入之前请确认这个主题包的许可允许你这样用。' }),
       ]),
     );
   }
@@ -274,7 +280,7 @@
     if (!result || result.canceled) return;
     if (!result.ok) { toast(result.error || '导入失败', { kind: 'warning' }); return; }
     S.packs = result.packs;
-    toast(L(`已导入「${result.pack.name}」`, `Imported “${result.pack.name}”`));
+    toast(L(`已导入「${result.pack.name}」`, `Imported “${result.pack.name}”`) + (result.pack.warning ? L(`。${result.pack.warning}`, '. Some animations are missing or use a newer format; those parts fall back to other animations.') : ''), result.pack.warning ? { kind: 'warning' } : undefined);
     await save({ deskPetKind: result.pack.id });
   }
 

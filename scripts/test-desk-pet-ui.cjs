@@ -41,7 +41,7 @@ const live = () => BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
 const petOf = () => live().find(w => w.webContents.getURL().includes('desk-pet.html'));
 const bubbleOf = () => live().find(w => w.webContents.getURL().includes('desk-pet-bubble.html'));
 const mainOf = () => live().find(w => w.webContents.getURL().includes('index.html'));
-setTimeout(() => { console.error('FAIL desk pet UI timed out'); app.exit(1); }, 150000);
+setTimeout(() => { console.error('FAIL desk pet UI timed out'); app.exit(1); }, 200000);
 
 app.whenReady().then(async () => {
   let failed = false;
@@ -430,6 +430,123 @@ app.whenReady().then(async () => {
     await until(() => mjs("document.querySelectorAll('.dps-choice[data-kind^=pet-]').length === 0"), '删掉了');
     await until(() => js("document.getElementById('dp-stage').dataset.pet === 'squirrel'"), '回到松鼠');
     console.log('PASS desk pet UI: the Desk pet page toggles, previews and switches pets, imports a custom pet (shown with a quota badge) and deletes it with a double click');
+
+    // 主题包（Clawd on Desk 格式）：用自己画的方块小人测试。导入后 SVG 画在 Shadow DOM 里，动画自带的 CSS 生效；
+    // 眼睛跟着鼠标、思考和跑工具分开、多任务换姿势、在问你、绕两圈转晕、双击、出错都换对应的动画
+    const themeDir = path.join(root, 'cube-theme');
+    fs.mkdirSync(path.join(themeDir, 'assets'), { recursive: true });
+    const cube = (color, extra = '') => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 -10 40 40" width="500" height="500"><defs><style>#eyes-js, #body-js { transition: transform 0.2s ease-out; } .bob { animation: bob 1s infinite; } @keyframes bob { 50% { transform: translateY(1px); } }</style></defs>${extra}<g id="shadow-js"><rect x="2" y="18" width="16" height="1" opacity=".4"/></g><g id="body-js"><g class="bob"><rect x="2" y="6" width="16" height="12" fill="${color}"/><g id="eyes-js"><rect x="6" y="10" width="2" height="2"/><rect x="12" y="10" width="2" height="2"/></g></g></g></svg>`;
+    const cubeFiles = { 'idle.svg': cube('#e9a'), 'think.svg': cube('#9ae'), 'work.svg': cube('#9e9'), 'busy.svg': cube('#ee9'), 'ask.svg': cube('#fc6'), 'oops.svg': cube('#f66', '<script>window.__hacked = 1</script><rect onclick="window.__hacked = 2" width="1" height="1"/>'), 'dizzy.svg': cube('#c9f'), 'poke.svg': cube('#f9c'), 'drag.svg': cube('#aaa'),
+      'juggle.svg': cube('#6cf'), 'look.svg': cube('#cf6'), 'mi.svg': cube('#e9a'), 'me.svg': cube('#9cc'), 'mp.svg': cube('#c9c') };
+    for (const [name, content] of Object.entries(cubeFiles)) fs.writeFileSync(path.join(themeDir, 'assets', name), content);
+    fs.writeFileSync(path.join(themeDir, 'theme.json'), JSON.stringify({
+      schemaVersion: 1, name: '方块', author: 'QA', viewBox: { x: -10, y: -10, width: 40, height: 40 }, layout: { contentBox: { x: 0, y: 4, width: 20, height: 16 }, centerX: 10, baselineY: 19 },
+      eyeTracking: { enabled: true, states: ['idle', 'mini-idle'], maxOffset: 2, bodyScale: 0.5, shadowStretch: 0.2, shadowShift: 0.5, ids: { eyes: 'eyes-js', body: 'body-js', shadow: 'shadow-js' } },
+      states: { idle: ['idle.svg'], thinking: ['think.svg'], working: ['work.svg'], notification: ['ask.svg'], error: ['oops.svg'], dizzy: ['dizzy.svg'] },
+      workingTiers: [{ minSessions: 2, file: 'busy.svg' }], jugglingTiers: [{ minSessions: 1, file: 'juggle.svg' }], reactions: { drag: { file: 'drag.svg' }, double: { files: ['poke.svg'], duration: 2000 } },
+      idleAnimations: [{ file: 'look.svg', duration: 1500 }],
+      timings: { autoReturn: { dizzy: 2500, error: 2000 }, mouseIdleTimeout: 3000 }, hitBoxes: { default: { x: 2, y: 6, w: 16, h: 12 } },
+      miniMode: { supported: true, offsetRatio: 0.5, peek: { offsetRatio: 0.25 }, timings: { autoReturn: { 'mini-enter': 800, 'mini-peek': 700 } }, states: { 'mini-idle': ['mi.svg'], 'mini-enter': ['me.svg'], 'mini-peek': ['mp.svg'] } },
+    }));
+    // 真鼠标别来捣乱：主进程看到的光标固定住（不变就不发），鼠标位置全由测试发
+    screen.getCursorScreenPoint = () => ({ x: -19000, y: -19000 });
+    const pickTheme = dialog.showOpenDialog;
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [themeDir] });
+    try {
+      await mjs("document.getElementById('dps-import').click()");
+      await until(() => mjs("document.querySelectorAll('.dps-choice[data-kind^=pet-]').length === 1"), '主题包出现在列表里');
+    } finally { dialog.showOpenDialog = pickTheme; }
+    assert.match(await mjs("document.querySelector('.dps-choice[data-kind^=pet-] small').textContent"), /^作者：QA$/);
+    assert.match(await mjs("document.querySelector('.dps-choice[data-kind^=pet-] img').src"), /^data:image\/svg\+xml;base64,/, '设置页预览用 idle');
+    const themeId = await mjs("document.querySelector('.dps-choice[data-kind^=pet-]').dataset.kind");
+    const sroot = "document.getElementById('dp-svg').shadowRoot";
+    await until(() => js(`document.getElementById('dp-stage').dataset.pet === '${themeId}' && !document.getElementById('dp-svg').hidden && !!${sroot}.querySelector('svg')`), '桌宠换成主题包，SVG 画在 Shadow DOM 里');
+    assert.deepEqual(await js("['dp-canvas', 'dp-img'].map(id => document.getElementById(id).hidden)"), [true, true]);
+    const idleView = { pet: themeId, scale: 3, theme: 'light', fidget: false, badge: false, sound: false, quota: 60, mood: 'ok', account: '', mode: 'idle', phase: null, tasks: 0, waiting: 0, asking: 0, mini: null };
+    pet.webContents.send('desk-pet-state', idleView);
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg'"), '待机动画');
+    assert.equal(await js(`getComputedStyle(${sroot}.querySelector('.bob')).animationName`), 'bob', '动画自带的 CSS 生效（只在 Shadow DOM 里）');
+    assert.equal(await js(`getComputedStyle(${sroot}.getElementById('eyes-js')).transitionDuration`), '0.06s', '跟随用的元素：自带的 0.2 秒过渡换成很短的，不拖尾');
+    assert.equal(await js("getComputedStyle(document.body).transitionDuration"), '0s', '不影响外面');
+    // 身体画在舞台底边中间附近、大小按身体框放大（先让它看正前方：身体会跟着眼睛挪）
+    pet.webContents.send('desk-pet-cursor', { x: 0, y: 0 });
+    // 跟随有 60 毫秒的过渡：等它走完再量
+    await delay(150);
+    const bodyRect = await js(`(() => { const r = ${sroot}.querySelector('svg rect[fill]').getBoundingClientRect(), s = document.getElementById('dp-stage').getBoundingClientRect(); return { w: r.width, h: r.height, cx: r.left + r.width / 2 - s.left - s.width / 2, bottom: s.bottom - r.bottom, x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    assert.ok(Math.abs(bodyRect.w - 16 * 8.64) < 3 && Math.abs(bodyRect.cx) < 2 && bodyRect.bottom > 0 && bodyRect.bottom < 20, `身体的位置和大小 ${JSON.stringify(bodyRect)}`);
+    assert.equal(await hover(bodyRect.x, bodyRect.y), true, '身体上算悬停');
+    assert.equal(await hover(2, 2), false, '透明的地方不算');
+    // 眼睛跟着鼠标：鼠标在右边远处，眼睛挪满 maxOffset（2），身体跟着挪一半，影子往右拉长。
+    // 收到位置就画好，不等下一帧慢慢挪：紧跟着的这次检查（同一条 IPC 通道，排在后面）就已经到位
+    pet.webContents.send('desk-pet-cursor', { x: 400, y: 0 });
+    assert.equal(await js(`${sroot}.getElementById('eyes-js').style.transform`), 'translate(2px, 0px)', '眼睛立刻往右看');
+    assert.equal(await js(`${sroot}.getElementById('body-js').style.transform`), 'translate(1px, 0px)');
+    assert.match(await js(`${sroot}.getElementById('shadow-js').style.transform`), /^translate\(1px, 0px\) scaleX\(1\.2\)$/);
+    pet.webContents.send('desk-pet-cursor', { x: -400, y: 300 });
+    assert.equal(await js(`${sroot}.getElementById('eyes-js').style.transform`), 'translate(-2px, 1px)', '眼睛立刻往左下看（竖着只挪一半）');
+    // 思考、跑工具、多任务、在问你
+    pet.webContents.send('desk-pet-state', { ...idleView, mode: 'work', phase: 'thinking', tasks: 1 });
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'think.svg' && document.getElementById('dp-stage').dataset.phase === 'thinking'"), '在想');
+    assert.equal(await js(`${sroot}.getElementById('eyes-js').style.transform`), '', '不是待机动画：眼睛不跟');
+    pet.webContents.send('desk-pet-state', { ...idleView, mode: 'work', phase: 'tool', tasks: 1 });
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'work.svg'"), '跑工具');
+    pet.webContents.send('desk-pet-state', { ...idleView, mode: 'work', phase: 'tool', tasks: 2 });
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'busy.svg'"), '两个任务：更忙的姿势');
+    pet.webContents.send('desk-pet-state', { ...idleView, mode: 'work', phase: 'waiting', tasks: 1, waiting: 1, asking: 1 });
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'ask.svg'"), '在问你');
+    // 出错：换出错的动画；SVG 里的脚本、事件属性早在导入时去掉了
+    pet.webContents.send('desk-pet-state', idleView);
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg'"), '回到待机');
+    pet.webContents.send('desk-pet-event', { type: 'alert', kind: 'error' });
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'error' && document.getElementById('dp-stage').dataset.image === 'oops.svg'"), '出错的动画');
+    assert.deepEqual(await js(`[!!${sroot}.querySelector('script'), !!${sroot}.querySelector('[onclick]'), window.__hacked ?? null]`), [false, false, null], '没有脚本');
+    await until(() => js("!document.getElementById('dp-stage').dataset.action"), '出错的动画按主题写的 2 秒放完', 4000);
+    // 鼠标绕着转两圈：晕
+    for (let k = 0; k <= 36; k++) { const a = k * Math.PI / 8; pet.webContents.send('desk-pet-cursor', { x: Math.round(Math.cos(a) * 110), y: Math.round(Math.sin(a) * 110) }); await delay(30); }
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'dizzy' && document.getElementById('dp-stage').dataset.image === 'dizzy.svg'"), '转晕了');
+    await until(() => js("!document.getElementById('dp-stage').dataset.action"), '晕 2.5 秒后恢复', 5000);
+    // 双击：主题的双击反应
+    const tapAt = async () => { await js(`(() => { const s = document.getElementById('dp-stage'), o = { clientX: ${bodyRect.x}, clientY: ${bodyRect.y}, screenX: 0, screenY: 0, button: 0, buttons: 1, pointerId: 11, bubbles: true }; s.dispatchEvent(new PointerEvent('pointerdown', o)); s.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0 })); })()`); };
+    await tapAt(); await delay(80); await tapAt();
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'poke' && document.getElementById('dp-stage').dataset.image === 'poke.svg'"), '双击反应');
+    console.log('PASS desk pet UI: a Clawd on Desk format theme imports, draws its sanitized SVG in a shadow root with its own CSS, follows the mouse with its eyes, separates thinking from tool work, gets dizzy from circling and plays its reactions');
+
+    // 第二期：子代理在跑换「同时忙好几件」；鼠标不动一阵放随机待机；极简模式用主题自己的探头动画
+    await until(() => js("!document.getElementById('dp-stage').dataset.action"), '双击反应放完', 4000);
+    pet.webContents.send('desk-pet-state', { ...idleView, mode: 'work', phase: 'thinking', tasks: 1, subagents: 2 });
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'juggle.svg'"), '有子代理在跑');
+    pet.webContents.send('desk-pet-state', { ...idleView, fidget: true });
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg'"), '回到待机');
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'idle:0' && document.getElementById('dp-stage').dataset.image === 'look.svg'"), '鼠标 3 秒没动：随机待机', 25000);
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg'"), '按主题写的 1.5 秒放完', 4000);
+    pet.webContents.send('desk-pet-state', { ...idleView, fidget: true, mini: { tuck: { tilt: 30, show: 0.55 }, peek: { tilt: 20, show: 0.75 } } });
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'miniEnter' && document.getElementById('dp-stage').dataset.image === 'me.svg'"), '钻进屏幕边：mini-enter');
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'mi.svg'"), '放完换 mini-idle', 4000);
+    assert.equal(await js("document.getElementById('dp-stage').style.transform"), 'none', '主题自己画了探头的样子：不歪');
+    // 画面宽度的一半（offsetRatio）藏在窗口右边外面
+    const svgBox = () => js(`(() => { const r = ${sroot}.querySelector('svg').getBoundingClientRect(); return { left: r.left, top: r.top, w: r.width, h: r.height, edge: innerWidth }; })()`);
+    await delay(400);
+    const tuckBox = await svgBox();
+    assert.ok(Math.abs(tuckBox.left + tuckBox.w / 2 - tuckBox.edge) < 2, `藏一半 ${JSON.stringify(tuckBox)}`);
+    pet.webContents.send('desk-pet-cursor', { x: -300, y: 0 });
+    assert.equal(await js(`${sroot}.getElementById('eyes-js').style.transform`), 'translate(-2px, 0px)', 'mini-idle 写在 eyeTracking.states 里：眼睛跟着');
+    // 鼠标移到露出来的身子上：探出来（mini-peek），往外滑画面宽度的 25%；放够 0.7 秒没有 mini-peek-hold 回 mini-idle
+    assert.equal(await hover(tuckBox.left + (6 + 10) / 40 * tuckBox.w, tuckBox.top + (12 + 10) / 40 * tuckBox.h), true, '露出来的身子能悬停');
+    await until(() => js("document.getElementById('dp-stage').dataset.mini === 'peek' && document.getElementById('dp-stage').dataset.image === 'mp.svg'"), '探头 mini-peek');
+    assert.notEqual(await js("document.getElementById('dp-stage').dataset.action"), 'wave', '主题的探头动画自己会打招呼，不另外挥手');
+    await delay(450);
+    const peekBox = await svgBox();
+    assert.ok(Math.abs(tuckBox.left - peekBox.left - 0.25 * tuckBox.w) < 2, `往外滑 25% ${JSON.stringify([tuckBox, peekBox])}`);
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'mi.svg'"), '探头放完回 mini-idle', 3000);
+    assert.equal(await hover(2, 2), false);
+    await until(() => js("document.getElementById('dp-stage').dataset.mini === 'tuck'"), '鼠标移开缩回去');
+    pet.webContents.send('desk-pet-state', idleView);
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg' && !document.body.classList.contains('mini')"), '退出极简模式');
+    console.log('PASS desk pet UI: theme phase 2 — subagents switch to the juggling pose, a resting mouse plays the theme\'s idle animations, and mini mode uses the theme\'s own enter / idle / peek animations at its own offsets');
+    deskPetMain.pushDeskPet(true);
+    await mjs("document.querySelector('.dps-remove').click()"); await mjs("document.querySelector('.dps-remove').click()");
+    await until(() => js("document.getElementById('dp-stage').dataset.pet === 'squirrel' && document.getElementById('dp-svg').hidden && !document.getElementById('dp-canvas').hidden"), '删掉后回到松鼠');
+    screen.getCursorScreenPoint = realCursor;
 
     // 关掉：宠物窗口没了
     await mjs("document.getElementById('dps-toggle').click()");

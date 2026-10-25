@@ -907,6 +907,13 @@ main.entering .metric { animation: fade-up .5s var(--ease) both; animation-delay
   border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 14px;
 }
 .stale-note .icon { width: 18px; height: 18px; }
+/* 后台账号（「后台账号少查一点」）：不是出错，只是说明查得慢，用中性色 */
+.quiet-note {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 18px; padding: 10px 16px;
+  border-radius: 12px; background: var(--surface-2); color: var(--muted); font-size: 13px;
+}
+.quiet-note .icon { width: 16px; height: 16px; flex: none; }
 .sample-caption { margin-top: 14px; font-size: 12.5px; color: var(--muted); }
 
 /* ---------------- 用量明细 ---------------- */

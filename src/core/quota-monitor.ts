@@ -131,6 +131,8 @@ export type AccountReport = {
    * 判断「采样过期」要用这个，否则额度一不动就误报过期。
    */
   lastCheckedAt?: number;
+  /** 后台账号：「后台账号少查一点」开着、又不在用，半小时才查一次（主进程发快照前补上，见 quota-quiet.ts）。界面放宽「过期」的判断。 */
+  quiet?: boolean;
   resetCredits?: number;
   plan?: string;
   /** 这份额度是哪个账号的（= 这组采样的账号）。 */

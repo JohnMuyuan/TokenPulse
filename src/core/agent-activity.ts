@@ -14,6 +14,9 @@ import { claudeUserText, codexUserText } from "./sessions";
  * 只读文件开头（会话 id、工作目录、是不是子会话、第一句提问）和结尾（最近的状态、Claude 的 ai-title），各 64 KB。
  * 目录 30 秒全扫一次，记下两小时内动过的文件；之间每次只 stat 这些文件，变了才重读。
  * 子代理（Claude 的 subagents/、isSidechain；Codex 带 parent_thread_id 的子会话）不算单独的任务。
+ * Claude 的子代理记在主会话旁边的 <会话 id>/subagents/agent-*.jsonl：没结束、SUB_STALE_MS 内动过的算在跑，
+ * 记到主会话的 subagents 上（桌宠按它换「同时忙好几件」的姿势）。子代理在跑时主文件可能很久不动，主会话按两边最近的动静算，
+ * 不会被当成「可能在等你」或过期；主会话这一轮已经结束、后台子代理还在跑的，也算在跑。
  *
  * 在问你（askOf）：Claude 的 AskUserQuestion（选择题）、ExitPlanMode（计划等你批准），Codex 的 request_user_input，
  * 调用已经写进会话文件、还没有结果，就是在等你回答。只拿来显示，回答还是在终端里。
@@ -24,7 +27,8 @@ export type TaskKind = "claude" | "codex";
 export type AskQuestion = { header: string; question: string; options: { label: string; description: string }[]; multi: boolean };
 /** 一个等你回答的提问。id 是那次工具调用的 id，回答了（有了结果）就没了。 */
 export type AgentAsk = { id: string; tool: string; at: number; questions: AskQuestion[]; plan?: string };
-export type AgentTask = { key: string; kind: TaskKind; agent: string; id: string; title: string; project: string; status: TaskStatus; tool?: string; since: number; updatedAt: number; doneAt?: number; ask?: AgentAsk };
+/** subagents：这个会话下正在跑的子代理个数（没有就不写）。 */
+export type AgentTask = { key: string; kind: TaskKind; agent: string; id: string; title: string; project: string; status: TaskStatus; tool?: string; since: number; updatedAt: number; doneAt?: number; ask?: AgentAsk; subagents?: number };
 /** 一轮是怎么结束的：正常做完、用户自己中断、出错（API 报错之类）。 */
 export type TurnEnd = "ok" | "interrupted" | "error";
 /**
@@ -43,6 +47,8 @@ export const WAITING_MS = 90_000;
 export const ASK_STALE_MS = 60 * 60_000;
 /** 任务列表里「刚完成」保留多久。 */
 export const RECENT_MS = 10 * 60_000;
+/** 子代理没结束、文件却这么久没动：多半是被停掉了（停掉的子代理不写结束行），不再算在跑。 */
+export const SUB_STALE_MS = 5 * 60_000;
 const FULL_SCAN_MS = 30_000;
 const KEEP_MS = 2 * 60 * 60_000;
 const CHUNK = 64 * 1024;
@@ -87,11 +93,14 @@ export function askOf(tool: string, input: unknown, id: string, at: number): Age
   return questions.length ? { id, tool, at, questions } : null;
 }
 
-/** Claude Code：按文件结尾的若干行推出这一轮的状态。读不出任何对话行返回 null。 */
-export function inferClaude(lines: string[]): Inferred | null {
+/**
+ * Claude Code：按文件结尾的若干行推出这一轮的状态。读不出任何对话行返回 null。
+ * sidechain：读的是子代理的文件（每行都带 isSidechain），不跳过这些行。
+ */
+export function inferClaude(lines: string[], options: { sidechain?: boolean } = {}): Inferred | null {
   let status = null as TaskStatus | null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined, ended: TurnEnd | undefined, ask: AgentAsk | undefined;
   for (const row of rows(lines)) {
-    if (row.isSidechain || row.isMeta) continue;
+    if ((row.isSidechain && !options.sidechain) || row.isMeta) continue;
     const t = stamp(row.timestamp) || at;
     if (row.type === "system") {
       if ((row.subtype === "turn_duration" || row.subtype === "stop_hook_summary") && status && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "ok"; }
@@ -105,6 +114,8 @@ export function inferClaude(lines: string[]): Inferred | null {
     if (row.type === "user") {
       if (blocks.some((block) => block?.type === "tool_result")) {
         if (ask && blocks.some((block) => block?.type === "tool_result" && block.tool_use_id === ask!.id)) ask = undefined;
+        // 有的工具交了结果这一轮就结束（子代理交最终结果那种），这一行带 toolEndsTurn
+        if (row.toolEndsTurn === true && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "ok"; continue; }
         if (status !== "done") { status = "thinking"; tool = undefined; }
         continue;
       }
@@ -213,6 +224,8 @@ export function codexHead(lines: string[]) {
 }
 
 type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string };
+/** Claude 子代理的会话文件；parent 是主会话文件。 */
+type SubEntry = { file: string; parent: string; size: number; mtimeMs: number; inferred: Inferred | null; read: boolean };
 export type ActivityRoots = { claude: string; codex: string; codexIndex: string };
 export function defaultRoots(): ActivityRoots {
   return { claude: path.join(cliDir("claude"), "projects"), codex: path.join(cliDir("chatgpt"), "sessions"), codexIndex: path.join(cliDir("chatgpt"), "session_index.jsonl") };
@@ -233,6 +246,7 @@ async function list(dir: string) { try { return await fs.readdir(dir, { withFile
 
 export class ActivityScanner {
   private entries = new Map<string, Entry>();
+  private subs = new Map<string, SubEntry>();
   private lastFull = 0;
   private titles = { mtimeMs: -1, map: new Map<string, string>() };
   constructor(private roots: ActivityRoots = defaultRoots(), private now: () => number = Date.now) {}
@@ -265,6 +279,43 @@ export class ActivityScanner {
         if (now - stat.mtimeMs <= KEEP_MS) this.entries.set(file, { file, kind, size: -1, mtimeMs: stat.mtimeMs, task: null, inferred: null, read: false });
       } catch { /* 刚好被删了 */ }
     }
+    // 子代理：主会话旁边的 <会话 id>/subagents/，只收最近还在动的
+    for (const entry of this.entries.values()) {
+      if (entry.kind !== "claude") continue;
+      const dir = path.join(entry.file.slice(0, -".jsonl".length), "subagents");
+      for (const item of await list(dir)) {
+        if (!item.isFile() || !item.name.endsWith(".jsonl")) continue;
+        const file = path.join(dir, item.name);
+        if (this.subs.has(file)) continue;
+        try {
+          const stat = await fs.stat(file);
+          if (now - stat.mtimeMs <= SUB_STALE_MS) this.subs.set(file, { file, parent: entry.file, size: -1, mtimeMs: stat.mtimeMs, inferred: null, read: false });
+        } catch { /* 刚好被删了 */ }
+      }
+    }
+  }
+
+  /** 下一次 scan 先把目录全扫一遍（会话目录里有文件变了：可能是新会话、新子代理）。 */
+  poke() { this.lastFull = 0; }
+  /** 值得盯着的目录（里面的 .jsonl 变了就该看一次）。 */
+  watchRoots() { return [this.roots.claude, this.roots.codex]; }
+
+  /** 各主会话下正在跑的子代理：个数、最近一次动静。 */
+  private async scanSubs(now: number) {
+    const out = new Map<string, { count: number; at: number }>();
+    for (const sub of [...this.subs.values()]) {
+      let stat;
+      try { stat = await fs.stat(sub.file); } catch { this.subs.delete(sub.file); continue; }
+      if (!sub.read || stat.size !== sub.size || stat.mtimeMs !== sub.mtimeMs) {
+        sub.size = stat.size; sub.mtimeMs = stat.mtimeMs; sub.read = true;
+        try { sub.inferred = inferClaude((await readEnds(sub.file, sub.size)).tail, { sidechain: true }); } catch { sub.inferred = null; }
+      }
+      if (now - sub.mtimeMs > SUB_STALE_MS) { this.subs.delete(sub.file); continue; }
+      if (!sub.inferred || sub.inferred.status === "done") continue;
+      const hit = out.get(sub.parent) ?? { count: 0, at: 0 };
+      out.set(sub.parent, { count: hit.count + 1, at: Math.max(hit.at, sub.mtimeMs) });
+    }
+    return out;
   }
 
   private async codexTitle(id: string) {
@@ -301,6 +352,7 @@ export class ActivityScanner {
     const now = this.now();
     if (now - this.lastFull >= FULL_SCAN_MS) { this.lastFull = now; await this.discover(now); }
     const running: AgentTask[] = [], recent: AgentTask[] = [], finished: string[] = [], failed: string[] = [], needsYou: string[] = [], asked: string[] = [];
+    const subs = await this.scanSubs(now);
     for (const entry of [...this.entries.values()]) {
       let stat;
       try { stat = await fs.stat(entry.file); } catch { this.entries.delete(entry.file); continue; }
@@ -308,22 +360,25 @@ export class ActivityScanner {
         entry.size = stat.size; entry.mtimeMs = stat.mtimeMs;
         try { await this.load(entry); } catch { entry.inferred = null; entry.task = null; }
       }
-      const status = entry.inferred ? liveStatus(entry.inferred, entry.mtimeMs, now) : null;
-      if (entry.task && entry.inferred && status) {
-        const ask = status === "done" ? undefined : entry.inferred.ask;
-        const task: AgentTask = { ...entry.task, status, tool: status === "done" ? undefined : entry.inferred.tool, since: entry.inferred.since, updatedAt: entry.mtimeMs, doneAt: entry.inferred.doneAt, ...(ask ? { ask } : {}) };
+      // 有子代理在跑：按两边最近的动静算；这一轮已经结束的（后台子代理还在跑）当作在跑子代理
+      const sub = entry.task ? subs.get(entry.file) : undefined, seen = Math.max(entry.mtimeMs, sub?.at ?? 0);
+      const inferred = sub && entry.inferred?.status === "done" ? { ...entry.inferred, status: "tool" as const, tool: "Agent", doneAt: undefined, ended: undefined } : entry.inferred;
+      const status = inferred ? liveStatus(inferred, seen, now) : null;
+      if (entry.task && inferred && status) {
+        const ask = status === "done" ? undefined : inferred.ask;
+        const task: AgentTask = { ...entry.task, status, tool: status === "done" ? undefined : inferred.tool, since: inferred.since, updatedAt: seen, doneAt: inferred.doneAt, ...(ask ? { ask } : {}), ...(sub && status !== "done" ? { subagents: sub.count } : {}) };
         if (status !== "done") running.push(task);
         else if (task.doneAt && now - task.doneAt <= RECENT_MS) recent.push(task);
         if (status === "done" && entry.last && entry.last !== "done") {
-          if (entry.inferred.ended === "error") failed.push(task.key);
-          else if (entry.inferred.ended !== "interrupted") finished.push(task.key);
+          if (inferred.ended === "error") failed.push(task.key);
+          else if (inferred.ended !== "interrupted") finished.push(task.key);
         }
         // 第一次扫描（entry.last 还是 undefined）不算：免得一启动就响
         if (ask && entry.last !== undefined && entry.lastAsk !== ask.id) asked.push(task.key);
         else if (!ask && status === "waiting" && entry.last && entry.last !== "waiting") needsYou.push(task.key);
       }
       entry.last = status;
-      entry.lastAsk = status && status !== "done" ? entry.inferred?.ask?.id : undefined;
+      entry.lastAsk = status && status !== "done" ? inferred?.ask?.id : undefined;
       if (now - entry.mtimeMs > KEEP_MS) this.entries.delete(entry.file);
     }
     // 同一个会话可能有几份文件（Claude 续接旧会话）：只留最新的那份

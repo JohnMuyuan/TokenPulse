@@ -113,6 +113,21 @@
   // 东张西望时头顶的问号；被戳时的「气鼓鼓」十字
   function question(g, x, y) { layer(g, '#6B4500', null, l => ['0110', '1001', '0001', '0010', '0100', '0000', '0100'].forEach((r, j) => [...r].forEach((b, i) => { if (b === '1') put(l, x + i, y + j, '#FFD84A', true); }))); }
   function anger(g, x, y) { layer(g, '#7A1F1F', null, l => ['01010', '11011', '00000', '11011', '01010'].forEach((r, j) => [...r].forEach((b, i) => { if (b === '1') put(l, x + i, y + j, '#FF6B6B', true); }))); }
+  /** 晕了：三颗小星星绕着头顶转。 */
+  function stars(g, cx, cy, t) {
+    for (let k = 0; k < 3; k++) {
+      const a = t * 0.45 + k * 2.094, x = Math.round(cx + Math.cos(a) * 10), y = Math.round(cy + Math.sin(a) * 2.5);
+      put(g, x, y, '#FFF4C2'); for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) put(g, x + dx, y + dy, '#FFC93C');
+    }
+  }
+  /** 在想（任务这会儿在等模型回复，没在跑工具）：右上角一个想法泡泡，里面的点一个一个冒出来。 */
+  function thought(g, t) {
+    const o = '#3B3F4A';
+    layer(g, o, null, l => { rect(l, 59, 1, 11, 6, '#FFFFFF', true); rect(l, 57, 9, 2, 2, '#FFFFFF', true); });
+    put(g, 55, 12, o);
+    const n = 1 + ((t >> 2) % 3);
+    for (let i = 0; i < n; i++) put(g, 61 + i * 3, 4, '#6B7280');
+  }
   /** 地面上的影子：身体朝鼠标那边歪的时候，影子往那边拉长一点。 */
   function shadow(g, cx, lean, y = 54.6) { ell(g, cx + lean * 1.5, y, 13 + Math.abs(lean) * 1.6, 1.7, 'rgba(20,24,32,0.18)', false); }
   function dust(g, x, y, k) { const c = '#C3C9D3'; for (const s of [-1, 1]) { put(g, x + s * (10 + k * 2), y - (k > 2 ? 1 : 0), c); put(g, x + s * (11 + k * 2), y - 1 - (k > 3 ? 1 : 0), c); if (k < 4) put(g, x + s * (9 + k), y, c); } }
@@ -141,6 +156,16 @@
         const m = Math.max(1, Math.floor(h / 2));
         for (let i = 0; i <= m; i++) { const d = Math.round(i * (w - 1) / m), xx = mode === 'squeezeL' ? x + d : x + w - 1 - d; put(g, xx, y + i, P.o); put(g, xx, y + h - 1 - i, P.o); }
         break;
+      }
+      // 晕了：眼睛变成一圈缺一角的圈，缺口一帧一帧转（spin0 ~ spin3）
+      default: if (mode.startsWith('spin')) {
+        const ring = [];
+        for (let i = 0; i < w; i++) ring.push([x + i, y]);
+        for (let j = 1; j < h; j++) ring.push([x + w - 1, y + j]);
+        for (let i = w - 2; i >= 0; i--) ring.push([x + i, y + h - 1]);
+        for (let j = h - 2; j > 0; j--) ring.push([x, y + j]);
+        const phase = +mode[4] || 0;
+        ring.forEach(([px, py], k) => { if (Math.floor(k * 4 / ring.length) !== phase) put(g, px, py, P.o); });
       }
     }
   }
@@ -171,7 +196,7 @@
 
   /* ---------- behaviour shared by the two furry pets ---------- */
   // 这些动作在干活、睡觉时也照样播（盖过干活 / 睡觉的样子）
-  const OVERRIDE = new Set(['startle', 'drag', 'land', 'celebrate', 'restock', 'yawn', 'wake', 'poke', 'lookaround', 'flop', 'wave']);
+  const OVERRIDE = new Set(['startle', 'drag', 'land', 'celebrate', 'restock', 'yawn', 'wake', 'poke', 'lookaround', 'flop', 'wave', 'dizzy']);
   const JUMP = [0, -3, -6, -7, -7, -6, -4, -2, 0, 1, 0, 0, 0, 0];
   const moodOf = c => c.mood || (c.quota <= 0 ? 'empty' : c.quota < 25 ? 'tight' : 'ok');
   function basePose(c, mood) {
@@ -208,6 +233,8 @@
       case 'flop': Object.assign(p, { eyes: 'closed', mouth: 'small', sq: Math.min(1.6, at * 0.16), headDrop: Math.min(3, Math.round(at * 0.35)), dy: at < 5 ? -Math.round(at / 2) : 0, ears: 1, tailAmp: 0, lx: 0, ly: 0, brows: null, hx: 0, lean: 0, fx: at >= 9 ? ['dust'] : [] }); break;
       // 极简模式里鼠标移过来：探出身子挥挥手
       case 'wave': Object.assign(p, { paws: 'hi', eyes: 'happy', mouth: 'open', brows: null, lx: -2, ly: -0.5, tailAmp: 1.8, tailSpeed: 0.5, hx: 0, lean: 0 }); break;
+      // 被鼠标绕着转晕了：眼睛打转、身子左右晃、头上星星绕圈
+      case 'dizzy': { const sway = [-1, 0, 1, 0][(at >> 2) % 4]; Object.assign(p, { eyes: 'spin' + ((t >> 1) % 4), mouth: (at >> 3) % 2 ? 'frown' : 'small', brows: null, dx: sway, hx: sway, lean: 0, lx: 0, ly: 0, blush: false, tailAmp: 0.6, tailSpeed: 0.3, fx: ['stars'] }); break; }
     }
     return p;
   }
@@ -223,6 +250,7 @@
       case 'anger': anger(g, at.exclaim[0] - 1, Math.max(1, at.exclaim[1] + 2)); break;
       case 'sparkles': sparkles(g, c.t, [[5, 8], [27, 3], [63, 5], [67, 25], [4, 27]]); break;
       case 'confetti': confetti(g, c.at); break;
+      case 'stars': stars(g, at.halo[0], Math.max(2, at.halo[1]), c.t); break;
     }
   }
 
@@ -322,7 +350,7 @@
     }
     if (p.wrap) bushyTail(g, P, TAIL_WRAP, cx, dy, t, 0.4, 0.15, 0);
     if (p.fx.includes('crumbs')) for (let k = 0; k < 3; k++) put(g, F - 2 + k * 2, ny + 9 + ((at + k * 3) % 9), P.acornL);
-    poseFx(g, p, c, { sweat: [A + 13, hy - 9], dots: [3, 21], exclaim: [A + 13, hy - 18], zzz: [cx + 10, hy - 12], dust: [cx] }, P);
+    poseFx(g, p, c, { sweat: [A + 13, hy - 9], dots: [3, 21], exclaim: [A + 13, hy - 18], zzz: [cx + 10, hy - 12], dust: [cx], halo: [A, hy - 18] }, P);
   }
   // Side view while working: hops between the pile and a stash, carrying one acorn per running task.
   function squirrelSide(g, c, mood) {
@@ -444,7 +472,7 @@
       const u = age / 12, x = F - 2 + ((k * 5) % 9 - 4) * (1 - u), y = -4 + (hy - (-4)) * u;
       seed(g, x, y, P);
     }
-    poseFx(g, p, c, { sweat: [A + 16, top + 2], dots: [A + 9, top - 8], exclaim: [A + 16, top - 8], zzz: [A + 15, top - 2], dust: [cx] }, P);
+    poseFx(g, p, c, { sweat: [A + 16, top + 2], dots: [A + 9, top - 8], exclaim: [A + 16, top - 8], zzz: [A + 15, top - 2], dust: [cx], halo: [A, top - 7] }, P);
   }
   function hamsterRun(g, c, mood) {
     const P = HAM, t = c.t, n = clamp(c.tasks, 1, 3), q = c.quota;
@@ -546,8 +574,9 @@
       case 'poke': sq = [2.6, 2.2, 1.6, 1, 0.5, 0.2][at] ?? 0; eyes = at < 8 ? 'squeeze' : 'open'; mouth = at < 4 ? 'o' : 'frown'; brow = at >= 8 ? 'worry' : null; fx = ['anger']; wave = 1.2; break;
       case 'lookaround': lx = [-2, -2, 2, 2, -2, 2, -2, 0][Math.floor(at / 4)] ?? 0; ly = -0.5; mouth = 'o'; brow = null; fx = ['question']; break;
       case 'flop': eyes = 'closed'; mouth = 'small'; dy = Math.min(4, Math.round(at * 0.4)); sq = Math.min(1.5, at * 0.15); wave = 0; brow = null; fx = at >= 9 ? ['dust'] : []; break;
+      case 'dizzy': eyes = 'spin' + ((t >> 1) % 4); mouth = (at >> 3) % 2 ? 'frown' : 'o'; brow = null; lx = 0; ly = 0; wave = 0.7; fx = ['stars']; break;
     }
-    const shake = (mood === 'tight' && c.nervous && !a && t % 12 < 3) || (a === 'poke' && at < 6) ? (t % 2 ? 1 : -1) : 0;
+    const shake = (mood === 'tight' && c.nervous && !a && t % 12 < 3) || (a === 'poke' && at < 6) ? (t % 2 ? 1 : -1) : a === 'dizzy' ? [-1, 0, 1, 0][(at >> 2) % 4] : 0;
     const lean = c.state === 'idle' && !a && mood !== 'empty' ? clamp(Math.round(lx * 0.4), -1, 1) : 0;
     const cx = 36 + shake + lean, cy = 21 + dy;
     const F = cx + Math.round(lx * 0.6), fy = Math.round(ly * 0.6), mF = x => 2 * F - 1 - x;
@@ -615,12 +644,14 @@
       case 'sparkles': sparkles(g, t, [[6, 8], [64, 6], [66, 30], [5, 34]]); break;
       case 'confetti': confetti(g, at); break;
       case 'dust': dust(g, cx, 53, a === 'flop' ? at - 9 : at); break;
+      case 'stars': stars(g, cx, Math.max(2, cy - 18), t); break;
     }
   }
 
   const PETS = { squirrel, hamster, octopus };
   const DUR = {
-    common: { startle: 14, land: 6, celebrate: 36, yawn: 18, wake: 14, restock: 40, look: 30, poke: 12, lookaround: 32, flop: 14, wave: 26 },
+    // dizzy 以外的 error / tapLeft / tapRight 只给主题宠物用（内置宠物出错是 startle，单击不做动作）
+    common: { startle: 14, land: 6, celebrate: 36, yawn: 18, wake: 14, restock: 40, look: 30, poke: 12, lookaround: 32, flop: 14, wave: 26, dizzy: 60, error: 50, tapLeft: 25, tapRight: 25 },
     squirrel: { nibble: 36, groom: 28, tail: 26, scratch: 22 },
     hamster: { wash: 28, stuff: 30, stretch: 22 },
     octopus: { bubbles: 30, shimmer: 24, wave: 26, stretch: 24 },
@@ -633,6 +664,7 @@
     const running = c.state === 'work' && !OVERRIDE.has(a) && name !== 'octopus';
     if (a !== 'drag' && !c.mini && !running) shadow(g, name === 'squirrel' ? 37 : 36, c.state === 'idle' && !a ? clamp(Math.round((c.look?.x || 0) * 0.5), -1, 1) : 0, name === 'octopus' ? 48.6 : 54.6);
     PETS[name](g, c);
+    if (c.state === 'work' && c.phase === 'thinking' && !OVERRIDE.has(a)) thought(g, c.t);
     return g;
   }
 
@@ -640,7 +672,7 @@
   const BODY = { squirrel: [23, 7, 64, 54], hamster: [18, 22, 53, 54], octopus: [15, 8, 54, 46] };
 
   const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
-  const LABELS = { nibble: '啃橡果', groom: '洗脸', look: '张望', tail: '理尾巴', scratch: '挠耳朵', wash: '洗脸', stuff: '塞腮帮', stretch: '伸懒腰', bubbles: '吐泡泡', shimmer: '变色', wave: '打招呼', startle: '吓一跳', drag: '被拎起来', land: '落地', celebrate: '庆祝', yawn: '打哈欠', wake: '揉眼睛', restock: '补满额度', poke: '被戳了一下', lookaround: '东张西望', flop: '倒头就睡' };
+  const LABELS = { nibble: '啃橡果', groom: '洗脸', look: '张望', tail: '理尾巴', scratch: '挠耳朵', wash: '洗脸', stuff: '塞腮帮', stretch: '伸懒腰', bubbles: '吐泡泡', shimmer: '变色', wave: '打招呼', startle: '吓一跳', drag: '被拎起来', land: '落地', celebrate: '庆祝', yawn: '打哈欠', wake: '揉眼睛', restock: '补满额度', poke: '被戳了一下', lookaround: '东张西望', flop: '倒头就睡', dizzy: '转晕了' };
 
   /*
    * 睡眠序列：电脑 DOZE_AFTER 秒没人动（键盘鼠标都算，主进程每秒报一次）→ 打哈欠 → 打盹点头 DOZE_MS → 一头栽倒 → 睡觉。
@@ -660,12 +692,41 @@
     settle(now) { if (!this.n || now - this.last <= this.gap) return 0; const n = this.n; this.n = 0; return n; }
   }
 
+  /*
+   * 绕圈会晕：鼠标绕着宠物转，把相邻两次的角度差（规整到 -π ~ π）带正负号加起来，同一个方向攒够 turns 圈就晕。
+   * 左右来回晃互相抵消；离宠物太近（minR 以内，角度乱跳）或太远（maxR 以外）不算；两次之间停了超过 gapMs，
+   * 或者一直没攒够、超过 windowMs，从头算；晕过一次 cooldownMs 之内不再晕。坐标是鼠标相对宠物身体中心的像素。
+   */
+  class Spin {
+    constructor(o = {}) {
+      this.turns = o.turns ?? 2; this.minR = o.minR ?? 24; this.maxR = o.maxR ?? 320; this.gapMs = o.gapMs ?? 500;
+      this.windowMs = o.windowMs ?? 6000; this.cooldownMs = o.cooldownMs ?? 12000; this.coolUntil = 0; this.reset();
+    }
+    reset() { this.sum = 0; this.last = null; this.lastAt = 0; this.startAt = 0; }
+    /** 来了一个新位置；该晕了返回 true。 */
+    add(x, y, now = Date.now()) {
+      const r = Math.hypot(x, y);
+      if (r < this.minR || r > this.maxR) { this.reset(); return false; }
+      const a = Math.atan2(y, x);
+      if (this.last == null || now - this.lastAt > this.gapMs || now - this.startAt > this.windowMs) { this.sum = 0; this.startAt = now; }
+      else { let d = a - this.last; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; this.sum += d; }
+      this.last = a; this.lastAt = now;
+      if (Math.abs(this.sum) < this.turns * 2 * Math.PI || now < this.coolUntil) return false;
+      this.coolUntil = now + this.cooldownMs; this.reset();
+      return true;
+    }
+  }
+
   /** 一只宠物的动作节奏：正在做的动作做到第几帧、下一个随机小动作还有多久、眼睛看向哪里。 */
   class Controller {
     constructor(name) {
       this.name = name; this.t = 0; this.action = null; this.at = 0; this.from = 0;
+      /** 这只宠物自己的动作时长（帧），比如主题包写的动画时长；没有的按 DUR。serial 每做一个动作加一（主题包按它挑同一种反应的几个动画之一）。 */
+      this.dur = {}; this.serial = 0;
       this.look = { x: 0, y: 0 }; this.target = { x: 0, y: 0 }; this.aimedAt = 0;
       this.fidgetIn = rand(60, 140); this.fidgetIdx = rand(0, 4);
+      /** 换掉内置的随机小动作（主题包的随机待机 idle:0、idle:1……）和两次之间隔多少帧 [最少, 最多]。 */
+      this.fidgets = null; this.fidgetGap = [200, 600];
       this.now = 0; this.nervousAt = 0; this.nervousUntil = 0;
       /** awake / doze / asleep：睡眠序列走到哪了。idleSec 是主进程报来的电脑没人动的秒数（没报过就一直醒着）。 */
       this.drowse = 'awake'; this.dozeSince = 0; this.idleSec = 0; this.mode = null;
@@ -716,24 +777,25 @@
       this.nervousAt = this.nervousUntil + (ctx.quota < 10 ? rand(15000, 25000) : rand(20000, 40000));
     }
     get nervous() { return this.now < this.nervousUntil && !this.action; }
-    trigger(action, from) { this.action = action; this.at = 0; if (from != null) this.from = from; }
-    /** 随机小动作：空闲时每 20 到 60 秒一个，几种轮着来。 */
-    fidget() { const list = FIDGETS[this.name] || []; if (!list.length) return; this.trigger(list[this.fidgetIdx++ % list.length]); this.fidgetIn = rand(200, 600); }
-    /** 鼠标相对宠物身体中心的位置（屏幕像素）。 */
-    aim(dx, dy, now = Date.now()) { this.target = { x: clamp(dx / 110, -2, 2), y: clamp(dy / 110, -1.5, 1.5) }; this.aimedAt = now; }
+    trigger(action, from) { this.action = action; this.at = 0; this.serial++; if (from != null) this.from = from; }
+    /** 随机小动作：空闲时每 20 到 60 秒一个（fidgetGap），几种轮着来。 */
+    fidget() { const list = this.fidgets || FIDGETS[this.name] || []; if (!list.length) return; this.trigger(list[this.fidgetIdx++ % list.length]); this.fidgetIn = rand(...this.fidgetGap); }
+    /** 鼠标相对宠物身体中心的位置（屏幕像素）。眼睛直接看过去，不等下一帧慢慢挪（跟手才不显得慢半拍）。 */
+    aim(dx, dy, now = Date.now()) { this.target = { x: clamp(dx / 110, -2, 2), y: clamp(dy / 110, -1.5, 1.5) }; this.look = { ...this.target }; this.aimedAt = now; }
     tick(ctx, now = Date.now()) {
       this.t++;
       if (this.action) {
         this.at++;
-        const d = durOf(this.name, this.action);
+        const d = this.dur[this.action] ?? durOf(this.name, this.action);
         if (d && this.at >= d) { this.action = null; this.at = 0; if (this.queue.length) this.trigger(this.queue.shift()); }
-      } else if (ctx.fidget !== false && this.stateOf(ctx) === 'idle' && !ctx.mini && moodOf(ctx) !== 'empty' && --this.fidgetIn <= 0) this.fidget();
+      // ctx.fidgetAfter：鼠标这么多毫秒没动才开始数（主题包的 timings.mouseIdleTimeout）
+      } else if (ctx.fidget !== false && this.stateOf(ctx) === 'idle' && !ctx.mini && moodOf(ctx) !== 'empty' && !(now - this.aimedAt < (ctx.fidgetAfter || 0)) && --this.fidgetIn <= 0) this.fidget();
       this.now = now;
       this.drowseTick(ctx, now);
       this.nervousTick(ctx, now);
-      // 鼠标几秒没动：偶尔自己东张西望
+      // 鼠标几秒没动：偶尔自己东张西望（这个是慢慢转过去的）
       if (now - this.aimedAt > 4000 && this.t % 40 === 0) this.target = Math.random() < 0.5 ? { x: 0, y: 0 } : { x: Math.random() * 3 - 1.5, y: Math.random() - 0.6 };
-      this.look.x += (this.target.x - this.look.x) * 0.3; this.look.y += (this.target.y - this.look.y) * 0.3;
+      this.look.x += (this.target.x - this.look.x) * 0.5; this.look.y += (this.target.y - this.look.y) * 0.5;
     }
     frame(ctx) { return drawPet(this.name, { ...ctx, state: this.stateOf(ctx), t: this.t, action: this.action, at: this.at, look: this.look, from: this.from, nervous: ctx.nervous ?? this.nervous }); }
   }
@@ -745,5 +807,5 @@
     for (let i = 0; i < W * H; i++) { const c = g.c[i]; if (!c) continue; ctx.fillStyle = c; ctx.fillRect((i % W) * scale, Math.floor(i / W) * scale, scale, scale); }
   }
 
-  root.PulsePet = { W, H, BODY, drawPet, FIDGETS, OVERRIDE, LABELS, durOf, Controller, Clicks, DOZE_AFTER, DOZE_MS, paint };
+  root.PulsePet = { W, H, BODY, drawPet, FIDGETS, OVERRIDE, LABELS, durOf, Controller, Clicks, Spin, DOZE_AFTER, DOZE_MS, paint };
 })(typeof window !== 'undefined' ? window : globalThis);

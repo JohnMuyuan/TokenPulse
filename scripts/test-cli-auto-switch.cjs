@@ -130,6 +130,20 @@ const fresh = () => { auto.resetAutoSwitchForTests(); switched = []; switchImpl 
     fresh();
     check("每家分开：Codex 没开时只看 Claude", (await auto.autoSwitchCli(deps({ current: (kind) => (kind === "chatgpt" ? "chatgpt:y" : "claude:a"), quota: (id) => (id === "chatgpt:y" ? q(99) : quotas[id] ?? null) })))[0]?.kind === "claude");
 
+    // 「后台账号少查一点」开着：候选账号的额度旧了（5 分钟以上），切之前先临时查一次
+    fresh();
+    seed(["f"]);
+    const old = (fiveUsed) => ({ ...q(fiveUsed), at: NOW - 20 * MIN });
+    quotas = { "claude:a": q(96), "claude:b": old(10), "claude:f": q(10) };
+    check("该切号了：额度旧的候选账号要先查（新的、被拒的、隐藏的、没存登录的不用）", auto.autoSwitchStale(deps()).join() === "claude:b", auto.autoSwitchStale(deps()).join());
+    check("没查到过的候选账号也要查", auto.autoSwitchStale(deps({ quota: (id) => (id === "claude:a" ? q(99) : null) })).sort().join() === "claude:b,claude:f");
+    quotas["claude:a"] = q(80);
+    check("还没到触发线：不用查", auto.autoSwitchStale(deps()).length === 0);
+    quotas["claude:a"] = q(96);
+    check("没开 / 只读 / 不是官方登录：不用查", auto.autoSwitchStale(deps({ rules: {} })).length === 0 && auto.autoSwitchStale(deps({ readOnly: true })).length === 0 && auto.autoSwitchStale(deps({ usesOfficial: () => false })).length === 0);
+    await auto.autoSwitchCli(deps());
+    check("刚切过（冷却中）：不用查", switched.length === 1 && auto.autoSwitchStale(deps({ now: NOW + MIN })).length === 0);
+
     const r = auto.normalizeRule;
     check("规则校验：只认 90 / 95 / 99，其他按 95；on 必须是 true", r({ on: true, at: 99 }).at === 99 && r({ on: true, at: 50 }).at === 95 && r({ on: "yes" }).on === false && r(null).on === false && r(undefined).at === 95);
 

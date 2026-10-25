@@ -14,6 +14,8 @@ export type TrayPanelAccount = {
   plan: string;
   /** 最后一次查到额度的时间；太久没查到（额度可能已经变了）界面上会标出来。 */
   checkedAt: number;
+  /** 后台账号（「后台账号少查一点」，半小时才查一次）：过期的判断放宽。 */
+  quiet?: boolean;
   five: TrayPanelWindow | null;
   week: TrayPanelWindow | null;
 };
@@ -52,6 +54,7 @@ export function trayPanelData(snapshot: Snapshot | null, theme: "light" | "dark"
     today: { tokens: snapshot?.totals.today.tokens ?? 0, costUsd: snapshot?.totals.today.costUsd ?? 0 },
     accounts: (snapshot?.accounts ?? []).filter((account) => account.five || account.week).map((account) => ({
       kind: account.kind, name: title(account), plan: account.plan ?? "", checkedAt: account.lastCheckedAt ?? account.lastSampleAt ?? 0,
+      ...(account.quiet ? { quiet: true } : {}),
       five: pick(account.five), week: pick(account.week),
     })),
   };

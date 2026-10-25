@@ -27,6 +27,8 @@ body.dp-body { position: relative; }
 .dp-stage canvas, .dp-stage img { display: block; image-rendering: pixelated; }
 /* 自定义宠物是图片：不让浏览器把它当图片拖走（按住一拖会拖出一张图片的虚影、拖不动窗口），鼠标事件交给外面的 stage */
 .dp-stage img { object-fit: contain; object-position: 50% 100%; image-rendering: auto; -webkit-user-drag: none; pointer-events: none; }
+/* 主题包宠物：SVG 在它的 Shadow DOM 里，按主题坐标摆，可能比舞台大（头顶的特效）；鼠标事件同样交给外面的 stage */
+.dp-stage .dp-svg { position: relative; overflow: visible; pointer-events: none; }
 body.hover .dp-stage { cursor: grab; }
 body.dragging .dp-stage { cursor: grabbing; }
 /* 极简模式：躲在屏幕右边后面探头。位置和歪的角度由 desk-pet.js 算，以脚底中点为轴；探出来、缩回去带一点回弹 */

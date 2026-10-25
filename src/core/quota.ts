@@ -550,8 +550,17 @@ function quotaLine(quota: OfficialQuota) {
   return bits.join("，") || "有数据";
 }
 
-export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promise<QuotaFetchResult> {
+/** 这一轮查不查这个账号（「后台账号少查一点」，见 quota-quiet.ts）。没传就全查；不查的账号这一轮不发请求、也不报问题。 */
+export type QuotaPick = (kind: AccountKind, accountId: string) => boolean;
+
+export async function fetchOfficialQuota(force = false, gate?: QuotaGate, pick?: QuotaPick): Promise<QuotaFetchResult> {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return { ...cache.value, issues: [] };
+  const picked = new Map<string, boolean>();
+  const wanted = (kind: AccountKind, id: string) => {
+    if (!pick) return true;
+    if (!picked.has(id)) picked.set(id, pick(kind, id));
+    return picked.get(id)!;
+  };
   const kinds: AccountKind[] = ["claude", "chatgpt", "grok"];
   const issues: QuotaIssue[] = [];
   // 检查本身出错也按「不放行」处理：宁可这一轮没有额度，也不从没确认过的出口去问官方
@@ -573,12 +582,13 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate): Promi
     const queryable = new Set(targets.map((target) => target.accountId));
     const inCli = new Set(readCliAccounts(kind).filter((item) => item.credential.refreshToken).map((item) => accountIdOf(kind, item.ref)));
     for (const account of visibleAccounts(kind)) {
-      if (queryable.has(account.id)) continue;
+      if (queryable.has(account.id) || !wanted(kind, account.id)) continue;
       const dead = kind === "claude" && cliRenew?.dead && cliRenew.accountId === account.id;
       const reason = inCli.has(account.id) && !dead ? "cli-wait" : "expired";
       issues.push({ kind, accountId: account.id, who: whoOf(kind, account.id), reason });
     }
     for (const target of targets) {
+      if (!wanted(kind, target.accountId)) continue;
       const who = whoOf(kind, target.accountId);
       const cooling = cooldowns.get(target.accountId);
       if (cooling && Date.now() < cooling.until) {

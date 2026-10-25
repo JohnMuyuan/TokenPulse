@@ -220,6 +220,47 @@ curl.curlJson = async (...args) => {
     const renewedCli = await fetchOfficialQuota(true);
     check("替 Claude Code 续上之后这一轮就能查额度", renewedCli.issues.length === 0 && curlCalls === 1 && renewedCli.claude?.fiveHourPct === 10, JSON.stringify(renewedCli.issues));
 
+    // ---- 后台账号少查一点（quota-quiet.ts）：a 登录在 Claude Code 里（在用），b 只存在 TokenPulse 里（后台） ----
+    const quiet = build("core/quota-quiet.js");
+    const { readQuotaChecks } = build("core/quota-history.js");
+    accounts.writeOfficialAccountStore({ version: 2, accounts: [
+      { id: "claude:uuid-a", kind: "claude", ref: "uuid-a", email: "a@example.com", label: "Claude 账号", createdAt: 1, lastSeenAt: 1 },
+      { id: "claude:uuid-b", kind: "claude", ref: "uuid-b", email: "b@example.com", label: "Claude 账号", credential: { token: "tok-b", expiresAt: Date.now() + 8 * 3600_000 }, createdAt: 2, lastSeenAt: 2 },
+    ], active: {} });
+    const asked = [];
+    let bFails = false;
+    curlImpl = async (_url, headers) => {
+      const who = headers.some((h) => h.includes("tok-b")) ? "b" : "a";
+      asked.push(who);
+      if (who === "b" && bFails) throw new curl.HttpError(503);
+      return { five_hour: { utilization: who === "b" ? 30 : 10, resets_at: "2026-10-11T14:00:00.000Z" }, seven_day: { utilization: 20, resets_at: "2026-10-14T12:00:00.000Z" } };
+    };
+    const round = async (at, extra = []) => {
+      asked.length = 0;
+      const result = await fetchOfficialQuota(true, undefined, quiet.quietPick(quiet.foregroundAccounts(extra), readQuotaChecks().accounts, at));
+      return { asked: [...asked].sort().join(","), result };
+    };
+    quiet.resetQuietForTests();
+    const fg = quiet.foregroundAccounts([]);
+    check("在用的账号：CLI 当前登录的", fg.has("claude:uuid-a") && !fg.has("claude:uuid-b"), JSON.stringify([...fg]));
+    const r1 = await round(Date.now());
+    check("开着：后台账号还没查到过 → 这一轮也查", r1.asked === "a,b", r1.asked);
+    const r2 = await round(Date.now());
+    check("刚查过的后台账号这一轮不查、也不报问题；在用的照查", r2.asked === "a" && r2.result.issues.length === 0 && r2.result.all.every((q) => q.accountId === "claude:uuid-a"), r2.asked + JSON.stringify(r2.result.issues));
+    const r3 = await round(Date.now() + 29 * 60_000);
+    check("29 分钟后还不查", r3.asked === "a", r3.asked);
+    bFails = true;
+    const r4 = await round(Date.now() + 31 * 60_000);
+    check("满 30 分钟再查一次（这次出错照常报出来）", r4.asked === "a,b" && r4.result.issues.some((i) => i.accountId === "claude:uuid-b" && i.reason === "error"), r4.asked + JSON.stringify(r4.result.issues));
+    const r5 = await round(Date.now() + 32 * 60_000);
+    check("出错了也等满 30 分钟再试，不每轮都问", r5.asked === "a", r5.asked);
+    bFails = false;
+    const r6 = await round(Date.now() + 33 * 60_000, ["claude:uuid-b"]);
+    check("号池里 / 桌宠固定看的账号算在用，每轮照查", r6.asked === "a,b", r6.asked);
+    asked.length = 0;
+    await fetchOfficialQuota(true);
+    check("不传挑选（开关关着、手动刷新）：全查", [...asked].sort().join(",") === "a,b", asked.join(","));
+
     const failedCount = results.filter((ok) => !ok).length;
     console.log(`\n${results.length - failedCount}/${results.length} quota-fetch checks`);
     if (failedCount) process.exitCode = 1;

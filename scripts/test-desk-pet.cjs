@@ -44,6 +44,12 @@ check('desk pet: Claude Code turn states from the session tail', () => {
   // 子代理、meta 行不影响主会话
   assert.equal(activity.inferClaude([prompt, claudeAsst(4, [{ type: 'text', text: 'x' }], 'end_turn'), claudeUser(6, 'sub task', { isSidechain: true }), claudeAsst(7, [{ type: 'tool_use', name: 'Read' }], 'tool_use', { isSidechain: true })]).status, 'done');
   // 读到的尾巴从一轮中间开始：以第一条回复为准
+  // 读子代理自己的文件：每行都是 isSidechain，要照常推
+  const sub = [claudeUser(6, 'sub task', { isSidechain: true }), claudeAsst(7, [{ type: 'tool_use', name: 'Read' }], 'tool_use', { isSidechain: true })];
+  assert.equal(activity.inferClaude(sub), null, '平时跳过子代理的行');
+  assert.equal(activity.inferClaude(sub, { sidechain: true }).status, 'tool');
+  const ended = line({ type: 'user', timestamp: at(9), isSidechain: true, toolEndsTurn: true, message: { content: [{ type: 'tool_result', tool_use_id: 't9', content: 'final' }] } });
+  assert.deepEqual([activity.inferClaude([...sub, ended], { sidechain: true }).status, activity.inferClaude([...sub, ended], { sidechain: true }).ended], ['done', 'ok'], '交了结果这一轮就结束的工具（toolEndsTurn）');
   const mid = activity.inferClaude([toolResult(1), claudeAsst(2, [{ type: 'tool_use', name: 'Edit' }], 'tool_use')]);
   assert.equal(mid.status, 'tool'); assert.equal(mid.since, T0 + 1000);
   assert.equal(activity.inferClaude(['not json', '{"broken"', line({ type: 'mode' })]), null, '没有对话行');
@@ -148,9 +154,9 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     const old = path.join(claude, 'D--work-demo-app', 'c-old.jsonl');
     fs.writeFileSync(old, line({ type: 'user', timestamp: recent(9000), sessionId: 'c-old', message: { content: '很久以前' } }) + '\n');
     const longAgo = new Date(Date.now() - 3 * 3600_000); fs.utimesSync(old, longAgo, longAgo);
-    // 子代理文件在 <会话>/subagents/ 下，不在项目目录这一层：扫描本来就不进去
+    // 子代理文件在 <会话>/subagents/ 下：不算单独的任务（已经做完的这个也不算在跑的子代理）
     fs.mkdirSync(path.join(claude, 'D--work-demo-app', 'c-1', 'subagents'), { recursive: true });
-    fs.writeFileSync(path.join(claude, 'D--work-demo-app', 'c-1', 'subagents', 'agent-a.jsonl'), line({ type: 'user', timestamp: recent(3), isSidechain: true, message: { content: 'sub' } }) + '\n');
+    fs.writeFileSync(path.join(claude, 'D--work-demo-app', 'c-1', 'subagents', 'agent-a.jsonl'), [line({ type: 'user', timestamp: recent(3), isSidechain: true, message: { content: 'sub' } }), line({ type: 'assistant', timestamp: recent(2), isSidechain: true, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }] } })].join('\n') + '\n');
     const codexFile = path.join(day, 'rollout-2026-10-22T10-00-00-x-1.jsonl');
     fs.writeFileSync(codexFile, [line({ type: 'session_meta', timestamp: recent(60), payload: { id: 'x-1', cwd: '/home/me/tokenpulse' } }), line({ type: 'event_msg', timestamp: recent(60), payload: { type: 'task_started' } }), line({ type: 'response_item', timestamp: recent(50), payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '补单元测试' }] } })].join('\n') + '\n');
     fs.writeFileSync(path.join(day, 'rollout-2026-10-22T10-00-01-x-2.jsonl'), [line({ type: 'session_meta', payload: { id: 'x-2', parent_thread_id: 'x-1' } }), line({ type: 'event_msg', timestamp: recent(5), payload: { type: 'task_started' } })].join('\n') + '\n');
@@ -205,6 +211,43 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.deepEqual(restart.asked, []);
     // 目录不存在不报错
     assert.deepEqual((await new activity.ActivityScanner({ claude: path.join(root, 'none'), codex: path.join(root, 'none'), codexIndex: path.join(root, 'none.jsonl') }).scan()).running, []);
+  });
+
+  await checkAsync('desk pet: running Claude subagents count on their session and keep it from looking stuck', async () => {
+    const home = path.join(root, 'home-sub'), claude = path.join(home, '.claude', 'projects'), project = path.join(claude, 'D--work-sub');
+    const subDir = path.join(project, 's-1', 'subagents');
+    fs.mkdirSync(subDir, { recursive: true });
+    const recent = s => new Date(Date.now() - s * 1000).toISOString();
+    const ago = (file, s) => { const t = new Date(Date.now() - s * 1000); fs.utimesSync(file, t, t); };
+    const main = path.join(project, 's-1.jsonl');
+    // 主会话派了个子代理（Agent 调用还没结果），主文件三分钟没动
+    fs.writeFileSync(main, [line({ type: 'user', timestamp: recent(300), sessionId: 's-1', cwd: 'D:\\work\\sub', message: { content: '查一下全仓库' } }), line({ type: 'assistant', timestamp: recent(180), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'ag-1', name: 'Agent', input: {} }] } })].join('\n') + '\n');
+    ago(main, 180);
+    const subA = path.join(subDir, 'agent-a.jsonl');
+    fs.writeFileSync(subA, [line({ type: 'user', timestamp: recent(170), isSidechain: true, message: { content: '找用法' } }), line({ type: 'assistant', timestamp: recent(2), isSidechain: true, message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'Grep' }] } })].join('\n') + '\n');
+    // 早就停掉的子代理（没有结束行，但十分钟没动了）不算
+    const dead = path.join(subDir, 'agent-dead.jsonl');
+    fs.writeFileSync(dead, line({ type: 'user', timestamp: recent(700), isSidechain: true, message: { content: 'old' } }) + '\n');
+    ago(dead, 700);
+    const scanner = new activity.ActivityScanner({ claude, codex: path.join(home, 'none'), codexIndex: path.join(home, 'none.jsonl') });
+    const first = await scanner.scan();
+    assert.deepEqual(first.running.map(t => [t.key, t.status, t.tool, t.subagents]), [['claude:s-1', 'tool', 'Agent', 1]], '子代理在动：不是「可能在等你」');
+    assert.ok(Date.now() - first.running[0].updatedAt < 60_000, '最近的动静按子代理算');
+    // 子代理做完了（交了结果这一轮结束）：主会话又只看自己，三分钟没动的工具调用是「可能在等你」
+    fs.appendFileSync(subA, line({ type: 'user', timestamp: new Date().toISOString(), isSidechain: true, toolEndsTurn: true, message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: 'done' }] } }) + '\n');
+    const second = await scanner.scan();
+    assert.deepEqual(second.running.map(t => [t.status, t.subagents]), [['waiting', undefined]]);
+    // 这一轮结束了，但又开了一个后台子代理：照样算在跑（新文件要先重扫目录，poke 之后下一次就找到）
+    fs.appendFileSync(main, [line({ type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'tool_result', tool_use_id: 'ag-1', content: 'ok' }] } }), line({ type: 'assistant', timestamp: new Date().toISOString(), message: { stop_reason: 'end_turn', content: [{ type: 'text', text: '后台在查' }] } })].join('\n') + '\n');
+    const subB = path.join(subDir, 'agent-b.jsonl');
+    fs.writeFileSync(subB, line({ type: 'user', timestamp: new Date().toISOString(), isSidechain: true, message: { content: '后台任务' } }) + '\n');
+    scanner.poke();
+    const fourth = await scanner.scan();
+    assert.deepEqual(fourth.running.map(t => [t.key, t.status, t.tool, t.subagents]), [['claude:s-1', 'tool', 'Agent', 1]], '后台子代理还在跑');
+    fs.appendFileSync(subB, line({ type: 'assistant', timestamp: new Date().toISOString(), isSidechain: true, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: '查完了' }] } }) + '\n');
+    const fifth = await scanner.scan();
+    assert.deepEqual([fifth.running.length, fifth.finished], [0, ['claude:s-1']], '后台子代理也做完了：这时才算做完');
+    assert.deepEqual(scanner.watchRoots(), [claude, path.join(home, 'none')]);
   });
 
   check('desk pet: settings are normalized, defaults keep the pet off', () => {
@@ -605,6 +648,279 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
       // 影子：平时有，被拎着、贴边时没有
       assert.notEqual(key(Pet.drawPet(name, { ...base, state: 'idle', action: null, at: 0, mini: true })), idle, `${name} 贴边时不画影子`);
     }
+  });
+
+  /* ---------- 主题包（Clawd on Desk 格式）：消毒、导入、画法 ---------- */
+  const sanitize = require('../build/core/svg-sanitize');
+  const themes = require('../build/core/pet-theme');
+
+  check('desk pet themes: SVG sanitizer keeps the drawing and drops scripts, handlers, external links and DOCTYPE', () => {
+    const clean = sanitize.sanitizeSvg('<?xml version="1.0"?>\n<!-- hi --><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="500" onload="alert(1)" xmlns:inkscape="x" inkscape:label="l">'
+      + '<defs><style>.a { fill: red; animation: b 1s infinite } @import url(http://x/y.css); .c { background: url("http://evil/x.png") } .d { fill: url(#g) } :host { display: none } @keyframes b { to { opacity: .5 } }</style>'
+      + '<linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient></defs>'
+      + '<script>alert(1)</script><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">x</div></foreignObject>'
+      + '<g id="eyes-js" class="a" style="fill: blue; background-image: url(http://evil)"><rect x="1" y="1" width="2" height="2" onclick="x()"/></g>'
+      + '<a href="http://evil"><rect width="1" height="1"/></a>'
+      + '<use href="#g"/><use xlink:href="http://evil/#x"/><image href="data:image/png;base64,AAAA"/><image href="http://evil/a.png"/><image href="data:text/html;base64,AAAA"/>'
+      + '<rect fill="url(http://evil/#x)" width="3" height="3"/><rect filter="url(#g)" width="1" height="1"/>'
+      + '<animate attributeName="href" values="javascript:alert(1)"/><set attributeName="onclick" to="alert(1)"/><animate attributeName="opacity" values="0;1" dur="1s"/>'
+      + '<text>a &amp; b &lt; c &#106;</text><![CDATA[ x ]]></svg>');
+    assert.match(clean, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" xmlns:xlink="http:\/\/www\.w3\.org\/1999\/xlink" viewBox="0 0 10 10" width="500">/);
+    for (const bad of [/onload|onclick/, /<script/i, /foreignObject|xhtml/, /evil/, /<a[\s>]/, /@import/, /javascript/i, /inkscape/, /:host/, /data:text/]) assert.doesNotMatch(clean, bad);
+    assert.match(clean, /<g id="eyes-js" class="a" style="fill: blue; background-image: none">/, 'style 属性里的外部地址换成 none');
+    assert.match(clean, /\.d \{ fill: url\(#g\) \}/); assert.match(clean, /@keyframes b/);
+    assert.match(clean, /<use href="#g"><\/use>/); assert.match(clean, /<image href="data:image\/png;base64,AAAA"><\/image>/);
+    assert.equal((clean.match(/<image/g) || []).length, 3, '外部图片的 href 去掉了（元素本身留着也什么都不画）');
+    assert.match(clean, /<rect filter="url\(#g\)"/); assert.doesNotMatch(clean, /fill="url\(http/);
+    assert.equal((clean.match(/<animate|<set/g) || []).length, 1, '改 href / 事件属性的动画整个不要');
+    assert.match(clean, /<text>a &amp; b &lt; c j<\/text>/, '实体解开再转义');
+    assert.equal(sanitize.sanitizeSvg(clean), clean, '消毒过的再消毒不变');
+    assert.throws(() => sanitize.sanitizeSvg('<!DOCTYPE svg [<!ENTITY x "y">]><svg/>'), /DOCTYPE/);
+    assert.throws(() => sanitize.sanitizeSvg('<html><svg/></html>'), /不是 SVG/);
+    assert.throws(() => sanitize.sanitizeSvg('<svg><g></svg>'), /写坏了/);
+    assert.throws(() => sanitize.sanitizeSvg('<svg></svg><svg></svg>'), /一个根元素/);
+    assert.throws(() => sanitize.sanitizeSvg('x'.repeat(sanitize.SVG_FILE_MAX + 1)), /2 MB/);
+    assert.match(sanitize.sanitizeSvg('﻿<svg/>'), /^<svg xmlns=[^>]+><\/svg>$/);
+    assert.equal(sanitize.sanitizeCss('a{b:u\\72l(http://x)}'), 'a{b:u72l(http://x)}', '反斜杠去掉，转义拼不出 url(');
+  });
+
+  // 测试用的小主题：自己画的方块小人（不是任何别人的素材）
+  const box = (body, eyes = '', extra = '') => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 -10 40 40"><defs><style>#eyes-js { transition: transform .2s }</style></defs>${extra}<g id="shadow-js"><rect x="2" y="18" width="16" height="1" opacity=".4"/></g><g id="body-js"><rect x="2" y="6" width="16" height="12" fill="${body}"/>${eyes}</g></svg>`;
+  const eyes = '<g id="eyes-js"><rect x="6" y="10" width="2" height="2"/><rect x="12" y="10" width="2" height="2"/></g>';
+  const makeTheme = (dir, theme, files) => {
+    fs.mkdirSync(path.join(dir, 'assets'), { recursive: true });
+    for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name.endsWith('.png') ? name : path.join('assets', name)), content);
+    fs.writeFileSync(path.join(dir, 'theme.json'), JSON.stringify(theme));
+  };
+  const testTheme = {
+    schemaVersion: 1, name: '方块', author: 'QA', viewBox: { x: -10, y: -10, width: 40, height: 40 },
+    layout: { contentBox: { x: 0, y: 4, width: 20, height: 16 }, centerX: 10, baselineY: 19 },
+    eyeTracking: { enabled: true, states: ['idle'], maxOffset: 2, bodyScale: 0.5, shadowStretch: 0.2, shadowShift: 0.5, ids: { eyes: 'eyes-js', body: 'body-js', shadow: 'shadow-js' } },
+    states: { idle: ['idle.svg'], thinking: ['think.svg'], working: ['work.svg'], notification: ['ask.svg'], attention: ['happy.svg'], error: ['oops.svg'], dizzy: ['dizzy.svg'], sleeping: ['sleep.png'], roam: ['roam.svg'], bogus: ['x.svg'] },
+    workingTiers: [{ minSessions: 2, file: 'busy.svg' }, { minSessions: 1, files: ['work.svg'] }],
+    reactions: { drag: { file: 'drag.svg' }, double: { files: ['poke.svg', 'missing.svg'], duration: 2500 }, clickLeft: { file: '../evil.svg', duration: 1000 } },
+    timings: { autoReturn: { dizzy: 3000, attention: 2000 } },
+    hitBoxes: { default: { x: 2, y: 6, w: 16, h: 12 } }, fileHitBoxes: { 'work.svg': { x: 0, y: 0, w: 20, h: 20 } },
+    miniMode: { supported: true, states: { 'mini-idle': ['idle.svg'] } }, petTint: true, idleEasterEggs: [{ file: 'egg.svg' }],
+  };
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a4a00000000049454e44ae426082', 'hex');
+  const themeFolder = path.join(root, 'cube-theme');
+  makeTheme(themeFolder, testTheme, {
+    'idle.svg': box('#e9a', eyes), 'think.svg': box('#9ae', eyes), 'work.svg': box('#9e9'), 'busy.svg': box('#ee9'), 'ask.svg': box('#fc6'), 'happy.svg': box('#fd6'),
+    'oops.svg': box('#f66', '', '<script>alert(1)</script>'), 'dizzy.svg': box('#c9f'), 'drag.svg': box('#aaa'), 'poke.svg': box('#f9c'), 'sleep.png': png,
+  });
+
+  check('desk pet themes: theme.json is read into the fields TokenPulse uses; unknown ones are dropped', () => {
+    const t = themes.normalizeTheme(testTheme);
+    assert.deepEqual(Object.keys(t.states), ['idle', 'thinking', 'working', 'error', 'attention', 'notification', 'sleeping', 'dizzy'], '不认识的状态（roam、bogus）不要');
+    assert.deepEqual(t.workingTiers, [{ minSessions: 2, files: ['busy.svg'] }, { minSessions: 1, files: ['work.svg'] }], 'file / files 都认，按会话数从多到少');
+    assert.deepEqual(t.reactions, { drag: { files: ['drag.svg'], duration: 0 }, double: { files: ['poke.svg', 'missing.svg'], duration: 2500 } }, '带路径的文件名不收');
+    assert.equal(t.eyeTracking.maxOffset, 2); assert.equal(t.eyeTracking.ids.dozeEyes, 'eyes-doze', '没写的用默认');
+    assert.deepEqual(t.miniMode, { states: { 'mini-idle': ['idle.svg'] }, offsetRatio: 0.5, peek: { offsetRatio: 0.12 }, timings: { autoReturn: {} } });
+    assert.equal('petTint' in t || 'idleEasterEggs' in t, false);
+    assert.deepEqual(themes.normalizeTheme(t), t, '收过的再收一次不变');
+    assert.throws(() => themes.normalizeTheme({ states: { working: ['a.svg'] } }), /至少要有 idle/);
+    assert.equal(themes.normalizeTheme({ states: { idle: 'a.svg' }, eyeTracking: { enabled: false } }).eyeTracking, null);
+  });
+
+  check('desk pet themes: importing a theme folder copies sanitized SVGs, skips missing files and lists it', () => {
+    const pack = packs.importPetPack(themeFolder);
+    assert.equal(pack.kind, 'theme'); assert.equal(pack.name, '方块'); assert.equal(pack.author, 'QA');
+    assert.match(pack.warning, /1 个动画文件没找到/, 'missing.svg 没找到：提醒一下');
+    const dir = path.join(packs.petsDir(), pack.id);
+    assert.equal(fs.readFileSync(path.join(dir, 'oops.svg'), 'utf8').includes('script'), false, '存的是消毒后的');
+    assert.ok(fs.readFileSync(path.join(dir, 'sleep.png')).equals(png), '位图原样复制（在文件夹根上也找得到）');
+    assert.equal(fs.existsSync(path.join(dir, 'missing.svg')), false);
+    const stored = JSON.parse(fs.readFileSync(path.join(dir, 'pet.json'), 'utf8'));
+    assert.equal(stored.kind, 'theme'); assert.deepEqual(stored.theme.reactions.double.files, ['poke.svg'], '没找到的从反应里去掉');
+    assert.deepEqual(packs.listPetPacks().find(p => p.id === pack.id), { id: pack.id, name: '方块', author: 'QA', states: { idle: 'idle.svg' }, kind: 'theme' });
+    const data = packs.petPackImages(pack.id);
+    assert.equal(data.kind, 'theme'); assert.match(data.images.idle, /^data:image\/svg\+xml;base64,/, '设置页预览用 idle');
+    assert.match(data.files['idle.svg'].svg, /id="eyes-js"/); assert.match(data.files['sleep.png'].src, /^data:image\/png;base64,/);
+    assert.equal(Object.keys(data.files).length, 11);
+    // 数据目录里的文件被人改了：读的时候再消毒一遍
+    fs.writeFileSync(path.join(dir, 'happy.svg'), box('#fd6', '', '<script>bad()</script><rect onclick="x()" width="1" height="1"/>'));
+    assert.doesNotMatch(packs.petPackImages(pack.id).files['happy.svg'].svg, /script|onclick/);
+    fs.writeFileSync(path.join(dir, 'idle.svg'), '<html></html>');
+    assert.equal(packs.petPackImages(pack.id), null, 'idle 坏了：整个读不出来');
+    assert.equal(packs.removePetPack(pack.id), true);
+  });
+
+  check('desk pet themes: bad theme folders are refused with a reason', () => {
+    const bad = path.join(root, 'bad-theme');
+    const reset = () => fs.rmSync(bad, { recursive: true, force: true });
+    reset(); fs.mkdirSync(bad); assert.throws(() => packs.importPetPack(bad), /没有 pet\.json 或 theme\.json/);
+    reset(); makeTheme(bad, { states: { idle: ['gone.svg'] } }, {}); assert.throws(() => packs.importPetPack(bad), /找不到 idle/);
+    reset(); makeTheme(bad, { states: { idle: ['idle.svg'] } }, { 'idle.svg': '<!DOCTYPE svg><svg/>' }); assert.throws(() => packs.importPetPack(bad), /idle\.svg」SVG 里不能有 DOCTYPE/);
+    reset(); makeTheme(bad, { states: { idle: ['idle.png'] } }, { 'idle.png': 'not a png' }); assert.throws(() => packs.importPetPack(bad), /不是 SVG、PNG/);
+    reset(); fs.mkdirSync(bad); fs.writeFileSync(path.join(bad, 'theme.json'), '{nope'); assert.throws(() => packs.importPetPack(bad), /theme\.json 不是有效的 JSON/);
+    reset(); makeTheme(bad, { schemaVersion: 2, states: { idle: ['idle.svg'] } }, { 'idle.svg': box('#fff') });
+    const newer = packs.importPetPack(bad);
+    assert.match(newer.warning, /格式比 TokenPulse 认识的新/); assert.equal(newer.name, 'bad-theme', '没写名字用文件夹名');
+    packs.removePetPack(newer.id);
+    assert.equal(fs.readdirSync(packs.petsDir()).length, 0, '导入失败不留半截文件夹');
+    reset();
+  });
+
+  check('desk pet themes: which animation shows for each action and state, and theme timings', () => {
+    require('../renderer/pet-theme.js');
+    const PT = globalThis.PulsePetTheme, t = themes.normalizeTheme(testTheme);
+    const v = s => PT.visualOf(t, { serial: 0, state: 'idle', mode: 'idle', phase: null, asking: 0, tasks: 0, ...s }).file;
+    assert.equal(v({}), 'idle.svg');
+    assert.equal(v({ mode: 'work', state: 'work', phase: 'thinking', tasks: 1 }), 'think.svg', '在想');
+    assert.equal(v({ mode: 'work', state: 'work', phase: 'tool', tasks: 1 }), 'work.svg', '跑工具：一个任务');
+    assert.equal(v({ mode: 'work', state: 'work', phase: 'tool', tasks: 3 }), 'busy.svg', '两个以上换更忙的姿势');
+    assert.equal(v({ mode: 'work', state: 'work', phase: 'waiting', tasks: 1 }), 'work.svg', '「可能在等你」不算明确在问');
+    assert.equal(v({ mode: 'work', state: 'work', phase: 'waiting', tasks: 1, asking: 1 }), 'ask.svg', '明确在问你');
+    assert.equal(v({ action: 'dizzy' }), 'dizzy.svg'); assert.equal(v({ action: 'error' }), 'oops.svg'); assert.equal(v({ action: 'celebrate' }), 'happy.svg');
+    assert.equal(v({ action: 'drag' }), 'drag.svg'); assert.equal(v({ action: 'poke' }), 'poke.svg');
+    assert.equal(v({ action: 'wave' }), 'ask.svg', '挥手叫你 = notification');
+    assert.equal(v({ action: 'tapLeft' }), 'idle.svg', '主题没有的反应退回 idle');
+    assert.equal(v({ state: 'sleep' }), 'sleep.png'); assert.equal(v({ state: 'doze' }), 'sleep.png', '没有打盹用睡觉');
+    assert.equal(PT.visualOf(t, { action: 'poke', serial: 3 }).once, true, '一次性的要从头放');
+    assert.deepEqual(PT.durations(t), { poke: 25, dizzy: 30, celebrate: 20, miniEnter: 15 }, '毫秒换成帧（每秒 10 帧）');
+  });
+
+  check('desk pet themes (phase 2): theme fields for idle animations, mini mode and timings are kept', () => {
+    const t = themes.normalizeTheme({
+      states: { idle: ['idle.svg'] },
+      idleAnimations: [{ file: 'look.svg', duration: 6500 }, { file: 'bubble.svg', duration: 13500, mirrorOnRightSide: true }, { file: '../x.svg' }],
+      timings: { mouseIdleTimeout: 15000 },
+      miniMode: { supported: true, offsetRatio: 0.486, peek: { offsetRatio: 0.2 }, timings: { autoReturn: { 'mini-alert': 4000, 'mini-peek': 1500 } }, states: { 'mini-idle': ['mi.svg'], 'mini-peek-hold': ['mph.svg'], 'mini-sleep-peek': ['msp.svg'], 'mini-bogus': ['b.svg'] } },
+    });
+    assert.deepEqual(t.idleAnimations, [{ file: 'look.svg', duration: 6500 }, { file: 'bubble.svg', duration: 13500, mirrorOnRightSide: true }]);
+    assert.equal(t.timings.mouseIdleTimeout, 15000);
+    assert.deepEqual(t.miniMode, { states: { 'mini-idle': ['mi.svg'], 'mini-peek-hold': ['mph.svg'], 'mini-sleep-peek': ['msp.svg'] }, offsetRatio: 0.486, peek: { offsetRatio: 0.2 }, timings: { autoReturn: { 'mini-alert': 4000, 'mini-peek': 1500 } } });
+    assert.deepEqual(themes.normalizeTheme(t), t, '收过一次的再收一次不变');
+    assert.equal(themes.normalizeTheme({ states: { idle: ['i.svg'] } }).timings.mouseIdleTimeout, 20000, '没写按 20 秒');
+    assert.equal(themes.normalizeTheme({ states: { idle: ['i.svg'] }, miniMode: { states: { 'mini-alert': ['a.svg'] } } }).miniMode, null, '没有 mini-idle 不算支持极简');
+    assert.equal(themes.normalizeTheme({ states: { idle: ['i.svg'] }, timings: { mouseIdleTimeout: 10 } }).timings.mouseIdleTimeout, 3000, '太短的按 3 秒');
+  });
+
+  check('desk pet themes (phase 2): session tiers, subagents, random idle animations and mini mode pick the right animation', () => {
+    const PT = globalThis.PulsePetTheme;
+    const t = themes.normalizeTheme({
+      states: { idle: ['idle.svg'], thinking: ['think.svg'], working: ['work.svg'], juggling: ['juggle.svg'], notification: ['ask.svg'], attention: ['happy.svg'], sleeping: ['sleep.svg'] },
+      workingTiers: [{ minSessions: 3, files: ['build-a.svg', 'build-b.svg'] }, { minSessions: 2, file: 'phones.svg' }, { minSessions: 1, file: 'type.svg' }],
+      jugglingTiers: [{ minSessions: 2, file: 'juggle2.svg' }, { minSessions: 1, file: 'juggle1.svg' }],
+      idleAnimations: [{ file: 'look.svg', duration: 6500 }, { file: 'bubble.svg', duration: 13500, mirrorOnRightSide: true }],
+      miniMode: { offsetRatio: 0.486, timings: { autoReturn: { 'mini-enter': 2500 } }, states: { 'mini-idle': ['mi.svg'], 'mini-alert': ['ma.svg'], 'mini-happy': ['mh.svg'], 'mini-enter': ['me.svg'], 'mini-peek': ['mp.svg'], 'mini-sleep': ['ms.svg'], 'mini-enter-sleep': ['mes.svg'] } },
+    });
+    const pick = s => PT.visualOf(t, { serial: 0, state: 'idle', mode: 'idle', phase: null, asking: 0, tasks: 0, subagents: 0, seed: 0, ...s });
+    const v = s => pick(s).file;
+    const work = s => v({ mode: 'work', state: 'work', phase: 'tool', ...s });
+    assert.deepEqual([work({ tasks: 1 }), work({ tasks: 2 }), work({ tasks: 5 })], ['type.svg', 'phones.svg', 'build-a.svg'], '按任务数换档');
+    assert.equal(work({ tasks: 3, seed: 1 }), 'build-b.svg', '一档有好几个：按 seed 挑');
+    assert.equal(work({ tasks: 3, seed: 1, serial: 7 }), 'build-b.svg', '同一段干活里做别的动作不换');
+    assert.equal(work({ tasks: 1, phase: 'thinking' }), 'think.svg');
+    assert.deepEqual([work({ tasks: 1, subagents: 1 }), work({ tasks: 1, subagents: 4, phase: 'thinking' })], ['juggle1.svg', 'juggle2.svg'], '有子代理：同时忙好几件，比思考优先');
+    assert.equal(work({ tasks: 1, subagents: 2, asking: 1 }), 'ask.svg', '在问你最优先');
+    const noJuggleTiers = themes.normalizeTheme({ states: { idle: ['idle.svg'], juggling: ['juggle.svg'], working: ['work.svg'] } });
+    assert.equal(PT.visualOf(noJuggleTiers, { mode: 'work', state: 'work', tasks: 1, subagents: 1 }).file, 'juggle.svg', '没写 jugglingTiers 用 states.juggling');
+    assert.equal(PT.visualOf(noJuggleTiers, { mode: 'work', state: 'work', tasks: 1, subagents: 0 }).file, 'work.svg');
+    // 随机待机：idle:N 是第几个；写了 mirrorOnRightSide 的在屏幕右半边翻过来
+    assert.deepEqual(pick({ action: 'idle:0' }), { file: 'look.svg', once: true, mirror: false });
+    assert.deepEqual(pick({ action: 'idle:1', right: true }), { file: 'bubble.svg', once: true, mirror: true });
+    assert.deepEqual(pick({ action: 'idle:1', right: false }).mirror, false);
+    assert.equal(v({ action: 'idle:9' }), 'idle.svg', '没有这一个：待着');
+    const d = PT.durations(t);
+    assert.deepEqual([d['idle:0'], d['idle:1'], d.miniEnter], [65, 135, 25]);
+    // 极简模式
+    const mini = s => v({ mini: true, ...s });
+    assert.equal(mini({}), 'mi.svg');
+    assert.equal(mini({ action: 'miniEnter' }), 'me.svg');
+    assert.equal(mini({ action: 'miniEnter', state: 'sleep' }), 'mes.svg', '睡着进来');
+    assert.deepEqual([mini({ action: 'celebrate' }), mini({ action: 'wave' }), mini({ action: 'error' })], ['mh.svg', 'ma.svg', 'ma.svg']);
+    assert.equal(mini({ peek: true }), 'mp.svg');
+    assert.equal(mini({ peek: true, peekHold: true }), 'mi.svg', '没有 mini-peek-hold：探头放完回 mini-idle');
+    assert.equal(mini({ state: 'sleep' }), 'ms.svg'); assert.equal(mini({ state: 'sleep', peek: true }), 'ms.svg', '没有 mini-sleep-peek 用 mini-sleep');
+    assert.equal(mini({ mode: 'work', state: 'work', tasks: 2 }), 'mi.svg', '没有 mini-working 用 mini-idle');
+    assert.equal(mini({ action: 'idle:0' }), 'mi.svg', '极简模式不放随机待机');
+    assert.equal(PT.visualOf(noJuggleTiers, { mini: true, state: 'idle', mode: 'idle' }).file, 'idle.svg', '主题没有极简动画：照平时的挑');
+    assert.equal(PT.peekHoldMs(t), 2000);
+  });
+
+  check('desk pet: the controller can take a theme\'s idle animations as its fidgets, only after the mouse rests', () => {
+    const Pet = globalThis.PulsePet, c = new Pet.Controller('squirrel');
+    c.fidgets = ['idle:0', 'idle:1']; c.fidgetGap = [3, 3]; c.fidgetIn = 2; c.fidgetIdx = 0; c.dur = { 'idle:0': 4, 'idle:1': 4 };
+    const ctx = { state: 'idle', quota: 80, mood: 'ok', tasks: 0, mini: false, fidget: true, fidgetAfter: 20000 };
+    c.aim(10, 10, 1000);
+    for (let i = 0; i < 10; i++) c.tick(ctx, 2000 + i * 100);
+    assert.equal(c.action, null, '鼠标刚动过：不放');
+    c.tick(ctx, 21000); c.tick(ctx, 21100);
+    assert.equal(c.action, 'idle:0', '鼠标 20 秒没动：开始轮着放');
+    for (let i = 0; i < 4; i++) c.tick(ctx, 21200 + i * 100);
+    assert.equal(c.action, null, '按主题写的时长放完');
+    for (let i = 0; i < 3; i++) c.tick(ctx, 21700 + i * 100);
+    assert.equal(c.action, 'idle:1', '下一个');
+    const plain = new Pet.Controller('squirrel'); plain.fidgetIn = 1;
+    plain.tick({ ...ctx, fidgetAfter: 0 }, 5000);
+    assert.ok(Pet.FIDGETS.squirrel.includes(plain.action), '内置宠物照旧');
+  });
+
+  check('desk pet: circling the mouse twice the same way makes it dizzy; wiggling, pauses and the cooldown do not', () => {
+    const Pet = globalThis.PulsePet;
+    const around = (spin, turns, from = 0, step = Math.PI / 8, r = 60, t0 = 0, dt = 40, dir = 1) => {
+      let hit = false, t = t0;
+      for (let a = 0; a <= turns * 2 * Math.PI + 1e-9; a += step) { t += dt; hit = spin.add(Math.cos(from + dir * a) * r, Math.sin(from + dir * a) * r, t) || hit; }
+      return { hit, t };
+    };
+    let spin = new Pet.Spin();
+    assert.equal(around(spin, 1.8).hit, false, '不到两圈不晕');
+    spin = new Pet.Spin();
+    assert.equal(around(spin, 2.05).hit, true, '两圈晕');
+    spin = new Pet.Spin();
+    assert.equal(around(spin, 2.05, 0, Math.PI / 8, 60, 0, 40, -1).hit, true, '反方向转也晕');
+    // 左右来回晃：一会儿顺时针一会儿逆时针，加起来抵消
+    spin = new Pet.Spin(); let t = 0, wiggle = false;
+    for (let k = 0; k < 80; k++) { t += 40; const a = Math.sin(k / 2) * 1.2; wiggle = spin.add(Math.cos(a) * 60, Math.sin(a) * 60, t) || wiggle; }
+    assert.equal(wiggle, false, '左右晃不晕');
+    // 中间停了超过半秒：从头算
+    spin = new Pet.Spin(); const first = around(spin, 1.2); assert.equal(around(spin, 1.2, 0, Math.PI / 8, 60, first.t + 800).hit, false, '停顿后重来');
+    // 离得太近（角度乱跳）不算
+    spin = new Pet.Spin(); assert.equal(around(spin, 3, 0, Math.PI / 8, 10).hit, false, '贴着身体中心转不算');
+    // 晕过 12 秒内不再晕
+    spin = new Pet.Spin(); const once = around(spin, 2.05); assert.equal(once.hit, true);
+    assert.equal(around(spin, 2.05, 0, Math.PI / 8, 60, once.t).hit, false, '冷却中');
+    assert.equal(around(spin, 2.05, 0, Math.PI / 8, 60, once.t + 13000).hit, true, '冷却过了又能晕');
+  });
+
+  check('desk pet: built-in pets draw a dizzy pose and a thought bubble while the agent is thinking', () => {
+    const Pet = globalThis.PulsePet;
+    const base = { quota: 70, mood: 'ok', tasks: 1, t: 5, look: { x: 0, y: 0 }, from: 0, at: 0 };
+    const key = g => g.c.join(',');
+    for (const name of ['squirrel', 'hamster', 'octopus']) {
+      const idle = key(Pet.drawPet(name, { ...base, state: 'idle', action: null }));
+      const frames = new Set();
+      for (let at = 0; at < Pet.durOf(name, 'dizzy'); at += 4) frames.add(key(Pet.drawPet(name, { ...base, state: 'idle', action: 'dizzy', at, t: at })));
+      assert.ok(frames.size >= 3 && !frames.has(idle), `${name} 晕的时候会动、和平时不一样`);
+      const work = Pet.drawPet(name, { ...base, state: 'work', phase: 'tool', action: null }), think = Pet.drawPet(name, { ...base, state: 'work', phase: 'thinking', action: null });
+      assert.equal(work.c[2 * Pet.W + 63], null, `${name} 跑工具时右上角空着`);
+      assert.equal(think.c[2 * Pet.W + 63], '#FFFFFF', `${name} 在想：右上角有个想法泡泡`);
+      assert.equal(Pet.drawPet(name, { ...base, state: 'work', phase: 'thinking', action: 'celebrate', at: 3 }).c[2 * Pet.W + 63] === '#FFFFFF', false, `${name} 做动作时不画泡泡`);
+    }
+    // 主题写的动作时长：Controller 按它算
+    const ctl = new Pet.Controller('squirrel'); ctl.dur = { poke: 3 };
+    ctl.trigger('poke'); const serial = ctl.serial;
+    for (let i = 0; i < 3; i++) ctl.tick({ state: 'idle', quota: 50, fidget: false });
+    assert.equal(ctl.action, null, '按主题的时长做完'); assert.equal(serial, 1);
+    // 眼睛跟鼠标：鼠标一动直接看过去，不等下一帧慢慢挪；鼠标几秒不动后的东张西望才是慢慢转的
+    const eye = new Pet.Controller('squirrel'), now = Date.now();
+    eye.aim(400, -300, now);
+    assert.deepEqual(eye.look, { x: 2, y: -1.5 }, '立刻看向鼠标');
+    eye.aim(-55, 0, now + 16);
+    assert.deepEqual(eye.look, { x: -0.5, y: 0 });
+    eye.target = { x: 1.5, y: 0 };
+    eye.tick({ state: 'idle', quota: 50, fidget: false }, now + 5000);
+    assert.ok(eye.look.x > -0.5 && eye.look.x < 1.5, `自己东张西望是慢慢转的 ${eye.look.x}`);
+  });
+
+  check('desk pet: phase — tool beats thinking beats waiting', () => {
+    const task = status => ({ status });
+    assert.equal(model.petPhase(null), null);
+    assert.equal(model.petPhase({ running: [task('waiting'), task('thinking')] }), 'thinking');
+    assert.equal(model.petPhase({ running: [task('thinking'), task('tool')] }), 'tool');
+    assert.equal(model.petPhase({ running: [task('waiting')] }), 'waiting');
   });
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录删不掉不影响结果 */ }

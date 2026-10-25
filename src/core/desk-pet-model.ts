@@ -110,6 +110,16 @@ export function petMode(activity: ActivityState | null, idleSeconds: number): "i
   return idleSeconds >= SLEEP_AFTER_SECONDS ? "sleep" : "idle";
 }
 
+/**
+ * 在跑的任务这会儿在干嘛（宠物分开表现）：有一个在跑工具就算 tool（打字），都在想就是 thinking，剩下的都在等你就是 waiting。
+ * 没有任务在跑返回 null。
+ */
+export function petPhase(activity: ActivityState | null): "thinking" | "tool" | "waiting" | null {
+  const running = activity?.running ?? [];
+  for (const status of ["tool", "thinking", "waiting"] as const) if (running.some((task) => task.status === status)) return status;
+  return null;
+}
+
 export const GRID = { width: 72, height: 56 };
 /** 宠物上方留给悬停提示的高度。 */
 const HINT_SPACE = 30;

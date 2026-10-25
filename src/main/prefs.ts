@@ -40,6 +40,8 @@ export type Prefs = DeskPetPrefs & {
    * 默认 60。界面滑块是 1 到 10 分钟，保存后主进程才改定时器。
    */
   quotaEverySeconds: number;
+  /** 后台账号少查一点：定时查询只查在用的账号，其他账号半小时查一次（见 core/quota-quiet.ts）。默认关。 */
+  quotaQuietBackground: boolean;
   /** 额度用满自动切 CLI 登录（0.3.55），按家分开，见 core/cli-auto-switch.ts。没有就是关。 */
   cliAutoSwitch: Partial<Record<"claude" | "chatgpt" | "grok", { on: boolean; at: number }>>;
   /** 额度预测「达到上限」什么时候变色（0.3.59），周窗口 / 5 小时窗口分开；见 core/quota-pressure.ts，worker 直接读。 */
@@ -61,7 +63,7 @@ export function quotaEverySeconds(value: unknown): number {
   return minutes * 60;
 }
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, cliAutoSwitch: {}, pressureWeek: PRESSURE_DEFAULTS.week, pressureFive: PRESSURE_DEFAULTS.five, ...DESK_PET_DEFAULTS };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, quotaQuietBackground: false, cliAutoSwitch: {}, pressureWeek: PRESSURE_DEFAULTS.week, pressureFive: PRESSURE_DEFAULTS.five, ...DESK_PET_DEFAULTS };
 
 function file() {
   return dataFile("prefs.json");

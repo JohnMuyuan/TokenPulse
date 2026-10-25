@@ -3,7 +3,8 @@
  *
  * - 默认关闭，在「桌宠」页打开。关着的时候不建窗口、不扫会话文件。
  * - 宠物窗口透明、不占任务栏、不抢焦点；只有点在宠物身上才接鼠标，透明的地方点下去落到后面的窗口（setIgnoreMouseEvents + forward）。
- * - 任务状态只读会话文件推断（core/agent-activity.ts），4 秒看一次；电脑 5 分钟没人动、也没有任务在跑，宠物去睡觉。
+ * - 任务状态只读会话文件推断（core/agent-activity.ts）：盯着会话目录，有文件变了马上看一次；另外空闲 4 秒、有任务在跑 1 秒兜底看一次。
+ *   电脑 5 分钟没人动、也没有任务在跑，宠物去睡觉。
  * - 气泡是单独的透明窗口（desk-pet-bubble.html）：点宠物出来的是额度，右键「查看任务」出来的是任务列表。
  *   失焦、再点宠物、按 Esc 收起，鼠标不在上面 8 秒自己收起（在页面里计时）；收起两分钟后销毁。
  * 位置存的是宠物脚下的中点，换大小、换屏幕后都从这一点放回去，并保证整只在屏幕的可用区域里。
@@ -18,7 +19,7 @@ import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask } fr
 import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
-import { anchorOf, askBounds, bubbleBounds, flingPath, GRID, jumpPoint, MINI_POSE, miniBounds, miniSpriteCenter, PACK_ID, petBounds, petMode, petQuota, petWindowSize, pickPetAccount, reachesRightEdge, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetMood, type PetUsing } from "../core/desk-pet-model";
+import { anchorOf, askBounds, bubbleBounds, flingPath, GRID, jumpPoint, MINI_POSE, miniBounds, miniSpriteCenter, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, reachesRightEdge, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetMood, type PetUsing } from "../core/desk-pet-model";
 import { petPackImages } from "../core/pet-pack";
 import { tr } from "./i18n";
 
@@ -35,7 +36,8 @@ export type DeskPetBubbleData = {
   /** 每打开一次加一：页面看到它变了就重新播一次冒出来的动画、重新开始 8 秒计时。 */
   opened: number;
   place: Pick<BubblePlace, "side" | "at">;
-  account: { kind: string; name: string; plan: string; checkedAt: number; five: BubbleWindow | null; week: BubbleWindow | null } | null;
+  /** quiet：后台账号（「后台账号少查一点」，半小时才查一次），过期的判断放宽。 */
+  account: { kind: string; name: string; plan: string; checkedAt: number; quiet?: boolean; five: BubbleWindow | null; week: BubbleWindow | null } | null;
   quota: number | null; mood: PetMood;
   tasks: { running: TaskBrief[]; recent: TaskBrief[] }; scanned: boolean;
 };
@@ -54,7 +56,10 @@ type Options = {
 };
 
 const OFFSCREEN = () => !!process.env.TOKENPULSE_DESK_PET_OFFSCREEN;
-const SCAN_EVERY_MS = 4000;
+/** 会话文件多久看一次：空闲时 4 秒，有任务在跑 1 秒。会话目录有文件变了（fs.watch）另外马上看一次，这两个只是兜底。 */
+const SCAN_EVERY_MS = 4000, SCAN_BUSY_MS = 1000;
+/** 会话文件变了以后等多久再看（一下子写好几行只看一次）、两次之间至少隔多久。 */
+const SCAN_SOON_MS = 300, SCAN_GAP_MS = 500;
 const BUBBLE_DESTROY_MS = 2 * 60_000;
 /** 会话里的工具 → 它用哪家的额度。 */
 const TASK_ACCOUNT = { claude: "claude", codex: "chatgpt" } as const;
@@ -72,6 +77,8 @@ let scanner: ActivityScanner | null = null;
 let activity: ActivityState | null = null;
 let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null, flyTimer: NodeJS.Timeout | null = null;
 let scanning = false, listening = false, interactive = false, bubbleShown = false;
+/** 盯着会话目录的 watcher；soonTimer 是文件变了以后那次扫描；scanGen 每次 stopTimers 加一，旧的扫描循环看到就不再排下一次。 */
+let watchers: fs.FSWatcher[] = [], soonTimer: NodeJS.Timeout | null = null, scanGen = 0;
 let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "";
 /** 最近一次有任务的是哪家（任务做完十分钟后不在 activity 里了，靠它记住「最近用的」）。 */
 let lastUsedKind: Account["kind"] | null = null;
@@ -156,9 +163,13 @@ export function syncDeskPet() {
 function startTimers() {
   stopTimers();
   scanner ??= new ActivityScanner();
+  const gen = scanGen;
+  let lastScan = 0, again = false;
   const scan = async () => {
-    if (scanning || !scanner) return;
-    scanning = true;
+    if (!scanner || gen !== scanGen) return;
+    // 正在看：看完再来一次（这次的变化可能没赶上）
+    if (scanning) { again = true; return; }
+    scanning = true; lastScan = Date.now();
     try {
       const before = activity;
       activity = await scanner.scan();
@@ -169,30 +180,57 @@ function startTimers() {
       if (before && activity.asked.length) sendEvent({ type: "alert", kind: "ask" });
       if (before && activity.needsYou.length) sendEvent({ type: "alert", kind: "waiting" });
       pushDeskPet();
-      if (bubbleVisible()) pushBubble();
+      if (bubbleVisible()) pushBubble(true);
       syncAsk();
     } catch (error) { console.error("[TokenPulse] 桌宠读取会话状态失败", error); }
-    finally { scanning = false; }
+    finally { scanning = false; if (again) { again = false; soon(); } }
   };
-  void scan();
-  scanTimer = setInterval(() => void scan(), SCAN_EVERY_MS);
-  // 眼睛跟着鼠标：只发宠物身体中心到鼠标的相对位置，变了才发
+  const soon = () => {
+    if (soonTimer || gen !== scanGen) return;
+    soonTimer = setTimeout(() => { soonTimer = null; void scan(); }, Math.max(SCAN_SOON_MS, SCAN_GAP_MS - (Date.now() - lastScan)));
+  };
+  // 兜底的定时扫描：有任务在跑看得勤一点
+  const loop = () => {
+    if (gen !== scanGen) return;
+    scanTimer = setTimeout(() => { void scan().finally(loop); }, activity?.running.length ? SCAN_BUSY_MS : SCAN_EVERY_MS);
+  };
+  void scan().finally(loop);
+  // 会话目录有 .jsonl 变了：马上看一次（新文件先把目录重扫一遍）。建不起来（目录不存在之类）就只靠定时扫描
+  for (const dir of scanner.watchRoots()) {
+    try {
+      const watcher = fs.watch(dir, { recursive: true, persistent: false }, (event, name) => {
+        if (!name || !String(name).endsWith(".jsonl")) return;
+        if (event === "rename") scanner?.poke();
+        soon();
+      });
+      watcher.on("error", () => { watcher.close(); watchers = watchers.filter((item) => item !== watcher); });
+      watchers.push(watcher);
+    } catch { /* 目录不在：等定时扫描 */ }
+  }
+  // 眼睛跟着鼠标：只发宠物身体中心到鼠标的相对位置，变了才发。眼睛要立刻跟上，绕着宠物转圈会晕（宠物窗口里判断），都要采得密：
+  // 鼠标在动（1.5 秒内动过）时每 16 毫秒看一次，停着时隔一次看一次（Windows 计时器一格约 15.6 毫秒，实际约 32 毫秒，一动最多晚这么久就跟上）
+  let tick = 0, movedAt = 0, idleAt = 0;
   cursorTimer = setInterval(() => {
     if (!pet || pet.isDestroyed() || !pet.isVisible() || drag) return;
-    // 睡眠序列要知道电脑多久没人动（键盘鼠标都算）；变了才发，最多一秒一次。测试时（屏幕外）由测试自己发
-    if (!OFFSCREEN()) { const idle = idleSeconds(); if (idle !== lastIdle) { lastIdle = idle; pet.webContents.send("desk-pet-idle", idle); } }
+    const now = Date.now();
+    if (now - movedAt > 1500 && ++tick % 2) return;
+    // 睡眠序列要知道电脑多久没人动（键盘鼠标都算）；一秒看一次，变了才发。测试时（屏幕外）由测试自己发
+    if (!OFFSCREEN() && now - idleAt >= 1000) { idleAt = now; const idle = idleSeconds(); if (idle !== lastIdle) { lastIdle = idle; pet.webContents.send("desk-pet-idle", idle); } }
     const point = screen.getCursorScreenPoint(), bounds = pet.getBounds(), sprite = spriteSize();
     const rel = { x: Math.round(point.x - (bounds.x + bounds.width / 2)), y: Math.round(point.y - (bounds.y + bounds.height - sprite.height * 0.55)) };
     const key = `${Math.round(rel.x / 4)},${Math.round(rel.y / 4)}`;
     if (key === lastCursor) return;
-    lastCursor = key;
+    lastCursor = key; movedAt = now;
     pet.webContents.send("desk-pet-cursor", rel);
-  }, 150);
+  }, 16);
 }
 
 function stopTimers() {
-  for (const timer of [scanTimer, cursorTimer, dragTimer, flyTimer]) if (timer) clearInterval(timer);
-  scanTimer = cursorTimer = dragTimer = flyTimer = null;
+  scanGen++;
+  for (const timer of [scanTimer, cursorTimer, dragTimer, flyTimer, soonTimer]) if (timer) clearInterval(timer);
+  scanTimer = cursorTimer = dragTimer = flyTimer = soonTimer = null;
+  for (const watcher of watchers) watcher.close();
+  watchers = [];
   drag = null; lastIdle = -1;
 }
 
@@ -241,7 +279,9 @@ export function deskPetView() {
     sounds: Object.fromEntries(Object.entries(listPetSounds()).map(([kind, item]) => [kind, item!.at])),
     mini: prefs.deskPetMini ? MINI_POSE : null,
     quota: quota.quota, mood: quota.mood, account: quota.account,
-    mode: petMode(activity, idleSeconds()), tasks: running.length, waiting: running.filter((task) => task.status === "waiting").length, asking: running.filter((task) => task.ask).length,
+    mode: petMode(activity, idleSeconds()), phase: petPhase(activity), tasks: running.length, waiting: running.filter((task) => task.status === "waiting").length, asking: running.filter((task) => task.ask).length,
+    // 在跑的子代理一共几个（主题包宠物按它换「同时忙好几件」的姿势）
+    subagents: running.reduce((sum, task) => sum + (task.subagents ?? 0), 0),
   };
 }
 
@@ -430,12 +470,20 @@ export function deskPetBubbleData(): DeskPetBubbleData | null {
   return {
     now: Date.now(), theme: prefs.theme, view: bubbleView, opened: bubbleOpened,
     place: { side: bubblePlace?.side ?? "down", at: bubblePlace?.at ?? Math.round(bubbleBox.width / 2) },
-    account: account ? { kind: account.kind, name: options.title(account), plan: account.plan ?? "", checkedAt: account.lastCheckedAt ?? account.lastSampleAt ?? 0, five: bubbleWindow(account.five), week: bubbleWindow(account.week) } : null,
+    account: account ? { kind: account.kind, name: options.title(account), plan: account.plan ?? "", checkedAt: account.lastCheckedAt ?? account.lastSampleAt ?? 0, ...(account.quiet ? { quiet: true } : {}), five: bubbleWindow(account.five), week: bubbleWindow(account.week) } : null,
     quota: quota.quota, mood: quota.mood,
     tasks: { running: (activity?.running ?? []).map(brief), recent: (activity?.recent ?? []).map(brief) }, scanned: !!activity,
   };
 }
-function pushBubble() { if (bubble && !bubble.isDestroyed()) bubble.webContents.send("desk-pet-bubble", deskPetBubbleData()); }
+let bubbleSent = { json: "", at: 0 };
+/** 把气泡要画的东西发过去。changedOnly：扫描完顺手更新的，内容没变、离上次不到 4 秒就不发（扫描现在可能一秒一次）。 */
+function pushBubble(changedOnly = false) {
+  if (!bubble || bubble.isDestroyed()) return;
+  const data = deskPetBubbleData(), json = JSON.stringify({ ...data, now: 0 }), now = Date.now();
+  if (changedOnly && json === bubbleSent.json && now - bubbleSent.at < SCAN_EVERY_MS) return;
+  bubbleSent = { json, at: now };
+  bubble.webContents.send("desk-pet-bubble", data);
+}
 
 /** 右键菜单「查看额度」「查看任务」：打开气泡，开着就换到那一页。 */
 export function openDeskPetBubble(view: BubbleView) { toggleBubble(view, true); }

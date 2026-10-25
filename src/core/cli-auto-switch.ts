@@ -12,7 +12,8 @@ import { dataFile, readJson, writeJson } from "./paths";
  *
  * 规则：
  * - 每家单独开关，默认关；供应商「只读保护」开着时不动；这家工具现在用的不是官方登录（第三方供应商 / 号池）时不动 —— 换 CLI 登录没意义；
- * - 只切到能切的账号：TokenPulse 存着能续期的登录、没隐藏、额度采样是新的（30 分钟内），剩余比当前账号的触发线多 MIN_GAIN 个百分点；
+ * - 只切到能切的账号：TokenPulse 存着能续期的登录、没隐藏、额度采样是新的（30 分钟内），剩余比当前账号的触发线多 MIN_GAIN 个百分点
+ *   （「后台账号少查一点」开着时，切之前先临时查一次候选账号，见 autoSwitchStale）；
  * - 一家切过之后 COOLDOWN_MS 内不再切（等新账号的额度查回来，也避免来回跳）；切换失败同样冷却；
  * - 没有能切的号：只提醒一次，直到当前账号回到触发线以下或换了账号。
  * 每次动作记进 `cli-auto-switch.json`（最近 MAX_EVENTS 条），不含凭据。
@@ -82,6 +83,49 @@ function tightest(quota: MemberQuota) {
   return windows.sort((a, b) => b.used - a.used)[0];
 }
 
+/** 能切过去的账号：TokenPulse 存着能续期的登录、没隐藏、不是现在这个。 */
+function candidatesOf(kind: AutoSwitchKind, from: string) {
+  return readOfficialAccountStore().accounts
+    .filter((item) => item.kind === kind && item.id !== from && !item.hidden && item.credential?.refreshToken && !item.renewFailed)
+    .map((item) => item.id);
+}
+
+/** 这家现在该切号了吗：开了、用的是官方登录、CLI 当前账号已用到触发线。返回当前账号和触发的窗口。 */
+function dueOf(kind: AutoSwitchKind, deps: AutoSwitchDeps, now: number) {
+  const rule = normalizeRule(deps.rules[kind]);
+  if (!rule.on) return null;
+  let official = false;
+  try { official = deps.usesOfficial(kind); } catch { official = false; }
+  if (!official) return null;
+  const from = (deps.current ?? currentCliAccount)(kind);
+  const quota = from ? (deps.quota ?? accountQuota)(from, now) : null;
+  const hit = quota ? tightest(quota) : undefined;
+  return from && hit ? { rule, from, hit, due: hit.used >= rule.at } : null;
+}
+
+/** 候选账号的额度要在这之内查到过，才不用先临时查。 */
+export const FRESH_MS = 5 * 60_000;
+
+/**
+ * 「后台账号少查一点」开着时，后台账号半小时才查一次：哪家这一轮该切号了、候选账号的额度又不够新（FRESH_MS 内没查到），
+ * 返回这些候选账号，调用方先临时查一次再切（切号只认 30 分钟内的额度，旧了会误报「没有能切的号」）。
+ */
+export function autoSwitchStale(deps: AutoSwitchDeps): string[] {
+  const now = deps.now ?? Date.now();
+  const quotaOf = deps.quota ?? accountQuota;
+  const out: string[] = [];
+  if (deps.readOnly) return out;
+  for (const kind of ["claude", "chatgpt", "grok"] as const) {
+    const state = dueOf(kind, deps, now);
+    if (!state?.due || now - (lastSwitchAt.get(kind) ?? 0) < COOLDOWN_MS) continue;
+    for (const id of candidatesOf(kind, state.from)) {
+      const quota = quotaOf(id, now);
+      if (!quota || now - quota.at > FRESH_MS) out.push(id);
+    }
+  }
+  return out;
+}
+
 /** 冷却和「没有能切的号只提醒一次」记在内存里：重启后重新判断，最多多提醒一次。 */
 const lastSwitchAt = new Map<AutoSwitchKind, number>();
 const stuckOn = new Map<AutoSwitchKind, string>();
@@ -96,28 +140,20 @@ export function autoSwitchCli(deps: AutoSwitchDeps): Promise<AutoSwitchEvent[]> 
 async function run(deps: AutoSwitchDeps): Promise<AutoSwitchEvent[]> {
   const now = deps.now ?? Date.now();
   const quotaOf = deps.quota ?? accountQuota;
-  const currentOf = deps.current ?? currentCliAccount;
   const events: AutoSwitchEvent[] = [];
   if (deps.readOnly) return events;
   for (const kind of ["claude", "chatgpt", "grok"] as const) {
-    const rule = normalizeRule(deps.rules[kind]);
-    if (!rule.on) continue;
-    let official = false;
-    try { official = deps.usesOfficial(kind); } catch { official = false; }
-    if (!official) continue;
-    const from = currentOf(kind);
-    const quota = from ? quotaOf(from, now) : null;
-    const hit = quota ? tightest(quota) : undefined;
-    if (!from || !hit || hit.used < rule.at) {
+    const state = dueOf(kind, deps, now);
+    if (!state?.due) {
       stuckOn.delete(kind);
       continue;
     }
+    const { rule, from, hit } = state;
     if (now - (lastSwitchAt.get(kind) ?? 0) < COOLDOWN_MS) continue;
 
     const need = 100 - rule.at + MIN_GAIN;
-    const candidates = readOfficialAccountStore().accounts
-      .filter((item) => item.kind === kind && item.id !== from && !item.hidden && item.credential?.refreshToken && !item.renewFailed)
-      .map((item) => ({ id: item.id, left: leftOf(quotaOf(item.id, now)) }))
+    const candidates = candidatesOf(kind, from)
+      .map((id) => ({ id, left: leftOf(quotaOf(id, now)) }))
       .filter((item): item is { id: string; left: number } => item.left != null && item.left >= need);
     // 剩余最多的先；一样多的保持设置里的顺序（sort 是稳定的）
     candidates.sort((a, b) => b.left - a.left);

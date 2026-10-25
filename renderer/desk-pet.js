@@ -6,13 +6,16 @@
  *
  * 互动：点一下（等 300 毫秒确认不是双击）打开对话气泡；双击戳一下；连点四下东张西望。
  * 拖着甩出去会滑一段、碰边弹回来（主进程算，停下来时发 landed）。极简模式（view.mini）：宠物贴在窗口右边、
- * 身子有一截在屏幕外，鼠标移上来探出来打招呼，移开缩回去。
+ * 身子有一截在屏幕外，鼠标移上来探出来打招呼，移开缩回去。鼠标绕着宠物转两圈它会晕（Pet.Spin）。
+ *
+ * 自定义宠物有两种：图片宠物（pet.json，按状态换一张 <img>）和主题包宠物（Clawd on Desk 格式，pet-theme.js 画，
+ * SVG 放在 #dp-svg 的 Shadow DOM 里，眼睛跟着鼠标）。
  */
 (() => {
   const api = window.tokenpulse.deskPet;
-  const Pet = window.PulsePet;
+  const Pet = window.PulsePet, Theme = window.PulsePetTheme;
   const $ = id => document.getElementById(id);
-  const canvas = $('dp-canvas'), img = $('dp-img'), hint = $('dp-hint'), badge = $('dp-badge'), stage = $('dp-stage');
+  const canvas = $('dp-canvas'), img = $('dp-img'), hint = $('dp-hint'), badge = $('dp-badge'), stage = $('dp-stage'), svgHost = $('dp-svg');
   const EN = window.PulseI18n?.lang?.() === 'en';
   const L = (zh, en) => EN ? en : zh;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -21,9 +24,15 @@
   let view = null, pack = null, ctl = null, grid = null, scale = 2, pixel = 2, hovering = false, shownKey = '';
   let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0, tilt = 0, origin = { x: 0, y: 0 }, customBox = null;
   const clicks = new Pet.Clicks(300);
+  const themeView = new Theme.ThemeView(svgHost);
+  let spin = new Pet.Spin(), pressX = 0;
+  /** 主题包：进入干活时抽一次，一个档位有好几个动画时挑哪个（同一段干活里不换）；极简模式探出来的时间（mini-peek 放够了换 mini-peek-hold）。 */
+  let workSeed = 0, peekAt = 0;
 
   function ctx() {
-    return { state: view.mode, quota: view.quota ?? 100, mood: view.mood, tasks: view.tasks, mini: !!view.mini, fidget: view.fidget && !reduced.matches && BUILT_IN.includes(view.pet) };
+    // 主题包的随机待机：鼠标 mouseIdleTimeout 没动、没悬停没拖着才放
+    const theme = themed() ? themeView.theme : null, idleAnims = !!theme?.idleAnimations.length && !hovering && !dragging && !press;
+    return { state: view.mode, phase: view.phase || null, quota: view.quota ?? 100, mood: view.mood, tasks: view.tasks, mini: !!view.mini, fidget: view.fidget && !reduced.matches && (BUILT_IN.includes(view.pet) || idleAnims), fidgetAfter: theme ? theme.timings.mouseIdleTimeout : 0 };
   }
 
   function size() {
@@ -31,17 +40,37 @@
     pixel = Math.max(1, Math.round(scale * (window.devicePixelRatio || 1)));
     canvas.width = Pet.W * pixel; canvas.height = Pet.H * pixel;
     for (const node of [canvas, img]) { node.style.width = Pet.W * scale + 'px'; node.style.height = Pet.H * scale + 'px'; }
+    themeView.layout(Pet.W * scale, Pet.H * scale, scale);
     hint.style.bottom = Pet.H * scale + 2 + 'px';
+    // 离身体太近角度乱跳、太远就不算绕着它转了：按放大倍数算
+    spin = new Pet.Spin({ minR: 12 * scale, maxR: 160 * scale });
   }
 
-  /** 宠物身体占的格子 [左, 上, 右, 下]：内置的写在 pet-engine.js；自定义的按 idle 图里不透明的范围量（还没量好先用画面中间一块）。 */
+  /** 宠物身体占的格子 [左, 上, 右, 下]：内置的写在 pet-engine.js；主题包按 layout.contentBox；图片宠物按 idle 图里不透明的范围量（还没量好先用画面中间一块）。 */
   function bodyBox() {
+    if (themed()) return themeView.bodyCells();
     return custom() ? (customBox || [18, 20, 53, 55]) : Pet.BODY[view.pet];
+  }
+  /** 换了自定义宠物：主题包交给 pet-theme.js，动作时长按主题写的。 */
+  function setPack(next) {
+    pack = next; shownKey = '';
+    themeView.load(pack);
+    tune();
+    measurePack();
+    layout();
+  }
+  /** 主题包宠物：动作时长按主题写的，随机小动作换成主题的随机待机（轮着放，两次之间隔 10～30 秒）。 */
+  function tune() {
+    if (!ctl) return;
+    const theme = view && custom() && themeView.ready ? themeView.theme : null;
+    ctl.dur = theme ? Theme.durations(theme) : {};
+    ctl.fidgets = theme ? theme.idleAnimations.map((_, i) => 'idle:' + i) : null;
+    ctl.fidgetGap = theme ? [100, 300] : [200, 600];
   }
   function measurePack() {
     customBox = null;
     const src = pack?.images?.idle;
-    if (!src) return;
+    if (!src || pack.kind === 'theme') return;
     const probe = new Image();
     probe.onload = () => {
       if (pack?.images?.idle !== src || !probe.naturalWidth) return;
@@ -64,6 +93,7 @@
   /**
    * 摆宠物：平时在窗口底边中间。极简模式像躲在屏幕边后面探头：以身体的脚底中点为轴往左歪 tilt 度，头先探出来，
    * 探出屏幕的宽度是身宽的 show 倍（矮胖的、高瘦的都探出差不多的比例）；鼠标移上来换成 peek 的姿势，探得更出来。
+   * 主题包写了极简动画的不歪：动画自己画好了探头的样子，按主题写的比例藏进屏幕、探出来（ThemeView.miniLeft）。
    * 窗口外的部分本来就看不见。
    */
   function layout() {
@@ -71,6 +101,9 @@
     document.body.classList.toggle('mini', !!mini);
     stage.dataset.mini = mini ? (peeking ? 'peek' : 'tuck') : '';
     if (!mini) { tilt = 0; stage.style.left = ''; stage.style.transform = ''; stage.style.transformOrigin = ''; return; }
+    const own = themed() ? themeView.miniLeft(window.innerWidth, peeking) : null;
+    // transform 要写 none：样式表里平时是 translateX(-50%) 居中
+    if (own != null) { tilt = 0; stage.style.left = own + 'px'; stage.style.transform = 'none'; stage.style.transformOrigin = ''; return; }
     const pose = peeking ? mini.peek : mini.tuck, [x0, y0, x1, y1] = bodyBox();
     const width = (x1 - x0 + 1) * scale, height = (y1 - y0 + 1) * scale, a = pose.tilt * Math.PI / 180;
     // 歪过去以后，身体左上角离轴有多远（最先探出屏幕的就是这个角）
@@ -87,12 +120,16 @@
     peekUntil = on && ms ? Date.now() + ms : 0;
     if (on && ms) tuckTimer = setTimeout(() => peek(hovering || document.body.classList.contains('talking')), ms);
     if (peeking === on) return;
-    peeking = on;
-    if (on && view?.mini && ctl && !ctl.action) ctl.trigger('wave');
+    peeking = on; peekAt = on ? Date.now() : 0;
+    // 主题包的极简动画自己有探头（mini-peek），不另外挥手
+    if (on && view?.mini && ctl && !ctl.action && !themeMini()) ctl.trigger('wave');
     layout();
+    draw();
   }
+  function themeMini() { return !!view?.mini && themed() && !!themeView.theme.miniMode; }
 
   function custom() { return !BUILT_IN.includes(view.pet); }
+  function themed() { return custom() && themeView.ready; }
   /** 自定义宠物：按动作和状态挑一张图，没有的用 idle。 */
   function imageKey() {
     const has = key => !!pack?.images?.[key];
@@ -100,6 +137,7 @@
     const action = ctl.action, state = ctl.stateOf(ctx());
     if (action === 'drag') return pick('drag', 'startle');
     if (action === 'startle') return pick('startle');
+    if (action === 'dizzy') return pick('dizzy', 'startle');
     if (action === 'poke') return pick('poke', 'startle');
     if (action === 'celebrate' || action === 'restock') return pick('celebrate');
     if (action === 'wave') return pick('wave');
@@ -108,7 +146,7 @@
     if (state === 'doze' || action === 'yawn') return pick('doze', 'sleep');
     if (view.mini && has('peek')) return 'peek';
     if (view.mood === 'empty') return pick('empty', 'tight');
-    if (view.mode === 'work') return pick('work');
+    if (view.mode === 'work') return view.phase === 'thinking' ? pick('think', 'work') : pick('work');
     // 额度紧张：和内置宠物一样，平时照常待着，隔一阵紧张一下（ctl.nervous，两三秒）才换成 tight 图，不一直冒汗
     if (view.mood === 'tight' && ctl.nervous) return pick('tight');
     return 'idle';
@@ -117,15 +155,28 @@
   function draw() {
     if (!view || !ctl) return;
     // 现在画的是哪只、在做什么：写在节点上，方便检查
-    stage.dataset.pet = view.pet; stage.dataset.mode = view.mode; stage.dataset.action = ctl.action || ''; stage.dataset.state = ctl.stateOf(ctx());
+    stage.dataset.pet = view.pet; stage.dataset.mode = view.mode; stage.dataset.phase = view.phase || ''; stage.dataset.action = ctl.action || ''; stage.dataset.state = ctl.stateOf(ctx());
     // 打盹、睡着是宠物自己走到的，不一定有新的状态送来：提示跟着画面变
     const text = hintText();
     if (hint.textContent !== text) hint.textContent = text;
     if (custom()) {
-      canvas.hidden = true; img.hidden = !pack;
-      const key = imageKey();
-      stage.dataset.image = key;
-      if (pack && key !== shownKey) { shownKey = key; img.src = pack.images[key] || pack.images.idle || ''; }
+      canvas.hidden = true;
+      if (themed()) {
+        img.hidden = true; svgHost.hidden = false;
+        const theme = themeView.theme, right = window.screenX + window.innerWidth / 2 > (screen.availLeft || 0) + screen.availWidth / 2;
+        const pick = Theme.visualOf(theme, {
+          action: ctl.action, serial: ctl.serial, state: ctl.stateOf(ctx()), mode: view.mode, phase: view.phase, asking: view.asking, tasks: view.tasks,
+          subagents: view.subagents || 0, seed: workSeed, right, mini: !!view.mini, peek: peeking, peekHold: peeking && Date.now() - peekAt >= Theme.peekHoldMs(theme),
+        });
+        stage.dataset.image = themeView.show(pick.file, pick.once ? `${pick.file}#${ctl.serial}` : pick.key || pick.file, !!pick.mirror);
+        // 眼睛跟着鼠标：ctl.look 是看的方向（x -2 ~ 2，y -1.5 ~ 1.5；鼠标一动直接看过去，几秒不动时它自己慢慢东张西望）
+        themeView.look(ctl.look.x / 2, ctl.look.y / 1.5);
+      } else {
+        svgHost.hidden = true; img.hidden = !pack;
+        const key = imageKey();
+        stage.dataset.image = key;
+        if (pack && key !== shownKey) { shownKey = key; img.src = pack.images[key] || pack.images.idle || ''; }
+      }
       badge.hidden = !view.badge;
       if (view.badge) {
         badge.textContent = (view.quota == null ? '—' : `${view.quota}%`) + (view.tasks ? ` · ${view.tasks}` : '');
@@ -133,7 +184,7 @@
       }
       return;
     }
-    canvas.hidden = false; img.hidden = true; badge.hidden = true;
+    canvas.hidden = false; img.hidden = true; svgHost.hidden = true; badge.hidden = true;
     grid = ctl.frame(ctx());
     Pet.paint(canvas, grid, pixel);
   }
@@ -155,14 +206,22 @@
 
   function apply(next) {
     if (!next) return;
-    const changedPet = !view || view.pet !== next.pet, changedScale = !view || view.scale !== next.scale, wasMini = !!view?.mini;
+    const changedPet = !view || view.pet !== next.pet, changedScale = !view || view.scale !== next.scale, wasMini = !!view?.mini, wasWork = view?.mode === 'work';
     view = next;
     document.documentElement.dataset.theme = view.theme === 'dark' ? 'dark' : 'light';
-    if (changedPet || !ctl) { ctl = new Pet.Controller(BUILT_IN.includes(view.pet) ? view.pet : 'squirrel'); ctl.idleSec = idleSec; shownKey = ''; }
+    if (changedPet || !ctl) {
+      ctl = new Pet.Controller(BUILT_IN.includes(view.pet) ? view.pet : 'squirrel'); ctl.idleSec = idleSec; shownKey = '';
+      tune();
+    }
     if (changedScale) size();
+    if (view.mode === 'work' && !wasWork) workSeed = Math.floor(Math.random() * 1000);
     // 状态切换的过渡（睡前打哈欠，醒来揉眼睛）在 Controller 里
     ctl.setMode(view.mode);
-    if (wasMini !== !!view.mini) { peeking = false; peekUntil = 0; clearTimeout(tuckTimer); }
+    if (wasMini !== !!view.mini) {
+      peeking = false; peekUntil = 0; peekAt = 0; clearTimeout(tuckTimer);
+      // 主题包有极简动画：钻进屏幕边时放 mini-enter
+      if (view.mini && !changedPet && themeMini()) ctl.trigger('miniEnter');
+    }
     syncSounds();
     layout();
     draw();
@@ -178,6 +237,7 @@
       const a = tilt * Math.PI / 180, dx = x - (stage.offsetLeft + origin.x), dy = y - (stage.offsetTop + origin.y);
       lx = dx * Math.cos(a) - dy * Math.sin(a) + origin.x; ly = dx * Math.sin(a) + dy * Math.cos(a) + origin.y;
     } else { const box = stage.getBoundingClientRect(); lx = x - box.left; ly = y - box.top; }
+    if (themed()) return themeView.hit(lx, ly);
     if (lx < 0 || ly < 0 || lx >= width || ly >= height) return false;
     if (custom()) return true;
     if (!grid) return false;
@@ -205,6 +265,7 @@
   stage.addEventListener('pointerdown', event => {
     if (event.button !== 0 || !hitAt(event.clientX, event.clientY)) return;
     press = { x: event.screenX, y: event.screenY };
+    pressX = event.clientX;
     try { stage.setPointerCapture(event.pointerId); } catch { /* 指针已经不在了：照样按普通点击处理 */ }
   });
   stage.addEventListener('pointermove', event => {
@@ -254,11 +315,23 @@
   }
   /** 点了一下：算连点的第几下。双击戳一下，四下东张西望；只点一下的，等确定不是双击再打开气泡。 */
   function tap() {
-    const n = clicks.press(Date.now());
+    const n = clicks.press(Date.now()), x = pressX;
     if (n === 4) ctl?.trigger('lookaround');
     else if (n >= 2) ctl?.trigger('poke');
     draw();
-    setTimeout(() => { if (clicks.settle(Date.now()) === 1) api.click(); }, clicks.gap + 20);
+    setTimeout(() => {
+      if (clicks.settle(Date.now()) !== 1) return;
+      api.click();
+      // 主题包写了点左边 / 右边的反应：气泡照开，宠物顺便往被点的那边缩一下
+      const side = x < stage.getBoundingClientRect().left + stage.offsetWidth / 2 ? 'clickLeft' : 'clickRight';
+      if (themed() && !view.mini && ctl && !ctl.action && themeView.theme.reactions[side]) { ctl.trigger(side === 'clickLeft' ? 'tapLeft' : 'tapRight'); draw(); }
+    }, clicks.gap + 20);
+  }
+  /** 能不能转晕：平时空闲、没在做动作、没被拖着、不在极简模式；内置宠物都能，主题包和图片宠物要有晕的动画。 */
+  function canDizzy() {
+    if (!view || !ctl || view.mini || dragging || press || ctl.action || ctl.stateOf(ctx()) !== 'idle') return false;
+    if (!custom()) return true;
+    return themed() ? !!themeView.theme.states.dizzy : !!pack?.images?.dizzy;
   }
   stage.addEventListener('pointerup', () => release(true));
   stage.addEventListener('lostpointercapture', () => release(false));
@@ -268,8 +341,15 @@
   document.addEventListener('contextmenu', event => { event.preventDefault(); if (hitAt(event.clientX, event.clientY)) api.menu(); });
 
   api.onState(apply);
-  api.onPack(next => { pack = next; shownKey = ''; measurePack(); draw(); });
-  api.onCursor(rel => ctl?.aim(rel.x, rel.y));
+  api.onPack(next => { setPack(next); draw(); });
+  api.onCursor(rel => {
+    if (!ctl) return;
+    ctl.aim(rel.x, rel.y);
+    if (!canDizzy()) spin.reset();
+    else if (spin.add(rel.x, rel.y)) ctl.trigger('dizzy');
+    // 眼睛马上画到新位置，不等下一帧（每秒 10 帧，等下去看着慢半拍）
+    draw();
+  });
   window.addEventListener('resize', layout);
   api.onIdle(seconds => { idleSec = seconds; ctl?.idle(seconds); });
   api.onEvent(event => {
@@ -284,7 +364,7 @@
     if (event.type === 'celebrate') { ctl.trigger('celebrate'); chime('done'); if (view?.mini) peek(true, 4000); }
     else if (event.type === 'alert') {
       // 出错停下吓一跳；在问你、可能在等你确认就挥挥手叫你；额度用完只响一声（样子已经是没精神的了）
-      if (event.kind === 'error') ctl.trigger('startle');
+      if (event.kind === 'error') ctl.trigger(themed() ? 'error' : 'startle');
       else if (event.kind === 'waiting' || event.kind === 'ask') ctl.trigger('wave');
       chime(event.kind);
       if (view?.mini) peek(true, 4000);
@@ -294,7 +374,7 @@
     else if (event.type === 'landed') { clearTimeout(landTimer); ctl.trigger('land'); }
     draw();
   });
-  api.ready().then(data => { pack = data?.pack || null; measurePack(); apply(data?.view); }).catch(() => undefined);
+  api.ready().then(data => { setPack(data?.pack || null); apply(data?.view); }).catch(() => undefined);
 
   // 每秒 10 帧；系统开了「减少动画」时每秒 2 帧、不做随机小动作。窗口被藏起来的时候不画
   let last = 0;

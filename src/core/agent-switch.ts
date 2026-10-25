@@ -1039,6 +1039,14 @@ export function localRouteLeftovers(): { app: AgentApp; kind: "route" | "pass"; 
   }
   return out;
 }
+/** 号池里的官方账号 id（「后台账号少查一点」开着时它们也算在用，号池排序要新的额度）。读不了配置返回空。 */
+export function poolAccountIds(): string[] {
+  try {
+    return load().providers.flatMap((provider) => provider.pool?.members.filter((member) => member.type === "account").map((member) => member.id) ?? []);
+  } catch {
+    return [];
+  }
+}
 /** 这个工具现在用的是不是它自己的官方登录（直连、透明转发，或者本地路由到官方登录）。第三方供应商 / 号池不算。 */
 export function usesOfficialLogin(app: AgentApp) {
   const store = load();

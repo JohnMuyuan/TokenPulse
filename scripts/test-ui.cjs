@@ -137,6 +137,18 @@ app.on('web-contents-created', (_, contents) => {
       await until("window.tokenpulse.readPrefs().then(p => p.quotaEverySeconds === 180)");
       assert.equal(await evaluate("document.getElementById('pref-quota-every-save').disabled"), true);
       assert.match(await evaluate("document.getElementById('pref-quota-every-value').textContent"), /每 3 分钟/);
+      // 后台账号少查一点：默认关，紧跟在查询间隔下面
+      assert.match(await evaluate("document.getElementById('pref-quotaQuietBackground').textContent"), /全部账号按间隔查/);
+      assert.equal(await evaluate("document.getElementById('pref-quota-every').closest('.setting-block').nextElementSibling?.contains(document.getElementById('pref-quotaQuietBackground'))"), true);
+      await evaluate("document.getElementById('pref-quotaQuietBackground').click()");
+      await until("!document.getElementById('option-menu').hidden");
+      await evaluate("document.querySelector('#option-menu [data-value=\"true\"]').click()");
+      await until("window.tokenpulse.readPrefs().then(p => p.quotaQuietBackground === true)");
+      assert.match(await evaluate("document.getElementById('pref-quotaQuietBackground').textContent"), /后台账号每 30 分钟查一次/);
+      await evaluate("document.getElementById('pref-quotaQuietBackground').click()");
+      await until("!document.getElementById('option-menu').hidden");
+      await evaluate("document.querySelector('#option-menu [data-value=\"false\"]').click()");
+      await until("window.tokenpulse.readPrefs().then(p => p.quotaQuietBackground === false)");
       await evaluate("document.querySelector('[data-settings-tab=accounts]').click()");
       assert.equal(await evaluate("document.querySelector('[data-panel=general]').hidden"), true);
       // 账号列表在设置窗口打开后才异步加载（要探测 CLI），先等它出来。
