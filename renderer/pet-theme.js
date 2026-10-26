@@ -221,7 +221,7 @@
   }
 
   /**
-   * 极简模式（贴屏幕右边）：用 miniMode.states 的动画，没写的往 mini-idle 退。
+   * 极简模式（贴屏幕左右边；贴左边时整个画面在 desk-pet.js 里左右翻过来）：用 miniMode.states 的动画，没写的往 mini-idle 退。
    * 进来时放 mini-enter（睡着进来放 mini-enter-sleep）；庆祝 mini-happy；出错、在问你、吓一跳 mini-alert；
    * 鼠标移上来探头 mini-peek，放够 autoReturn 的时长后换成 mini-peek-hold（没有就回 mini-idle）；
    * 睡觉 mini-sleep（鼠标移上来时有 mini-sleep-peek 就用它）；干活 mini-working（没有就 mini-idle）。

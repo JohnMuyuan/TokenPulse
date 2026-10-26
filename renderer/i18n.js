@@ -50,7 +50,7 @@
     "电脑 1 分钟没人用、也没有任务在跑时，它会打哈欠、打盹，再过半分钟倒头睡着；你一回来它就醒，睡熟了会先吓一跳。": "After a minute with no one at the computer and no tasks running, it yawns and dozes off, then flops asleep half a minute later. It wakes as soon as you're back, with a start if it was fast asleep.",
     "点一下冒出额度气泡；双击戳它一下，连点四下它会东张西望。拖着用力一甩，它会滑出去、碰到屏幕边弹回来。鼠标绕着它转两圈，它会转晕一会儿。": "Click for a quota bubble; double-click to poke it, or click four times and it looks around. Fling it while dragging and it slides off, bouncing back from the screen edges. Circle the mouse around it twice and it gets dizzy for a moment.",
     "任务在等模型回复时，宠物头上冒一个想法泡泡；在跑工具时专心干活。": "While a task waits for the model, a thought bubble pops up over the pet; while tools run, it gets to work.",
-    "极简模式：把它拖（或甩）到屏幕右边，或者在右键菜单里选，它会躲到屏幕边后面，只探出个脑袋看着你；鼠标移上去它探出身子打招呼。从边上拖出来就恢复。": "Mini mode: drag or fling it to the right edge of the screen, or pick it from the right-click menu. It hides behind the edge with just its head peeking out at you, and leans out to wave when you hover. Drag it out to go back.",
+    "极简模式：把它拖（或甩）到屏幕左边、右边、上边，或者往下拖进屏幕底边一截，也可以在右键菜单里选，它会躲到屏幕边后面，只探出个脑袋看着你；贴在上边时倒挂着荡来荡去。鼠标移上去它探出身子打招呼，从边上拖出来就恢复。": "Mini mode: drag or fling it to the left, right or top edge of the screen, or drag it a little past the bottom edge, or pick an edge from the right-click menu. It hides behind the edge with just its head peeking out at you, and hangs upside down and sways at the top edge. It leans out to wave when you hover; drag it out to go back.",
     "提示音：任务做完、在问你、出错停下、可能在等你确认、额度用完时响一声，各有各的调子；每种都可以单独关掉，或者换成你自己的音频。": "Sounds: a short tone plays when a task finishes, asks you something, stops with an error, may be waiting for your approval, or when quota runs out, each with its own tune. Turn any of them off, or swap in your own audio.",
     "提示音": "Sounds", "任务做完、在问你、出错停下、可能在等你确认、额度用完时，桌宠会响一声短短的提示音。每种都可以换成你自己的音频。": "The pet plays a short tone when a task finishes, asks you something, stops with an error, may be waiting for your approval, or when quota runs out. You can swap in your own audio for each.", "开": "On", "关": "Off",
     // 问题卡片、自己选的提示音
@@ -66,7 +66,7 @@
     "选择提示音（WAV、MP3、OGG、FLAC、M4A，2 MB 以内）": "Choose a sound (WAV, MP3, OGG, FLAC or M4A, up to 2 MB)", "音频": "Audio",
     "不认识的提示音": "Unknown sound", "没有选文件": "No file chosen", "找不到这个文件": "Can't find this file", "选的不是普通文件": "That isn't a regular file",
     "音频文件超过 2 MB，换一个短一点的": "The audio file is larger than 2 MB. Pick a shorter one.", "不是 WAV、MP3、OGG、FLAC 或 M4A 音频": "Not a WAV, MP3, OGG, FLAC or M4A file",
-    "退出极简模式": "Leave mini mode", "极简模式（贴到屏幕右边）": "Mini mode (hide at the right edge)",
+    "退出极简模式": "Leave mini mode", "极简模式": "Mini mode", "贴到屏幕左边": "Hide at the left edge", "贴到屏幕右边": "Hide at the right edge", "倒挂在屏幕上边": "Hang from the top edge", "藏到屏幕下边": "Hide at the bottom edge",
     "自定义宠物的格式": "Custom pet format",
     "Clawd on Desk 格式的主题包": "Clawd on Desk themes",
     "选一个放着 pet.json 和图片的文件夹，或者 Clawd on Desk 格式的主题文件夹": "Choose a folder with pet.json and images, or a Clawd on Desk theme folder",
@@ -371,6 +371,11 @@
     "会话管理新增 pi：查看对话和工具记录、全文搜索，并在终端继续会话。": "Sessions now supports pi: read conversations and tool calls, search their text, and continue in the terminal.",
     "一键切换 pi 供应商": "Switch pi providers",
     "供应商页新增 pi，支持三种接口直连和本地路由；保留其他配置，可切回原有默认供应商。": "Providers now supports pi with three native APIs and local routing. Other settings are preserved, and you can restore the original defaults.",
+    // 0.3.68 更新说明
+    "极简模式能贴屏幕四条边了": "Mini mode works on all four screen edges",
+    "以前只能躲在屏幕右边，现在左边、右边、下边都能躲；贴在上边时它倒挂着荡来荡去。把它拖（或甩）到那条边就行，往下要拖进屏幕底边一截；也可以在右键菜单「极简模式」里选。": "It used to hide only at the right edge. Now it can hide at the left, right and bottom edges, and at the top edge it hangs upside down and sways. Drag or fling it to an edge (for the bottom, drag it a little past the edge), or pick one under “Mini mode” in the right-click menu.",
+    "桌宠不再被别的窗口盖住": "Other windows no longer cover the desk pet",
+    "别的程序的置顶窗口（视频小窗、截图工具等）出来后，以前会一直压在桌宠上面。现在桌宠几秒内会自己回到最上面，不抢你正在用的窗口的焦点；在设置里关了置顶就不管。": "When another app's always-on-top window (a video mini player, a screenshot tool…) appeared, it used to stay on top of the desk pet. Now the pet comes back on top within a few seconds without taking focus from the window you're using. Turning off “always on top” in settings leaves it alone.",
     // 0.3.67 更新说明
     "能导入 Clawd on Desk 格式的主题包": "Import Clawd on Desk format themes",
     "「桌宠」页导入宠物时，除了原来的图片宠物，也能选 Clawd on Desk 格式的主题文件夹（theme.json 加 SVG 或图片）。SVG 导入时会去掉脚本等不安全的内容；主题里的美术素材请确认你有权使用。": "When importing a pet on the Desk pet page, you can now pick a Clawd on Desk format theme folder (theme.json with SVG or image files) as well as an image pet. Scripts and other unsafe content are stripped from SVGs on import. Make sure you have the right to use the theme's artwork.",

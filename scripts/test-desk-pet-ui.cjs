@@ -331,6 +331,67 @@ app.whenReady().then(async () => {
     assert.equal(prefsNow().deskPetMini, false, '测试时不按屏幕边自动贴边');
     console.log('PASS desk pet UI: mini mode tucks the pet at the right edge, peeks out with a wave on hover, and dragging it out leaves mini mode');
 
+    // 另外三条边：左边是右边左右翻过来；下边从屏幕底边冒出上半身；上边倒挂着荡秋千。量画面上有颜色的范围（先把提示条藏起来）
+    const extent = async () => {
+      await js("document.getElementById('dp-hint').style.visibility = 'hidden'");
+      const image = await pet.webContents.capturePage(), { width, height } = image.getSize(), bits = image.toBitmap(), k = width / (await js('innerWidth'));
+      await js("document.getElementById('dp-hint').style.visibility = ''");
+      let x0 = width, y0 = height, x1 = -1, y1 = -1;
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (bits[(y * width + x) * 4 + 3] > 40) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      assert.ok(x1 >= 0, '画面上有宠物');
+      return { x0: x0 / k, y0: y0 / k, x1: (x1 + 1) / k, y1: (y1 + 1) / k, left: Math.round(x0 / k), top: Math.round(y0 / k), right: Math.round((width - 1 - x1) / k), bottom: Math.round((height - 1 - y1) / k), width: Math.round((x1 - x0 + 1) / k), height: Math.round((y1 - y0 + 1) / k) };
+    };
+    // 在画面范围里一格一格移鼠标，碰到宠物就算悬停上了（翻着、倒着的要按变回去的位置判断）
+    const hoverIn = e => js(`(() => { for (let y = ${Math.floor(e.y0)}; y < ${Math.ceil(e.y1)}; y += 3) for (let x = ${Math.floor(e.x0)}; x < ${Math.ceil(e.x1)}; x += 3) {
+      document.dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
+      if (document.body.classList.contains('hover')) return { x, y }; } return null; })()`);
+    const matrix = () => js("(() => { const m = new DOMMatrix(getComputedStyle(document.getElementById('dp-stage')).transform); return { a: Math.round(m.a * 100) / 100, d: Math.round(m.d * 100) / 100 }; })()");
+    // 松鼠身体 42 × 48 格，放大两倍是 84 × 96 像素。干活时侧着身跑来跑去、露出多少不固定：量的时候换成空闲的样子
+    // （主进程的状态没变就不重发，这份留得住）
+    const petModel = require(path.join(appRoot, 'build/core/desk-pet-model.js')), widths = {};
+    const edges = {
+      right: { away: [2, 2], touches: e => e.right === 0, size: e => e.width, tucked: [84 * 0.4, 84 * 0.7] },
+      left: { away: [236, 2], touches: e => e.left === 0, size: e => e.width, tucked: [84 * 0.4, 84 * 0.7] },
+      top: { away: [2, 140], touches: e => e.top === 0, size: e => e.height, tucked: [96 * 0.6 * 0.6, 96 * 0.6 * 1.25] },
+      bottom: { away: [2, 2], touches: e => e.bottom === 0, size: e => e.height, tucked: [96 * 0.5 * 0.4, 96 * 0.5 * 1.25] },
+    };
+    for (const [edge, want] of Object.entries(edges)) {
+      deskPetMain.setDeskPetMini(true, edge);
+      assert.deepEqual([prefsNow().deskPetMini, prefsNow().deskPetEdge], [true, edge], `记住贴${edge}`);
+      await until(() => js(`document.body.dataset.edge === '${edge}' && document.getElementById('dp-stage').dataset.mini === 'tuck'`), `贴 ${edge} 藏着`);
+      pet.webContents.send('desk-pet-state', { ...awake, mini: petModel.miniPose(edge) });
+      await until(() => js("document.getElementById('dp-stage').dataset.mode === 'idle' && !document.getElementById('dp-stage').dataset.action"), '空闲、落地做完', 6000);
+      await delay(450);
+      const m = await matrix();
+      if (edge === 'left') assert.ok(m.a < 0, `左边是翻过来的，实际 ${JSON.stringify(m)}`);
+      if (edge === 'top') {
+        assert.deepEqual(m, { a: -1, d: -1 }, '上边倒过来');
+        assert.equal(await js("getComputedStyle(document.getElementById('dp-stage')).animationName"), 'dp-swing', '倒挂着荡来荡去');
+        assert.equal(await js("document.getElementById('dp-hint').style.bottom"), '2px', '提示条放到倒挂着的头下面');
+      }
+      if (edge === 'bottom') assert.deepEqual(m, { a: 1, d: 1 }, '下边不歪不翻');
+      const tucked = await extent();
+      assert.ok(want.touches(tucked), `${edge}：宠物从窗口（屏幕）边上露出来，实际 ${JSON.stringify(tucked)}`);
+      assert.ok(want.size(tucked) > want.tucked[0] && want.size(tucked) < want.tucked[1], `${edge}：平时只露出一截，实际 ${want.size(tucked)}`);
+      widths[edge] = want.size(tucked);
+      const spot = await hoverIn(tucked);
+      assert.ok(spot, `${edge}：露出来的那截能悬停`);
+      await until(() => js("document.getElementById('dp-stage').dataset.mini === 'peek'"), `${edge} 探出来`);
+      await delay(450);
+      const peeked = await extent();
+      assert.ok(want.touches(peeked) && want.size(peeked) > want.size(tucked) + 8, `${edge}：探得更出来，${want.size(tucked)} → ${want.size(peeked)}`);
+      assert.equal(await hover(...want.away), false, '离宠物远的地方不算');
+      await until(() => js("document.getElementById('dp-stage').dataset.mini === 'tuck'"), `${edge} 鼠标移开缩回去`);
+      deskPetMain.setDeskPetMini(false);
+      assert.equal(prefsNow().deskPetMini, false);
+      await until(() => js("!document.body.classList.contains('mini') && document.body.dataset.edge === '' && getComputedStyle(document.getElementById('dp-stage')).animationName === 'none'"), `${edge} 退出极简模式`);
+    }
+    // 位置一样是镜像算的；屏幕缩放 150% 这类非整数倍时，歪着的像素画两边落到物理像素上不一样，差一两个宠物像素
+    assert.ok(Math.abs(widths.left - widths.right) <= 4, `左边和右边露出的差不多：${widths.left} / ${widths.right}`);
+    assert.equal(await js("Math.round(document.getElementById('dp-stage').getBoundingClientRect().bottom) === innerHeight"), true, '出来以后宠物回到窗口底边');
+    assert.equal(pet.isAlwaysOnTop(), true, '一直置顶');
+    console.log('PASS desk pet UI: mini mode also works at the left edge (mirrored), the bottom edge (pops up) and the top edge (hangs upside down and swings)');
+
     // 设置从主窗口改：大小、宠物、透明度都落到宠物窗口上
     const main = mainOf(), mjs = code => main.webContents.executeJavaScript(code);
     await until(() => mjs('typeof window.PulseDeskPet === "object"'), '主窗口加载好');

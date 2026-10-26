@@ -22,7 +22,8 @@
   const BUILT_IN = ['squirrel', 'hamster', 'octopus'];
 
   let view = null, pack = null, ctl = null, grid = null, scale = 2, pixel = 2, hovering = false, shownKey = '';
-  let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0, tilt = 0, origin = { x: 0, y: 0 }, customBox = null;
+  /** xf：极简模式下舞台的变换（轴 o、变换的逆矩阵），判断鼠标位置时用；平时是 null。 */
+  let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0, xf = null, customBox = null;
   const clicks = new Pet.Clicks(300);
   const themeView = new Theme.ThemeView(svgHost);
   let spin = new Pet.Spin(), pressX = 0;
@@ -90,29 +91,57 @@
     probe.src = src;
   }
 
+  /** 极简模式贴哪条边（不在极简模式返回 ''）。 */
+  function edgeOf() { return view?.mini ? view.mini.edge || 'right' : ''; }
+
   /**
-   * 摆宠物：平时在窗口底边中间。极简模式像躲在屏幕边后面探头：以身体的脚底中点为轴往左歪 tilt 度，头先探出来，
-   * 探出屏幕的宽度是身宽的 show 倍（矮胖的、高瘦的都探出差不多的比例）；鼠标移上来换成 peek 的姿势，探得更出来。
-   * 主题包写了极简动画的不歪：动画自己画好了探头的样子，按主题写的比例藏进屏幕、探出来（ThemeView.miniLeft）。
-   * 窗口外的部分本来就看不见。
+   * 摆宠物：平时在窗口底边中间。极简模式像躲在屏幕边后面探头，窗口外的部分本来就看不见；鼠标移上来换成 peek 的姿势，探得更出来。
+   * - 右边：以身体的脚底中点为轴往左歪 tilt 度，头先探出来，探出屏幕的宽度是身宽的 show 倍（矮胖的、高瘦的都探出差不多的比例）。
+   *   主题包写了极简动画的不歪：动画自己画好了探头的样子，按主题写的比例藏进屏幕、探出来（ThemeView.miniLeft）。
+   * - 左边：把右边的样子整个左右翻过来（以窗口中线为镜子）。
+   * - 下边：脚底沉到窗口底边下面，只冒出身高的 show 倍。
+   * - 上边：倒挂金钩——绕脚底中点转 180 度，脚勾在窗口顶边上面，头朝下露出身高的 show 倍；样式表让它绕脚荡来荡去。
+   * 算好的变换记在 xf 里，判断鼠标在不在宠物身上时反着变回去。
    */
   function layout() {
-    const mini = view?.mini;
+    const mini = view?.mini, edge = edgeOf();
     document.body.classList.toggle('mini', !!mini);
+    document.body.dataset.edge = edge;
     stage.dataset.mini = mini ? (peeking ? 'peek' : 'tuck') : '';
-    if (!mini) { tilt = 0; stage.style.left = ''; stage.style.transform = ''; stage.style.transformOrigin = ''; return; }
-    const own = themed() ? themeView.miniLeft(window.innerWidth, peeking) : null;
+    hint.style.bottom = Pet.H * scale + 2 + 'px';
+    if (!mini) { xf = null; stage.style.left = ''; stage.style.top = ''; stage.style.bottom = ''; stage.style.transform = ''; stage.style.transformOrigin = ''; return; }
+    const W = window.innerWidth, H = window.innerHeight, pose = peeking ? mini.peek : mini.tuck;
+    let left, top = null, transform = '', o;
+    const own = (edge === 'left' || edge === 'right') && themed() ? themeView.miniLeft(W, peeking) : null;
+    if (own != null) { left = own; o = { x: Pet.W * scale / 2, y: Pet.H * scale }; }
+    else {
+      const [x0, y0, x1, y1] = bodyBox();
+      const width = (x1 - x0 + 1) * scale, height = (y1 - y0 + 1) * scale, a = pose.tilt * Math.PI / 180;
+      o = { x: (x0 + x1 + 1) / 2 * scale, y: (y1 + 1) * scale };
+      if (edge === 'top' || edge === 'bottom') {
+        left = W / 2 - o.x;
+        // 脚底（轴）在窗口里的高度：下边沉到窗口底下 (1 - show) 个身高；上边吊在窗口顶上面这么多，身子倒过来往下垂
+        const hidden = height * (1 - pose.show);
+        top = (edge === 'bottom' ? H + hidden : -hidden) - o.y;
+        if (edge === 'top') transform = 'rotate(180deg)';
+        // 提示条：下边的挨着冒出来的头顶，上边的放到窗口最下面（倒挂着的头下面）
+        hint.style.bottom = (edge === 'bottom' ? Math.round(height * mini.peek.show) + 6 : 2) + 'px';
+      } else {
+        // 歪过去以后，身体左上角离轴有多远（最先探出屏幕的就是这个角）
+        const reach = width / 2 * Math.cos(a) + height * Math.sin(a);
+        left = W + reach - width * pose.show - o.x;
+        transform = `rotate(${-pose.tilt}deg)`;
+      }
+    }
+    // 左边：以窗口中线为镜子翻过来。舞台绕轴 o 翻，左边界要挪到 W - left - 2·o.x
+    if (edge === 'left') { left = W - left - 2 * o.x; transform = ('scaleX(-1) ' + transform).trim(); }
+    xf = { o, inverse: (transform ? new DOMMatrix(transform) : new DOMMatrix()).inverse() };
+    stage.style.transformOrigin = `${o.x}px ${o.y}px`;
+    stage.style.left = Math.round(left) + 'px';
+    stage.style.top = top == null ? '' : Math.round(top) + 'px';
+    stage.style.bottom = top == null ? '' : 'auto';
     // transform 要写 none：样式表里平时是 translateX(-50%) 居中
-    if (own != null) { tilt = 0; stage.style.left = own + 'px'; stage.style.transform = 'none'; stage.style.transformOrigin = ''; return; }
-    const pose = peeking ? mini.peek : mini.tuck, [x0, y0, x1, y1] = bodyBox();
-    const width = (x1 - x0 + 1) * scale, height = (y1 - y0 + 1) * scale, a = pose.tilt * Math.PI / 180;
-    // 歪过去以后，身体左上角离轴有多远（最先探出屏幕的就是这个角）
-    const reach = width / 2 * Math.cos(a) + height * Math.sin(a);
-    origin = { x: (x0 + x1 + 1) / 2 * scale, y: (y1 + 1) * scale };
-    tilt = pose.tilt;
-    stage.style.transformOrigin = `${origin.x}px ${origin.y}px`;
-    stage.style.left = Math.round(window.innerWidth + reach - width * pose.show - origin.x) + 'px';
-    stage.style.transform = `rotate(${-pose.tilt}deg)`;
+    stage.style.transform = transform || 'none';
   }
   /** 极简模式下探出来；ms 毫秒后自己缩回去（鼠标还在上面、气泡还开着就不缩）。不给 ms 等鼠标移开。 */
   function peek(on, ms = 0) {
@@ -126,7 +155,8 @@
     layout();
     draw();
   }
-  function themeMini() { return !!view?.mini && themed() && !!themeView.theme.miniMode; }
+  /** 主题包自己的极简动画是照「从左右边探头」画的：只有贴左右边时用，贴上下边照平时的动画、和内置宠物一样摆。 */
+  function themeMini() { const edge = edgeOf(); return (edge === 'left' || edge === 'right') && themed() && !!themeView.theme.miniMode; }
 
   function custom() { return !BUILT_IN.includes(view.pet); }
   function themed() { return custom() && themeView.ready; }
@@ -144,7 +174,7 @@
     if (action === 'lookaround') return pick('look');
     if (state === 'sleep' || action === 'flop') return pick('sleep');
     if (state === 'doze' || action === 'yawn') return pick('doze', 'sleep');
-    if (view.mini && has('peek')) return 'peek';
+    if ((edgeOf() === 'left' || edgeOf() === 'right') && has('peek')) return 'peek';
     if (view.mood === 'empty') return pick('empty', 'tight');
     if (view.mode === 'work') return view.phase === 'thinking' ? pick('think', 'work') : pick('work');
     // 额度紧张：和内置宠物一样，平时照常待着，隔一阵紧张一下（ctl.nervous，两三秒）才换成 tight 图，不一直冒汗
@@ -166,7 +196,7 @@
         const theme = themeView.theme, right = window.screenX + window.innerWidth / 2 > (screen.availLeft || 0) + screen.availWidth / 2;
         const pick = Theme.visualOf(theme, {
           action: ctl.action, serial: ctl.serial, state: ctl.stateOf(ctx()), mode: view.mode, phase: view.phase, asking: view.asking, tasks: view.tasks,
-          subagents: view.subagents || 0, seed: workSeed, right, mini: !!view.mini, peek: peeking, peekHold: peeking && Date.now() - peekAt >= Theme.peekHoldMs(theme),
+          subagents: view.subagents || 0, seed: workSeed, right, mini: themeMini(), peek: peeking, peekHold: peeking && Date.now() - peekAt >= Theme.peekHoldMs(theme),
         });
         stage.dataset.image = themeView.show(pick.file, pick.once ? `${pick.file}#${ctl.serial}` : pick.key || pick.file, !!pick.mirror);
         // 眼睛跟着鼠标：ctl.look 是看的方向（x -2 ~ 2，y -1.5 ~ 1.5；鼠标一动直接看过去，几秒不动时它自己慢慢东张西望）
@@ -206,7 +236,7 @@
 
   function apply(next) {
     if (!next) return;
-    const changedPet = !view || view.pet !== next.pet, changedScale = !view || view.scale !== next.scale, wasMini = !!view?.mini, wasWork = view?.mode === 'work';
+    const changedPet = !view || view.pet !== next.pet, changedScale = !view || view.scale !== next.scale, wasEdge = edgeOf(), wasWork = view?.mode === 'work';
     view = next;
     document.documentElement.dataset.theme = view.theme === 'dark' ? 'dark' : 'light';
     if (changedPet || !ctl) {
@@ -217,7 +247,7 @@
     if (view.mode === 'work' && !wasWork) workSeed = Math.floor(Math.random() * 1000);
     // 状态切换的过渡（睡前打哈欠，醒来揉眼睛）在 Controller 里
     ctl.setMode(view.mode);
-    if (wasMini !== !!view.mini) {
+    if (wasEdge !== edgeOf()) {
       peeking = false; peekUntil = 0; peekAt = 0; clearTimeout(tuckTimer);
       // 主题包有极简动画：钻进屏幕边时放 mini-enter
       if (view.mini && !changedPet && themeMini()) ctl.trigger('miniEnter');
@@ -232,10 +262,10 @@
     if (!view) return false;
     const width = Pet.W * scale, height = Pet.H * scale;
     let lx, ly;
-    if (tilt) {
-      // 极简模式歪着：把鼠标位置绕脚底中点转回去，再按没歪的样子判断
-      const a = tilt * Math.PI / 180, dx = x - (stage.offsetLeft + origin.x), dy = y - (stage.offsetTop + origin.y);
-      lx = dx * Math.cos(a) - dy * Math.sin(a) + origin.x; ly = dx * Math.sin(a) + dy * Math.cos(a) + origin.y;
+    if (xf) {
+      // 极简模式歪着 / 翻着 / 倒挂着：把鼠标位置绕轴变回去，再按没变的样子判断
+      const p = xf.inverse.transformPoint({ x: x - (stage.offsetLeft + xf.o.x), y: y - (stage.offsetTop + xf.o.y) });
+      lx = p.x + xf.o.x; ly = p.y + xf.o.y;
     } else { const box = stage.getBoundingClientRect(); lx = x - box.left; ly = y - box.top; }
     if (themed()) return themeView.hit(lx, ly);
     if (lx < 0 || ly < 0 || lx >= width || ly >= height) return false;
@@ -344,7 +374,9 @@
   api.onPack(next => { setPack(next); draw(); });
   api.onCursor(rel => {
     if (!ctl) return;
-    ctl.aim(rel.x, rel.y);
+    // 鼠标位置是按屏幕算的：宠物贴左边时左右翻着、倒挂时上下左右都反着，眼睛要反过来看
+    const edge = edgeOf();
+    ctl.aim(edge === 'left' || edge === 'top' ? -rel.x : rel.x, edge === 'top' ? -rel.y : rel.y);
     if (!canDizzy()) spin.reset();
     else if (spin.add(rel.x, rel.y)) ctl.trigger('dizzy');
     // 眼睛马上画到新位置，不等下一帧（每秒 10 帧，等下去看着慢半拍）

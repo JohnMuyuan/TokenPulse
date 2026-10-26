@@ -31,12 +31,22 @@ body.dp-body { position: relative; }
 .dp-stage .dp-svg { position: relative; overflow: visible; pointer-events: none; }
 body.hover .dp-stage { cursor: grab; }
 body.dragging .dp-stage { cursor: grabbing; }
-/* 极简模式：躲在屏幕右边后面探头。位置和歪的角度由 desk-pet.js 算，以脚底中点为轴；探出来、缩回去带一点回弹 */
-body.mini .dp-stage { transform-origin: 50% 100%; transition: left .28s cubic-bezier(.3, 1.4, .6, 1), transform .28s cubic-bezier(.3, 1.4, .6, 1); }
-body.mini.dragging .dp-stage { transition: none; }
-body.mini .dp-hint { left: auto; right: 4px; transform: translateY(4px); }
-body.mini.hover .dp-hint { transform: none; }
+/*
+ * 极简模式：躲在屏幕边（body[data-edge]）后面探头。位置、歪的角度、翻转由 desk-pet.js 算，以脚底中点为轴；探出来、缩回去带一点回弹。
+ * 贴上边是倒挂着的：绕脚荡来荡去（rotate 和 transform 叠在一起，轴都是脚底中点）。
+ */
+body.mini .dp-stage { transform-origin: 50% 100%; transition: left .28s cubic-bezier(.3, 1.4, .6, 1), top .28s cubic-bezier(.3, 1.4, .6, 1), transform .28s cubic-bezier(.3, 1.4, .6, 1); }
+body.mini[data-edge="top"] .dp-stage { animation: dp-swing 2.4s ease-in-out infinite alternate; }
+body.mini.dragging .dp-stage { transition: none; animation: none; }
+@keyframes dp-swing { from { rotate: -5deg; } to { rotate: 5deg; } }
+body.mini[data-edge="right"] .dp-hint { left: auto; right: 4px; transform: translateY(4px); }
+body.mini[data-edge="left"] .dp-hint { left: 4px; transform: translateY(4px); }
+body.mini.hover[data-edge="right"] .dp-hint, body.mini.hover[data-edge="left"] .dp-hint { transform: none; }
+/* 标签在舞台里，跟着翻 / 倒过来：放到露出来的那头，字再翻回来 */
 body.mini .dp-badge { right: auto; left: -4px; }
+body.mini[data-edge="left"] .dp-badge { transform: scaleX(-1); }
+body.mini[data-edge="top"] .dp-badge, body.mini[data-edge="bottom"] .dp-badge { left: auto; right: -4px; bottom: auto; top: 2px; }
+body.mini[data-edge="top"] .dp-badge { transform: rotate(180deg); }
 
 .dp-hint {
   position: absolute; left: 50%; bottom: 120px; max-width: calc(100% - 8px); box-sizing: border-box;
@@ -57,4 +67,4 @@ body.dragging .dp-hint, body.talking .dp-hint { opacity: 0; }
 .dp-badge.tight { color: var(--dp-warn); }
 .dp-badge.empty { color: var(--dp-danger); }
 
-@media (prefers-reduced-motion: reduce) { .dp-hint, body.mini .dp-stage { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dp-hint, body.mini .dp-stage { transition: none; animation: none; } }

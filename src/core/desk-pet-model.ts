@@ -11,6 +11,8 @@ type Rect = { x: number; y: number; width: number; height: number };
 
 export const PET_KINDS = ["squirrel", "hamster", "octopus"] as const;
 export const PET_SCALES = [1, 2, 3] as const;
+export const PET_EDGES = ["left", "right", "top", "bottom"] as const;
+export type PetEdge = typeof PET_EDGES[number];
 export type DeskPetPrefs = {
   /** 显示桌宠。默认关。 */
   deskPet: boolean;
@@ -29,8 +31,10 @@ export type DeskPetPrefs = {
   deskPetBadge: boolean;
   /** 宠物脚下中点的屏幕坐标；null = 主屏右下角。 */
   deskPetPos: { x: number; y: number } | null;
-  /** 极简模式：躲在屏幕右边后面探头（位置只看 deskPetPos 的高度）。 */
+  /** 极简模式：躲在屏幕边后面探头（贴左右边时位置只看 deskPetPos 的高度，贴上下边时只看横向位置）。 */
   deskPetMini: boolean;
+  /** 极简模式贴哪条边：left / right / top（倒挂着）/ bottom。 */
+  deskPetEdge: PetEdge;
   /** 任务做完、在问你、出错停下、可能在等你、额度用完时响一声提示音。 */
   deskPetSound: boolean;
   /** 提示音音量，0 到 100。 */
@@ -40,7 +44,7 @@ export type DeskPetPrefs = {
   /** Agent 问你问题（选择题、计划等你批准）时，在屏幕右下角弹出问题卡片。 */
   deskPetAsk: boolean;
 };
-export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false, deskPetSound: true, deskPetVolume: 70, deskPetMute: [], deskPetAsk: true };
+export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false, deskPetEdge: "right", deskPetSound: true, deskPetVolume: 70, deskPetMute: [], deskPetAsk: true };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 export const PACK_ID = /^pet-[a-f0-9]{8}$/;
@@ -57,6 +61,7 @@ export function normalizeDeskPet(patch: Record<string, unknown>): Partial<DeskPe
   if ("deskPetFidget" in patch) out.deskPetFidget = patch.deskPetFidget !== false;
   if ("deskPetBadge" in patch) out.deskPetBadge = patch.deskPetBadge !== false;
   if ("deskPetMini" in patch) out.deskPetMini = patch.deskPetMini === true;
+  if ("deskPetEdge" in patch) out.deskPetEdge = (PET_EDGES as readonly unknown[]).includes(patch.deskPetEdge) ? patch.deskPetEdge as PetEdge : DESK_PET_DEFAULTS.deskPetEdge;
   if ("deskPetSound" in patch) out.deskPetSound = patch.deskPetSound !== false;
   if ("deskPetVolume" in patch) { const value = Math.round(Number(patch.deskPetVolume)); out.deskPetVolume = Number.isFinite(value) ? clamp(value, 0, 100) : DESK_PET_DEFAULTS.deskPetVolume; }
   if ("deskPetMute" in patch) out.deskPetMute = Array.isArray(patch.deskPetMute) ? SOUND_KINDS.filter((kind) => (patch.deskPetMute as unknown[]).includes(kind)) : [];
@@ -138,24 +143,53 @@ export function petBounds(anchor: { x: number; y: number } | null, size: { width
 export const anchorOf = (bounds: Rect) => ({ x: Math.round(bounds.x + bounds.width / 2), y: bounds.y + bounds.height });
 
 /*
- * 极简模式：窗口贴着屏幕可用区域的右边，宠物像躲在屏幕边后面探头——以脚底中点为轴往左歪 tilt 度，
- * 探出屏幕的宽度是身宽的 show 倍，其余在窗口（也就是屏幕边）外看不见。平时是 tuck，鼠标移上来换成 peek（桌宠窗口 desk-pet.js 照这个摆）。
- * 窗口本身一直完整地在这块屏幕里：右边如果还接着一块屏幕，也不会露到那块屏幕上去。
+ * 极简模式：窗口贴着屏幕可用区域的一条边，宠物像躲在屏幕边后面探头，其余在窗口（也就是屏幕边）外看不见。
+ * 平时是 tuck，鼠标移上来换成 peek（桌宠窗口 desk-pet.js 照这个摆）。
+ * - 右边：以脚底中点为轴往左歪 tilt 度，探出屏幕的宽度是身宽的 show 倍；左边是右边左右翻过来。
+ * - 下边：从屏幕底边冒出上半身，露出身高的 show 倍。
+ * - 上边：倒挂金钩，脚勾在屏幕顶边外、头朝下，露出身高的 show 倍，轻轻荡来荡去。
+ * 窗口本身一直完整地在这块屏幕里：旁边如果还接着一块屏幕，也不会露到那块屏幕上去。
  */
 export const MINI_POSE = { tuck: { tilt: 30, show: 0.55 }, peek: { tilt: 20, show: 0.75 } } as const;
-/** 松手时宠物右边离屏幕右边不到这么多（或者已经伸出去了）就贴边藏起来。 */
+const MINI_POSE_UPDOWN = { top: { tuck: { tilt: 0, show: 0.6 }, peek: { tilt: 0, show: 0.85 } }, bottom: { tuck: { tilt: 0, show: 0.5 }, peek: { tilt: 0, show: 0.8 } } } as const;
+/** 贴 edge 这条边时的姿势（发给宠物窗口的 view.mini）。 */
+export function miniPose(edge: PetEdge) {
+  return { edge, ...(edge === "top" || edge === "bottom" ? MINI_POSE_UPDOWN[edge] : MINI_POSE) };
+}
+/** 松手时宠物离屏幕左、右、上边不到这么多（或者已经伸出去了）就贴边藏起来。 */
 export const MINI_SNAP = 8;
-export function miniBounds(anchor: { x: number; y: number } | null, size: { width: number; height: number }, work: Rect): Rect {
+/** 下边不一样：宠物平时就站在屏幕底边上，要往下沉进去身高的这么多才算。 */
+export const MINI_SINK = 0.25;
+export function miniBounds(anchor: { x: number; y: number } | null, size: { width: number; height: number }, work: Rect, edge: PetEdge = "right"): Rect {
   const normal = petBounds(anchor, size, work);
+  if (edge === "left") return { ...normal, x: work.x };
+  if (edge === "top") return { ...normal, y: work.y };
+  if (edge === "bottom") return { ...normal, y: work.y + work.height - size.height };
   return { ...normal, x: work.x + work.width - size.width };
 }
-/** 极简模式下探出来的那截宠物大约在哪（对话气泡对着它；开着气泡时宠物是 peek 的姿势，探出来大约半个画面宽）。 */
-export function miniSpriteCenter(work: Rect, sprite: { width: number }) {
-  return Math.round(work.x + work.width - sprite.width / 4);
+/**
+ * 极简模式下宠物画面（sprite 那么大的格子）大约在哪：对话气泡对着它，问题卡片躲着它。按探出来（peek）的样子估：
+ * 左右边露出大约半个画面宽；下边露出上半截；上边倒挂着，头在屏幕顶边下面一点。win 是宠物窗口。
+ */
+export function miniSpriteBox(edge: PetEdge, win: Rect, work: Rect, sprite: { width: number; height: number }): Rect {
+  const { width, height } = sprite, middle = Math.round(win.x + (win.width - width) / 2);
+  if (edge === "left") return { x: Math.round(work.x - width / 4), y: win.y + win.height - height, width, height };
+  if (edge === "bottom") return { x: middle, y: Math.round(work.y + work.height - height * 0.7), width, height };
+  if (edge === "top") return { x: middle, y: Math.round(work.y + height * 0.15), width, height };
+  return { x: Math.round(work.x + work.width - width * 3 / 4), y: win.y + win.height - height, width, height };
 }
-/** 窗口放在 bounds 时，宠物的右边是不是已经到了（或伸出了）屏幕右边。 */
-export function reachesRightEdge(bounds: Rect, sprite: { width: number }, work: Rect) {
-  return bounds.x + bounds.width / 2 + sprite.width / 2 >= work.x + work.width - MINI_SNAP;
+/** 窗口放在 bounds 时，宠物伸出（或贴到）了屏幕的哪条边；好几条都是的取伸出去最多的，都没有返回 null。 */
+export function edgeReached(bounds: Rect, sprite: { width: number; height: number }, work: Rect): PetEdge | null {
+  const center = bounds.x + bounds.width / 2, bottom = bounds.y + bounds.height, top = bottom - sprite.height;
+  const over: [PetEdge, number][] = [
+    ["right", center + sprite.width / 2 - (work.x + work.width - MINI_SNAP)],
+    ["left", work.x + MINI_SNAP - (center - sprite.width / 2)],
+    ["top", work.y + MINI_SNAP - top],
+    ["bottom", bottom - (work.y + work.height + Math.round(sprite.height * MINI_SINK))],
+  ];
+  let best: PetEdge | null = null, most = -1;
+  for (const [edge, value] of over) if (value >= 0 && value > most) { best = edge; most = value; }
+  return best;
 }
 
 /** 拖动时记下的窗口位置（t 毫秒）。 */
@@ -178,23 +212,23 @@ export function releaseVelocity(trail: DragSample[], now: number): { x: number; 
 }
 /**
  * 甩出去之后每一帧窗口在哪：每帧乘 0.9 减速，碰到屏幕可用区域的边弹回来（速度剩 45%），慢到 0.05 像素 / 毫秒停下。
- * 用力甩到右边（碰右边时还有 0.6 像素 / 毫秒以上）：停在右边，hitRight = true（接着贴边藏起来）。
+ * 用力甩到哪条边（撞上时朝那边还有 0.6 像素 / 毫秒以上）：停在那条边，edge 是哪条（接着贴边藏起来）。
  * box 是窗口左上角能去的范围。
  */
 export function flingPath(start: { x: number; y: number }, velocity: { x: number; y: number }, box: { minX: number; maxX: number; minY: number; maxY: number }, frameMs = 16) {
   const points: { x: number; y: number }[] = [];
-  let x = clamp(start.x, box.minX, box.maxX), y = clamp(start.y, box.minY, box.maxY), vx = velocity.x, vy = velocity.y, hitRight = false;
+  let x = clamp(start.x, box.minX, box.maxX), y = clamp(start.y, box.minY, box.maxY), vx = velocity.x, vy = velocity.y, edge: PetEdge | null = null;
   for (let i = 0; i < 150 && Math.hypot(vx, vy) >= 0.05; i++) {
     x += vx * frameMs; y += vy * frameMs;
-    if (x >= box.maxX) { x = box.maxX; if (vx > 0.6) hitRight = true; vx = -vx * 0.45; }
-    if (x <= box.minX) { x = box.minX; vx = -vx * 0.45; }
-    if (y >= box.maxY) { y = box.maxY; vy = -vy * 0.45; }
-    if (y <= box.minY) { y = box.minY; vy = -vy * 0.45; }
+    if (x >= box.maxX) { x = box.maxX; if (vx > 0.6) edge = "right"; vx = -vx * 0.45; }
+    if (x <= box.minX) { x = box.minX; if (vx < -0.6) edge = "left"; vx = -vx * 0.45; }
+    if (y >= box.maxY) { y = box.maxY; if (vy > 0.6) edge ??= "bottom"; vy = -vy * 0.45; }
+    if (y <= box.minY) { y = box.minY; if (vy < -0.6) edge ??= "top"; vy = -vy * 0.45; }
     vx *= 0.9; vy *= 0.9;
     points.push({ x: Math.round(x), y: Math.round(y) });
-    if (hitRight) break;
+    if (edge) break;
   }
-  return { points, hitRight };
+  return { points, edge };
 }
 /** 进出极简模式的抛物线跳：u 从 0 到 1，中间最高处比两头的连线高 arc 像素。 */
 export function jumpPoint(from: { x: number; y: number }, to: { x: number; y: number }, u: number, arc: number) {

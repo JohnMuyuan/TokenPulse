@@ -34,7 +34,7 @@ export type PetTheme = {
   wideHitboxFiles: string[];
   sleepingHitboxFiles: string[];
   /**
-   * 极简模式（贴屏幕右边）各状态的动画。动画自己画好了歪着探头的样子：画面宽度的 offsetRatio 藏在屏幕外，
+   * 极简模式（贴屏幕左右边，左边是右边翻过来；贴上下边不用）各状态的动画。动画自己画好了歪着探头的样子：画面宽度的 offsetRatio 藏在屏幕外，
    * 悬停时再往外滑 peek.offsetRatio（没写按画面宽的 12%）。timings.autoReturn：mini-peek 放多久换 mini-peek-hold 之类。
    */
   miniMode: { states: Record<string, string[]>; offsetRatio: number; peek: { offsetRatio: number }; timings: { autoReturn: Record<string, number> } } | null;

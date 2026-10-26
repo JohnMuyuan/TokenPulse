@@ -323,7 +323,7 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.deepEqual(sounds.listPetSounds(), {});
   });
 
-  check('desk pet: flinging, the right-edge mini mode and the jump into it', () => {
+  check('desk pet: flinging, the four-edge mini mode and the jump into it', () => {
     const work = { x: 0, y: 0, width: 1920, height: 1040 }, size = model.petWindowSize(2), sprite = { width: 144, height: 112 };
     // 松手速度：最后一个点和它之前 40～120 毫秒的点
     const trail = [{ x: 0, y: 0, t: 0 }, { x: 40, y: 0, t: 20 }, { x: 100, y: 10, t: 50 }, { x: 160, y: 20, t: 80 }];
@@ -334,32 +334,70 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.deepEqual(model.releaseVelocity([{ x: 0, y: 0, t: 0 }], 5), { x: 0, y: 0 }, '只有一个点');
     const fast = model.releaseVelocity([{ x: 0, y: 0, t: 0 }, { x: 0, y: 1000, t: 50 }], 50);
     assert.ok(Math.abs(Math.hypot(fast.x, fast.y) - 4) < 1e-9, '太快的按上限算');
-    // 甩出去：越来越慢、停在屏幕里；碰边弹回来；用力撞右边就停在右边
+    // 甩出去：越来越慢、停在屏幕里；轻轻碰边弹回来；用力撞哪条边就停在那条边
     const box = { minX: 0, maxX: work.width - size.width, minY: 0, maxY: work.height - size.height };
     const slide = model.flingPath({ x: 500, y: 400 }, { x: 1, y: 0 }, box);
-    assert.equal(slide.hitRight, false);
+    assert.equal(slide.edge, null);
     assert.ok(slide.points.length > 5 && slide.points.length <= 150);
     const steps = slide.points.map((p, i) => p.x - (i ? slide.points[i - 1].x : 500));
     for (let i = 1; i < steps.length; i++) assert.ok(steps[i] <= steps[i - 1] + 1, '一帧比一帧慢（取整差一像素）');
     assert.ok(steps[steps.length - 1] < steps[0] / 4, '最后慢下来');
-    const bounce = model.flingPath({ x: 100, y: 400 }, { x: -2, y: 0 }, box);
+    const bounce = model.flingPath({ x: 20, y: 400 }, { x: -0.65, y: 0 }, box);
     assert.ok(bounce.points.some(p => p.x === 0), '碰到左边');
     assert.ok(bounce.points[bounce.points.length - 1].x > 0, '弹回来一点');
+    assert.equal(bounce.edge, null, '撞上时已经慢了：不贴边');
     for (const p of model.flingPath({ x: 900, y: 500 }, { x: 0.5, y: 3 }, box).points) assert.ok(p.y >= box.minY && p.y <= box.maxY, '一直在屏幕里');
     const hit = model.flingPath({ x: 1500, y: 400 }, { x: 3, y: 0 }, box);
-    assert.equal(hit.hitRight, true); assert.equal(hit.points[hit.points.length - 1].x, box.maxX);
+    assert.equal(hit.edge, 'right'); assert.equal(hit.points[hit.points.length - 1].x, box.maxX);
+    const last = r => r.points[r.points.length - 1];
+    const left = model.flingPath({ x: 300, y: 400 }, { x: -3, y: 0 }, box), up = model.flingPath({ x: 900, y: 300 }, { x: 0, y: -3 }, box), down = model.flingPath({ x: 900, y: 600 }, { x: 0.2, y: 3 }, box);
+    assert.deepEqual([left.edge, last(left).x], ['left', box.minX]);
+    assert.deepEqual([up.edge, last(up).y], ['top', box.minY]);
+    assert.deepEqual([down.edge, last(down).y], ['bottom', box.maxY]);
     assert.equal(model.flingPath({ x: 1200, y: 400 }, { x: 0, y: 0 }, box).points.length, 0, '没有速度不动');
     // 极简模式：窗口贴屏幕右边（整个窗口还在这块屏幕里），高度跟着原来的位置
     const mini = model.miniBounds({ x: 500, y: 600 }, size, work);
     assert.deepEqual(mini, { x: 1920 - 240, y: 600 - 142, width: 240, height: 142 });
     assert.equal(model.miniBounds(null, size, work).x, 1680);
-    assert.equal(model.miniSpriteCenter(work, sprite), 1920 - 36, '气泡对着探出来的那截');
+    // 左边贴左边、高度不变；上下边贴着边、横着的位置不变（整个窗口都还在屏幕里）
+    assert.deepEqual(model.miniBounds({ x: 500, y: 600 }, size, work, 'left'), { x: 0, y: 600 - 142, width: 240, height: 142 });
+    assert.deepEqual(model.miniBounds({ x: 500, y: 600 }, size, work, 'top'), { x: 500 - 120, y: 0, width: 240, height: 142 });
+    assert.deepEqual(model.miniBounds({ x: 500, y: 600 }, size, work, 'bottom'), { x: 500 - 120, y: 1040 - 142, width: 240, height: 142 });
+    assert.equal(model.miniBounds({ x: 5, y: 600 }, size, work, 'top').x, 0, '横着也不出屏幕');
+    // 气泡、问题卡片按露出来的那截估：左右边露出大约半个画面宽
+    const win = model.miniBounds({ x: 500, y: 600 }, size, work);
+    const right = model.miniSpriteBox('right', win, work, sprite), leftBox = model.miniSpriteBox('left', model.miniBounds({ x: 500, y: 600 }, size, work, 'left'), work, sprite);
+    assert.equal(right.x + right.width / 2, 1920 - 36, '气泡对着探出来的那截');
+    assert.equal(leftBox.x + leftBox.width / 2, 36);
+    assert.equal(right.y + right.height, win.y + win.height);
+    const bottomBox = model.miniSpriteBox('bottom', model.miniBounds({ x: 500, y: 600 }, size, work, 'bottom'), work, sprite);
+    assert.ok(bottomBox.x + bottomBox.width / 2 === 500 && bottomBox.y < 1040 && bottomBox.y + bottomBox.height > 1040, '下边：画面一截在屏幕底边下面');
+    const topBox = model.miniSpriteBox('top', model.miniBounds({ x: 500, y: 600 }, size, work, 'top'), work, sprite);
+    assert.ok(topBox.x + topBox.width / 2 === 500 && topBox.y >= 0 && topBox.y < 112, '上边：倒挂着的头在屏幕顶边下面');
     const { tuck, peek } = model.MINI_POSE;
     assert.ok(tuck.show < peek.show && peek.show < 1, '平时只探出头，鼠标移上来探出更多，但不整个出来');
     assert.ok(tuck.tilt > peek.tilt && peek.tilt > 0, '躲着的时候歪得多（只有头探出来），探出来时身子直一些');
-    assert.equal(model.reachesRightEdge(model.petBounds(null, size, work), sprite, work), false, '默认位置不算贴边');
-    assert.equal(model.reachesRightEdge({ x: 1920 - 240 + 40, y: 0, width: 240, height: 142 }, sprite, work), true, '拖得伸出屏幕右边：贴边');
-    assert.equal(model.reachesRightEdge({ x: 1920 - 240 + 4, y: 0, width: 240, height: 142 }, sprite, work), false, '离右边还远');
+    assert.deepEqual(model.miniPose('left'), { edge: 'left', ...model.MINI_POSE });
+    for (const edge of ['top', 'bottom']) {
+      const pose = model.miniPose(edge);
+      assert.equal(pose.edge, edge);
+      assert.ok(pose.tuck.show < pose.peek.show && pose.peek.show < 1 && pose.tuck.tilt === 0, `${edge}：不歪，露出的身高探头时多一些`);
+    }
+    // 松手时伸出了哪条边
+    const at = (x, y) => ({ x, y, width: 240, height: 142 });
+    assert.equal(model.edgeReached(model.petBounds(null, size, work), sprite, work), null, '默认位置（站在屏幕右下角）不算贴边');
+    assert.equal(model.edgeReached(at(1920 - 240 + 40, 300), sprite, work), 'right', '拖得伸出屏幕右边：贴边');
+    assert.equal(model.edgeReached(at(1920 - 240 + 4, 300), sprite, work), null, '离右边还远');
+    assert.equal(model.edgeReached(at(-40, 300), sprite, work), 'left');
+    assert.equal(model.edgeReached(at(0, 300), sprite, work), null, '贴着左边放下（宠物离边还有一截）不算');
+    assert.equal(model.edgeReached(at(800, -30), sprite, work), 'top', '宠物头顶拖过屏幕顶边');
+    assert.equal(model.edgeReached(at(800, 0), sprite, work), null, '窗口顶着屏幕顶边（宠物下面还有提示条的空）不算');
+    assert.equal(model.edgeReached(at(800, 1040 - 142), sprite, work), null, '站在屏幕底边上不算');
+    assert.equal(model.edgeReached(at(800, 1040 - 142 + 20), sprite, work), null, '往下沉一点点也不算');
+    assert.equal(model.edgeReached(at(800, 1040 - 142 + 40), sprite, work), 'bottom', '沉进去四分之一个身高：贴下边');
+    assert.equal(model.edgeReached(at(1920 - 240 + 80, 1040 - 142 + 30), sprite, work), 'right', '角上：取伸出去多的那条边');
+    assert.deepEqual(model.normalizeDeskPet({ deskPetEdge: 'top' }), { deskPetEdge: 'top' });
+    assert.deepEqual(model.normalizeDeskPet({ deskPetEdge: 'middle' }), { deskPetEdge: 'right' }, '不认识的边按右边');
     // 跳过去：两头准、中间高
     const from = { x: 100, y: 500 }, to = { x: 400, y: 500 };
     assert.deepEqual(model.jumpPoint(from, to, 0, 80), from); assert.deepEqual(model.jumpPoint(from, to, 1, 80), to);

@@ -3,6 +3,8 @@
  *
  * - 默认关闭，在「桌宠」页打开。关着的时候不建窗口、不扫会话文件。
  * - 宠物窗口透明、不占任务栏、不抢焦点；只有点在宠物身上才接鼠标，透明的地方点下去落到后面的窗口（setIgnoreMouseEvents + forward）。
+ * - 置顶：Windows 上置顶窗口之间谁后来谁在上面，别的程序的置顶窗口（视频小窗、截图工具、别的桌宠……）一出来就压住宠物，
+ *   而宠物从不抢焦点，自己回不到最上面。所以每隔几秒、电脑醒来 / 解锁、换屏幕后把宠物和它的卡片、气泡重新提到最上面（keepOnTop）。
  * - 任务状态只读会话文件推断（core/agent-activity.ts）：盯着会话目录，有文件变了马上看一次；另外空闲 4 秒、有任务在跑 1 秒兜底看一次。
  *   电脑 5 分钟没人动、也没有任务在跑，宠物去睡觉。
  * - 气泡是单独的透明窗口（desk-pet-bubble.html）：点宠物出来的是额度，右键「查看任务」出来的是任务列表。
@@ -19,7 +21,7 @@ import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask } fr
 import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
-import { anchorOf, askBounds, bubbleBounds, flingPath, GRID, jumpPoint, MINI_POSE, miniBounds, miniSpriteCenter, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, reachesRightEdge, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetMood, type PetUsing } from "../core/desk-pet-model";
+import { anchorOf, askBounds, bubbleBounds, edgeReached, flingPath, GRID, jumpPoint, miniBounds, miniPose, miniSpriteBox, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetEdge, type PetMood, type PetUsing } from "../core/desk-pet-model";
 import { petPackImages } from "../core/pet-pack";
 import { tr } from "./i18n";
 
@@ -45,8 +47,8 @@ type Options = {
   preload: string;
   prefs: () => DeskPetPrefs & { theme: "light" | "dark" };
   savePos: (pos: { x: number; y: number } | null) => void;
-  /** 进出极简模式（贴屏幕右边）。 */
-  saveMini: (on: boolean) => void;
+  /** 进出极简模式；进的时候带上贴哪条边。 */
+  saveMini: (on: boolean, edge?: PetEdge) => void;
   hide: () => void;
   snapshot: () => Snapshot | null;
   title: (account: Account) => string;
@@ -61,6 +63,10 @@ const SCAN_EVERY_MS = 4000, SCAN_BUSY_MS = 1000;
 /** 会话文件变了以后等多久再看（一下子写好几行只看一次）、两次之间至少隔多久。 */
 const SCAN_SOON_MS = 300, SCAN_GAP_MS = 500;
 const BUBBLE_DESTROY_MS = 2 * 60_000;
+/** 多久把宠物重新提到置顶窗口的最上面一次。 */
+const TOPMOST_EVERY_MS = 3000;
+/** 置顶用的层级：比任务栏高（"floating" 这几档在 Windows 上会放到任务栏后面）。 */
+const TOP_LEVEL = "pop-up-menu";
 /** 会话里的工具 → 它用哪家的额度。 */
 const TASK_ACCOUNT = { claude: "claude", codex: "chatgpt" } as const;
 
@@ -75,8 +81,9 @@ const dismissed = new Set<string>();
 const ASK_CARDS = 3;
 let scanner: ActivityScanner | null = null;
 let activity: ActivityState | null = null;
-let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null, flyTimer: NodeJS.Timeout | null = null;
-let scanning = false, listening = false, interactive = false, bubbleShown = false;
+let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null, flyTimer: NodeJS.Timeout | null = null, topTimer: NodeJS.Timeout | null = null;
+/** menuOpen：右键菜单开着（菜单也是置顶窗口，这时不把宠物提上去盖住菜单）。 */
+let scanning = false, listening = false, interactive = false, bubbleShown = false, menuOpen = false;
 /** 盯着会话目录的 watcher；soonTimer 是文件变了以后那次扫描；scanGen 每次 stopTimers 加一，旧的扫描循环看到就不再排下一次。 */
 let watchers: fs.FSWatcher[] = [], soonTimer: NodeJS.Timeout | null = null, scanGen = 0;
 let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "";
@@ -93,9 +100,12 @@ export function setupDeskPet(next: Options) {
   if (!listening) {
     listening = true;
     // 拔掉副屏、改分辨率：把宠物放回还在的屏幕里
-    const replace = () => { if (pet && !pet.isDestroyed() && !drag) placePet(); };
+    const replace = () => { if (pet && !pet.isDestroyed() && !drag) { placePet(); keepOnTop(); } };
     screen.on("display-removed", replace);
     screen.on("display-metrics-changed", replace);
+    // 睡醒、解锁回来：锁屏界面、全屏程序之类可能把宠物压下去了
+    powerMonitor.on("resume", () => keepOnTop());
+    powerMonitor.on("unlock-screen", () => keepOnTop());
   }
   syncDeskPet();
 }
@@ -111,7 +121,7 @@ function placePet() {
   const prefs = options.prefs();
   const size = petWindowSize(prefs.deskPetScale);
   const work = workAreaFor(prefs.deskPetPos);
-  const bounds = prefs.deskPetMini ? miniBounds(prefs.deskPetPos, size, work) : petBounds(prefs.deskPetPos, size, work);
+  const bounds = prefs.deskPetMini ? miniBounds(prefs.deskPetPos, size, work, prefs.deskPetEdge) : petBounds(prefs.deskPetPos, size, work);
   pet.setBounds(OFFSCREEN() ? { ...bounds, x: -20000, y: -20000 } : bounds);
   if (bubbleVisible()) placeBubble();
   placeAsk();
@@ -143,7 +153,19 @@ function applyLook() {
   if (!options || !pet || pet.isDestroyed()) return;
   const prefs = options.prefs();
   pet.setOpacity(prefs.deskPetOpacity / 100);
-  if (prefs.deskPetOnTop) pet.setAlwaysOnTop(true, "pop-up-menu"); else pet.setAlwaysOnTop(false);
+  if (prefs.deskPetOnTop) { pet.setAlwaysOnTop(true, TOP_LEVEL); keepOnTop(); } else pet.setAlwaysOnTop(false);
+}
+
+/**
+ * 把宠物重新提到置顶窗口的最上面，再把开着的问题卡片、气泡依次提上去（它们要盖在宠物上面）。
+ * 每次都重新设一遍置顶（SetWindowPos HWND_TOPMOST，不动位置、不抢焦点），已经在最上面的也没有副作用。
+ * 设置里关了置顶、宠物藏着、右键菜单开着、TokenPulse 自己别的置顶窗口（托盘面板）开着的时候不动，不去盖住它们。
+ */
+function keepOnTop() {
+  if (!options || !pet || pet.isDestroyed() || !pet.isVisible() || menuOpen || !options.prefs().deskPetOnTop) return;
+  const own = [pet, askWin, bubble];
+  if (BrowserWindow.getAllWindows().some((win) => !own.includes(win) && !win.isDestroyed() && win.isVisible() && win.isAlwaysOnTop())) return;
+  for (const win of [pet, askWin, bubbleVisible() ? bubble : null]) if (win && !win.isDestroyed() && win.isVisible()) win.setAlwaysOnTop(true, TOP_LEVEL);
 }
 
 /** 设置变了：开关、大小、透明度、换宠物都在这里落实。 */
@@ -195,6 +217,7 @@ function startTimers() {
     scanTimer = setTimeout(() => { void scan().finally(loop); }, activity?.running.length ? SCAN_BUSY_MS : SCAN_EVERY_MS);
   };
   void scan().finally(loop);
+  topTimer = setInterval(keepOnTop, TOPMOST_EVERY_MS);
   // 会话目录有 .jsonl 变了：马上看一次（新文件先把目录重扫一遍）。建不起来（目录不存在之类）就只靠定时扫描
   for (const dir of scanner.watchRoots()) {
     try {
@@ -227,8 +250,8 @@ function startTimers() {
 
 function stopTimers() {
   scanGen++;
-  for (const timer of [scanTimer, cursorTimer, dragTimer, flyTimer, soonTimer]) if (timer) clearInterval(timer);
-  scanTimer = cursorTimer = dragTimer = flyTimer = soonTimer = null;
+  for (const timer of [scanTimer, cursorTimer, dragTimer, flyTimer, soonTimer, topTimer]) if (timer) clearInterval(timer);
+  scanTimer = cursorTimer = dragTimer = flyTimer = soonTimer = topTimer = null;
   for (const watcher of watchers) watcher.close();
   watchers = [];
   drag = null; lastIdle = -1;
@@ -277,7 +300,7 @@ export function deskPetView() {
     sound: prefs.deskPetSound, volume: prefs.deskPetVolume, mute: prefs.deskPetMute,
     // 换成自己音频的提示音：种类 → 导入时间（变了宠物窗口重新要一次数据）
     sounds: Object.fromEntries(Object.entries(listPetSounds()).map(([kind, item]) => [kind, item!.at])),
-    mini: prefs.deskPetMini ? MINI_POSE : null,
+    mini: prefs.deskPetMini ? miniPose(prefs.deskPetEdge) : null,
     quota: quota.quota, mood: quota.mood, account: quota.account,
     mode: petMode(activity, idleSeconds()), phase: petPhase(activity), tasks: running.length, waiting: running.filter((task) => task.status === "waiting").length, asking: running.filter((task) => task.ask).length,
     // 在跑的子代理一共几个（主题包宠物按它换「同时忙好几件」的姿势）
@@ -335,10 +358,15 @@ export function deskPetDrag(phase: "start" | "end") {
     // 大小用算出来的，不用 getBounds()：屏幕缩放 150% 这类非整数倍时，把读回来的大小再设回去，窗口每次会大一像素，
     // 宠物画在底边中间，光标停着不动也会一直漂。光标没动就不碰窗口
     const size = petWindowSize(options.prefs().deskPetScale);
-    let dx = point.x - bounds.x;
-    // 从屏幕边上拽出来：退出极简模式，宠物回到窗口中间，抓着的就是它的身子中间
-    if (options.prefs().deskPetMini) { options.saveMini(false); pushDeskPet(true); dx = Math.round(size.width / 2); }
-    drag = { dx, dy: point.y - bounds.y, size, at: { x: bounds.x, y: bounds.y, ...size }, trail: [{ x: bounds.x, y: bounds.y, t: Date.now() }] };
+    let dx = point.x - bounds.x, dy = point.y - bounds.y;
+    // 从屏幕边上拽出来：退出极简模式，宠物回到窗口底边中间，抓着的就是它的身子中间
+    const prefs = options.prefs();
+    if (prefs.deskPetMini) {
+      options.saveMini(false); pushDeskPet(true);
+      if (prefs.deskPetEdge === "left" || prefs.deskPetEdge === "right") dx = Math.round(size.width / 2);
+      else dy = size.height - Math.round(spriteSize().height * 0.4);
+    }
+    drag = { dx, dy, size, at: { x: bounds.x, y: bounds.y, ...size }, trail: [{ x: bounds.x, y: bounds.y, t: Date.now() }] };
     pet.setIgnoreMouseEvents(false); interactive = true;
     dragTimer = setInterval(() => {
       if (!pet || pet.isDestroyed() || !drag) return;
@@ -357,16 +385,16 @@ export function deskPetDrag(phase: "start" | "end") {
   const dropped = drag.at, trail = drag.trail;
   dragTimer = null; drag = null;
   const velocity = OFFSCREEN() ? { x: 0, y: 0 } : releaseVelocity(trail, Date.now());
-  if (!velocity.x && !velocity.y) { settle(dropped, false); return; }
-  // 甩出去：按速度滑一段，碰边弹回来；用力甩到右边就贴边藏起来
+  if (!velocity.x && !velocity.y) { settle(dropped, null); return; }
+  // 甩出去：按速度滑一段，碰边弹回来；用力甩到哪条边就贴着那条边藏起来
   const work = screen.getDisplayNearestPoint(anchorOf(dropped)).workArea;
-  const { points, hitRight } = flingPath(dropped, velocity, { minX: work.x, maxX: work.x + work.width - dropped.width, minY: work.y, maxY: work.y + work.height - dropped.height });
+  const { points, edge } = flingPath(dropped, velocity, { minX: work.x, maxX: work.x + work.width - dropped.width, minY: work.y, maxY: work.y + work.height - dropped.height });
   let i = 0;
   flyTimer = setInterval(() => {
     if (!pet || pet.isDestroyed()) { stopFlying(); return; }
     const point = points[i++];
     if (point) pet.setBounds({ x: point.x, y: point.y, width: dropped.width, height: dropped.height });
-    if (i >= points.length) { stopFlying(); settle({ ...dropped, ...(points[points.length - 1] ?? dropped) }, hitRight); }
+    if (i >= points.length) { stopFlying(); settle({ ...dropped, ...(points[points.length - 1] ?? dropped) }, edge); }
   }, 16);
 }
 
@@ -375,34 +403,45 @@ function stopFlying() {
   flyTimer = null;
 }
 
-/** 停下来了：记住位置；宠物到了（或伸出了）屏幕右边就贴边藏起来。宠物窗口收到 landed 播落地。 */
-function settle(at: { x: number; y: number; width: number; height: number }, toEdge: boolean) {
+/** 停下来了：记住位置；宠物到了（或伸出了）屏幕哪条边就贴着那条边藏起来（下边要沉进去一截才算）。宠物窗口收到 landed 播落地。 */
+function settle(at: { x: number; y: number; width: number; height: number }, toEdge: PetEdge | null) {
   if (!options) return;
   const work = screen.getDisplayNearestPoint(anchorOf(at)).workArea;
   options.savePos(anchorOf(at));
-  if (toEdge || (!OFFSCREEN() && reachesRightEdge(at, spriteSize(), work))) options.saveMini(true);
+  const edge = toEdge ?? (OFFSCREEN() ? null : edgeReached(at, spriteSize(), work));
+  if (edge) options.saveMini(true, edge);
   sendEvent({ type: "landed" });
   placePet();
   pushDeskPet(true);
 }
 
+/** 从贴着 edge 的极简模式出来，宠物落在哪（脚下中点）：往屏幕里跳一段；贴下边的原地蹦一下，倒挂着的松手掉下来。 */
+function leaveAnchor(edge: PetEdge, at: { x: number; y: number }, work: { x: number; y: number; width: number; height: number }) {
+  const sprite = spriteSize(), { x: center, y: feet } = at, away = Math.round(sprite.width * 1.4);
+  if (edge === "left") return { x: work.x + away, y: feet };
+  if (edge === "top") return { x: center, y: feet + Math.round(sprite.height * 0.8) };
+  if (edge === "bottom") return { x: center, y: work.y + work.height };
+  return { x: work.x + work.width - away, y: feet };
+}
+
 /**
- * 右键菜单进出极简模式：抛物线跳过去。进的时候跳到右边贴好再藏；出的时候先探出来，往左跳一段落地。
- * 测试时（屏幕外）不跳，直接换。
+ * 右键菜单进出极简模式：抛物线跳过去。进的时候跳到那条边贴好再藏；出的时候先探出来，往屏幕里跳一段落地。
+ * edge：贴哪条边（不给用上次的）。贴上边、从上边出来不往上跳（直接挂上去 / 掉下来）。测试时（屏幕外）不跳，直接换。
  */
-export function setDeskPetMini(on: boolean) {
+export function setDeskPetMini(on: boolean, edge?: PetEdge) {
   if (!pet || pet.isDestroyed() || !options || drag) return;
-  const o = options, prefs = o.prefs();
+  const o = options, prefs = o.prefs(), side = on ? edge ?? prefs.deskPetEdge : prefs.deskPetEdge;
   if (prefs.deskPetMini === on) return;
   hideBubble();
   stopFlying();
   const size = petWindowSize(prefs.deskPetScale), from = pet.getBounds(), work = screen.getDisplayMatching(from).workArea;
-  const to = on ? miniBounds(prefs.deskPetPos, size, work) : petBounds({ x: work.x + work.width - Math.round(spriteSize().width * 1.4), y: from.y + size.height }, size, work);
+  const at = prefs.deskPetPos ?? anchorOf(from);
+  const to = on ? miniBounds(at, size, work, side) : petBounds(leaveAnchor(side, at, work), size, work);
   if (!on) { o.saveMini(false); pushDeskPet(true); }
-  const done = () => { o.savePos(anchorOf(to)); if (on) o.saveMini(true); sendEvent({ type: "landed" }); placePet(); pushDeskPet(true); };
+  const done = () => { o.savePos(anchorOf(to)); if (on) o.saveMini(true, side); sendEvent({ type: "landed" }); placePet(); pushDeskPet(true); };
   if (OFFSCREEN()) { done(); return; }
   sendEvent({ type: "fly" });
-  const start = Date.now(), ms = 520, arc = Math.round(size.height * 0.6);
+  const start = Date.now(), ms = 520, arc = side === "top" ? 0 : Math.round(size.height * 0.6);
   flyTimer = setInterval(() => {
     if (!pet || pet.isDestroyed()) { stopFlying(); return; }
     const u = Math.min(1, (Date.now() - start) / ms), point = jumpPoint(from, to, u, arc);
@@ -416,17 +455,22 @@ export function deskPetClick() { toggleBubble("quota"); }
 export function deskPetMenu() {
   if (!pet || pet.isDestroyed() || !options) return;
   const o = options;
-  Menu.buildFromTemplate([
+  const edges: [PetEdge, string][] = [["left", tr("贴到屏幕左边")], ["right", tr("贴到屏幕右边")], ["top", tr("倒挂在屏幕上边")], ["bottom", tr("藏到屏幕下边")]];
+  const menu = Menu.buildFromTemplate([
     { label: tr("查看额度"), click: () => openDeskPetBubble("quota") },
     { label: tr("查看任务"), click: () => openDeskPetBubble("tasks") },
     { label: tr("立即刷新"), click: () => o.refresh() },
     { type: "separator" },
-    { label: o.prefs().deskPetMini ? tr("退出极简模式") : tr("极简模式（贴到屏幕右边）"), click: () => setDeskPetMini(!o.prefs().deskPetMini) },
+    o.prefs().deskPetMini
+      ? { label: tr("退出极简模式"), click: () => setDeskPetMini(false) }
+      : { label: tr("极简模式"), submenu: edges.map(([edge, label]) => ({ label, click: () => setDeskPetMini(true, edge) })) },
     { label: tr("桌宠设置"), click: () => o.openSettings() },
     { label: tr("打开 TokenPulse"), click: () => o.openMain() },
     { type: "separator" },
     { label: tr("隐藏桌宠"), click: () => o.hide() },
-  ]).popup({ window: pet });
+  ]);
+  menuOpen = true;
+  menu.popup({ window: pet, callback: () => { menuOpen = false; } });
 }
 
 /** 把宠物放回主屏右下角（找不到宠物的时候用）。 */
@@ -445,9 +489,10 @@ function bubbleVisible() { return !!bubble && !bubble.isDestroyed() && bubble.is
 
 function placeBubble() {
   if (!bubble || bubble.isDestroyed() || !pet || pet.isDestroyed()) return;
-  const real = pet.getBounds(), work = screen.getDisplayMatching(real).workArea, sprite = spriteSize();
-  // 极简模式：宠物只露出右边一截，气泡对着露出来的那截
-  const bounds = options?.prefs().deskPetMini ? { ...real, x: Math.round(miniSpriteCenter(work, sprite) - real.width / 2) } : real;
+  const real = pet.getBounds(), work = screen.getDisplayMatching(real).workArea, sprite = spriteSize(), prefs = options?.prefs();
+  // 极简模式：宠物只露出一截，气泡对着露出来的那截（气泡按「宠物画在 bounds 的底边中间」摆）
+  const box = prefs?.deskPetMini ? miniSpriteBox(prefs.deskPetEdge, real, work, sprite) : null;
+  const bounds = box ? { x: box.x + Math.round((box.width - real.width) / 2), y: box.y + box.height - real.height, width: real.width, height: real.height } : real;
   const place = bubbleBounds(bounds, sprite, bubbleBox, work);
   const moved = !bubblePlace || bubblePlace.side !== place.side || bubblePlace.at !== place.at;
   bubblePlace = place;
@@ -520,7 +565,7 @@ function toggleBubble(view: BubbleView, open = false) {
   const show = () => {
     if (target.isDestroyed()) return;
     placeBubble(); pushBubble();
-    target.setAlwaysOnTop(true, "pop-up-menu");
+    target.setAlwaysOnTop(true, TOP_LEVEL);
     target.show(); target.focus(); bubbleShown = true;
     sendEvent({ type: "bubble", open: true });
   };
@@ -571,13 +616,12 @@ export function deskPetAskData(): DeskPetAskData | null {
   };
 }
 
-/** 卡片挨着宠物所在的屏幕右下角；宠物（画出来的那块，极简模式下是露出来的那截）在那儿就让开。 */
+/** 卡片挨着宠物所在的屏幕右下角；宠物（画出来的那块，极简模式下是露出来的那截附近）在那儿就让开。 */
 function placeAsk() {
   if (!askWin || askWin.isDestroyed() || !pet || pet.isDestroyed()) return;
   if (OFFSCREEN()) { askWin.setBounds({ x: -20000, y: -22000, ...askBox }); return; }
-  const real = pet.getBounds(), work = screen.getDisplayMatching(real).workArea, sprite = spriteSize();
-  const center = options?.prefs().deskPetMini ? miniSpriteCenter(work, sprite) : real.x + real.width / 2;
-  const avoid = { x: Math.round(center - sprite.width / 2), y: real.y + real.height - sprite.height, ...sprite };
+  const real = pet.getBounds(), work = screen.getDisplayMatching(real).workArea, sprite = spriteSize(), prefs = options?.prefs();
+  const avoid = prefs?.deskPetMini ? miniSpriteBox(prefs.deskPetEdge, real, work, sprite) : { x: Math.round(real.x + (real.width - sprite.width) / 2), y: real.y + real.height - sprite.height, ...sprite };
   askWin.setBounds(askBounds(askBox, work, avoid));
 }
 
@@ -605,7 +649,7 @@ function syncAsk(force = false) {
   next.setMenuBarVisibility(false);
   next.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   next.loadFile(path.join(__dirname, "..", "..", "renderer", "desk-pet-ask.html"), { query: { theme: options.prefs().theme } });
-  next.once("ready-to-show", () => { if (next.isDestroyed()) return; placeAsk(); next.setAlwaysOnTop(true, "pop-up-menu"); next.showInactive(); });
+  next.once("ready-to-show", () => { if (next.isDestroyed()) return; placeAsk(); next.setAlwaysOnTop(true, TOP_LEVEL); next.showInactive(); });
   next.on("closed", () => { if (askWin === next) { askWin = null; lastAsk = ""; } });
   placeAsk();
 }
