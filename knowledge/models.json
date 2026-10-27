@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.10.16",
-  "updatedAt": "2026-10-16T05:57:26.405Z",
+  "version": "2026.10.27",
+  "updatedAt": "2026-10-27T06:26:06.436Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。 labels：给型号打标签（promo 优惠价、until 到期日 YYYY-MM-DD、note 说明），到期自动去掉；pinned 规则也可以带 until。",
   "prices": [
     {
@@ -1073,6 +1073,23 @@
       "note": "自动：gpt-5.6-terra（LiteLLM）",
       "auto": "gpt-5.6-terra",
       "changedAt": "2026-09-30",
+      "previous": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      },
+      "previousFallback": true
+    },
+    {
+      "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-6\\.1-terra(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
+      "input": 1,
+      "output": 5,
+      "cacheRead": 0.05,
+      "cacheWrite": 1.25,
+      "note": "自动：gpt-6.1-terra（LiteLLM）",
+      "auto": "gpt-6.1-terra",
+      "changedAt": "2026-10-27",
       "previous": {
         "input": 5,
         "output": 30,
