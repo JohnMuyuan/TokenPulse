@@ -17,7 +17,7 @@ import { BrowserWindow, Menu, powerMonitor, screen } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import type { Snapshot } from "../core/report";
-import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask } from "../core/agent-activity";
+import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask, type TaskKind } from "../core/agent-activity";
 import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
@@ -67,8 +67,8 @@ const BUBBLE_DESTROY_MS = 2 * 60_000;
 const TOPMOST_EVERY_MS = 3000;
 /** 置顶用的层级：比任务栏高（"floating" 这几档在 Windows 上会放到任务栏后面）。 */
 const TOP_LEVEL = "pop-up-menu";
-/** 会话里的工具 → 它用哪家的额度。 */
-const TASK_ACCOUNT = { claude: "claude", codex: "chatgpt" } as const;
+/** 会话里的工具 → 它用哪家的额度（DeepSeek Harness、pi 没有官方账号额度）。 */
+const TASK_ACCOUNT: Partial<Record<TaskKind, Account["kind"]>> = { claude: "claude", codex: "chatgpt", grok: "grok" };
 
 let options: Options | null = null;
 let pet: BrowserWindow | null = null;
@@ -218,11 +218,11 @@ function startTimers() {
   };
   void scan().finally(loop);
   topTimer = setInterval(keepOnTop, TOPMOST_EVERY_MS);
-  // 会话目录有 .jsonl 变了：马上看一次（新文件先把目录重扫一遍）。建不起来（目录不存在之类）就只靠定时扫描
+  // 会话目录有 .jsonl（DeepSeek 是 .jsonl.zstd）变了：马上看一次（新文件先把目录重扫一遍）。建不起来（目录不存在之类）就只靠定时扫描
   for (const dir of scanner.watchRoots()) {
     try {
       const watcher = fs.watch(dir, { recursive: true, persistent: false }, (event, name) => {
-        if (!name || !String(name).endsWith(".jsonl")) return;
+        if (!name || !/\.jsonl(\.zstd)?$/.test(String(name))) return;
         if (event === "rename") scanner?.poke();
         soon();
       });

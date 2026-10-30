@@ -45,7 +45,7 @@
     "空闲时": "When idle", "没有任务在跑时，每隔二三十秒随机做一个小动作。": "With no tasks running, it does a little random action every 20–30 seconds.", "偶尔做小动作": "Do little actions now and then", "安静待着": "Stay still",
     "自定义宠物的额度标签": "Quota label for custom pets", "自己导入的宠物画不出额度，在它右下角显示剩余百分比和任务数。只对自定义宠物有效。": "Imported pets can't draw quota, so a label in the corner shows the remaining percentage and task count. Custom pets only.", "显示": "Show", "不显示": "Hide",
     "剩余额度：松鼠看身边的橡果堆，仓鼠看腮帮子，章鱼看身体颜色。额度紧张时皱着眉，隔一阵冒一下汗；用完会发呆；额度重置时补满一下。": "Remaining quota: the squirrel's acorn pile, the hamster's cheeks, the octopus's color. When quota is tight it frowns and breaks into a sweat now and then; it zones out when it's gone, and refills when quota resets.",
-    "任务：本机的 Claude Code 或 Codex 有任务在跑时，宠物开始干活；任务做完会庆祝一下。只读会话文件，不改任何工具的配置。": "Tasks: when Claude Code or Codex is running a task on this computer, the pet gets to work and celebrates when it finishes. It only reads session files and never changes any tool's config.",
+    "任务：本机的 Claude Code、Codex、Grok Build、DeepSeek Harness 或 pi 有任务在跑时，宠物开始干活；任务做完会庆祝一下。只读会话文件，不改任何工具的配置。": "Tasks: when Claude Code, Codex, Grok Build, DeepSeek Harness or pi is running a task on this computer, the pet gets to work and celebrates when it finishes. It only reads session files and never changes any tool's config.",
     "工具调用 90 秒还没有结果时，任务上写「可能在等你」：可能是在等你确认，也可能只是工具跑得久。": "If a tool call has no result after 90 seconds, the task says “May need you”: it may be waiting for your approval, or the tool may just be slow.",
     "电脑 1 分钟没人用、也没有任务在跑时，它会打哈欠、打盹，再过半分钟倒头睡着；你一回来它就醒，睡熟了会先吓一跳。": "After a minute with no one at the computer and no tasks running, it yawns and dozes off, then flops asleep half a minute later. It wakes as soon as you're back, with a start if it was fast asleep.",
     "点一下冒出额度气泡；双击戳它一下，连点四下它会东张西望。拖着用力一甩，它会滑出去、碰到屏幕边弹回来。鼠标绕着它转两圈，它会转晕一会儿。": "Click for a quota bubble; double-click to poke it, or click four times and it looks around. Fling it while dragging and it slides off, bouncing back from the screen edges. Circle the mouse around it twice and it gets dizzy for a moment.",
@@ -371,6 +371,9 @@
     "会话管理新增 pi：查看对话和工具记录、全文搜索，并在终端继续会话。": "Sessions now supports pi: read conversations and tool calls, search their text, and continue in the terminal.",
     "一键切换 pi 供应商": "Switch pi providers",
     "供应商页新增 pi，支持三种接口直连和本地路由；保留其他配置，可切回原有默认供应商。": "Providers now supports pi with three native APIs and local routing. Other settings are preserved, and you can restore the original defaults.",
+    // 0.3.69 更新说明
+    "桌宠认得 Grok Build、DeepSeek Harness 和 pi 在干活了": "The desk pet now notices Grok Build, DeepSeek Harness and pi at work",
+    "以前桌宠只看 Claude Code 和 Codex，用 Grok Build 时它一直闲着。现在这三家在跑任务时它也会干活、做完庆祝、出错提醒；Grok 问你问题或计划等你批准时弹卡片，开子代理时换成忙好几件事的样子；DeepSeek Harness 要你批准操作时马上提醒你。": "The desk pet used to watch only Claude Code and Codex, so it sat idle while Grok Build worked. Now it gets busy when any of these three runs a task, celebrates when it finishes and alerts you on errors. Grok's questions and plans awaiting approval pop up a card, and Grok subagents switch it to the juggling pose. When DeepSeek Harness needs your approval, you hear about it right away.",
     // 0.3.68 更新说明
     "极简模式能贴屏幕四条边了": "Mini mode works on all four screen edges",
     "以前只能躲在屏幕右边，现在左边、右边、下边都能躲；贴在上边时它倒挂着荡来荡去。把它拖（或甩）到那条边就行，往下要拖进屏幕底边一截；也可以在右键菜单「极简模式」里选。": "It used to hide only at the right edge. Now it can hide at the left, right and bottom edges, and at the top edge it hangs upside down and sways. Drag or fling it to an edge (for the bottom, drag it a little past the edge), or pick one under “Mini mode” in the right-click menu.",

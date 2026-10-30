@@ -1,12 +1,12 @@
 'use strict';
 /*
  * 桌宠（0.3.61）里不依赖窗口的部分：
- * - core/agent-activity.ts：从 Claude Code / Codex 会话文件推断任务状态，扫描器找最近的会话、发现「刚做完」；
+ * - core/agent-activity.ts：从 Claude Code / Codex / Grok Build / DeepSeek Harness / pi 会话文件推断任务状态，扫描器找最近的会话、发现「刚做完」；
  * - core/desk-pet-model.ts：设置项的收口、宠物跟的额度、睡觉判断、宠物和对话气泡放在哪；
  * - core/pet-pack.ts：自定义宠物文件夹的校验、导入、列表、删除。
  * 宠物窗口和对话气泡的界面在 test-desk-pet-ui.cjs（Electron）。全部在临时目录里跑，不碰真实的 ~/.claude、~/.codex、~/.tokenpulse。
  */
-const assert = require('node:assert/strict'), fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+const assert = require('node:assert/strict'), fs = require('node:fs'), os = require('node:os'), path = require('node:path'), zlib = require('node:zlib');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-desk-pet-'));
 assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep));
 process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
@@ -248,6 +248,111 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     const fifth = await scanner.scan();
     assert.deepEqual([fifth.running.length, fifth.finished], [0, ['claude:s-1']], '后台子代理也做完了：这时才算做完');
     assert.deepEqual(scanner.watchRoots(), [claude, path.join(home, 'none')]);
+  });
+
+  check('desk pet: Grok Build / DeepSeek Harness / pi turn states', () => {
+    const sec = s => Math.floor(T0 / 1000) + s;
+    const grok = (s, update) => line({ timestamp: sec(s), method: 'session/update', params: { sessionId: 'g-1', update } });
+    const call = (s, id, name, rawInput = {}) => grok(s, { sessionUpdate: 'tool_call', toolCallId: id, title: name, rawInput, _meta: { 'x.ai/tool': { name } } });
+    const result = (s, id, status = 'completed') => grok(s, { sessionUpdate: 'tool_call_update', toolCallId: id, status });
+    const ask = { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '修一下' } };
+    const turnEnd = (s, stop_reason) => grok(s, { sessionUpdate: 'turn_completed', stop_reason });
+    // Grok 的时间戳是秒
+    assert.deepEqual(activity.inferGrok([grok(0, ask), grok(1, ask)]), { status: 'thinking', since: T0, at: T0 + 1000, tool: undefined, doneAt: undefined }, '连着的分块算一条');
+    const running = [grok(0, ask), grok(2, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '…' } }), call(3, 't1', 'run_terminal_command'), grok(3, { sessionUpdate: 'tool_call_update', toolCallId: 't1', kind: 'execute' })];
+    assert.deepEqual([activity.inferGrok(running).status, activity.inferGrok(running).tool], ['tool', 'run_terminal_command'], '没有 status 的 tool_call_update 只是进度');
+    assert.equal(activity.inferGrok([...running, result(5, 't1')]).status, 'thinking');
+    assert.equal(activity.inferGrok([...running, call(4, 't2', 'read_file'), result(5, 't2')]).tool, 'run_terminal_command', '并行的工具还有一个没完');
+    const ended = stop => { const r = activity.inferGrok([...running, result(5, 't1'), turnEnd(9, stop)]); return [r.status, r.ended, r.doneAt]; };
+    assert.deepEqual([ended('end_turn'), ended('cancelled'), ended('error')], [['done', 'ok', T0 + 9000], ['done', 'interrupted', T0 + 9000], ['done', 'error', T0 + 9000]]);
+    // 读到的尾巴从一轮中间开始：以第一条回复为准
+    assert.deepEqual([activity.inferGrok([result(1, 'x'), call(2, 't3', 'grep')]).status, activity.inferGrok([result(1, 'x'), call(2, 't3', 'grep')]).since], ['tool', T0 + 2000]);
+    assert.equal(activity.inferGrok([grok(0, { sessionUpdate: 'hook_execution', event_name: 'session_start' })]), null);
+    // 问你：ask_user_question 按 AskUserQuestion 显示，回答了就没了；exit_plan_mode 是计划等批准
+    const question = call(4, 'q1', 'ask_user_question', { questions: [{ question: '用哪种？', options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] });
+    const asking = activity.inferGrok([grok(0, ask), question]);
+    assert.deepEqual([asking.ask.tool, asking.ask.id, asking.ask.questions[0].options.map(o => o.label)], ['AskUserQuestion', 'q1', ['A', 'B']]);
+    assert.equal(activity.inferGrok([grok(0, ask), question, result(8, 'q1')]).ask, undefined);
+    assert.deepEqual(activity.inferGrok([grok(0, ask), call(4, 'p1', 'exit_plan_mode')]).ask, { id: 'p1', tool: 'ExitPlanMode', at: T0 + 4000, questions: [], plan: '' });
+    // 子代理：开出去还没结束的记下来（这一轮结束了也留着）
+    const spawn = (s, child) => grok(s, { sessionUpdate: 'subagent_spawned', child_session_id: child });
+    const subs = activity.inferGrok([grok(0, ask), spawn(1, 'k1'), spawn(1, 'k2'), grok(5, { sessionUpdate: 'subagent_finished', child_session_id: 'k1' }), turnEnd(6, 'end_turn')]);
+    assert.deepEqual([subs.status, subs.children], ['done', ['k2']]);
+
+    // DeepSeek：turn/start 到 turn/end；approval/asked 没决定就是在等你批准
+    const ds = (s, type, data = {}) => line({ type, seq: s, time: T0 + s * 1000, data });
+    const dsRun = [ds(0, 'turn/start', { turn: 1 }), ds(1, 'user/message', { content: [{ type: 'text', text: 'hi' }] }), ds(2, 'assistant/message', {}), ds(3, 'tool/call', { callId: 'c1', name: 'shell' })];
+    assert.deepEqual([activity.inferDeepseek(dsRun).status, activity.inferDeepseek(dsRun).tool, activity.inferDeepseek(dsRun).since], ['tool', 'shell', T0]);
+    const approval = [...dsRun, ds(4, 'approval/asked', { id: 'a1', toolName: 'shell', callId: 'c1' })];
+    assert.equal(activity.inferDeepseek(approval).status, 'waiting');
+    assert.equal(activity.inferDeepseek([...approval, ds(5, 'approval/decided', { id: 'a1', outcome: 'allowed-once' })]).status, 'tool');
+    assert.equal(activity.inferDeepseek([...dsRun, ds(6, 'tool/result', { message: { toolCallId: 'c1' } })]).status, 'thinking');
+    const dsEnd = kind => { const r = activity.inferDeepseek([...dsRun, ds(9, 'turn/end', { turn: 1, reason: { kind } })]); return [r.status, r.ended]; };
+    assert.deepEqual([dsEnd('completed'), dsEnd('cancelled'), dsEnd('error')], [['done', 'ok'], ['done', 'interrupted'], ['done', 'error']]);
+    assert.equal(activity.liveStatus({ status: 'waiting', since: 0, at: 0 }, Date.now() - activity.STALE_MS - 1, Date.now()), 'waiting', '等你批准不按十分钟算过期');
+
+    // pi：stopReason=toolUse 去跑工具，stop / error / aborted 这一轮结束
+    const pi = (s, message) => line({ type: 'message', id: 'm' + s, timestamp: at(s), message });
+    const piRun = [pi(0, { role: 'user', content: [{ type: 'text', text: '看看' }] }), pi(2, { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'p1', name: 'read' }, { type: 'toolCall', id: 'p2', name: 'bash' }] })];
+    assert.deepEqual([activity.inferPi(piRun).status, activity.inferPi(piRun).tool, activity.inferPi(piRun).since], ['tool', 'bash', T0]);
+    assert.equal(activity.inferPi([...piRun, pi(3, { role: 'toolResult', toolCallId: 'p2' })]).tool, 'read');
+    assert.equal(activity.inferPi([...piRun, pi(3, { role: 'toolResult', toolCallId: 'p2' }), pi(3, { role: 'toolResult', toolCallId: 'p1' })]).status, 'thinking');
+    const piEnd = stopReason => { const r = activity.inferPi([...piRun, pi(9, { role: 'assistant', stopReason, content: [] })]); return [r.status, r.ended]; };
+    assert.deepEqual([piEnd('stop'), piEnd('aborted'), piEnd('error')], [['done', 'ok'], ['done', 'interrupted'], ['done', 'error']]);
+    assert.equal(activity.inferPi([line({ type: 'session', id: 'p', cwd: '/w' })]), null);
+  });
+
+  await checkAsync('desk pet: scanner reads Grok Build / DeepSeek Harness / pi sessions, Grok subagents count on their parent', async () => {
+    const home = path.join(root, 'home-third');
+    const grokRoot = path.join(home, '.grok', 'sessions'), dsRoot = path.join(home, '.dsh', 'sessions'), piRoot = path.join(home, '.pi', 'agent', 'sessions');
+    const sec = () => Math.floor(Date.now() / 1000);
+    const grok = update => line({ timestamp: sec(), method: 'session/update', params: { sessionId: 'x', update } });
+    const project = path.join(grokRoot, encodeURIComponent('D:\\work\\grok-app'));
+    const session = (id, summary, rows) => { fs.mkdirSync(path.join(project, id), { recursive: true }); if (summary) fs.writeFileSync(path.join(project, id, 'summary.json'), JSON.stringify(summary)); fs.writeFileSync(path.join(project, id, 'updates.jsonl'), rows.join('\n') + '\n'); return path.join(project, id, 'updates.jsonl'); };
+    const parent = session('g-main', { generated_title: 'Grok 修登录页', info: { cwd: 'D:\\work\\grok-app' } }, [grok({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '修登录页' } }), grok({ sessionUpdate: 'tool_call', toolCallId: 's1', title: 'spawn_subagent', _meta: { 'x.ai/tool': { name: 'spawn_subagent' } } }), grok({ sessionUpdate: 'subagent_spawned', child_session_id: 'g-child' })]);
+    const child = session('g-child', { session_kind: 'subagent' }, [grok({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '子任务' } }), grok({ sessionUpdate: 'tool_call', toolCallId: 'r1', title: 'read_file', _meta: { 'x.ai/tool': { name: 'read_file' } } })]);
+    // 没有 summary.json 的：标题用第一句话，项目名用目录
+    session('g-plain', null, [grok({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '第一句' } }), grok({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '话' } }), grok({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '好' } }), grok({ sessionUpdate: 'turn_completed', stop_reason: 'end_turn' })]);
+    const dsDir = path.join(dsRoot, '--D-work-ds--', 'session-d-1');
+    fs.mkdirSync(dsDir, { recursive: true });
+    const dsRow = (type, data = {}) => ({ type, seq: 1, time: Date.now(), data });
+    const dsFile = path.join(dsDir, 'session.v4.jsonl.zstd');
+    const frame = list => zlib.zstdCompressSync(Buffer.from(list.map(row => JSON.stringify(row)).join('\n') + '\n'));
+    fs.writeFileSync(dsFile, Buffer.concat([frame([{ type: 'session', id: 'd-1', cwd: 'D:\\work\\ds', delegationDepth: 0 }, dsRow('turn/start'), dsRow('user/message', { content: [{ type: 'text', text: '整理文档' }] })]), frame([dsRow('session/title', { title: 'DeepSeek 整理文档' }), dsRow('tool/call', { callId: 'c1', name: 'shell' })])]));
+    const dsSub = path.join(dsRoot, '--D-work-ds--', 'session-d-2');
+    fs.mkdirSync(dsSub, { recursive: true });
+    fs.writeFileSync(path.join(dsSub, 'session.v4.jsonl.zstd'), frame([{ type: 'session', id: 'd-2', cwd: 'D:\\work\\ds', delegationDepth: 1 }, dsRow('turn/start')]));
+    fs.mkdirSync(path.join(piRoot, '--D--work-pi--'), { recursive: true });
+    const piFile = path.join(piRoot, '--D--work-pi--', '2026-10-30T01-00-00-000Z_p-1.jsonl');
+    fs.writeFileSync(piFile, [line({ type: 'session', id: 'p-1', cwd: 'D:\\work\\pi', timestamp: new Date().toISOString() }), line({ type: 'message', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'text', text: '跑测试' }] } }), line({ type: 'message', timestamp: new Date().toISOString(), message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 't', name: 'bash' }] } }), line({ type: 'session_info', name: 'pi 跑测试' })].join('\n') + '\n');
+
+    const none = path.join(home, 'none');
+    const scanner = new activity.ActivityScanner({ claude: none, codex: none, codexIndex: path.join(home, 'none.jsonl'), grok: grokRoot, deepseek: dsRoot, pi: piRoot });
+    assert.deepEqual(scanner.watchRoots(), [none, none, grokRoot, dsRoot, piRoot]);
+    const first = await scanner.scan();
+    assert.deepEqual(first.running.map(t => [t.key, t.agent, t.status, t.title, t.project, t.tool ?? '']).sort(), [
+      ['deepseek:d-1', 'DeepSeek Harness', 'tool', 'DeepSeek 整理文档', 'ds', 'shell'],
+      ['grok:g-main', 'Grok Build', 'tool', 'Grok 修登录页', 'grok-app', 'spawn_subagent'],
+      ['pi:p-1', 'pi', 'tool', 'pi 跑测试', 'pi', 'bash'],
+    ], '子会话（Grok session_kind=subagent、DeepSeek delegationDepth>0）不算单独的任务');
+    assert.deepEqual(first.recent.map(t => [t.key, t.title, t.project]), [['grok:g-plain', '第一句话', 'grok-app']]);
+    // 子代理是下一次扫描才挂上的（读了主会话才知道它的 id）
+    const second = await scanner.scan();
+    assert.equal(second.running.find(t => t.key === 'grok:g-main').subagents, 1);
+    // 主会话三分钟没动，子代理还在动：不算「可能在等你」
+    const ago = new Date(Date.now() - 180_000); fs.utimesSync(parent, ago, ago);
+    fs.appendFileSync(child, grok({ sessionUpdate: 'tool_call_update', toolCallId: 'r1', status: 'completed' }) + '\n');
+    const third = await scanner.scan();
+    assert.deepEqual(third.running.filter(t => t.kind === 'grok').map(t => [t.status, t.subagents]), [['tool', 1]]);
+    // 子代理做完、主会话这一轮也结束：庆祝
+    fs.appendFileSync(child, grok({ sessionUpdate: 'turn_completed', stop_reason: 'end_turn' }) + '\n');
+    fs.appendFileSync(parent, [grok({ sessionUpdate: 'subagent_finished', child_session_id: 'g-child' }), grok({ sessionUpdate: 'tool_call_update', toolCallId: 's1', status: 'completed' }), grok({ sessionUpdate: 'turn_completed', stop_reason: 'end_turn' })].join('\n') + '\n');
+    // DeepSeek 要你批准：直接是在等你（报在 needsYou）；pi 用户中断不庆祝
+    fs.appendFileSync(dsFile, frame([dsRow('approval/asked', { id: 'a1', callId: 'c1' })]));
+    fs.appendFileSync(piFile, line({ type: 'message', timestamp: new Date().toISOString(), message: { role: 'assistant', stopReason: 'aborted', content: [] } }) + '\n');
+    const fourth = await scanner.scan();
+    assert.deepEqual([fourth.finished, fourth.needsYou, fourth.failed], [['grok:g-main'], ['deepseek:d-1'], []]);
+    assert.deepEqual(fourth.running.map(t => [t.key, t.status]), [['deepseek:d-1', 'waiting']]);
   });
 
   check('desk pet: settings are normalized, defaults keep the pet off', () => {
