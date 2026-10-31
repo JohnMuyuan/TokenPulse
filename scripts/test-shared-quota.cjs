@@ -80,6 +80,18 @@ const local=rows.map((r,i)=>({...r,at:now-(51-i*5)*minute}));
   }
   console.log('PASS off-machine usage: detection, merge, lag guard, marks with token equivalents, mixed-mark exclusion, clean capacity, gaps and minimum samples across providers');
 }
+// 0.3.70：官方百分比只给整数，容量要从一次跳点数到下一次跳点
+{
+  const at=(m,week)=>({account:id,at:now-m*minute,week,weekReset:new Date(now+3*86400000).toISOString()});
+  const use=m=>({...rows[0],key:'g'+m,at:now-m*minute});
+  const points=[at(300,0),at(290,1),at(285,1),at(200,1),at(190,2),at(100,4),at(90,5),at(80,6)];
+  const used=[305,295,284,250,195,95,85].map(use);
+  const capacity=cleanCapacity('claude',points,used,[],'week',now).current;
+  // 窗口开头还是 0%：第一次采样前的请求也算（2000 / 1 点）；隔了 85 分钟但百分比没变，接着累积（3000 / 1 点）；
+  // 隔了 90 分钟期间涨了：锚点在两次跳点中间，到下一次跳点的区间（-95 那条）丢掉；之后 1000 / 1 点
+  assert.equal(capacity.tokens,6000/3*100,'以前丢了没涨点的空档里的 Token，却把那零点几个点算到下一段，容量只有 100000');
+  console.log('PASS clean capacity counts from one official tick to the next: quiet sampling gaps keep accumulating, the first tick after an unclear gap is dropped, a window still at 0% counts from its start');
+}
 const { calibrationContains, updateCalibration, readCalibrations, calibrationStatus, forgetCalibrations } = require('../build/core/quota-calibration');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'tokenpulse-calibration-'));

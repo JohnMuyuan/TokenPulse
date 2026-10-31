@@ -371,6 +371,9 @@
     "会话管理新增 pi：查看对话和工具记录、全文搜索，并在终端继续会话。": "Sessions now supports pi: read conversations and tool calls, search their text, and continue in the terminal.",
     "一键切换 pi 供应商": "Switch pi providers",
     "供应商页新增 pi，支持三种接口直连和本地路由；保留其他配置，可切回原有默认供应商。": "Providers now supports pi with three native APIs and local routing. Other settings are preserved, and you can restore the original defaults.",
+    // 0.3.70 更新说明
+    "整窗容量折算不再偏小": "Window capacity no longer comes out too small",
+    "电脑睡眠或 TokenPulse 没开的那段时间，以前会少算本机用掉的 Token，额度详情里的「整窗容量折算」因此偏小，常常出现「已用 + 剩余」比整窗还多，甚至已用比整窗还大。现在这段用量会接着算进去，容量和剩余可用都更准，历史容量趋势也一起修正。": "Tokens used on this computer around times when it slept or TokenPulse wasn't running used to be left out, so “Window capacity” in Quota details came out too small: used plus remaining often added up to more than the whole window, and sometimes used alone did. That usage is now counted, so capacity and remaining are more accurate, and the capacity history is corrected too.",
     // 0.3.69 更新说明
     "桌宠认得 Grok Build、DeepSeek Harness 和 pi 在干活了": "The desk pet now notices Grok Build, DeepSeek Harness and pi at work",
     "以前桌宠只看 Claude Code 和 Codex，用 Grok Build 时它一直闲着。现在这三家在跑任务时它也会干活、做完庆祝、出错提醒；Grok 问你问题或计划等你批准时弹卡片，开子代理时换成忙好几件事的样子；DeepSeek Harness 要你批准操作时马上提醒你。": "The desk pet used to watch only Claude Code and Codex, so it sat idle while Grok Build worked. Now it gets busy when any of these three runs a task, celebrates when it finishes and alerts you on errors. Grok's questions and plans awaiting approval pop up a card, and Grok subagents switch it to the juggling pose. When DeepSeek Harness needs your approval, you hear about it right away.",

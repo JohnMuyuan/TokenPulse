@@ -131,20 +131,29 @@ export type CleanSegment = { cost: number; tokens: number; points: number; price
 /**
  * 把一个窗口段按相邻采样切成区间，分出干净的本机区间和本机以外的涨幅。rows 必须按时间排好、只含这个账号这一家的官方请求。
  * 周额度常常半小时以上才涨 1 个点：不到 1 点的变化先累积，避免把最后一小段请求除以 1%。
+ *
+ * 官方百分比只给整数，区间要从一次跳点数到下一次跳点才是整整那么多个点（0.3.70）：
+ * - 采样隔了半小时以上、但这期间百分比没变：没什么说不清的，接着累积（以前整段丢掉，丢了 Token 却没丢那零点几个点的进度，
+ *   进度算到了下一个区间头上，容量偏小，本机实测睡眠多的账号小 5%～9%，「已用 + 剩余」比整窗还多）；
+ * - 隔太久期间涨了、或者回落：锚点落在两次跳点中间，到下一次跳点为止的那个区间点数不准，也丢掉；
+ * - 窗口开头还是 0%：从窗口开始算起，第一次跳点前的请求也算进去。
  */
 export function cleanSegment(segment: WindowSegment, rows: RequestRow[], marks: OffMachineMark[], now: number): CleanSegment {
   const upper = (at: number) => { let low = 0, high = rows.length; while (low < high) { const mid = (low + high) >>> 1; if (rows[mid].at <= at) low = mid + 1; else high = mid; } return low; };
   const out: CleanSegment = { cost: 0, tokens: 0, points: 0, priced: true, offPoints: 0, markedPoints: 0, offIntervals: [] };
-  let anchor = segment.points[0], prev = anchor;
-  for (const point of segment.points.slice(1)) {
+  const start = segment.points[0];
+  let anchor = start && start.pct <= 0.01 && Number.isFinite(segment.startAt) && segment.startAt < start.at ? { at: segment.startAt, pct: 0 } : start, prev = anchor;
+  let aligned = anchor !== start;
+  for (const point of segment.points.slice(aligned ? 0 : 1)) {
     if (!anchor) { anchor = prev = point; continue; }
-    const step = point.at - prev.at, delta = point.pct - anchor.pct;
+    const step = point.at - prev.at, delta = point.pct - anchor.pct, moved = Math.abs(point.pct - prev.pct) > 0.01;
     prev = point;
     if (point.at <= anchor.at) continue;
-    if (step > GAP_MS || delta < -0.01) { anchor = point; continue; }
+    if ((step > GAP_MS && moved) || delta < -0.01) { anchor = point; aligned = false; continue; }
     if (delta < 1) continue;
     const from = anchor.at, to = point.at;
     anchor = point;
+    if (!aligned) { aligned = true; continue; }
     if (delta > 100) continue;
     if (overlapsMark(marks, from, to)) { out.markedPoints += delta; continue; }
     const part = rows.slice(upper(from), upper(to));
