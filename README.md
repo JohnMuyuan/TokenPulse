@@ -226,6 +226,7 @@ CLIs record usage after API calls. TokenPulse reads their session files incremen
 | Codex CLI | `~/.codex/sessions/<date>/rollout-*.jsonl` |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` |
 | DeepSeek Harness | `~/.dsh/sessions/<workdir>/session-<id>/session.v4.jsonl.zstd` |
+| pi | `~/.pi/agent/sessions/<project>/<time>_<session>.jsonl` |
 
 Deduplication, cache token accounting, and official/relay attribution have dedicated handling; see §4 of [HANDOFF.md](HANDOFF.md).
 

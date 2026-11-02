@@ -7,8 +7,8 @@ write(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false,
 write(path.join(root, 'pi', 'sessions', '--Demo--', 'pi-ui.jsonl'), [
   { type: 'session', version: 3, id: 'pi-ui', cwd: root },
   { type: 'message', id: 'a', parentId: null, message: { role: 'user', content: '检查 pi 合成演示项目' } },
-  { type: 'message', id: 'b', parentId: 'a', message: { role: 'assistant', model: 'pi-demo-model', content: [{ type: 'text', text: 'pi-search-demo：测试项目检查完成。' }] } },
-].map(row => JSON.stringify({ timestamp: new Date().toISOString(), ...row })).join('\n'));
+  { type: 'message', id: 'b', parentId: 'a', message: { role: 'assistant', model: 'pi-demo-model', usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 0, totalTokens: 60, cost: { total: 0.5 } }, content: [{ type: 'text', text: 'pi-search-demo：测试项目检查完成。' }] } },
+].map(row => JSON.stringify({ timestamp: new Date().toISOString(), ...row }) + '\n').join(''));
 process.env.TOKENPULSE_DSH_HOME = path.join(root, 'dsh');
 const dshFile = path.join(root, 'dsh', 'sessions', '--Demo--', 'session-ui', 'session.v4.jsonl.zstd');
 write(dshFile, require('node:zlib').zstdCompressSync(Buffer.from([
@@ -82,6 +82,18 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.notEqual(await e("getComputedStyle(document.querySelector('.sw-mark.pi svg path')).fill"), lightFill);
     await shot('pi-sessions-dark');
     console.log('PASS pi UI: English continuation note and narrow window');
+    // 用量：pi 和别家一样出现在工具筛选和用量明细里，带自己的图标
+    await e("navigate('usage')");
+    await until("[...document.getElementById('source-filter').options].some(o => o.value === 'pi')");
+    await e("(() => { const s = document.getElementById('source-filter'); s.value = 'pi'; s.dispatchEvent(new Event('change')); })()");
+    await until("document.querySelector('#records tr')?.textContent.includes('pi-demo-model')");
+    assert.equal(await e("document.querySelectorAll('#records tr').length"), 1);
+    assert.equal(await e("current.sources.find(s => s.source === 'pi')?.tokens"), 60, '输入 10 + 缓存读 30 + 输出 20');
+    assert.ok(await e("!!document.querySelector('#records tr .brand-svg path') || !!document.querySelector('#records tr .mini-logo svg')"), 'pi 有自己的图标，不是首字母');
+    await shot('pi-usage');
+    console.log('PASS pi UI: pi appears in the source filter and usage details');
+    await e("document.getElementById('source-filter').value = 'all'; document.getElementById('source-filter').dispatchEvent(new Event('change')); navigate('sessions')");
+    await until("document.querySelector('#page-sessions .sw-item')");
     // 删除对话：确认框选取消什么都不动；选删除后文件和列表项都没了，提示没有报错
     const { dialog } = require('electron');
     const prompts = [];

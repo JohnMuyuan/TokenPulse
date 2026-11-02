@@ -1,9 +1,9 @@
-import { recordedEffort } from "./model-effort";
+import { normalizeEffort, recordedEffort } from "./model-effort";
 import { normalizeModel } from "./request-verify";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { dataFile, readJson, writeJson } from "./paths";
+import { dataFile, piDir, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline } from "./login-timeline";
 import { routeEvents, type RouteEvent } from "./route-ledger";
@@ -25,6 +25,8 @@ import { estimateCost } from "./model-pricing";
  * | Claude Code | `~/.claude/projects/<项目>/<会话>.jsonl` | `type:"assistant"` 的 `message.usage` | `requestId` |
  * | Codex | `~/.codex/sessions/<日期>/rollout-….jsonl` | `type:"token_usage_record"` 的 `payload.usage` | `payload.response_id` |
  * | Grok Build | `~/.grok/sessions/<目录>/<会话>/updates.jsonl` | `turn_completed` 的 `update.usage` | `prompt_id` |
+ * | DeepSeek Harness | `~/.dsh/sessions/<目录>/session-<id>/session.v4.jsonl.zstd` | `assistant/message` 的 `data.usage` | `message.id` |
+ * | pi | `~/.pi/agent/sessions/<项目>/<时间>_<会话>.jsonl` | 见 piRow | 会话 + 条目 id |
  *
  * 别家 CLI（Gemini / Qwen / iFlow / Copilot）目前不往本地写 per-request usage，
  * 没法统计 —— 等它们写了，在 roots() 和解析函数那儿加一档就行。
@@ -51,13 +53,14 @@ export type UsageBucket = {
  */
 export type DayBuckets = Record<string, Record<string, Record<string, UsageBucket>>>;
 
-export type Kind = "claude-code" | "codex" | "grok-build" | "deepseek-harness";
+export type Kind = "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "pi";
 
 export const SOURCES: Record<Kind, string> = {
   "claude-code": "Claude Code",
   codex: "Codex CLI",
   "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
+  pi: "pi",
 };
 
 type FileState = {
@@ -152,6 +155,8 @@ type FileState = {
    * 用号池时工具配置里填的是本地路由，文件整体记成「不是官方」，统计时整份被跳过——这一份单独留着，照样算到号池成员名下。
    */
   routedHours?: Record<string, Record<string, Record<string, UsageBucket>>>;
+  /** pi：这个文件是分叉出来的，这个时间之前的记录都是从原会话复制来的（见 piRow）。 */
+  piForkAt?: number;
 };
 
 export type UsageRollups = {
@@ -305,8 +310,8 @@ function configOfficial(): Record<Kind, boolean | undefined> {
   } catch {
     // 没有 config.toml 同上
   }
-  // DeepSeek 按量付费，没有订阅额度窗口，不分官方 / 第三方
-  return { "claude-code": claude, codex: undefined, "grok-build": grok, "deepseek-harness": undefined };
+  // DeepSeek 按量付费，没有订阅额度窗口，不分官方 / 第三方；pi 没有自己的额度，也不算进任何官方账号
+  return { "claude-code": claude, codex: undefined, "grok-build": grok, "deepseek-harness": undefined, pi: undefined };
 }
 
 type CodexProviderRule = { official: boolean };
@@ -489,6 +494,7 @@ function roots(): { kind: Kind; dir: string }[] {
     { kind: "grok-build", dir: path.join(home, ".grok", "sessions") },
     // DeepSeek Harness（0.3.42）：~/.dsh/sessions/<工作目录>/session-<id>/session.v4.jsonl.zstd
     { kind: "deepseek-harness", dir: path.join(home, ".dsh", "sessions") },
+    { kind: "pi", dir: path.join(piDir(), "sessions") },
   ];
 }
 
@@ -508,6 +514,8 @@ type Row = {
   compaction?: boolean;
   /** DeepSeek Harness：日志里记的出字时间（见 deepseekStream）。 */
   stream?: { firstAt: number; tokensPerSec?: number };
+  /** pi：这次调用用了多久，CLI 自己记的。 */
+  durationMs?: number;
 };
 
 /* ---------------- 压缩上下文 ---------------- */
@@ -740,6 +748,40 @@ function deepseekStream(value: unknown, output: number): Row["stream"] {
   return { firstAt: first, ...(output >= 20 && ms >= 300 ? { tokensPerSec: Math.round(output / ms * 10000) / 10 } : {}) };
 }
 /*
+ * pi。口径照它自己的会话统计（getSessionStats）：不只看回复，这几处的 usage 都是花掉的钱：
+ * - assistant 消息；工具结果（工具里又调了模型的嵌套用量）；
+ * - `usage` 条目（扩展记的、不进上下文的调用）；`compaction`、`branch_summary` 条目（压缩和分支摘要那次调用，有真实用量，不用估）。
+ * 被放弃的分支还留在文件里，那些请求确实发出去过，也算。
+ * 分叉（/fork、/tree 新开文件）把旧记录原样复制进新文件，时间戳不变，而文件头的 timestamp 是分叉那一刻：
+ * 早于它的是复制来的，已经算在原文件上（原文件删了账也还在）。
+ * input 不含缓存：本机实测 totalTokens = input + output + cacheRead + cacheWrite，TokenPulse 的 input 含缓存，要加回去。
+ * 费用优先用 pi 自己算的；自定义供应商的模型没配单价时它记 0，DeepSeek 的按单价表和高峰时段算，其余交给统计时按型号估。
+ * 文件里只有配置的型号，没有上游返回的型号，所以 returned 留空、核验显示无法核对。
+ * 供应商名 tokenpulse_route 只是写进 pi 配置的名字，请求直连上游，不经过本地路由，转发记录里没有这些请求。
+ */
+function piRow(obj: Record<string, unknown>, session: string, state: FileState): Row | null {
+  const message = obj.type === "message" ? (obj.message as Record<string, unknown> | undefined) : undefined;
+  const usage = (message
+    ? (message.role === "assistant" || message.role === "toolResult" ? message.usage : undefined)
+    : (obj.type === "usage" || obj.type === "compaction" || obj.type === "branch_summary" ? obj.usage : undefined)) as Record<string, unknown> | undefined;
+  const at = Date.parse(String(obj.timestamp || "")) || 0;
+  if (!usage || !at || (state.piForkAt && at < state.piForkAt)) return null;
+  const cacheRead = num(usage.cacheRead), cacheWrite = num(usage.cacheWrite);
+  const input = num(usage.input) + cacheRead + cacheWrite, output = num(usage.output);
+  // 出错、中断的那几条没有用量
+  if (!input && !output) return null;
+  const named = message?.model ?? obj.model;
+  const model = typeof named === "string" && named ? displayModel(named) : state.model || "";
+  const reported = Number((usage.cost as Record<string, unknown> | undefined)?.total);
+  const costUsd = reported > 0 ? reported : /deepseek/i.test(model) ? estimateCost(model, { input, output, cacheRead, cacheWrite }) * (deepseekPeak(at) ? 1 : 0.5) : 0;
+  return {
+    at, id: `${session}:${String(obj.id || at)}`, model,
+    responseId: typeof message?.responseId === "string" && message.responseId ? message.responseId : undefined,
+    usage: { input, output, cacheRead, cacheWrite, reasoning: num(usage.reasoning), costUsd, requests: 1 },
+    durationMs: num(message?.durationMs) || undefined,
+  };
+}
+/*
  * 估算速度（0.3.53）：没开透明转发、没走本地路由时，用会话日志的时间戳粗估每秒输出多少 Token。
  * 用时 = 这次回复写进日志的时间 − 这次调用开始的时间（上一条提问 / 工具结果 / 上一次回复），
  * 里面包含排队、首字之前的思考和网络，所以比真实的出字速度偏慢，界面上一律标「≈」。
@@ -823,6 +865,7 @@ function scanFile(
     state.turnStartAt = undefined;
     state.lastTurnAt = undefined;
     state.callStartAt = undefined;
+    state.piForkAt = undefined;
   };
   if (state.v !== STATE_VERSION) {
     state.v = STATE_VERSION;
@@ -906,6 +949,19 @@ function scanFile(
         state.effort = effort || undefined; state.effortSource = effort ? "request/header.reasoningEffort" : undefined;
       }
     }
+    if (kind === "pi") {
+      if (obj.type === "session") {
+        if (typeof obj.cwd === "string" && obj.cwd) state.cwd = obj.cwd;
+        state.piForkAt = obj.parentSession ? Date.parse(String(obj.timestamp || "")) || undefined : undefined;
+      }
+      if (obj.type === "model_change" && typeof obj.modelId === "string" && obj.modelId) state.model = displayModel(obj.modelId);
+      const message = obj.type === "message" ? (obj.message as Record<string, unknown> | undefined) : undefined;
+      const replied = message?.role === "assistant";
+      if (replied && typeof message?.model === "string" && message.model) state.model = displayModel(message.model);
+      // 思考等级每条回复自己带，别的行不沿用
+      state.effort = replied ? normalizeEffort(message?.thinkingLevel) : undefined;
+      state.effortSource = state.effort ? "message.thinkingLevel" : undefined;
+    }
     if (kind === "grok-build") {
       const update = (obj.params as Record<string, unknown> | undefined)?.update as Record<string, unknown> | undefined;
       const meta = update?._meta as Record<string, unknown> | undefined;
@@ -958,7 +1014,7 @@ function scanFile(
     const callStart = state.callStartAt;
     const lineAt = kind === "claude-code" || kind === "codex" ? Date.parse(String(obj.timestamp || "")) || 0 : 0;
     if (lineAt && callBoundary(kind, obj)) state.callStartAt = lineAt;
-    let one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : kind === "deepseek-harness" ? deepseekRow(obj) : null;
+    let one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : kind === "deepseek-harness" ? deepseekRow(obj) : kind === "pi" ? piRow(obj, path.basename(file, ".jsonl"), state) : null;
     if (kind === "codex") {
       if (obj.type === "token_usage_record") state.codexRecords = true;
       else if (!one && !state.codexRecords) one = codexTokenCountRow(obj, state);
@@ -1084,7 +1140,7 @@ function scanFile(
         model,
         effort: piece.effort ?? (kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined),
         effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined),
-        requested: kind === "codex" ? state.model : state.requested,
+        requested: kind === "codex" || kind === "pi" ? state.model : state.requested,
         returned: row.returned,
         responseId: row.responseId,
         requestId: row.requestId,
@@ -1109,6 +1165,10 @@ function scanFile(
         const estimate = estimateOf(callStart, row.at, row.usage.output);
         if (estimate) record.estimate = estimate;
         pendingEstimate = kind === "claude-code" && row.id ? { id: row.id, startAt: callStart, output: row.usage.output, record } : null;
+      }
+      if (row.durationMs) {
+        const estimate = estimateOf(row.at - row.durationMs, row.at, row.usage.output);
+        if (estimate) out.records[out.records.length - 1].estimate = estimate;
       }
       touched = true;
     }
