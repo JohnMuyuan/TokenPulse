@@ -497,7 +497,7 @@
       d.kind === 'deepseek' ? null : { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
       d.resumeCommand ? { value: 'command', label: '复制继续命令', hint: d.resumeCommand } : null,
       { value: 'id', label: '复制会话 ID', hint: d.id },
-      ['deepseek', 'pi'].includes(d.kind) ? null : { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
+      { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
     ].filter(Boolean);
     openOptionMenu(anchor, '更多操作', menu, null, async value => {
       if (value === 'command') copy(d.resumeCommand, '继续命令已复制');

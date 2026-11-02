@@ -2,7 +2,7 @@ import { execFileSync, spawn, type ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { deleteClaudeSession, type AgentKind } from "../core/sessions";
+import { deleteLocalSessionFiles, type AgentKind } from "../core/sessions";
 
 /**
  * 在 TokenPulse 里直接回复一段会话：用对应 CLI 的无界面模式接着这个会话跑一轮，
@@ -288,7 +288,7 @@ export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFi
   ];
 }
 /**
- * 删除命令对着本机 CLI 的 --help 核过。Claude Code 没有普通对话删除子命令。
+ * 删除命令对着本机 CLI 的 --help 核过。Claude Code、pi、DeepSeek Harness 没有后台能调用的删除命令，走 deleteLocalSessionFiles。
  * Codex 要带 --force（0.3.21）：不带的话它要在终端里问一句确认，TokenPulse 起的进程没有终端，
  * 直接报「cannot confirm session deletion without an interactive terminal」。确认已经由 TokenPulse 自己的对话框问过了。
  */
@@ -300,12 +300,11 @@ export function deleteArgs(kind: AgentKind, id: string): string[] | null {
 
 /** 永久删除一段会话；正在回复的会话不允许删除。 */
 export async function deleteSession(kind: AgentKind, id: string) {
-  if (kind === "deepseek") throw new Error("DeepSeek Harness 的会话不从这里删除");
   const key = `${kind}:${id}`;
   if ([...runs.values()].some((run) => run.key === key)) throw new Error("这段会话正在回复，请先停止再删除");
   const args = deleteArgs(kind, id);
   if (!args) {
-    if (!deleteClaudeSession(id)) throw new Error("找不到 Claude Code 的会话记录文件");
+    if (!deleteLocalSessionFiles(kind, id)) throw new Error("找不到这段对话的会话记录文件");
     return;
   }
   const cli = resolveCli(kind);

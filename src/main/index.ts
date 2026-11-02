@@ -957,15 +957,18 @@ async function pickProjectFolder(start: unknown) {
   const result = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
   return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
 }
-/** 永久删除一段对话：先由主进程弹确认框，再调用各家 CLI（Claude 走本地文件回退）。 */
+const DELETE_METHOD: Record<AgentKind, string> = {
+  claude: "Claude Code 没有普通对话删除命令；TokenPulse 会删除本机的会话记录文件和同名附属目录。此操作无法撤销。",
+  codex: "将调用 codex delete --force <会话 ID> 永久删除这段对话。此操作无法撤销。",
+  grok: "将调用 grok sessions delete <会话 ID> 永久删除这段对话。此操作无法撤销。",
+  deepseek: "DeepSeek Harness 没有删除功能；TokenPulse 会删除本机的会话记录和它派出的子代理记录。如果 Harness 正开着，请先关掉再删，否则它的列表要重启后才更新。此操作无法撤销。",
+  pi: "TokenPulse 会删除本机的会话记录文件，和在 pi 的 /resume 列表里删除一样。如果这段对话还开着，请先退出。此操作无法撤销。",
+};
+
+/** 永久删除一段对话：先由主进程弹确认框，再调用各家 CLI（Claude、pi、DeepSeek 删本机文件）。 */
 async function deleteConversation(kind: unknown, id: unknown) {
-  if (kind === "pi") throw new Error("请在 pi 中管理会话文件。");
   const hit = await sessionOf(kind, id);
-  const method = hit.kind === "claude"
-    ? "Claude Code 没有普通对话删除命令；TokenPulse 会删除本机的会话记录文件和同名附属目录。此操作无法撤销。"
-    : hit.kind === "codex"
-      ? "将调用 codex delete --force <会话 ID> 永久删除这段对话。此操作无法撤销。"
-      : "将调用 grok sessions delete <会话 ID> 永久删除这段对话。此操作无法撤销。";
+  const method = DELETE_METHOD[hit.kind];
   const options = {
     type: "warning" as const,
     title: tr("删除对话"),

@@ -168,6 +168,85 @@ assert(!fs.existsSync(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1.json
 assert(!fs.existsSync(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1')));
 assert(!sessions.listSessions().some(item => item.key === 'claude:claude-1'));
 
+// pi：和它自己在 /resume 里删除一样，只删这段对话的 .jsonl；以文件里的会话 id 为准，索引过期时不删错
+const piDir = path.join(process.env.PI_CODING_AGENT_DIR, 'sessions', '--D--Demo--');
+const piRows = id => [
+  { type: 'session', version: 3, id, timestamp: '2026-09-24T14:00:00Z', cwd: project },
+  { type: 'message', id: 'a', parentId: null, timestamp: '2026-09-24T14:00:01Z', message: { role: 'user', content: [{ type: 'text', text: '你好' }] } },
+  { type: 'message', id: 'b', parentId: 'a', timestamp: '2026-09-24T14:00:02Z', message: { role: 'assistant', content: [{ type: 'text', text: '嗯' }] } },
+];
+const piFile = path.join(piDir, '2026-09-24T14-00-00-000Z_pi-1.jsonl');
+const piOther = path.join(piDir, '2026-09-24T14-10-00-000Z_pi-2.jsonl');
+const piRenamed = path.join(piDir, 'renamed.jsonl');
+write(piFile, piRows('pi-1'));
+write(piOther, piRows('pi-2'));
+const piStale = path.join(piDir, '2026-09-24T14-20-00-000Z_pi-4.jsonl');
+write(piRenamed, piRows('pi-3'));
+write(piStale, piRows('pi-4'));
+assert(sessions.listSessions().some(item => item.key === 'pi:pi-1'));
+const piText = sessions.sessionTextFile(piFile);
+fs.mkdirSync(path.dirname(piText), { recursive: true });
+fs.writeFileSync(piText, '缓存的文字');
+assert.strictEqual(sessions.deleteLocalSessionFiles('pi', 'pi-1'), true);
+assert(!fs.existsSync(piFile) && !fs.existsSync(piText), 'pi 的会话文件和全文搜索缓存都删掉');
+assert(fs.existsSync(piOther), '别的 pi 会话不动');
+assert.strictEqual(sessions.deleteLocalSessionFiles('pi', 'pi-3'), true, '文件被改过名也能删');
+assert(!fs.existsSync(piRenamed));
+// 文件内容换成了别的会话、大小和修改时间又没变：索引还以为是 pi-4，不能照着索引删
+const staleStat = fs.statSync(piStale);
+write(piStale, piRows('pi-9'));
+fs.utimesSync(piStale, staleStat.atime, staleStat.mtime);
+assert.strictEqual(sessions.deleteLocalSessionFiles('pi', 'pi-4'), false, '文件里的会话 id 对不上：不删');
+assert(fs.existsSync(piStale));
+fs.rmSync(piStale);
+assert.deepStrictEqual(sessions.listSessions().filter(item => item.kind === 'pi').map(item => item.id), ['pi-2']);
+
+// DeepSeek Harness：删整个会话目录、它派出的子代理（平级目录，可以好几层）、列表缓存和 workspace.json 里的 ID；
+// 分叉出来的会话有 parentSession 但不是子代理，是独立的一段对话，不跟着删
+const dshHome = process.env.TOKENPULSE_DSH_HOME;
+const dshSession = (id, header = {}) => {
+  const file = path.join(dshHome, 'sessions', 'Demo', id, 'session.v4.jsonl.zstd');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, zlib.zstdCompressSync(Buffer.from([
+    { type: 'session', id, createdAt: '2026-09-24T13:00:00Z', cwd: project, ...header },
+    { type: 'user/message', time: '2026-09-24T13:00:02Z', data: { role: 'user', content: [{ type: 'text', text: '问题' }] } },
+    { type: 'assistant/message', time: '2026-09-24T13:00:03Z', data: { message: { role: 'assistant', content: [{ type: 'text', text: '回答' }] } } },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n')));
+  return file;
+};
+dshSession('session-sub', { origin: 'subagent', parentSession: 'session-demo', delegationDepth: 1 });
+dshSession('session-sub2', { origin: 'subagent', parentSession: 'session-sub', delegationDepth: 2 });
+dshSession('session-fork', { parentSession: 'session-demo', isSeeded: true });
+dshSession('session-other');
+fs.writeFileSync(path.join(dshHome, 'sessions', 'Demo', 'session-demo', 'extra.bin'), 'x');
+const projcache = path.join(dshHome, 'storages', 'session_projcache', 'sessions');
+fs.mkdirSync(projcache, { recursive: true });
+for (const id of ['session-demo', 'session-sub', 'session-sub2', 'session-other']) fs.writeFileSync(path.join(projcache, `${id}.json`), '{}');
+const workspaceFile = path.join(dshHome, 'storages', 'workspace.json');
+fs.writeFileSync(workspaceFile, JSON.stringify({
+  unit: { name: 'workspace', version: 1 },
+  global: { initialized: true, defaultWorkspaceId: 'w1', workspaceIds: ['w1'], archivedSessionIds: ['session-sub', 'session-other'], pinnedSessionIds: ['session-demo'] },
+  tables: { workspaces: { w1: { path: project, title: 'Demo', sessionIds: ['session-demo', 'session-other', 'session-sub2'], createdAt: 'x', updatedAt: 'y' } } },
+}));
+sessions.listSessions();
+assert.strictEqual(sessions.deleteLocalSessionFiles('deepseek', 'session-demo'), true);
+const dshDirs = fs.readdirSync(path.join(dshHome, 'sessions', 'Demo')).sort();
+assert.deepStrictEqual(dshDirs, ['session-fork', 'session-other'], '主会话和两层子代理的目录都删掉，分叉和别的会话不动');
+assert.deepStrictEqual(fs.readdirSync(projcache), ['session-other.json']);
+assert.deepStrictEqual(JSON.parse(fs.readFileSync(workspaceFile, 'utf8')), {
+  unit: { name: 'workspace', version: 1 },
+  global: { initialized: true, defaultWorkspaceId: 'w1', workspaceIds: ['w1'], archivedSessionIds: ['session-other'], pinnedSessionIds: [] },
+  tables: { workspaces: { w1: { path: project, title: 'Demo', sessionIds: ['session-other'], createdAt: 'x', updatedAt: 'y' } } },
+}, 'workspace.json 只去掉被删的 ID');
+assert.deepStrictEqual(sessions.listSessions().filter(item => item.kind === 'deepseek').map(item => item.id).sort(), ['session-fork', 'session-other']);
+
+// 只有 Claude、pi、DeepSeek 走本地文件；Codex、Grok 走 CLI。id 里不能有路径
+assert.strictEqual(sessions.deleteLocalSessionFiles('codex', 'codex-1'), false);
+assert.strictEqual(sessions.deleteLocalSessionFiles('grok', 'grok-1'), false);
+assert.strictEqual(sessions.deleteLocalSessionFiles('deepseek', '..\\session-other'), false);
+assert.strictEqual(sessions.deleteLocalSessionFiles('deepseek', 'missing'), false);
+assert(fs.existsSync(path.join(dshHome, 'sessions', 'Demo', 'session-other')));
+
 /* ---------------- 在 TokenPulse 里回复 ---------------- */
 const reply = require('../build/main/session-reply.js');
 const claudeArgs = reply.replyArgs('claude', 'abc', 'readonly');
@@ -189,6 +268,8 @@ for (const args of [claudeArgs, codexArgs, grokArgs, reply.replyArgs('deepseek',
 assert.deepStrictEqual(reply.deleteArgs('codex', 'abc'), ['delete', '--force', 'abc'], 'Codex 删除要带 --force：没有终端时它没法问确认');
 assert.deepStrictEqual(reply.deleteArgs('grok', 'abc'), ['sessions', 'delete', 'abc']);
 assert.strictEqual(reply.deleteArgs('claude', 'abc'), null);
+assert.strictEqual(reply.deleteArgs('pi', 'abc'), null);
+assert.strictEqual(reply.deleteArgs('deepseek', 'abc'), null);
 
 // 在终端里继续：进项目目录；PATH 上没有 CLI 时退到找到的 exe；单引号按 PowerShell 规则加倍
 const script = reply.terminalScript('grok', "a'b", "D:\\临时\\it's here", 'C:\\Users\\x\\.grok\\bin\\grok.exe');
@@ -271,5 +352,13 @@ assert.deepStrictEqual(ev('grok', { params: { update: { sessionUpdate: 'agent_me
 assert.deepStrictEqual(ev('grok', { update: { sessionUpdate: 'tool_call', title: 'read_file', _meta: { 'x.ai/tool': { name: 'Read' } } } }), { tool: 'Read' });
 assert.deepStrictEqual(ev('grok', { params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '我说的' } } } }), {}, '自己发的那句不当成回复');
 
-fs.rmSync(root, { recursive: true, force: true });
-console.log(`session tests passed (${list.length} sessions, reply args + stream events)`);
+(async () => {
+  // 主进程的删除入口：pi、DeepSeek 不再拦着；找不到时报错
+  await reply.deleteSession('pi', 'pi-2');
+  assert(!fs.existsSync(piOther));
+  await reply.deleteSession('deepseek', 'session-other');
+  assert(!fs.existsSync(path.join(dshHome, 'sessions', 'Demo', 'session-other')));
+  await assert.rejects(reply.deleteSession('pi', 'missing'), /找不到这段对话的会话记录文件/);
+  fs.rmSync(root, { recursive: true, force: true });
+  console.log(`session tests passed (${list.length} sessions, reply args + stream events)`);
+})().catch(error => { console.error(error); process.exit(1); });

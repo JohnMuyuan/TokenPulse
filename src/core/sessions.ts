@@ -27,7 +27,7 @@ import { zstdFrames } from "./zstd-frames";
  * 而且在 worker 里做的内存缓存每次都是新进程、根本用不上。现在摘要按「文件大小 + 修改时间」缓存到
  * `~/.tokenpulse/sessions-index.json`，只重读变了的文件；点开详情只读那一个文件。
  *
- * 只读，不改 CLI 的任何文件。
+ * 只读，不改 CLI 的任何文件；唯一的例外是用户确认后的删除对话（deleteLocalSessionFiles）。
  */
 
 export type AgentKind = "claude" | "codex" | "grok" | "deepseek" | "pi";
@@ -661,41 +661,117 @@ function fileOf(kind: AgentKind, id: string) {
   return filesOf(kind, id)[0];
 }
 
-/** Claude Code 没有普通对话删除命令：删主 transcript 和同名附属目录，并同步移出索引。 */
+function isInside(root: string, candidate: string) {
+  const relative = path.relative(root, candidate);
+  return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
+}
+
+/** 这个文件确实属于这段会话时，给出删除它要带走的路径；对不上（索引过期）给空，不删。 */
+function removalPaths(kind: AgentKind, id: string, file: string): string[] {
+  const target = path.resolve(file);
+  if (kind === "claude") {
+    const root = path.resolve(path.join(cliDir("claude"), "projects"));
+    if (!isInside(root, target) || path.basename(target) !== `${id}.jsonl`) return [];
+    const sidecar = path.resolve(path.dirname(target), id);
+    return isInside(root, sidecar) ? [target, sidecar] : [target];
+  }
+  if (kind === "pi") {
+    // pi 自己在 /resume 里删除时也只删这一个文件。文件名可能被改过，以第一行 header 里的会话 id 为准
+    if (!isInside(path.resolve(path.join(piDir(), "sessions")), target)) return [];
+    const header = parseLine(readLines(target)[0] ?? "");
+    return header?.type === "session" && header.id === id ? [target] : [];
+  }
+  if (kind === "deepseek") {
+    const dir = path.dirname(target);
+    return isInside(path.resolve(path.join(dshRoot(), "sessions")), dir) && path.basename(dir) === id ? [dir] : [];
+  }
+  return [];
+}
+
+/** DeepSeek 的子代理各占一个和主会话平级的目录，header 里写着 origin=subagent 和 parentSession；子代理还能再派子代理。 */
+function deepseekSubagents(id: string) {
+  const children = new Map<string, { id: string; file: string }[]>();
+  for (const file of walk(path.join(dshRoot(), "sessions"), (candidate) => path.basename(candidate) === "session.v4.jsonl.zstd")) {
+    let header: Record<string, any> | null = null;
+    try { header = parseLine(zstdFrames(fs.readFileSync(file)).text.split("\n", 1)[0]); } catch { continue; }
+    if (header?.origin !== "subagent" || !str(header.id) || !str(header.parentSession)) continue;
+    children.set(header.parentSession, [...(children.get(header.parentSession) ?? []), { id: header.id, file }]);
+  }
+  const found: { id: string; file: string }[] = [];
+  const seen = new Set([id]);
+  const queue = [id];
+  for (const parent of queue) {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      queue.push(child.id);
+      found.push(child);
+    }
+  }
+  return found;
+}
+
+/**
+ * DeepSeek Harness 没有删除功能（只有归档），它记着会话 ID 的地方要自己清：
+ * `storages/session_projcache/sessions/<id>.json` 是列表缓存，`storages/workspace.json` 里有工作区成员、置顶和归档。
+ * Harness 开着时状态在它内存里，写回去会把 ID 带回来；找不到记录的 ID 它只是过滤掉不显示，所以这里失败不影响删除。
+ */
+function forgetDeepseekSessions(ids: string[]) {
+  const storages = path.join(dshRoot(), "storages");
+  try {
+    for (const id of ids) fs.rmSync(path.join(storages, "session_projcache", "sessions", `${id}.json`), { force: true });
+    const file = path.join(storages, "workspace.json");
+    const workspace = readJson<Record<string, any> | null>(file, null);
+    if (!workspace) return;
+    let changed = false;
+    const without = (owner: Record<string, any> | undefined, key: string) => {
+      const list = owner?.[key];
+      if (!owner || !Array.isArray(list) || !list.some((id) => ids.includes(id))) return;
+      owner[key] = list.filter((id) => !ids.includes(id));
+      changed = true;
+    };
+    without(workspace.global, "archivedSessionIds");
+    without(workspace.global, "pinnedSessionIds");
+    for (const row of Object.values(workspace.tables?.workspaces ?? {})) without(row as Record<string, any>, "sessionIds");
+    if (changed) writeJson(file, workspace);
+  } catch {
+    // 会话本身已经删掉了
+  }
+}
+
+/**
+ * Claude Code、pi、DeepSeek Harness 没有能在后台调用的删除命令：直接删本机的会话记录，并同步移出索引和全文搜索缓存。
+ * Claude 连同名附属目录，DeepSeek 连整个会话目录和它派出的子代理。
+ */
 export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
-  if (kind !== "claude" || !id || id.length > 200 || !/^[A-Za-z0-9._-]+$/.test(id)) return false;
-  let files = filesOf("claude", id);
+  if (!id || id.length > 200 || !/^[A-Za-z0-9._-]+$/.test(id)) return false;
+  let files = filesOf(kind, id);
   if (!files.length) {
     listSessions();
-    files = filesOf("claude", id);
+    files = filesOf(kind, id);
   }
-  const root = path.resolve(path.join(cliDir("claude"), "projects"));
-  const inside = (candidate: string) => {
-    const relative = path.relative(root, candidate);
-    return relative !== "" && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
-  };
-  const removed: string[] = [];
-  for (const file of files) {
-    const transcript = path.resolve(file);
-    if (!inside(transcript) || path.basename(transcript) !== `${id}.jsonl`) continue;
-    fs.rmSync(transcript, { force: true });
-    // 全文搜索缓存里这段对话的文字也删掉
+  const targets = files.map((file) => ({ file, paths: removalPaths(kind, id, file) })).filter((target) => target.paths.length);
+  if (!targets.length) return false;
+  const ids = [id];
+  if (kind === "deepseek") {
+    for (const child of deepseekSubagents(id)) {
+      const paths = removalPaths(kind, child.id, child.file);
+      if (!paths.length) continue;
+      targets.push({ file: child.file, paths });
+      ids.push(child.id);
+    }
+  }
+  for (const { file, paths } of targets) {
+    for (const target of paths) fs.rmSync(target, { recursive: true, force: true });
     fs.rmSync(sessionTextFile(file), { force: true });
-    const sidecar = path.resolve(path.dirname(transcript), id);
-    if (inside(sidecar)) fs.rmSync(sidecar, { recursive: true, force: true });
-    removed.push(file);
   }
-  if (!removed.length) return false;
+  if (kind === "deepseek") forgetDeepseekSessions(ids);
   const index = readJson<SessionIndex | null>(indexFile(), null);
   if (index?.version === INDEX_VERSION) {
-    for (const file of removed) delete index.files[file];
+    for (const { file } of targets) delete index.files[file];
     writeJson(indexFile(), index);
   }
   return true;
-}
-
-export function deleteClaudeSession(id: string) {
-  return deleteLocalSessionFiles("claude", id);
 }
 
 /** 详情：只读这一个会话文件。索引里没有（新会话）就先刷新一遍列表。 */
