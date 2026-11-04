@@ -428,6 +428,52 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.deepEqual(sounds.listPetSounds(), {});
   });
 
+  check('desk pet: read-only source files (zip, cloud drive, shared folder) can still be replaced and reset to default', () => {
+    // Windows 上 copyFile 会把只读属性带进数据目录，以前「恢复默认」报 EPERM、界面却说「演示模式下不能更改」
+    const sounds = require('../build/core/pet-sound-file');
+    const packs = require('../build/core/pet-pack');
+    const writable = file => { try { fs.accessSync(file, fs.constants.W_OK); return true; } catch { return false; } };
+    const dir = path.join(root, 'readonly-src'); fs.mkdirSync(dir, { recursive: true });
+    const mp3 = path.join(dir, 'bell.mp3'), mp3b = path.join(dir, 'bell2.mp3');
+    fs.writeFileSync(mp3, Buffer.from('ID3\x04\x00 first', 'latin1')); fs.writeFileSync(mp3b, Buffer.from('ID3\x04\x00 second', 'latin1'));
+    fs.chmodSync(mp3, 0o444); fs.chmodSync(mp3b, 0o444);
+    const copy = path.join(process.env.TOKENPULSE_DATA_DIR, 'pet-sounds', 'done.mp3');
+    sounds.importPetSound('done', mp3);
+    assert.equal(writable(copy), true, '复制进来的副本是可写的');
+    // 旧版本留下的只读副本：同格式再换一个能覆盖，恢复默认能删
+    fs.chmodSync(copy, 0o444);
+    sounds.importPetSound('done', mp3b);
+    assert.equal(fs.readFileSync(copy, 'latin1').endsWith('second'), true);
+    fs.chmodSync(copy, 0o444);
+    assert.equal(sounds.removePetSound('done'), true);
+    assert.equal(fs.existsSync(copy), false);
+    assert.deepEqual(sounds.listPetSounds(), {});
+    // 五种提示音都一样：旧版本留下的只读副本，升级后直接「恢复默认」或换成别的格式就行，不用用户先去改文件属性
+    const wav = path.join(dir, 'bell.wav'); fs.writeFileSync(wav, Buffer.concat([Buffer.from('RIFF\x24\x00\x00\x00WAVEfmt ', 'latin1'), Buffer.alloc(16)]));
+    for (const kind of sounds.SOUND_KINDS) {
+      sounds.importPetSound(kind, mp3);
+      fs.chmodSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'pet-sounds', `${kind}.mp3`), 0o444);
+    }
+    for (const kind of ['done', 'ask', 'waiting']) assert.equal(sounds.removePetSound(kind), true, kind);
+    for (const kind of ['error', 'empty']) assert.equal(sounds.importPetSound(kind, wav).type, 'wav', kind);
+    assert.deepEqual(fs.readdirSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'pet-sounds')).sort(), ['empty.wav', 'error.wav', 'sounds.json'], '只读的 mp3 副本都删掉了');
+    for (const kind of ['error', 'empty']) sounds.removePetSound(kind);
+    assert.deepEqual(sounds.listPetSounds(), {});
+    // 自定义宠物同理：只读的图片导入后能删掉
+    const folder = path.join(root, 'readonly-pet'); fs.mkdirSync(folder, { recursive: true });
+    const idle = path.join(folder, 'idle.png');
+    fs.writeFileSync(idle, Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(32)]));
+    fs.writeFileSync(path.join(folder, 'pet.json'), JSON.stringify({ name: '只读的猫', states: { idle: 'idle.png' } }));
+    fs.chmodSync(idle, 0o444);
+    const pack = packs.importPetPack(folder);
+    const stored = path.join(packs.petsDir(), pack.id, 'idle.png');
+    assert.equal(writable(stored), true);
+    fs.chmodSync(stored, 0o444); // 旧版本导入的
+    assert.equal(packs.removePetPack(pack.id), true);
+    assert.equal(fs.existsSync(path.join(packs.petsDir(), pack.id)), false);
+    for (const file of [mp3, mp3b, idle]) fs.chmodSync(file, 0o666);
+  });
+
   check('desk pet: flinging, the four-edge mini mode and the jump into it', () => {
     const work = { x: 0, y: 0, width: 1920, height: 1040 }, size = model.petWindowSize(2), sprite = { width: 144, height: 112 };
     // 松手速度：最后一个点和它之前 40～120 毫秒的点

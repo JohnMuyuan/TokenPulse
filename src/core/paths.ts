@@ -29,6 +29,34 @@ export function writeJson(file: string, value: unknown) {
   fs.renameSync(tmp, file);
 }
 
+/*
+ * 用户选的文件复制进数据目录：Windows 上 copyFile 会把「只读」属性一起带过来（比如从压缩包、网盘、
+ * 别人共享的文件夹里选的文件），之后删除或覆盖这份副本就报 EPERM。复制后把副本改回可写；
+ * 目标已经是只读的旧副本时先改可写再覆盖。
+ */
+export function copyIntoData(source: string, target: string) {
+  try { fs.chmodSync(target, 0o666); } catch { /* 目标还不存在 */ }
+  fs.copyFileSync(source, target);
+  fs.chmodSync(target, 0o666);
+}
+
+/** 删数据目录里自己的文件 / 文件夹。碰到只读（旧版本复制进来的）先改可写再删，其他错误照常抛出。 */
+export function removeFromData(target: string) {
+  try { fs.rmSync(target, { recursive: true, force: true }); return; } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EPERM" && code !== "EACCES") throw error;
+  }
+  const writable = (item: string) => {
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(item); } catch { return; }
+    if (stat.isSymbolicLink()) return;
+    try { fs.chmodSync(item, stat.isDirectory() ? 0o777 : 0o666); } catch { /* 改不了就让下面的 rmSync 报原来的错 */ }
+    if (stat.isDirectory()) for (const name of fs.readdirSync(item)) writable(path.join(item, name));
+  };
+  writable(target);
+  fs.rmSync(target, { recursive: true, force: true });
+}
+
 export function readJson<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as T;

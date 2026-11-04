@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { dataFile, writeJson } from "./paths";
+import { copyIntoData, dataFile, removeFromData, writeJson } from "./paths";
 import { normalizeTheme, readThemeFolder, THEME_FILE, themeFiles, themeFileType, type PetTheme } from "./pet-theme";
 import { sanitizeSvg, SVG_FILE_MAX } from "./svg-sanitize";
 
@@ -118,7 +118,7 @@ function importTheme(dir: string, target: string): PetPack & { warning?: string 
   const folder = readThemeFolder(dir, { file: PET_FILE_MAX, total: PET_PACK_MAX });
   for (const [name, item] of folder.files) {
     if (item.svg) fs.writeFileSync(path.join(target, name), item.svg, "utf8");
-    else fs.copyFileSync(item.file, path.join(target, name));
+    else copyIntoData(item.file, path.join(target, name));
   }
   writeJson(path.join(target, "pet.json"), { name: folder.name, author: folder.author, kind: "theme", theme: folder.theme });
   const notes = [folder.missing.length ? `有 ${folder.missing.length} 个动画文件没找到，用到它们的地方会换成别的动画` : "", folder.theme.schemaVersion > 1 ? "这个主题的格式比 TokenPulse 认识的新，有些动作可能显示不出来" : ""].filter(Boolean);
@@ -137,18 +137,18 @@ export function importPetPack(dir: string): PetPack & { warning?: string } {
   const target = path.join(petsDir(), id);
   fs.mkdirSync(target, { recursive: true });
   if (!folder) {
-    try { return importTheme(source, target); } catch (error) { fs.rmSync(target, { recursive: true, force: true }); throw error; }
+    try { return importTheme(source, target); } catch (error) { try { removeFromData(target); } catch { /* 清不掉也报原来的错 */ } throw error; }
   }
   const states: Partial<Record<PetState, string>> = {};
   try {
     for (const [state, item] of Object.entries(folder.files) as [PetState, { file: string; type: ImageType }][]) {
       const name = `${state}.${item.type === "jpeg" ? "jpg" : item.type}`;
-      fs.copyFileSync(item.file, path.join(target, name));
+      copyIntoData(item.file, path.join(target, name));
       states[state] = name;
     }
     writeJson(path.join(target, "pet.json"), { name: folder.name, author: folder.author, states });
   } catch (error) {
-    fs.rmSync(target, { recursive: true, force: true });
+    try { removeFromData(target); } catch { /* 清不掉也报原来的错 */ }
     throw error;
   }
   return { id, name: folder.name, author: folder.author, states };
@@ -174,7 +174,7 @@ export function removePetPack(id: unknown): boolean {
   if (typeof id !== "string" || !ID.test(id)) return false;
   const target = path.join(petsDir(), id);
   if (!fs.existsSync(target)) return false;
-  fs.rmSync(target, { recursive: true, force: true });
+  removeFromData(target);
   return true;
 }
 

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { dataFile, writeJson } from "./paths";
+import { copyIntoData, dataFile, removeFromData, writeJson } from "./paths";
 
 /**
  * 桌宠提示音换成自己的音频：每种提示音可以单独换一个文件。
@@ -68,8 +68,8 @@ export function importPetSound(kind: unknown, file: unknown): PetSound {
   fs.mkdirSync(soundsDir(), { recursive: true });
   const list = readList();
   const old = list[kind];
-  fs.copyFileSync(file, path.join(soundsDir(), `${kind}.${type}`));
-  if (old && old.type !== type) fs.rmSync(path.join(soundsDir(), `${kind}.${old.type}`), { force: true });
+  copyIntoData(file, path.join(soundsDir(), `${kind}.${type}`));
+  if (old && old.type !== type) removeFromData(path.join(soundsDir(), `${kind}.${old.type}`));
   const sound: PetSound = { name: path.basename(file).slice(0, 120), type, size: info.size, at: Date.now() };
   writeJson(listFile(), { ...list, [kind]: sound });
   return sound;
@@ -80,7 +80,7 @@ export function removePetSound(kind: unknown): boolean {
   if (!isKind(kind)) return false;
   const list = readList(), old = list[kind];
   if (!old) return false;
-  fs.rmSync(path.join(soundsDir(), `${kind}.${old.type}`), { force: true });
+  removeFromData(path.join(soundsDir(), `${kind}.${old.type}`));
   delete list[kind];
   writeJson(listFile(), list);
   return true;

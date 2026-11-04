@@ -200,7 +200,7 @@
       const reset = mine ? el('button', { type: 'button', class: 'text-btn', 'data-reset': kind, text: '恢复默认' }) : null;
       reset?.addEventListener('click', async () => {
         try { S.sounds = await pet.removeSound(kind) || {}; loadSounds(); render(); }
-        catch { toast('演示模式下不能更改', { kind: 'warning' }); }
+        catch { toast(api.isDemo?.() ? '演示模式下不能更改' : '恢复默认失败，请检查数据目录权限', { kind: 'warning' }); }
       });
       const toggle = el('button', { type: 'button', class: 'dps-switch small' + (muted ? '' : ' on'), role: 'switch', 'aria-checked': String(!muted), 'aria-label': L(`${name}时响`, `Play for “${T(name)}”`), 'data-mute': kind, translate: 'no' }, [el('span', { class: 'dps-knob' })]);
       toggle.addEventListener('click', () => save({ deskPetMute: muted ? mute.filter(item => item !== kind) : [...mute, kind] }));
@@ -222,7 +222,7 @@
 
   async function importSound(kind) {
     let result;
-    try { result = await pet.importSound(kind); } catch { toast('演示模式下不能更改', { kind: 'warning' }); return; }
+    try { result = await pet.importSound(kind); } catch { toast(api.isDemo?.() ? '演示模式下不能更改' : '导入失败', { kind: 'warning' }); return; }
     if (!result || result.canceled) return;
     if (!result.ok) { toast(result.error || '导入失败', { kind: 'warning' }); return; }
     S.sounds = result.sounds || {};
@@ -276,7 +276,7 @@
 
   async function importPack() {
     let result;
-    try { result = await pet.importPack(); } catch { toast('演示模式下不能导入', { kind: 'warning' }); return; }
+    try { result = await pet.importPack(); } catch { toast(api.isDemo?.() ? '演示模式下不能导入' : '导入失败', { kind: 'warning' }); return; }
     if (!result || result.canceled) return;
     if (!result.ok) { toast(result.error || '导入失败', { kind: 'warning' }); return; }
     S.packs = result.packs;

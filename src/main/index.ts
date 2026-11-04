@@ -20,7 +20,7 @@ import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
 import { dataDir } from "../core/paths";
-import { appLogFile, log } from "../core/app-log";
+import { appLogFile, errorText, log } from "../core/app-log";
 import { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, type QuotaGlance } from "../core/quota";
 import type { Snapshot } from "../core/report";
 import { updateCalibration } from "../core/quota-calibration";
@@ -1206,7 +1206,7 @@ if (!app.requestSingleInstanceLock()) {
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
       try { return { ok: true as const, pack: importPetPack(picked.filePaths[0]), packs: listPetPacks() }; }
-      catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "导入失败" }; }
+      catch (error) { return { ok: false as const, error: importError(error) }; }
     });
     ipcMain.handle("desk-pet:reset-position", () => { resetDeskPetPosition(); return true; });
     // 问题卡片（Agent 在问你）和自己选的提示音
@@ -1220,9 +1220,14 @@ if (!app.requestSingleInstanceLock()) {
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
       try { const sound = importPetSound(kind, picked.filePaths[0]); syncDeskPet(); return { ok: true as const, sound, sounds: listPetSounds() }; }
-      catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "导入失败" }; }
+      catch (error) { return { ok: false as const, error: importError(error) }; }
     });
     ipcMain.handle("desk-pet:remove-sound", (_event, kind: unknown) => { removePetSound(kind); syncDeskPet(); return listPetSounds(); });
+    // 校验不过的是给用户看的中文说明；文件系统的错误（EPERM 之类）换成一句能看懂的，细节进日志
+    function importError(error: unknown) {
+      if ((error as NodeJS.ErrnoException)?.code) { console.error("desk-pet import failed:", errorText(error)); return "复制失败，请检查数据目录权限"; }
+      return error instanceof Error ? error.message : "导入失败";
+    }
     ipcMain.handle("knowledge:state", () => knowledgeState());
     ipcMain.handle("knowledge:check", () => checkKnowledge(() => backgroundRefresh(false)));
     ipcMain.handle("ccswitch:sync", async () => publishSnapshot(await loadSnapshot(false, true)));
