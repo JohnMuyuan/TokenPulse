@@ -49,7 +49,7 @@ import { foregroundAccounts, quietPick } from "../core/quota-quiet";
 import { readQuotaChecks } from "../core/quota-history";
 import { switchCliAccount } from "../core/cli-switch";
 import { runHealthCheck } from "./health";
-import { activateProvider, agentDrift, agentView as coreAgentView, usesOfficialLogin, poolAccountIds, deleteProvider, poolDef, importCcProviders, importCurrent, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
+import { activateProvider, agentDrift, agentView as coreAgentView, usesOfficialLogin, poolAccountIds, deleteProvider, poolDef, importCcProviders, importCurrent, listPoolModels, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
 import { randomUUID } from "crypto";
@@ -1280,6 +1280,7 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(checkDrift, 5000);
     ipcMain.handle("agent:readonly", (_event, on: unknown) => { applyPrefs({ agentReadOnly: on === true }); publishAgent(); return agentView(); });
     ipcMain.handle("agent:models", (_event, input: unknown) => agentCall(() => listProviderModels(input)));
+    ipcMain.handle("agent:pool-models", (_event, input: unknown) => agentCall(() => listPoolModels(input)));
     ipcMain.handle("agent:probe", async (_event, id: unknown) => {
       try {
         return { ok: true, result: await probeProvider(String(id || "")) };

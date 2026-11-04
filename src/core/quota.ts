@@ -41,7 +41,11 @@ export type OfficialQuota = {
   plan?: string;
   /** 查的是哪个账号（accounts.ts 的 id）。采样历史按它分开，切换账号不会把两个人的百分比连成一条线。 */
   accountId?: string;
+  /** 只对某个型号算的周额度（Claude 的 Fable），见 claudeModelWeeks。只有 Max 及以上的账号才有。 */
+  modelWeeks?: ModelWeek[];
 };
+
+export type ModelWeek = { model: string; pct: number; reset?: string };
 
 export type AccountKind = OfficialAccountKind;
 /**
@@ -501,6 +505,9 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
   const five = windowPct(json.five_hour);
   const week = windowPct(json.seven_day);
   if (!five && !week) return undefined;
+  const scoped = claudeModelWeeks(json);
+  // 有按型号的行才去问套餐：Pro 账号不多发请求
+  const modelWeeks = scoped.length && (await claudeTier(active)) === "max" ? scoped : undefined;
   return {
     name: "Claude 账号",
     fiveHourPct: five?.pct ?? 0,
@@ -508,7 +515,69 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
     weekReset: week?.reset,
     fiveHourReset: five?.reset,
     accountId: active.accountId,
+    ...(modelWeeks ? { modelWeeks } : {}),
   };
+}
+
+/*
+ * Claude 按型号的周额度。额度接口的 limits[] 里 kind = "weekly_scoped"、带 scope.model.display_name 的行，
+ * 就是只对这个型号算的周额度（目前是 Fable），Claude Code 的 /usage 显示成「Current week (Fable)」。
+ * 只有 Max 及以上的账号显示：Pro 用不了 Fable。套餐以账号资料接口为准（has_claude_max、organization_type），
+ * 不用凭据里的 subscriptionType：那是登录时的快照，登录后升级不会变。套餐查不到就不显示。
+ */
+export function claudeModelWeeks(json: Record<string, unknown>): ModelWeek[] {
+  const rows = Array.isArray(json.limits) ? (json.limits as unknown[]) : [];
+  const out: ModelWeek[] = [];
+  for (const raw of rows) {
+    const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+    const scope = row?.scope as { model?: { display_name?: unknown } } | null | undefined;
+    const model = scope?.model?.display_name;
+    if (row?.kind !== "weekly_scoped" || typeof model !== "string" || !model.trim()) continue;
+    if (typeof row.percent !== "number" || !Number.isFinite(row.percent)) continue;
+    out.push({ model: model.trim().slice(0, 40), pct: row.percent, ...(typeof row.resets_at === "string" ? { reset: row.resets_at } : {}) });
+  }
+  return out;
+}
+
+/** max：Max，或团队 / 企业版（Max 及以上）；basic：Pro、免费版。认不出返回 undefined。 */
+export function claudeTierOf(profile: Record<string, unknown>): "max" | "basic" | undefined {
+  const account = (profile.account ?? {}) as Record<string, unknown>;
+  const org = (profile.organization ?? {}) as Record<string, unknown>;
+  const type = typeof org.organization_type === "string" ? org.organization_type.toLowerCase() : "";
+  const tier = typeof org.rate_limit_tier === "string" ? org.rate_limit_tier.toLowerCase() : "";
+  if (account.has_claude_max === true || /max|team|enterprise/.test(type) || /max/.test(tier)) return "max";
+  if (account.has_claude_pro === true || /pro|free/.test(type) || account.has_claude_max === false) return "basic";
+  return undefined;
+}
+
+const TIER_TTL_MS = 6 * 3600_000;
+const TIER_RETRY_MS = 30 * 60_000;
+const claudeTiers = new Map<string, { tier?: "max" | "basic"; until: number }>();
+
+/** 这个账号的套餐，按账号缓存 6 小时；资料接口没问到时沿用上次的，半小时后再试。 */
+async function claudeTier(active: Target): Promise<"max" | "basic" | undefined> {
+  const key = active.accountId || "";
+  const hit = claudeTiers.get(key);
+  if (hit && Date.now() < hit.until) return hit.tier;
+  try {
+    const json = await curlJson("https://api.anthropic.com/api/oauth/profile", [
+      `Authorization: Bearer ${active.token}`,
+      "anthropic-beta: oauth-2025-04-20",
+      "anthropic-version: 2023-06-01",
+    ]);
+    const tier = claudeTierOf(json) ?? hit?.tier;
+    claudeTiers.set(key, { tier, until: Date.now() + TIER_TTL_MS });
+    return tier;
+  } catch (error) {
+    log.warn("quota", `Claude 套餐没查到，暂不显示按型号的周额度：${errorText(error)}`);
+    claudeTiers.set(key, { tier: hit?.tier, until: Date.now() + TIER_RETRY_MS });
+    return hit?.tier;
+  }
+}
+
+/** 测试用：清掉套餐缓存。 */
+export function resetClaudeTiers() {
+  claudeTiers.clear();
 }
 
 /**
@@ -545,6 +614,7 @@ function quotaLine(quota: OfficialQuota) {
   const bits = [
     quota.fiveHourPct != null ? `5 小时 ${quota.fiveHourPct.toFixed(1)}%` : "",
     quota.weekPct != null ? `周 ${quota.weekPct.toFixed(1)}%` : "",
+    ...(quota.modelWeeks ?? []).map((row) => `${row.model} 周 ${row.pct.toFixed(1)}%`),
     quota.resetCredits != null ? `重置次数 ${quota.resetCredits}` : "",
   ].filter(Boolean);
   return bits.join("，") || "有数据";

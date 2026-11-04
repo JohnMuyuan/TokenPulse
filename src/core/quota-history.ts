@@ -24,6 +24,8 @@ export type QuotaSample = {
   plan?: string;
   /** 哪个账号的采样（0.3 起）。更早的采样没有这一项，都来自 CLI 当时登录的账号。 */
   account?: string;
+  /** 按型号的周额度（Claude Max 的 Fable），见 quota.ts 的 claudeModelWeeks。 */
+  models?: { model: string; pct: number; reset?: string }[];
 };
 
 export type QuotaHistory = { version: 1; accounts: Record<string, QuotaSample[]> };
@@ -60,8 +62,12 @@ function same(a: QuotaSample, b: QuotaSample) {
     sameReset(a.fiveReset, b.fiveReset) &&
     sameReset(a.weekReset, b.weekReset) &&
     a.resetCredits === b.resetCredits &&
-    a.account === b.account
+    a.account === b.account &&
+    sameModels(a.models, b.models)
   );
+}
+function sameModels(a: QuotaSample["models"] = [], b: QuotaSample["models"] = []) {
+  return a.length === b.length && a.every((row, i) => row.model === b[i].model && row.pct === b[i].pct && sameReset(row.reset, b[i].reset));
 }
 
 /**
@@ -149,6 +155,7 @@ export function recordQuotaSamples(map: OfficialQuotaMap, now = Date.now()) {
       resetCredits: quota.resetCredits,
       plan: quota.plan,
       account: quota.accountId,
+      ...(quota.modelWeeks?.length ? { models: quota.modelWeeks.map((row) => ({ ...row })) } : {}),
     };
     const list = (history.accounts[kind] ??= []);
     // 同一家好几个账号的采样交错排在一起：去重要和**同一个账号**的上一条比

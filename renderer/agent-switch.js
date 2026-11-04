@@ -1063,6 +1063,53 @@
     select.addEventListener('change', () => { editor.pool.reasoningEffort = select.value; });
     return el('label', { class: 'pv-field' }, [el('span', { text: '思考等级' }), select, el('small', { text: 'Grok 里的 /effort 对号池不起作用（会提示 current model does not support reasoning effort）。在这里选一档，本地路由转发时替你加上。' })]);
   }
+  /**
+   * 号池的模型框 +「获取模型」。号池没有自己的地址和密钥：主进程挨个问成员（官方 Claude 账号用它的登录，供应商用它的密钥），
+   * 合并后点一下填进模型框。号池轮换着用成员，只有部分成员有的模型标出「2/3」：轮到没有的成员时请求会失败。
+   * 问的是编辑页里当前勾选的成员，还没保存的也算。
+   */
+  function poolModelField(app, provider, field) {
+    const label = field('model', app === 'grok' ? '模型' : '默认模型（可选）', { value: provider?.model || '', translate: 'no', placeholder: app === 'grok' ? '例如 grok-4.7-build' : '留空就由工具自己选模型' }, app === 'grok' ? 'Grok CLI 的配置表必须写一个模型名。' : '留空时工具照常发自己选的模型，号池原样转给官方。');
+    const input = label.querySelector('input');
+    const list = el('div', { class: 'pv-fetched pv-pool-models' });
+    const misses = el('ul', { class: 'pv-pool-misses' });
+    misses.hidden = true;
+    const fetch = button('获取模型', async () => {
+      if (pending || editor.fetching) return;
+      const draft = editor;
+      if (!draft.pool.members.length) { showFeedback('先在「成员」里加入账号或供应商', 'warning'); return; }
+      const asked = JSON.stringify(draft.pool.members);
+      draft.fetching = true; fetch.disabled = true; fetch.setAttribute('aria-busy', 'true');
+      showFeedback('正在向号池成员获取模型…', 'pending');
+      try {
+        const result = await api.agentPoolModels({ app, id: provider?.id, members: draft.pool.members });
+        if (editor !== draft || !list.isConnected || pending) return;
+        if (JSON.stringify(draft.pool.members) !== asked) { showFeedback('号池成员已改变，请重新获取。', 'warning'); return; }
+        if (!result?.ok) { showFeedback(result?.error || '获取模型失败', 'error'); return; }
+        const { models, members, total } = result.result;
+        list.replaceChildren(...models.slice(0, 60).map(model => {
+          const partial = model.members < total;
+          const chip = el('button', { type: 'button', class: 'pv-level' + (partial ? ' partial' : ''), 'data-model': model.id, title: partial ? '只有部分成员有这个模型：轮到没有的成员时请求会失败' : '' }, [
+            el('span', { text: model.id, translate: 'no' }),
+            partial ? el('small', { class: 'num', text: ` ${model.members}/${total}` }) : null,
+          ]);
+          chip.addEventListener('click', () => { input.value = model.id; input.dispatchEvent(new Event('input', { bubbles: true })); });
+          return chip;
+        }));
+        const failed = members.filter(row => !row.ok);
+        misses.replaceChildren(...failed.map(row => el('li', {}, [el('span', { text: row.name, translate: 'no' }), el('span', { text: row.error || '获取模型失败' })])));
+        misses.hidden = !failed.length;
+        showFeedback(!models.length ? '没有成员返回模型，原因见模型框下方。' : failed.length ? '已获取模型；有成员没问到，见模型框下方。' : '已获取模型；点一下填进模型框。', !models.length ? 'error' : failed.length ? 'warning' : 'success');
+      } catch (error) {
+        if (editor === draft && !pending && list.isConnected) showFeedback(error?.message || '获取模型失败', 'error');
+      } finally {
+        draft.fetching = false; fetch.disabled = pending; fetch.removeAttribute('aria-busy');
+        if (feedback?.kind === 'pending' && feedback.message === '正在向号池成员获取模型…') clearPending();
+      }
+    }, 'btn');
+    fetch.dataset.action = 'fetch-pool-models';
+    return el('div', { class: 'pv-pool-model' }, [label, el('div', { class: 'pv-pool-model-tools' }, [fetch, el('small', { text: '向号池里的每个成员要模型列表，全员都有的排前面。' })]), list, misses]);
+  }
   function modelSection(app, provider) {
     const box = el('div', { class: 'pv-models' });
     const hint = app === 'pi' ? 'pi 支持三种接口直连；新会话用这里选择的模型，旧会话请在 /model 中切换。' : app === 'codex'
@@ -1287,7 +1334,8 @@
       const move = step => { const j = i + step; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; box.replaceWith(poolOrder()); root.querySelectorAll('.pv-pool-order li')[j]?.querySelector('button:not([disabled])')?.focus(); };
       const up = iconButton('up', '往前移', () => move(-1)); up.disabled = i === 0;
       const down = iconButton('up', '往后移', () => move(1), 'flip'); down.disabled = i === list.length - 1;
-      box.append(el('li', {}, [el('span', { class: 'pv-order-no', text: String(i + 1) }), el('span', { class: 'pv-member-kind', text: m.type === 'account' ? '账号' : 'Key' }), el('b', { text: memberName(m), translate: 'no' }), up, down]));
+      const gone = memberMissing(m);
+      box.append(el('li', { class: gone ? 'missing' : null }, [el('span', { class: 'pv-order-no', text: String(i + 1) }), el('span', { class: 'pv-member-kind', text: m.type === 'account' ? '账号' : 'Key' }), el('b', { text: memberName(m), translate: 'no' }), gone ? el('small', { class: 'pv-member-gone', text: '已删除，保存时移出' }) : null, up, down]));
     });
     return box;
   }
@@ -1332,6 +1380,11 @@
     if (m.type === 'provider') return providersOf(editor?.app).find(p => p.id === m.id)?.name || '已删除的供应商';
     const acc = editor?.accounts?.find(a => a.id === m.id);
     return acc ? acc.alias || acc.email || acc.label : editor?.provider?.pool?.members.find(x => x.id === m.id)?.name || m.id;
+  }
+  /** 号池里还记着、但账号 / 供应商已经删掉的成员：后端保存时会移出。 */
+  function memberMissing(m) {
+    if (m.type === 'provider') return !providersOf(editor?.app).some(p => p.id === m.id);
+    return !!editor?.provider?.pool?.members.find(x => x.type === 'account' && x.id === m.id)?.missing;
   }
   function editorFingerprint() {
     const form = root.querySelector('.pv-editor');
@@ -1433,7 +1486,7 @@
         pane('basic',
           avatarPicker(),
           nameInput,
-          field('model', app === 'grok' ? '模型' : '默认模型（可选）', { value: provider?.model || '', translate: 'no', placeholder: app === 'grok' ? '例如 grok-4.7-build' : '留空就由工具自己选模型' }, app === 'grok' ? 'Grok CLI 的配置表必须写一个模型名。' : '留空时工具照常发自己选的模型，号池原样转给官方。'),
+          poolModelField(app, provider, field),
           app === 'grok' ? poolContextField(provider) : null,
           app === 'grok' ? poolEffortField() : null,
           notes,

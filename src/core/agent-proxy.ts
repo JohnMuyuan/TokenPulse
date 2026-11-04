@@ -944,13 +944,18 @@ function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse,
   });
 }
 
-export async function fetchUpstreamModels(baseUrl: string, apiKey: string) {
+/**
+ * 上游的模型列表（/v1/models）。official：号池里的官方 Claude 账号，用 OAuth 令牌问 Anthropic，
+ * 要带 oauth beta 和 anthropic-version；官方默认一页 20 个，要一次拿全。
+ */
+export async function fetchUpstreamModels(baseUrl: string, apiKey: string, official?: "claude-oauth") {
   let url: URL;
-  try { url = joinUpstream(baseUrl, "/v1/models"); } catch { throw new Error("地址不是有效的网址"); }
+  try { url = joinUpstream(baseUrl, official ? "/v1/models?limit=1000" : "/v1/models"); } catch { throw new Error("地址不是有效的网址"); }
   const proxy = await proxyFor(url);
   return new Promise<string[]>((resolve, reject) => {
     const headers: Record<string, string> = {};
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+    if (official === "claude-oauth") Object.assign(headers, { "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" });
     const request = upstreamRequest(url, proxy, { method: "GET", timeout: 8000, headers }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));

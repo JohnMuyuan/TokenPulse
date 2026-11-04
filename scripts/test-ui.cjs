@@ -768,6 +768,23 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(tabBar.shown, true, 'scrollbar appears when accounts overflow');
       assert.ok(tabBar.after > tabBar.before, `scrollbar thumb should scroll the row, ${tabBar.before} -> ${tabBar.after}`);
       assert.equal(tabBar.hiddenAfter, true);
+      // 这一行先在窄的时候量过（比如编辑布局点「完成」时右边的布局面板还没关），之后变宽：不重画也要把滚动条收掉
+      const tabResize = await evaluate(`(async () => {
+        const tabs = document.getElementById('account-tabs');
+        const bar = document.getElementById('account-tabs-bar');
+        // 重算排在 ResizeObserver 之后的下一帧：多等几帧
+        const frame = () => new Promise(resolve => { let n = 4; const tick = () => (--n ? requestAnimationFrame(tick) : resolve()); requestAnimationFrame(tick); });
+        tabs.style.maxWidth = '120px';
+        await frame();
+        markAccountTabEdges();
+        const narrow = !bar.hidden && tabs.scrollWidth > tabs.clientWidth + 2;
+        tabs.style.maxWidth = '';
+        await frame();
+        const fits = tabs.scrollWidth <= tabs.clientWidth + 2;
+        return { narrow, fits, hidden: bar.hidden, edges: tabs.classList.contains('overflow-right') };
+      })()`);
+      assert.equal(tabResize.narrow, true, 'scrollbar shows while the row is squeezed');
+      if (tabResize.fits) assert.deepEqual([tabResize.hidden, tabResize.edges], [true, false], 'scrollbar and fade go away once the row widens again, without a redraw');
       console.log('PASS quota account click stays a click, drag reorders, scrollbar scrolls');
       // 会话管理：左边列表、右边对话；复制项目地址；回复走主进程的 sessions:reply。
       // 这里把 sessions:reply 换成假的：不真的调 CLI（会花订阅额度、改会话文件），只验证界面的流式显示和结束后的状态。

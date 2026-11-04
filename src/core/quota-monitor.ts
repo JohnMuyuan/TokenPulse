@@ -135,6 +135,8 @@ export type AccountReport = {
   quiet?: boolean;
   resetCredits?: number;
   plan?: string;
+  /** 按型号的周额度（Claude Max 的 Fable），取最后一次采样。resetAt 毫秒。 */
+  modelWeeks?: { model: string; used: number; resetAt?: number }[];
   /** 这份额度是哪个账号的（= 这组采样的账号）。 */
   accountId?: string;
   /** 这个账号的名字（邮箱），report.ts 从账号登记里补上。 */
@@ -683,6 +685,9 @@ export function analyzeAccount(
         : latest?.at,
     resetCredits: latest?.resetCredits,
     plan: latest?.plan,
+    ...(latest?.models?.length
+      ? { modelWeeks: latest.models.map((row) => ({ model: row.model, used: row.pct, ...(Number.isFinite(Date.parse(row.reset ?? "")) ? { resetAt: Date.parse(row.reset!) } : {}) })) }
+      : {}),
     week,
     five,
     trend,

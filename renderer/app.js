@@ -628,6 +628,23 @@ function settingsDone(message) { $('prefs-status').textContent = ''; showStatus(
 function empty(message) { return el('div', { class: 'empty', text: message }); }
 /** 预测压力高才变色；按趋势会提前一点点用完的（watch）只用文字说明。老快照没有 pressure 字段时退回 runsOutBeforeReset。 */
 function pressured(win) { return Boolean(win && (win.pressure ? win.pressure === 'high' : win.runsOutBeforeReset)); }
+/**
+ * Claude 按型号的周额度（目前是 Fable）。主进程只给 Max 及以上的账号带上这一项（Pro 用不了 Fable）。
+ * 型号名单独一个不翻译的 span，后面的「周额度」照常翻译。重置时间过了、还没查到新数据时不显示旧百分比。
+ */
+function modelWeekTitle(row) { return el('span', {}, [el('span', { translate: 'no', text: row.model }), el('span', { text: ' 周额度' })]); }
+function modelWeekEnded(row) { return row.resetAt != null && row.resetAt <= Date.now(); }
+function modelWeekReset(row) {
+  return modelWeekEnded(row) ? '旧窗口已结束，正在等待新数据' : row.resetAt ? `${duration(row.resetAt - Date.now())}后重置 · ${date(row.resetAt)}` : '接口未提供重置时间';
+}
+function modelWeekMini(row) {
+  const ended = modelWeekEnded(row);
+  return el('div', { class: 'quota-mini model-week', 'data-model': row.model }, [
+    el('div', { class: 'quota-mini-head' }, [modelWeekTitle(row), el('span', { class: 'mini-used' }, [el('span', { class: 'num', text: ended ? '等待确认' : `已用 ${percent(row.used)}` })])]),
+    ended ? el('div', { class: 'track' }) : track(row.used, row.used >= 75, '已用额度'),
+    el('div', { class: 'mini-reset' }, [icon('clock'), modelWeekReset(row)])
+  ]);
+}
 function track(pct, warning = false, label = '已用额度', identity = '') {
   // identity：双环卡片里进度条用和环一样的身份色（5 小时 / 周），预警改由文字颜色表达；快用完（≥90%）仍然变红。
   const tone = pct >= 90 ? ' critical' : identity ? ` ${identity}` : warning ? ' warning' : '';
@@ -852,6 +869,7 @@ function quotaCard({ kind, key, account }, pool = null) {
         el('div', { class: 'mini-reset' }, [icon('clock'), pending ? '旧窗口已结束，正在等待新数据' : win.resetAt ? `${duration(win.resetAt - Date.now())}后重置 · ${date(win.resetAt)}` : '接口未提供重置时间'])
       ]));
     }
+    for (const row of account.modelWeeks || []) body.push(modelWeekMini(row));
   } else {
     const ringNode = ring({});
     ringNode.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining empty-number', text: '—' })]));
@@ -1171,6 +1189,20 @@ function windowPanel(label, report, account) {
   panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { text: report.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' })]));
   const caution = pressured(report) || unknown;
   panel.append(el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(report, account)]));
+  // 周额度窗口里再列按型号单独算的周额度（Claude Max 的 Fable）：和总的周额度分开计，哪个先用完都会被限制
+  if (report === account.week && account.modelWeeks?.length) {
+    panel.append(el('div', { class: 'model-weeks' }, [
+      el('div', { class: 'model-weeks-head' }, [el('b', { text: '按型号的周额度' }), el('small', { text: '单独计算，用完后这个型号要等它自己重置' })]),
+      ...account.modelWeeks.map(row => {
+        const ended = modelWeekEnded(row);
+        return el('div', { class: 'model-week-row', 'data-model': row.model }, [
+          el('div', { class: 'model-week-line' }, [modelWeekTitle(row), el('span', { class: 'num', text: ended ? '等待确认' : `剩余 ${percent(Math.max(0, 100 - row.used))}` })]),
+          ended ? el('div', { class: 'track' }) : track(row.used, row.used >= 75, '已用额度'),
+          el('div', { class: 'mini-reset' }, [icon('clock'), ...(ended ? [modelWeekReset(row)] : [el('span', { text: `已用 ${percent(row.used)}` }), ' · ', el('span', { text: modelWeekReset(row) })])])
+        ]);
+      })
+    ]));
+  }
   // 这个窗口是重置卡之后开始的：本窗口用量、容量、平均速度都从重置那一刻算
   if (report.startedByReset && !pending) panel.append(el('p', { class: 'reset-card-note' }, [icon('refresh'), `${RESET_CARD[report.startedByReset]} · 从 ${date(report.startAt)} 起算`]));
 
@@ -3603,6 +3635,16 @@ $('account-tabs').addEventListener('lostpointercapture', event => finishTabGestu
 // 按下后还没开始拖（没捕获指针）就在别处松手：这一行收不到 pointerup，在窗口上收尾
 window.addEventListener('pointerup', event => { if (tabGesture?.mode === 'pending' && event.pointerId === tabGesture.id) tabGesture = null; });
 $('account-tabs').addEventListener('scroll', markAccountTabEdges);
+// 这一行变宽变窄不一定伴随重画或窗口缩放：编辑布局点「完成」时先重画标签、后关右边的布局面板，
+// 量到的是面板还占着位置时的宽度，滚动条就留在了只剩一两个账号的行下面。宽度一变就重算淡出和滚动条。
+// 放到下一帧：藏掉滚动条会让页面变矮、整页滚动条跟着消失，这一行又变宽，同一帧里重算会触发 ResizeObserver 的循环警告
+if (typeof ResizeObserver === 'function') {
+  let tabResizeFrame = 0;
+  new ResizeObserver(() => {
+    if (tabResizeFrame) return;
+    tabResizeFrame = requestAnimationFrame(() => { tabResizeFrame = 0; markAccountTabEdges(); });
+  }).observe($('account-tabs'));
+}
 $('model-search').closest('label').hidden = true;
 $('record-sort').addEventListener('change', event => { state.sort = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
 $('prev-page').addEventListener('click', () => { state.tablePage--; renderRecords(); });

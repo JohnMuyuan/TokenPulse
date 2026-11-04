@@ -252,6 +252,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   agentImportLive: (app: string) => ipcRenderer.invoke("agent:import-live", app),
   agentProbe: (id: string) => ipcRenderer.invoke("agent:probe", id),
   agentModels: (input: unknown) => ipcRenderer.invoke("agent:models", input),
+  agentPoolModels: (input: unknown) => ipcRenderer.invoke("agent:pool-models", input),
   /** 确认预览过的改动（agentSave / agentActivate 等返回 confirm 时）。 */
   agentConfirm: (token: string) => ipcRenderer.invoke("agent:confirm", token),
   agentBackups: () => ipcRenderer.invoke("agent:backups"),

@@ -135,6 +135,8 @@ export type ProviderView = {
 };
 type PoolMemberView = PoolMember & {
   name: string; usable: boolean; requests: number; ok: number; lastAt: number; lastStatus: number; health: "ok" | "degraded" | "open";
+  /** 账号 / 供应商已经删掉了，号池里只剩 id：下次保存号池时移出。 */
+  missing?: boolean;
   /** 官方账号成员的最近一次额度（剩余百分比、重置时间），没查到是 null。 */
   quota?: { fiveLeft: number | null; fiveResetAt: number | null; weekLeft: number | null; weekResetAt: number | null; left: number | null; at: number; limited: boolean } | null;
 };
@@ -412,11 +414,11 @@ function poolMemberView(store: Store, pool: Provider, member: PoolMember): PoolM
   const stats = memberStats.get(targetId) ?? { requests: 0, ok: 0, lastAt: 0, lastStatus: 0 };
   if (member.type === "provider") {
     const provider = byId(store, member.id);
-    return { ...member, name: provider?.name || "已删除的供应商", usable: !!provider?.endpoint && !provider.official && !provider.pool, ...stats, health: healthOf(targetId) };
+    return { ...member, name: provider?.name || "已删除的供应商", usable: !!provider?.endpoint && !provider.official && !provider.pool, ...(provider ? {} : { missing: true }), ...stats, health: healthOf(targetId) };
   }
   const account = readOfficialAccountStore().accounts.find((item) => item.id === member.id);
   const usable = !!account && !account.hidden && !resolveAccountCredential(account).expired;
-  return { ...member, name: account ? account.alias || account.email || account.label : "已删除的账号", usable, ...stats, health: healthOf(targetId), quota: quotaView(accountQuota(member.id), poolLimited.get(targetId)) };
+  return { ...member, name: account ? account.alias || account.email || account.label : "已删除的账号", usable, ...(account ? {} : { missing: true }), ...stats, health: healthOf(targetId), quota: quotaView(accountQuota(member.id), poolLimited.get(targetId)) };
 }
 function quotaView(quota: MemberQuota | null, limitedAt?: number) {
   if (!quota) return null;
@@ -472,6 +474,13 @@ function saveProviderImpl(input: unknown) {
   if (parsed.pool) {
     // 成员只能是同一工具的普通供应商或同一家的官方账号
     const accounts = readOfficialAccountStore().accounts;
+    /*
+     * 已经删掉的账号 / 供应商：号池里还留着它的 id，以前保存时报「找不到的官方账号」，号池就再也改不了。
+     * 现在保存时直接移出号池（编辑页上标着「已删除，保存时移出」）；还在、但不合格的成员照旧报错。
+     */
+    const before = parsed.pool.members.length;
+    parsed.pool.members = parsed.pool.members.filter((member) => member.type === "provider" ? !!byId(store, member.id) : accounts.some((item) => item.id === member.id));
+    if (before && !parsed.pool.members.length) throw new Error("号池里的成员都已删除，请在「成员」里重新选择");
     for (const member of parsed.pool.members) {
       if (member.type === "provider") {
         const target = byId(store, member.id);
@@ -1152,6 +1161,58 @@ export async function listProviderModels(input: unknown) {
   const models = await fetchUpstreamModels(baseUrl, apiKey);
   if (!models.length) throw new Error("供应商没有返回模型");
   return models;
+}
+
+/*
+ * 号池的「获取模型」：号池没有自己的地址和密钥，挨个问成员。
+ * - API Key 供应商：和供应商编辑页一样问它的 /v1/models；
+ * - 官方 Claude 账号：用这个账号的 OAuth 令牌问 Anthropic 的 /v1/models（和本地路由转发时同一把令牌）。
+ *   令牌过期就跳过，不替它续期。Codex、Grok 的官方账号没有能用的模型列表接口，跳过并说明。
+ * 号池轮换着用成员，所以合并时记下每个模型几个成员能用：全员可用的排前面，只有部分成员有的会在界面上标出来。
+ * members 可以是编辑页里还没保存的成员；没传就用已保存号池的。
+ */
+export type PoolModelReport = {
+  models: { id: string; members: number }[];
+  members: { name: string; ok: boolean; count?: number; error?: string }[];
+  total: number;
+};
+export async function listPoolModels(input: unknown): Promise<PoolModelReport> {
+  const body = asObj(input);
+  const store = load();
+  const saved = str(body.id) ? byId(store, str(body.id)) : undefined;
+  const app = isAgentApp(body.app) ? body.app : saved?.app;
+  if (!app) throw new Error("请选择一个工具");
+  const raw = Array.isArray(body.members) ? body.members : saved?.pool?.members || [];
+  const members = raw.map((item) => asObj(item)).filter((item) => (item.type === "account" || item.type === "provider") && str(item.id)).slice(0, 50);
+  if (!members.length) throw new Error("先在「成员」里加入账号或供应商");
+  const spec = POOL_OFFICIAL[app];
+  const accounts = readOfficialAccountStore().accounts;
+  const asks = members.map(async (member): Promise<{ name: string; ok: boolean; models?: string[]; error?: string }> => {
+    if (member.type === "provider") {
+      const item = byId(store, str(member.id));
+      if (!item?.endpoint || item.pool || item.app !== app) return { name: item?.name || "已删除的供应商", ok: false, error: "找不到这个供应商" };
+      try { return { name: item.name, ok: true, models: await fetchUpstreamModels(item.endpoint.baseUrl, item.endpoint.apiKey) }; }
+      catch (error) { return { name: item.name, ok: false, error: error instanceof Error ? error.message : String(error) }; }
+    }
+    const account = accounts.find((row) => row.id === str(member.id) && !row.hidden);
+    const name = account ? account.alias || account.email || account.label || "官方账号" : "找不到的官方账号";
+    if (!account || !spec || account.kind !== spec.kind) return { name, ok: false, error: "找不到这个官方账号" };
+    if (spec.auth !== "claude-oauth") return { name, ok: false, error: "这家的官方账号没有可用的模型列表接口" };
+    const { credential, expired } = resolveAccountCredential(account);
+    if (!credential?.token || expired) return { name, ok: false, error: "登录已过期，先在 Claude Code 里用一次或重新登录" };
+    // AGENT_SWITCH_POOL_BASE 只给自动化测试用：和 poolTargets 一样把官方接口换成本机假上游
+    const base = process.env.AGENT_SWITCH_POOL_BASE ? `${process.env.AGENT_SWITCH_POOL_BASE}/${app}` : spec.baseUrl;
+    try { return { name, ok: true, models: await fetchUpstreamModels(base, credential.token, "claude-oauth") }; }
+    catch (error) { return { name, ok: false, error: error instanceof Error ? error.message : String(error) }; }
+  });
+  const results = await Promise.all(asks);
+  const count = new Map<string, number>();
+  for (const result of results) for (const id of new Set(result.models || [])) count.set(id, (count.get(id) || 0) + 1);
+  const answered = results.filter((result) => result.ok).length;
+  // 一个都没问到也照样返回：界面按成员列出原因
+  // 稳定排序：先按几个成员有，同样多的保持上游给的顺序（官方是从新到旧）
+  const models = [...count].map(([id, n], index) => ({ id, members: n, index })).sort((a, b) => b.members - a.members || a.index - b.index).map(({ id, members: n }) => ({ id, members: n }));
+  return { models, members: results.map((result) => ({ name: result.name, ok: result.ok, ...(result.ok ? { count: result.models?.length || 0 } : { error: result.error }) })), total: answered };
 }
 
 export function probeProvider(id: string) {
