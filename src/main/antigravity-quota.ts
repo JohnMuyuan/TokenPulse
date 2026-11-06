@@ -235,6 +235,48 @@ const EFFORT_SCALE: Record<string, number> = { minimal: 0.45, low: 0.62, medium:
 
 export const groupKey = (models: string[]) => [...models].sort().join("|");
 
+function isMixedPoolModels(modelsOrKey: string[] | string): boolean {
+  const text = Array.isArray(modelsOrKey) ? modelsOrKey.join("|") : String(modelsOrKey || "");
+  return /gemini/i.test(text) && /claude|gpt/i.test(text);
+}
+
+function sanitizeStored(raw: Partial<Stored> | null): Stored {
+  const history = (Array.isArray(raw?.history) ? raw.history : [])
+    .map((sample) => ({
+      ...sample,
+      groups: Array.isArray(sample.groups) ? sample.groups.filter((g) => !isMixedPoolModels(g.key)) : [],
+    }))
+    .filter((sample) => sample.groups.length > 0);
+  const rawLast = raw?.last;
+  let last = rawLast;
+  if (rawLast && Array.isArray(rawLast.groups) && rawLast.groups.some((g) => isMixedPoolModels(g.models))) {
+    const cleanGroups = rawLast.groups.filter((g) => !isMixedPoolModels(g.models));
+    if (cleanGroups.length) {
+      last = { ...rawLast, groups: cleanGroups };
+    } else if (history.length) {
+      const prev = history[history.length - 1];
+      last = {
+        ...rawLast,
+        groups: prev.groups.map((g) => ({
+          key: g.key,
+          models: g.key.split("|").filter(Boolean),
+          used: g.used,
+          ...(g.resetAt ? { resetAt: g.resetAt } : {}),
+          ...(g.weekUsed != null ? { week: { used: g.weekUsed, ...(g.weekResetAt ? { resetAt: g.weekResetAt } : {}) } } : {}),
+        })),
+      };
+    } else {
+      last = undefined;
+    }
+  }
+  const rawNotified = raw?.notified && typeof raw.notified === "object" ? raw.notified : {};
+  const notified: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rawNotified)) {
+    if (!isMixedPoolModels(k)) notified[k] = v;
+  }
+  return { last, history, notified };
+}
+
 function dayStr(at: number) {
   const d = new Date(at);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -741,7 +783,7 @@ export class AntigravityQuota {
     this.fetcher = options.fetcher ?? fetchAntigravityStatus;
     this.now = options.now ?? Date.now;
     const raw = readJson<Partial<Stored> | null>(this.file, null);
-    this.stored = { last: raw?.last, history: Array.isArray(raw?.history) ? raw.history : [], notified: raw?.notified && typeof raw.notified === "object" ? raw.notified : {} };
+    this.stored = sanitizeStored(raw);
     this.running = Boolean(antigravityHub());
   }
 

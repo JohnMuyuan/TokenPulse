@@ -2614,6 +2614,11 @@
     'Codex 返回了错误': 'Codex returned an error', '这段会话正在回复，等它结束或先停止': 'This session is already replying; wait or stop it first',
     '会话参数无效': 'Invalid session', '找不到这个会话': 'Session not found', '回复内容是空的': 'The reply is empty', '回复内容太长': 'The reply is too long', '内容无效': 'Invalid content',
     '这个会话的项目目录已经不在了，没法在原目录里继续': "This session's project folder no longer exists, so it cannot continue there",
+    '用量详情': 'Usage details', '收起用量详情': 'Hide usage details',
+    '总 Token 消耗': 'Total tokens', 'API 等价花费': 'API-equivalent cost', '缓存省下费用': 'Saved by cache',
+    '模型占比分布': 'Model breakdown', '按 Token': 'By tokens', '按调用次数': 'By calls', '按 API 费用': 'By API cost',
+    '调用次数 / 占比': 'Calls / share', '总 Token / 占比': 'Total tokens / share', '输入 / 输出': 'Input / output',
+    'API 等价 / 占比': 'API equiv. / share', '缓存省下': 'Cache saved',
     '把使用节奏，放在时间里看': 'Your usage pace, over time', '剩余额度、重置时间与达到上限的参考时间，集中在这里。': 'Remaining quota, reset times and when you may hit the limit — all in one place.',
     '每一笔用量，都有迹可循': 'Every token, accounted for', '按日期、工具与模型查看消耗，找到值得关注的变化。': 'Browse usage by date, tool and model to spot changes worth a look.',
     '每一次请求，都能核对': 'Every request, verifiable', '逐条查看本机的每一次 API 请求，核对上游返回的型号和你要的是不是同一个。': 'Inspect every API request on this computer and check whether the upstream returned the model you asked for.',
@@ -2840,7 +2845,12 @@
     '每一行是一次 API 请求，点开查看响应 ID、发出的账号和核验依据': 'Each row is one API request — expand it to see response IDs, the sending account and the evidence', '未选择': 'Not selected', '时间未知': 'Time unknown',
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
-    '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type'
+    '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.77 更新说明
+    '会话管理能看每段对话的用量和模型占比了': 'Per-conversation usage and model breakdown in Sessions',
+    '左边会话列表标出每段对话的总 Token 和 API 等价费用；右边对话顶部常驻一行紧凑用量条（总 Token、缓存命中率、API 等价花费、缓存省下金额和模型多色占比条），点「用量详情」展开完整的模型占比分布（支持按 Token、调用次数、API 费用切换）和多列明细表。Claude Code、Codex、Grok、DeepSeek、pi 和 Antigravity 全部支持。': 'The session list on the left shows each conversation’s total tokens and API-equivalent cost. The top of a conversation has a compact usage bar (total tokens, cache hit rate, API-equivalent cost, cache savings and a multi-color model bar); click “Usage details” to expand the model share breakdown (switchable by tokens, calls or API cost) and the multi-column table. Supported for Claude Code, Codex, Grok, DeepSeek, pi and Antigravity.',
+    '修复：Antigravity 窗口重置后两个额度池合并': 'Fixed: Antigravity quota pools merged after a window reset',
+    '其中一个 5 小时窗口刚重置到接近 0%、另一个池子也是 0% 时，Gemini 和 Claude/GPT 两个额度池不再被合并成同一张卡片；升级后会自动清掉合并采样。': 'When one 5-hour window just reset near 0% while the other pool was also at 0%, the Gemini and Claude/GPT quota pools are no longer merged into a single card; any merged samples are cleaned up automatically after updating.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */
@@ -3463,6 +3473,19 @@
     P('剩 ([\\d.]+%)', m => `${m[1]} left`),
     P('调整顺序：(.+)（按住拖动，或用上下方向键）', m => `Reorder ${m[1]} (drag, or use the Up / Down arrow keys)`),
     // 会话管理：项目名、工具名是用户的内容，不递归翻译
+    P('总 Token (\\S+)', m => `Tokens ${m[1]}`),
+    P('缓存命中 ([\\d.]+%)', m => `Cache hit ${m[1]}`),
+    P('API 等价 ≈ (\\S+)', m => `API equiv. ≈ ${m[1]}`),
+    P('缓存省下 ≈ (\\S+)', m => `Cache saved ≈ ${m[1]}`),
+    P('输入 (\\S+) / 输出 (\\S+) / 思考 (\\S+)', m => `Input ${m[1]} / Output ${m[2]} / Reasoning ${m[3]}`),
+    P('输入 (\\S+) / 输出 (\\S+)', m => `Input ${m[1]} / Output ${m[2]}`),
+    P('输入 (\\S+) · 输出 (\\S+) · 思考 (\\S+)', m => `Input ${m[1]} · Output ${m[2]} · Reasoning ${m[3]}`),
+    P('输入 (\\S+) · 输出 (\\S+)', m => `Input ${m[1]} · Output ${m[2]}`),
+    P('缓存读 (\\S+) · 缓存写 (\\S+)', m => `Cache read ${m[1]} · Cache write ${m[2]}`),
+    P('缓存读 (\\S+)', m => `Cache read ${m[1]}`),
+    P('共 ' + N + ' 次模型调用 · 均每轮 (\\S+)', m => `${m[1]} model ${m[1] === '1' ? 'call' : 'calls'} · ${m[2]} / turn`),
+    P('无缓存原价 ≈ (\\S+)', m => `Uncached ≈ ${m[1]}`),
+    P(N + ' 次 \\(([\\d.]+%)\\)', m => `${m[1]} (${m[2]})`),
     P('昨天 (\\d{1,2}:\\d{2})', m => `Yesterday ${m[1]}`),
     P('全部项目（' + N + '）', m => `All projects (${m[1]})`),
     P('(.+) · ' + N + ' 个会话', m => `${v(m[1])} · ${m[2]} sessions`),

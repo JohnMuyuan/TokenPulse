@@ -46,9 +46,11 @@ body[data-page="sessions"] .workspace { overflow-y: hidden; }
 .sw-item-top { display: flex; align-items: baseline; gap: 8px; }
 .sw-item-top b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 600; }
 .sw-item-top time { flex: none; font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
-.sw-item-meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 12px; color: var(--muted); }
+.sw-item-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
 .sw-item-project { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sw-item-meta > span:not(.sw-item-project) { flex: none; }
+.sw-item-usage { padding: 0 5px; border-radius: 6px; background: var(--surface-2); color: var(--text-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sw-item.active .sw-item-usage { background: color-mix(in srgb, var(--surface) 75%, transparent); }
 .sw-live { padding: 0 6px; border-radius: 99px; background: var(--accent); color: #fff; font-size: 11px; }
 /* 全文搜索（0.3.55）：搜索框下的说明、列表里的命中片段、对话里的高亮和定位条 */
 .sw-search-note { margin: -4px 18px 8px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
@@ -95,6 +97,71 @@ mark.sw-hl { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, 
 .sw-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-left: 56px; }
 .sw-actions .btn { height: 34px; }
 .sw-actions .icon-only { width: 34px; padding: 0; }
+
+/* ---- 会话用量统计条与展开面板 ---- */
+.sw-usage-bar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  margin-top: 12px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2);
+}
+.sw-usage-pills { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.sw-usage-pill {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 99px; background: var(--surface);
+  font-size: 11.5px; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.sw-usage-pill.good {
+  border-color: color-mix(in srgb, var(--good, var(--accent)) 32%, transparent);
+  background: var(--accent-soft); color: var(--good, var(--accent)); font-weight: 600;
+}
+.sw-usage-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.sw-usage-mini-bar { display: flex; width: 64px; height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; gap: 1px; }
+.sw-usage-mini-seg { height: 100%; min-width: 3px; }
+.sw-usage-toggle {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 9px;
+  border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface);
+  color: var(--text-2); font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.sw-usage-toggle:hover { background: var(--surface-2); border-color: var(--accent); color: var(--text); }
+.sw-usage-toggle .sw-caret { width: 13px; height: 13px; }
+
+.sw-usage-panel {
+  margin-top: 8px; padding: 12px; max-height: 280px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.sw-usage-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.sw-usage-kpi {
+  display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; min-width: 0;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+}
+.sw-usage-kpi-label { font-size: 11px; color: var(--muted); }
+.sw-usage-kpi-val { font-size: 15px; font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+.sw-usage-kpi.good .sw-usage-kpi-val { color: var(--good, var(--accent)); }
+.sw-usage-kpi-sub { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.sw-usage-models-sec { display: flex; flex-direction: column; gap: 6px; }
+.sw-usage-bar-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.sw-usage-sec-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.sw-usage-basis { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); gap: 2px; }
+.sw-basis-btn { height: 22px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11.5px; cursor: pointer; }
+.sw-basis-btn:hover { color: var(--text); }
+.sw-basis-btn.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.sw-model-stack { display: flex; width: 100%; height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; gap: 1px; }
+.sw-model-seg { height: 100%; min-width: 2px; transition: width .2s var(--ease); }
+.sw-model-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11.5px; color: var(--text-2); }
+.sw-model-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.sw-model-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.sw-model-legend-item small { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.sw-usage-table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.sw-usage-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.sw-usage-table th, .sw-usage-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.sw-usage-table th { font-weight: 600; color: var(--muted); background: var(--surface-2); font-size: 11.5px; }
+.sw-usage-table tr:last-child td { border-bottom: 0; }
+.sw-usage-model-cell { display: flex; align-items: center; gap: 6px; }
+.sw-usage-model-cell code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11.5px; color: var(--text); }
+.sw-usage-table td.good { color: var(--good, var(--accent)); font-weight: 600; }
 
 .sw-scroll { flex: 1; min-height: 0; overflow-y: auto; scroll-behavior: auto; }
 .sw-messages { max-width: 920px; margin: 0 auto; padding: 18px 22px 24px; display: flex; flex-direction: column; gap: 12px; }
@@ -191,6 +258,7 @@ mark.sw-hl { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, 
 @media (max-width: 1100px) {
   .sw { grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); gap: 12px; height: calc(100vh - var(--titlebar-h) - 64px - 44px); }
   .sw-actions { padding-left: 0; }
+  .sw-usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* 列表变窄后四个按钮放不下数字，数字收起来（悬停提示里还有） */
   .sw-kinds small { display: none; }
 }

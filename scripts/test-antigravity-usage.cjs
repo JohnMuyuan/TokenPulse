@@ -181,7 +181,41 @@ function addSteps(file, steps) {
       ['Gemini Models', 25, 20, '2026-11-12T09:00:00Z'],
       ['Claude and GPT models', 100, 35, '2026-11-12T10:00:00Z'],
     ]);
-    pass('antigravity quota: models sharing a quota are grouped, weekly quota buckets from RetrieveUserQuotaSummary are merged, an exhausted group is 100% used, no email kept');
+    // 窗口刚重置时（Gemini 0.1% 与 Claude/GPT 0% 相差 <= 0.2%，且未用池的 resetTime 在两次 RPC 间差 1 秒）仍严格保持两个独立池
+    const resetStatus = { userStatus: { planStatus: { planInfo: { planName: 'Pro' } }, cascadeModelConfigData: { clientModelConfigs: [
+      { label: 'Gemini 4 Argon (High)', modelOrAlias: { model: 'M417' }, quotaInfo: { remainingFraction: 0.9991438, resetTime: '2026-11-06T19:17:55Z' } },
+      { label: 'Gemini 3.8 Flash (High)', modelOrAlias: { model: 'M318' }, quotaInfo: { remainingFraction: 0.9991438, resetTime: '2026-11-06T19:17:55Z' } },
+      { label: 'Claude Opus 5.5 (Thinking)', modelOrAlias: { model: 'M400' }, quotaInfo: { remainingFraction: 1, resetTime: '2026-11-06T19:20:22Z' } },
+      { label: 'GPT-OSS 120B (Medium)', modelOrAlias: { model: 'M500' }, quotaInfo: { remainingFraction: 1, resetTime: '2026-11-06T19:20:22Z' } },
+    ] } } };
+    const realSummary = {
+      response: {
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            description: 'Models within this group: Gemini Flash, Gemini Pro',
+            buckets: [
+              { bucketId: 'gemini-weekly', displayName: 'Weekly Limit Remaining', window: 'weekly', remainingFraction: 0.96119565, resetTime: '2026-11-13T04:17:55Z' },
+              { bucketId: 'gemini-5h', displayName: 'Five Hour Limit Remaining', window: '5h', remainingFraction: 0.9991438, resetTime: '2026-11-06T19:17:55Z' },
+            ],
+          },
+          {
+            displayName: 'Claude and GPT models',
+            description: 'Models within this group: Claude Opus, Claude Sonnet, GPT-OSS',
+            buckets: [
+              { bucketId: '3p-weekly', displayName: 'Weekly Limit Remaining', window: 'weekly', remainingFraction: 1, resetTime: '2026-11-13T14:21:39Z' },
+              { bucketId: '3p-5h', displayName: 'Five Hour Limit Remaining', window: '5h', remainingFraction: 1, resetTime: '2026-11-06T19:21:39Z' },
+            ],
+          },
+        ],
+      },
+    };
+    const parsedAfterReset = a.parseAntigravityStatus(resetStatus, realSummary);
+    assert.deepEqual(parsedAfterReset.groups.map(g => [g.title, g.models, g.used, g.week?.used]), [
+      ['Gemini Models', ['Gemini 4 Argon', 'Gemini 3.8 Flash'], 0.1, 3.9],
+      ['Claude and GPT models', ['Claude Opus 5.5', 'GPT-OSS 120B'], 0, 0],
+    ], '窗口重置后即使两边都接近 0% 也不会合并成一个池');
+    pass('antigravity quota: models sharing a quota are grouped, weekly quota buckets from RetrieveUserQuotaSummary are merged, an exhausted group is 100% used, reset windows never merge across pools');
 
     // 本机接口：从 daemon/hub_*.json 找端口和令牌，带 CSRF 头问；Antigravity 没开（没有 hub、进程不在）返回 null
     assert.equal(await a.fetchAntigravityStatus(), null);

@@ -125,6 +125,11 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     const thread = await text('.sw-messages');
     assert.match(thread, /把首页的额度卡片改成分组显示[\s\S]*view_file[\s\S]*改好了：两组额度各占一行/);
     assert.match(await text('.sw-head'), /额度卡片分组[\s\S]*demo-app/);
+    assert.ok(await e(`!!document.querySelector('.sw-item[data-key="${KEY}"] .sw-item-usage')`), '会话列表显示 Token 与费用徽标');
+    assert.match(await text('.sw-usage-bar'), /总 Token[\s\S]*缓存命中[\s\S]*API 等价/);
+    await e("document.querySelector('.sw-usage-toggle').click()");
+    assert.equal(await e("document.querySelector('.sw-usage-panel').hidden"), false, '点击展开会话用量详情');
+    assert.match(await text('.sw-usage-panel'), /总 Token 消耗[\s\S]*缓存命中率[\s\S]*API 等价花费[\s\S]*模型占比分布[\s\S]*gemini-4-argon/);
     assert.equal(await e("[...document.querySelectorAll('.sw-actions button')].some(b => b.textContent.includes('回复对话'))"), false, '不能在这里回复');
     assert.match(await text('.sw-composer'), /Antigravity 的对话请在 Antigravity 里继续/);
     await e("document.querySelector('.sw-actions button[aria-haspopup=menu]').click()");
@@ -172,6 +177,12 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await pause(400);
     const enPage = await text('#quota-detail');
     assert.ok(!/[一-鿿]/.test(enPage), enPage.match(/.{0,40}[一-鿿].{0,40}/)?.[0]);
+    await e(`PulseSessions.open(${JSON.stringify(KEY)})`);
+    await until("document.querySelector('.sw-usage-bar')");
+    await e("if (document.querySelector('.sw-usage-panel')?.hidden) document.querySelector('.sw-usage-toggle').click()");
+    await pause(300);
+    const enUsage = (await text('.sw-usage-bar')) + ' ' + (await text('.sw-usage-panel'));
+    assert.ok(!/[一-鿿]/.test(enUsage), enUsage);
     pass('antigravity UI: dark mode has no default black text, 900px does not overflow, English is fully translated');
 
     console.log(`${checks}/${checks} antigravity UI checks passed`);

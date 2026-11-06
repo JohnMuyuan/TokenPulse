@@ -20,6 +20,8 @@
     mode: 'readonly',
     drafts: {},
     openGroups: new Set(),
+    usageOpen: false,
+    usageBasis: 'tokens',
     /**
      * 0.3.55 全文搜索：hits 是这次搜内容命中的会话（key → { count, snippets, ids }），null = 没在搜内容；
      * terms 是搜索词（高亮用）；jump 是正在看的会话里「第几处」：{ key, ids, index }，index -1 = 还没跳。
@@ -46,6 +48,27 @@
   let N = {};
 
   /* ---------------- 小工具 ---------------- */
+
+  const MODEL_COLORS = ['#6366f1', '#14b8a6', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6'];
+  function paint(node, props) {
+    for (const [key, value] of Object.entries(props)) {
+      if (value == null) continue;
+      if (key.startsWith('--')) node.style.setProperty(key, value);
+      else node.style[key] = value;
+    }
+    return node;
+  }
+  function compact(n) {
+    const v = Number(n) || 0;
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+    return number(v);
+  }
+  function usd(n) {
+    const v = Number(n) || 0;
+    return v <= 0 ? '$0.00' : v < 0.01 ? '$' + v.toFixed(4) : '$' + v.toFixed(2);
+  }
 
   function mark(kind, cls = 'sw-mark') {
     return el('span', { class: `${cls} ${AGENTS[kind]?.brand || ''}`, 'aria-hidden': 'true' }, [brandSvg(AGENTS[kind]?.brand)]);
@@ -404,6 +427,7 @@
           el('span', { class: 'sw-item-meta' }, [
             el('span', { class: 'sw-item-project', text: item.project, translate: 'no' }),
             el('span', { text: `${number(item.turns)} 轮` }),
+            item.usage && item.usage.tokens > 0 ? el('span', { class: 'sw-item-usage', translate: 'no', text: `${compact(item.usage.tokens)}${item.usage.costUsd > 0 ? ' · ≈' + usd(item.usage.costUsd) : ''}` }) : null,
             hit ? el('span', { class: 'sw-hit-count', text: `${number(hit.count)} 处` }) : null,
             running ? el('span', { class: 'sw-live', text: '回复中' }) : null
           ]),
@@ -468,7 +492,119 @@
 
   function saveDraft() { if (S.key && N.input) S.drafts[S.key] = N.input.value; }
 
+  function usageBox(d) {
+    const u = d.usage;
+    if (!u || !(u.tokens > 0)) return [];
+    const models = u.models || [];
+    const pills = el('div', { class: 'sw-usage-pills' }, [
+      el('span', { class: 'sw-usage-pill', text: `总 Token ${compact(u.tokens)}`, title: `输入 ${number(u.input)} / 输出 ${number(u.output)}${u.reasoning ? ' / 思考 ' + number(u.reasoning) : ''}` }),
+      el('span', { class: 'sw-usage-pill', text: `缓存命中 ${(u.cacheHitRate || 0).toFixed(1)}%` }),
+      el('span', { class: 'sw-usage-pill', text: `API 等价 ≈ ${usd(u.costUsd)}` }),
+      u.cacheSavedUsd > 0.0001 ? el('span', { class: 'sw-usage-pill good', text: `缓存省下 ≈ ${usd(u.cacheSavedUsd)}` }) : null
+    ]);
+    const miniBar = models.length ? el('div', { class: 'sw-usage-mini-bar', 'aria-hidden': 'true' }, models.map((m, i) => paint(
+      el('span', { class: 'sw-usage-mini-seg', title: `${m.model}: ${(m.tokenShare || 0).toFixed(1)}%` }),
+      { width: `${Math.max(3, m.tokenShare || 0)}%`, background: MODEL_COLORS[i % MODEL_COLORS.length] }
+    ))) : null;
+    const toggleText = el('span', { text: S.usageOpen ? '收起用量详情' : '用量详情' });
+    const toggle = el('button', { type: 'button', class: 'sw-usage-toggle', 'aria-expanded': String(S.usageOpen) }, [
+      toggleText,
+      icon('chevron', 'icon sw-caret')
+    ]);
+    const bar = el('div', { class: 'sw-usage-bar' }, [
+      pills,
+      el('div', { class: 'sw-usage-right' }, [miniBar, toggle])
+    ]);
+
+    const kpi = (label, val, sub, extra = '') => el('div', { class: `sw-usage-kpi ${extra}`.trim() }, [
+      el('small', { class: 'sw-usage-kpi-label', text: label }),
+      el('b', { class: 'sw-usage-kpi-val', text: val, translate: 'no' }),
+      el('span', { class: 'sw-usage-kpi-sub', text: sub })
+    ]);
+    const kpis = el('div', { class: 'sw-usage-kpis' }, [
+      kpi('总 Token 消耗', compact(u.tokens), `输入 ${compact(u.input)} · 输出 ${compact(u.output)}${u.reasoning ? ` · 思考 ${compact(u.reasoning)}` : ''}`),
+      kpi('缓存命中率', `${(u.cacheHitRate || 0).toFixed(1)}%`, `缓存读 ${compact(u.cacheRead)}${u.cacheWrite ? ` · 缓存写 ${compact(u.cacheWrite)}` : ''}`),
+      kpi('API 等价花费', `≈ ${usd(u.costUsd)}`, `共 ${number(u.requests)} 次模型调用 · 均每轮 ${compact(Math.round(u.tokens / Math.max(1, d.turns || 1)))}`),
+      kpi('缓存省下费用', `≈ ${usd(u.cacheSavedUsd)}`, `无缓存原价 ≈ ${usd(u.uncachedCostUsd)}`, u.cacheSavedUsd > 0.0001 ? 'good' : '')
+    ]);
+
+    const shareOf = m => S.usageBasis === 'requests' ? (m.requestShare || 0) : S.usageBasis === 'cost' ? (m.costShare || 0) : (m.tokenShare || 0);
+    const stack = el('div', { class: 'sw-model-stack' });
+    const legend = el('div', { class: 'sw-model-legend' });
+    const drawStack = () => {
+      stack.replaceChildren(...models.map((m, i) => paint(
+        el('span', { class: 'sw-model-seg', title: `${m.model}: ${shareOf(m).toFixed(1)}%` }),
+        { width: `${Math.max(2, shareOf(m))}%`, background: MODEL_COLORS[i % MODEL_COLORS.length] }
+      )));
+      legend.replaceChildren(...models.map((m, i) => el('span', { class: 'sw-model-legend-item', translate: 'no' }, [
+        paint(el('i', { class: 'sw-model-dot' }), { background: MODEL_COLORS[i % MODEL_COLORS.length] }),
+        el('span', { class: 'sw-model-name', text: m.model }),
+        el('small', { text: `${shareOf(m).toFixed(1)}%` })
+      ])));
+    };
+    drawStack();
+    const basisBtns = [['tokens', '按 Token'], ['requests', '按调用次数'], ['cost', '按 API 费用']].map(([key, label]) => {
+      const btn = el('button', { type: 'button', class: 'sw-basis-btn' + (S.usageBasis === key ? ' on' : ''), 'data-basis': key, 'aria-pressed': String(S.usageBasis === key), text: label });
+      btn.addEventListener('click', () => {
+        S.usageBasis = key;
+        for (const b of basisBtns) {
+          const on = b.dataset.basis === key;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-pressed', String(on));
+        }
+        drawStack();
+      });
+      return btn;
+    });
+    const barHead = el('div', { class: 'sw-usage-bar-head' }, [
+      el('span', { class: 'sw-usage-sec-title', text: '模型占比分布' }),
+      el('div', { class: 'sw-usage-basis', role: 'group', 'aria-label': '模型占比分布' }, basisBtns)
+    ]);
+
+    const tableWrap = el('div', { class: 'sw-usage-table-wrap' }, [
+      el('table', { class: 'sw-usage-table' }, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { text: '模型' }),
+          el('th', { text: '调用次数 / 占比' }),
+          el('th', { text: '总 Token / 占比' }),
+          el('th', { text: '输入 / 输出' }),
+          el('th', { text: '缓存命中率' }),
+          el('th', { text: 'API 等价 / 占比' }),
+          el('th', { text: '缓存省下' })
+        ])]),
+        el('tbody', {}, models.map((m, i) => el('tr', {}, [
+          el('td', { class: 'sw-usage-model-cell', translate: 'no' }, [
+            paint(el('i', { class: 'sw-model-dot' }), { background: MODEL_COLORS[i % MODEL_COLORS.length] }),
+            el('code', { text: m.model })
+          ]),
+          el('td', { text: `${number(m.requests)} 次 (${(m.requestShare || 0).toFixed(1)}%)` }),
+          el('td', { text: `${compact(m.tokens)} (${(m.tokenShare || 0).toFixed(1)}%)`, translate: 'no' }),
+          el('td', { text: `${compact(m.input)} / ${compact(m.output)}`, translate: 'no' }),
+          el('td', { text: `${(m.cacheHitRate || 0).toFixed(1)}%`, translate: 'no' }),
+          el('td', { text: `≈ ${usd(m.costUsd)} (${(m.costShare || 0).toFixed(1)}%)`, translate: 'no' }),
+          el('td', { class: m.cacheSavedUsd > 0.0001 ? 'good' : '', text: m.cacheSavedUsd > 0.0001 ? `≈ ${usd(m.cacheSavedUsd)}` : '—', translate: 'no' })
+        ])))
+      ])
+    ]);
+
+    const panel = el('div', { class: 'sw-usage-panel', hidden: S.usageOpen ? null : '' }, [
+      kpis,
+      models.length ? el('div', { class: 'sw-usage-models-sec' }, [barHead, stack, legend]) : null,
+      models.length ? tableWrap : null
+    ]);
+    toggle.addEventListener('click', () => {
+      S.usageOpen = !S.usageOpen;
+      panel.hidden = !S.usageOpen;
+      toggle.setAttribute('aria-expanded', String(S.usageOpen));
+      toggleText.textContent = S.usageOpen ? '收起用量详情' : '用量详情';
+      if (window.PulseI18n?.lang() === 'en') window.PulseI18n.apply(toggleText);
+    });
+    return [bar, panel];
+  }
+
   function header(d) {
+    const item = S.items.find(entry => entry.key === d.key);
+    const merged = item && !d.usage ? { ...d, usage: item.usage } : d;
     const agent = AGENTS[d.kind];
     const chips = [
       el('span', { class: 'sw-chip', title: d.cwd || '', translate: 'no' }, [icon('folder'), d.project]),
@@ -490,7 +626,8 @@
         mark(d.kind, 'sw-mark lg'),
         el('div', { class: 'sw-head-text' }, [el('h2', { text: d.title, title: d.title, translate: 'no' }), el('div', { class: 'sw-chips' }, chips)])
       ]),
-      el('div', { class: 'sw-actions' }, [copyPath, d.kind === 'pi' || IDE_ONLY.has(d.kind) ? null : reply, more])
+      el('div', { class: 'sw-actions' }, [copyPath, d.kind === 'pi' || IDE_ONLY.has(d.kind) ? null : reply, more]),
+      ...usageBox(merged)
     ]);
   }
 

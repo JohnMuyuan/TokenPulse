@@ -155,7 +155,7 @@ Request records include time, project, account, requested model, tokens, cost, a
 
 ### Sessions
 
-Browse Claude Code, Codex CLI, Grok Build, and DeepSeek Harness histories with agent/project/keyword filters, copy project paths, and reply with streaming output. Claude/Codex/Grok support read-only or file-edit permissions and confirmed permanent deletion. DeepSeek sessions support viewing and replies. New chat/project launches the chosen tool in a project terminal. Injected environment/system information and subagent logs are filtered, tools collapse into rows, and titles come from the CLI. Cached indexes open in tens of milliseconds.
+Browse Claude Code, Codex CLI, Grok Build, DeepSeek Harness, pi, and Antigravity histories with agent/project/keyword filters and full-text search, copy project paths, and reply with streaming output (where supported by the CLI). Each session displays total tokens, cache hit rate, API-equivalent cost, estimated cache savings, and an expandable per-model breakdown with token, request, and cost shares. Claude/Codex/Grok support read-only or file-edit permissions and confirmed permanent deletion; Antigravity sessions can be deleted through the running Antigravity instance. New chat/project launches the chosen tool in a project terminal. Injected environment/system information and subagent logs are filtered, tools collapse into rows, and titles come from the CLI. Cached indexes open in tens of milliseconds.
 
 ### Layout and onboarding
 

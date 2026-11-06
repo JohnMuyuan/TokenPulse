@@ -29,7 +29,10 @@ const time = (no, ms) => msg(no, num(1, Math.floor(ms / 1000)), num(2, 0));
 const T0 = Date.UTC(2026, 10, 5, 3, 0, 0);
 const meta = (at, extra = []) => msg(5, time(1, at), ...extra);
 const userStep = (at, text) => Buffer.concat([num(1, 14), num(4, 3), meta(at), msg(19, str(2, text), msg(3, str(1, text)))]);
-const replyStep = (at, { text = '', thinking = '', tools = [], gen = 0 }) => Buffer.concat([num(1, 15), num(4, 3), meta(at, [num(11, 1417), msg(20, num(3, gen))]),
+const replyStep = (at, { text = '', thinking = '', tools = [], gen = 0, usage = null }) => Buffer.concat([num(1, 15), num(4, 3), meta(at, [
+  ...(usage ? [msg(9, num(1, 1417), num(2, usage.input || 0), num(3, usage.output || 0), ...(usage.cacheWrite ? [num(4, usage.cacheWrite)] : []), num(5, usage.cacheRead || 0), num(9, usage.thinking || 0))] : []),
+  num(11, 1417), msg(20, num(3, gen)),
+]),
   msg(20, ...(text ? [str(1, text)] : []), ...(thinking ? [str(3, thinking)] : []), str(6, 'bot-x'), ...tools.map(t => msg(7, str(1, t.id), str(2, t.name), str(3, t.args))))]);
 const toolStep = (at, id, name, args, output) => Buffer.concat([num(1, 132), num(4, 3), meta(at, [msg(4, str(1, id), str(2, name), str(3, args))]), msg(140, msg(1, str(1, 'toolSummary'), str(2, 'x')), msg(2, str(1, output)))]);
 
@@ -50,11 +53,11 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
     const A = 'aaaaaaaa-2222-4000-8000-000000000001', SUB = 'bbbbbbbb-2222-4000-8000-000000000002', GONE = 'cccccccc-2222-4000-8000-000000000003';
     conversation(A, [
       [14, 3, userStep(T0, '把首页的额度卡片改成分组显示')],
-      [15, 3, replyStep(T0 + 2000, { thinking: '先看看卡片现在怎么画的……', tools: [{ id: 'call_1', name: 'view_file', args: JSON.stringify({ AbsolutePath: 'D:\\demo-app\\card.js' }) }, { id: 'call_2', name: 'run_command', args: JSON.stringify({ CommandLine: 'npm test' }) }] })],
+      [15, 3, replyStep(T0 + 2000, { thinking: '先看看卡片现在怎么画的……', tools: [{ id: 'call_1', name: 'view_file', args: JSON.stringify({ AbsolutePath: 'D:\\demo-app\\card.js' }) }, { id: 'call_2', name: 'run_command', args: JSON.stringify({ CommandLine: 'npm test' }) }], usage: { input: 2000, output: 400, cacheRead: 8000, thinking: 150 } })],
       [132, 3, toolStep(T0 + 3000, 'call_1', 'view_file', JSON.stringify({ AbsolutePath: 'D:\\demo-app\\card.js' }), 'function card() {}')],
       [132, 7, toolStep(T0 + 4000, 'call_2', 'run_command', JSON.stringify({ CommandLine: 'npm test' }), '1 failing')],
       [23, 3, Buffer.concat([num(1, 23), num(4, 3), meta(T0 + 4500)])],
-      [15, 3, replyStep(T0 + 5000, { text: '改好了：两组额度各占一行。' })],
+      [15, 3, replyStep(T0 + 5000, { text: '改好了：两组额度各占一行。', usage: { input: 1000, output: 600, cacheRead: 9000, thinking: 50 } })],
     ]);
     summary(A, '额度卡片分组');
     conversation(SUB, [[14, 3, userStep(T0, '子代理的任务')], [15, 3, replyStep(T0 + 1000, { text: '好' })]]);
@@ -68,9 +71,40 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
     assert.deepEqual([item.key, item.title, item.project, item.cwd, item.turns, item.messageCount, item.toolCount, item.models, item.resumeCommand, item.createdAt],
       [`antigravity:${A}`, '额度卡片分组', 'demo-app', path.join(root, 'demo-app'), 1, 2, 2, ['gemini-4-argon'], '', T0]);
     assert.equal(item.preview, '改好了：两组额度各占一行。');
-    pass('antigravity sessions: listed from the summary database with title, project, turns, tools and model labels; subagents and deleted ones are left out');
+    assert.deepEqual(item.usage, {
+      requests: 2,
+      input: 20000,
+      output: 1000,
+      cacheRead: 17000,
+      cacheWrite: 0,
+      reasoning: 200,
+      tokens: 21000,
+      cacheHitRate: 85,
+      costUsd: 0.019,
+      uncachedCostUsd: 0.035,
+      cacheSavedUsd: 0.016,
+      models: [{
+        model: 'gemini-4-argon',
+        requests: 2,
+        input: 20000,
+        output: 1000,
+        cacheRead: 17000,
+        cacheWrite: 0,
+        reasoning: 200,
+        tokens: 21000,
+        cacheHitRate: 85,
+        costUsd: 0.019,
+        uncachedCostUsd: 0.035,
+        cacheSavedUsd: 0.016,
+        tokenShare: 100,
+        requestShare: 100,
+        costShare: 100,
+      }],
+    });
+    pass('antigravity sessions: listed from the summary database with title, project, turns, tools, model labels and session usage');
 
     const detail = sessions.getSession('antigravity', A);
+    assert.deepEqual(detail.usage, item.usage);
     assert.deepEqual(detail.messages.map(m => [m.role, m.role === 'tool' ? m.name : m.text]), [
       ['user', '把首页的额度卡片改成分组显示'], ['tool', 'view_file'], ['tool', 'run_command'], ['assistant', '改好了：两组额度各占一行。'],
     ], '思考过程不展示；工具调用挂上结果');

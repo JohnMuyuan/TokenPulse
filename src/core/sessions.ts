@@ -5,6 +5,8 @@ import path from "path";
 import { cliDir } from "./credentials";
 import { dataFile, piDir, readJson, writeJson } from "./paths";
 import { zstdFrames } from "./zstd-frames";
+import { displayModel } from "./knowledge";
+import { estimateCost } from "./model-pricing";
 import { antigravityConversationFiles, antigravityStamp, antigravitySummaries, readAntigravityConversation, readModelLabels, resolveModel } from "./antigravity";
 
 /**
@@ -40,6 +42,46 @@ export type SessionMessage =
   /** 斜杠命令、中断、上下文压缩这类不是对话本身的事件。 */
   | { id: string; role: "event"; text: string; at?: number };
 
+export type SessionModelUsage = {
+  model: string;
+  requests: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  tokens: number;
+  /** 0-100, 1 decimal place: Math.round((cacheRead / input) * 1000) / 10 when input > 0 else 0 */
+  cacheHitRate: number;
+  /** Actual API equivalent cost in USD (4 decimal places) */
+  costUsd: number;
+  /** Hypothetical API cost in USD if cacheRead & cacheWrite were 0 (all input billed at regular input price) */
+  uncachedCostUsd: number;
+  /** Amount saved by caching in USD: Math.max(0, uncachedCostUsd - costUsd) */
+  cacheSavedUsd: number;
+  /** Share of total session tokens (0-100, 1 decimal place) */
+  tokenShare: number;
+  /** Share of total session model requests (0-100, 1 decimal place) */
+  requestShare: number;
+  /** Share of total session costUsd (0-100, 1 decimal place) */
+  costShare: number;
+};
+
+export type SessionUsage = {
+  requests: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  tokens: number;
+  cacheHitRate: number;
+  costUsd: number;
+  uncachedCostUsd: number;
+  cacheSavedUsd: number;
+  models: SessionModelUsage[];
+};
+
 export type SessionSummary = {
   key: string;
   id: string;
@@ -56,6 +98,7 @@ export type SessionSummary = {
   models: string[];
   preview: string;
   resumeCommand: string;
+  usage?: SessionUsage;
 };
 
 export type SessionDetail = SessionSummary & { messages: SessionMessage[]; truncated: number };
@@ -64,7 +107,7 @@ const MAX_TEXT = 40_000;
 const MAX_TOOL_TEXT = 6_000;
 /** 详情最多带回这么多条（超长会话只给最后这些，前面标出省略了多少）。 */
 const MAX_MESSAGES = 4_000;
-const INDEX_VERSION = 2;
+const INDEX_VERSION = 3;
 
 type Parsed = Omit<SessionDetail, "truncated"> & { file: string };
 type IndexEntry = { size: number; mtimeMs: number; summary: SessionSummary | null };
@@ -82,6 +125,10 @@ function timestamp(value: unknown) {
 }
 
 const str = (value: unknown) => (typeof value === "string" ? value : "");
+const num = (value: unknown) => {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 0;
+};
 const clip = (value: string, max: number) => (value.length > max ? `${value.slice(0, max)}…（已截断 ${value.length - max} 个字符）` : value);
 
 function clean(value: string) {
@@ -162,12 +209,147 @@ function parseLine(line: string): Record<string, any> | null {
   }
 }
 
+type RawModelUsage = {
+  requests: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  reportedCostUsd: number;
+};
+
 /** 收消息：同一个角色连着的文字（同一条回复被拆成几块）合并；工具结果按 id 挂回调用上。 */
 class Builder {
   messages: SessionMessage[] = [];
   private tools = new Map<string, Extract<SessionMessage, { role: "tool" }>>();
   models = new Set<string>();
+  private usageByModel = new Map<string, RawModelUsage>();
   private seq = 0;
+
+  addUsage(
+    model: string,
+    u: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      reasoning?: number;
+      costUsd?: number;
+      requests?: number;
+    },
+  ) {
+    const input = Math.max(0, Math.round(u.input || 0));
+    const output = Math.max(0, Math.round(u.output || 0));
+    const cacheRead = Math.max(0, Math.round(u.cacheRead || 0));
+    const cacheWrite = Math.max(0, Math.round(u.cacheWrite || 0));
+    const reasoning = Math.max(0, Math.round(u.reasoning || 0));
+    const costUsd = typeof u.costUsd === "number" && Number.isFinite(u.costUsd) && u.costUsd > 0 ? u.costUsd : 0;
+    const requests = Math.max(1, Math.round(u.requests || 1));
+    if (input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite <= 0 && reasoning <= 0 && costUsd <= 0) return;
+    const key = (model || "").trim() || "未知模型";
+    const entry = this.usageByModel.get(key) ?? {
+      requests: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      reportedCostUsd: 0,
+    };
+    entry.requests += requests;
+    entry.input += input;
+    entry.output += output;
+    entry.cacheRead += cacheRead;
+    entry.cacheWrite += cacheWrite;
+    entry.reasoning += reasoning;
+    entry.reportedCostUsd += costUsd;
+    this.usageByModel.set(key, entry);
+  }
+
+  buildUsage(): SessionUsage | undefined {
+    if (!this.usageByModel.size) return undefined;
+    const pct1 = (part: number, total: number) => (total > 0 ? Math.round((part / total) * 1000) / 10 : 0);
+    const round4 = (n: number) => Math.round(n * 10000) / 10000;
+    const computed = [...this.usageByModel.entries()].map(([model, b]) => {
+      const tokens = b.input + b.output;
+      const cacheHitRate = pct1(b.cacheRead, b.input);
+      const estCost = estimateCost(model, {
+        input: b.input,
+        output: b.output,
+        cacheRead: b.cacheRead,
+        cacheWrite: b.cacheWrite,
+      });
+      const actualCost = b.reportedCostUsd > 0 ? b.reportedCostUsd : estCost;
+      const uncachedEst = estimateCost(model, {
+        input: b.input,
+        output: b.output,
+        cacheRead: 0,
+        cacheWrite: 0,
+      });
+      const uncachedCost = Math.max(actualCost, uncachedEst);
+      const cacheSaved = Math.max(0, uncachedCost - actualCost);
+      return {
+        model,
+        requests: b.requests,
+        input: b.input,
+        output: b.output,
+        cacheRead: b.cacheRead,
+        cacheWrite: b.cacheWrite,
+        reasoning: b.reasoning,
+        tokens,
+        cacheHitRate,
+        rawCost: actualCost,
+        rawUncachedCost: uncachedCost,
+        costUsd: round4(actualCost),
+        uncachedCostUsd: round4(uncachedCost),
+        cacheSavedUsd: round4(cacheSaved),
+      };
+    });
+    computed.sort((a, b) => b.tokens - a.tokens || b.requests - a.requests || a.model.localeCompare(b.model));
+    const totalRequests = computed.reduce((s, m) => s + m.requests, 0);
+    const totalInput = computed.reduce((s, m) => s + m.input, 0);
+    const totalOutput = computed.reduce((s, m) => s + m.output, 0);
+    if (totalRequests <= 0 || (totalInput <= 0 && totalOutput <= 0)) return undefined;
+    const totalCacheRead = computed.reduce((s, m) => s + m.cacheRead, 0);
+    const totalCacheWrite = computed.reduce((s, m) => s + m.cacheWrite, 0);
+    const totalReasoning = computed.reduce((s, m) => s + m.reasoning, 0);
+    const totalTokens = totalInput + totalOutput;
+    const totalRawCost = computed.reduce((s, m) => s + m.rawCost, 0);
+    const totalRawUncached = computed.reduce((s, m) => s + m.rawUncachedCost, 0);
+    const totalRawSaved = Math.max(0, totalRawUncached - totalRawCost);
+    const models: SessionModelUsage[] = computed.map((m) => ({
+      model: m.model,
+      requests: m.requests,
+      input: m.input,
+      output: m.output,
+      cacheRead: m.cacheRead,
+      cacheWrite: m.cacheWrite,
+      reasoning: m.reasoning,
+      tokens: m.tokens,
+      cacheHitRate: m.cacheHitRate,
+      costUsd: m.costUsd,
+      uncachedCostUsd: m.uncachedCostUsd,
+      cacheSavedUsd: m.cacheSavedUsd,
+      tokenShare: pct1(m.tokens, totalTokens),
+      requestShare: pct1(m.requests, totalRequests),
+      costShare: pct1(m.rawCost, totalRawCost),
+    }));
+    return {
+      requests: totalRequests,
+      input: totalInput,
+      output: totalOutput,
+      cacheRead: totalCacheRead,
+      cacheWrite: totalCacheWrite,
+      reasoning: totalReasoning,
+      tokens: totalTokens,
+      cacheHitRate: pct1(totalCacheRead, totalInput),
+      costUsd: round4(totalRawCost),
+      uncachedCostUsd: round4(totalRawUncached),
+      cacheSavedUsd: round4(totalRawSaved),
+      models,
+    };
+  }
 
   text(role: "user" | "assistant", raw: string, at?: number, mergeKey?: string) {
     const text = clean(raw);
@@ -267,6 +449,7 @@ function parseClaude(file: string): Parsed | null {
   let cwd: string | undefined;
   let id = path.basename(file, ".jsonl");
   let title = "";
+  let lastUsageKey = "";
   for (const line of readLines(file)) {
     const row = parseLine(line);
     if (!row) continue;
@@ -296,6 +479,23 @@ function parseClaude(file: string): Parsed | null {
       }
     } else {
       if (typeof message.model === "string" && message.model !== "<synthetic>") b.models.add(message.model);
+      const usage = message.usage as Record<string, unknown> | undefined;
+      if (usage && typeof usage === "object" && message.model !== "<synthetic>") {
+        const usageKey = str(row.requestId) || str(message.id);
+        if (!usageKey || usageKey !== lastUsageKey) {
+          const cacheRead = num(usage.cache_read_input_tokens);
+          const cacheWrite = num(usage.cache_creation_input_tokens);
+          const input = num(usage.input_tokens) + cacheRead + cacheWrite;
+          const output = num(usage.output_tokens);
+          const details = usage.output_tokens_details as Record<string, unknown> | undefined;
+          const reasoning = num(details?.thinking_tokens);
+          if (input > 0 || output > 0) {
+            if (usageKey) lastUsageKey = usageKey;
+            const modelName = typeof message.model === "string" && message.model ? message.model : "未知模型";
+            b.addUsage(modelName, { input, output, cacheRead, cacheWrite, reasoning });
+          }
+        }
+      }
       // 一次回复被拆成多行写（每行一个块），同一个 message.id 的文字拼回一条
       const mergeKey = str(message.id) || str(row.requestId) || str(row.uuid);
       for (const block of (Array.isArray(content) ? content : [{ type: "text", text: str(content) }]) as Record<string, unknown>[]) {
@@ -346,6 +546,9 @@ function parseCodex(file: string): Parsed | null {
   const b = new Builder();
   let cwd: string | undefined;
   let id = "";
+  let currentModel = "";
+  let hasTokenRecords = false;
+  let lastTokenCount = "";
   for (const line of readLines(file)) {
     const row = parseLine(line);
     if (!row) continue;
@@ -359,7 +562,47 @@ function parseCodex(file: string): Parsed | null {
       if (typeof payload.cwd === "string") cwd = payload.cwd;
       continue;
     }
-    if (row.type === "turn_context" && typeof payload.model === "string") b.models.add(payload.model);
+    if (row.type === "turn_context" && typeof payload.model === "string" && payload.model) {
+      currentModel = payload.model;
+      b.models.add(payload.model);
+    }
+    if (payload.type === "thread_settings_applied") {
+      const m = str(payload.thread_settings?.model);
+      if (m) {
+        currentModel = m;
+        b.models.add(m);
+      }
+    }
+    if (row.type === "token_usage_record" && payload.usage && typeof payload.usage === "object") {
+      hasTokenRecords = true;
+      const u = payload.usage as Record<string, unknown>;
+      b.addUsage(currentModel || "未知模型", {
+        input: num(u.input_tokens),
+        output: num(u.output_tokens),
+        cacheRead: num(u.cached_input_tokens),
+        cacheWrite: num(u.cache_write_input_tokens),
+        reasoning: num(u.reasoning_output_tokens),
+      });
+      continue;
+    }
+    if (!hasTokenRecords && row.type === "event_msg" && payload.type === "token_count") {
+      const info = payload.info as Record<string, unknown> | null | undefined;
+      const last = info?.last_token_usage as Record<string, unknown> | undefined;
+      if (last && typeof last === "object") {
+        const signature = JSON.stringify([info?.total_token_usage ?? null, last]);
+        if (signature !== lastTokenCount) {
+          lastTokenCount = signature;
+          b.addUsage(currentModel || "未知模型", {
+            input: num(last.input_tokens),
+            output: num(last.output_tokens),
+            cacheRead: num(last.cached_input_tokens),
+            cacheWrite: num(last.cache_write_input_tokens),
+            reasoning: num(last.reasoning_output_tokens),
+          });
+        }
+      }
+      continue;
+    }
     if (row.type === "compacted") b.event("上下文已压缩", at);
     if (row.type !== "response_item") continue;
     if (payload.type === "message") {
@@ -400,7 +643,8 @@ function parseGrok(file: string): Parsed | null {
     cwd = undefined;
   }
   const summary = readJson<Record<string, unknown> | null>(path.join(sessionDir, "summary.json"), null);
-  if (typeof summary?.current_model_id === "string") b.models.add(summary.current_model_id);
+  let currentModel = typeof summary?.current_model_id === "string" ? summary.current_model_id : "";
+  if (currentModel) b.models.add(currentModel);
   let at: number | undefined;
   for (const line of readLines(file)) {
     const row = parseLine(line);
@@ -408,12 +652,41 @@ function parseGrok(file: string): Parsed | null {
     at = timestamp(row.timestamp) ?? at;
     const update = (row.params?.update ?? {}) as Record<string, any>;
     const kind = str(update.sessionUpdate);
-    if (kind === "user_message_chunk") b.chunk("user", textOf(update.content), at);
-    else if (kind === "agent_message_chunk") b.chunk("assistant", textOf(update.content), at);
+    if (kind === "user_message_chunk") {
+      if (typeof update._meta?.modelId === "string" && update._meta.modelId) {
+        currentModel = update._meta.modelId;
+        b.models.add(currentModel);
+      }
+      b.chunk("user", textOf(update.content), at);
+    } else if (kind === "agent_message_chunk") b.chunk("assistant", textOf(update.content), at);
     else if (kind === "tool_call") b.tool(str(update.toolCallId), str(update.title) || str(update.kind), update.rawInput, at);
     else if (kind === "tool_call_update" && (update.status === "completed" || update.status === "failed")) {
       b.toolResult(str(update.toolCallId), update.rawOutput ?? update.content, update.status === "failed");
-    } else if (kind === "turn_completed") b.close();
+    } else if (kind === "turn_completed") {
+      b.close();
+      const usage = update.usage as Record<string, unknown> | undefined;
+      if (usage && typeof usage === "object") {
+        const perModel = usage.modelUsage as Record<string, Record<string, unknown>> | undefined;
+        const entries: [string, Record<string, unknown>][] =
+          perModel && typeof perModel === "object" && Object.keys(perModel).length
+            ? Object.entries(perModel)
+            : [[currentModel || "未知模型", usage]];
+        for (const [m, u] of entries) {
+          if (!u || typeof u !== "object") continue;
+          const modelName = m || currentModel || "未知模型";
+          if (modelName !== "未知模型") b.models.add(modelName);
+          b.addUsage(modelName, {
+            input: num(u.inputTokens),
+            output: num(u.outputTokens),
+            cacheRead: num(u.cachedReadTokens),
+            cacheWrite: num(u.cacheCreationTokens),
+            reasoning: num(u.reasoningTokens),
+            costUsd: num(u.costUsdTicks) / 1e9,
+            requests: num(u.modelCalls) || 1,
+          });
+        }
+      }
+    }
   }
   return summarize("grok", id, b, cwd, str(summary?.generated_title), file);
 }
@@ -459,6 +732,15 @@ function parseDeepseek(file: string): Parsed | null {
       const message = data.message ?? {};
       if (typeof message?.source?.model === "string") b.models.add(message.source.model);
       b.text("assistant", blockText(message.content, (type) => type === "text"), at);
+      const usage = data.usage as Record<string, unknown> | undefined;
+      if (usage && typeof usage === "object") {
+        const cacheRead = num(usage.cacheReadTokens);
+        const cacheWrite = num(usage.cacheWriteTokens);
+        const input = num(usage.inputTokens) + cacheRead + cacheWrite;
+        const output = num(usage.outputTokens);
+        const usageModel = displayModel(str(message?.source?.model) || model || "deepseek-chat");
+        b.addUsage(usageModel, { input, output, cacheRead, cacheWrite });
+      }
     } else if (row.type === "tool/call") b.tool(str(data.callId), str(data.name), data.arguments, at);
     else if (row.type === "tool/result") b.toolResult(str(data.message?.toolCallId), blockText(data.message?.content, () => true), data.message?.isError === true);
     else if (row.type === "command/run") b.event(`命令 ${str(data.name)}`.trim(), at);
@@ -490,7 +772,26 @@ function parsePi(file: string): Parsed | null {
     }
     branch.reverse();
   } else branch.push(...entries); // v1 会话尚未引入树结构。
-  for (const row of entries) if (row.type === "session_info" && typeof row.name === "string") title = row.name;
+  let currentModel = "";
+  for (const row of entries) {
+    if (row.type === "session_info" && typeof row.name === "string") title = row.name;
+    if (row.type === "model_change" && str(row.modelId)) currentModel = str(row.modelId);
+    const m = row.type === "message" && row.message && typeof row.message === "object" ? (row.message as Record<string, any>) : undefined;
+    if (m?.role === "assistant" && str(m.model)) currentModel = str(m.model);
+    const usage = (m
+      ? (m.role === "assistant" || m.role === "toolResult" ? m.usage : undefined)
+      : (row.type === "usage" || row.type === "compaction" || row.type === "branch_summary" ? row.usage : undefined)) as Record<string, any> | undefined;
+    if (usage && typeof usage === "object") {
+      const cacheRead = num(usage.cacheRead);
+      const cacheWrite = num(usage.cacheWrite);
+      const input = num(usage.input) + cacheRead + cacheWrite;
+      const output = num(usage.output);
+      const reasoning = num(usage.reasoning);
+      const costUsd = Number(usage.cost?.total) || 0;
+      const modelName = displayModel(str(m?.model ?? row.model) || currentModel || "未知模型");
+      b.addUsage(modelName, { input, output, cacheRead, cacheWrite, reasoning, costUsd });
+    }
+  }
   for (const row of branch) {
     const at = timestamp(row.timestamp);
     if (row.type === "model_change") { if (str(row.modelId)) b.models.add(row.modelId); }
@@ -542,7 +843,8 @@ function parseAntigravity(file: string): Parsed | null {
     else if (step.kind === "reply") {
       const model = resolveModel(read.models[step.modelId], labels);
       if (model.model !== "未知模型") b.models.add(model.model);
-      b.text("assistant", step.text, step.at);
+      if (step.usage) b.addUsage(model.model, step.usage);
+      if (step.text.trim()) b.text("assistant", step.text, step.at);
       for (const tool of step.tools) b.tool(tool.id, tool.name, tool.args, step.at);
     } else b.toolResult(step.id, step.output, step.error);
   }
@@ -568,6 +870,7 @@ function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefi
     // 用消息时间
   }
   const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant") as { text: string } | undefined;
+  const usage = b.buildUsage();
   return {
     key: `${kind}:${id}`,
     id,
@@ -583,6 +886,7 @@ function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefi
     models: [...b.models].slice(0, 6),
     preview: oneLine((lastAssistant ?? firstUser)?.text ?? "").slice(0, 140),
     resumeCommand: commandOf(kind, id),
+    ...(usage ? { usage } : {}),
     messages,
     file,
   };

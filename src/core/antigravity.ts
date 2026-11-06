@@ -294,9 +294,17 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
  * - 132 工具执行：5.4.1 调用 id、5.4.2 工具名、5.4.3 参数；140.2.1 是交给模型的工具输出。
  * 其他类型（检查点、摘要之类）不展示。
  */
+export type AgyStepUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+};
+
 export type AgyStep =
   | { kind: "user"; at: number; text: string }
-  | { kind: "reply"; at: number; text: string; modelId: number; tools: { id: string; name: string; args: string }[] }
+  | { kind: "reply"; at: number; text: string; modelId: number; tools: { id: string; name: string; args: string }[]; usage?: AgyStepUsage }
   | { kind: "result"; at: number; id: string; name: string; args: string; output: string; error: boolean };
 
 export const USER_INPUT = 14, TOOL_STEP = 132;
@@ -307,27 +315,37 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
     const out: AgyStep[] = [];
     const models: Record<string, AgyModel> = {};
     const genModel = prepareOptional(db, "select data from gen_metadata where idx = ?");
-    for (const row of db.prepare("select idx, step_type, status, step_payload from steps order by idx").all() as { idx: number; step_type: number; status: number; step_payload: Uint8Array | null }[]) {
-      if (!row.step_payload) continue;
-      const payload = Buffer.from(row.step_payload), meta = pbMessage(payload, 5);
-      const at = pbTime(pbMessage(meta, 1));
+    for (const row of db.prepare("select idx, step_type, status, metadata, step_payload from steps order by idx").all() as { idx: number; step_type: number; status: number; metadata: Uint8Array | null; step_payload: Uint8Array | null }[]) {
+      if (!row.step_payload && !row.metadata) continue;
+      const payload = row.step_payload ? Buffer.from(row.step_payload) : undefined;
+      const payloadMeta = pbMessage(payload, 5);
+      const colMeta = row.metadata ? Buffer.from(row.metadata) : undefined;
+      const meta = payloadMeta ?? colMeta;
+      const at = pbTime(pbMessage(payloadMeta, 1)) || pbTime(pbMessage(colMeta, 1));
       if (row.step_type === USER_INPUT) {
+        if (!payload) continue;
         const text = pbString(pbMessage(payload, 19), 2);
         if (text.trim()) out.push({ kind: "user", at, text });
       } else if (row.step_type === MODEL_REPLY) {
         const body = pbMessage(payload, 20);
         const tools = (pbFields(body ?? Buffer.alloc(0)) ?? []).filter((field) => field.no === 7 && field.bytes).map((field) => ({ id: pbString(field.bytes, 1), name: pbString(field.bytes, 2), args: pbString(field.bytes, 3) }));
         const text = pbString(body, 1);
-        const modelId = pbNumber(meta, 11);
+        const u = pbMessage(payloadMeta, 9) ?? pbMessage(colMeta, 9);
+        const rawInput = pbNumber(u, 2), output = pbNumber(u, 3), cacheWrite = pbNumber(u, 4), cacheRead = pbNumber(u, 5), reasoning = pbNumber(u, 9);
+        const input = rawInput + cacheRead + cacheWrite;
+        const usage: AgyStepUsage | undefined = u && (input > 0 || output > 0) ? { input, output, cacheRead, cacheWrite, reasoning } : undefined;
+        const modelId = pbNumber(payloadMeta, 11) || pbNumber(colMeta, 11) || pbNumber(u, 1);
         if (modelId && !models[modelId]) {
           try {
-            const data = (genModel?.get(pbNumber(pbMessage(meta, 20), 3)) as { data?: Uint8Array } | undefined)?.data;
+            const genInfo = pbMessage(payloadMeta, 20) ?? pbMessage(colMeta, 20);
+            const data = (genModel?.get(pbNumber(genInfo, 3)) as { data?: Uint8Array } | undefined)?.data;
             const found = data ? generationModel(Buffer.from(data)) : null;
             if (found) models[modelId] = found;
           } catch { /* 老对话没有 gen_metadata 表：型号留空 */ }
         }
-        if (text.trim() || tools.length) out.push({ kind: "reply", at, text, modelId, tools });
+        if (text.trim() || tools.length || usage) out.push({ kind: "reply", at, text, modelId, tools, ...(usage ? { usage } : {}) });
       } else if (row.step_type === TOOL_STEP) {
+        if (!payload) continue;
         const call = pbMessage(meta, 4);
         const id = pbString(call, 1);
         if (!id) continue;
@@ -531,10 +549,17 @@ export function modelFamily(label: string) {
 type ParsedSummaryGroup = {
   idx: number;
   title: string;
+  description: string;
   bucketIds: string[];
   five?: AgyWindowQuota;
   week?: AgyWindowQuota;
 };
+
+function poolCategory(family: string): string {
+  if (/gemini/i.test(family)) return "gemini";
+  if (/claude|gpt|anthropic|openai/i.test(family)) return "3p";
+  return family.toLowerCase();
+}
 
 function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
   const root = (summaryJson as { response?: { groups?: unknown }; groups?: unknown } | null);
@@ -543,15 +568,28 @@ function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
   const out: ParsedSummaryGroup[] = [];
   rawGroups.forEach((raw, idx) => {
     if (!raw || typeof raw !== "object") return;
-    const title = typeof raw.title === "string" ? raw.title.trim() : "";
+    const title = typeof raw.displayName === "string" && raw.displayName.trim()
+      ? raw.displayName.trim()
+      : typeof raw.title === "string"
+        ? raw.title.trim()
+        : "";
+    const description = typeof raw.description === "string" ? raw.description.trim() : "";
     const buckets = Array.isArray(raw.buckets) ? (raw.buckets as Record<string, unknown>[]) : [];
     const bucketIds: string[] = [];
     let five: AgyWindowQuota | undefined;
     let week: AgyWindowQuota | undefined;
     for (const bucket of buckets) {
       if (!bucket || typeof bucket !== "object") continue;
-      const id = typeof bucket.id === "string" ? bucket.id : "";
-      const bTitle = typeof bucket.title === "string" ? bucket.title : "";
+      const id = typeof bucket.bucketId === "string" && bucket.bucketId
+        ? bucket.bucketId
+        : typeof bucket.id === "string"
+          ? bucket.id
+          : "";
+      const bTitle = typeof bucket.displayName === "string" && bucket.displayName
+        ? bucket.displayName
+        : typeof bucket.title === "string"
+          ? bucket.title
+          : "";
       const win = typeof bucket.window === "string" ? bucket.window : "";
       if (id) bucketIds.push(id);
       const remaining = Math.min(1, Math.max(0, Number(bucket.remainingFraction ?? 0) || 0));
@@ -559,28 +597,41 @@ function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
       const resetAt = typeof bucket.resetTime === "string" && bucket.resetTime ? bucket.resetTime : undefined;
       const quota: AgyWindowQuota = { used, ...(resetAt ? { resetAt } : {}) };
       if (win === "weekly" || /weekly/i.test(id) || /week/i.test(bTitle)) week = quota;
-      else if (win === "5h" || /5h/i.test(id) || /5-?hour/i.test(bTitle)) five = quota;
+      else if (win === "5h" || /5h/i.test(id) || /5-?hour|five\s+hour/i.test(bTitle)) five = quota;
     }
-    if (title || five || week) out.push({ idx, title, bucketIds, ...(five ? { five } : {}), ...(week ? { week } : {}) });
+    if (title || five || week) out.push({ idx, title, description, bucketIds, ...(five ? { five } : {}), ...(week ? { week } : {}) });
   });
   return out;
 }
 
+function sameResetTime(a?: string, b?: string, maxDiffMs = 10_000): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) <= maxDiffMs;
+}
+
 function matchSummaryGroup(family: string, used: number, resetAt: string | undefined, summaryGroups: ParsedSummaryGroup[]): ParsedSummaryGroup | undefined {
   if (!summaryGroups.length) return undefined;
-  const exact = summaryGroups.find((sg) => sg.five && sg.five.resetAt && sg.five.resetAt === resetAt && Math.abs(sg.five.used - used) <= 0.2);
-  if (exact) return exact;
   if (/gemini/i.test(family)) {
-    const byFamily = summaryGroups.find((sg) => /gemini/i.test(sg.title) || sg.bucketIds.some((id) => /gemini/i.test(id)));
+    const byFamily = summaryGroups.find(
+      (sg) => /gemini/i.test(sg.title) || /gemini/i.test(sg.description) || sg.bucketIds.some((id) => /gemini/i.test(id)),
+    );
     if (byFamily) return byFamily;
   }
   if (/claude|gpt|anthropic|openai/i.test(family)) {
-    const byFamily = summaryGroups.find((sg) => /claude|gpt|3p/i.test(sg.title) || sg.bucketIds.some((id) => /3p|claude|gpt/i.test(id)));
+    const byFamily = summaryGroups.find(
+      (sg) =>
+        /claude|gpt|3p|anthropic|openai/i.test(sg.title)
+        || /claude|gpt|3p|anthropic|openai/i.test(sg.description)
+        || sg.bucketIds.some((id) => /3p|claude|gpt/i.test(id)),
+    );
     if (byFamily) return byFamily;
   }
-  const byReset = summaryGroups.find((sg) => sg.five?.resetAt && sg.five.resetAt === resetAt);
-  if (byReset) return byReset;
-  return summaryGroups.find((sg) => sg.five && Math.abs(sg.five.used - used) <= 0.2);
+  const exact = summaryGroups.find((sg) => sg.five && sameResetTime(sg.five.resetAt, resetAt) && Math.abs(sg.five.used - used) <= 0.2);
+  if (exact) return exact;
+  return summaryGroups.find((sg) => sg.five && sameResetTime(sg.five.resetAt, resetAt));
 }
 
 /** 把 GetUserStatus（以及可选的 RetrieveUserQuotaSummary）的返回整理成套餐 + 额度分组（含 5h 与周额度）+ 型号标签。认不出来返回 null。 */
@@ -618,7 +669,7 @@ export function parseAntigravityStatus(json: unknown, summaryJson?: unknown): Ag
     const resetAt = typeof quota.resetTime === "string" && quota.resetTime ? quota.resetTime : undefined;
     const { model, family, effort } = splitModelLabel(label);
     const matched = matchSummaryGroup(family, used, resetAt, summaryGroups);
-    const key = matched ? `sg:${matched.idx}` : `${remaining}|${resetAt ?? ""}`;
+    const key = matched ? `sg:${matched.idx}` : `${poolCategory(family)}|${remaining}|${resetAt ?? ""}`;
     const groupUsed = matched?.five ? matched.five.used : used;
     const groupResetAt = matched?.five?.resetAt ?? resetAt;
     const group = groups.get(key) ?? {

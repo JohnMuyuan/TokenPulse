@@ -26,12 +26,12 @@ write(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1.jsonl'), [
   { type: 'user', uuid: 'm0', isMeta: true, timestamp: '2026-09-24T09:59:00Z', sessionId: 'claude-1', cwd: project, message: { content: 'Caveat: meta line' } },
   { type: 'user', uuid: 'u0', timestamp: '2026-09-24T09:59:30Z', sessionId: 'claude-1', cwd: project, message: { content: '<command-name>/model</command-name><command-args>opus</command-args>' } },
   { type: 'user', uuid: 'u1', timestamp: '2026-09-24T10:00:00Z', sessionId: 'claude-1', cwd: project, message: { content: '<system-reminder>别显示我</system-reminder>检查项目状态' } },
-  // 一次回复拆成两行写：同一个 message.id，文字要拼回一条
-  { type: 'assistant', uuid: 'a1', timestamp: '2026-09-24T10:00:02Z', message: { id: 'msg_1', model: 'claude-opus-5', content: [{ type: 'text', text: '正在检查。' }] } },
-  { type: 'assistant', uuid: 'a2', timestamp: '2026-09-24T10:00:03Z', message: { id: 'msg_1', model: 'claude-opus-5', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'dir' } }] } },
+  // 一次回复拆成两行写：同一个 message.id，文字要拼回一条，usage 也要去重只算一次
+  { type: 'assistant', uuid: 'a1', timestamp: '2026-09-24T10:00:02Z', message: { id: 'msg_1', model: 'claude-opus-5', usage: { input_tokens: 2000, cache_read_input_tokens: 8000, cache_creation_input_tokens: 0, output_tokens: 400, output_tokens_details: { thinking_tokens: 100 } }, content: [{ type: 'text', text: '正在检查。' }] } },
+  { type: 'assistant', uuid: 'a2', timestamp: '2026-09-24T10:00:03Z', message: { id: 'msg_1', model: 'claude-opus-5', usage: { input_tokens: 2000, cache_read_input_tokens: 8000, cache_creation_input_tokens: 0, output_tokens: 400, output_tokens_details: { thinking_tokens: 100 } }, content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'dir' } }] } },
   { type: 'user', uuid: 'u2', timestamp: '2026-09-24T10:00:04Z', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'file.txt' }] } },
   { type: 'assistant', uuid: 'a3', isSidechain: true, timestamp: '2026-09-24T10:00:05Z', message: { id: 'msg_side', content: [{ type: 'text', text: '旁支不显示' }] } },
-  { type: 'assistant', uuid: 'a4', timestamp: '2026-09-24T10:00:06Z', message: { id: 'msg_2', model: 'claude-opus-5', content: [{ type: 'text', text: '只有 file.txt。' }] } },
+  { type: 'assistant', uuid: 'a4', timestamp: '2026-09-24T10:00:06Z', message: { id: 'msg_2', model: 'claude-opus-5', usage: { input_tokens: 1000, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 200 }, content: [{ type: 'text', text: '只有 file.txt。' }] } },
   { type: 'ai-title', aiTitle: '检查 Demo 项目' },
   'not json {',
 ]);
@@ -60,6 +60,7 @@ write(codexFile, [
   { type: 'response_item', timestamp: '2026-09-24T11:00:02Z', payload: { type: 'function_call', name: 'shell', arguments: '{"command":"dir"}', call_id: 'call-1' } },
   { type: 'response_item', timestamp: '2026-09-24T11:00:03Z', payload: { type: 'function_call_output', call_id: 'call-1', output: 'file.txt' } },
   { type: 'response_item', timestamp: '2026-09-24T11:00:04Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已完成。' }] } },
+  { type: 'token_usage_record', timestamp: '2026-09-24T11:00:04Z', payload: { response_id: 'resp_1', usage: { input_tokens: 10000, cached_input_tokens: 6000, cache_write_input_tokens: 0, output_tokens: 500, reasoning_output_tokens: 200 } } },
   { type: 'event_msg', timestamp: '2026-09-24T11:00:04Z', payload: { type: 'agent_message', message: '已完成。' } },
   { type: 'response_item', timestamp: '2026-09-24T11:00:05Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<turn_aborted>\nThe user interrupted.\n</turn_aborted>' }] } },
 ]);
@@ -80,7 +81,7 @@ write(path.join(grokSession, 'updates.jsonl'), [
   { params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '需要我做什么？' } } } },
   { params: { update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'read_file', rawInput: { path: 'a.txt' } } } },
   { params: { update: { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'failed', rawOutput: 'not found' } } },
-  { params: { update: { sessionUpdate: 'turn_completed' } } },
+  { params: { update: { sessionUpdate: 'turn_completed', usage: { modelUsage: { 'grok-4.6': { inputTokens: 8000, cachedReadTokens: 4000, outputTokens: 1000, reasoningTokens: 300, costUsdTicks: 15000000, modelCalls: 2 } } } } } },
 ]);
 fs.writeFileSync(path.join(grokSession, 'summary.json'), JSON.stringify({ generated_title: '打个招呼', current_model_id: 'grok-4.6' }));
 
@@ -89,7 +90,7 @@ const deepseekLines = [
   { type: 'session', id: 'session-demo', createdAt: '2026-09-24T13:00:00Z', cwd: project },
   { type: 'session/title', time: '2026-09-24T13:00:01Z', data: { title: '看看 Demo' } },
   { type: 'user/message', time: '2026-09-24T13:00:02Z', data: { role: 'user', content: [{ type: 'text', text: '目录里有什么' }] } },
-  { type: 'assistant/message', time: '2026-09-24T13:00:03Z', data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: '想一下' }, { type: 'text', text: '有一个文件。' }], source: { model: 'deepseek-flash' } } } },
+  { type: 'assistant/message', time: '2026-09-24T13:00:03Z', data: { usage: { inputTokens: 2000, cacheReadTokens: 8000, cacheWriteTokens: 0, outputTokens: 500 }, message: { role: 'assistant', content: [{ type: 'reasoning', text: '想一下' }, { type: 'text', text: '有一个文件。' }], source: { model: 'deepseek-flash' } } } },
   { type: 'tool/call', time: '2026-09-24T13:00:04Z', data: { callId: 'c1', name: 'read', arguments: { path: 'a.txt' } } },
   { type: 'tool/result', time: '2026-09-24T13:00:05Z', data: { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'hello' }], isError: false } } },
 ].map((row) => JSON.stringify(row)).join('\n') + '\n';
@@ -113,11 +114,56 @@ for (const item of list) {
   assert.strictEqual(item.turns, 1, `${item.kind} 只有一轮用户提问`);
   if (item.kind !== 'deepseek') assert(item.resumeCommand.includes(item.id));
   assert(!('messages' in item), '列表里不带整段对话');
+  assert(item.usage && item.usage.tokens > 0, `${item.kind} 列表摘要带会话级用量统计`);
 }
 assert.deepStrictEqual(byKind.claude.models, ['claude-opus-5']);
 assert.deepStrictEqual(byKind.codex.models, ['gpt-6']);
 assert.deepStrictEqual(byKind.grok.models, ['grok-4.6']);
 assert.deepStrictEqual(byKind.deepseek.models, ['deepseek-flash']);
+
+// 会话级用量统计：去重、缓存命中率、API 等价费用、缓存节省、模型占比
+assert.deepStrictEqual(byKind.claude.usage, {
+  requests: 2,
+  input: 20000,
+  output: 600,
+  cacheRead: 17000,
+  cacheWrite: 0,
+  reasoning: 100,
+  tokens: 20600,
+  cacheHitRate: 85,
+  costUsd: 0.0385,
+  uncachedCostUsd: 0.115,
+  cacheSavedUsd: 0.0765,
+  models: [{
+    model: 'claude-opus-5',
+    requests: 2,
+    input: 20000,
+    output: 600,
+    cacheRead: 17000,
+    cacheWrite: 0,
+    reasoning: 100,
+    tokens: 20600,
+    cacheHitRate: 85,
+    costUsd: 0.0385,
+    uncachedCostUsd: 0.115,
+    cacheSavedUsd: 0.0765,
+    tokenShare: 100,
+    requestShare: 100,
+    costShare: 100,
+  }],
+}, 'Claude 会话用量：同一条回复拆多行要去重，缓存命中率与节省金额计算准确');
+assert.strictEqual(byKind.codex.usage.tokens, 10500);
+assert.strictEqual(byKind.codex.usage.cacheHitRate, 60);
+assert.strictEqual(byKind.codex.usage.costUsd, 0.038);
+assert.strictEqual(byKind.codex.usage.cacheSavedUsd, 0.027);
+assert.strictEqual(byKind.grok.usage.requests, 2);
+assert.strictEqual(byKind.grok.usage.tokens, 9000);
+assert.strictEqual(byKind.grok.usage.cacheHitRate, 50);
+assert.strictEqual(byKind.grok.usage.costUsd, 0.015);
+assert.strictEqual(byKind.grok.usage.cacheSavedUsd, 0.007);
+assert.strictEqual(byKind.deepseek.usage.tokens, 10500);
+assert.strictEqual(byKind.deepseek.usage.cacheHitRate, 80);
+assert.strictEqual(byKind.deepseek.usage.models[0].model, 'DeepSeek-V4.1-Flash');
 
 // Claude：meta / sidechain / system-reminder 过滤，斜杠命令变事件，同 id 的文字拼成一条，工具结果挂到工具上
 const claude = sessions.getSession('claude', 'claude-1');
@@ -128,6 +174,7 @@ const bash = claude.messages.find(m => m.role === 'tool');
 assert.strictEqual(bash.name, 'Bash');
 assert(bash.output.includes('file.txt') && !bash.error);
 assert.strictEqual(claude.truncated, 0);
+assert.deepStrictEqual(claude.usage, byKind.claude.usage, '详情与列表摘要的 usage 一致');
 
 // Codex：developer / AGENTS.md / environment_context 不算用户说的；AllAi 的前缀剥掉；event_msg 不重复；中断变事件
 const codex = sessions.getSession('codex', 'codex-1');
@@ -175,7 +222,7 @@ const piDir = path.join(process.env.PI_CODING_AGENT_DIR, 'sessions', '--D--Demo-
 const piRows = id => [
   { type: 'session', version: 3, id, timestamp: '2026-09-24T14:00:00Z', cwd: project },
   { type: 'message', id: 'a', parentId: null, timestamp: '2026-09-24T14:00:01Z', message: { role: 'user', content: [{ type: 'text', text: '你好' }] } },
-  { type: 'message', id: 'b', parentId: 'a', timestamp: '2026-09-24T14:00:02Z', message: { role: 'assistant', content: [{ type: 'text', text: '嗯' }] } },
+  { type: 'message', id: 'b', parentId: 'a', timestamp: '2026-09-24T14:00:02Z', message: { role: 'assistant', model: 'claude-sonnet-5', usage: { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 0, reasoning: 100, cost: { total: 0.0114 } }, content: [{ type: 'text', text: '嗯' }] } },
 ];
 const piFile = path.join(piDir, '2026-09-24T14-00-00-000Z_pi-1.jsonl');
 const piOther = path.join(piDir, '2026-09-24T14-10-00-000Z_pi-2.jsonl');
@@ -185,7 +232,11 @@ write(piOther, piRows('pi-2'));
 const piStale = path.join(piDir, '2026-09-24T14-20-00-000Z_pi-4.jsonl');
 write(piRenamed, piRows('pi-3'));
 write(piStale, piRows('pi-4'));
-assert(sessions.listSessions().some(item => item.key === 'pi:pi-1'));
+const piOne = sessions.listSessions().find(item => item.key === 'pi:pi-1');
+assert(piOne && piOne.usage);
+assert.strictEqual(piOne.usage.tokens, 4500);
+assert.strictEqual(piOne.usage.cacheHitRate, 75);
+assert.strictEqual(piOne.usage.costUsd, 0.0114);
 const piText = sessions.sessionTextFile(piFile);
 fs.mkdirSync(path.dirname(piText), { recursive: true });
 fs.writeFileSync(piText, '缓存的文字');
