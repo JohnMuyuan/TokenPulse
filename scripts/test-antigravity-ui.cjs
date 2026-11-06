@@ -14,9 +14,10 @@ for (const dir of ['data', 'home', 'antigravity/conversations', 'antigravity/dae
 fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' }));
 const NOW = Date.now(), H = 3600000, iso = at => new Date(at).toISOString();
 const RESET_A = Math.floor((NOW + 3 * H) / 1000) * 1000, RESET_B = Math.floor((NOW + 4.5 * H) / 1000) * 1000;
+const RESET_A_WEEK = Math.floor((NOW + 120 * H) / 1000) * 1000, RESET_B_WEEK = Math.floor((NOW + 144 * H) / 1000) * 1000;
 // 同一个窗口里的三次采样：Gemini 一组从 10% 涨到 30%（每小时 10 个点），Claude 一组没动
 const KEY_A = 'Gemini 3.8 Flash|Gemini 4 Argon', KEY_B = 'Claude Opus 5.5|GPT-OSS 120B';
-fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({ history: [2, 1].map(ago => ({ at: NOW - ago * H, groups: [{ key: KEY_A, used: 30 - ago * 10, resetAt: iso(RESET_A) }, { key: KEY_B, used: 0, resetAt: iso(RESET_B) }] })), notified: {} }));
+fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({ history: [2, 1].map(ago => ({ at: NOW - ago * H, groups: [{ key: KEY_A, used: 30 - ago * 10, resetAt: iso(RESET_A), weekUsed: 20 - ago * 2, weekResetAt: iso(RESET_A_WEEK) }, { key: KEY_B, used: 0, resetAt: iso(RESET_B), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) }] })), notified: {} }));
 
 /* ---------- 对话库：今天两次生成 ---------- */
 const { DatabaseSync } = require('node:sqlite');
@@ -49,16 +50,20 @@ const step = (start, input, output, gen) => Buffer.concat([time(1, start), time(
 /* ---------- 假的 language server ---------- */
 const CSRF = 'csrf-ui-' + 'x'.repeat(20);
 let mode = 'normal';
-const status = () => ({ userStatus: { name: 'QA', email: 'qa-agy@example.com', planStatus: { planInfo: { planName: 'Pro' } }, userTier: { name: 'Google AI Ultra' }, cascadeModelConfigData: { clientModelConfigs: [
+const status = () => ({ userStatus: { name: 'QA', email: 'qa-agy@example.com', planStatus: { planInfo: { planName: 'Pro', monthlyPromptCredits: 50000, monthlyFlowCredits: 150000 }, availablePromptCredits: 48000, availableFlowCredits: 149500 }, userTier: { name: 'Google AI Ultra' }, cascadeModelConfigData: { clientModelConfigs: [
   ...['Gemini 4 Argon (High)', 'Gemini 4 Argon (Low)', 'Gemini 3.8 Flash (Medium)'].map((label, i) => ({ label, modelOrAlias: { model: ['MODEL_PLACEHOLDER_M417', 'MODEL_PLACEHOLDER_M419', 'MODEL_PLACEHOLDER_M319'][i] }, quotaInfo: { remainingFraction: 0.7, resetTime: iso(RESET_A) } })),
   ...['Claude Opus 5.5 (Low)', 'GPT-OSS 120B (Medium)'].map((label, i) => ({ label, modelOrAlias: { model: ['MODEL_PLACEHOLDER_M400', 'MODEL_OPENAI_GPT_OSS_120B_MEDIUM'][i] }, quotaInfo: mode === 'out' ? { resetTime: iso(RESET_B) } : { remainingFraction: 1, resetTime: iso(RESET_B) } })),
 ] } } });
+const summary = () => ({ groups: [
+  { title: 'Gemini Models', buckets: [{ id: 'gemini_5h', window: '5h', remainingFraction: 0.7, resetTime: iso(RESET_A) }, { id: 'gemini_weekly', window: 'weekly', remainingFraction: 0.8, resetTime: iso(RESET_A_WEEK) }] },
+  { title: 'Claude and GPT models', buckets: [{ id: '3p_5h', window: '5h', remainingFraction: mode === 'out' ? 0 : 1, resetTime: iso(RESET_B) }, { id: '3p_weekly', window: 'weekly', remainingFraction: 0.9, resetTime: iso(RESET_B_WEEK) }] },
+] });
 const hits = [];
 const server = http.createServer((req, res) => {
   let body = ''; req.on('data', c => body += c); req.on('end', () => {
     hits.push({ url: req.url, csrf: req.headers['x-codeium-csrf-token'] });
     if (req.headers['x-codeium-csrf-token'] !== CSRF) { res.writeHead(403).end('{}'); return; }
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(status()));
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(req.url.endsWith('/RetrieveUserQuotaSummary') ? summary() : status()));
   });
 });
 
@@ -79,10 +84,10 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     const card = '#quota-cards [data-antigravity]';
     assert.equal(await e(`document.querySelectorAll('${card} .agy-mini').length`), 2);
     assert.match(await text(card), /Antigravity[\s\S]*Google AI Ultra[\s\S]*节奏正常/);
-    assert.match(await text(`${card} .agy-mini[data-group="${KEY_A}"]`), /Gemini 4 Argon · Gemini 3\.8 Flash[\s\S]*已用 30\.0%[\s\S]*后重置/);
+    assert.match(await text(`${card} .agy-mini[data-group="${KEY_A}"]`), /Gemini 4 Argon · Gemini 3\.8 Flash[\s\S]*已用 30\.0%[\s\S]*后重置[\s\S]*周额度[\s\S]*周已用 20\.0%/);
     assert.equal(await text(`${card} .ring-center`), '70.0%', '圆环中间是剩得最少的那一组');
     assert.equal(await e(`document.querySelectorAll('${card} .ring-value').length`), 2, '两组各一个环');
-    assert.ok(hits.length >= 1 && hits.every(h => h.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus'));
+    assert.ok(hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') && hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary'));
     await shot('agy-overview');
     pass('antigravity UI: the overview has an Antigravity card with one row per quota group and a double ring');
 
@@ -94,9 +99,11 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.equal(await e("document.getElementById('page-quota').classList.contains('agy-mode')"), true);
     assert.equal(await e("getComputedStyle(document.getElementById('quota-model-study')).display"), 'none');
     assert.match(await text('#quota-detail .agy-context'), /Google Antigravity[\s\S]*Google AI Ultra · Pro/);
-    assert.match(await text(`#quota-detail .agy-group[data-group="${KEY_A}"]`), /剩余额度[\s\S]*已用 30\.0%[\s\S]*按最近的速度，重置时大约用到 60\.0%[\s\S]*10\.00/);
-    assert.match(await text(`#quota-detail .agy-group[data-group="${KEY_B}"]`), /100\.0%[\s\S]*这个窗口里还没有新增用量/);
+    assert.match(await text(`#quota-detail .agy-group[data-group="${KEY_A}"]`), /剩余额度[\s\S]*已用 30\.0%[\s\S]*按最近的速度，重置时大约用到 60\.0%[\s\S]*周额度窗口[\s\S]*80\.0%[\s\S]*周已用 20\.0%[\s\S]*Token 与费用[\s\S]*10\.00/);
+    assert.match(await text(`#quota-detail .agy-group[data-group="${KEY_B}"]`), /100\.0%[\s\S]*这个窗口里还没有新增用量[\s\S]*周额度窗口[\s\S]*90\.0%/);
     assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line').length"), 2, '走势图每组一条线');
+    assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line-week').length"), 2, '周额度走势虚线每组一条');
+    assert.ok(await e("!!document.querySelector('#quota-detail .agy-capacity') && !!document.querySelector('#quota-detail .agy-model-study') && !!document.querySelector('#quota-detail .agy-requests')"), '容量趋势、模型换算与账号请求面板齐全');
     pass('antigravity UI: the quota page shows each group with remaining, reset, pace forecast and a 7-day chart, without the official-account sections');
 
     // 本机用量：扫到的 Antigravity 对话；型号按额度接口的标签显示

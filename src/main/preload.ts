@@ -51,6 +51,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   antigravityQuota: {
     state: () => ipcRenderer.invoke("antigravity-quota:state"),
     refresh: () => (demo ? blocked() : ipcRenderer.invoke("antigravity-quota:refresh")),
+    timeline: (query?: unknown) => ipcRenderer.invoke("antigravity-quota:timeline", query),
+    speed: (days: number) => ipcRenderer.invoke("antigravity-quota:speed", days),
     onState: (handler: (state: unknown) => void) => {
       const listener = (_event: unknown, state: unknown) => handler(state);
       ipcRenderer.on("antigravity-quota-state", listener);

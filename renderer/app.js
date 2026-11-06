@@ -1573,7 +1573,7 @@ function renderQuota() {
   $('page-quota').classList.toggle('agy-mode', agyPage);
   if (agyPage) {
     $('page-quota').classList.remove('ds-mode', 'pool-mode', 'ds-no-timeline');
-    state.account = window.AntigravityQuota.renderQuota(host);
+    state.account = window.AntigravityQuota.renderQuota(host, quotaTimelineNode);
     drawAccountTabs(slots);
     syncSegs();
     return;
@@ -2058,7 +2058,8 @@ function latencyCell(row) {
   if (!t || (t.ms == null && t.firstByteMs == null)) return el('td', { class: 'request-latency empty', title: '这次请求没有经过 TokenPulse 转发，量不到延迟。打开「供应商 → 透明转发」，或者走本地路由（第三方供应商、号池）的请求会有。', text: '—' });
   const first = t.firstTokenMs ?? t.firstByteMs;
   const line = (label, value) => el('span', {}, [el('small', { text: label }), el('b', { translate: 'no', text: value })]);
-  return el('td', { class: 'request-latency ' + latencyTone(t), title: `${t.pass ? '透明转发' : '本地路由'}${t.stream === false ? ' · 非流式' : ' · 流式'}` }, [el('div', {}, [
+  const via = t.provider === 'Antigravity' ? 'Antigravity 本地记录' : t.pass ? '透明转发' : '本地路由';
+  return el('td', { class: 'request-latency ' + latencyTone(t), title: `${via}${t.stream === false ? ' · 非流式' : ' · 流式'}` }, [el('div', {}, [
     line('首字', first == null ? '—' : secs(first)), line('总耗时', t.ms == null ? '—' : secs(t.ms)), line('速度', t.tokensPerSec == null ? '—' : `${t.tokensPerSec} t/s`)])]);
 }
 function modelCell(row) {
@@ -2095,6 +2096,7 @@ function projectAccountCell(row) {
  */
 const KIND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'chatgpt', 'Grok Build': 'grok' };
 function quotaShare(row) {
+  if (row.source === 'Antigravity') return window.AntigravityQuota?.quotaShare?.(row) || null;
   // 同一家可能有好几个账号在查额度：找这条请求所属账号的那份
   const reports = current?.accounts?.filter(item => item.kind === KIND_OF_SOURCE[row.source]) || [];
   const report = reports.find(item => item.accountId && item.accountId === row.account?.id) || (reports.length === 1 && !reports[0].accountId ? reports[0] : null);
@@ -2147,7 +2149,7 @@ function requestDetail(row) {
     ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)], ['推理 Tokens', number(row.reasoning)],
     ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : []),
     ...(row.effort ? [['思考等级', row.effort]] : []),
-    ...(row.timing ? [['经由', row.timing.pass ? '透明转发（原样转给官方）' : `本地路由 · ${row.timing.provider || '供应商'}`], ['接口', row.timing.path || '—', true], ['类型', row.timing.stream === false ? '非流式' : '流式'],
+    ...(row.timing ? [['经由', row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发（原样转给官方）' : `本地路由 · ${row.timing.provider || '供应商'}`], ['接口', row.timing.path || '—', true], ['类型', row.timing.stream === false ? '非流式' : '流式'],
       ['首字节', row.timing.firstByteMs == null ? '—' : secs(row.timing.firstByteMs)], ['首段内容', row.timing.firstTokenMs == null ? '—' : secs(row.timing.firstTokenMs)], ['总耗时', row.timing.ms == null ? '—' : secs(row.timing.ms)],
       ['输出速度', row.timing.tokensPerSec == null ? '—（输出太少，不算）' : `${row.timing.tokensPerSec} Token/秒`]] : []),
     ...(!row.timing && row.estimate ? [['估算用时', '≈ ' + secs(row.estimate.ms)], ['估算速度', `≈ ${row.estimate.tokensPerSec} Token/秒（按日志时间戳，偏慢）`]] : [])
@@ -2406,7 +2408,7 @@ const LAYOUT = [
   ['quota:timeline', '模型与思考等级时间线', '各页通用'], ['quota:speed', '模型速度', '各页通用'], ['quota:account', '这个账号的请求', '官方账号'],
   ['quota:balance', '余额', 'DeepSeek 和第三方 Key'], ['quota:local', '本机用量', 'DeepSeek 和第三方 Key'], ['quota:spend', '消耗趋势', 'DeepSeek 和第三方 Key'],
   ['quota:history', '余额走势', 'DeepSeek 和第三方 Key'], ['quota:models', '模型换算', 'DeepSeek 和第三方 Key'], ['quota:site', '站点上的 Key', 'DeepSeek 和第三方 Key'], ['quota:about', '账号说明', 'DeepSeek 和第三方 Key'],
-  ['quota:agy-groups', '额度分组', 'Antigravity'], ['quota:agy-history', '最近 7 天的额度', 'Antigravity'], ['quota:agy-local', '本机用量', 'Antigravity'],
+  ['quota:agy-groups', '额度分组', 'Antigravity'], ['quota:agy-capacity', '额度容量趋势', 'Antigravity'], ['quota:agy-local', '本机用量', 'Antigravity'], ['quota:agy-history', '最近 7 天的额度', 'Antigravity'], ['quota:agy-models', '模型换算', 'Antigravity'], ['quota:agy-requests', '这个账号的请求', 'Antigravity'],
   ['quota:pool-quota', '号池总额度', '号池'], ['quota:pool-plan', '预排', '号池'], ['quota:pool-usage', '号池用量', '号池'], ['quota:pool-survival', '生存分析', '号池'], ['quota:pool-members', '成员分摊', '号池'], ['quota:pool-hourly', '号池最近 24 小时', '号池'],
   ['quota:pool-daily', '号池最近 30 天', '号池'], ['quota:pool-models', '号池用过的模型', '号池'], ['quota:pool-requests', '这个号池的请求', '号池'],
   ['usage:breakdown', 'Token 构成', '卡片'], ['usage:year', '全年活跃度', '卡片'], ['usage:trend', '用量趋势 · 按工具', '卡片'], ['usage:tools', '工具排行', '卡片'], ['usage:hours', '使用时段分布', '卡片'],

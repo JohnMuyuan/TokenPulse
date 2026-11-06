@@ -57,9 +57,9 @@ export function normalizeModel(model: string) {
   let out = model.trim().toLowerCase();
   // 规则在 knowledge/models.json 的 aliases 里，能在线更新
   for (const rule of aliasRules()) out = out.replace(rule.test, rule.replace);
-  // 空格、以及缀在型号后面的路由名，先收成同一种写法，再认 Grok Build 的 -build
+  // 空格、以及缀在型号后面的路由名，先收成同一种写法，再认 Grok Build 的 -build 和 Antigravity 内部后缀
   out = out.replace(/\s*·\s*tokenpulse$/i, "").replace(/\s+/g, "-");
-  return out.replace(/^(grok-[\d.]+)-build$/, "$1");
+  return out.replace(/^(grok-[\d.]+)-build$/, "$1").replace(/^(gemini-[\w.-]+?)-(?:b|n)$/, "$1");
 }
 
 const isClaude = (model?: string) => Boolean(model && /claude/i.test(model));
@@ -77,6 +77,7 @@ export function idShape(id?: string) {
 
 /** 从响应 ID 看是哪种接口回的。 */
 export function channelOf(kind: VerifyInput["kind"], responseId?: string) {
+  if (kind === "antigravity") return "Google Antigravity";
   const id = responseId || "";
   if (!id) return kind === "grok-build" ? "xAI（Grok Build）" : kind === "deepseek-harness" ? "DeepSeek" : "未知";
   if (/^msg_bdrk_/.test(id)) return "AWS Bedrock";
@@ -144,7 +145,11 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
     if (responseId && !OPENAI_RESPONSE.test(responseId)) {
       problems.push(`响应 ID 是 ${channel}（${idShape(responseId)}），不是 OpenAI 的 resp_ + 十六进制`);
     }
-  } else if (kind === "deepseek-harness" || kind === "pi" || kind === "antigravity") {
+  } else if (kind === "antigravity") {
+    if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");
+    else if (!requested) notes.push("会话记录里没记下请求的型号");
+    else if (!mismatch && normalizeModel(returned) !== returned.toLowerCase().trim()) notes.push(`${returned} 是 ${requested} 在 Antigravity 里的内部型号名`);
+  } else if (kind === "deepseek-harness" || kind === "pi") {
     if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");
     else if (!requested) notes.push("会话记录里没记下请求的型号");
   } else {

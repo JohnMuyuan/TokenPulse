@@ -76,3 +76,12 @@ export function pbTime(buf: Buffer | null | undefined): number {
   const seconds = pbNumber(buf, 1);
   return seconds ? seconds * 1000 + Math.floor(pbNumber(buf, 2) / 1e6) : 0;
 }
+
+/** google.protobuf.Duration（1 秒、2 纳秒）→ 毫秒（含不足 1 秒的纳秒部分）。没有就是 0。 */
+export function pbDurationMs(buf: Buffer | null | undefined): number {
+  if (!buf) return 0;
+  const seconds = pbNumber(buf, 1);
+  const nanos = pbNumber(buf, 2);
+  if (!seconds && !nanos) return 0;
+  return Math.max(0, seconds * 1000 + Math.round(nanos / 1e6));
+}

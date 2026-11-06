@@ -1111,6 +1111,8 @@ if (!app.requestSingleInstanceLock()) {
     deepseekBalance.start();
     ipcMain.handle("antigravity-quota:state", () => antigravityQuota.state());
     ipcMain.handle("antigravity-quota:refresh", () => antigravityQuota.refresh(true));
+    ipcMain.handle("antigravity-quota:timeline", (_event, query: unknown) => antigravityQuota.timeline(query));
+    ipcMain.handle("antigravity-quota:speed", (_event, days: unknown) => antigravityQuota.speed(Math.max(0, Math.min(3650, Number(days) || 0))));
     antigravityQuota.start();
     // 额度详情的号池页（0.3.44）：号池定义从供应商数据里取（不带凭据），汇总在 worker 里读转发记录和额度采样
     const poolOf = (id: unknown) => {

@@ -135,6 +135,25 @@ function addSteps(file, steps) {
     assert.deepEqual(scan.scanLocalUsage().records.map(x => x.id), [conv3 + ':3', conv3 + ':4'], '批准之后接着读');
     pass('antigravity usage: canceled and failed replies are finished (partial usage counted), generating and waiting-for-approval ones wait');
 
+    // gen_metadata 里的首字延迟（11）、流式耗时（12）与显示名标签（21）
+    const conv4 = 'eeeeeeee-0000-4000-8000-000000000005';
+    const richGen = Buffer.concat([msg(1,
+      time(11, 1500),
+      time(12, 2500),
+      str(19, 'gemini-4-argon-b'),
+      msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_UNKNOWN')),
+      msg(20, str(1, 'request_id'), str(2, 'req-rich-1')),
+      str(21, 'Gemini 4 Argon (High)'),
+    )]);
+    makeConversation(conv4, [
+      { idx: 0, type: 15, status: 3, meta: stepMeta({ start: now - 10000, end: now - 6000, modelId: 1999, gen: 0, input: 800, output: 200 }) },
+    ], [[0, richGen]]);
+    r = scan.scanLocalUsage();
+    assert.equal(r.records.length, 1);
+    assert.deepEqual([r.records[0].model, r.records[0].effort, r.records[0].returned, r.records[0].requestId], ['gemini-4-argon', 'high', 'gemini-4-argon-b', 'req-rich-1']);
+    assert.deepEqual(r.records[0].timing, { stream: true, ms: 4000, firstTokenMs: 1500, tokensPerSec: 50, provider: 'Antigravity' });
+    pass('antigravity usage: gen_metadata streaming timing (TTFT + duration) and fallback model_display_name are extracted');
+
     // 额度：GetUserStatus 按剩余比例 + 重置时间分组；用完的那组没有 remainingFraction
     const status = { userStatus: { name: 'QA', email: 'qa@example.com', planStatus: { planInfo: { planName: 'Pro' } }, userTier: { name: 'Google AI Ultra' }, cascadeModelConfigData: { clientModelConfigs: [
       { label: 'Gemini 4 Argon (High)', modelOrAlias: { model: 'M417' }, quotaInfo: { remainingFraction: 0.75, resetTime: '2026-11-06T09:00:00Z' } },
@@ -151,7 +170,18 @@ function addSteps(file, steps) {
     assert.deepEqual([parsed.plan, parsed.tier, parsed.labels.M400], ['Pro', 'Google AI Ultra', 'Claude Opus 5.5 (Low)']);
     assert.equal(JSON.stringify(parsed).includes('qa@example.com'), false, '不带邮箱');
     assert.equal(a.parseAntigravityStatus({}), null);
-    pass('antigravity quota: models sharing a quota are grouped, an exhausted group (no remainingFraction) is 100% used, no email kept');
+    const summary = {
+      groups: [
+        { title: 'Gemini Models', buckets: [{ id: 'gemini_5h', window: '5h', remainingFraction: 0.75, resetTime: '2026-11-06T09:00:00Z' }, { id: 'gemini_weekly', window: 'weekly', remainingFraction: 0.8, resetTime: '2026-11-12T09:00:00Z' }] },
+        { title: 'Claude and GPT models', buckets: [{ id: '3p_5h', window: '5h', remainingFraction: 0, resetTime: '2026-11-06T10:00:00Z' }, { id: '3p_weekly', window: 'weekly', remainingFraction: 0.65, resetTime: '2026-11-12T10:00:00Z' }] },
+      ],
+    };
+    const parsedWithSummary = a.parseAntigravityStatus(status, summary);
+    assert.deepEqual(parsedWithSummary.groups.map(g => [g.title, g.used, g.week?.used, g.week?.resetAt]), [
+      ['Gemini Models', 25, 20, '2026-11-12T09:00:00Z'],
+      ['Claude and GPT models', 100, 35, '2026-11-12T10:00:00Z'],
+    ]);
+    pass('antigravity quota: models sharing a quota are grouped, weekly quota buckets from RetrieveUserQuotaSummary are merged, an exhausted group is 100% used, no email kept');
 
     // 本机接口：从 daemon/hub_*.json 找端口和令牌，带 CSRF 头问；Antigravity 没开（没有 hub、进程不在）返回 null
     assert.equal(await a.fetchAntigravityStatus(), null);
@@ -160,7 +190,8 @@ function addSteps(file, steps) {
       let body = ''; req.on('data', c => body += c); req.on('end', () => {
         seen.push({ url: req.url, csrf: req.headers['x-codeium-csrf-token'], connect: req.headers['connect-protocol-version'], body });
         if (req.headers['x-codeium-csrf-token'] !== 'csrf-qa') { res.writeHead(403); res.end('{}'); return; }
-        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(status));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(req.url.endsWith('/RetrieveUserQuotaSummary') ? summary : status));
       });
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -169,8 +200,12 @@ function addSteps(file, steps) {
       assert.equal(await a.fetchAntigravityStatus(), null, '进程已经不在的 hub 文件不用');
       fs.writeFileSync(path.join(agy, 'daemon', 'hub_2.json'), JSON.stringify({ pid: process.pid, httpPort: server.address().port, httpsPort: 1, lsVersion: '2.29.0', csrfToken: 'csrf-qa' }));
       const live = await a.fetchAntigravityStatus();
-      assert.deepEqual(live.groups.map(g => g.used), [25, 100]);
-      assert.deepEqual([seen[0].url, seen[0].csrf, seen[0].connect], ['/exa.language_server_pb.LanguageServerService/GetUserStatus', 'csrf-qa', '1']);
+      assert.deepEqual(live.groups.map(g => [g.used, g.week?.used]), [[25, 20], [100, 35]]);
+      assert.deepEqual(seen.map(s => s.url).sort(), [
+        '/exa.language_server_pb.LanguageServerService/GetUserStatus',
+        '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary',
+      ]);
+      assert.deepEqual([seen[0].csrf, seen[0].connect], ['csrf-qa', '1']);
       assert.equal(a.readModelLabels().M417, 'Gemini 4 Argon (High)', '标签存下来给扫描用');
       assert.equal(fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'antigravity-models.json'), 'utf8').includes('csrf'), false, '令牌不存盘');
     } finally { server.close(); }

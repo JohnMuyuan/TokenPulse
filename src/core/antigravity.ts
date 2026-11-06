@@ -3,7 +3,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { dataFile, readJson, writeJson } from "./paths";
-import { pbFields, pbMessage, pbNumber, pbString, pbTime } from "./protobuf-lite";
+import { pbDurationMs, pbFields, pbMessage, pbNumber, pbString, pbTime } from "./protobuf-lite";
 
 /**
  * Google Antigravity 的本地数据（2026-11 对着 Antigravity 2.29 / language server 2.29.0 的真实文件核过）。
@@ -82,7 +82,17 @@ export function workspacePath(uris: string | null | undefined): string | undefin
   try { return fileURLToPath(first); } catch { return undefined; }
 }
 
-export type AgyModel = { model: string; enum?: string };
+export type AgyModel = { model: string; enum?: string; label?: string };
+
+export type AgyGenMeta = {
+  model?: string;
+  rawModel?: string;
+  enum?: string;
+  label?: string;
+  requestId?: string;
+  firstTokenMs?: number;
+  streamingMs?: number;
+};
 
 export type AgyGeneration = {
   /** steps 表里这一步的 idx。 */
@@ -98,23 +108,57 @@ export type AgyGeneration = {
   cacheWrite: number;
   reasoning: number;
   responseId?: string;
+  requestId?: string;
+  returned?: string;
+  firstTokenMs?: number;
+  totalMs?: number;
+  tokensPerSec?: number;
 };
+
+/** 一条 gen_metadata 里的型号、档位标签、请求 ID 和流式耗时（首字 + 生成时长）。 */
+export function parseGenerationMeta(data: Buffer): AgyGenMeta | null {
+  const request = pbMessage(data, 1);
+  if (!request) return null;
+  const rawModel = pbString(request, 19).trim();
+  const label = pbString(request, 21).trim();
+  let modelEnum = "", requestId = "";
+  for (const field of pbFields(request) ?? []) {
+    if (field.no === 20 && field.bytes) {
+      const key = pbString(field.bytes, 1);
+      if (key === "model_enum") modelEnum = pbString(field.bytes, 2).trim();
+      else if (key === "request_id") requestId = pbString(field.bytes, 2).trim();
+    }
+  }
+  const firstTokenMs = pbDurationMs(pbMessage(request, 11));
+  const streamingMs = pbDurationMs(pbMessage(request, 12));
+  const model = rawModel || modelEnum;
+  if (!model && !label && !requestId && !firstTokenMs && !streamingMs) return null;
+  return {
+    ...(model ? { model } : {}),
+    ...(rawModel ? { rawModel } : {}),
+    ...(modelEnum ? { enum: modelEnum } : {}),
+    ...(label ? { label } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(firstTokenMs > 0 ? { firstTokenMs } : {}),
+    ...(streamingMs > 0 ? { streamingMs } : {}),
+  };
+}
 
 /** 一条 gen_metadata 里的型号名和 model_enum。 */
 export function generationModel(data: Buffer): AgyModel | null {
-  const request = pbMessage(data, 1);
-  let model = pbString(request, 19), modelEnum = "";
-  for (const field of pbFields(request ?? Buffer.alloc(0)) ?? []) {
-    if (field.no === 20 && field.bytes && pbString(field.bytes, 1) === "model_enum") modelEnum = pbString(field.bytes, 2);
-  }
-  model ||= modelEnum;
-  if (!model) return null;
-  return { model, ...(modelEnum ? { enum: modelEnum } : {}) };
+  const parsed = parseGenerationMeta(data);
+  if (!parsed?.model) return null;
+  return {
+    model: parsed.model,
+    ...(parsed.enum ? { enum: parsed.enum } : {}),
+    ...(parsed.label ? { label: parsed.label } : {}),
+  };
 }
 
 /*
- * 型号的显示名：Antigravity 的额度接口（GetUserStatus）按 model_enum 给标签，如「Gemini 4 Argon (High)」。
- * 每次查额度时存一份（modelLabels.json），扫描时拿来对：型号按标签转成 ID 的写法（gemini-4-argon、claude-opus-5-5），
+ * 型号的显示名：Antigravity 的额度接口（GetUserStatus）按 model_enum 给标签，如「Gemini 4 Argon (High)」；
+ * gen_metadata 的 1.21 也直接存了同款显示名。
+ * 每次查额度时存一份（antigravity-models.json），扫描时拿来对：型号按标签转成 ID 的写法（gemini-4-argon、claude-opus-5-5），
  * 括号里的是思考档位。还没查过额度、或者标签里没有的，用库里的内部型号名。
  */
 const labelFile = () => dataFile("antigravity-models.json");
@@ -128,16 +172,21 @@ export function rememberModelLabels(labels: Record<string, string>) {
   const merged = { ...before, ...labels };
   if (JSON.stringify(merged) !== JSON.stringify(before)) writeJson(labelFile(), { labels: merged });
 }
-export function resolveModel(found: AgyModel | undefined, labels: Record<string, string>): { model: string; effort?: string; labeled: boolean } {
-  const label = found?.enum ? labels[found.enum] : undefined;
-  if (!label) return { model: found?.model || "未知模型", labeled: false };
-  const match = label.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
-  const base = (match ? match[1] : label).trim();
-  let id = base.toLowerCase().replace(/\s+/g, "-");
+export function splitModelLabel(label: string): { model: string; family: string; effort?: string } {
+  const match = label.trim().match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+  const family = (match ? match[1] : label).trim();
+  let id = family.toLowerCase().replace(/\s+/g, "-");
   // Anthropic 的型号 ID 用短横线分版本（claude-opus-5-5），和 Claude Code 记的对上
   if (id.startsWith("claude-")) id = id.replace(/\./g, "-");
-  const effort = match?.[2].trim().toLowerCase();
-  return { model: id, ...(effort ? { effort } : {}), labeled: true };
+  const rawEffort = match?.[2].trim().toLowerCase();
+  const effort = rawEffort === "thinking" ? "high" : rawEffort;
+  return { model: id, family, ...(effort ? { effort } : {}) };
+}
+export function resolveModel(found: AgyModel | undefined, labels: Record<string, string>): { model: string; effort?: string; labeled: boolean } {
+  const label = (found?.enum ? labels[found.enum] : undefined) || found?.label;
+  if (!label) return { model: found?.model || "未知模型", labeled: false };
+  const { model, effort } = splitModelLabel(label);
+  return { model, ...(effort ? { effort } : {}), labeled: true };
 }
 
 /*
@@ -179,20 +228,57 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       if (!usage || (!input && !output && !cacheRead)) continue;
       const modelId = pbNumber(meta, 11) || pbNumber(usage, 1);
       const key = String(modelId);
-      if (modelId && !known[key] && !models[key]) {
-        const genIdx = pbNumber(pbMessage(meta, 20), 3);
-        const data = (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data;
-        const found = data ? generationModel(Buffer.from(data)) : null;
-        if (found) models[key] = found;
+      const genInfo = pbMessage(meta, 20);
+      const hasGenIdx = genInfo ? (pbFields(genInfo)?.some((f) => f.no === 3) ?? false) : false;
+      const genIdx = hasGenIdx ? pbNumber(genInfo, 3) : -1;
+      const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
+      const genParsed = genData ? parseGenerationMeta(Buffer.from(genData)) : null;
+      if (modelId && !known[key] && !models[key] && genParsed?.model) {
+        models[key] = {
+          model: genParsed.model,
+          ...(genParsed.enum ? { enum: genParsed.enum } : {}),
+          ...(genParsed.label ? { label: genParsed.label } : {}),
+        };
+      } else if (modelId && genParsed?.label) {
+        const existing = models[key] ?? known[key];
+        if (existing && !existing.label) models[key] = { ...existing, label: genParsed.label };
       }
       const startAt = pbTime(pbMessage(meta, 1));
-      const at = pbTime(pbMessage(meta, 6)) || pbTime(pbMessage(meta, 8)) || startAt;
+      const viewableAt = pbTime(pbMessage(meta, 6));
+      const finishedAt = pbTime(pbMessage(meta, 7));
+      const completedAt = pbTime(pbMessage(meta, 8));
+      const firstTokenMs = genParsed?.firstTokenMs ?? 0;
+      const streamingMs = genParsed?.streamingMs ?? 0;
+      const hasStreamTiming = firstTokenMs > 0 || streamingMs > 0;
+      const at = hasStreamTiming
+        ? (finishedAt || completedAt || viewableAt || startAt)
+        : (viewableAt || finishedAt || completedAt || startAt);
       if (!at) continue;
+      const totalMs = hasStreamTiming
+        ? (firstTokenMs > 0 && streamingMs > 0
+            ? firstTokenMs + streamingMs
+            : finishedAt > startAt
+              ? finishedAt - startAt
+              : completedAt > startAt
+                ? completedAt - startAt
+                : firstTokenMs || streamingMs)
+        : 0;
+      const tokensPerSec = totalMs >= 200 && totalMs <= 30 * 60_000 && output > 0
+        ? Math.round((output / (totalMs / 1000)) * 10) / 10
+        : 0;
       const responseId = pbString(usage, 11);
+      const messageId = pbString(usage, 7);
+      const requestId = genParsed?.requestId || messageId;
+      const returned = genParsed?.rawModel || (known[key] ?? models[key])?.model;
       rows.push({
         step: step.idx, at, startAt, modelId,
         input: input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, reasoning: pbNumber(usage, 9),
         ...(responseId ? { responseId } : {}),
+        ...(requestId ? { requestId } : {}),
+        ...(returned ? { returned } : {}),
+        ...(firstTokenMs > 0 ? { firstTokenMs } : {}),
+        ...(totalMs > 0 ? { totalMs } : {}),
+        ...(tokensPerSec > 0 ? { tokensPerSec } : {}),
       });
     }
     return { rows, next, total, models };
@@ -348,14 +434,50 @@ export function readAntigravityActivity(since: number, dir = antigravityDir()): 
  * 只连 127.0.0.1，不走代理；令牌只在内存里用，不写日志、不存盘。返回里的邮箱和名字不往外传。
  */
 
-export type AgyQuotaGroup = {
-  /** 这一组里的型号（显示名，不带档位），按 Antigravity 给的顺序去重。 */
-  models: string[];
+export type AgyWindowQuota = {
   /** 已用百分比（0–100）。 */
   used: number;
   resetAt?: string;
 };
-export type AgyStatus = { plan: string; tier?: string; groups: AgyQuotaGroup[]; labels: Record<string, string> };
+
+export type AgyModelQuotaItem = {
+  label: string;
+  family: string;
+  model: string;
+  effort?: string;
+  modelEnum?: string;
+  used: number;
+  resetAt?: string;
+  weekUsed?: number;
+  weekResetAt?: string;
+};
+
+export type AgyCredits = {
+  monthlyPromptCredits?: number;
+  availablePromptCredits?: number;
+  monthlyFlowCredits?: number;
+  availableFlowCredits?: number;
+};
+
+export type AgyQuotaGroup = {
+  /** 分组标题（如 "Gemini Models" / "Claude and GPT models"）。 */
+  title?: string;
+  /** 这一组里的型号（显示名，不带档位），按 Antigravity 给的顺序去重。 */
+  models: string[];
+  /** 5 小时窗口已用百分比（0–100）。 */
+  used: number;
+  resetAt?: string;
+  /** 周额度窗口（来自 RetrieveUserQuotaSummary）。 */
+  week?: AgyWindowQuota;
+};
+export type AgyStatus = {
+  plan: string;
+  tier?: string;
+  groups: AgyQuotaGroup[];
+  labels: Record<string, string>;
+  models?: AgyModelQuotaItem[];
+  credits?: AgyCredits;
+};
 
 type Hub = { pid: number; httpPort: number; csrfToken: string; at: number };
 
@@ -406,15 +528,84 @@ export function modelFamily(label: string) {
   return label.replace(/\s*\([^)]*\)\s*$/, "").trim();
 }
 
-/** 把 GetUserStatus 的返回整理成套餐 + 额度分组 + 型号标签。认不出来返回 null。 */
-export function parseAntigravityStatus(json: unknown): AgyStatus | null {
+type ParsedSummaryGroup = {
+  idx: number;
+  title: string;
+  bucketIds: string[];
+  five?: AgyWindowQuota;
+  week?: AgyWindowQuota;
+};
+
+function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
+  const root = (summaryJson as { response?: { groups?: unknown }; groups?: unknown } | null);
+  const rawGroups = (root?.response?.groups ?? root?.groups) as Record<string, unknown>[] | undefined;
+  if (!Array.isArray(rawGroups) || !rawGroups.length) return [];
+  const out: ParsedSummaryGroup[] = [];
+  rawGroups.forEach((raw, idx) => {
+    if (!raw || typeof raw !== "object") return;
+    const title = typeof raw.title === "string" ? raw.title.trim() : "";
+    const buckets = Array.isArray(raw.buckets) ? (raw.buckets as Record<string, unknown>[]) : [];
+    const bucketIds: string[] = [];
+    let five: AgyWindowQuota | undefined;
+    let week: AgyWindowQuota | undefined;
+    for (const bucket of buckets) {
+      if (!bucket || typeof bucket !== "object") continue;
+      const id = typeof bucket.id === "string" ? bucket.id : "";
+      const bTitle = typeof bucket.title === "string" ? bucket.title : "";
+      const win = typeof bucket.window === "string" ? bucket.window : "";
+      if (id) bucketIds.push(id);
+      const remaining = Math.min(1, Math.max(0, Number(bucket.remainingFraction ?? 0) || 0));
+      const used = Math.round((1 - remaining) * 1000) / 10;
+      const resetAt = typeof bucket.resetTime === "string" && bucket.resetTime ? bucket.resetTime : undefined;
+      const quota: AgyWindowQuota = { used, ...(resetAt ? { resetAt } : {}) };
+      if (win === "weekly" || /weekly/i.test(id) || /week/i.test(bTitle)) week = quota;
+      else if (win === "5h" || /5h/i.test(id) || /5-?hour/i.test(bTitle)) five = quota;
+    }
+    if (title || five || week) out.push({ idx, title, bucketIds, ...(five ? { five } : {}), ...(week ? { week } : {}) });
+  });
+  return out;
+}
+
+function matchSummaryGroup(family: string, used: number, resetAt: string | undefined, summaryGroups: ParsedSummaryGroup[]): ParsedSummaryGroup | undefined {
+  if (!summaryGroups.length) return undefined;
+  const exact = summaryGroups.find((sg) => sg.five && sg.five.resetAt && sg.five.resetAt === resetAt && Math.abs(sg.five.used - used) <= 0.2);
+  if (exact) return exact;
+  if (/gemini/i.test(family)) {
+    const byFamily = summaryGroups.find((sg) => /gemini/i.test(sg.title) || sg.bucketIds.some((id) => /gemini/i.test(id)));
+    if (byFamily) return byFamily;
+  }
+  if (/claude|gpt|anthropic|openai/i.test(family)) {
+    const byFamily = summaryGroups.find((sg) => /claude|gpt|3p/i.test(sg.title) || sg.bucketIds.some((id) => /3p|claude|gpt/i.test(id)));
+    if (byFamily) return byFamily;
+  }
+  const byReset = summaryGroups.find((sg) => sg.five?.resetAt && sg.five.resetAt === resetAt);
+  if (byReset) return byReset;
+  return summaryGroups.find((sg) => sg.five && Math.abs(sg.five.used - used) <= 0.2);
+}
+
+/** 把 GetUserStatus（以及可选的 RetrieveUserQuotaSummary）的返回整理成套餐 + 额度分组（含 5h 与周额度）+ 型号标签。认不出来返回 null。 */
+export function parseAntigravityStatus(json: unknown, summaryJson?: unknown): AgyStatus | null {
   const status = (json as { userStatus?: Record<string, unknown> } | null)?.userStatus;
   if (!status) return null;
-  const plan = String(((status.planStatus as Record<string, unknown> | undefined)?.planInfo as Record<string, unknown> | undefined)?.planName ?? "");
+  const planStatus = status.planStatus as Record<string, unknown> | undefined;
+  const planInfo = planStatus?.planInfo as Record<string, unknown> | undefined;
+  const plan = String(planInfo?.planName ?? "");
   const tier = String((status.userTier as Record<string, unknown> | undefined)?.name ?? "") || undefined;
+  const monthlyPromptCredits = Number(planInfo?.monthlyPromptCredits ?? 0) || 0;
+  const availablePromptCredits = Number(planStatus?.availablePromptCredits ?? 0) || 0;
+  const monthlyFlowCredits = Number(planInfo?.monthlyFlowCredits ?? 0) || 0;
+  const availableFlowCredits = Number(planStatus?.availableFlowCredits ?? 0) || 0;
+  const credits: AgyCredits | undefined = (monthlyPromptCredits || availablePromptCredits || monthlyFlowCredits || availableFlowCredits)
+    ? {
+        ...(monthlyPromptCredits ? { monthlyPromptCredits, availablePromptCredits } : {}),
+        ...(monthlyFlowCredits ? { monthlyFlowCredits, availableFlowCredits } : {}),
+      }
+    : undefined;
+  const summaryGroups = parseSummaryGroups(summaryJson);
   const configs = ((status.cascadeModelConfigData as Record<string, unknown> | undefined)?.clientModelConfigs ?? []) as Record<string, unknown>[];
   const labels: Record<string, string> = {};
   const groups = new Map<string, AgyQuotaGroup>();
+  const models: AgyModelQuotaItem[] = [];
   for (const config of Array.isArray(configs) ? configs : []) {
     const label = typeof config.label === "string" ? config.label.trim() : "";
     const modelEnum = (config.modelOrAlias as Record<string, unknown> | undefined)?.model;
@@ -423,22 +614,51 @@ export function parseAntigravityStatus(json: unknown): AgyStatus | null {
     if (!label || !quota) continue;
     // 用完的时候 remainingFraction 不出现（protobuf 的 0 不写），当成 0
     const remaining = Math.min(1, Math.max(0, Number(quota.remainingFraction ?? 0) || 0));
+    const used = Math.round((1 - remaining) * 1000) / 10;
     const resetAt = typeof quota.resetTime === "string" && quota.resetTime ? quota.resetTime : undefined;
-    const key = `${remaining}|${resetAt ?? ""}`;
-    const group = groups.get(key) ?? { models: [], used: Math.round((1 - remaining) * 1000) / 10, ...(resetAt ? { resetAt } : {}) };
-    const family = modelFamily(label);
+    const { model, family, effort } = splitModelLabel(label);
+    const matched = matchSummaryGroup(family, used, resetAt, summaryGroups);
+    const key = matched ? `sg:${matched.idx}` : `${remaining}|${resetAt ?? ""}`;
+    const groupUsed = matched?.five ? matched.five.used : used;
+    const groupResetAt = matched?.five?.resetAt ?? resetAt;
+    const group = groups.get(key) ?? {
+      ...(matched?.title ? { title: matched.title } : {}),
+      models: [],
+      used: groupUsed,
+      ...(groupResetAt ? { resetAt: groupResetAt } : {}),
+      ...(matched?.week ? { week: matched.week } : {}),
+    };
     if (!group.models.includes(family)) group.models.push(family);
     groups.set(key, group);
+    models.push({
+      label,
+      family,
+      model,
+      ...(effort ? { effort } : {}),
+      ...(typeof modelEnum === "string" && modelEnum ? { modelEnum } : {}),
+      used: groupUsed,
+      ...(groupResetAt ? { resetAt: groupResetAt } : {}),
+      ...(matched?.week ? { weekUsed: matched.week.used, ...(matched.week.resetAt ? { weekResetAt: matched.week.resetAt } : {}) } : {}),
+    });
   }
-  return { plan, ...(tier ? { tier } : {}), groups: [...groups.values()], labels };
+  return {
+    plan,
+    ...(tier ? { tier } : {}),
+    groups: [...groups.values()],
+    labels,
+    ...(models.length ? { models } : {}),
+    ...(credits ? { credits } : {}),
+  };
 }
 
-/** 问一次额度。Antigravity 没开（找不到 language server）返回 null。 */
+/** 问一次额度（同时拉 GetUserStatus 和 RetrieveUserQuotaSummary 拿到 5 小时与周额度）。Antigravity 没开返回 null。 */
 export async function fetchAntigravityStatus(): Promise<AgyStatus | null> {
   const hub = antigravityHub();
   if (!hub) return null;
-  const json = await postLocal(hub.httpPort, hub.csrfToken, "GetUserStatus", { metadata: { ideName: "antigravity", extensionName: "antigravity" } });
-  const status = parseAntigravityStatus(json);
+  const meta = { metadata: { ideName: "antigravity", extensionName: "antigravity" } };
+  const json = await postLocal(hub.httpPort, hub.csrfToken, "GetUserStatus", meta);
+  const summaryJson = await postLocal(hub.httpPort, hub.csrfToken, "RetrieveUserQuotaSummary", meta).catch(() => null);
+  const status = parseAntigravityStatus(json, summaryJson);
   if (!status) throw new Error("Antigravity 本机接口的返回认不出来");
   if (Object.keys(status.labels).length) rememberModelLabels(status.labels);
   return status;

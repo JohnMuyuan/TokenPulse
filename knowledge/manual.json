@@ -194,6 +194,14 @@
       "cacheRead": 0.06,
       "cacheWrite": 0,
       "note": "国产长文模型"
+    },
+    {
+      "match": "gpt-oss",
+      "input": 0.15,
+      "output": 0.6,
+      "cacheRead": 0.075,
+      "cacheWrite": 0,
+      "note": "GPT-OSS 120B"
     }
   ],
   "aliases": [
@@ -226,6 +234,11 @@
       "match": "^(grok-[\\d.]+)-build$",
       "replace": "$1",
       "note": "Grok Build 用的是同一型号的 -build 变体"
+    },
+    {
+      "match": "^(gemini-[\\w.-]+?)-(?:b|n)$",
+      "replace": "$1",
+      "note": "Antigravity 内部 Gemini 型号后缀（如 gemini-4-argon-b、gemini-3.8-flash-n）"
     }
   ],
   "capabilities": {

@@ -6,33 +6,102 @@
 .quota-card.antigravity .ring-value.ring-week { stroke: var(--claude); }
 .quota-card.antigravity .ring-value.critical { stroke: var(--danger); }
 
-/* 额度详情：Antigravity 的页面不需要官方账号那两块（模型容量排行、时间轴） */
-#page-quota.agy-mode #quota-model-study,
-#page-quota.agy-mode #quota-model-timeline { display: none; }
+/* 额度详情：官方单池的模型容量排行隐藏，改由 #quota-detail 内的分组双窗口 .agy-model-study 渲染 */
+#page-quota.agy-mode #quota-model-study { display: none; }
+#quota-detail button, #quota-cards [data-antigravity] button { color: inherit; }
 
 .agy-dot { display: inline-block; flex: none; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--agy-color, var(--antigravity)); vertical-align: middle; }
 .agy-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agy-mini .mini-label { display: inline-flex; align-items: center; min-width: 0; }
 .agy-mini .quota-mini-head { gap: 8px; }
 .agy-mini .track-fill:not(.critical):not(.warning) { background: var(--agy-color, var(--antigravity)); }
+.agy-mini-week { margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--line); }
+.agy-mini-week-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; font-size: 12px; color: var(--muted); }
+.agy-mini-week-label { font-weight: 600; color: var(--ink-2); }
+.agy-mini-week .agy-week-track { height: 5px; }
+.agy-mini-week-reset { margin-top: 4px; font-size: 11.5px; }
+
+.agy-group { min-width: 0; }
 .agy-group .panel-heading h2 { display: flex; align-items: center; min-width: 0; }
 .agy-group .track-fill:not(.critical):not(.warning) { background: var(--agy-color, var(--antigravity)); }
+.agy-win-pill { margin-left: auto; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 11.5px; font-weight: 500; }
+
+/* 详情卡片内的周额度二级窗口框 */
+.agy-week-box { margin: 14px 0 6px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); }
+.agy-week-box.is-empty { padding: 10px 14px; }
+.agy-week-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.agy-week-box.is-empty .agy-week-head { margin-bottom: 0; }
+.agy-week-title { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--ink); }
+.agy-week-remaining { display: inline-flex; align-items: baseline; gap: 6px; }
+.agy-week-remaining strong { font-size: 20px; font-weight: 700; color: var(--ink); }
+.agy-week-remaining span { font-size: 12px; color: var(--muted); }
+.agy-week-meta { margin-top: 6px; }
+.agy-week-pred { margin-top: 8px; margin-bottom: 0; }
+
+/* 组内模型档位列表 */
+.agy-tier-list { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
+.agy-tier-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; font-size: 12px; color: var(--muted); }
+.agy-tier-head b { color: var(--ink-2); font-weight: 600; }
+.agy-tier-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; min-width: 0; }
+.agy-tier-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agy-tier-usage { flex: none; color: var(--muted); font-size: 12px; }
+
 .agy-card-actions { display: inline-flex; align-items: center; gap: 10px; }
 .agy-context-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.agy-context-sub { margin-top: 2px; font-size: 12px; }
 .agy-note { margin: 0 0 14px; }
 
-.agy-history, .agy-local { margin-top: 18px; }
+/* 额度容量趋势 */
+.agy-capacity { margin-top: 18px; min-width: 0; }
+.agy-cap-list { display: grid; gap: 12px; margin: 10px 0 6px; }
+.agy-cap-row { padding: 12px 14px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); min-width: 0; }
+.agy-cap-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.agy-cap-title { display: inline-flex; align-items: center; font-weight: 600; min-width: 0; }
+.agy-cap-val strong { font-size: 16px; color: var(--ink); }
+.agy-cap-val small { color: var(--muted); font-size: 12px; }
+.agy-cap-bar { height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.agy-cap-fill { display: block; height: 100%; border-radius: 999px; }
+.agy-cap-sub { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--muted); }
+
+/* 24 小时本机用量与 7 天走势 */
+.agy-history-grid { margin-top: 18px; }
+.agy-history, .agy-local { min-width: 0; }
 .agy-chart { display: block; width: 100%; height: auto; max-height: 220px; }
 .agy-grid { stroke: var(--line); stroke-width: 1; }
 .agy-axis { fill: var(--faint); font-size: 11px; }
 .agy-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.agy-line-week { fill: none; stroke-width: 1.75; stroke-dasharray: 5 4; opacity: 0.82; stroke-linejoin: round; stroke-linecap: round; }
 .agy-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; color: var(--muted); font-size: 12.5px; }
 .agy-legend-item { display: inline-flex; align-items: center; min-width: 0; }
+.agy-legend-note { margin-left: auto; color: var(--faint); font-size: 12px; }
 
-.agy-local-figures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.agy-local-figures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.agy-hourly-chart { margin-top: 12px; min-height: 150px; }
 .agy-models { display: grid; gap: 6px; margin-top: 14px; }
-.agy-model-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.agy-model-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; min-width: 0; }
+.agy-model-main { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
 .agy-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agy-model-row .num { flex: none; color: var(--muted); }
+.agy-model-row .num { flex: none; color: var(--muted); font-size: 12.5px; }
 .agy-local-foot { margin-top: 12px; }
-@media (max-width: 720px) { .agy-local-figures { grid-template-columns: 1fr; } }
+
+/* 模型换算与最近请求 */
+.agy-model-study, .agy-requests { margin-top: 18px; min-width: 0; }
+.agy-requests .table-scroll {
+  overflow: auto;
+  max-inline-size: 100%;
+  container-type: inline-size;
+}
+.agy-requests .table-scroll thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+}
+.agy-req-speed { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12.5px; }
+
+@media (max-width: 960px) {
+  .agy-local-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agy-model-study .ds-row { grid-template-columns: 28px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, .85fr); gap: 8px; }
+}
+@media (max-width: 720px) {
+  .agy-local-figures { grid-template-columns: 1fr; }
+}

@@ -164,6 +164,8 @@ type FileState = {
   agyModels?: Record<string, AgyModel>;
   /** Antigravity：扫的时候还没有显示名的 model_enum。等有了标签整份重算（见 antigravityNeedsRelabel）。 */
   agyUnlabeled?: string[];
+  /** Antigravity 单独的扫描结构版本（升级只重扫 Antigravity SQLite，不重扫其他 CLI）。 */
+  agyV?: number;
 };
 
 export type UsageRollups = {
@@ -1195,6 +1197,8 @@ function scanFile(
  * 费用交给统计时按型号估；不归任何官方账号（Antigravity 的额度按模型分组单独看，见 quota.ts）。
  * 型号就是请求的型号，没有上游返回的型号，核验显示无法核对。
  */
+const ANTIGRAVITY_STATE_VERSION = 2;
+
 /** 之前没对上显示名的型号，现在有标签了：这个对话要整份重算一遍，型号和档位才对。 */
 export function antigravityNeedsRelabel(state: FileState, labels: Record<string, string>) {
   return (state.agyUnlabeled ?? []).some((modelEnum) => labels[modelEnum]);
@@ -1203,9 +1207,10 @@ export function antigravityNeedsRelabel(state: FileState, labels: Record<string,
 function scanAntigravity(file: string, state: FileState, out: ScanOutput, workspaces: Map<string, string>, labels: Record<string, string>) {
   const stamp = antigravityStamp(file);
   if (!stamp) return false;
-  if (state.v !== STATE_VERSION || antigravityNeedsRelabel(state, labels)) {
+  if (state.v !== STATE_VERSION || state.agyV !== ANTIGRAVITY_STATE_VERSION || antigravityNeedsRelabel(state, labels)) {
     if (state.offset > 0) out.rescanned = true;
-    Object.assign(state, { v: STATE_VERSION, offset: 0, days: {}, hours: {}, accountHours: {}, routedHours: {}, agyUnlabeled: [] });
+    const resetModels = state.agyV !== ANTIGRAVITY_STATE_VERSION ? {} : (state.agyModels ?? {});
+    Object.assign(state, { v: STATE_VERSION, agyV: ANTIGRAVITY_STATE_VERSION, offset: 0, days: {}, hours: {}, accountHours: {}, routedHours: {}, agyUnlabeled: [], agyModels: resetModels });
   }
   let read: ReturnType<typeof readAntigravityGenerations>;
   try {
@@ -1234,11 +1239,23 @@ function scanAntigravity(file: string, state: FileState, out: ScanOutput, worksp
     addUsage(bucket(state.days, dayOf(row.at), source, model), usage);
     const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
     addUsage((byModel[model] ??= emptyBucket()), usage);
+    const hasStreamTiming = Boolean(row.firstTokenMs || row.totalMs);
     const record: RequestRecord = {
       id: `${conversation}:${row.step}`, at: row.at, kind: "antigravity", file, cwd: state.cwd, model,
       ...(resolved.effort ? { effort: normalizeEffort(resolved.effort) ?? resolved.effort, effortSource: "model_label" } : {}),
       requested: known ? model : undefined,
+      ...(row.returned ? { returned: row.returned } : {}),
       responseId: row.responseId,
+      ...(row.requestId ? { requestId: row.requestId } : {}),
+      ...(hasStreamTiming ? {
+        timing: {
+          stream: true,
+          ms: row.totalMs || row.firstTokenMs || 0,
+          ...(row.firstTokenMs ? { firstTokenMs: row.firstTokenMs } : {}),
+          ...(row.tokensPerSec ? { tokensPerSec: row.tokensPerSec } : {}),
+          provider: "Antigravity",
+        },
+      } : {}),
       input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, reasoning: usage.reasoning, costUsd: 0, calls: 1,
     };
     // 这一步从发出请求到生成完的用时，包含排队和思考，和其他来源一样标「≈」
@@ -1311,7 +1328,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
       state.kind = "antigravity";
       state.official = official.antigravity;
       const stamp = antigravityStamp(file);
-      if (!stamp || (state.v === STATE_VERSION && stamp.size === state.size && stamp.mtimeMs === state.mtimeMs && !antigravityNeedsRelabel(state, labels))) continue;
+      if (!stamp || (state.v === STATE_VERSION && state.agyV === ANTIGRAVITY_STATE_VERSION && stamp.size === state.size && stamp.mtimeMs === state.mtimeMs && !antigravityNeedsRelabel(state, labels))) continue;
       workspaces ??= antigravityWorkspaces();
       if (scanAntigravity(file, state, out, workspaces, labels)) changed += 1;
     }
