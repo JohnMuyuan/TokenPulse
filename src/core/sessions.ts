@@ -5,6 +5,7 @@ import path from "path";
 import { cliDir } from "./credentials";
 import { dataFile, piDir, readJson, writeJson } from "./paths";
 import { zstdFrames } from "./zstd-frames";
+import { antigravityConversationFiles, antigravityStamp, antigravitySummaries, readAntigravityConversation, readModelLabels, resolveModel } from "./antigravity";
 
 /**
  * 会话管理：把本机各家 CLI 的会话文件读成「一段段对话」。
@@ -30,7 +31,7 @@ import { zstdFrames } from "./zstd-frames";
  * 只读，不改 CLI 的任何文件；唯一的例外是用户确认后的删除对话（deleteLocalSessionFiles）。
  */
 
-export type AgentKind = "claude" | "codex" | "grok" | "deepseek" | "pi";
+export type AgentKind = "claude" | "codex" | "grok" | "deepseek" | "pi" | "antigravity";
 
 export type SessionMessage =
   | { id: string; role: "user" | "assistant"; text: string; at?: number }
@@ -136,12 +137,12 @@ function projectName(cwd: string | undefined, fallback: string) {
 }
 
 function commandOf(kind: AgentKind, id: string) {
-  if (kind === "deepseek") return "";
+  if (kind === "deepseek" || kind === "antigravity") return "";
   if (kind === "pi") return `pi --session ${id}`;
   return kind === "codex" ? `codex resume ${id}` : `${kind === "claude" ? "claude" : "grok"} --resume ${id}`;
 }
 
-const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex CLI", grok: "Grok Build", deepseek: "DeepSeek Harness", pi: "pi" };
+const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex CLI", grok: "Grok Build", deepseek: "DeepSeek Harness", pi: "pi", antigravity: "Antigravity" };
 
 function readLines(file: string) {
   try {
@@ -510,6 +511,44 @@ function parsePi(file: string): Parsed | null {
   return summarize("pi", header.id, b, str(header.cwd) || undefined, title, file);
 }
 
+/* ---------------- Antigravity ---------------- */
+
+/*
+ * 每个对话一个 SQLite（~/.gemini/antigravity/conversations/<id>.db），步骤怎么读见 antigravity.ts 的 readAntigravityConversation。
+ * 标题和工作区在对话列表库里；那里没有的（Antigravity 已经删掉的、还没写进列表的子代理）不列出来。
+ * 型号用额度接口的显示名（gemini-4-argon 之类），和用量明细一致。
+ */
+/** 对话库 + -wal + 对话列表库的大小和时间：任何一个变了都重读。 */
+function antigravityListStamp(file: string) {
+  const own = antigravityStamp(file);
+  if (!own) throw new Error("gone");
+  const list = antigravityStamp(path.join(path.dirname(path.dirname(file)), "conversation_summaries.db"));
+  // 型号显示名是查额度时才存下来的：存了新的也要重读，型号才显示得对
+  let labels = 0;
+  try { labels = fs.statSync(dataFile("antigravity-models.json")).mtimeMs; } catch { /* 还没查过额度 */ }
+  return { size: own.size + (list?.size ?? 0), mtimeMs: Math.max(own.mtimeMs, list?.mtimeMs ?? 0, labels) };
+}
+
+function parseAntigravity(file: string): Parsed | null {
+  const id = path.basename(file, ".db");
+  const summary = antigravitySummaries()?.get(id);
+  if (!summary || summary.nested) return null;
+  let read: ReturnType<typeof readAntigravityConversation>;
+  try { read = readAntigravityConversation(file); } catch { return null; }
+  const labels = readModelLabels();
+  const b = new Builder();
+  for (const step of read.steps) {
+    if (step.kind === "user") b.text("user", step.text, step.at);
+    else if (step.kind === "reply") {
+      const model = resolveModel(read.models[step.modelId], labels);
+      if (model.model !== "未知模型") b.models.add(model.model);
+      b.text("assistant", step.text, step.at);
+      for (const tool of step.tools) b.tool(tool.id, tool.name, tool.args, step.at);
+    } else b.toolResult(step.id, step.output, step.error);
+  }
+  return summarize("antigravity", id, b, summary.workspace, summary.title, file);
+}
+
 /* ---------------- 汇总 ---------------- */
 
 function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefined, cliTitle: string, file: string): Parsed | null {
@@ -576,11 +615,12 @@ function sources(): { kind: AgentKind; files: string[] }[] {
     { kind: "grok", files: walk(path.join(cliDir("grok"), "sessions"), (file) => path.basename(file) === "updates.jsonl") },
     { kind: "deepseek", files: walk(path.join(dshRoot(), "sessions"), (file) => path.basename(file) === "session.v4.jsonl.zstd") },
     { kind: "pi", files: walk(path.join(piDir(), "sessions"), file => file.endsWith(".jsonl")) },
+    { kind: "antigravity", files: antigravityConversationFiles() },
   ];
 }
 
 function parseFile(kind: AgentKind, file: string) {
-  return kind === "claude" ? parseClaude(file) : kind === "codex" ? parseCodex(file) : kind === "deepseek" ? parseDeepseek(file) : kind === "pi" ? parsePi(file) : parseGrok(file);
+  return kind === "claude" ? parseClaude(file) : kind === "codex" ? parseCodex(file) : kind === "deepseek" ? parseDeepseek(file) : kind === "pi" ? parsePi(file) : kind === "antigravity" ? parseAntigravity(file) : parseGrok(file);
 }
 
 /**
@@ -620,9 +660,10 @@ export function listSessions(): SessionSummary[] {
   let changed = !stored || stored.version !== INDEX_VERSION;
   for (const { kind, files } of sources()) {
     for (const file of files) {
-      let stat: fs.Stats;
+      let stat: { size: number; mtimeMs: number };
       try {
-        stat = fs.statSync(file);
+        // Antigravity：新内容先写进 -wal；标题、删除在对话列表库里，也算进来
+        stat = kind === "antigravity" ? antigravityListStamp(file) : fs.statSync(file);
       } catch {
         continue;
       }
@@ -774,9 +815,20 @@ export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
   return true;
 }
 
+/** 工具自己删掉了这段对话（Antigravity）：只把 TokenPulse 的索引和全文搜索缓存清掉，不碰工具的文件。 */
+export function forgetSession(kind: AgentKind, id: string) {
+  const files = filesOf(kind, id);
+  for (const file of files) fs.rmSync(sessionTextFile(file), { force: true });
+  const index = readJson<SessionIndex | null>(indexFile(), null);
+  if (index?.version === INDEX_VERSION && files.length) {
+    for (const file of files) delete index.files[file];
+    writeJson(indexFile(), index);
+  }
+}
+
 /** 详情：只读这一个会话文件。索引里没有（新会话）就先刷新一遍列表。 */
 export function getSession(kind: unknown, id: unknown): SessionDetail | null {
-  if ((kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "deepseek" && kind !== "pi") || typeof id !== "string" || !id || id.length > 200) return null;
+  if ((kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "deepseek" && kind !== "pi" && kind !== "antigravity") || typeof id !== "string" || !id || id.length > 200) return null;
   let file = fileOf(kind, id);
   if (!file || !fs.existsSync(file)) {
     listSessions();

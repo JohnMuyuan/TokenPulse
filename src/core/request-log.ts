@@ -22,7 +22,7 @@ import { windowSegments } from "./quota-monitor";
  */
 
 /** cc-switch：从 CC Switch 导入的（TokenPulse 自己那天没有这个工具的记录，或者是它不扫的工具）。 */
-export type RequestKind = "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "pi" | "cc-switch";
+export type RequestKind = "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "pi" | "antigravity" | "cc-switch";
 
 export type RequestRecord = {
   /** 去重键，同一家 CLI 内唯一：Claude 的 requestId、Codex 的 response_id、Grok 的 prompt_id + 型号。 */
@@ -78,7 +78,7 @@ export type RequestRecord = {
   estimate?: { ms: number; tokensPerSec: number };
 };
 
-const SOURCE_NAMES: Record<RequestKind, string> = { "claude-code": "Claude Code", codex: "Codex CLI", "grok-build": "Grok Build", "deepseek-harness": "DeepSeek Harness", pi: "pi", "cc-switch": "CC Switch" };
+const SOURCE_NAMES: Record<RequestKind, string> = { "claude-code": "Claude Code", codex: "Codex CLI", "grok-build": "Grok Build", "deepseek-harness": "DeepSeek Harness", pi: "pi", antigravity: "Antigravity", "cc-switch": "CC Switch" };
 const sourceOf = (record: RequestRecord) => record.source ?? SOURCE_NAMES[record.kind] ?? record.kind;
 
 export function requestDir() {
@@ -355,6 +355,8 @@ function sessionOf(record: RequestRecord) {
   if (record.kind === "deepseek-harness") return path.basename(path.dirname(record.file)).replace(/^session-/, "");
   // pi 的文件名是 <时间>_<会话 ID>.jsonl
   if (record.kind === "pi") return base.replace(/^.*_/, "");
+  // Antigravity 的对话库是 <对话 ID>.db
+  if (record.kind === "antigravity") return base.replace(/.db$/, "");
   return record.kind === "grok-build" ? path.basename(path.dirname(record.file)) : base.replace(/^rollout-[\dT:-]+-/, "");
 }
 

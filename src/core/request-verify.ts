@@ -23,7 +23,7 @@ import { aliasRules } from "./knowledge";
 export type VerifyStatus = "match" | "mismatch" | "suspect" | "unverified";
 
 export type VerifyInput = {
-  kind: "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "pi" | "cc-switch";
+  kind: "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "pi" | "antigravity" | "cc-switch";
   /** 客户端请求的型号。undefined = 会话里没记下来。 */
   requested?: string;
   /** 上游返回的型号。undefined = 这家 CLI 不记。 */
@@ -144,7 +144,7 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
     if (responseId && !OPENAI_RESPONSE.test(responseId)) {
       problems.push(`响应 ID 是 ${channel}（${idShape(responseId)}），不是 OpenAI 的 resp_ + 十六进制`);
     }
-  } else if (kind === "deepseek-harness" || kind === "pi") {
+  } else if (kind === "deepseek-harness" || kind === "pi" || kind === "antigravity") {
     if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");
     else if (!requested) notes.push("会话记录里没记下请求的型号");
   } else {

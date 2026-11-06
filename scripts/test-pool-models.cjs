@@ -6,6 +6,8 @@
  * 另外：号池里的账号 / 供应商删掉后号池还能保存，删掉的成员标出来、保存时移出。
  * 用一次性的数据目录和本机假上游（AGENT_SWITCH_POOL_BASE 只给测试用），不碰真实账号。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');

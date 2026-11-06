@@ -5,6 +5,8 @@
  * 跑法（先 npm run compile）：node scripts/test-pass-grok.cjs
  * GROK_HOME 和数据目录都在临时文件夹里，官方接口换成本机假上游，不碰真实的 ~/.grok。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');

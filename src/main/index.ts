@@ -56,6 +56,7 @@ import { randomUUID } from "crypto";
 import { readFileSync } from "fs";
 import { TokensUploader } from "./tokens-ci";
 import { DeepSeekBalance } from "./deepseek-balance";
+import { AntigravityQuota } from "./antigravity-quota";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 /**
@@ -94,6 +95,16 @@ const deepseekBalance = new DeepSeekBalance({
     if (!Notification.isSupported()) return;
     const sign = info.currency === "CNY" ? "¥" : info.currency === "USD" ? "$" : info.currency + " ";
     const note = new Notification({ title: tr(kind === "relay" ? "第三方 Key 余额不多了" : "DeepSeek 余额不多了") + (label ? " · " + label : ""), body: `${tr("当前余额")} ${sign}${info.total.toFixed(2)} · ${tr("提醒线")} ${sign}${below.toFixed(2)}`, icon: windowIcon() });
+    note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
+  },
+});
+/** Google Antigravity 的额度：只能问本机开着的 Antigravity，见 antigravity-quota.ts。提醒线和官方订阅共用。 */
+const antigravityQuota = new AntigravityQuota({
+  publish: state => { if (win && !win.isDestroyed()) win.webContents.send("antigravity-quota-state", state); },
+  notifyAt: () => readPrefs().notifyAt,
+  notify: (models, used, resetAt) => {
+    if (!Notification.isSupported()) return;
+    const note = new Notification({ title: `Antigravity · ${models.join("、")} ${tr("额度已用")} ${Math.round(used)}%`, body: resetAt ? `${new Date(resetAt).toLocaleString()} ${tr("重置")}` : tr("注意节奏"), icon: windowIcon() });
     note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
   },
 });
@@ -670,6 +681,7 @@ function scheduleQuotaChecks() {
   quotaTimer = setInterval(() => backgroundRefresh(true, false, true), every);
   quotaTimer.unref?.();
   deepseekBalance.reschedule(every);
+  antigravityQuota.reschedule(every);
 }
 function setWindowAway(away: boolean) {
   if (windowAway === away) return;
@@ -882,7 +894,7 @@ function isOfficialAccountKind(value: unknown): value is OfficialAccountKind {
 }
 
 function isAgentKind(value: unknown): value is AgentKind {
-  return value === "claude" || value === "codex" || value === "grok" || value === "deepseek" || value === "pi";
+  return value === "claude" || value === "codex" || value === "grok" || value === "deepseek" || value === "pi" || value === "antigravity";
 }
 
 /** 找到会话并确认参数：id 来自界面，只收三家之一、长度有限的字符串。 */
@@ -896,13 +908,14 @@ async function sessionOf(kind: unknown, id: unknown) {
 /** 在 TokenPulse 里直接回复（见 session-reply.ts）。必须在原项目目录里跑：Agent 读写的是这个目录。 */
 async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unknown) {
   if (kind === "pi") throw new Error("pi 会话请在终端里继续。");
+  if (kind === "antigravity") throw new Error("Antigravity 的对话请在 Antigravity 里继续。");
   const hit = await sessionOf(kind, id);
   if (typeof prompt !== "string" || !prompt.trim()) throw new Error("回复内容是空的");
   if (prompt.length > 100_000) throw new Error("回复内容太长");
   const cwd = hit.session.cwd;
   if (!cwd || !fsSync.existsSync(cwd)) throw new Error("这个会话的项目目录已经不在了，没法在原目录里继续");
   // 0.3.16：凡是 TokenPulse 启动的 CLI，设了出口 IP 白名单就先测出口，不在白名单不启动。Harness 这版不做出口监控。
-  if (hit.kind !== "deepseek" && hit.kind !== "pi") {
+  if (hit.kind !== "deepseek" && hit.kind !== "pi" && hit.kind !== "antigravity") {
     const gate = await exitMonitor.gateLaunch(CLI_PROVIDER[hit.kind], CLI_NAME[hit.kind]);
     if (!gate.ok) throw new Error(gate.message);
   }
@@ -916,6 +929,7 @@ async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unk
 async function openInTerminal(kind: unknown, id: unknown) {
   const hit = await sessionOf(kind, id);
   if (hit.kind === "deepseek") throw new Error("DeepSeek Harness 没有交互式命令行，不能在终端里继续");
+  if (hit.kind === "antigravity") throw new Error("Antigravity 的对话请在 Antigravity 里继续。");
   const session = hit.session;
   const cwd = session.cwd && fsSync.existsSync(session.cwd) ? session.cwd : undefined;
   // 终端里的 CLI 走的是那个 PowerShell 的网络环境：出口检测放在终端里做（见 session-reply.ts 的 exitGuardScript）
@@ -963,6 +977,7 @@ const DELETE_METHOD: Record<AgentKind, string> = {
   grok: "将调用 grok sessions delete <会话 ID> 永久删除这段对话。此操作无法撤销。",
   deepseek: "DeepSeek Harness 没有删除功能；TokenPulse 会删除本机的会话记录和它派出的子代理记录。如果 Harness 正开着，请先关掉再删，否则它的列表要重启后才更新。此操作无法撤销。",
   pi: "TokenPulse 会删除本机的会话记录文件，和在 pi 的 /resume 列表里删除一样。如果这段对话还开着，请先退出。此操作无法撤销。",
+  antigravity: "TokenPulse 会请开着的 Antigravity 删除这段对话，和在它自己的对话列表里删除一样。Antigravity 没开着时删不了。此操作无法撤销。",
 };
 
 /** 永久删除一段对话：先由主进程弹确认框，再调用各家 CLI（Claude、pi、DeepSeek 删本机文件）。 */
@@ -1094,6 +1109,9 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("deepseek-balance:speed", (_event, days: unknown) => loadDeepSeek({ op: "speed", days: Math.max(0, Math.min(3650, Number(days) || 0)) }));
     deepseekBalance.start();
+    ipcMain.handle("antigravity-quota:state", () => antigravityQuota.state());
+    ipcMain.handle("antigravity-quota:refresh", () => antigravityQuota.refresh(true));
+    antigravityQuota.start();
     // 额度详情的号池页（0.3.44）：号池定义从供应商数据里取（不带凭据），汇总在 worker 里读转发记录和额度采样
     const poolOf = (id: unknown) => {
       const pool = poolDef(typeof id === "string" ? id.replace(/^pool:/, "") : "");
@@ -1412,6 +1430,7 @@ if (!app.requestSingleInstanceLock()) {
     scheduleQuotaChecks();
     backgroundRefresh(true);
     void deepseekBalance.refreshAll(false);
+    void antigravityQuota.refresh(false);
     setInterval(() => { if (!windowAway || Date.now() - lastScanAt >= AWAY_SCAN_EVERY_MS - 1000) backgroundRefresh(false); }, SCAN_EVERY_MS);
 
     app.on("activate", () => {
@@ -1432,7 +1451,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', event => {
     destroyTrayPanel();
     destroyDeskPet();
-    if (agentQuitReady) { quitting = true; concurrencyService.stop(); exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); stopAllReplies(); releasePrism(); return; }
+    if (agentQuitReady) { quitting = true; concurrencyService.stop(); exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); antigravityQuota.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

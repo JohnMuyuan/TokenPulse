@@ -76,6 +76,8 @@ mark.sw-hl { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, 
 .sw-mark.claude, .sw-avatar.claude { background: var(--claude-soft); }
 .sw-mark.openai, .sw-avatar.openai { color: var(--openai); background: color-mix(in srgb, var(--openai) 10%, var(--surface)); }
 .sw-mark.grok, .sw-avatar.grok { color: var(--grok); }
+.sw-mark.antigravity, .sw-avatar.antigravity, .sw-chip-mark.antigravity { color: var(--antigravity); }
+.sw-mark.antigravity, .sw-avatar.antigravity { background: color-mix(in srgb, var(--antigravity) 10%, var(--surface)); }
 
 /* ---- 右：对话 ---- */
 .sw-main { position: relative; }

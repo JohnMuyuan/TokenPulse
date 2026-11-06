@@ -4,6 +4,8 @@
  * 覆盖：写进 CLI 的是目标账号的 token 和资料、CLI 文件里别的内容不动；换下来的账号凭据收进 TokenPulse（之后由它续期），
  * 切进去的账号不再由 TokenPulse 保存凭据；有备份；没有可用登录的账号拒绝；写完读回来不对就整体还原。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

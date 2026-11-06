@@ -2,6 +2,8 @@
  * 0.3.9 供应商配置保护：预览不落盘、确认签名、只读保护、每次改动留历史、一键还原、接管前原件、密钥打码。
  * 全部在临时 HOME / 数据目录里跑，不碰真实的 ~/.claude、~/.codex、~/.grok。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

@@ -3,6 +3,8 @@
  * 工具自己改无关设置不算；用户明确「切回」时本地路由能重新接上，关闭路由后恢复到接管前。
  * 临时 HOME / 数据目录，不碰真实配置。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');

@@ -177,6 +177,7 @@ Read-only import from [CC Switch](https://github.com/farion1231/cc-switch) recov
 | **Codex CLI** | ✅ | ChatGPT | Five-hour and weekly percentages, subscription tier, manual resets |
 | **Grok Build** | ✅ | Grok | Weekly percentage, billing cycle, remaining resets |
 | **DeepSeek Harness** | ✅ | — | Pay-as-you-go balance with multiple API keys, spending trend, remaining days, timelines, speed, and per-model capacity; provider/pool switching and session viewing/replies |
+| **Google Antigravity** | ✅ | Google (read from the running Antigravity) | Per-model quota groups with remaining share, reset time, pace forecast, 7-day trend and alerts; sessions can be viewed, searched and deleted through Antigravity |
 | **Third-party relay keys** | — | — | sub2api, new-api/one-api balance, key quotas/rate windows, expiry, and daily usage |
 
 > [!NOTE]
@@ -227,6 +228,7 @@ CLIs record usage after API calls. TokenPulse reads their session files incremen
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` |
 | DeepSeek Harness | `~/.dsh/sessions/<workdir>/session-<id>/session.v4.jsonl.zstd` |
 | pi | `~/.pi/agent/sessions/<project>/<time>_<session>.jsonl` |
+| Antigravity | `~/.gemini/antigravity/conversations/<conversation>.db` (SQLite, read by step) |
 
 Deduplication, cache token accounting, and official/relay attribution have dedicated handling; see §4 of [HANDOFF.md](HANDOFF.md).
 

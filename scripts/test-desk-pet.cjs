@@ -10,6 +10,8 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), os = requ
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-desk-pet-'));
 assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep));
 process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
+// Antigravity 的目录默认跟着用户目录走，这里没隔离用户目录：单独指到临时目录，不读真实的 ~/.gemini/antigravity
+process.env.TOKENPULSE_ANTIGRAVITY_DIR = path.join(root, 'antigravity');
 const activity = require('../build/core/agent-activity');
 const model = require('../build/core/desk-pet-model');
 const packs = require('../build/core/pet-pack');
@@ -353,6 +355,43 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     const fourth = await scanner.scan();
     assert.deepEqual([fourth.finished, fourth.needsYou, fourth.failed], [['grok:g-main'], ['deepseek:d-1'], []]);
     assert.deepEqual(fourth.running.map(t => [t.key, t.status]), [['deepseek:d-1', 'waiting']]);
+  });
+
+  await checkAsync('desk pet: scanner reads Antigravity conversations from its summary database (thinking, tool, waiting for approval, done, error); subagents skipped', async () => {
+    // Antigravity 的数据：conversation_summaries.db 的运行状态 + 对话库最后几步（步骤状态编号见 antigravity.ts 的 STEP）
+    const { DatabaseSync } = require('node:sqlite');
+    const agy = path.join(root, 'antigravity-pet');
+    fs.mkdirSync(path.join(agy, 'conversations'), { recursive: true });
+    const stamp = ms => new Date(ms).toISOString().replace('T', ' ').replace('Z', '0000+00:00');
+    const sum = new DatabaseSync(path.join(agy, 'conversation_summaries.db'));
+    sum.exec('create table conversation_summaries (conversation_id text primary key, title text, workspace_uris text, status text, nesting_depth integer, killed numeric, last_modified_time datetime, last_user_input_time datetime)');
+    const put = (id, title, status, nesting = 0) => sum.prepare('insert or replace into conversation_summaries values (?, ?, ?, ?, ?, 0, ?, ?)').run(id, title, JSON.stringify([require('node:url').pathToFileURL(path.join(root, 'agy-app')).href]), status, nesting, stamp(Date.now()), stamp(Date.now() - 30000));
+    const steps = (id, list) => {
+      const db = new DatabaseSync(path.join(agy, 'conversations', id + '.db'));
+      db.exec('create table if not exists steps (idx integer primary key, step_type integer, status integer, metadata blob); delete from steps;');
+      list.forEach(([type, status], idx) => db.prepare('insert into steps (idx, step_type, status) values (?, ?, ?)').run(idx, type, status));
+      db.close();
+    };
+    const A = 'aaaaaaaa-1111-4000-8000-000000000001', B = 'bbbbbbbb-1111-4000-8000-000000000002', C = 'cccccccc-1111-4000-8000-000000000003';
+    put(A, '修首页的额度卡片', 'CASCADE_RUN_STATUS_RUNNING'); steps(A, [[14, 3], [15, 8]]);
+    put(B, '跑测试', 'CASCADE_RUN_STATUS_RUNNING'); steps(B, [[14, 3], [15, 3], [132, 2]]);
+    put(C, '子代理', 'CASCADE_RUN_STATUS_RUNNING', 1); steps(C, [[15, 8]]);
+    const scanner = new activity.ActivityScanner({ claude: path.join(root, 'none'), codex: path.join(root, 'none'), codexIndex: path.join(root, 'none.jsonl'), antigravity: agy });
+    assert.ok(scanner.watchRoots().includes(agy));
+    const first = await scanner.scan();
+    assert.deepEqual(first.running.map(t => [t.key, t.status, t.agent, t.project]).sort(), [[`antigravity:${A}`, 'thinking', 'Antigravity', 'agy-app'], [`antigravity:${B}`, 'tool', 'Antigravity', 'agy-app']], '子代理不单独算');
+    assert.equal(first.running.find(t => t.id === A).title, '修首页的额度卡片');
+    // A 要你批准一个命令；B 做完了
+    steps(A, [[14, 3], [15, 3], [132, 9]]);
+    put(B, '跑测试', 'CASCADE_RUN_STATUS_IDLE'); steps(B, [[14, 3], [15, 3], [132, 3], [15, 3]]);
+    const second = await scanner.scan();
+    assert.deepEqual([second.finished, second.needsYou, second.running.map(t => [t.id, t.status])], [[`antigravity:${B}`], [`antigravity:${A}`], [[A, 'waiting']]]);
+    assert.deepEqual(second.recent.map(t => t.id), [B], '刚做完的在「刚完成」里');
+    // A 出错停下：报 failed，不庆祝
+    put(A, '修首页的额度卡片', 'CASCADE_RUN_STATUS_IDLE'); steps(A, [[14, 3], [15, 3], [132, 3], [15, 7]]);
+    const third = await scanner.scan();
+    assert.deepEqual([third.failed, third.finished, third.running], [[`antigravity:${A}`], [], []]);
+    sum.close();
   });
 
   check('desk pet: settings are normalized, defaults keep the pet off', () => {

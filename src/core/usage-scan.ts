@@ -10,6 +10,7 @@ import { routeEvents, type RouteEvent } from "./route-ledger";
 import { zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
+import { antigravityConversationFiles, antigravityStamp, antigravityWorkspaces, readAntigravityGenerations, readModelLabels, resolveModel, type AgyModel } from "./antigravity";
 
 /**
  * 统计**这台电脑上所有** AI CLI 的 token 消耗 —— 不管那一轮是在终端里跑的、
@@ -27,6 +28,7 @@ import { estimateCost } from "./model-pricing";
  * | Grok Build | `~/.grok/sessions/<目录>/<会话>/updates.jsonl` | `turn_completed` 的 `update.usage` | `prompt_id` |
  * | DeepSeek Harness | `~/.dsh/sessions/<目录>/session-<id>/session.v4.jsonl.zstd` | `assistant/message` 的 `data.usage` | `message.id` |
  * | pi | `~/.pi/agent/sessions/<项目>/<时间>_<会话>.jsonl` | 见 piRow | 会话 + 条目 id |
+ * | Antigravity | `~/.gemini/antigravity/conversations/<对话>.db`（SQLite） | steps 表里完成了的模型回复，见 antigravity.ts | 对话 + 步骤 idx |
  *
  * 别家 CLI（Gemini / Qwen / iFlow / Copilot）目前不往本地写 per-request usage，
  * 没法统计 —— 等它们写了，在 roots() 和解析函数那儿加一档就行。
@@ -53,7 +55,7 @@ export type UsageBucket = {
  */
 export type DayBuckets = Record<string, Record<string, Record<string, UsageBucket>>>;
 
-export type Kind = "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "pi";
+export type Kind = "claude-code" | "codex" | "grok-build" | "deepseek-harness" | "pi" | "antigravity";
 
 export const SOURCES: Record<Kind, string> = {
   "claude-code": "Claude Code",
@@ -61,6 +63,7 @@ export const SOURCES: Record<Kind, string> = {
   "grok-build": "Grok Build",
   "deepseek-harness": "DeepSeek Harness",
   pi: "pi",
+  antigravity: "Antigravity",
 };
 
 type FileState = {
@@ -157,6 +160,10 @@ type FileState = {
   routedHours?: Record<string, Record<string, Record<string, UsageBucket>>>;
   /** pi：这个文件是分叉出来的，这个时间之前的记录都是从原会话复制来的（见 piRow）。 */
   piForkAt?: number;
+  /** Antigravity：型号的数字 id → 型号名和思考档位（见 antigravity.ts）。offset 在这种来源里是下一次从哪一步读。 */
+  agyModels?: Record<string, AgyModel>;
+  /** Antigravity：扫的时候还没有显示名的 model_enum。等有了标签整份重算（见 antigravityNeedsRelabel）。 */
+  agyUnlabeled?: string[];
 };
 
 export type UsageRollups = {
@@ -311,7 +318,7 @@ function configOfficial(): Record<Kind, boolean | undefined> {
     // 没有 config.toml 同上
   }
   // DeepSeek 按量付费，没有订阅额度窗口，不分官方 / 第三方；pi 没有自己的额度，也不算进任何官方账号
-  return { "claude-code": claude, codex: undefined, "grok-build": grok, "deepseek-harness": undefined, pi: undefined };
+  return { "claude-code": claude, codex: undefined, "grok-build": grok, "deepseek-harness": undefined, pi: undefined, antigravity: undefined };
 }
 
 type CodexProviderRule = { official: boolean };
@@ -1181,6 +1188,70 @@ function scanFile(
   return touched;
 }
 
+/*
+ * Antigravity（见 antigravity.ts）：会话是 SQLite，不按字节读。offset 记的是下一次从 steps 表的哪一步读，
+ * size / mtimeMs 是对话库连同 -wal 的大小和改动时间（没变就不打开库）。
+ * 每次完成的模型回复记一条：输入含缓存（库里的输入不含缓存，加回去），输出含思考。
+ * 费用交给统计时按型号估；不归任何官方账号（Antigravity 的额度按模型分组单独看，见 quota.ts）。
+ * 型号就是请求的型号，没有上游返回的型号，核验显示无法核对。
+ */
+/** 之前没对上显示名的型号，现在有标签了：这个对话要整份重算一遍，型号和档位才对。 */
+export function antigravityNeedsRelabel(state: FileState, labels: Record<string, string>) {
+  return (state.agyUnlabeled ?? []).some((modelEnum) => labels[modelEnum]);
+}
+
+function scanAntigravity(file: string, state: FileState, out: ScanOutput, workspaces: Map<string, string>, labels: Record<string, string>) {
+  const stamp = antigravityStamp(file);
+  if (!stamp) return false;
+  if (state.v !== STATE_VERSION || antigravityNeedsRelabel(state, labels)) {
+    if (state.offset > 0) out.rescanned = true;
+    Object.assign(state, { v: STATE_VERSION, offset: 0, days: {}, hours: {}, accountHours: {}, routedHours: {}, agyUnlabeled: [] });
+  }
+  let read: ReturnType<typeof readAntigravityGenerations>;
+  try {
+    read = readAntigravityGenerations(file, state.offset, state.agyModels ?? {});
+  } catch {
+    // 正在写（SQLITE_BUSY）、文件损坏、Node 太老没有 node:sqlite：这一轮不动，size 不更新，下次再试
+    return false;
+  }
+  // 步数比上次读到的还少：对话被删了重建、或者被回退过，之前记的账对不上了，整份重算
+  if (read.total < state.offset) {
+    out.rescanned = true;
+    Object.assign(state, { offset: 0, days: {}, hours: {}, accountHours: {}, routedHours: {} });
+    try { read = readAntigravityGenerations(file, 0, state.agyModels ?? {}); } catch { return false; }
+  }
+  state.agyModels = { ...(state.agyModels ?? {}), ...read.models };
+  const conversation = path.basename(file, ".db");
+  const source = SOURCES.antigravity;
+  const cwd = workspaces.get(conversation);
+  if (cwd) state.cwd = cwd;
+  for (const row of read.rows) {
+    const known: AgyModel | undefined = state.agyModels?.[String(row.modelId)];
+    const resolved = resolveModel(known, labels);
+    if (!resolved.labeled && known?.enum && !(state.agyUnlabeled ??= []).includes(known.enum)) state.agyUnlabeled.push(known.enum);
+    const model = displayModel(resolved.model);
+    const usage: UsageBucket = { input: row.input, output: row.output, cacheRead: row.cacheRead, cacheWrite: row.cacheWrite, reasoning: row.reasoning, costUsd: 0, requests: 1 };
+    addUsage(bucket(state.days, dayOf(row.at), source, model), usage);
+    const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
+    addUsage((byModel[model] ??= emptyBucket()), usage);
+    const record: RequestRecord = {
+      id: `${conversation}:${row.step}`, at: row.at, kind: "antigravity", file, cwd: state.cwd, model,
+      ...(resolved.effort ? { effort: normalizeEffort(resolved.effort) ?? resolved.effort, effortSource: "model_label" } : {}),
+      requested: known ? model : undefined,
+      responseId: row.responseId,
+      input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, reasoning: usage.reasoning, costUsd: 0, calls: 1,
+    };
+    // 这一步从发出请求到生成完的用时，包含排队和思考，和其他来源一样标「≈」
+    const estimate = row.startAt ? estimateOf(row.startAt, row.at, row.output) : undefined;
+    if (estimate) record.estimate = estimate;
+    out.records.push(record);
+  }
+  state.offset = read.next;
+  state.size = stamp.size;
+  state.mtimeMs = stamp.mtimeMs;
+  return read.rows.length > 0;
+}
+
 function safeStat(file: string) {
   try {
     return fs.statSync(file);
@@ -1228,6 +1299,21 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
         if (needsAccountHours) state.v = 0;
         if (scanFile(file, kind, state, out, accountContext)) changed += 1;
       }
+    }
+    // Antigravity：每个对话一个 SQLite（见 scanAntigravity）
+    const agyFiles = antigravityConversationFiles();
+    let workspaces: Map<string, string> | null = null;
+    const labels = agyFiles.length ? readModelLabels() : {};
+    for (const file of agyFiles) {
+      alive.add(file);
+      files += 1;
+      const state = (rollups.files[file] ??= { size: 0, mtimeMs: 0, offset: 0, days: {} });
+      state.kind = "antigravity";
+      state.official = official.antigravity;
+      const stamp = antigravityStamp(file);
+      if (!stamp || (state.v === STATE_VERSION && stamp.size === state.size && stamp.mtimeMs === state.mtimeMs && !antigravityNeedsRelabel(state, labels))) continue;
+      workspaces ??= antigravityWorkspaces();
+      if (scanAntigravity(file, state, out, workspaces, labels)) changed += 1;
     }
     // CLI 自己清掉的老会话：账留着（那些 token 确实花过），只是不会再更新。
     for (const key of Object.keys(rollups.files)) {

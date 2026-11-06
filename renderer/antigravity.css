@@ -1,0 +1,38 @@
+/* Google Antigravity 的额度卡片和详情页（renderer/antigravity-quota.js）。 */
+.account-avatar.antigravity { color: var(--antigravity); background: color-mix(in srgb, var(--antigravity) 14%, transparent); }
+#account-tabs button[data-antigravity] .brand-glyph { color: var(--antigravity); }
+.quota-card.antigravity { --card-accent: var(--antigravity); }
+.quota-card.antigravity .ring-value.ring-five { stroke: var(--antigravity); }
+.quota-card.antigravity .ring-value.ring-week { stroke: var(--claude); }
+.quota-card.antigravity .ring-value.critical { stroke: var(--danger); }
+
+/* 额度详情：Antigravity 的页面不需要官方账号那两块（模型容量排行、时间轴） */
+#page-quota.agy-mode #quota-model-study,
+#page-quota.agy-mode #quota-model-timeline { display: none; }
+
+.agy-dot { display: inline-block; flex: none; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--agy-color, var(--antigravity)); vertical-align: middle; }
+.agy-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agy-mini .mini-label { display: inline-flex; align-items: center; min-width: 0; }
+.agy-mini .quota-mini-head { gap: 8px; }
+.agy-mini .track-fill:not(.critical):not(.warning) { background: var(--agy-color, var(--antigravity)); }
+.agy-group .panel-heading h2 { display: flex; align-items: center; min-width: 0; }
+.agy-group .track-fill:not(.critical):not(.warning) { background: var(--agy-color, var(--antigravity)); }
+.agy-card-actions { display: inline-flex; align-items: center; gap: 10px; }
+.agy-context-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.agy-note { margin: 0 0 14px; }
+
+.agy-history, .agy-local { margin-top: 18px; }
+.agy-chart { display: block; width: 100%; height: auto; max-height: 220px; }
+.agy-grid { stroke: var(--line); stroke-width: 1; }
+.agy-axis { fill: var(--faint); font-size: 11px; }
+.agy-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.agy-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; color: var(--muted); font-size: 12.5px; }
+.agy-legend-item { display: inline-flex; align-items: center; min-width: 0; }
+
+.agy-local-figures { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.agy-models { display: grid; gap: 6px; margin-top: 14px; }
+.agy-model-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; }
+.agy-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agy-model-row .num { flex: none; color: var(--muted); }
+.agy-local-foot { margin-top: 12px; }
+@media (max-width: 720px) { .agy-local-figures { grid-template-columns: 1fr; } }

@@ -2,7 +2,8 @@ import { execFileSync, spawn, type ChildProcess } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { deleteLocalSessionFiles, type AgentKind } from "../core/sessions";
+import { deleteLocalSessionFiles, forgetSession, type AgentKind } from "../core/sessions";
+import { deleteAntigravityConversation } from "../core/antigravity";
 
 /**
  * 在 TokenPulse 里直接回复一段会话：用对应 CLI 的无界面模式接着这个会话跑一轮，
@@ -168,7 +169,7 @@ export const quotePs = (value: string) => `'${value.replace(/['‘’‚‛]/g, 
  */
 export type ExitGuard = { host: string; allowedIps: string[]; allowedRegions: string[] };
 export const guardMode = (guard?: ExitGuard | null): "ip" | "region" | null => guard?.allowedIps.length ? "ip" : guard?.allowedRegions.length ? "region" : null;
-const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok", deepseek: "DeepSeek Harness", pi: "pi" };
+const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok", deepseek: "DeepSeek Harness", pi: "pi", antigravity: "Antigravity" };
 
 /**
  * 启动 CLI 之前，在**同一个 PowerShell 窗口里**测一次出口：符合白名单才往下走，否则打印原因、不启动。
@@ -302,6 +303,8 @@ export function deleteArgs(kind: AgentKind, id: string): string[] | null {
 export async function deleteSession(kind: AgentKind, id: string) {
   const key = `${kind}:${id}`;
   if ([...runs.values()].some((run) => run.key === key)) throw new Error("这段会话正在回复，请先停止再删除");
+  // Antigravity：请它自己删（文件它开着、列表也在它那里），删完把 TokenPulse 的索引和搜索缓存清掉
+  if (kind === "antigravity") { await deleteAntigravityConversation(id); forgetSession(kind, id); return; }
   const args = deleteArgs(kind, id);
   if (!args) {
     if (!deleteLocalSessionFiles(kind, id)) throw new Error("找不到这段对话的会话记录文件");

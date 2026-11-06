@@ -32,6 +32,8 @@ test('calendar arithmetic handles daylight saving and leap days', () => {
   assert.equal(D.analyze([], '2026-03-07', '2026-03-10').daily.length, 4);
   assert.equal(D.shift('2026-01-01', -1), '2025-12-31');
 });
+// 不读真实的 ~/.gemini/antigravity（这个测试没隔离用户目录）
+process.env.TOKENPULSE_ANTIGRAVITY_DIR = path.join(os.tmpdir(), 'tokenpulse-no-antigravity');
 test('real snapshot exports aggregated usage with matching totals and exact 7-day boundary', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-report-'));
   process.env.TOKENPULSE_DATA_DIR = dir;

@@ -218,11 +218,12 @@ function startTimers() {
   };
   void scan().finally(loop);
   topTimer = setInterval(keepOnTop, TOPMOST_EVERY_MS);
-  // 会话目录有 .jsonl（DeepSeek 是 .jsonl.zstd）变了：马上看一次（新文件先把目录重扫一遍）。建不起来（目录不存在之类）就只靠定时扫描
+  // 会话目录有 .jsonl（DeepSeek 是 .jsonl.zstd、Antigravity 是对话列表库）变了：马上看一次（新文件先把目录重扫一遍）。建不起来（目录不存在之类）就只靠定时扫描
   for (const dir of scanner.watchRoots()) {
     try {
       const watcher = fs.watch(dir, { recursive: true, persistent: false }, (event, name) => {
-        if (!name || !/\.jsonl(\.zstd)?$/.test(String(name))) return;
+        // Antigravity 的对话状态在 conversation_summaries.db（WAL 模式，先写 -wal）
+        if (!name || !/\.jsonl(\.zstd)?$|conversation_summaries\.db(-wal)?$/.test(String(name))) return;
         if (event === "rename") scanner?.poke();
         soon();
       });

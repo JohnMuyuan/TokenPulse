@@ -5,6 +5,8 @@
  *
  * 会话文件照 test-sessions.cjs 的格式在临时目录里造，不碰本机真实会话。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");

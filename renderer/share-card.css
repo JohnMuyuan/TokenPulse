@@ -2,7 +2,7 @@
 :root {
   --bg: #f3f4f7; --surface: #ffffff; --surface-2: #f7f8fa; --text: #14171c; --text-2: #3f4652; --muted: #697281; --faint: #9aa2ae;
   --line: #e6e8ed; --accent: #14855f; --accent-strong: #0f6e4e; --accent-soft: #e5f4ec; --warn: #b66d0d; --warn-soft: #fdf1dd;
-  --week: #5f70c8; --claude: #d97757; --openai: #10a37f; --grok: #5b6573; --deepseek: #4d6bfe;
+  --week: #5f70c8; --claude: #d97757; --openai: #10a37f; --grok: #5b6573; --deepseek: #4d6bfe; --antigravity: #3186ff;
   --shadow-md: 0 6px 24px -6px #11182714, 0 2px 6px #1118270a;
   --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
   --font-display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;

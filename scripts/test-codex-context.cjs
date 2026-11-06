@@ -2,6 +2,8 @@
  * 0.3.9 Codex 整体上下文：一键 1M 写 config.toml 顶层 model_context_window / model_auto_compact_token_limit（整数），
  * 清空就删掉；校验范围和「压缩阈值 < 窗口」；用户自己的其他 Codex 设置不动。临时 HOME，不碰真实配置。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

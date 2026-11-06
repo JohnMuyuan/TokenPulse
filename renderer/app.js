@@ -15,7 +15,7 @@ const OAUTH_META = {
   claude: { name: 'Claude', brand: 'claude' },
   grok: { name: 'Grok', brand: 'grok' }
 };
-const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi' };
+const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi', Antigravity: 'antigravity' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
 const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', models: [], project: '', channel: 'all', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
@@ -1121,6 +1121,7 @@ function renderOverview() {
   }));
   // DeepSeek 按量付费，没有额度窗口：它的卡片（余额、还能用几天）由 deepseek-balance.js 画，和别家并排
   for (const card of window.DeepSeekBalance?.cards() || []) $('quota-cards').append(stagger(card, $('quota-cards').children.length));
+  for (const card of window.AntigravityQuota?.cards() || []) $('quota-cards').append(stagger(card, $('quota-cards').children.length));
   dailyChart(entering());
   const t = analysis.total;
   // 过去 24 小时按小时算节奏，其余按天
@@ -1377,7 +1378,7 @@ function orderQuotaTabs(items) {
 function drawAccountTabs(slots) {
   const tabs = $('account-tabs');
   // DeepSeek 的账号（按量付费，一个 API Key 一个）默认排在官方账号后面，见 deepseek-balance.js
-  const extra = [...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])];
+  const extra = [...(window.AntigravityQuota?.tabs() || []), ...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])];
   const all = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind, who: accountWho(slot.account), slot })), ...extra.map(tab => ({ key: tab.key, kind: tab.kind, who: tab.who, tab }))]);
   tabLabels.clear();
   for (const item of all) tabLabels.set(item.key, [META[item.kind]?.name || (item.kind === 'pool' ? '号池' : item.kind === 'deepseek' ? 'DeepSeek' : item.kind === 'relay' ? '第三方 Key' : ''), item.who].filter(Boolean).join(' · ') || item.key);
@@ -1388,7 +1389,7 @@ function drawAccountTabs(slots) {
     tabs.dataset.signature = signature;
     tabs.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...items.map(({ slot, tab, who }) => {
       // 号池（0.3.44）：供应商页建的号池，每个一页，见 pool-quota.js
-      if (tab) return tab.kind === 'pool' ? window.PoolQuota.tabButton(tab) : window.DeepSeekBalance.tabButton(tab);
+      if (tab) return tab.kind === 'pool' ? window.PoolQuota.tabButton(tab) : tab.kind === 'antigravity' ? window.AntigravityQuota.tabButton(tab) : window.DeepSeekBalance.tabButton(tab);
       return el('button', { type: 'button', 'data-account': slot.key, 'data-kind': slot.kind, title: slot.account?.accountLabel || null }, [
         el('span', { class: 'brand-glyph' }, [brandSvg(META[slot.kind].brand)]), META[slot.kind].name,
         who ? el('small', { class: 'tab-who', text: who, translate: 'no' }) : null
@@ -1560,13 +1561,23 @@ function renderQuota() {
   const host = $('quota-detail'); host.replaceChildren();
   const slots = quotaSlots();
   if (!layoutEdit) {
-    const keys = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind })), ...[...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])].map(tab => ({ key: tab.key, kind: tab.kind }))]).map(item => item.key);
+    const keys = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind })), ...[...(window.AntigravityQuota?.tabs() || []), ...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])].map(tab => ({ key: tab.key, kind: tab.kind }))]).map(item => item.key);
     const selected = keys.includes(state.account) ? state.account : slots.find(item => item.kind === state.account)?.key;
     const open = keys.filter(key => !tabHidden(key));
     if (selected && tabHidden(selected) && open.length) state.account = open[0];
   }
   // 选中的是 DeepSeek 的账号：按量付费，没有额度窗口，这一页由 deepseek-balance.js 画（余额、消耗、用量、时间线、速度、模型换算）
   const deepseek = Boolean(window.DeepSeekBalance?.owns(state.account));
+  // 选中的是 Google Antigravity：额度按型号分组，这一页由 antigravity-quota.js 画
+  const agyPage = !deepseek && Boolean(window.AntigravityQuota?.owns(state.account));
+  $('page-quota').classList.toggle('agy-mode', agyPage);
+  if (agyPage) {
+    $('page-quota').classList.remove('ds-mode', 'pool-mode', 'ds-no-timeline');
+    state.account = window.AntigravityQuota.renderQuota(host);
+    drawAccountTabs(slots);
+    syncSegs();
+    return;
+  }
   // 选中的是号池（0.3.44）：这一页由 pool-quota.js 画（总额度、用量、成员分摊、趋势、时间线、速度、模型、请求）
   const poolPage = !deepseek && Boolean(window.PoolQuota?.owns(state.account));
   $('page-quota').classList.toggle('ds-mode', deepseek);
@@ -2387,7 +2398,7 @@ const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量�
 /** [key, 名字, 区域]。区域只给布局面板分组；数组顺序就是默认顺序。 */
 const LAYOUT = [
   ['overview:quota:claude', 'Claude', '官方额度'], ['overview:quota:chatgpt', 'ChatGPT', '官方额度'], ['overview:quota:grok', 'Grok', '官方额度'],
-  ['overview:quota:deepseek', 'DeepSeek', '官方额度'], ['overview:quota:relay', '第三方 Key 余额', '官方额度'],
+  ['overview:quota:deepseek', 'DeepSeek', '官方额度'], ['overview:quota:relay', '第三方 Key 余额', '官方额度'], ['overview:quota:antigravity', 'Antigravity', '官方额度'],
   ['overview:tokens', '总 Tokens', '统计小卡'], ['overview:cost', '参考费用', '统计小卡'], ['overview:requests', '请求次数', '统计小卡'], ['overview:cache', '缓存读取占比', '统计小卡'],
   ['overview:trend', '用量趋势', '图表'], ['overview:rhythm', '使用节奏', '图表'], ['overview:sources', '工具分布', '图表'], ['overview:ranking', '模型用量排行', '图表'],
   ['quota:five', '5 小时窗口', '官方账号'], ['quota:week', '周额度窗口', '官方账号'], ['quota:probe', '降智检测', '官方账号'], ['quota:capacity', '额度容量趋势', '官方账号'],
@@ -2395,6 +2406,7 @@ const LAYOUT = [
   ['quota:timeline', '模型与思考等级时间线', '各页通用'], ['quota:speed', '模型速度', '各页通用'], ['quota:account', '这个账号的请求', '官方账号'],
   ['quota:balance', '余额', 'DeepSeek 和第三方 Key'], ['quota:local', '本机用量', 'DeepSeek 和第三方 Key'], ['quota:spend', '消耗趋势', 'DeepSeek 和第三方 Key'],
   ['quota:history', '余额走势', 'DeepSeek 和第三方 Key'], ['quota:models', '模型换算', 'DeepSeek 和第三方 Key'], ['quota:site', '站点上的 Key', 'DeepSeek 和第三方 Key'], ['quota:about', '账号说明', 'DeepSeek 和第三方 Key'],
+  ['quota:agy-groups', '额度分组', 'Antigravity'], ['quota:agy-history', '最近 7 天的额度', 'Antigravity'], ['quota:agy-local', '本机用量', 'Antigravity'],
   ['quota:pool-quota', '号池总额度', '号池'], ['quota:pool-plan', '预排', '号池'], ['quota:pool-usage', '号池用量', '号池'], ['quota:pool-survival', '生存分析', '号池'], ['quota:pool-members', '成员分摊', '号池'], ['quota:pool-hourly', '号池最近 24 小时', '号池'],
   ['quota:pool-daily', '号池最近 30 天', '号池'], ['quota:pool-models', '号池用过的模型', '号池'], ['quota:pool-requests', '这个号池的请求', '号池'],
   ['usage:breakdown', 'Token 构成', '卡片'], ['usage:year', '全年活跃度', '卡片'], ['usage:trend', '用量趋势 · 按工具', '卡片'], ['usage:tools', '工具排行', '卡片'], ['usage:hours', '使用时段分布', '卡片'],

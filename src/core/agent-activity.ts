@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { cliDir } from "./credentials";
 import { piDir } from "./paths";
+import { antigravityDir, readAntigravityActivity } from "./antigravity";
 import { claudeUserText, codexUserText, dshRoot } from "./sessions";
 import { zstdFrames } from "./zstd-frames";
 
@@ -31,7 +32,7 @@ import { zstdFrames } from "./zstd-frames";
  */
 
 export type TaskStatus = "thinking" | "tool" | "waiting" | "done";
-export type TaskKind = "claude" | "codex" | "grok" | "deepseek" | "pi";
+export type TaskKind = "claude" | "codex" | "grok" | "deepseek" | "pi" | "antigravity";
 export type AskQuestion = { header: string; question: string; options: { label: string; description: string }[]; multi: boolean };
 /** 一个等你回答的提问。id 是那次工具调用的 id，回答了（有了结果）就没了。 */
 export type AgentAsk = { id: string; tool: string; at: number; questions: AskQuestion[]; plan?: string };
@@ -61,7 +62,7 @@ export const SUB_STALE_MS = 5 * 60_000;
 const FULL_SCAN_MS = 30_000;
 const KEEP_MS = 2 * 60 * 60_000;
 const CHUNK = 64 * 1024;
-const AGENT: Record<TaskKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok Build", deepseek: "DeepSeek Harness", pi: "pi" };
+const AGENT: Record<TaskKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok Build", deepseek: "DeepSeek Harness", pi: "pi", antigravity: "Antigravity" };
 
 type Row = Record<string, any>;
 function rows(lines: string[]): Row[] {
@@ -376,12 +377,13 @@ export function piHead(lines: string[]) {
 type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string };
 /** 子代理的会话文件（Claude 的 subagents/、Grok 的子会话）；parent 是主会话文件。 */
 type SubEntry = { file: string; kind: "claude" | "grok"; parent: string; size: number; mtimeMs: number; inferred: Inferred | null; read: boolean };
-/** grok / deepseek / pi 不给就不扫（测试只给前三个）。 */
-export type ActivityRoots = { claude: string; codex: string; codexIndex: string; grok?: string; deepseek?: string; pi?: string };
+/** grok / deepseek / pi / antigravity 不给就不扫（测试只给前三个）。antigravity 是 ~/.gemini/antigravity 本身。 */
+export type ActivityRoots = { claude: string; codex: string; codexIndex: string; grok?: string; deepseek?: string; pi?: string; antigravity?: string };
 export function defaultRoots(): ActivityRoots {
   return {
     claude: path.join(cliDir("claude"), "projects"), codex: path.join(cliDir("chatgpt"), "sessions"), codexIndex: path.join(cliDir("chatgpt"), "session_index.jsonl"),
     grok: path.join(cliDir("grok"), "sessions"), deepseek: path.join(dshRoot(), "sessions"), pi: path.join(piDir(), "sessions"),
+    antigravity: antigravityDir(),
   };
 }
 const DEEPSEEK_FILE = "session.v4.jsonl.zstd";
@@ -404,6 +406,8 @@ export class ActivityScanner {
   private subs = new Map<string, SubEntry>();
   private lastFull = 0;
   private titles = { mtimeMs: -1, map: new Map<string, string>() };
+  /** Antigravity 的对话：上一次的状态（和上面 entries 的 last / lastAsk 一个意思）。 */
+  private agy = new Map<string, { last?: TaskStatus | null; lastAsk?: string }>();
   constructor(private roots: ActivityRoots = defaultRoots(), private now: () => number = Date.now) {}
 
   /** 两小时内动过的会话文件。Claude 只看 projects/<项目>/ 下直接的 .jsonl；Codex 只看最近 7 天的日期目录。 */
@@ -470,7 +474,7 @@ export class ActivityScanner {
   /** 下一次 scan 先把目录全扫一遍（会话目录里有文件变了：可能是新会话、新子代理）。 */
   poke() { this.lastFull = 0; }
   /** 值得盯着的目录（里面的 .jsonl 变了就该看一次）。 */
-  watchRoots() { return [this.roots.claude, this.roots.codex, this.roots.grok, this.roots.deepseek, this.roots.pi].filter((dir): dir is string => !!dir); }
+  watchRoots() { return [this.roots.claude, this.roots.codex, this.roots.grok, this.roots.deepseek, this.roots.pi, this.roots.antigravity].filter((dir): dir is string => !!dir); }
 
   /** 各主会话下正在跑的子代理：个数、最近一次动静。 */
   private async scanSubs(now: number) {
@@ -562,6 +566,25 @@ export class ActivityScanner {
     if (now - this.lastFull >= FULL_SCAN_MS) { this.lastFull = now; await this.discover(now); }
     const running: AgentTask[] = [], recent: AgentTask[] = [], finished: string[] = [], failed: string[] = [], needsYou: string[] = [], asked: string[] = [];
     const subs = await this.scanSubs(now);
+    /** 一个会话这一次的状态：放进在跑 / 刚完成，和上一次比出做完了、出错了、问了你、在等你（holder 记着上一次）。 */
+    const consider = (holder: { last?: TaskStatus | null; lastAsk?: string }, base: AgentTask | null, inferred: Inferred | null, seen: number, sub?: { count: number }) => {
+      const status = inferred ? liveStatus(inferred, seen, now) : null;
+      if (base && inferred && status) {
+        const ask = status === "done" ? undefined : inferred.ask;
+        const task: AgentTask = { ...base, status, tool: status === "done" ? undefined : inferred.tool, since: inferred.since, updatedAt: seen, doneAt: inferred.doneAt, ...(ask ? { ask } : {}), ...(sub && status !== "done" ? { subagents: sub.count } : {}) };
+        if (status !== "done") running.push(task);
+        else if (task.doneAt && now - task.doneAt <= RECENT_MS) recent.push(task);
+        if (status === "done" && holder.last && holder.last !== "done") {
+          if (inferred.ended === "error") failed.push(task.key);
+          else if (inferred.ended !== "interrupted") finished.push(task.key);
+        }
+        // 第一次扫描（holder.last 还是 undefined）不算：免得一启动就响
+        if (ask && holder.last !== undefined && holder.lastAsk !== ask.id) asked.push(task.key);
+        else if (!ask && status === "waiting" && holder.last && holder.last !== "waiting") needsYou.push(task.key);
+      }
+      holder.last = status;
+      holder.lastAsk = status && status !== "done" ? inferred?.ask?.id : undefined;
+    };
     for (const entry of [...this.entries.values()]) {
       let stat;
       try { stat = await fs.stat(entry.file); } catch { this.entries.delete(entry.file); continue; }
@@ -572,23 +595,24 @@ export class ActivityScanner {
       // 有子代理在跑：按两边最近的动静算；这一轮已经结束的（后台子代理还在跑）当作在跑子代理
       const sub = entry.task ? subs.get(entry.file) : undefined, seen = Math.max(entry.mtimeMs, sub?.at ?? 0);
       const inferred = sub && entry.inferred?.status === "done" ? { ...entry.inferred, status: "tool" as const, tool: "Agent", doneAt: undefined, ended: undefined } : entry.inferred;
-      const status = inferred ? liveStatus(inferred, seen, now) : null;
-      if (entry.task && inferred && status) {
-        const ask = status === "done" ? undefined : inferred.ask;
-        const task: AgentTask = { ...entry.task, status, tool: status === "done" ? undefined : inferred.tool, since: inferred.since, updatedAt: seen, doneAt: inferred.doneAt, ...(ask ? { ask } : {}), ...(sub && status !== "done" ? { subagents: sub.count } : {}) };
-        if (status !== "done") running.push(task);
-        else if (task.doneAt && now - task.doneAt <= RECENT_MS) recent.push(task);
-        if (status === "done" && entry.last && entry.last !== "done") {
-          if (inferred.ended === "error") failed.push(task.key);
-          else if (inferred.ended !== "interrupted") finished.push(task.key);
-        }
-        // 第一次扫描（entry.last 还是 undefined）不算：免得一启动就响
-        if (ask && entry.last !== undefined && entry.lastAsk !== ask.id) asked.push(task.key);
-        else if (!ask && status === "waiting" && entry.last && entry.last !== "waiting") needsYou.push(task.key);
-      }
-      entry.last = status;
-      entry.lastAsk = status && status !== "done" ? inferred?.ask?.id : undefined;
+      consider(entry, entry.task, inferred, seen, sub);
       if (now - entry.mtimeMs > KEEP_MS) this.entries.delete(entry.file);
+    }
+    // Antigravity：对话状态在它自己的对话列表库里（见 antigravity.ts 的 readAntigravityActivity），子代理不单独算
+    if (this.roots.antigravity) {
+      const alive = new Set<string>();
+      for (const item of readAntigravityActivity(now - KEEP_MS, this.roots.antigravity)) {
+        if (item.nested) continue;
+        alive.add(item.id);
+        const holder = this.agy.get(item.id) ?? {};
+        this.agy.set(item.id, holder);
+        const inferred: Inferred = item.running
+          ? { status: item.phase === "waiting" ? "waiting" : item.phase === "tool" ? "tool" : "thinking", since: item.since, at: item.at }
+          : { status: "done", since: item.since, at: item.at, doneAt: item.at, ...(item.ended ? { ended: item.ended } : {}) };
+        const task: AgentTask = { key: `antigravity:${item.id}`, kind: "antigravity", agent: AGENT.antigravity, id: item.id, title: clip(item.title || "未命名会话"), project: path.basename(item.workspace || ""), status: "thinking", since: 0, updatedAt: 0 };
+        consider(holder, task, inferred, item.at);
+      }
+      for (const id of [...this.agy.keys()]) if (!alive.has(id)) this.agy.delete(id);
     }
     // 同一个会话可能有几份文件（Claude 续接旧会话）：只留最新的那份
     const unique = (tasks: AgentTask[]) => [...new Map(tasks.sort((a, b) => a.updatedAt - b.updatedAt).map((task) => [task.key, task])).values()];

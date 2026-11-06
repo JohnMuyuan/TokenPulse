@@ -15,6 +15,8 @@ process.env.GROK_HOME = grokDir;
 process.env.PI_CODING_AGENT_DIR = path.join(root, 'pi');
 process.env.TOKENPULSE_DSH_HOME = path.join(root, 'dsh');
 process.env.TOKENPULSE_DATA_DIR = path.join(root, 'data');
+// Antigravity 的目录默认跟着用户目录走，这里没隔离用户目录：单独指到临时目录，不读真实的 ~/.gemini/antigravity
+process.env.TOKENPULSE_ANTIGRAVITY_DIR = path.join(root, 'antigravity');
 const write = (file, rows) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, rows.map(row => typeof row === 'string' ? row : JSON.stringify(row)).join('\n') + '\n'); };
 const project = path.join(root, 'Demo');
 fs.mkdirSync(project);

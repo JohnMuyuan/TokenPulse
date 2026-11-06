@@ -8,7 +8,7 @@
     idle: ['空闲过久', '距上一次请求超过 5 分钟，缓存可能已过期。'],
     unknown: ['原因不明', '日志里没有足够线索判断缓存为什么失效。']
   };
-  const KIND = { 'Claude Code': 'claude', 'Codex CLI': 'codex', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi' };
+  const KIND = { 'Claude Code': 'claude', 'Codex CLI': 'codex', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi', Antigravity: 'antigravity' };
   const cacheView = { key: '', page: null, loading: false, error: false, seq: 0, built: false };
   const nodes = {};
   const paint = (node, props) => { for (const [key, value] of Object.entries(props)) key.startsWith('--') ? node.style.setProperty(key, value) : (node.style[key] = value); return node; };

@@ -47,6 +47,16 @@ contextBridge.exposeInMainWorld("tokenpulse", {
       return () => ipcRenderer.off("deepseek-balance-state", listener);
     },
   },
+  /** Google Antigravity 的额度：问本机开着的 Antigravity，见 main/antigravity-quota.ts。只读。 */
+  antigravityQuota: {
+    state: () => ipcRenderer.invoke("antigravity-quota:state"),
+    refresh: () => (demo ? blocked() : ipcRenderer.invoke("antigravity-quota:refresh")),
+    onState: (handler: (state: unknown) => void) => {
+      const listener = (_event: unknown, state: unknown) => handler(state);
+      ipcRenderer.on("antigravity-quota-state", listener);
+      return () => ipcRenderer.off("antigravity-quota-state", listener);
+    },
+  },
   /** 额度详情的号池页（0.3.44）：汇总、时间线、速度。只读。 */
   poolInsight: {
     summary: (id: string) => ipcRenderer.invoke("pool-insight:summary", id),

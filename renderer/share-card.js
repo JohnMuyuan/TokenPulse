@@ -26,8 +26,8 @@
   const usd = value => '$' + n(value);
   const day = key => { const [, m, d] = key.split('-').map(Number); return english ? new Date(key + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : `${m} 月 ${d} 日`; };
   const stamp = () => { const d = new Date(); return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`; };
-  const TOOL_COLOR = { 'Claude Code': 'var(--claude)', 'Codex CLI': 'var(--openai)', 'Grok Build': 'var(--grok)', 'DeepSeek Harness': 'var(--deepseek)', pi: '#64748b' };
-  const TOOL_NAME = { 'Claude Code': 'Claude', 'Codex CLI': 'Codex', 'Grok Build': 'Grok', 'DeepSeek Harness': 'DeepSeek', pi: 'pi' };
+  const TOOL_COLOR = { 'Claude Code': 'var(--claude)', 'Codex CLI': 'var(--openai)', 'Grok Build': 'var(--grok)', 'DeepSeek Harness': 'var(--deepseek)', pi: '#64748b', Antigravity: 'var(--antigravity)' };
+  const TOOL_NAME = { 'Claude Code': 'Claude', 'Codex CLI': 'Codex', 'Grok Build': 'Grok', 'DeepSeek Harness': 'DeepSeek', pi: 'pi', Antigravity: 'Antigravity' };
   const toolColor = source => TOOL_COLOR[source] || 'var(--faint)';
 
   function brand(tags) {

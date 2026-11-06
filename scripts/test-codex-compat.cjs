@@ -7,6 +7,8 @@
  * 覆盖：TOML 删键连整行删、空的自有表整张删；目录必填字段；来回切换文件不变长；启动修复；只读保护下不写；
  * 本机装了 Codex 时用真实的 codex 可执行文件读一遍（没装就跳过）。只用临时目录，不碰真实配置。
  */
+// 不读真实的 ~/.gemini/antigravity：这个测试没隔离用户目录
+process.env.TOKENPULSE_ANTIGRAVITY_DIR ??= require('node:path').join(require('node:os').tmpdir(), 'tokenpulse-no-antigravity');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');

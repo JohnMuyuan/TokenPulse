@@ -32,8 +32,11 @@
     codex: { name: 'Codex CLI', short: 'Codex', brand: 'openai' },
     grok: { name: 'Grok Build', short: 'Grok', brand: 'grok' },
     deepseek: { name: 'DeepSeek Harness', short: 'DeepSeek', brand: 'deepseek' },
-    pi: { name: 'pi', short: 'pi', brand: 'pi' }
+    pi: { name: 'pi', short: 'pi', brand: 'pi' },
+    antigravity: { name: 'Antigravity', short: 'Antigravity', brand: 'antigravity' }
   };
+  /** Antigravity 不是命令行工具：不能在终端里继续、不能在这里回复，只能看、搜、删。 */
+  const IDE_ONLY = new Set(['antigravity']);
   const DAY = 86400000;
   /** 0.3.16：这一家设了出口 IP 白名单时，TokenPulse 启动的 CLI 会先测出口。 */
   const GUARD_NOTES = { ip: '启动前会先在终端里检测出口 IP，不在白名单就不会启动。', region: '启动前会先在终端里检测出口地区，不在地区白名单就不会启动。' };
@@ -363,9 +366,9 @@
   }
 
   function drawList() {
-    const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0, deepseek: 0, pi: 0 };
+    const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0, deepseek: 0, pi: 0, antigravity: 0 };
     for (const item of S.items) counts[item.kind] = (counts[item.kind] || 0) + 1;
-    N.kinds.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...['all', 'claude', 'codex', 'grok', 'deepseek', 'pi'].map(kind =>
+    N.kinds.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...['all', 'claude', 'codex', 'grok', 'deepseek', 'pi', 'antigravity'].filter(kind => kind !== 'antigravity' || counts.antigravity > 0 || S.kind === kind).map(kind =>
       el('button', { type: 'button', 'data-kind': kind, class: S.kind === kind ? 'on' : '', 'aria-pressed': String(S.kind === kind), title: `${kind === 'all' ? '全部' : AGENTS[kind].short} · ${number(counts[kind] || 0)} 个会话` }, [
         kind === 'all' ? '全部' : AGENTS[kind].short, el('small', { text: number(counts[kind] || 0) })
       ])));
@@ -487,14 +490,14 @@
         mark(d.kind, 'sw-mark lg'),
         el('div', { class: 'sw-head-text' }, [el('h2', { text: d.title, title: d.title, translate: 'no' }), el('div', { class: 'sw-chips' }, chips)])
       ]),
-      el('div', { class: 'sw-actions' }, [copyPath, d.kind === 'pi' ? null : reply, more])
+      el('div', { class: 'sw-actions' }, [copyPath, d.kind === 'pi' || IDE_ONLY.has(d.kind) ? null : reply, more])
     ]);
   }
 
   /** 「更多」菜单：终端、复制信息和永久删除。借用设置里的选项菜单样式。 */
   function openMore(anchor, d) {
     const menu = [
-      d.kind === 'deepseek' ? null : { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
+      d.kind === 'deepseek' || IDE_ONLY.has(d.kind) ? null : { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
       d.resumeCommand ? { value: 'command', label: '复制继续命令', hint: d.resumeCommand } : null,
       { value: 'id', label: '复制会话 ID', hint: d.id },
       { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
@@ -632,6 +635,7 @@
 
   function composer(d) {
     if (d.kind === 'pi') { N.input = null; return el('div', { class: 'sw-composer' }, [el('small', { text: 'pi 会话请在终端里继续。' })]); }
+    if (IDE_ONLY.has(d.kind)) { N.input = null; return el('div', { class: 'sw-composer' }, [el('small', { text: 'Antigravity 的对话请在 Antigravity 里继续。删除时会请开着的 Antigravity 自己删。' })]); }
     const running = S.run && S.run.key === d.key;
     const otherRunning = S.run && !running && !S.run.done;
     N.input = el('textarea', { rows: '1', placeholder: `回复 ${AGENTS[d.kind].short}…（Enter 发送，Shift + Enter 换行）`, 'aria-label': '回复内容' });
@@ -808,7 +812,7 @@
     open(key) {
       const value = String(key || ''), split = value.indexOf(':');
       const kind = split > 0 ? value.slice(0, split) : '', id = split > 0 ? value.slice(split + 1) : '';
-      if (!['claude', 'codex', 'grok', 'deepseek', 'pi'].includes(kind) || !id) return;
+      if (!['claude', 'codex', 'grok', 'deepseek', 'pi', 'antigravity'].includes(kind) || !id) return;
       S.kind = kind; S.project = 'all'; S.search = ''; S.hits = null; S.terms = []; S.openKey = value;
       clearTimeout(searchTimer);
       if (N.search) N.search.value = '';
