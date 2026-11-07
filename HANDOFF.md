@@ -1,4 +1,38 @@
-# 当前接手入口 · TokenPulse v0.3.81 正式版发布完工（桌宠问题卡片右侧截断修复 & 全工具进行中任务识别与提问适配，2026-11-07）
+# 当前接手入口 · TokenPulse v0.3.82 正式版发布完工（Antigravity 时间线历史周期切换修复 & 周额度窗口卡片 UI 修复，2026-11-07）
+
+## 已完成并发布 · TokenPulse v0.3.82 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.82）
+
+- **本轮目标与问题现象**：
+  - **版本**：`v0.3.82`（以 `package.json:3` 为准，Git 标签 `v0.3.82`）。
+  1. **Antigravity 时间线历史周期切换丢失账号**：用户在 Antigravity 额度详情页的「模型与思考等级 · 时间线」点击周期导航按钮切换历史周期时，页面直接显示「这个账号还没有带账号标识的官方额度周期。」。
+  2. **周额度窗口（`.agy-week-box`）提醒卡片 UI 缺陷**：当周额度窗口存在「⚠️ 按最近的速度，约 ... 后用完」提醒卡片且窗口经历过提前重置时，下方的「窗口已提前重置，重置日期已顺延 · 从 ... 起算」文字向上贴边/重叠压入黄色预警卡片底部，且下方留出多余空白；同时浅色模式下 `.agy-week-box` 内的进度条底槽（`.track`）与卡片底色相同（`var(--surface-2)`）导致底槽不可见。
+- **根因诊断与完成改动**：
+  1. **`renderer/model-study.js`、`renderer/antigravity-quota.js` & `src/main/antigravity-quota.ts`**：
+     - 在 `renderer/model-study.js` 中，不在 `snapshot.accounts` 内的扩展账号（Antigravity、DeepSeek、号池）通过第 3 个参数 `extra` 传给 `timelineUpdate(snapshot, preferred, extra = null)` 并存入 `T.extra`。但点击时间线周期导航按钮（`‹` / `›`）或重试按钮时调用的 `reloadTimeline()` 写成了 `timelineUpdate(T.snapshot, T.accountId)`，漏传了 `T.extra`，导致 `T.extra` 被默认参数 `null` 覆盖清空，`timelineAccounts(snapshot)` 找不到 `antigravity` 账号并进入 `drawTimeline('none')`。
+     - 将 `renderer/model-study.js` 的 `reloadTimeline()` 改为 `timelineUpdate(T.snapshot, T.accountId, T.extra)`；在 `renderer/antigravity-quota.js` 中允许在 `current` 尚未就绪时照常调用 `PulseModelStudy.timeline`；在 `src/main/antigravity-quota.ts` 的 `agyWindowSegments` 中收紧提前重置切段时的 `startAt` 下界（`startAt = Math.max(startAt, previous.endAt)`），确保前后周期边界严密衔接不重叠。
+  2. **`renderer/antigravity.css`**：
+     - 在 `renderer/app.css` 中，`.prediction-line` 默认有 `margin: 18px 0`，因此下方的 `.reset-card-note` 设置了负上边距 `margin: -4px 0 14px`。但在 `renderer/antigravity.css` 中，`.agy-week-pred` 将下边距覆盖为 `margin-bottom: 0`，导致紧随其后的 `.reset-card-note` 因 `margin-top: -4px` 向上贴边/压入黄色预警卡片底部，且底部多出 `14px` 外边距。
+     - 新增 `.agy-week-box .reset-card-note { margin: 10px 0 0; }`、`.agy-week-box .track { background: var(--line); }`、`.agy-week-title .section-tag { margin-left: 0; background: var(--surface); }`，并将样式表中未定义的 `var(--ink)` / `var(--ink-2)` 统一替换为标准设计变量 `var(--text)` / `var(--text-2)`。
+  3. **`scripts/test-antigravity-ui.cjs`、`package.json`、`package-lock.json`、`renderer/intro.js` & `renderer/i18n.js`**：
+     - 新增 `.agy-week-box` 轨道对比度与 `.reset-card-note` 间距（`gap >= 6px`）断言，以及 `#quota-model-timeline` 历史周期翻页（`1 / 2` ↔ `2 / 2`）断言；
+     - 版本号升级至 `0.3.82`，补充 `0.3.82` 版本更新说明与英文翻译词条。
+- **验证结果**：
+  - `npm run build`：**PASSED (Exit 0)**。
+  - `node scripts/test-antigravity-usage.cjs`：**9/9 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**7/7 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASSED (Exit 0)**。
+- **最新产物路径与版本（v0.3.82）**：
+  - `dist/TokenPulse-0.3.82-Setup.exe`（SHA256: `155F03484996702BA1C803EB18FBA5847CA13DE83FEC79327A4B94E9CB2006FF`）
+  - `dist/TokenPulse-0.3.82-Portable.exe`（SHA256: `2E21030BB109531D3A4CBD8C2EE73C082E351456D52921E7737FE36CEC730FCD`）
+  - `dist/TokenPulse-0.3.82-Setup.exe.blockmap`（SHA256: `F2714A548DBD52324011E2FD9615DEBE006BE874ECDDA8D4E9F2DECA21EB3DE4`）
+  - `dist/latest.yml`（SHA256: `3FD425D8236C6585BF404CBDBDDBF8A68BAB69833D72BA8F535968B85005865C`）
+  - `dist/win-unpacked/TokenPulse.exe`
+  - **Git 提交与发布状态**：代码已提交至 `main`、已打标签 `v0.3.82` 并推送到 `origin/main`；GitHub Release `v0.3.82` 已正式发布（https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.82 ），全部 4 项安装包与元数据附件均已上传。
+  - **进程与文件锁状态**：本轮启动的构建与测试进程已全部退出；`build/main/index.js`、`build/main/antigravity-quota.js`、`dist/TokenPulse-0.3.82-Setup.exe`、`dist/TokenPulse-0.3.82-Portable.exe`、`dist/latest.yml`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测句柄已立即关闭）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.81 正式版发布完工（桌宠问题卡片右侧截断修复 & 全工具进行中任务识别与提问适配，2026-11-07）
 
 ## 已完成并发布 · TokenPulse v0.3.81 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.81）
 
@@ -51,6 +85,14 @@
   5. **后续追加（本机 7 次「未知模型」排查修复 & 仓库模型知识库更新 `2026.11.07`）**：
      - **7 次「未知模型」真相与根因**：排查 `~/.tokenpulse/requests/2026-11.jsonl` 中 7 条 `model: "未知模型"` 记录（`c1e44be5:1`、`03c0a178:1`、`580c35cd:1`、`6c525a31:1`、`d435d17e:1`、`f8736e3e:1`、`92fd7850:1`），全部为 Antigravity 子代理对话的第 1 步模型回复（`step.idx = 1`，对应 `gen_metadata.idx = 0`），真实模型均为 **`gemini-3.8-flash-tiered`**（`MODEL_PLACEHOLDER_M322`，`modelId = 1322`）。因为 Protobuf3 在 `gen_idx = 0`（`meta.20.3 = 0`）时省略默认标量值 `0`，此前 `src/core/antigravity.ts` 要求 `pbFields(genInfo)?.some(f => f.no === 3)` 为真才读取 `gen_metadata`，导致对话刚完成第 1 步即被扫描时 `genIdx = -1` 漏读 `gen_metadata[0]` 并回退为 `"未知模型"`；
      - **修复与知识库同步**：在 `src/core/antigravity.ts`（`readAntigravityGenerations` 与 `readAntigravityConversation`）中改为 `const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;`，在 `src/core/usage-scan.ts` 中将 `ANTIGRAVITY_STATE_VERSION` 升至 `4` 以自动重扫修正首步记录；在 `knowledge/manual.json` 中为 Antigravity Gemini 内部后缀别名补充 `-tiered`（`^(gemini-[\w.-]+?)-(?:b|n|tiered)$`）并为 `capabilities.claude` 补充 `claude-sonnet-5-5`，重新生成并推送 `knowledge/models.json`（版本 `2026.11.07`）。
+  6. **后续追加（Antigravity 时间线历史周期切换丢失账号修复 & 周额度窗口卡片 UI 修复）**：
+     - **时间线切换历史周期显示「这个账号还没有带账号标识的官方额度周期。」根因与修复**：
+       - 在 `renderer/model-study.js` 中，不在 `snapshot.accounts` 内的账号（Antigravity、DeepSeek、号池）通过第 3 个参数 `extra` 传给 `timelineUpdate(snapshot, preferred, extra = null)` 并存入 `T.extra`。但点击时间线周期导航按钮（`‹` / `›`）或重试按钮时调用的 `reloadTimeline()` 写成了 `timelineUpdate(T.snapshot, T.accountId)`，未把 `T.extra` 传回，导致 `T.extra` 被默认参数 `null` 覆盖清空，`timelineAccounts(snapshot)` 找不到 `antigravity` 账号并进入 `drawTimeline('none')` 显示 `这个账号还没有带账号标识的官方额度周期。`。
+       - 修复：将 `renderer/model-study.js` 的 `reloadTimeline()` 改为 `timelineUpdate(T.snapshot, T.accountId, T.extra)`；同时在 `renderer/antigravity-quota.js` 中允许在 `current` 尚未就绪时照常调用 `PulseModelStudy.timeline`，并在 `src/main/antigravity-quota.ts` 的 `agyWindowSegments` 中确保提前重置切段后新窗口 `startAt >= previous.endAt` 不产生时间段重叠。
+     - **周额度窗口（`.agy-week-box`）预测条与提前重置说明重叠及轨道底色不可见根因与修复**：
+       - 在 `renderer/app.css` 中，`.prediction-line` 默认有 `margin: 18px 0`，因此下方的 `.reset-card-note` 设置了负上边距 `margin: -4px 0 14px`（`18px - 4px = 14px`）。但在 `renderer/antigravity.css` 中，`.agy-week-pred` 将下边距覆盖为 `margin-bottom: 0`，导致紧随其后的 `.reset-card-note` 因 `margin-top: -4px` 向上贴边/压入黄色预警卡片（`⚠️ 按最近的速度，约 ... 后用完`）底部，且底部多出 `14px` 外边距；同时 `.agy-week-box` 与内部的 `.track` 背景均为 `var(--surface-2)`，导致浅色模式下周额度进度条底槽完全隐形，且多处使用了未定义的 `--ink` / `--ink-2` 变量。
+       - 修复：在 `renderer/antigravity.css` 中新增 `.agy-week-box .reset-card-note { margin: 10px 0 0; }`、`.agy-week-box .track { background: var(--line); }`、`.agy-week-title .section-tag { margin-left: 0; background: var(--surface); }`，并将未定义的 `var(--ink)` / `var(--ink-2)` 替换为标准设计变量 `var(--text)` / `var(--text-2)`。
+     - **回归测试**：在 `scripts/test-antigravity-ui.cjs` 中新增 `.agy-week-box` 轨道对比度与 `.reset-card-note` 间距（`gap >= 6px`）断言，以及 `#quota-model-timeline` 历史周期翻页（`1 / 2` ↔ `2 / 2`）断言。
 - **验证结果**：
   - `npm run build`：**PASSED (Exit 0)**。
   - `node scripts/test-desk-pet.cjs`：**35/35 PASSED (Exit 0)**。
@@ -58,6 +100,7 @@
   - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASSED (Exit 0)**。
   - `node scripts/test-knowledge-update.cjs`：**PASSED (Exit 0)**。
   - `node scripts/test-antigravity-usage.cjs`：**9/9 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**7/7 PASSED (Exit 0)**。
   - `node scripts/test-antigravity-sessions.cjs`：**3/3 PASSED (Exit 0)**。
   - `node scripts/test-model-study.cjs`：**16/16 PASSED (Exit 0)**。
 - **最新产物路径与版本（v0.3.81）**：

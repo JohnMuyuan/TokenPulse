@@ -2883,6 +2883,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.82 更新说明
+    '修复：Antigravity 时间线切换历史周期丢失账号，周额度窗口提醒卡片重叠': 'Fixed: Antigravity timeline losing its account when switching historical cycles, and overlapping warning card in the weekly quota box',
+    '修复「模型与思考等级 · 时间线」在切换历史周期时丢失 Antigravity / DeepSeek / 号池账号并显示空状态的问题；修复周额度窗口内提前重置说明与上方预警卡片贴边重叠及浅色模式下进度条底槽隐形的问题；补齐 Antigravity 子代理首步生成型号读取与最新模型知识库。': 'Fixed the “Models & effort · Timeline” section losing Antigravity, DeepSeek or pool accounts and showing an empty state when switching to historical cycles; fixed the early-reset note overlapping the warning banner and the invisible progress track in light mode inside the weekly quota box; fixed model resolution on first-step Antigravity subagent replies and updated the bundled model knowledge base.',
     // 0.3.81 更新说明
     '修复：桌宠更准地识别各家工具正在运行的任务，支持 DeepSeek 提问卡片': 'Fixed: desk pet accurately detects active tasks across all tools and supports DeepSeek question cards',
     '修复 Claude Code、Codex、Grok Build 在生成大附件、大图或超长工具输出时把回合开头挤出读取窗口导致桌宠漏判的问题，补齐 Claude 并行工具跟踪与 Antigravity 长回合及子代理识别；DeepSeek Harness 向你提问或提交计划时也会弹出桌面卡片了。': 'Fixed missed active-turn detection in Claude Code, Codex and Grok Build when large attachments, images or long tool outputs pushed turn headers past the tail read window; added parallel tool tracking for Claude and long-turn / subagent detection for Antigravity; DeepSeek Harness now pops up desk cards when asking questions or submitting plans.',

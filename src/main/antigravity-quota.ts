@@ -433,11 +433,14 @@ export function agyWindowSegments(
       const prevLastAt = previous.points[previous.points.length - 1].at;
       const prevHasUsage = previous.points.some((p) => p.used > 0);
       if (prevHasUsage && group.firstAt < previous.endAt - SAME_WINDOW_MS) {
-        previous.endAt = Math.max(prevLastAt, Math.min(previous.endAt, group.firstAt));
+        const cutAt = group.startAt >= prevLastAt ? Math.min(group.startAt, group.firstAt) : group.firstAt;
+        previous.endAt = Math.max(prevLastAt, Math.min(previous.endAt, cutAt));
         previous.endedByReset = "moved";
         startedByReset = "moved";
+        startAt = Math.max(startAt, previous.endAt);
+      } else {
+        startAt = Math.max(startAt, prevLastAt);
       }
-      startAt = Math.max(startAt, prevLastAt);
     }
 
     let part: { at: number; used: number }[] = [];

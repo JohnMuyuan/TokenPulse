@@ -732,7 +732,7 @@
     if (!report) { T.loader.reset(); drawTimeline('none'); return; }
     T.loader.load(`${T.accountId}|${T.cycles.five}|${T.cycles.week}`, { kind: report.kind, accountId: report.accountId, cycles: { ...(T.cycles.five ? { five: T.cycles.five } : {}), ...(T.cycles.week ? { week: T.cycles.week } : {}) } }, stampOf(snapshot, report));
   }
-  function reloadTimeline() { timelineUpdate(T.snapshot, T.accountId); }
+  function reloadTimeline() { timelineUpdate(T.snapshot, T.accountId, T.extra); }
 
   function timelineHeading() {
     const report = timelineAccounts(T.snapshot).find(a => a.accountId === T.accountId);

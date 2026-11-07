@@ -15,9 +15,27 @@ fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLau
 const NOW = Date.now(), H = 3600000, iso = at => new Date(at).toISOString();
 const RESET_A = Math.floor((NOW + 3 * H) / 1000) * 1000, RESET_B = Math.floor((NOW + 4.5 * H) / 1000) * 1000;
 const RESET_A_WEEK = Math.floor((NOW + 120 * H) / 1000) * 1000, RESET_B_WEEK = Math.floor((NOW + 144 * H) / 1000) * 1000;
-// 同一个窗口里的三次采样：Gemini 一组从 10% 涨到 30%（每小时 10 个点），Claude 一组没动
+// 包含上一周期（触发周窗口提前重置顺延说明与时间线历史周期切换）和当前窗口的三次采样：Gemini 一组从 10% 涨到 30%（每小时 10 个点），Claude 一组没动
 const KEY_A = 'Gemini 3.8 Flash|Gemini 4 Argon', KEY_B = 'Claude Opus 5.5|GPT-OSS 120B';
-fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({ history: [2, 1].map(ago => ({ at: NOW - ago * H, groups: [{ key: KEY_A, used: 30 - ago * 10, resetAt: iso(RESET_A), weekUsed: 20 - ago * 2, weekResetAt: iso(RESET_A_WEEK) }, { key: KEY_B, used: 0, resetAt: iso(RESET_B), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) }] })), notified: {} }));
+fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+  history: [
+    {
+      at: NOW - 6 * H,
+      groups: [
+        { key: KEY_A, used: 25, resetAt: iso(RESET_A - 5 * H), weekUsed: 15, weekResetAt: iso(RESET_A_WEEK - 24 * H) },
+        { key: KEY_B, used: 5, resetAt: iso(RESET_B - 5 * H), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) },
+      ],
+    },
+    ...[2, 1].map(ago => ({
+      at: NOW - ago * H,
+      groups: [
+        { key: KEY_A, used: 30 - ago * 10, resetAt: iso(RESET_A), weekUsed: 20 - ago * 2, weekResetAt: iso(RESET_A_WEEK) },
+        { key: KEY_B, used: 0, resetAt: iso(RESET_B), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) },
+      ],
+    })),
+  ],
+  notified: {},
+}));
 
 /* ---------- 对话库：今天两次生成 ---------- */
 const { DatabaseSync } = require('node:sqlite');
@@ -104,6 +122,30 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line').length"), 2, '走势图每组一条线');
     assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line-week').length"), 2, '周额度走势虚线每组一条');
     assert.ok(await e("!!document.querySelector('#quota-detail .agy-capacity') && !!document.querySelector('#quota-detail .agy-model-study') && !!document.querySelector('#quota-detail .agy-requests')"), '容量趋势、模型换算与账号请求面板齐全');
+    // 周额度二级窗口：进度条底槽与背景区分，且提前重置说明与上方预测条之间留有合理间距（不重叠或贴边）
+    const weekBoxLayout = await e(`(() => {
+      const box = document.querySelector('#quota-detail .agy-group[data-group="${KEY_A}"] .agy-week-box');
+      const track = box?.querySelector('.track');
+      const pred = box?.querySelector('.agy-week-pred');
+      const note = box?.querySelector('.reset-card-note');
+      if (!box || !track || !pred || !note) return null;
+      return {
+        boxBg: getComputedStyle(box).backgroundColor,
+        trackBg: getComputedStyle(track).backgroundColor,
+        gap: Math.round(note.getBoundingClientRect().top - pred.getBoundingClientRect().bottom),
+      };
+    })()`);
+    assert.ok(weekBoxLayout, '周额度窗口包含进度条、预测条和提前重置说明');
+    assert.notEqual(weekBoxLayout.trackBg, weekBoxLayout.boxBg, '周额度进度条轨道背景与卡片底色明显区分');
+    assert.ok(weekBoxLayout.gap >= 6, `周额度提前重置说明与上方预测条不重叠（实际间距 ${weekBoxLayout.gap}px）`);
+    // 模型与思考等级 · 时间线：切换历史周期不会丢失 extra 账号变成「还没有带账号标识的官方额度周期」
+    await until("document.querySelector('#quota-model-timeline .ms-cycle.five .ms-cycle-pos')?.textContent?.includes('/ 2')");
+    assert.equal(await text('#quota-model-timeline .ms-cycle.five .ms-cycle-pos'), '1 / 2');
+    await e("document.querySelector('#quota-model-timeline .ms-cycle.five .ms-step').click()");
+    await until("document.querySelector('#quota-model-timeline .ms-cycle.five .ms-cycle-pos')?.textContent === '2 / 2'");
+    assert.ok(!(await text('#quota-model-timeline')).includes('还没有带账号标识的官方额度周期'), '切换历史周期后正常显示 Antigravity 时间线');
+    await e("document.querySelectorAll('#quota-model-timeline .ms-cycle.five .ms-step')[1].click()");
+    await until("document.querySelector('#quota-model-timeline .ms-cycle.five .ms-cycle-pos')?.textContent === '1 / 2'");
     pass('antigravity UI: the quota page shows each group with remaining, reset, pace forecast and a 7-day chart, without the official-account sections');
 
     // 本机用量：扫到的 Antigravity 对话；型号按额度接口的标签显示

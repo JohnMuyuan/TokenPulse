@@ -770,9 +770,7 @@
     ]));
     if (timelineNode) {
       host.append(timelineNode);
-      if (typeof current !== 'undefined' && current) {
-        window.PulseModelStudy?.timeline(current, KEY, { kind: KEY, accountId: KEY, lastCheckedAt: last()?.at || 0 });
-      }
+      window.PulseModelStudy?.timeline(typeof current !== 'undefined' ? current : null, KEY, { kind: KEY, accountId: KEY, lastCheckedAt: last()?.at || 0 });
     }
     if (typeof speedPanel === 'function') {
       const speed = speedPanel({ accountId: KEY, accountLabel: 'Antigravity' }, KEY, {
