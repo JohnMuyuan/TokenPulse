@@ -7,7 +7,7 @@ import { dataFile, piDir, readJson, writeJson } from "./paths";
 import { zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
-import { antigravityConversationFiles, antigravityStamp, antigravitySummaries, readAntigravityConversation, readModelLabels, resolveModel } from "./antigravity";
+import { antigravityConversationFiles, antigravityStamp, antigravitySummaries, readAntigravityConversation, readModelLabels, resolveModel, type AgySummary } from "./antigravity";
 import { routeReturned } from "./route-ledger";
 
 /**
@@ -1072,24 +1072,24 @@ function parsePi(file: string): Parsed | null {
  * 标题和工作区在对话列表库里；那里没有的（Antigravity 已经删掉的、还没写进列表的子代理）不列出来。
  * 型号用额度接口的显示名（gemini-4-argon 之类），和用量明细一致。
  */
-/** 对话库 + -wal + 对话列表库的大小和时间：任何一个变了都重读。 */
-function antigravityListStamp(file: string) {
-  const own = antigravityStamp(file);
-  if (!own) throw new Error("gone");
-  const list = antigravityStamp(path.join(path.dirname(path.dirname(file)), "conversation_summaries.db"));
-  // 型号显示名是查额度时才存下来的：存了新的也要重读，型号才显示得对
-  let labels = 0;
-  try { labels = fs.statSync(dataFile("antigravity-models.json")).mtimeMs; } catch { /* 还没查过额度 */ }
-  return { size: own.size + (list?.size ?? 0), mtimeMs: Math.max(own.mtimeMs, list?.mtimeMs ?? 0, labels) };
+function readModelLabelsMtime() {
+  try { return fs.statSync(dataFile("antigravity-models.json")).mtimeMs; } catch { return 0; }
 }
 
-function parseAntigravity(file: string): Parsed | null {
+/** 对话库 + -wal + 型号标签文件的大小和时间：不混入公共 conversation_summaries.db，避免任一对话状态更新时全量失效重扫 600MB+ SQLite。 */
+function antigravityListStamp(file: string, labelsMtime = readModelLabelsMtime()) {
+  const own = antigravityStamp(file);
+  if (!own) throw new Error("gone");
+  return { size: own.size, mtimeMs: Math.max(own.mtimeMs, labelsMtime) };
+}
+
+function parseAntigravity(file: string, preloadedSummary?: AgySummary | null, preloadedLabels?: Record<string, string>): Parsed | null {
   const id = path.basename(file, ".db");
-  const summary = antigravitySummaries()?.get(id);
+  const summary = preloadedSummary !== undefined ? preloadedSummary : antigravitySummaries()?.get(id);
   if (!summary || summary.nested) return null;
   let read: ReturnType<typeof readAntigravityConversation>;
   try { read = readAntigravityConversation(file); } catch { return null; }
-  const labels = readModelLabels();
+  const labels = preloadedLabels ?? readModelLabels();
   const b = new Builder();
 
   let turnActiveMs = 0;
@@ -1246,27 +1246,56 @@ function indexFile() {
   return dataFile("sessions-index.json");
 }
 
+/** 索引文件是否已是当前版本（后台扫描仅在尚未建索引或版本升级时预热，避免每分钟全量重扫活跃会话）。 */
+export function hasCurrentSessionIndex(): boolean {
+  const stored = readJson<{ version?: number } | null>(indexFile(), null);
+  return stored?.version === INDEX_VERSION;
+}
+
 /** 列表。只重读大小或修改时间变了的会话文件。 */
 export function listSessions(): SessionSummary[] {
   const stored = readJson<SessionIndex | null>(indexFile(), null);
   const previous = stored?.version === INDEX_VERSION ? stored.files : {};
   const next: SessionIndex = { version: INDEX_VERSION, files: {} };
   let changed = !stored || stored.version !== INDEX_VERSION;
+  const agySummaries = antigravitySummaries();
+  const agyLabelsMtime = readModelLabelsMtime();
+  let agyLabels: Record<string, string> | undefined;
   for (const { kind, files } of sources()) {
     for (const file of files) {
+      let agySummary: AgySummary | null | undefined;
+      if (kind === "antigravity") {
+        const id = path.basename(file, ".db");
+        agySummary = agySummaries ? agySummaries.get(id) ?? null : undefined;
+        if (agySummary !== undefined && (!agySummary || agySummary.nested)) continue;
+      }
       let stat: { size: number; mtimeMs: number };
       try {
-        // Antigravity：新内容先写进 -wal；标题、删除在对话列表库里，也算进来
-        stat = kind === "antigravity" ? antigravityListStamp(file) : fs.statSync(file);
+        stat = kind === "antigravity" ? antigravityListStamp(file, agyLabelsMtime) : fs.statSync(file);
       } catch {
         continue;
       }
       const hit = previous[file];
       if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) {
+        if (kind === "antigravity" && hit.summary && agySummary) {
+          const nextTitle = agySummary.title.replace(/\s+/g, " ").trim();
+          const nextCwd = agySummary.workspace;
+          const nextProject = projectName(nextCwd, AGENT_NAMES.antigravity);
+          if ((nextTitle && hit.summary.title !== nextTitle) || hit.summary.cwd !== nextCwd || hit.summary.project !== nextProject) {
+            hit.summary = {
+              ...hit.summary,
+              ...(nextTitle ? { title: nextTitle } : {}),
+              cwd: nextCwd,
+              project: nextProject,
+            };
+            changed = true;
+          }
+        }
         next.files[file] = hit;
         continue;
       }
-      const parsed = parseFile(kind, file);
+      if (kind === "antigravity" && !agyLabels) agyLabels = readModelLabels();
+      const parsed = kind === "antigravity" ? parseAntigravity(file, agySummary, agyLabels) : parseFile(kind, file);
       next.files[file] = { size: stat.size, mtimeMs: stat.mtimeMs, summary: parsed ? stripFile(parsed) : null };
       changed = true;
     }

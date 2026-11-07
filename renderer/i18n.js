@@ -2883,6 +2883,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.80 更新说明
+    '修复：主进程与后台扫描内存占用偏高（约 500 MB 降至约 300 MB）': 'Fixed: high memory usage in the main process and background scans (down from ~500 MB to ~300 MB)',
+    '重构月度请求流水与 Antigravity 对话库的读取方式，改为分块流式扫描与 SQLite 游标迭代，不再一次性把整月 JSONL 和几十 MB 的步骤 BLOB 装入内存；同时修复会话索引在每次摘要库变动时全量重扫全部对话库的问题，大幅降低主进程与后台线程的峰值内存。': 'Monthly request logs and Antigravity conversation databases now use chunked streaming and SQLite cursor iteration instead of loading full-month JSONL files and multi-megabyte step BLOBs into memory at once; fixed session indexing rescanning every conversation database whenever the summary database changed, cutting peak memory in the main process and worker threads.',
     // 0.3.79 更新说明
     '会话管理统一展示与每轮对话耗时统计': 'Unified session view and per-turn duration stats',
     '会话列表统一显示轮数、Token 与 API 等价费用；每段对话按轮次标出「第 N 轮 · 耗时 X.Xs」，每条回复底部附上所用模型、本轮耗时与流式出字速度；用量详情面板新增「均轮耗时与速度」指标卡和按模型的均轮耗时列。': 'The session list now uniformly shows turn count, tokens and API-equivalent cost; conversations mark each turn with “Turn N · X.Xs” and show model, turn duration and streaming speed beneath each reply; the usage details panel adds an “Avg turn time & speed” card and a per-model average turn duration column.',

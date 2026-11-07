@@ -943,6 +943,7 @@ export class AntigravityQuota {
   private readonly fetcher: () => Promise<AgyStatus | null>;
   private readonly now: () => number;
   private rowCache?: { rollupMtime: number; at: number; rows: RequestRow[] };
+  private insightCache?: { stamp: string; at: number; insight: AgyInsight };
 
   constructor(private options: {
     publish?: (state: AgyQuotaState) => void;
@@ -995,6 +996,14 @@ export class AntigravityQuota {
   }
 
   private buildInsight(now = this.now()): AgyInsight {
+    let rollupMtime = 0;
+    try {
+      rollupMtime = fs.statSync(dataFile("usage-rollups.json")).mtimeMs;
+    } catch { /* 还没生成账本 */ }
+    const stamp = `${rollupMtime}|${this.stored.last?.at ?? 0}|${this.stored.history.length}|${(this.stored.last?.groups ?? []).map((g) => `${g.key}:${g.used}:${g.week?.used ?? ""}`).join(",")}`;
+    if (this.insightCache && this.insightCache.stamp === stamp && now >= this.insightCache.at && now - this.insightCache.at < 15_000) {
+      return this.insightCache.insight;
+    }
     const rows30 = this.recentRows(now);
     const todayStart = startOfDay(now);
     const d7Start = now - 7 * DAY;
@@ -1144,7 +1153,7 @@ export class AntigravityQuota {
     const kb = loadKnowledge();
     const modelCapacities = buildModelCapacities(groups, lastModels, rows30);
 
-    return {
+    const insight: AgyInsight = {
       now,
       conversations: antigravityConversationFiles().length,
       sampleCount: this.stored.history.length,
@@ -1162,6 +1171,8 @@ export class AntigravityQuota {
       modelCapacities,
       priceSource: { version: kb.knowledge.version, updatedAt: kb.knowledge.updatedAt },
     };
+    this.insightCache = { stamp, at: now, insight };
+    return insight;
   }
 
   state(): AgyQuotaState {
@@ -1254,6 +1265,7 @@ export class AntigravityQuota {
     this.loading = true;
     if (manual) this.publish();
     const at = this.now();
+    let nextState!: AgyQuotaState;
     try {
       const status = await this.fetcher();
       this.running = Boolean(status);
@@ -1281,10 +1293,11 @@ export class AntigravityQuota {
     } finally {
       this.loading = false;
       this.save();
-      this.publish();
+      nextState = this.state();
+      if (!this.stopped) this.options.publish?.(nextState);
     }
     // 在 finally 之后取状态：界面拿这个返回值覆盖自己的，不能还带着「正在查询」
-    return this.state();
+    return nextState;
   }
 
   /** 记一条采样：和上一条不一样、或者隔了 10 分钟以上才记。 */

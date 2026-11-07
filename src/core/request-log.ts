@@ -90,9 +90,20 @@ function monthOf(at: number) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+let lastDayStart = 0;
+let lastDayEnd = 0;
+let lastDayStr = "";
 function dayOf(at: number) {
+  if (at >= lastDayStart && at < lastDayEnd) return lastDayStr;
   const d = new Date(at);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const date = d.getDate();
+  if (!Number.isFinite(y)) return "1970-01-01";
+  lastDayStart = new Date(y, m, date).getTime();
+  lastDayEnd = new Date(y, m, date + 1).getTime();
+  lastDayStr = `${y}-${String(m + 1).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
+  return lastDayStr;
 }
 
 const keyOf = (record: Pick<RequestRecord, "kind" | "id">) => `${record.kind}\u0000${record.id}`;
@@ -122,23 +133,71 @@ function monthFiles() {
   }
 }
 
-function readMonth(name: string) {
-  const out: RequestRecord[] = [];
-  let text = "";
+function* streamMonth(name: string, hint?: string, skipAntigravity = false): Generator<RequestRecord> {
+  const file = path.join(requestDir(), name);
+  let fd = -1;
   try {
-    text = fs.readFileSync(path.join(requestDir(), name), "utf8");
+    fd = fs.openSync(file, "r");
   } catch {
-    return out;
+    return;
   }
-  for (const line of text.split("\n")) {
-    if (!line.startsWith("{")) continue;
-    try {
-      out.push(JSON.parse(line) as RequestRecord);
-    } catch {
-      // 追加到一半被杀进程留下的半行：跳过，下次整理时会被丢掉
+  try {
+    const chunk = Buffer.allocUnsafe(256 * 1024);
+    let carry = "";
+    let n = 0;
+    while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
+      const text = carry + chunk.toString("utf8", 0, n);
+      let start = 0;
+      let idx = text.indexOf("\n", start);
+      while (idx !== -1) {
+        const line = text.slice(start, idx);
+        start = idx + 1;
+        if (line.startsWith("{") && (!hint || line.includes(hint)) && (!skipAntigravity || !line.includes('"kind":"antigravity"'))) {
+          try {
+            yield JSON.parse(line) as RequestRecord;
+          } catch {
+            // 追加到一半被杀进程留下的半行：跳过，下次整理时会被丢掉
+          }
+        }
+        idx = text.indexOf("\n", start);
+      }
+      carry = text.slice(start);
     }
+    if (carry.startsWith("{") && (!hint || carry.includes(hint)) && (!skipAntigravity || !carry.includes('"kind":"antigravity"'))) {
+      try {
+        yield JSON.parse(carry) as RequestRecord;
+      } catch {
+        // 追加到一半被杀进程留下的半行：跳过
+      }
+    }
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {}
   }
-  return out;
+}
+
+function readMonth(name: string) {
+  return [...streamMonth(name)];
+}
+
+let firstAtCache: { name: string; size: number; mtimeMs: number; firstAt?: number } | null = null;
+function readFirstAt(firstName?: string): number | undefined {
+  if (!firstName) return undefined;
+  try {
+    const st = fs.statSync(path.join(requestDir(), firstName));
+    if (firstAtCache && firstAtCache.name === firstName && firstAtCache.size === st.size && firstAtCache.mtimeMs === st.mtimeMs) {
+      return firstAtCache.firstAt;
+    }
+    let min: number | undefined;
+    for (const r of streamMonth(firstName)) {
+      if (min == null || r.at < min) min = r.at;
+    }
+    firstAtCache = { name: firstName, size: st.size, mtimeMs: st.mtimeMs, firstAt: min };
+    return min;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -195,6 +254,8 @@ export type RequestQuery = {
   projects?: boolean;
   /** 缓存命中和断档分析（跟随全部查询筛选，不受分页影响）。 */
   cache?: boolean;
+  /** 内部容量折算快速通道：只读取 Claude / Codex / Grok 的官方账号请求，跳过代理核验与全量分面统计。 */
+  capacityOnly?: boolean;
 };
 
 /** 一个项目里某个「型号 × 思考等级 × 工具」组合的用量。effort 没记录的为 "unknown"。 */
@@ -367,6 +428,42 @@ function accountContext(): AccountContext {
 }
 
 const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，按压缩前的上下文大小和摘要长度估算";
+const EMPTY_REASONS: string[] = [];
+
+function toCapacityRow(record: RequestRecord, fileOfficial: boolean | undefined, accounts: AccountContext): RequestRow | null {
+  const kind = KIND_OF_SOURCE[sourceOf(record)];
+  if (!kind) return null;
+  const routed: RequestAccount | null =
+    record.routedAccount && record.routedAccountBasis === "response-id" && record.responseId
+      ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route" }
+      : record.routedAccount && record.routedAccountBasis === "route-window"
+        ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route-window" }
+        : routedAccount(kind, record.at, accounts.labels, record.responseId);
+  const official = routed ? true : fileOfficial;
+  if (official !== true) return null;
+  const account = routed ?? resolveAccount(kind, record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt }, accounts.timeline, accounts.labels);
+  if (!account) return null;
+  const usage = { input: record.input, output: record.output, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite };
+  return {
+    key: "",
+    at: record.at,
+    source: sourceOf(record),
+    model: record.model,
+    session: "",
+    ...usage,
+    reasoning: record.reasoning,
+    tokens: record.input + record.output,
+    costUsd: record.costUsd || estimateCost(record.model, usage),
+    priced: record.costUsd > 0 || priceOf(record.model) !== null,
+    calls: record.calls || 1,
+    official: true,
+    account,
+    status: "unverified",
+    statusLabel: "",
+    reasons: EMPTY_REASONS,
+    channel: "",
+  };
+}
 
 function toRow(record: RequestRecord, fileOfficial: boolean | undefined, accounts: AccountContext = accountContext()): RequestRow {
   // 经 TokenPulse 号池发出去的（0.3.34）：这一条实际用的是号池里的官方账号，按路由账本归到它名下、算官方用量
@@ -426,22 +523,36 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
 }
 
 /** 各会话文件的归属（官方 / 中转），以及 TokenPulse 自己有账的「天 × 工具」，都从用量账本里读。 */
+let attributionCache: { size: number; mtimeMs: number; value: Map<string, boolean | undefined> & { covered: Set<string> } } | null = null;
 function attribution() {
+  const file = dataFile("usage-rollups.json");
+  let size = -1;
+  let mtimeMs = -1;
+  try {
+    const st = fs.statSync(file);
+    size = st.size;
+    mtimeMs = st.mtimeMs;
+    if (attributionCache && attributionCache.size === size && attributionCache.mtimeMs === mtimeMs) {
+      return attributionCache.value;
+    }
+  } catch {}
   const rollups = readJson<{ files?: Record<string, { official?: boolean; days?: Record<string, Record<string, Record<string, { requests: number }>>> }> } | null>(
-    dataFile("usage-rollups.json"),
+    file,
     null,
   );
   const map = new Map<string, boolean | undefined>();
   const covered = new Set<string>();
-  for (const [file, state] of Object.entries(rollups?.files ?? {})) {
-    map.set(file, state.official);
+  for (const [f, state] of Object.entries(rollups?.files ?? {})) {
+    map.set(f, state.official);
     for (const [day, bySource] of Object.entries(state.days ?? {})) {
       for (const [source, byModel] of Object.entries(bySource)) {
         if (Object.values(byModel).some((bucket) => bucket.requests > 0)) covered.add(coverKey(day, source));
       }
     }
   }
-  return Object.assign(map, { covered });
+  const value = Object.assign(map, { covered });
+  if (size >= 0) attributionCache = { size, mtimeMs, value };
+  return value;
 }
 
 /**
@@ -451,7 +562,8 @@ function attribution() {
  *   用它记的上游返回型号来核验（sub2api 的做法；Codex 的会话文件不记返回型号，只有这里能补上）。
  * 对应关系：同一工具、输出 token 相同、时间差 10 分钟以内，一条代理记录只配一次。
  */
-function ccSwitchRecords(covered: Set<string>) {
+function ccSwitchRecords(covered: Set<string>, skip = false) {
+  if (skip) return { own: [] as RequestRecord[], matchProxy: (record: RequestRecord) => record };
   const store = ccSwitchEnabled() ? readCcSwitch() : null;
   const own: RequestRecord[] = [];
   const proxies = new Map<string, CcRequest[]>();
@@ -478,16 +590,17 @@ function ccSwitchRecords(covered: Set<string>) {
         viaProxy: request.proxy,
       });
     } else if (request.proxy) {
-      const list = proxies.get(request.source) ?? [];
+      const proxyKey = `${request.source}\u0000${request.output}`;
+      const list = proxies.get(proxyKey) ?? [];
       list.push(request);
-      proxies.set(request.source, list);
+      proxies.set(proxyKey, list);
     }
   }
   const used = new Set<string>();
   const matchProxy = (record: RequestRecord) => {
-    const list = proxies.get(sourceOf(record));
+    const list = proxies.get(`${sourceOf(record)}\u0000${record.output}`);
     if (!list) return record;
-    const hit = list.find((request) => !used.has(request.id) && request.output === record.output && Math.abs(request.at - record.at) <= 10 * 60_000);
+    const hit = list.find((request) => !used.has(request.id) && Math.abs(request.at - record.at) <= 10 * 60_000);
     if (!hit) return record;
     used.add(hit.id);
     return { ...record, proxy: { requested: hit.requested, returned: hit.model } };
@@ -544,7 +657,7 @@ function pendingGrokPool(seen: Set<string>, query: RequestQuery): RequestRecord[
 }
 
 function withRoute(record: RequestRecord): RequestRecord | null {
-  if (record.kind === "cc-switch" || !record.responseId) return null;
+  if (record.kind === "cc-switch" || record.kind === "antigravity" || !record.responseId) return null;
   const hit = routeReturned(record.responseId, record.at);
   return hit ? { ...record, proxy: { ...(hit.requested ? { requested: hit.requested } : {}), returned: hit.returned, ...(hit.declared ? { declared: hit.declared } : {}), via: "tokenpulse" }, ...(hit.timing ? { timing: hit.timing } : {}) } : null;
 }
@@ -555,7 +668,8 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const names = monthFiles();
   const firstName = names[0];
   const official = attribution();
-  const cc = ccSwitchRecords(official.covered);
+  const skipCc = Boolean(query.capacityOnly || query.source === "Antigravity");
+  const cc = ccSwitchRecords(official.covered, skipCc);
   const accountCtx = accountContext();
   const byAccount = new Map<string, RequestPage["accounts"][number]>();
   const groups = new Map<string, NonNullable<RequestPage["aggregate"]>["rows"][number]>();
@@ -644,28 +758,42 @@ export function queryRequests(query: RequestQuery): RequestPage {
   let tokens = 0;
   let costUsd = 0;
   const matched: RequestRow[] = [];
-  let firstAt: number | undefined;
-  if (firstName) firstAt = readMonth(firstName).reduce<number | undefined>((min, r) => (min == null || r.at < min ? r.at : min), undefined);
+  const firstAt = query.capacityOnly ? undefined : readFirstAt(firstName);
+  const cmp = (a: RequestRow, b: RequestRow) =>
+    query.sort === "tokens" ? b.tokens - a.tokens || b.at - a.at : query.sort === "cost" ? b.costUsd - a.costUsd || b.at - a.at : b.at - a.at;
+  const pageSize = Math.max(1, query.pageSize || 20);
+  const keepLimit = query.all || query.cache ? Infinity : Math.max(64, (Math.max(0, query.page || 0) + 1) * pageSize);
+  let totalMatched = 0;
+  const hint = query.source === "Antigravity" ? '"antigravity"' : undefined;
 
   const inMonths = function* () {
     for (const name of names) {
       const month = name.slice(0, 7);
       if (month < fromMonth || month > toMonth) continue;
-      yield* readMonth(name);
+      yield* streamMonth(name, hint, Boolean(query.capacityOnly));
     }
     yield* cc.own;
   };
   const seenRouteEvents = new Set<string>();
   const take = (raw: RequestRecord) => {
       if (raw.routeEventId) seenRouteEvents.add(raw.routeEventId);
+      if (query.capacityOnly && raw.kind !== "claude-code" && raw.kind !== "codex" && raw.kind !== "grok-build") return;
+      if (query.source !== "all" && sourceOf(raw) !== query.source) return;
+      if (query.since != null && raw.at < query.since) return;
+      if (query.until != null && raw.at > query.until) return;
+      const day = dayOf(raw.at);
+      if (day < query.from || day > query.to) return;
       const key = keyOf(raw);
       if (seen.has(key)) return; // 还没整理的重复行
       seen.add(key);
-      const day = dayOf(raw.at);
-      if (day < query.from || day > query.to) return;
-      if (query.since != null && raw.at < query.since) return;
-      if (query.until != null && raw.at > query.until) return;
-      if (query.source !== "all" && sourceOf(raw) !== query.source) return;
+      if (query.capacityOnly) {
+        const row = toCapacityRow(raw, official.get(raw.file), accountCtx);
+        if (row) {
+          totalMatched += 1;
+          matched.push(row);
+        }
+        return;
+      }
       const record = raw.kind === "cc-switch" ? raw : withRoute(raw) ?? cc.matchProxy(raw);
       const row = toRow(record, official.get(record.file), accountCtx);
       facets.models.add(row.model);
@@ -706,22 +834,25 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.status !== "all" && row.status !== query.status) return;
       if (query.aggregate && query.filteredAggregate) aggregateRow(row, day, raw.at);
       if (query.projects) projectRow(row);
+      totalMatched += 1;
       matched.push(row);
+      if (matched.length >= keepLimit * 2) {
+        matched.sort(cmp);
+        matched.length = keepLimit;
+      }
   };
   for (const raw of inMonths()) take(raw);
   for (const raw of pendingGrokPool(seenRouteEvents, query)) take(raw);
 
-  matched.sort((a, b) =>
-    query.sort === "tokens" ? b.tokens - a.tokens || b.at - a.at : query.sort === "cost" ? b.costUsd - a.costUsd || b.at - a.at : b.at - a.at,
-  );
+  matched.sort(cmp);
+  if (matched.length > keepLimit) matched.length = keepLimit;
   const projectQuotas = query.projects ? projectQuota(officialParts, accountRows, Date.now()) : null;
   const cache = query.cache ? analyzeCache(matched) : undefined;
-  const pageSize = Math.max(1, query.pageSize || 20);
-  const pages = Math.max(1, Math.ceil(matched.length / pageSize));
+  const pages = Math.max(1, Math.ceil(totalMatched / pageSize));
   const page = Math.min(Math.max(0, query.page || 0), pages - 1);
   return {
     facets: { models: [...facets.models].sort(), projects: [...facets.projects].sort() },
-    total: matched.length,
+    total: totalMatched,
     page,
     pages,
     rows: query.all ? matched : matched.slice(page * pageSize, (page + 1) * pageSize),

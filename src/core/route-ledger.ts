@@ -96,6 +96,31 @@ function load(): Index {
   return index;
 }
 
+const EMPTY_ACCOUNT_MAP = new Map<string, string | null>();
+const EMPTY_SHARE_MAP = new Map<string, ShareRow[]>();
+const monthShiftCache = new Map<number, readonly [string, string, string]>();
+
+function peekLog(name: string): Seen {
+  const key = "log:" + name;
+  const now = Date.now(), hit = seen.get(key);
+  if (hit && now - hit.at < CHECK_MS) return hit.stat;
+  let stat: Seen = null;
+  try { const info = fs.statSync(path.join(routeLogDir(), name)); stat = { size: info.size, mtimeMs: info.mtimeMs }; } catch { stat = null; }
+  if (seen.size > 256) seen.clear();
+  seen.set(key, { at: now, stat });
+  return stat;
+}
+
+function monthNamesAround(at: number): readonly [string, string, string] {
+  const slot = Math.floor(at / DAY_MS);
+  const hit = monthShiftCache.get(slot);
+  if (hit) return hit;
+  if (monthShiftCache.size > 512) monthShiftCache.clear();
+  const names: readonly [string, string, string] = [monthName(at, 0), monthName(at, -1), monthName(at, 1)];
+  monthShiftCache.set(slot, names);
+  return names;
+}
+
 /**
  * 只凭 CLI 和上游共同记录的响应 ID 归属。不再用时间邻近猜测：并发与直连请求会被配错。
  * 旧三列账本、Grok 整轮汇总和没有响应 ID 的记录返回 null。
@@ -105,8 +130,12 @@ export function routeAccount(kind: OfficialAccountKind | undefined, at: number, 
   const recent = load()[kind];
   if (recent?.has(responseId)) return recent.get(responseId) ?? null;
   // 旧三列账本没有 ID；永久日志若留有共同 ID 和账号，仍可精确找回历史归属。
-  for (const shift of [0, -1, 1]) {
-    const hit = accountIndex(monthName(at, shift)).get(kind + "\n" + responseId);
+  let lookupKey = "";
+  for (const name of monthNamesAround(at)) {
+    const map = accountIndex(name);
+    if (!map.size) continue;
+    if (!lookupKey) lookupKey = kind + "\n" + responseId;
+    const hit = map.get(lookupKey);
     if (hit !== undefined) return hit;
   }
   return null;
@@ -114,8 +143,8 @@ export function routeAccount(kind: OfficialAccountKind | undefined, at: number, 
 
 const accountCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, string | null> }>();
 function accountIndex(name: string): Map<string, string | null> {
-  const stat = peek("log:" + name, () => path.join(routeLogDir(), name));
-  if (!stat) return new Map();
+  const stat = peekLog(name);
+  if (!stat) return EMPTY_ACCOUNT_MAP;
   const cached = accountCache.get(name);
   if (cached?.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.index;
   const index = new Map<string, string | null>();
@@ -130,7 +159,7 @@ function accountIndex(name: string): Map<string, string | null> {
       if (index.has(key) && index.get(key) !== row.account) index.set(key, null);
       else if (!index.has(key)) index.set(key, row.account);
     }
-  } catch { return new Map(); }
+  } catch { return EMPTY_ACCOUNT_MAP; }
   accountCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, index });
   return index;
 }
@@ -265,7 +294,7 @@ export type RouteTiming = { ms?: number; firstByteMs?: number; firstTokenMs?: nu
 export type RouteReturned = { requested?: string; returned: string; /** 回复开头报的型号，和结束时报的不一样才有（0.3.41）。 */ declared?: string; timing?: RouteTiming };
 const returnedCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, RouteReturned> }>();
 function returnedIndex(name: string): Map<string, RouteReturned> | null {
-  const stat = peek("log:" + name, () => path.join(routeLogDir(), name));
+  const stat = peekLog(name);
   if (!stat) return null;
   const cached = returnedCache.get(name);
   if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.index;
@@ -290,8 +319,8 @@ const monthName = (at: number, shift: number) => { const day = new Date(at); con
 /** 这个响应 ID 的请求，转发时从上游回复里读到的型号。没经过 TokenPulse 转发、或者没读到，返回 null。 */
 export function routeReturned(responseId: string | undefined, at: number): RouteReturned | null {
   if (!responseId) return null;
-  for (const shift of [0, -1, 1]) {
-    const hit = returnedIndex(monthName(at, shift))?.get(responseId);
+  for (const name of monthNamesAround(at)) {
+    const hit = returnedIndex(name)?.get(responseId);
     if (hit) return hit;
   }
   return null;
@@ -308,8 +337,8 @@ type ShareRow = { at: number; account: string; weight: number; id: string; model
 const shareCache = new Map<string, { size: number; mtimeMs: number; apps: Map<string, ShareRow[]> }>();
 const APP_OF_KIND: Record<OfficialAccountKind, string> = { claude: "claude", chatgpt: "codex", grok: "grok" };
 function shareIndex(name: string): Map<string, ShareRow[]> {
-  const stat = peek("log:" + name, () => path.join(routeLogDir(), name));
-  if (!stat) return new Map();
+  const stat = peekLog(name);
+  if (!stat) return EMPTY_SHARE_MAP;
   const cached = shareCache.get(name);
   if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.apps;
   const apps = new Map<string, ShareRow[]>();
@@ -330,7 +359,7 @@ function shareIndex(name: string): Map<string, ShareRow[]> {
       });
       apps.set(row.app, list);
     }
-  } catch { return new Map(); }
+  } catch { return EMPTY_SHARE_MAP; }
   for (const list of apps.values()) list.sort((a, b) => a.at - b.at);
   shareCache.set(name, { size: stat.size, mtimeMs: stat.mtimeMs, apps });
   return apps;

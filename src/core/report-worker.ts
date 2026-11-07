@@ -7,7 +7,7 @@ import { queryRequests, recentAlerts } from "./request-log";
 import { scanLocalUsage } from "./usage-scan";
 import { ccSwitchEnabled, syncCcSwitch } from "./cc-switch";
 import { recordCliLogins } from "./login-timeline";
-import { getSession, listSessions } from "./sessions";
+import { getSession, hasCurrentSessionIndex, listSessions } from "./sessions";
 import { searchSessions } from "./session-search";
 
 function localDay(at: number) {
@@ -65,9 +65,9 @@ if (workerData.deepseek) {
     pageSize: 1,
   });
   snapshot.requestFlags = { flagged: week.counts.mismatch + week.counts.suspect, mismatch: week.counts.mismatch, suspect: week.counts.suspect, latest: week.latestFlagAt || 0 };
-  if (workerData.scan) {
+  if (workerData.scan && !hasCurrentSessionIndex()) {
     try {
-      // 在发送快照前更新会话索引，确保主线程调用 worker.terminate() 时内部磁盘 I/O 已经全部完成
+      // 仅在尚未建索引或索引版本升级时预热一次，避免每分钟后台扫描重读活跃大库导致主进程水位升高
       listSessions();
     } catch (error) {
       console.error("[TokenPulse] 预读会话索引失败", error);

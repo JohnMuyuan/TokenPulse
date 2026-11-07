@@ -24,12 +24,17 @@ export function antigravityDir() {
   return process.env.TOKENPULSE_ANTIGRAVITY_DIR || path.join(os.homedir(), ".gemini", "antigravity");
 }
 
-type Statement = { all: (...args: unknown[]) => unknown[]; get: (...args: unknown[]) => unknown };
-type Database = { prepare: (sql: string) => Statement; close: () => void };
+type Statement = { all: (...args: unknown[]) => unknown[]; get: (...args: unknown[]) => unknown; iterate: (...args: unknown[]) => IterableIterator<unknown> };
+type Database = { prepare: (sql: string) => Statement; exec?: (sql: string) => void; close: () => void };
 const openDb = (file: string): Database => {
   const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (file: string, opts?: { readOnly?: boolean }) => Database };
-  return new DatabaseSync(file, { readOnly: true });
+  const db = new DatabaseSync(file, { readOnly: true });
+  try { db.exec?.("PRAGMA cache_size = -2000; PRAGMA temp_store = MEMORY;"); } catch { /* 只读或旧版不支持时跳过 */ }
+  return db;
 };
+function toBuf(u8: Uint8Array | null | undefined): Buffer | null {
+  return u8 ? Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength) : null;
+}
 /** 表可能不存在（老版本、刚建的对话）：没有就是 null。 */
 function prepareOptional(db: Database, sql: string): Statement | null {
   try { return db.prepare(sql); } catch { return null; }
@@ -172,7 +177,10 @@ export function rememberModelLabels(labels: Record<string, string>) {
   const merged = { ...before, ...labels };
   if (JSON.stringify(merged) !== JSON.stringify(before)) writeJson(labelFile(), { labels: merged });
 }
+const splitLabelMemo = new Map<string, { model: string; family: string; effort?: string }>();
 export function splitModelLabel(label: string): { model: string; family: string; effort?: string } {
+  const cached = splitLabelMemo.get(label);
+  if (cached) return cached;
   const match = label.trim().match(/^(.*?)\s*\(([^)]+)\)\s*$/);
   const family = (match ? match[1] : label).trim();
   let id = family.toLowerCase().replace(/\s+/g, "-");
@@ -180,7 +188,10 @@ export function splitModelLabel(label: string): { model: string; family: string;
   if (id.startsWith("claude-")) id = id.replace(/\./g, "-");
   const rawEffort = match?.[2].trim().toLowerCase();
   const effort = rawEffort === "thinking" ? "high" : rawEffort;
-  return { model: id, family, ...(effort ? { effort } : {}) };
+  const out = { model: id, family, ...(effort ? { effort } : {}) };
+  if (splitLabelMemo.size > 256) splitLabelMemo.clear();
+  splitLabelMemo.set(label, out);
+  return out;
 }
 export function resolveModel(found: AgyModel | undefined, labels: Record<string, string>): { model: string; effort?: string; labeled: boolean } {
   const label = (found?.enum ? labels[found.enum] : undefined) || found?.label;
@@ -207,14 +218,15 @@ const STUCK_MS = 60 * 60_000;
  */
 export function readAntigravityGenerations(file: string, from: number, known: Record<string, AgyModel>, now = Date.now()): { rows: AgyGeneration[]; next: number; total: number; models: Record<string, AgyModel> } {
   return withDb(file, (db) => {
-    const steps = db.prepare("select idx, step_type, status, metadata from steps where idx >= ? order by idx").all(from) as { idx: number; step_type: number; status: number; metadata: Uint8Array | null }[];
+    const stepStmt = db.prepare("select idx, step_type, status, metadata from steps where idx >= ? order by idx");
     const total = (db.prepare("select coalesce(max(idx), -1) + 1 as n from steps").get() as { n: number }).n;
     const rows: AgyGeneration[] = [];
     const models: Record<string, AgyModel> = {};
     const genModel = prepareOptional(db, "select data from gen_metadata where idx = ?");
     let next = from;
-    for (const step of steps) {
-      const meta = step.metadata ? Buffer.from(step.metadata) : null;
+    for (const rawStep of stepStmt.iterate(from)) {
+      const step = rawStep as { idx: number; step_type: number; status: number; metadata: Uint8Array | null };
+      const meta = toBuf(step.metadata);
       if (step.step_type === MODEL_REPLY && STEP_OPEN.has(step.status)) {
         const startedAt = pbTime(pbMessage(meta, 1));
         // 还在生成：停在这里。很久以前就卡住的（崩溃、被杀）跳过
@@ -232,7 +244,8 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const hasGenIdx = genInfo ? (pbFields(genInfo)?.some((f) => f.no === 3) ?? false) : false;
       const genIdx = hasGenIdx ? pbNumber(genInfo, 3) : -1;
       const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
-      const genParsed = genData ? parseGenerationMeta(Buffer.from(genData)) : null;
+      const genBuf = toBuf(genData);
+      const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
       if (modelId && !known[key] && !models[key] && genParsed?.model) {
         models[key] = {
           model: genParsed.model,
@@ -336,11 +349,13 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
     const out: AgyStep[] = [];
     const models: Record<string, AgyModel> = {};
     const genModel = prepareOptional(db, "select data from gen_metadata where idx = ?");
-    for (const row of db.prepare("select idx, step_type, status, metadata, step_payload from steps order by idx").all() as { idx: number; step_type: number; status: number; metadata: Uint8Array | null; step_payload: Uint8Array | null }[]) {
+    const stepStmt = db.prepare("select idx, step_type, status, metadata, step_payload from steps where step_type in (14, 15, 132) order by idx");
+    for (const rawRow of stepStmt.iterate()) {
+      const row = rawRow as { idx: number; step_type: number; status: number; metadata: Uint8Array | null; step_payload: Uint8Array | null };
       if (!row.step_payload && !row.metadata) continue;
-      const payload = row.step_payload ? Buffer.from(row.step_payload) : undefined;
+      const payload = toBuf(row.step_payload) ?? undefined;
       const payloadMeta = pbMessage(payload, 5);
-      const colMeta = row.metadata ? Buffer.from(row.metadata) : undefined;
+      const colMeta = toBuf(row.metadata) ?? undefined;
       const meta = payloadMeta ?? colMeta;
       const at = pbTime(pbMessage(payloadMeta, 1)) || pbTime(pbMessage(colMeta, 1));
       if (row.step_type === USER_INPUT) {
@@ -361,7 +376,8 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
         const hasGenIdx = genInfo ? (pbFields(genInfo)?.some((f) => f.no === 3) ?? false) : false;
         const genIdx = hasGenIdx ? pbNumber(genInfo, 3) : -1;
         const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
-        const genParsed = genData ? parseGenerationMeta(Buffer.from(genData)) : null;
+        const genBuf = toBuf(genData);
+        const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
 
         if (modelId) {
           const key = String(modelId);
@@ -483,10 +499,16 @@ export function sqliteTime(value: unknown): number {
   return Date.parse(text) || 0;
 }
 
+const phaseCache = new Map<string, { size: number; mtimeMs: number; value: Pick<AgyActivity, "phase" | "ended"> }>();
+
 /** 一个对话最后几步：在跑的时候分出在想 / 工具 / 等你；空闲了看最后一次回复怎么结束的。 */
 export function conversationPhase(file: string): Pick<AgyActivity, "phase" | "ended"> {
+  const stamp = antigravityStamp(file);
+  if (!stamp) return {};
+  const hit = phaseCache.get(file);
+  if (hit && hit.size === stamp.size && hit.mtimeMs === stamp.mtimeMs) return hit.value;
   try {
-    return withDb(file, (db) => {
+    const value = withDb(file, (db) => {
       const tail = db.prepare("select step_type, status from steps order by idx desc limit 6").all() as { step_type: number; status: number }[];
       if (!tail.length) return {};
       const phase = tail.some((step) => step.status === STEP.WAITING) ? "waiting" as const
@@ -495,6 +517,9 @@ export function conversationPhase(file: string): Pick<AgyActivity, "phase" | "en
       const ended = reply?.status === STEP.ERROR ? "error" as const : reply && (reply.status === STEP.CANCELED || reply.status === STEP.INTERRUPTED) ? "interrupted" as const : "ok" as const;
       return { phase, ended };
     });
+    if (phaseCache.size > 128) phaseCache.clear();
+    phaseCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, value });
+    return value;
   } catch { return {}; }
 }
 
@@ -513,13 +538,14 @@ export function readAntigravityActivity(since: number, dir = antigravityDir()): 
     if (!id || at < since) continue;
     const status = String(row.status ?? "");
     const running = /RUNNING|BUSY|CANCELING/.test(status) && Number(row.killed || 0) === 0;
+    const nested = Number(row.nesting_depth || 0) > 0;
     const db = path.join(dir, "conversations", id + ".db");
     out.push({
       id, at, since: sqliteTime(row.last_user_input_time) || at, running,
       title: typeof row.title === "string" ? row.title : "",
       workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null),
-      nested: Number(row.nesting_depth || 0) > 0,
-      ...(fs.existsSync(db) ? conversationPhase(db) : {}),
+      nested,
+      ...(!nested && fs.existsSync(db) ? conversationPhase(db) : {}),
     });
   }
   return out;

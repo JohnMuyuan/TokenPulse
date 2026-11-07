@@ -344,8 +344,35 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   let official: RequestRow[] | null = null;
   const officialRows = () => {
     if (!official) {
-      try { official = queryRequests({ from: "2000-01-01", to: "2999-12-31", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true, channel: "official" }).rows; }
-      catch { official = []; }
+      try {
+        let minSampleAt = Infinity;
+        for (const kind of ACCOUNT_KINDS) {
+          for (const s of Array.isArray(history.accounts[kind]) ? history.accounts[kind] : []) {
+            if (Number.isFinite(s.at) && s.at < minSampleAt) minSampleAt = s.at;
+          }
+        }
+        if (!Number.isFinite(minSampleAt)) {
+          official = [];
+        } else {
+          const since = Math.max(0, minSampleAt - 8 * 86_400_000);
+          official = queryRequests({
+            from: dayKey(since),
+            to: "2999-12-31",
+            since,
+            source: "all",
+            status: "all",
+            search: "",
+            sort: "time",
+            page: 0,
+            pageSize: 1,
+            all: true,
+            channel: "official",
+            capacityOnly: true,
+          }).rows;
+        }
+      } catch {
+        official = [];
+      }
     }
     return official;
   };
