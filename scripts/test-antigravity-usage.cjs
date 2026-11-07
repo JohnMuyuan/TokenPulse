@@ -145,14 +145,24 @@ function addSteps(file, steps) {
       msg(20, str(1, 'request_id'), str(2, 'req-rich-1')),
       str(21, 'Gemini 4 Argon (High)'),
     )]);
+    const bufferedGen = Buffer.concat([msg(1,
+      time(11, 129000),
+      time(12, 48),
+      str(19, 'gemini-4-argon-b'),
+      msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_UNKNOWN')),
+      msg(20, str(1, 'request_id'), str(2, 'req-buffered-1')),
+      str(21, 'Gemini 4 Argon (High)'),
+    )]);
     makeConversation(conv4, [
       { idx: 0, type: 15, status: 3, meta: stepMeta({ start: now - 10000, end: now - 6000, modelId: 1999, gen: 0, input: 800, output: 200 }) },
-    ], [[0, richGen]]);
+      { idx: 1, type: 15, status: 3, meta: stepMeta({ start: now - 150000, end: now - 20952, modelId: 1999, gen: 1, input: 120000, output: 16155, thinking: 35 }) },
+    ], [[0, richGen], [1, bufferedGen]]);
     r = scan.scanLocalUsage();
-    assert.equal(r.records.length, 1);
+    assert.equal(r.records.length, 2);
     assert.deepEqual([r.records[0].model, r.records[0].effort, r.records[0].returned, r.records[0].requestId], ['gemini-4-argon', 'high', 'gemini-4-argon-b', 'req-rich-1']);
     assert.deepEqual(r.records[0].timing, { stream: true, ms: 4000, firstTokenMs: 1500, tokensPerSec: 50, provider: 'Antigravity' });
-    pass('antigravity usage: gen_metadata streaming timing (TTFT + duration) and fallback model_display_name are extracted');
+    assert.deepEqual(r.records[1].timing, { stream: false, ms: 129048, tokensPerSec: 125.2, provider: 'Antigravity' }, '服务端整包缓冲的大工具调用不把 129 秒总生成时间误记成首字延迟');
+    pass('antigravity usage: gen_metadata streaming timing (TTFT + duration), buffered tool-call TTFT guard, and fallback model_display_name are extracted');
 
     // 额度：GetUserStatus 按剩余比例 + 重置时间分组；用完的那组没有 remainingFraction
     const status = { userStatus: { name: 'QA', email: 'qa@example.com', planStatus: { planInfo: { planName: 'Pro' } }, userTier: { name: 'Google AI Ultra' }, cascadeModelConfigData: { clientModelConfigs: [
@@ -244,6 +254,28 @@ function addSteps(file, steps) {
       assert.equal(fs.readFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'antigravity-models.json'), 'utf8').includes('csrf'), false, '令牌不存盘');
     } finally { server.close(); }
     pass('antigravity quota: the local language server is found through its hub file, asked with the CSRF header, labels remembered, token never stored');
+
+    // 提前重置（moved / kept）与半途采样折算校验：防止把整窗前段用量除以半途增量导致估算翻数倍（如 80 亿假象）
+    const aqMod = require('../build/main/antigravity-quota.js');
+    const DAY = 86400000, HOUR = 3600000;
+    const baseT = Date.parse('2026-11-06T04:00:00Z');
+    const weekReset1 = new Date(baseT + 7 * DAY).toISOString();
+    const weekReset2 = new Date(baseT + 22 * HOUR + 7 * DAY).toISOString();
+    const gKey = 'Gemini 3.8 Flash|Gemini 4 Argon';
+    const mockHistory = [
+      { at: baseT + 8 * HOUR, groups: [{ key: gKey, used: 3.4, resetAt: new Date(baseT + 10 * HOUR).toISOString(), weekUsed: 3.4, weekResetAt: weekReset1 }] },
+      { at: baseT + 13 * HOUR, groups: [{ key: gKey, used: 4.7, resetAt: new Date(baseT + 15 * HOUR).toISOString(), weekUsed: 4.7, weekResetAt: weekReset1 }] },
+      // 距离原定周重置还有 6 天时，Google 提前重置周额度为 0% 并顺延重置日期
+      { at: baseT + 22 * HOUR, groups: [{ key: gKey, used: 0, resetAt: new Date(baseT + 27 * HOUR).toISOString(), weekUsed: 0, weekResetAt: weekReset2 }] },
+      { at: baseT + 23 * HOUR, groups: [{ key: gKey, used: 1.2, resetAt: new Date(baseT + 27 * HOUR).toISOString(), weekUsed: 0.4, weekResetAt: weekReset2 }] },
+    ];
+    const segs = aqMod.agyWindowSegments('week', gKey, mockHistory, { used: 0.4, resetAt: weekReset2 }, baseT + 23 * HOUR);
+    assert.equal(segs.length, 2, '提前重置将周窗口切分为前后两个独立周期段');
+    assert.equal(segs[0].endedByReset, 'moved', '第一段标记为被顺延式提前重置结束');
+    assert.equal(segs[0].endAt, baseT + 22 * HOUR, '第一段结束时间截断在重置发生点而非 7 天后');
+    assert.equal(segs[1].startedByReset, 'moved', '第二段标记为从顺延式提前重置开始');
+    assert.equal(segs[1].startAt, baseT + 22 * HOUR, '第二段起点不早于重置点，不会吞入重置前 Token');
+    pass('antigravity quota: agyWindowSegments splits early resets (moved/kept) and clamps segment boundaries');
 
     console.log(`${checks}/${checks} antigravity checks passed`);
   } finally {

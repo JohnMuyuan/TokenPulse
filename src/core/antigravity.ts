@@ -247,22 +247,32 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const viewableAt = pbTime(pbMessage(meta, 6));
       const finishedAt = pbTime(pbMessage(meta, 7));
       const completedAt = pbTime(pbMessage(meta, 8));
-      const firstTokenMs = genParsed?.firstTokenMs ?? 0;
+      const rawFirstTokenMs = genParsed?.firstTokenMs ?? 0;
       const streamingMs = genParsed?.streamingMs ?? 0;
-      const hasStreamTiming = firstTokenMs > 0 || streamingMs > 0;
+      const hasStreamTiming = rawFirstTokenMs > 0 || streamingMs > 0;
       const at = hasStreamTiming
         ? (finishedAt || completedAt || viewableAt || startAt)
         : (viewableAt || finishedAt || completedAt || startAt);
       if (!at) continue;
       const totalMs = hasStreamTiming
-        ? (firstTokenMs > 0 && streamingMs > 0
-            ? firstTokenMs + streamingMs
+        ? (rawFirstTokenMs > 0 && streamingMs > 0
+            ? rawFirstTokenMs + streamingMs
             : finishedAt > startAt
               ? finishedAt - startAt
               : completedAt > startAt
                 ? completedAt - startAt
-                : firstTokenMs || streamingMs)
+                : rawFirstTokenMs || streamingMs)
         : 0;
+      const reasoning = pbNumber(usage, 9);
+      const outNoThink = Math.max(0, output - reasoning);
+      // 服务端整包缓冲的工具调用（如直接调 write_file / edit_file 且无流式正文或可见思考块）：
+      // Gemini 在服务端拼完整个工具 JSON 后才一次性返回，导致 field 11 (viewableAt - startAt) 吞入了整段生成耗时（甚至长达 20s–129s），
+      // 而 field 12 (streamingMs) 只剩几十毫秒的收尾时间（表观流式速度 > 500 Token/秒）。此类不把整段生成耗时误记为「首字延迟」。
+      const isBufferedToolCall =
+        rawFirstTokenMs > 0 &&
+        outNoThink >= 150 &&
+        (streamingMs <= 0 || outNoThink / (streamingMs / 1000) > 500);
+      const firstTokenMs = isBufferedToolCall ? 0 : rawFirstTokenMs;
       const tokensPerSec = totalMs >= 200 && totalMs <= 30 * 60_000 && output > 0
         ? Math.round((output / (totalMs / 1000)) * 10) / 10
         : 0;
@@ -272,7 +282,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const returned = genParsed?.rawModel || (known[key] ?? models[key])?.model;
       rows.push({
         step: step.idx, at, startAt, modelId,
-        input: input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, reasoning: pbNumber(usage, 9),
+        input: input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, reasoning,
         ...(responseId ? { responseId } : {}),
         ...(requestId ? { requestId } : {}),
         ...(returned ? { returned } : {}),

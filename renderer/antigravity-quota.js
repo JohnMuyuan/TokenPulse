@@ -17,6 +17,10 @@
   const STALE_MS = 15 * 60000;
   const EFFORT_LABEL = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' };
   const CONFIDENCE_TEXT = { medium: '样本较充分', low: '初步参考', current: '按当前窗口估算', insufficient: '样本不足' };
+  const RESET_NOTE = {
+    moved: '窗口已提前重置，重置日期已顺延',
+    kept: '窗口已提前重置，重置日期不变',
+  };
   let quota = null;
   let studyWindow = 'five';
   let capWindow = 'five';
@@ -73,6 +77,14 @@
   function forecast(group, windowKind = 'five') {
     const target = windowKind === 'week' ? group?.week : group;
     if (!target?.resetAt || ended(target)) return null;
+    const wIns = groupInsightOf(group)?.[windowKind];
+    if (wIns && wIns.ratePerHour != null) {
+      return {
+        ratePerH: wIns.ratePerHour,
+        projected: wIns.projected != null ? wIns.projected : target.used,
+        etaAt: wIns.etaAt || null,
+      };
+    }
     const reset = Date.parse(target.resetAt);
     const points = (quota?.history || []).flatMap(sample => sample.groups.filter(item => {
       if (item.key !== group.key) return false;
@@ -198,6 +210,12 @@
       icon(caution ? 'alert' : 'trend'),
       stale() ? '数据不是最新的，打开 Antigravity 后再判断' : forecastText(group, 'five'),
     ]));
+    if (gInsight?.five?.startedByReset && !done) {
+      panel.append(el('p', { class: 'reset-card-note' }, [
+        icon('refresh'),
+        `${RESET_NOTE[gInsight.five.startedByReset] || RESET_NOTE.moved} · 从 ${date(gInsight.five.startAt)} 起算`,
+      ]));
+    }
 
     // 周额度窗口（RetrieveUserQuotaSummary 返回的二级窗口）
     const week = group.week || gInsight?.week || null;
@@ -227,6 +245,12 @@
           icon(weekCaution ? 'alert' : 'trend'),
           stale() ? '数据不是最新的，打开 Antigravity 后再判断' : forecastText(group, 'week'),
         ]),
+        gInsight?.week?.startedByReset && !weekDone
+          ? el('p', { class: 'reset-card-note' }, [
+              icon('refresh'),
+              `${RESET_NOTE[gInsight.week.startedByReset] || RESET_NOTE.moved} · 从 ${date(gInsight.week.startAt)} 起算`,
+            ])
+          : null,
       ]));
     } else {
       panel.append(el('div', { class: 'agy-week-box is-empty' }, [
@@ -256,12 +280,20 @@
       }),
       metric('5 小时整窗折算', fiveCap?.fullTokens ? amount(fiveCap.fullTokens) : '—', {
         unit: fiveCap?.fullTokens ? 'Tokens' : '',
-        sub: fiveCap?.fullCostUsd != null ? `${money(fiveCap.fullCostUsd)} · 约剩 ${tokens(fiveCap.remainingTokens || 0)}` : '需窗口内有扣额与本机用量',
+        sub: fiveCap?.fullCostUsd != null
+          ? `${money(fiveCap.fullCostUsd)} · 约剩 ${tokens(fiveCap.remainingTokens || 0)}`
+          : !done && group.used > 0 && group.used < 2
+            ? '已用不到 2%，暂不折算整窗容量'
+            : '需窗口内已用 ≥ 2% 且有本机用量',
         chip: fiveCap?.fullTokens ? { tone: fiveCap.confidence === 'medium' ? 'medium' : 'low', text: CONFIDENCE_TEXT[fiveCap.confidence] || '估算' } : null,
       }),
       metric('周额度整窗折算', weekCap?.fullTokens ? amount(weekCap.fullTokens) : '—', {
         unit: weekCap?.fullTokens ? 'Tokens' : '',
-        sub: weekCap?.fullCostUsd != null ? `${money(weekCap.fullCostUsd)} · 约剩 ${tokens(weekCap.remainingTokens || 0)}` : '需窗口内有扣额与本机用量',
+        sub: weekCap?.fullCostUsd != null
+          ? `${money(weekCap.fullCostUsd)} · 约剩 ${tokens(weekCap.remainingTokens || 0)}`
+          : week && !ended(week) && week.used > 0 && week.used < 2
+            ? '已用不到 2%，暂不折算整窗容量'
+            : '需窗口内已用 ≥ 2% 且有本机用量',
         chip: weekCap?.fullTokens ? { tone: weekCap.confidence === 'medium' ? 'medium' : 'low', text: CONFIDENCE_TEXT[weekCap.confidence] || '估算' } : null,
       }),
     ], 'two'));

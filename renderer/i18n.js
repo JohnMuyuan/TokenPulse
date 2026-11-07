@@ -2560,6 +2560,8 @@
     '已拦截额度查询：无法确认出口 IP': 'Quota query blocked: exit IP could not be confirmed', '出口 IP 已回到允许列表，额度查询恢复': 'Exit IP is back on the allowlist; quota queries resumed',
     // 多账号额度、账号管理
     '用过重置卡，重置日期已顺延': 'Reset card used; reset date moved later', '用过重置卡，重置日期不变': 'Reset card used; reset date unchanged',
+    '窗口已提前重置，重置日期已顺延': 'Window reset early; reset date moved later', '窗口已提前重置，重置日期不变': 'Window reset early; reset date unchanged',
+    '已用不到 2%，暂不折算整窗容量': 'Under 2% used; full-window capacity not estimated yet', '需窗口内已用 ≥ 2% 且有本机用量': 'Requires ≥ 2% used in the window with local usage',
     '号池 · 按顺序使用': 'Pool · used in order', '下一个': 'Next',
     '重命名': 'Rename', '拖动调整顺序': 'Drag to reorder', '回车保存，Esc 取消；留空就显示邮箱。': 'Enter to save, Esc to cancel. Leave empty to show the email.',
     '给这个账号起个名字': 'Name this account', '账号名字（留空就显示邮箱）': 'Account name (leave empty to show the email)', '已改名': 'Renamed', '已去掉名字，显示邮箱': 'Name removed. Showing the email.',
@@ -2846,6 +2848,11 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.78 更新说明
+    '修复：Antigravity 提前重置后周额度容量虚高': 'Fixed: inflated Antigravity weekly capacity after an early reset',
+    'Google 提前重置周额度并顺延重置日期时，自动按重置点切分前后周期，不再把整窗历史 Token 除以半途采样涨幅（修复周额度容量被放大到几十亿 Token 的问题），并在窗口卡片上标出「窗口已提前重置」。': 'When Google resets the weekly quota early and extends the reset date, cycles are split at the reset point instead of dividing full-window historical tokens by a mid-window sample delta (fixing weekly capacity being inflated to billions of tokens), and window cards show “Window reset early”.',
+    '修复：Antigravity 工具调用把整段生成时间算成首字延迟': 'Fixed: Antigravity tool calls counting full generation time as first-token latency',
+    'Gemini 在服务端整包生成完 write_file、edit_file 等大工具调用后才一次性返回，以前会把几十秒甚至两分钟的写代码总耗时算进「首字」；现在自动识别整包工具调用，只记总耗时和出字速度，升级后自动重扫修正。': 'When Gemini buffers large tool calls like write_file and edit_file on the server before returning them in one chunk, the full generation time (tens of seconds to two minutes) was previously counted as first-token latency; buffered tool calls are now detected so only total time and speed are recorded, with existing records rescanned automatically after updating.',
     // 0.3.77 更新说明
     '会话管理能看每段对话的用量和模型占比了': 'Per-conversation usage and model breakdown in Sessions',
     '左边会话列表标出每段对话的总 Token 和 API 等价费用；右边对话顶部常驻一行紧凑用量条（总 Token、缓存命中率、API 等价花费、缓存省下金额和模型多色占比条），点「用量详情」展开完整的模型占比分布（支持按 Token、调用次数、API 费用切换）和多列明细表。Claude Code、Codex、Grok、DeepSeek、pi 和 Antigravity 全部支持。': 'The session list on the left shows each conversation’s total tokens and API-equivalent cost. The top of a conversation has a compact usage bar (total tokens, cache hit rate, API-equivalent cost, cache savings and a multi-color model bar); click “Usage details” to expand the model share breakdown (switchable by tokens, calls or API cost) and the multi-column table. Supported for Claude Code, Codex, Grok, DeepSeek, pi and Antigravity.',
@@ -3467,6 +3474,7 @@
     P('从重置卡之后开始（(.+)）', m => `Started after a reset card (${v(m[1])})`),
     P('用了重置卡，提前结束（(.+)）', m => `Ended early by a reset card (${v(m[1])})`),
     P('(用过重置卡，重置日期(?:已顺延|不变)) · 从 (.+) 起算', m => `${v(m[1])} · counted from ${m[2]}`),
+    P('(窗口已提前重置，重置日期(?:已顺延|不变)) · 从 (.+) 起算', m => `${v(m[1])} · counted from ${m[2]}`),
     // 账号名是用户的内容，不翻
     P('(\\d+) / (\\d+) 个有余量', m => `${m[1]} / ${m[2]} with quota left`),
     P('还有 ' + N + ' 个账号', m => `${m[1]} more ${m[1] === '1' ? 'account' : 'accounts'}`),

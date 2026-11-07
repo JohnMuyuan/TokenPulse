@@ -61,6 +61,17 @@ export type AgyUsageSummary = {
   requests: number;
 };
 
+export type AgyResetStyle = "moved" | "kept";
+
+export type AgyWindowSegment = {
+  startAt: number;
+  endAt: number;
+  resetAt: number;
+  points: { at: number; used: number }[];
+  startedByReset?: AgyResetStyle;
+  endedByReset?: AgyResetStyle;
+};
+
 export type AgyWindowCapacity = {
   fullTokens: number | null;
   fullCostUsd: number | null;
@@ -80,6 +91,7 @@ export type AgyWindowInsight = {
   startAt: number;
   endAt: number;
   ended: boolean;
+  startedByReset?: AgyResetStyle;
   ratePerHour: number | null;
   recentRatePerHour: number | null;
   ratePerDay: number | null;
@@ -106,12 +118,16 @@ export type AgyGroupModelItem = {
 
 export type AgyCapacityPoint = {
   at: number;
+  startAt: number;
+  endAt: number;
   resetAt: number;
   usedPct: number;
   tokens: number;
   costUsd: number;
   fullTokens: number;
   fullCostUsd: number;
+  startedByReset?: AgyResetStyle;
+  endedByReset?: AgyResetStyle;
 };
 
 export type AgyGroupInsight = {
@@ -322,6 +338,146 @@ function groupMatchesModel(group: { models: string[]; title?: string }, model: s
   return false;
 }
 
+/**
+ * 至少用掉这么多百分比，才拿这一段去折算「整窗 100% 能用多少」（与 quota-monitor.ts 一致）。
+ * 0.2%–1% 时接口四舍五入或时间差一点点就会把整窗容量放大几十到几百倍。
+ */
+const MIN_CAPACITY_PCT = 2;
+
+/**
+ * 把某一组在 5 小时窗口或周额度窗口下的历史采样切成连续的窗口段（对标 quota-monitor.ts 的 windowSegments）：
+ * 1. 按官方 resetAt 分组（容忍 SAME_WINDOW_MS 抖动）；若窗口处于 0% 空闲状态导致 resetAt 随当前时间顺延，合并进同一组；
+ * 2. 若上一段已有消耗，且还未到上一段的 resetAt 就开启了新的 resetAt 周期（Google 提前重置 / 重置卡顺延）：
+ *    把上一段的 endAt 截断在重置发生处（标 endedByReset = "moved"），新一段标 startedByReset = "moved"，且起点不早于上一段末次采样；
+ * 3. 若同一个 resetAt 周期内已用百分比大幅回落（归零或回落 >= 3 个百分点，非普通浮点抖动）：
+ *    在回落前切开，前段标 endedByReset = "kept"，后段标 startedByReset = "kept"。
+ */
+export function agyWindowSegments(
+  windowKind: "five" | "week",
+  groupKeyStr: string,
+  history: AgySample[],
+  currentQuota: AgyWindowQuota,
+  now: number,
+): AgyWindowSegment[] {
+  const periodMs = windowKind === "five" ? FIVE_MS : WEEK_MS;
+  const pickSample = (item: AgySampleGroup) =>
+    windowKind === "five"
+      ? { used: item.used, resetAt: item.resetAt }
+      : item.weekUsed != null
+        ? { used: item.weekUsed, resetAt: item.weekResetAt }
+        : null;
+
+  const rawPoints: { at: number; used: number; resetAt: number }[] = [];
+  for (const sample of history) {
+    if (!Number.isFinite(sample.at) || sample.at > now) continue;
+    for (const item of sample.groups) {
+      if (item.key !== groupKeyStr) continue;
+      const picked = pickSample(item);
+      if (!picked || !Number.isFinite(picked.used)) continue;
+      const rMs = picked.resetAt ? Date.parse(picked.resetAt) || 0 : 0;
+      if (rMs > 0 && sample.at > rMs) continue;
+      rawPoints.push({
+        at: sample.at,
+        used: Math.min(100, Math.max(0, Number(picked.used) || 0)),
+        resetAt: rMs > 0 ? rMs : Math.floor(sample.at / periodMs) * periodMs + periodMs,
+      });
+    }
+  }
+
+  const currentResetMs = currentQuota.resetAt ? Date.parse(currentQuota.resetAt) || 0 : 0;
+  const currentEnded = Boolean(currentResetMs && currentResetMs <= now);
+  const currentUsed = currentEnded ? 0 : Math.min(100, Math.max(0, Number(currentQuota.used) || 0));
+  if (!currentEnded && currentResetMs > 0) {
+    const lastPt = rawPoints[rawPoints.length - 1];
+    if (
+      !lastPt ||
+      Math.abs(lastPt.resetAt - currentResetMs) >= SAME_WINDOW_MS ||
+      Math.abs(lastPt.used - currentUsed) >= 0.05
+    ) {
+      rawPoints.push({ at: now, used: currentUsed, resetAt: currentResetMs });
+    }
+  }
+
+  rawPoints.sort((a, b) => a.at - b.at);
+
+  const groups: { resetAt: number; startAt: number; firstAt: number; list: { at: number; used: number }[] }[] = [];
+  for (const pt of rawPoints) {
+    const last = groups[groups.length - 1];
+    if (last && Math.abs(last.resetAt - pt.resetAt) < SAME_WINDOW_MS) {
+      last.resetAt = pt.resetAt;
+      last.startAt = pt.resetAt - periodMs;
+      last.list.push({ at: pt.at, used: pt.used });
+      continue;
+    }
+    if (last && last.list.every((p) => p.used <= 0) && pt.resetAt - last.resetAt < periodMs) {
+      last.resetAt = pt.resetAt;
+      last.startAt = pt.resetAt - periodMs;
+      last.list = [...last.list.filter((p) => p.at >= last.startAt - SAME_WINDOW_MS), { at: pt.at, used: pt.used }];
+      continue;
+    }
+    groups.push({
+      resetAt: pt.resetAt,
+      startAt: pt.resetAt - periodMs,
+      firstAt: pt.at,
+      list: [{ at: pt.at, used: pt.used }],
+    });
+  }
+
+  const segments: AgyWindowSegment[] = [];
+  for (const group of groups) {
+    const previous = segments[segments.length - 1];
+    const firstListAt = group.list[0]?.at ?? group.firstAt;
+    let startAt = Math.max(group.startAt - SAME_WINDOW_MS, Math.min(group.startAt, firstListAt));
+    let startedByReset: AgyResetStyle | undefined;
+    if (previous) {
+      const prevLastAt = previous.points[previous.points.length - 1].at;
+      const prevHasUsage = previous.points.some((p) => p.used > 0);
+      if (prevHasUsage && group.firstAt < previous.endAt - SAME_WINDOW_MS) {
+        previous.endAt = Math.max(prevLastAt, Math.min(previous.endAt, group.firstAt));
+        previous.endedByReset = "moved";
+        startedByReset = "moved";
+      }
+      startAt = Math.max(startAt, prevLastAt);
+    }
+
+    let part: { at: number; used: number }[] = [];
+    let partStart = startAt;
+    let partStarted = startedByReset;
+    for (let i = 0; i < group.list.length; i += 1) {
+      const point = group.list[i];
+      if (i > 0) {
+        const prev = group.list[i - 1];
+        const isInPlaceReset =
+          (prev.used >= 2 && point.used <= 1 && prev.used - point.used >= 1.5) ||
+          point.used < prev.used - 3;
+        if (isInPlaceReset) {
+          const cut = prev.at;
+          segments.push({
+            startAt: partStart,
+            endAt: cut,
+            resetAt: group.resetAt,
+            points: part,
+            endedByReset: "kept",
+            ...(partStarted ? { startedByReset: partStarted } : {}),
+          });
+          part = [];
+          partStart = cut;
+          partStarted = "kept";
+        }
+      }
+      part.push(point);
+    }
+    segments.push({
+      startAt: partStart,
+      endAt: group.resetAt,
+      resetAt: group.resetAt,
+      points: part,
+      ...(partStarted ? { startedByReset: partStarted } : {}),
+    });
+  }
+  return segments;
+}
+
 function buildWindowInsight(
   windowKind: "five" | "week",
   quota: AgyWindowQuota,
@@ -334,34 +490,20 @@ function buildWindowInsight(
   const resetMs = quota.resetAt ? Date.parse(quota.resetAt) || 0 : 0;
   const ended = Boolean(resetMs && resetMs <= now);
   const endAt = resetMs > 0 ? resetMs : now;
-  const startAt = resetMs > 0 ? resetMs - periodMs : now - periodMs;
   const used = ended ? 0 : Math.min(100, Math.max(0, Number(quota.used) || 0));
   const remaining = ended ? 100 : Math.max(0, Math.round((100 - used) * 10) / 10);
 
-  // 当前窗口内的采样点
-  const pickSample = (item: AgySampleGroup) =>
-    windowKind === "five"
-      ? { used: item.used, resetAt: item.resetAt }
-      : item.weekUsed != null
-        ? { used: item.weekUsed, resetAt: item.weekResetAt }
-        : null;
+  const segments = agyWindowSegments(windowKind, groupKeyStr, history, quota, now);
+  const curSeg =
+    !ended && resetMs > 0
+      ? [...segments].reverse().find((s) => Math.abs(s.resetAt - resetMs) < SAME_WINDOW_MS && !s.endedByReset)
+      : !ended && !resetMs
+        ? segments[segments.length - 1]
+        : undefined;
 
-  const currentPoints = history.flatMap((sample) =>
-    sample.groups
-      .filter((item) => item.key === groupKeyStr)
-      .flatMap((item) => {
-        const picked = pickSample(item);
-        if (!picked) return [];
-        const sampleReset = picked.resetAt ? Date.parse(picked.resetAt) || 0 : 0;
-        if (resetMs > 0 && sampleReset > 0 && Math.abs(sampleReset - resetMs) < SAME_WINDOW_MS) {
-          return [{ at: sample.at, used: picked.used, resetAt: sampleReset }];
-        }
-        if (!resetMs && sample.at >= startAt && sample.at <= now) {
-          return [{ at: sample.at, used: picked.used, resetAt: 0 }];
-        }
-        return [];
-      }),
-  );
+  const startAt = curSeg ? curSeg.startAt : ended && resetMs > 0 ? resetMs : resetMs > 0 ? resetMs - periodMs : now - periodMs;
+  const startedByReset = !ended ? curSeg?.startedByReset : undefined;
+  const currentPoints = curSeg ? curSeg.points : [];
 
   let ratePerHour: number | null = null;
   let recentRatePerHour: number | null = null;
@@ -386,31 +528,8 @@ function buildWindowInsight(
     }
   }
 
-  const windowRows = groupRows.filter((r) => r.at >= startAt && r.at <= Math.min(endAt, now));
+  const windowRows = ended ? [] : groupRows.filter((r) => r.at >= startAt && r.at <= Math.min(endAt, now));
   const local = summarizeRows(windowRows);
-
-  // 历史周期与容量折算：按 resetAt 聚合各窗口
-  const cycleMap = new Map<number, { startAt: number; endAt: number; points: { at: number; used: number }[] }>();
-  for (const sample of history) {
-    for (const item of sample.groups) {
-      if (item.key !== groupKeyStr) continue;
-      const picked = pickSample(item);
-      if (!picked) continue;
-      const rMs = picked.resetAt ? Date.parse(picked.resetAt) || 0 : 0;
-      const key = rMs ? Math.round(rMs / SAME_WINDOW_MS) * SAME_WINDOW_MS : Math.floor(sample.at / periodMs) * periodMs + periodMs;
-      const cycle = cycleMap.get(key) ?? { startAt: key - periodMs, endAt: key, points: [] };
-      cycle.points.push({ at: sample.at, used: picked.used });
-      cycleMap.set(key, cycle);
-    }
-  }
-  if (resetMs > 0 && !ended) {
-    const key = Math.round(resetMs / SAME_WINDOW_MS) * SAME_WINDOW_MS;
-    const cycle = cycleMap.get(key) ?? { startAt, endAt, points: [] };
-    if (!cycle.points.length || cycle.points[cycle.points.length - 1].used !== used) {
-      cycle.points.push({ at: now, used });
-    }
-    cycleMap.set(key, cycle);
-  }
 
   const capacityHistory: AgyCapacityPoint[] = [];
   let sumPoints = 0;
@@ -418,26 +537,47 @@ function buildWindowInsight(
   let sumCost = 0;
   let intervals = 0;
 
-  for (const [key, cycle] of [...cycleMap.entries()].sort((a, b) => a[0] - b[0])) {
-    const maxUsed = Math.max(0, ...cycle.points.map((p) => p.used));
-    const minUsed = Math.min(...cycle.points.map((p) => p.used));
-    const delta = maxUsed >= minUsed + 0.5 ? maxUsed - minUsed : maxUsed;
-    if (delta < 0.2) continue;
-    const cRows = groupRows.filter((r) => r.at >= cycle.startAt && r.at <= Math.min(cycle.endAt, now));
+  for (const segment of segments) {
+    if (!segment.points.length) continue;
+    const first = segment.points[0];
+    const final = segment.points[segment.points.length - 1];
+    const maxPt = segment.points.reduce((best, p) => (p.used >= best.used ? p : best), final);
+    const targetPt = final.used >= maxPt.used - 0.5 ? final : maxPt;
+    if (targetPt.used <= 0) continue;
+
+    const endBound = Math.min(segment.endAt, targetPt.at + 60_000, now);
+    // 若窗口半途才开始采样（first.used >= 1.5），检查 first.at 之前是否有本机对话记录：
+    // - 有本机记录：说明本机日志从窗口起点就有完整覆盖，分子用 [segment.startAt, endBound] 全部用量，分母用 targetPt.used；
+    // - 无本机记录：说明采样前的消耗不在本机日志中，分子只取 [first.at, endBound] 用量，分母取采样区间增量 (targetPt.used - first.used)。
+    const preRows =
+      first.used >= 1.5 && first.at > segment.startAt
+        ? groupRows.filter((r) => r.at >= segment.startAt && r.at < first.at)
+        : [];
+    const useDeltaOnly = first.used >= 1.5 && first.at > segment.startAt && preRows.length === 0;
+    const usedPct = useDeltaOnly ? targetPt.used - first.used : targetPt.used;
+    if (usedPct < MIN_CAPACITY_PCT) continue;
+
+    const rowStart = useDeltaOnly ? first.at : segment.startAt;
+    const cRows = groupRows.filter((r) => r.at >= rowStart && r.at <= endBound);
     const cSum = summarizeRows(cRows);
     if (cSum.tokens <= 0) continue;
-    const fullTokens = Math.round((cSum.tokens / delta) * 100);
-    const fullCostUsd = Math.round(((cSum.costUsd / delta) * 100) * 100) / 100;
+
+    const fullTokens = Math.round((cSum.tokens / usedPct) * 100);
+    const fullCostUsd = Math.round(((cSum.costUsd / usedPct) * 100) * 100) / 100;
     capacityHistory.push({
-      at: cycle.points[cycle.points.length - 1]?.at ?? now,
-      resetAt: key,
-      usedPct: Math.round(delta * 10) / 10,
+      at: targetPt.at,
+      startAt: rowStart,
+      endAt: segment.endAt,
+      resetAt: segment.resetAt,
+      usedPct: Math.round(usedPct * 10) / 10,
       tokens: cSum.tokens,
       costUsd: cSum.costUsd,
       fullTokens,
       fullCostUsd,
+      ...(segment.startedByReset ? { startedByReset: segment.startedByReset } : {}),
+      ...(segment.endedByReset ? { endedByReset: segment.endedByReset } : {}),
     });
-    sumPoints += delta;
+    sumPoints += usedPct;
     sumTokens += cSum.tokens;
     sumCost += cSum.costUsd;
     intervals += 1;
@@ -448,12 +588,12 @@ function buildWindowInsight(
   let basis: AgyWindowCapacity["basis"] = null;
   let confidence: AgyWindowCapacity["confidence"] = "insufficient";
 
-  if (sumPoints >= 1 && sumTokens > 0) {
+  if (sumPoints >= MIN_CAPACITY_PCT && sumTokens > 0) {
     fullTokens = Math.round((sumTokens / sumPoints) * 100);
     fullCostUsd = sumCost > 0 ? Math.round(((sumCost / sumPoints) * 100) * 100) / 100 : null;
     basis = intervals >= 2 && sumPoints >= 5 ? "measured" : "current";
     confidence = intervals >= 3 && sumPoints >= 15 ? "medium" : sumPoints >= 5 ? "low" : "current";
-  } else if (!ended && used >= 0.2 && local.tokens > 0) {
+  } else if (!ended && used >= MIN_CAPACITY_PCT && local.tokens > 0) {
     fullTokens = Math.round((local.tokens / used) * 100);
     fullCostUsd = local.costUsd > 0 ? Math.round(((local.costUsd / used) * 100) * 100) / 100 : null;
     basis = "current";
@@ -483,6 +623,7 @@ function buildWindowInsight(
       startAt,
       endAt,
       ended,
+      ...(startedByReset ? { startedByReset } : {}),
       ratePerHour: ratePerHour != null ? Math.round(ratePerHour * 100) / 100 : null,
       recentRatePerHour: recentRatePerHour != null ? Math.round(recentRatePerHour * 100) / 100 : null,
       ratePerDay: ratePerHour != null ? Math.round(ratePerHour * 24 * 100) / 100 : null,
@@ -651,17 +792,48 @@ function buildTimelineWindow(
   const periodMs = windowKind === "five" ? FIVE_MS : WEEK_MS;
   const cycles: Cycle[] = [];
 
-  // 当前进行中的周期：优先取额度接口给出的重置时间
-  const primaryGroup = last?.groups?.[0];
+  // 当前进行中的周期：优先按 agyWindowSegments 切出的实际窗口段（含提前重置分段）生成周期列表
+  const primaryGroup =
+    last?.groups?.find((g) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) > 0) ?? last?.groups?.[0];
+  const primaryQuota = primaryGroup
+    ? windowKind === "five"
+      ? { used: primaryGroup.used, resetAt: primaryGroup.resetAt }
+      : primaryGroup.week ?? { used: primaryGroup.used, resetAt: primaryGroup.resetAt }
+    : { used: 0 };
+  const segments = primaryGroup ? agyWindowSegments(windowKind, primaryGroup.key, history, primaryQuota, now) : [];
+
+  for (let idx = segments.length - 1; idx >= 0; idx--) {
+    const seg = segments[idx];
+    const start = Math.round(seg.startAt);
+    const end = Math.round(seg.endAt);
+    if (end <= now - KEEP_MS || end <= start) continue;
+    const active = idx === segments.length - 1 && !seg.endedByReset && end > now;
+    const lastPt = seg.points[seg.points.length - 1];
+    const used = active
+      ? Math.max(0, ...(last?.groups ?? []).map((g) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) || 0))
+      : lastPt?.used ?? 0;
+    cycles.push({
+      id: `${start}:${end}`,
+      startAt: start,
+      endAt: end,
+      resetAt: Math.round(seg.resetAt),
+      used,
+      sampleAt: lastPt?.at ?? last?.at ?? now,
+      active,
+      resetCard: Boolean(seg.startedByReset || seg.endedByReset),
+    });
+  }
+
   const activeResetIso = windowKind === "five" ? primaryGroup?.resetAt : (primaryGroup?.week?.resetAt ?? primaryGroup?.resetAt);
   const activeResetMs = activeResetIso ? Date.parse(activeResetIso) || 0 : 0;
-  const anchorEnd = activeResetMs > now ? activeResetMs : (windowKind === "five" ? Math.ceil(now / HOUR) * HOUR : shiftDay(startOfDay(now), 1));
+  const earliestStart = cycles.length ? cycles[cycles.length - 1].startAt : (activeResetMs > now ? activeResetMs : (windowKind === "five" ? Math.ceil(now / HOUR) * HOUR : shiftDay(startOfDay(now), 1)));
 
   for (let i = 0; i < 36; i++) {
-    const end = anchorEnd - i * periodMs;
-    const start = end - periodMs;
+    const end = Math.round(earliestStart - i * periodMs);
+    const start = Math.round(end - periodMs);
     if (end <= now - KEEP_MS) break;
-    const active = i === 0 && now >= start && now <= end;
+    if (cycles.some((c) => Math.abs(c.startAt - start) < SAME_WINDOW_MS || (start < c.endAt && end > c.startAt + SAME_WINDOW_MS))) continue;
+    const active = cycles.length === 0 && i === 0 && now >= start && now <= end;
     const hasRows = rows.some((r) => r.at >= start && r.at < end);
     const hasSamples = history.some((s) => s.at >= start && s.at <= end);
     if (!active && !hasRows && !hasSamples) continue;
