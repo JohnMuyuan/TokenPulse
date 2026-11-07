@@ -1,4 +1,72 @@
-# 当前接手入口 · TokenPulse v0.3.80 正式版发布完工（主进程与后台扫描内存占用专项修复，2026-11-07）
+# 当前接手入口 · TokenPulse v0.3.81 正式版发布完工（桌宠问题卡片右侧截断修复 & 全工具进行中任务识别与提问适配，2026-11-07）
+
+## 已完成并发布 · TokenPulse v0.3.81 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.81）
+
+- **本轮目标与问题现象**：
+  - **版本**：`v0.3.81`（以 `package.json:3` 为准，Git 标签 `v0.3.81`）。
+  1. **问题卡片右侧裁切**：用户反馈桌宠弹出的问题卡片（`Claude Code · Claude · Minecraft Fabric 随机附魔怪物...` / `有个问题想问你`）右侧被裁切：顶部右侧关闭按钮 `×` 消失、右下角 `知道了` 按钮只剩 `知道`、每行文字右侧最后 2–3 个字被截断。
+  2. **多 CLI（Antigravity、Grok Build、Claude Code、Codex）进行中任务偶发漏识别**：用户反馈桌宠有时识别不到正在运行的 Antigravity、Grok Build、Claude Code 和 Codex 任务。
+  3. **DeepSeek Harness 适配检查与补全**：检查 `~/.dsh/sessions`（`session.v4.jsonl.zstd`）在桌宠中的适配完整性，并补齐缺失的提问卡片（`ask_user_question` / `exit_plan_mode`）与状态推断分支。
+- **根因诊断**：
+  1. **桌宠问题卡片右侧截断**：
+     - 在 `renderer/desk-pet-ask.css` 中，外层容器 `#ak`（`.ak`）设置了 `display: grid; gap: 12px; width: 320px;`，但**未声明 `grid-template-columns: minmax(0, 1fr)`**，且网格子项 `.ak-card` **未设置 `min-width: 0`**（选项列表 `.ak-opts` 同样为 `display: grid` 且未限制列最小宽度）。
+     - 根据 CSS Grid 规范，隐式单列网格默认轨道尺寸为 `auto`（即 `minmax(auto, 1fr)`），网格项默认 `min-width: auto`。当 `.ak-head span` 含有较长的 `white-space: nowrap` 会话标题或问题/选项含较长文本时，CSS Grid 在计算 `.ak-card` 的 `min-content` 最小宽度贡献时会被长文本撑开至 `406px`（超出 `#ak` 的 `320px`）。
+     - 与此同时，`renderer/desk-pet-ask.js` 的 `report()` 读取 `box.offsetWidth`（`#ak` 显式指定了 `width: 320px`），调用 `api.askSize(332, ...)` 将透明 `BrowserWindow` 宽度设为 `332px`。结果 `406px` 宽的 `.ak-card` 在 `332px` 窗口内向右溢出 `80.5px` 并被裁剪。
+  2. **Antigravity 任务偶发漏识别**：
+     - **摘要库时间戳滞后**：`src/core/antigravity.ts` 的 `readAntigravityActivity()` 此前仅取 `conversation_summaries.db` 的 `last_modified_time` 作为 `item.at`。但 Antigravity 在单轮执行期间将新步骤实时写入 `conversations/<id>.db-wal`，而摘要库的 `last_modified_time` 往往在回合开始/结束或检查点才刷新（实测活跃对话滞后可达数百秒甚至超过 10 分钟）。导致 `agent-activity.ts` 的 `liveStatus()` 在 90 秒（`WAITING_MS`）后将工具执行误判为 `waiting`（「可能在等你」），在 10 分钟（`STALE_MS`）后直接判定为僵尸任务返回 `null` 丢弃。
+     - **后台任务等待与 `not_fully_idle` 未纳入**：Antigravity 启动后台命令或等待子代理唤醒时，主回合结束使 `status` 变为 `CASCADE_RUN_STATUS_IDLE`，但 `not_fully_idle` 仍为 `1`（或对话库末尾步骤刚进入 `STEP_OPEN`）；此前代码仅匹配 `/RUNNING|BUSY|CANCELING/.test(status)`，未检查 `not_fully_idle`。
+     - **子代理（`nesting_depth > 0`）未归并到主对话**：当使用 `/teamwork` 或 `invoke_subagent` 派出子代理时，主对话处于 `IDLE` 等待状态，而子代理（带 `parent_conversation_id`）处于 `RUNNING`；此前 `ActivityScanner.scan()` 直接 `if (item.nested) continue;` 丢弃子代理，未像 Claude / Grok 一样将活跃子代理数和最新时间归并到主对话。
+     - **并行步骤判断与文件监听**：`conversationPhase()` 仅看 `tail[0]` 是否为非模型回复的 `STEP_OPEN`，当并行工具中一个完成（`tail[0]` 为 `DONE`）而另一个仍在跑（`tail[1]` 为 `RUNNING`）时会误判；`desk-pet.ts` 的 `fs.watch` 仅匹配 `conversation_summaries.db`，未匹配 `conversations/<id>.db(-wal)`。
+  3. **Grok Build 任务偶发漏识别**：
+     - **超大工具输出撑爆 64 KB 尾部窗口 + `tool_call_update` 状态丢失**：Grok 的 `updates.jsonl` 单条 `tool_call_update` 常包含完整文件内容或命令输出（实测用户会话单行高达 `161 KB`～`733 KB`）。当 `readEnds()` 仅截取末尾 `64 KB` 时：① 若最后一行本身超过 `64 KB`，`tail` 切出 0 条完整 JSON，`inferGrok(tail)` 返回 `null`；② 若前序大输出把本轮开头的 `user_message_chunk` 和 `tool_call` 挤出 `64 KB` 窗口，`tail` 以 `tool_call_update`（`completed` 或无 `status` 的进度行）或 `auto_compact_*` / `retry_state` 开头，而旧 `inferGrok()` 在 `status === null` 时直接忽略了这些行，返回 `null`（实测两个真实会话 668 个运行步中漏判了 43 步）。
+     - **未利用同目录轻量的 `events.jsonl`**：Grok 会话目录下同时维护了每行 `< 250 B` 的 `events.jsonl`（记录 `turn_started`、`phase_changed`、`tool_started`、`permission_requested`、`turn_ended`），可作为超大 `updates.jsonl` 行的可靠兜底并精准识别 `permission_prompt` 等待批准状态。
+  4. **Claude Code 任务偶发漏识别**：
+     - **2.1+ 版本请求前大体积 `attachment` / `api-request-shape` / `api-request-blob` 挤出 `user` 行**：实测本机 40 个真实 Claude Code 会话发现，现代 Claude Code（如 `2.1.319`）在写入 `user` 提问或 `tool_result` 后、模型回复前，会立即连续写入 `attachment`（`100 KB`～`150 KB`）、`api-request-shape`（`~99 KB`）、`api-request-blob`（`42 KB`～`3.3 MB`）、`api-request`、`last-prompt`、`ai-title`、`mode`、`permission-mode`、`session-owner`、`atis-latch`，连续非 `user/assistant` 数据块最高达 `3.31 MB`（常见 `150 KB`～`250 KB`）。由于末尾的 `last-prompt`、`ai-title`、`mode` 等本身是合法 JSON 行，此前 `readEnds` 仅读最后 `64 KB` 即停止，而 `inferClaude` 只看 `user` / `assistant` / `system`，导致整个模型思考期间 `inferClaude(tail)` 返回 `null`（40 个真实会话 66,144 个运行步中漏判高达 `6,014` 步）。
+     - **并行 `tool_use` 未按 `id` 跟踪 `pending` 集合**：本机 40 个会话中有 `1,170` 次并行工具调用（多条 `assistant` `tool_use` 后逐条返回 `user` `tool_result`）。旧 `inferClaude` 未维护 `pending` Map，第一个 `tool_result` 一返回就把状态改回 `thinking` 并清空 `tool`，导致仍在执行的其余工具（或 `AskUserQuestion`）状态丢失。
+     - **后台任务 `<task-notification>` 唤醒与自动压缩续写未触发新一轮**：当后台命令完成写回 `<task-notification>` 或触发 `This session is being continued from a previous conversation that ran out of context` 自动压缩续写时，`claudeUserText` 将其清洗为空文本 `{ text: '' }`，导致旧 `inferClaude` 忽略该 `user` 行，状态停留在上一轮的 `done`。
+  5. **Codex 任务偶发漏识别**：
+     - **大图消息 / 大工具输出挤出 `task_started` 后，末尾 `event_msg`（`item_completed` / `token_count`）被忽略**：实测本机 86 个真实 Codex 会话发现，含截图的 `user` 消息或 `function_call_output` / `item_completed` 单行可达 `3.1 MB`～`6.9 MB`。当 `task_started` 被挤出 `64 KB` 窗口、末尾仅剩 `event_msg:item_completed`、`event_msg:token_count` 或 `token_usage_record` 时，旧 `inferCodex` 直接跳过返回 `null`（5,545 个运行步中漏判 `400` 步）。
+     - **日期目录扫描窗口偏短**：`discover()` 此前仅扫最近 7 天日期目录，通过 `codex resume` 恢复更早创建的会话时无法被发现。
+  6. **DeepSeek Harness 适配检查**：
+     - `src/core/agent-activity.ts` 已具备基础的 `~/.dsh/sessions/<项目>/session-<id>/session.v4.jsonl.zstd` 解帧与 `turn/start`、`turn/end`、`tool/call`、`tool/result`、`approval/asked`、`approval/decided` 识别。
+     - **缺失项**：本机真实 `.dsh` 会话中存在 `name: "ask_user_question"` 的 `tool/call`（参数为 JSON 字符串形式的 `questions`），但旧 `inferDeepseek` 未调用 `askOf(...)` 提取 `ask` 字段，导致 DeepSeek Harness 向用户提问或提交计划（`exit_plan_mode`）时桌宠不会弹出问题卡片；且 `step/start`、`user/message` 未作为 `turn/start` 缺失时的运行态兜底，问题卡片也缺少 `deepseek` 专属标识色。
+- **已完成的关键改动与文件**：
+  1. `renderer/desk-pet-ask.css`、`renderer/desk-pet-ask.js` & `renderer/desk-pet-bubble.css`：
+     - 为 `.ak`、`.ak-opts`、`.bb-list` 显式补充 `grid-template-columns: minmax(0, 1fr)`；为 `.ak-card`、`.ak-question`、`.ak-opts li`、`.ak-opts li > div`、`.bb-task` 补充 `min-width: 0`，确保长标题与长选项严格约束在卡片宽度内；
+     - 在 `desk-pet-ask.js` 与 `desk-pet-bubble.css` 中新增 `deepseek` 品牌标识色（`--bb-deepseek: #4d6bfe`）。
+  2. `src/core/antigravity.ts`：
+     - `openDb` 增加 `PRAGMA busy_timeout = 200;` 防止并发写锁导致偶发空读；
+     - `conversationPhase` 改为检查 `tail` 中任意未完成步骤以支持并行工具调用；
+     - `readAntigravityActivity` 纳入 `not_fully_idle !== 0` 与对话库新开启步骤检测；对运行中对话取 `Math.max(sumAt, stamp.mtimeMs)`（结合 `<id>.db-wal` 实时修改时间），对已空闲对话仍保持 `sumAt`；并顺着 `parent_conversation_id` 将运行中的子代理（`nesting_depth > 0`）归并到根主对话的 `subagents` 与活动时间上。
+  3. `src/core/agent-activity.ts` & `src/main/desk-pet.ts`：
+     - **自适应尾块扩展（`readEnds`）**：将 `MAX_TAIL_CHUNK` 提升至 `8 MB`，并支持传入 `check`（对应各 CLI 的 `infer*` 函数）。当末尾 `64 KB` 仅含完整 JSON 元数据行（如 `attachment`、`last-prompt`、`progress`）但尚不足以推出回合状态时，按 `64 KB → 256 KB → 1 MB → 4 MB → 8 MB` 自动向前扩展（常规情况仍只读一次 `64 KB`）；
+     - **Claude Code（`inferClaude`）**：引入 `pending = new Map<string, string>()` 跟踪并行 `tool_use` 与 `tool_result`；识别 `api-request` / `api-request-blob` / `api-request-shape` / `tools-used` 运行态；支持 `<task-notification>` 后台任务唤醒与 `上下文已压缩，从摘要继续`；`system:turn_duration` / `stop_hook_summary` 在 `status === null` 时也能直接判定 `done`。实测本机前 20 个大文件 `40,897` 个运行步漏判从 `6,014` 降至 **`0`**，误判 **`0`**；
+     - **Codex（`inferCodex` & `discover`）**：在 `status === null` 时支持从 `event_msg`（`item_completed`、`token_count` 等）和 `token_usage_record` / `world_state` / `turn_context` 恢复 `thinking` 状态，`error` 事件在 `status === null` 时亦可记录 `error` 结束；`discover` 日期目录回看窗口从 7 天扩至 30 天。实测本机全部 86 个 Codex 会话 `5,545` 个运行步漏判从 `400` 降至 **`0`**，误判 **`0`**；
+     - **DeepSeek Harness（`inferDeepseek`）**：在 `tool/call` 中接入 `askOf(name, data.arguments ?? data.input, id, t)` 并在对应 `tool/result`、`turn/start`、`turn/end` 时清理，完整支持 `ask_user_question` 与 `exit_plan_mode` 问题卡片；补齐 `step/start`、`user/message` 运行态识别与 `approval/asked` 的 `toolName` 保留；
+     - **Grok Build（`inferGrok` & `inferGrokEvents`）**：支持从一轮中间的 `tool_call_update`、`retry_state`、`auto_compact_*`、`compaction_checkpoint`、`task_backgrounded`、`task_completed` 恢复运行态，并结合同目录 `events.jsonl` 兜底与识别权限等待；
+     - **监听重扫（`knows` & `fs.watch`）**：新增 `ActivityScanner.knows(file)`，并在 `desk-pet.ts` 的 `fs.watch` 中纳入 `.db(-wal)?$` 及未跟踪会话文件变更时的 `scanner.poke()` 立即重扫。
+  4. `scripts/test-desk-pet-ui.cjs`、`scripts/test-desk-pet.cjs`、`package.json`、`package-lock.json`、`renderer/intro.js` & `renderer/i18n.js`：
+     - 新增问题卡片超长文本不溢出回归测试、Claude 并行工具与 `api-request` / `<task-notification>` / `progress` 自适应扩窗测试、Codex 中间事件恢复测试、DeepSeek Harness `ask_user_question` / `exit_plan_mode` 提问卡片测试、Grok 超大工具输出与 Antigravity `.db-wal` 保活及子代理归并测试；
+     - 版本号升级至 `0.3.81`，补充 `0.3.81` 版本更新说明与英文翻译词条。
+- **验证结果**：
+  - `npm run build`：**PASSED (Exit 0)**。
+  - `node scripts/test-desk-pet.cjs`：**35/35 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-desk-pet-ui.cjs`：**20/20 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASSED (Exit 0)**。
+  - `node scripts/test-antigravity-usage.cjs`：**9/9 PASSED (Exit 0)**。
+  - `node scripts/test-antigravity-sessions.cjs`：**3/3 PASSED (Exit 0)**。
+- **最新产物路径与版本（v0.3.81）**：
+  - `dist/TokenPulse-0.3.81-Setup.exe`（SHA256: `6D7C2401630569958B6007EAA3F7176E3E0014C016E78813963B17DBBF2961F5`）
+  - `dist/TokenPulse-0.3.81-Portable.exe`（SHA256: `83293A06671DE436ECA98F00EA72812F3831C3AEFF20EFA9F4500530B065EB4F`）
+  - `dist/TokenPulse-0.3.81-Setup.exe.blockmap`（SHA256: `DEC0F71A11182625CA33397AC94CB4E2111800F4E63C8CAC0090151045CB3881`）
+  - `dist/latest.yml`（SHA256: `66471A6393C13D9197AB175C958F4BD09237AA91A0C0CD52A4334E25E5B7F958`）
+  - `dist/win-unpacked/TokenPulse.exe`
+  - **Git 提交与发布状态**：代码已提交至 `main`、已打标签 `v0.3.81` 并推送到 `origin/main`；GitHub Release `v0.3.81` 已正式发布（https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.81 ），全部 4 项安装包与元数据附件均已上传。
+  - **进程与文件锁状态**：本轮启动的构建与测试进程已全部退出；`build/main/index.js`、`build/core/agent-activity.js`、`dist/TokenPulse-0.3.81-Setup.exe`、`dist/TokenPulse-0.3.81-Portable.exe`、`dist/latest.yml`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测句柄已立即关闭）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.80 正式版发布完工（主进程与后台扫描内存占用专项修复，2026-11-07）
 
 ## 已完成并发布 · TokenPulse v0.3.80 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.80）
 

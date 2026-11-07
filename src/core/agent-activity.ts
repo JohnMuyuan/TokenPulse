@@ -28,7 +28,7 @@ import { zstdFrames } from "./zstd-frames";
  * 不会被当成「可能在等你」或过期；主会话这一轮已经结束、后台子代理还在跑的，也算在跑。
  *
  * 在问你（askOf）：Claude 的 AskUserQuestion（选择题）、ExitPlanMode（计划等你批准），Codex 的 request_user_input，
- * Grok 的 ask_user_question / exit_plan_mode，调用已经写进会话文件、还没有结果，就是在等你回答。只拿来显示，回答还是在终端里。
+ * Grok 与 DeepSeek Harness 的 ask_user_question / exit_plan_mode，调用已经写进会话文件、还没有结果，就是在等你回答。只拿来显示，回答还是在终端里。
  */
 
 export type TaskStatus = "thinking" | "tool" | "waiting" | "done";
@@ -62,6 +62,7 @@ export const SUB_STALE_MS = 5 * 60_000;
 const FULL_SCAN_MS = 30_000;
 const KEEP_MS = 2 * 60 * 60_000;
 const CHUNK = 64 * 1024;
+const MAX_TAIL_CHUNK = 8 * 1024 * 1024;
 const AGENT: Record<TaskKind, string> = { claude: "Claude Code", codex: "Codex", grok: "Grok Build", deepseek: "DeepSeek Harness", pi: "pi", antigravity: "Antigravity" };
 
 type Row = Record<string, any>;
@@ -112,44 +113,68 @@ export function askOf(name: string, input: unknown, id: string, at: number): Age
  */
 export function inferClaude(lines: string[], options: { sidechain?: boolean } = {}): Inferred | null {
   let status = null as TaskStatus | null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined, ended: TurnEnd | undefined, ask: AgentAsk | undefined;
+  const pending = new Map<string, string>();
+  const start = (t: number) => { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; ask = undefined; pending.clear(); };
   for (const row of rows(lines)) {
     if ((row.isSidechain && !options.sidechain) || row.isMeta) continue;
     const t = stamp(row.timestamp) || at;
+    if (t) { at = t; first ||= t; }
     if (row.type === "system") {
-      if ((row.subtype === "turn_duration" || row.subtype === "stop_hook_summary") && status && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "ok"; }
+      if ((row.subtype === "turn_duration" || row.subtype === "stop_hook_summary") && status !== "done") {
+        status = "done"; doneAt = t; tool = undefined; ended ||= "ok"; ask = undefined; pending.clear();
+      }
+      continue;
+    }
+    // Claude Code 2.1+ 在发请求前会先写大段 attachment、api-request-shape、api-request-blob、api-request（常超 64 KB）
+    if (row.type === "api-request" || row.type === "api-request-blob" || row.type === "api-request-shape") {
+      if (status === null || status === "done") start(t);
+      else since ||= t;
+      continue;
+    }
+    if (row.type === "tools-used") {
+      if (status === null) start(t);
       continue;
     }
     if (row.type !== "user" && row.type !== "assistant") continue;
-    if (t) { at = t; first ||= t; }
     const message = (row.message ?? {}) as Row;
     const content = message.content ?? row.content;
     const blocks = (Array.isArray(content) ? content : [{ type: "text", text: str(content) }]) as Row[];
     if (row.type === "user") {
       if (blocks.some((block) => block?.type === "tool_result")) {
-        if (ask && blocks.some((block) => block?.type === "tool_result" && block.tool_use_id === ask!.id)) ask = undefined;
+        for (const block of blocks) {
+          if (block?.type !== "tool_result") continue;
+          const id = str(block.tool_use_id);
+          if (!pending.delete(id)) pending.delete("");
+          if (ask && ask.id === id) ask = undefined;
+        }
         // 有的工具交了结果这一轮就结束（子代理交最终结果那种），这一行带 toolEndsTurn
-        if (row.toolEndsTurn === true && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "ok"; continue; }
-        if (status !== "done") { status = "thinking"; tool = undefined; }
+        if (row.toolEndsTurn === true && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "ok"; pending.clear(); continue; }
+        if (status === null || status === "done") { since = t; doneAt = undefined; ended = undefined; }
+        ({ status, tool } = settle(pending));
         continue;
       }
       for (const block of blocks) {
         if (block?.type !== "text") continue;
-        const cleaned = claudeUserText(str(block.text));
-        if (cleaned.event === "已中断") { status = "done"; doneAt = t; tool = undefined; ended = "interrupted"; }
-        else if (cleaned.text) { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; ask = undefined; }
+        const raw = str(block.text);
+        const cleaned = claudeUserText(raw);
+        if (cleaned.event === "已中断") { status = "done"; doneAt = t; tool = undefined; ended = "interrupted"; ask = undefined; pending.clear(); }
+        else if (cleaned.text || cleaned.event === "上下文已压缩，从摘要继续" || raw.includes("<task-notification>")) start(t);
       }
       continue;
     }
     // API 报错（限流、过载、额度用完……）：Claude Code 写一条 isApiErrorMessage 的回复，这一轮就停了
-    if (row.isApiErrorMessage === true) { status = "done"; doneAt = t; tool = undefined; ended = "error"; continue; }
-    if (DONE_STOPS.has(str(message.stop_reason))) { status = "done"; doneAt = t; tool = undefined; ended = "ok"; continue; }
+    if (row.isApiErrorMessage === true) { status = "done"; doneAt = t; tool = undefined; ended = "error"; ask = undefined; pending.clear(); continue; }
+    if (DONE_STOPS.has(str(message.stop_reason))) { status = "done"; doneAt = t; tool = undefined; ended = "ok"; ask = undefined; pending.clear(); continue; }
     // 这一轮的提问在读到的范围之前：以第一条回复为准
-    if (status === null || status === "done") { status = "thinking"; since = t; doneAt = undefined; ended = undefined; ask = undefined; }
+    if (status === null || status === "done") start(t);
+    else since ||= t;
     const uses = blocks.filter((block) => block?.type === "tool_use");
-    for (const block of uses) ask = askOf(str(block.name), block.input, str(block.id), t) ?? ask;
-    const use = uses.at(-1);
-    if (use) { status = "tool"; tool = str(use.name) || undefined; }
-    else if (status === "tool") { status = "thinking"; tool = undefined; }
+    for (const block of uses) {
+      pending.set(str(block.id), str(block.name));
+      ask = askOf(str(block.name), block.input, str(block.id), t) ?? ask;
+    }
+    if (uses.length || pending.size) ({ status, tool } = settle(pending));
+    else status = "thinking";
   }
   if (!status) return null;
   return { status, since: since || first, at, tool, doneAt, ...(status === "done" && ended ? { ended } : {}), ...(status !== "done" && ask ? { ask } : {}) };
@@ -166,11 +191,17 @@ export function inferCodex(lines: string[]): Inferred | null {
     if (row.type === "event_msg") {
       if (payload.type === "task_started") { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; ask = undefined; pending.clear(); }
       // error 是这一轮出错停下（stream_error 只是在重试，不算）；出错后可能还会跟一条 task_complete，仍算出错
-      else if (payload.type === "error" && status && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "error"; pending.clear(); }
+      else if (payload.type === "error" && status !== "done") { status = "done"; doneAt = t; tool = undefined; ended = "error"; pending.clear(); }
       else if (payload.type === "task_complete" || payload.type === "turn_aborted") {
         if (status !== "done" || ended !== "error") ended = payload.type === "turn_aborted" ? "interrupted" : "ok";
         status = "done"; doneAt ||= t; tool = undefined; pending.clear();
+      } else if (status === null && payload.type) {
+        status = "thinking";
       }
+      continue;
+    }
+    if (row.type === "token_usage_record" || row.type === "world_state" || row.type === "turn_context") {
+      if (status === null) status = "thinking";
       continue;
     }
     if (row.type !== "response_item" || status === "done") continue;
@@ -215,16 +246,24 @@ export function inferGrok(lines: string[]): Inferred | null {
     } else if (kind === "agent_message_chunk" || kind === "agent_thought_chunk" || kind === "tool_call") {
       // 这一轮的提问在读到的范围之前：以第一条回复为准
       if (status === null || status === "done") start(t);
+      else since ||= t;
       if (kind !== "tool_call") continue;
       const id = str(update.toolCallId), name = str(update._meta?.["x.ai/tool"]?.name) || str(update.title);
       pending.set(id, name);
       ({ status, tool } = settle(pending));
       ask = askOf(name, update.rawInput, id, t) ?? ask;
-    } else if (kind === "tool_call_update" && (update.status === "completed" || update.status === "failed") && status !== "done") {
-      const id = str(update.toolCallId);
-      pending.delete(id);
-      if (ask && ask.id === id) ask = undefined;
-      if (status !== null) ({ status, tool } = settle(pending));
+    } else if (kind === "tool_call_update" && status !== "done") {
+      const id = str(update.toolCallId), name = str(update._meta?.["x.ai/tool"]?.name) || str(update.title);
+      if (update.status === "completed" || update.status === "failed") {
+        pending.delete(id);
+        if (ask && ask.id === id) ask = undefined;
+        ({ status, tool } = settle(pending));
+      } else if (id) {
+        if (!pending.has(id) || name) pending.set(id, name || pending.get(id) || "");
+        ({ status, tool } = settle(pending));
+      }
+    } else if ((kind === "retry_state" || kind === "auto_compact_started" || kind === "compaction_checkpoint" || kind === "auto_compact_completed" || kind === "task_backgrounded" || kind === "task_completed") && status === null) {
+      status = "thinking";
     }
   }
   if (!status) return null;
@@ -232,34 +271,91 @@ export function inferGrok(lines: string[]): Inferred | null {
   return { status, since: since || first, at, tool, doneAt, ...(done && ended ? { ended } : {}), ...(!done && ask ? { ask } : {}), ...(children.size ? { children: [...children].filter(Boolean) } : {}) };
 }
 
-/** DeepSeek Harness：turn/start 到 turn/end 之间算在跑；要你批准（approval/asked）还没决定就是在等你。 */
-export function inferDeepseek(lines: string[]): Inferred | null {
+/** Grok Build 的 events.jsonl：每行都很短（turn_started / phase_changed / tool_started / permission_requested / turn_ended），做超大工具输出或等权限时的补充。 */
+export function inferGrokEvents(lines: string[]): Inferred | null {
   let status: TaskStatus | null = null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined, ended: TurnEnd | undefined;
+  let waitingPerm = false;
+  const start = (t: number) => { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; waitingPerm = false; };
+  for (const row of rows(lines)) {
+    const t = stamp(row.ts ?? row.timestamp) || at;
+    if (t) { at = t; first ||= t; }
+    const type = str(row.type);
+    if (type === "turn_started") { start(t); continue; }
+    if (type === "turn_ended") {
+      const outcome = str(row.outcome);
+      status = "done"; doneAt = t; tool = undefined; waitingPerm = false;
+      ended = outcome === "cancelled" ? "interrupted" : outcome === "error" ? "error" : "ok";
+      continue;
+    }
+    if (type === "loop_started" || type === "first_token") {
+      if (status === null || status === "done") start(t);
+    } else if (type === "phase_changed") {
+      if (status === null || status === "done") start(t);
+      if (row.phase === "permission_prompt") { waitingPerm = true; status = "waiting"; }
+      else if (row.phase === "tool_execution") status = waitingPerm ? "waiting" : "tool";
+      else if (row.phase === "waiting_for_model" || row.phase === "streaming_reasoning" || row.phase === "streaming_text") {
+        if (!waitingPerm && !tool) status = "thinking";
+      }
+    } else if (type === "tool_started") {
+      if (status === null || status === "done") start(t);
+      tool = str(row.tool_name) || tool;
+      status = waitingPerm ? "waiting" : "tool";
+    } else if (type === "permission_requested") {
+      if (status === null || status === "done") start(t);
+      waitingPerm = true;
+      tool = str(row.tool_name) || tool;
+      status = "waiting";
+    } else if (type === "permission_resolved") {
+      waitingPerm = false;
+      if (status === "waiting") status = tool ? "tool" : "thinking";
+    } else if (type === "tool_completed") {
+      if (status === null || status === "done") start(t);
+      waitingPerm = false;
+      tool = undefined;
+      status = "thinking";
+    }
+  }
+  if (!status) return null;
+  return { status, since: since || first, at, tool, doneAt, ...(status === "done" && ended ? { ended } : {}) };
+}
+
+/** DeepSeek Harness：turn/start 到 turn/end 之间算在跑；要你批准（approval/asked）还没决定或调了 ask_user_question / exit_plan_mode 就是在等你。 */
+export function inferDeepseek(lines: string[]): Inferred | null {
+  let status: TaskStatus | null = null, since = 0, at = 0, first = 0, tool: string | undefined, doneAt: number | undefined, ended: TurnEnd | undefined, ask: AgentAsk | undefined;
   const pending = new Map<string, string>(), approvals = new Set<string>();
   for (const row of rows(lines)) {
     const t = stamp(row.time) || at;
     if (t) { at = t; first ||= t; }
     const data = (row.data ?? {}) as Row;
-    if (row.type === "turn/start") { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; pending.clear(); approvals.clear(); continue; }
+    if (row.type === "turn/start") { status = "thinking"; since = t; tool = undefined; doneAt = undefined; ended = undefined; ask = undefined; pending.clear(); approvals.clear(); continue; }
     if (row.type === "turn/end") {
       const reason = str(data.reason?.kind).toLowerCase();
       ended = /cancel|interrupt|abort/.test(reason) ? "interrupted" : /error|fail/.test(reason) ? "error" : "ok";
-      status = "done"; doneAt = t; tool = undefined; pending.clear(); approvals.clear();
+      status = "done"; doneAt = t; tool = undefined; ask = undefined; pending.clear(); approvals.clear();
       continue;
     }
     if (status === "done") continue;
-    if (row.type === "assistant/message" || row.type === "tool/call") status ??= "thinking";
-    if (row.type === "tool/call") pending.set(str(data.callId), str(data.name));
-    else if (row.type === "tool/result") pending.delete(str(data.message?.toolCallId));
-    else if (row.type === "approval/asked") approvals.add(str(data.id));
+    if (row.type === "step/start" || row.type === "user/message" || row.type === "assistant/message" || row.type === "tool/call" || row.type === "approval/asked") {
+      if (status === null) { status = "thinking"; since = t; }
+      else since ||= t;
+    }
+    if (row.type === "tool/call") {
+      const id = str(data.callId), name = str(data.name);
+      pending.set(id, name);
+      ask = askOf(name, data.arguments ?? data.input, id, t) ?? ask;
+    } else if (row.type === "tool/result") {
+      const id = str(data.message?.toolCallId ?? data.callId);
+      pending.delete(id);
+      if (ask && ask.id === id) ask = undefined;
+    } else if (row.type === "approval/asked") approvals.add(str(data.id));
     else if (row.type === "approval/decided") approvals.delete(str(data.id));
-    else continue;
+    else if (row.type !== "step/start" && row.type !== "user/message" && row.type !== "assistant/message") continue;
     if (status === null) continue;
     ({ status, tool } = settle(pending));
-    if (approvals.size) status = "waiting";
+    if (approvals.size) { status = "waiting"; tool ||= str(data.toolName) || undefined; }
   }
   if (!status) return null;
-  return { status, since: since || first, at, tool, doneAt, ...(status === "done" && ended ? { ended } : {}) };
+  return { status, since: since || first, at, tool, doneAt, ...(status === "done" && ended ? { ended } : {}), ...(status !== "done" && ask ? { ask } : {}) };
 }
 
 /** pi：用户说话开始一轮，assistant 的 stopReason 说明这一步之后是去跑工具还是这一轮结束了。 */
@@ -374,7 +470,7 @@ export function piHead(lines: string[]) {
   return { id, cwd, title, prompt };
 }
 
-type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string };
+type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; auxSize?: number; auxMtimeMs?: number; task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string };
 /** 子代理的会话文件（Claude 的 subagents/、Grok 的子会话）；parent 是主会话文件。 */
 type SubEntry = { file: string; kind: "claude" | "grok"; parent: string; size: number; mtimeMs: number; inferred: Inferred | null; read: boolean };
 /** grok / deepseek / pi / antigravity 不给就不扫（测试只给前三个）。antigravity 是 ~/.gemini/antigravity 本身。 */
@@ -388,13 +484,20 @@ export function defaultRoots(): ActivityRoots {
 }
 const DEEPSEEK_FILE = "session.v4.jsonl.zstd";
 
-async function readEnds(file: string, size: number) {
+async function readEnds(file: string, size: number, check?: (tail: string[]) => unknown) {
   const handle = await fs.open(file, "r");
   try {
-    const part = async (start: number, length: number) => { const buffer = Buffer.alloc(length); const { bytesRead } = await handle.read(buffer, 0, length, start); return buffer.subarray(0, bytesRead).toString("utf8"); };
+    const part = async (start: number, length: number) => { const buffer = Buffer.allocUnsafe(length); const { bytesRead } = await handle.read(buffer, 0, length, start); return buffer.subarray(0, bytesRead).toString("utf8"); };
     if (size <= CHUNK * 2) { const all = (await part(0, size)).split(/\r?\n/); return { head: all, tail: all }; }
     const head = (await part(0, CHUNK)).split(/\r?\n/).slice(0, -1);
-    const tail = (await part(size - CHUNK, CHUNK)).split(/\r?\n/).slice(1);
+    let tailLen = CHUNK;
+    let tail = (await part(size - tailLen, tailLen)).split(/\r?\n/).slice(1);
+    // 有的工具返回超大单行或连续写入超 64 KB 的附件/进度块（如 Grok 的大 tool_call_update、Claude 的大 attachment、Codex 的大图消息），64 KB 尾巴里还没有能推出状态的行：逐步往前扩到能推出状态为止
+    while ((check ? !check(tail) : !tail.some((line) => line.startsWith("{"))) && tailLen < size && tailLen < MAX_TAIL_CHUNK) {
+      tailLen = Math.min(size, tailLen * 4, MAX_TAIL_CHUNK);
+      const raw = (await part(size - tailLen, tailLen)).split(/\r?\n/);
+      tail = size > tailLen ? raw.slice(1) : raw;
+    }
     return { head, tail };
   } finally { await handle.close(); }
 }
@@ -410,7 +513,7 @@ export class ActivityScanner {
   private agy = new Map<string, { last?: TaskStatus | null; lastAsk?: string }>();
   constructor(private roots: ActivityRoots = defaultRoots(), private now: () => number = Date.now) {}
 
-  /** 两小时内动过的会话文件。Claude 只看 projects/<项目>/ 下直接的 .jsonl；Codex 只看最近 7 天的日期目录。 */
+  /** 两小时内动过的会话文件。Claude 只看 projects/<项目>/ 下直接的 .jsonl；Codex 只看最近 30 天的日期目录（兼顾 resume 旧会话）。 */
   private async discover(now: number) {
     const found: { file: string; kind: TaskKind }[] = [];
     for (const project of await list(this.roots.claude)) {
@@ -418,7 +521,7 @@ export class ActivityScanner {
       const dir = path.join(this.roots.claude, project.name);
       for (const item of await list(dir)) if (item.isFile() && item.name.endsWith(".jsonl")) found.push({ file: path.join(dir, item.name), kind: "claude" });
     }
-    const since = new Date(now - 7 * 86_400_000);
+    const since = new Date(now - 30 * 86_400_000);
     const floor = since.getFullYear() * 10000 + (since.getMonth() + 1) * 100 + since.getDate();
     for (const year of await list(this.roots.codex)) {
       if (!year.isDirectory() || !/^\d{4}$/.test(year.name) || +year.name < since.getFullYear()) continue;
@@ -473,6 +576,12 @@ export class ActivityScanner {
 
   /** 下一次 scan 先把目录全扫一遍（会话目录里有文件变了：可能是新会话、新子代理）。 */
   poke() { this.lastFull = 0; }
+  /** 这个文件是不是已经在跟踪列表里了（不在的话说明是新会话或旧会话刚恢复，需要 poke 重扫目录）。 */
+  knows(file: string) {
+    if (this.entries.has(file) || this.subs.has(file)) return true;
+    if (file.endsWith("events.jsonl")) return this.entries.has(path.join(path.dirname(file), "updates.jsonl"));
+    return false;
+  }
   /** 值得盯着的目录（里面的 .jsonl 变了就该看一次）。 */
   watchRoots() { return [this.roots.claude, this.roots.codex, this.roots.grok, this.roots.deepseek, this.roots.pi, this.roots.antigravity].filter((dir): dir is string => !!dir); }
 
@@ -485,8 +594,9 @@ export class ActivityScanner {
       if (!sub.read || stat.size !== sub.size || stat.mtimeMs !== sub.mtimeMs) {
         sub.size = stat.size; sub.mtimeMs = stat.mtimeMs; sub.read = true;
         try {
-          const { tail } = await readEnds(sub.file, sub.size);
-          sub.inferred = sub.kind === "grok" ? inferGrok(tail) : inferClaude(tail, { sidechain: true });
+          const infer = sub.kind === "grok" ? inferGrok : (lines: string[]) => inferClaude(lines, { sidechain: true });
+          const { tail } = await readEnds(sub.file, sub.size, infer);
+          sub.inferred = infer(tail);
         } catch { sub.inferred = null; }
       }
       if (now - sub.mtimeMs > SUB_STALE_MS) { this.subs.delete(sub.file); continue; }
@@ -520,7 +630,8 @@ export class ActivityScanner {
       entry.task = { key: `deepseek:${id}`, kind: "deepseek", agent: AGENT.deepseek, id, title: clip(top.title || top.prompt || "未命名会话"), project: path.basename(top.cwd), status: "thinking", since: 0, updatedAt: 0 };
       return;
     }
-    const { head, tail } = await readEnds(entry.file, entry.size);
+    const infer = entry.kind === "grok" ? inferGrok : entry.kind === "pi" ? inferPi : entry.kind === "claude" ? inferClaude : inferCodex;
+    const { head, tail } = await readEnds(entry.file, entry.size, infer);
     entry.read = true;
     if (entry.kind === "grok") {
       const dir = path.dirname(entry.file);
@@ -530,7 +641,19 @@ export class ActivityScanner {
       let cwd = str(summary.info?.cwd);
       try { cwd ||= decodeURIComponent(path.basename(path.dirname(dir))); } catch { /* 目录名不是编码过的路径 */ }
       const id = path.basename(dir);
-      entry.inferred = inferGrok(tail);
+      let inferred = inferGrok(tail);
+      try {
+        const evFile = path.join(dir, "events.jsonl");
+        const evStat = await fs.stat(evFile);
+        if (!inferred || evStat.mtimeMs >= entry.mtimeMs - 2000) {
+          const evInferred = inferGrokEvents((await readEnds(evFile, evStat.size, inferGrokEvents)).tail);
+          if (!inferred) inferred = evInferred;
+          else if (evInferred && inferred.status !== "done" && evInferred.status === "waiting") {
+            inferred = { ...inferred, status: "waiting", tool: evInferred.tool ?? inferred.tool };
+          }
+        }
+      } catch { /* 没有 events.jsonl 时只看 updates.jsonl */ }
+      entry.inferred = inferred;
       entry.task = { key: `grok:${id}`, kind: "grok", agent: AGENT.grok, id, title: clip(str(summary.generated_title) || grokHead(head).prompt || "未命名会话"), project: path.basename(cwd), status: "thinking", since: 0, updatedAt: 0 };
       // 子代理是同一工作目录下的另一个会话
       for (const child of entry.inferred?.children ?? []) {
@@ -588,8 +711,16 @@ export class ActivityScanner {
     for (const entry of [...this.entries.values()]) {
       let stat;
       try { stat = await fs.stat(entry.file); } catch { this.entries.delete(entry.file); continue; }
-      if (!entry.read || stat.size !== entry.size || stat.mtimeMs !== entry.mtimeMs) {
-        entry.size = stat.size; entry.mtimeMs = stat.mtimeMs;
+      let auxSize = entry.auxSize, auxMtimeMs = entry.auxMtimeMs;
+      if (entry.kind === "grok") {
+        try {
+          const evStat = await fs.stat(path.join(path.dirname(entry.file), "events.jsonl"));
+          auxSize = evStat.size; auxMtimeMs = evStat.mtimeMs;
+        } catch { auxSize = undefined; auxMtimeMs = undefined; }
+      }
+      const mtimeMs = Math.max(stat.mtimeMs, auxMtimeMs ?? 0);
+      if (!entry.read || stat.size !== entry.size || mtimeMs !== entry.mtimeMs || auxSize !== entry.auxSize) {
+        entry.size = stat.size; entry.mtimeMs = mtimeMs; entry.auxSize = auxSize; entry.auxMtimeMs = auxMtimeMs;
         try { await this.load(entry); } catch { entry.inferred = null; entry.task = null; }
       }
       // 有子代理在跑：按两边最近的动静算；这一轮已经结束的（后台子代理还在跑）当作在跑子代理
@@ -598,19 +729,19 @@ export class ActivityScanner {
       consider(entry, entry.task, inferred, seen, sub);
       if (now - entry.mtimeMs > KEEP_MS) this.entries.delete(entry.file);
     }
-    // Antigravity：对话状态在它自己的对话列表库里（见 antigravity.ts 的 readAntigravityActivity），子代理不单独算
+    // Antigravity：对话状态在它自己的对话列表库里（见 antigravity.ts 的 readAntigravityActivity），子代理不单独算（归入主对话的 subagents）
     if (this.roots.antigravity) {
       const alive = new Set<string>();
-      for (const item of readAntigravityActivity(now - KEEP_MS, this.roots.antigravity)) {
+      for (const item of readAntigravityActivity(now - KEEP_MS, this.roots.antigravity, now)) {
         if (item.nested) continue;
         alive.add(item.id);
         const holder = this.agy.get(item.id) ?? {};
         this.agy.set(item.id, holder);
         const inferred: Inferred = item.running
-          ? { status: item.phase === "waiting" ? "waiting" : item.phase === "tool" ? "tool" : "thinking", since: item.since, at: item.at }
+          ? { status: item.phase === "waiting" ? "waiting" : item.phase === "tool" ? "tool" : "thinking", since: item.since, at: item.at, ...(item.phase === "tool" && item.subagents ? { tool: "Agent" } : {}) }
           : { status: "done", since: item.since, at: item.at, doneAt: item.at, ...(item.ended ? { ended: item.ended } : {}) };
         const task: AgentTask = { key: `antigravity:${item.id}`, kind: "antigravity", agent: AGENT.antigravity, id: item.id, title: clip(item.title || "未命名会话"), project: path.basename(item.workspace || ""), status: "thinking", since: 0, updatedAt: 0 };
-        consider(holder, task, inferred, item.at);
+        consider(holder, task, inferred, item.at, item.subagents ? { count: item.subagents } : undefined);
       }
       for (const id of [...this.agy.keys()]) if (!alive.has(id)) this.agy.delete(id);
     }

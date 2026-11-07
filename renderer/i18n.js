@@ -2883,6 +2883,11 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.81 更新说明
+    '修复：桌宠更准地识别各家工具正在运行的任务，支持 DeepSeek 提问卡片': 'Fixed: desk pet accurately detects active tasks across all tools and supports DeepSeek question cards',
+    '修复 Claude Code、Codex、Grok Build 在生成大附件、大图或超长工具输出时把回合开头挤出读取窗口导致桌宠漏判的问题，补齐 Claude 并行工具跟踪与 Antigravity 长回合及子代理识别；DeepSeek Harness 向你提问或提交计划时也会弹出桌面卡片了。': 'Fixed missed active-turn detection in Claude Code, Codex and Grok Build when large attachments, images or long tool outputs pushed turn headers past the tail read window; added parallel tool tracking for Claude and long-turn / subagent detection for Antigravity; DeepSeek Harness now pops up desk cards when asking questions or submitting plans.',
+    '修复：桌宠问题卡片右侧文字与按钮被截断': 'Fixed: right-side text and buttons clipped on desk pet question cards',
+    '修复问题卡片在长会话标题或长选项说明下被撑宽超出窗口的问题，右上角关闭键和右下角「知道了」按钮完整显示。': 'Fixed question cards stretching past the window edge on long session titles or option descriptions, keeping the top-right close button and bottom-right “Got it” button fully visible.',
     // 0.3.80 更新说明
     '修复：主进程与后台扫描内存占用偏高（约 500 MB 降至约 300 MB）': 'Fixed: high memory usage in the main process and background scans (down from ~500 MB to ~300 MB)',
     '重构月度请求流水与 Antigravity 对话库的读取方式，改为分块流式扫描与 SQLite 游标迭代，不再一次性把整月 JSONL 和几十 MB 的步骤 BLOB 装入内存；同时修复会话索引在每次摘要库变动时全量重扫全部对话库的问题，大幅降低主进程与后台线程的峰值内存。': 'Monthly request logs and Antigravity conversation databases now use chunked streaming and SQLite cursor iteration instead of loading full-month JSONL files and multi-megabyte step BLOBs into memory at once; fixed session indexing rescanning every conversation database whenever the summary database changed, cutting peak memory in the main process and worker threads.',

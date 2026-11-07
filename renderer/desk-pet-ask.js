@@ -17,7 +17,7 @@
     node.append(...children.filter(Boolean));
     return node;
   };
-  const KIND = { claude: 'claude', codex: 'chatgpt' };
+  const KIND = { claude: 'claude', codex: 'chatgpt', deepseek: 'deepseek' };
   /** 弹过的提问：只有新来的才播弹出来的动画。 */
   const seen = new Set();
 

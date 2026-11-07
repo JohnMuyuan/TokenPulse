@@ -266,6 +266,13 @@ app.whenReady().then(async () => {
     assert.deepEqual(await ajs("[document.querySelector('.ak-head b').textContent, document.querySelector('.ak-head span').textContent, document.querySelector('.ak-say').textContent, document.querySelector('.ak-question').textContent, [...document.querySelectorAll('.ak-opts li')].map(li => li.textContent), document.querySelector('.ak-multi').textContent, document.querySelector('.ak-foot small').textContent]"),
       ['Claude Code', 'demo-app · 额度卡片分级提示', '有个问题想问你', '方案额度紧张时用哪种提示？', ['1分级颜色按剩余额度变色', '2弹通知'], '可以多选', '回到终端里回答']);
     await until(() => { const b = askWin.getBounds(); return b.width === 332 && b.height > 100; }, '窗口大小 = 卡片 + 描边投影');
+    assert.deepEqual(await ajs(`(() => {
+      document.querySelector('.ak-head span').textContent = 'Claude · Minecraft Fabric 随机附魔怪物组队生存模组完整重构方案';
+      document.querySelector('.ak-question span').textContent = '1.0.2 在屏幕左上角加了一行「保护 X 点 减伤 Y%」。你在游戏里看到的是哪种情况？';
+      document.querySelector('.ak-opts small').textContent = '只显示了普通保护，想把火焰保护、爆炸保护、弹射物保护、摔落缓冲、荆棘这些防御附魔也全部列出来，每种写清楚减伤多少。';
+      const card = document.querySelector('.ak-card'), x = document.querySelector('.ak-x').getBoundingClientRect(), ok = document.querySelector('.ak-btn').getBoundingClientRect();
+      return [card.offsetWidth, Math.round(card.getBoundingClientRect().right) <= 326, Math.round(x.right) <= 320, Math.round(ok.right) <= 320];
+    })()`), [320, true, true, true], '长标题、长问题和长选项说明不会把卡片撑出 320px 宽的窗口，右上角关闭键与右下角按钮完整显示');
     await until(async () => (await sounds()).some(item => item.startsWith('ask@')), '主进程发来「在问你」：响一声').catch(async error => { console.error('heard', await sounds()); throw error; });
     await until(() => js("/1 个在问你/.test(document.getElementById('dp-hint').textContent)"), '悬停提示写着在问你');
     // 点「知道了」：卡片收起；同一个问题不会再弹

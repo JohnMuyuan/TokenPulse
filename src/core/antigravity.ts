@@ -29,7 +29,7 @@ type Database = { prepare: (sql: string) => Statement; exec?: (sql: string) => v
 const openDb = (file: string): Database => {
   const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (file: string, opts?: { readOnly?: boolean }) => Database };
   const db = new DatabaseSync(file, { readOnly: true });
-  try { db.exec?.("PRAGMA cache_size = -2000; PRAGMA temp_store = MEMORY;"); } catch { /* 只读或旧版不支持时跳过 */ }
+  try { db.exec?.("PRAGMA busy_timeout = 200; PRAGMA cache_size = -2000; PRAGMA temp_store = MEMORY;"); } catch { /* 只读或旧版不支持时跳过 */ }
   return db;
 };
 function toBuf(u8: Uint8Array | null | undefined): Buffer | null {
@@ -486,6 +486,8 @@ export async function deleteAntigravityConversation(id: string) {
 export type AgyActivity = {
   id: string; title: string; workspace?: string;
   running: boolean; nested: boolean;
+  /** 这个主对话下正在跑的子代理个数。 */
+  subagents?: number;
   /** 最后改动的时间（毫秒）；since：最后一次用户输入。 */
   at: number; since: number;
   phase?: "thinking" | "tool" | "waiting";
@@ -499,11 +501,12 @@ export function sqliteTime(value: unknown): number {
   return Date.parse(text) || 0;
 }
 
-const phaseCache = new Map<string, { size: number; mtimeMs: number; value: Pick<AgyActivity, "phase" | "ended"> }>();
+type PhaseResult = Pick<AgyActivity, "phase" | "ended"> & { open?: boolean };
+const phaseCache = new Map<string, { size: number; mtimeMs: number; value: PhaseResult }>();
 
 /** 一个对话最后几步：在跑的时候分出在想 / 工具 / 等你；空闲了看最后一次回复怎么结束的。 */
-export function conversationPhase(file: string): Pick<AgyActivity, "phase" | "ended"> {
-  const stamp = antigravityStamp(file);
+export function conversationPhase(file: string, knownStamp?: { size: number; mtimeMs: number } | null): PhaseResult {
+  const stamp = knownStamp !== undefined ? knownStamp : antigravityStamp(file);
   if (!stamp) return {};
   const hit = phaseCache.get(file);
   if (hit && hit.size === stamp.size && hit.mtimeMs === stamp.mtimeMs) return hit.value;
@@ -511,11 +514,14 @@ export function conversationPhase(file: string): Pick<AgyActivity, "phase" | "en
     const value = withDb(file, (db) => {
       const tail = db.prepare("select step_type, status from steps order by idx desc limit 6").all() as { step_type: number; status: number }[];
       if (!tail.length) return {};
+      const open = tail.some((step) => STEP_OPEN.has(step.status));
       const phase = tail.some((step) => step.status === STEP.WAITING) ? "waiting" as const
-        : tail[0].step_type !== MODEL_REPLY && STEP_OPEN.has(tail[0].status) ? "tool" as const : "thinking" as const;
+        : tail.some((step) => step.step_type === MODEL_REPLY && STEP_OPEN.has(step.status)) ? "thinking" as const
+        : tail.some((step) => step.step_type !== MODEL_REPLY && STEP_OPEN.has(step.status)) ? "tool" as const
+        : "thinking" as const;
       const reply = tail.find((step) => step.step_type === MODEL_REPLY && !STEP_OPEN.has(step.status));
       const ended = reply?.status === STEP.ERROR ? "error" as const : reply && (reply.status === STEP.CANCELED || reply.status === STEP.INTERRUPTED) ? "interrupted" as const : "ok" as const;
-      return { phase, ended };
+      return { phase, ended, open };
     });
     if (phaseCache.size > 128) phaseCache.clear();
     phaseCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, value });
@@ -524,31 +530,96 @@ export function conversationPhase(file: string): Pick<AgyActivity, "phase" | "en
 }
 
 /** 最近 since 之后动过的对话。读不到（没装、正在写）返回空的。 */
-export function readAntigravityActivity(since: number, dir = antigravityDir()): AgyActivity[] {
+export function readAntigravityActivity(since: number, dir = antigravityDir(), now = Date.now()): AgyActivity[] {
   const file = path.join(dir, "conversation_summaries.db");
   if (!fs.existsSync(file)) return [];
   let rows: Record<string, unknown>[] = [];
   try {
     rows = withDb(file, (db) => db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[]);
   } catch { return []; }
-  const out: AgyActivity[] = [];
+  const parentOf = new Map<string, string>();
+  const rawById = new Map<string, Record<string, unknown>>();
   for (const row of rows) {
     const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
-    const at = sqliteTime(row.last_modified_time);
-    if (!id || at < since) continue;
+    if (!id) continue;
+    rawById.set(id, row);
+    const parentId = typeof row.parent_conversation_id === "string" ? row.parent_conversation_id.trim() : "";
+    if (parentId) parentOf.set(id, parentId);
+  }
+  const rootOf = (id: string) => {
+    let cur = id;
+    for (let depth = 0; depth < 8; depth++) {
+      const next = parentOf.get(cur);
+      if (!next || next === cur) break;
+      cur = next;
+    }
+    return cur;
+  };
+  const byId = new Map<string, AgyActivity>();
+  const activeSubs = new Map<string, { count: number; at: number }>();
+  const buildItem = (row: Record<string, unknown>, forceKeep = false): AgyActivity | null => {
+    const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
+    if (!id) return null;
+    const sumAt = sqliteTime(row.last_modified_time);
     const status = String(row.status ?? "");
-    const running = /RUNNING|BUSY|CANCELING/.test(status) && Number(row.killed || 0) === 0;
+    const killed = Number(row.killed || 0) !== 0;
+    const notFullyIdle = Number(row.not_fully_idle || 0) !== 0;
+    const sumRunning = !killed && (/RUNNING|BUSY|CANCELING/.test(status) || notFullyIdle);
     const nested = Number(row.nesting_depth || 0) > 0;
+    if (!forceKeep && !sumRunning && sumAt < since) return null;
     const db = path.join(dir, "conversations", id + ".db");
-    out.push({
-      id, at, since: sqliteTime(row.last_user_input_time) || at, running,
+    const stamp = (!nested || sumRunning) ? antigravityStamp(db) : null;
+    const info = !nested && stamp ? conversationPhase(db, stamp) : {};
+    const dbOpen = !nested && !killed && !!info.open && !!stamp && stamp.mtimeMs > sumAt + 1000 && now - stamp.mtimeMs < 60_000;
+    const running = sumRunning || dbOpen;
+    // 正在跑的对话，步骤实时写进 conversations/<id>.db-wal，而摘要库的 last_modified_time 往往要等这一轮结束或检查点才更新；
+    // 取两边较新的时间，避免超过 90 秒误判成「可能在等你」或超过 10 分钟被当成僵尸任务丢掉。已空闲的对话仍以摘要库为准。
+    const at = running ? Math.max(sumAt, stamp?.mtimeMs ?? 0) : sumAt;
+    if (!forceKeep && !running && at < since) return null;
+    const { open: _open, ...phase } = info;
+    return {
+      id,
+      at,
+      since: sqliteTime(row.last_user_input_time) || sumAt || at,
+      running,
       title: typeof row.title === "string" ? row.title : "",
       workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null),
       nested,
-      ...(!nested && fs.existsSync(db) ? conversationPhase(db) : {}),
-    });
+      ...phase,
+    };
+  };
+  for (const row of rows) {
+    const item = buildItem(row);
+    if (!item) continue;
+    byId.set(item.id, item);
+    if (item.nested && item.running && now - item.at <= 5 * 60_000) {
+      const rootId = rootOf(item.id);
+      if (rootId && rootId !== item.id) {
+        const prev = activeSubs.get(rootId) ?? { count: 0, at: 0 };
+        activeSubs.set(rootId, { count: prev.count + 1, at: Math.max(prev.at, item.at) });
+      }
+    }
   }
-  return out;
+  for (const [rootId, sub] of activeSubs) {
+    let root = byId.get(rootId);
+    if (!root) {
+      const rawRoot = rawById.get(rootId);
+      if (rawRoot) {
+        root = buildItem(rawRoot, true) ?? undefined;
+        if (root) byId.set(rootId, root);
+      }
+    }
+    if (root && !root.nested) {
+      root.subagents = sub.count;
+      root.at = Math.max(root.at, sub.at);
+      if (!root.running) {
+        root.running = true;
+        root.phase = "tool";
+        root.ended = undefined;
+      }
+    }
+  }
+  return [...byId.values()];
 }
 
 /* ---------------- 额度（本机 language server） ---------------- */

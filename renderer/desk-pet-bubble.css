@@ -16,6 +16,7 @@
   --bb-danger: #df4f45;
   --bb-claude: #d97757;
   --bb-chatgpt: #10a37f;
+  --bb-deepseek: #4d6bfe;
   --bb-grok: #6f7782;
   font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
 }
@@ -61,6 +62,7 @@ body.bb-body { position: relative; color: var(--bb-text); font-size: 12px; line-
 .bb-kind { flex: none; width: 8px; height: 8px; background: var(--bb-grok); box-shadow: 0 0 0 1px var(--bb-ink); }
 .bb-kind.claude { background: var(--bb-claude); }
 .bb-kind.chatgpt { background: var(--bb-chatgpt); }
+.bb-kind.deepseek { background: var(--bb-deepseek); }
 .bb-plan { flex: none; padding: 0 4px; border: 1px solid var(--bb-muted); color: var(--bb-muted); font-size: 10.5px; line-height: 14px; }
 
 /* 一个窗口：名字、10 格（剩多少亮多少）、剩余百分比；下面一行写什么时候重置 */
@@ -86,8 +88,8 @@ button.bb-line:hover, button.bb-line:focus-visible { background: var(--bb-hover)
 .bb-dot.waiting { background: var(--bb-warn); }
 .bb-dot.done { background: var(--bb-off); }
 
-.bb-list { display: grid; gap: 2px; }
-.bb-task { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; padding: 4px 5px; border: 0; background: transparent; color: var(--bb-text); font: inherit; text-align: left; cursor: pointer; }
+.bb-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.bb-task { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; align-items: center; gap: 7px; min-width: 0; width: 100%; box-sizing: border-box; padding: 4px 5px; border: 0; background: transparent; color: var(--bb-text); font: inherit; text-align: left; cursor: pointer; }
 .bb-task:hover, .bb-task:focus-visible { background: var(--bb-hover); outline: none; }
 .bb-task-main { display: grid; min-width: 0; }
 .bb-task-main b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }

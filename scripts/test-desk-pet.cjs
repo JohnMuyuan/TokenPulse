@@ -32,8 +32,11 @@ check('desk pet: Claude Code turn states from the session tail', () => {
   const prompt = claudeUser(0, '把额度卡片改成分级提示');
   assert.deepEqual(activity.inferClaude([prompt]), { status: 'thinking', since: T0, at: T0, tool: undefined, doneAt: undefined });
   const tool = claudeAsst(5, [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }], 'tool_use');
+  const tool2 = claudeAsst(6, [{ type: 'tool_use', id: 't2', name: 'Read', input: { file_path: 'a.ts' } }], 'tool_use');
+  const toolResult2 = s => line({ type: 'user', timestamp: at(s), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'ok' }] } });
   assert.equal(activity.inferClaude([prompt, claudeAsst(3, [{ type: 'thinking', thinking: '…' }], 'tool_use'), tool]).status, 'tool');
   assert.equal(activity.inferClaude([prompt, tool]).tool, 'Bash');
+  assert.deepEqual([activity.inferClaude([prompt, tool, tool2, toolResult2(7)]).status, activity.inferClaude([prompt, tool, tool2, toolResult2(7)]).tool], ['tool', 'Bash'], '并行工具调用：先回来一个，另一个还在跑');
   assert.equal(activity.inferClaude([prompt, tool, toolResult(9)]).status, 'thinking', '工具有结果了：模型接着想');
   const done = activity.inferClaude([prompt, tool, toolResult(9), claudeAsst(20, [{ type: 'text', text: '改好了' }], 'end_turn')]);
   assert.equal(done.status, 'done'); assert.equal(done.doneAt, T0 + 20000); assert.equal(done.since, T0);
@@ -65,6 +68,12 @@ check('desk pet: Claude Code turn states from the session tail', () => {
   const apiError = activity.inferClaude([prompt, tool, toolResult(9), claudeAsst(10, [{ type: 'text', text: 'API Error: 529 overloaded' }], 'stop_sequence', { isApiErrorMessage: true })]);
   assert.deepEqual([apiError.status, apiError.ended, apiError.doneAt], ['done', 'error', T0 + 10000]);
   assert.equal(activity.inferClaude([prompt, claudeAsst(10, [], 'stop_sequence', { isApiErrorMessage: true }), claudeUser(30, '重试一下')]).ended, undefined, '出错后又问了一轮：重新算');
+  // Claude Code 2.1+ 大段 attachment 把 user 挤出 64KB 尾巴，只剩 api-request-blob / api-request；以及后台任务通知、自动压缩继续
+  assert.deepEqual([activity.inferClaude([line({ type: 'api-request-blob' }), line({ type: 'api-request', timestamp: at(15) })]).status, activity.inferClaude([line({ type: 'api-request-blob' }), line({ type: 'api-request', timestamp: at(15) })]).since], ['thinking', T0 + 15000]);
+  const endLine = claudeAsst(20, [{ type: 'text', text: '改好了' }], 'end_turn');
+  assert.equal(activity.inferClaude([endLine, claudeUser(50, '<task-notification>\n<task-id>b1</task-id>\n</task-notification>')]).status, 'thinking', '后台任务完成唤醒主会话');
+  assert.equal(activity.inferClaude([endLine, claudeUser(55, 'This session is being continued from a previous conversation that ran out of context.')]).status, 'thinking', '上下文自动压缩后继续');
+  assert.equal(activity.inferClaude([line({ type: 'system', subtype: 'turn_duration', timestamp: at(30) })]).status, 'done', '尾巴里只有 turn_duration 也算结束');
 });
 
 check('desk pet: Codex turn states from task_started / task_complete and pending tool calls', () => {
@@ -81,6 +90,8 @@ check('desk pet: Codex turn states from task_started / task_complete and pending
   assert.equal(activity.inferCodex([started, ev(5, 'turn_aborted')]).doneAt, T0 + 5000);
   assert.equal(activity.inferCodex([started, ev(5, 'task_complete'), item(6, { type: 'message', role: 'assistant', content: [] })]).status, 'done', '结束之后的零碎行不重新算在跑');
   assert.equal(activity.inferCodex([item(1, { type: 'reasoning' })]).status, 'thinking', '尾巴从一轮中间开始');
+  assert.equal(activity.inferCodex([ev(2, 'item_completed'), ev(3, 'token_count')]).status, 'thinking', '大图或大工具输出把 task_started 挤出 64KB 尾巴，只剩中间事件也算在跑');
+  assert.equal(activity.inferCodex([line({ type: 'token_usage_record', timestamp: at(4) })]).status, 'thinking');
   assert.equal(activity.inferCodex([line({ type: 'session_meta', payload: {} })]), null);
   // 结束方式：做完、中断、出错（出错后跟着的 task_complete 仍算出错；stream_error 只是在重试）
   assert.equal(activity.inferCodex([started, ev(9, 'task_complete')]).ended, 'ok');
@@ -191,6 +202,9 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     const scanned = await fresh.scan();
     const bigTask = scanned.running.find(t => t.key === 'claude:c-3');
     assert.ok(bigTask, '大文件也认出来'); assert.equal(bigTask.title, '很长的会话'); assert.equal(bigTask.tool, 'Grep');
+    // 工具跑的过程中连续写了超 64 KB 的 progress / attachment 行，readEnds 自动往前扩，仍能认出正在跑的工具
+    fs.appendFileSync(big, Array(80).fill(filler).join('\n') + '\n');
+    assert.equal((await fresh.scan()).running.find(t => t.key === 'claude:c-3')?.tool, 'Grep', '尾巴里全是 progress 时自动往前扩');
     // 工具调用卡了 90 秒以上：刚变成「可能在等你」报一次
     const stuck = new Date(Date.now() - activity.WAITING_MS - 10_000); fs.utimesSync(big, stuck, stuck);
     const waiting = await fresh.scan();
@@ -267,8 +281,11 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.equal(activity.inferGrok([...running, call(4, 't2', 'read_file'), result(5, 't2')]).tool, 'run_terminal_command', '并行的工具还有一个没完');
     const ended = stop => { const r = activity.inferGrok([...running, result(5, 't1'), turnEnd(9, stop)]); return [r.status, r.ended, r.doneAt]; };
     assert.deepEqual([ended('end_turn'), ended('cancelled'), ended('error')], [['done', 'ok', T0 + 9000], ['done', 'interrupted', T0 + 9000], ['done', 'error', T0 + 9000]]);
-    // 读到的尾巴从一轮中间开始：以第一条回复为准
+    // 读到的尾巴从一轮中间开始：以第一条回复为准；就算尾巴里只有刚跑完的超大工具结果或进度行、自动压缩行，也不会漏判成没在跑
     assert.deepEqual([activity.inferGrok([result(1, 'x'), call(2, 't3', 'grep')]).status, activity.inferGrok([result(1, 'x'), call(2, 't3', 'grep')]).since], ['tool', T0 + 2000]);
+    assert.deepEqual([activity.inferGrok([result(5, 'x')]).status, activity.inferGrok([result(5, 'x')]).since], ['thinking', T0 + 5000], '超大工具输出把前面的提问挤出 64KB 尾巴时，工具刚跑完仍在思考');
+    assert.deepEqual([activity.inferGrok([grok(3, { sessionUpdate: 'tool_call_update', toolCallId: 't9', title: 'write_file' })]).status, activity.inferGrok([grok(3, { sessionUpdate: 'tool_call_update', toolCallId: 't9', title: 'write_file' })]).tool], ['tool', 'write_file']);
+    assert.equal(activity.inferGrok([grok(4, { sessionUpdate: 'auto_compact_started' })]).status, 'thinking');
     assert.equal(activity.inferGrok([grok(0, { sessionUpdate: 'hook_execution', event_name: 'session_start' })]), null);
     // 问你：ask_user_question 按 AskUserQuestion 显示，回答了就没了；exit_plan_mode 是计划等批准
     const question = call(4, 'q1', 'ask_user_question', { questions: [{ question: '用哪种？', options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] });
@@ -292,6 +309,11 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     const dsEnd = kind => { const r = activity.inferDeepseek([...dsRun, ds(9, 'turn/end', { turn: 1, reason: { kind } })]); return [r.status, r.ended]; };
     assert.deepEqual([dsEnd('completed'), dsEnd('cancelled'), dsEnd('error')], [['done', 'ok'], ['done', 'interrupted'], ['done', 'error']]);
     assert.equal(activity.liveStatus({ status: 'waiting', since: 0, at: 0 }, Date.now() - activity.STALE_MS - 1, Date.now()), 'waiting', '等你批准不按十分钟算过期');
+    const dsAskCall = ds(4, 'tool/call', { callId: 'dq1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'next', header: '下一步', question: '接下来干什么？', options: [{ label: '继续写', description: '按原定大纲' }, { label: '先改大纲', description: '' }] }] }) });
+    const dsAsking = activity.inferDeepseek([ds(0, 'turn/start', { turn: 1 }), dsAskCall]);
+    assert.deepEqual([dsAsking.status, dsAsking.ask.tool, dsAsking.ask.id, dsAsking.ask.questions[0].header, dsAsking.ask.questions[0].options.map(o => o.label)], ['tool', 'AskUserQuestion', 'dq1', '下一步', ['继续写', '先改大纲']], 'DeepSeek Harness 的 ask_user_question 也弹问题卡片');
+    assert.equal(activity.inferDeepseek([ds(0, 'turn/start', { turn: 1 }), dsAskCall, ds(5, 'tool/result', { message: { toolCallId: 'dq1' } })]).ask, undefined, '回答后收起');
+    assert.deepEqual(activity.inferDeepseek([ds(0, 'turn/start', { turn: 1 }), ds(4, 'tool/call', { callId: 'dp1', name: 'exit_plan_mode', arguments: JSON.stringify({ plan: '1. 查问题\n2. 修代码' }) })]).ask, { id: 'dp1', tool: 'ExitPlanMode', at: T0 + 4000, questions: [], plan: '1. 查问题\n2. 修代码' });
 
     // pi：stopReason=toolUse 去跑工具，stop / error / aborted 这一轮结束
     const pi = (s, message) => line({ type: 'message', id: 'm' + s, timestamp: at(s), message });
@@ -391,6 +413,15 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     put(A, '修首页的额度卡片', 'CASCADE_RUN_STATUS_IDLE'); steps(A, [[14, 3], [15, 3], [132, 3], [15, 7]]);
     const third = await scanner.scan();
     assert.deepEqual([third.failed, third.finished, third.running], [[`antigravity:${A}`], [], []]);
+    // 摘要库 last_modified_time 超过 12 分钟没刷新、但对话库仍在写，或 not_fully_idle=1 / 子代理在跑：不会漏识别
+    sum.exec('alter table conversation_summaries add column not_fully_idle integer default 0; alter table conversation_summaries add column parent_conversation_id text;');
+    sum.prepare('update conversation_summaries set status = ?, last_modified_time = ? where conversation_id = ?').run('CASCADE_RUN_STATUS_RUNNING', stamp(Date.now() - 12 * 60_000), A);
+    steps(A, [[14, 3], [15, 3], [132, 2]]);
+    sum.prepare('update conversation_summaries set status = ?, not_fully_idle = 0, last_modified_time = ? where conversation_id = ?').run('CASCADE_RUN_STATUS_IDLE', stamp(Date.now() - 120_000), B);
+    sum.prepare('update conversation_summaries set status = ?, parent_conversation_id = ?, last_modified_time = ? where conversation_id = ?').run('CASCADE_RUN_STATUS_RUNNING', B, stamp(Date.now()), C);
+    steps(C, [[15, 8]]);
+    const fourth = await scanner.scan();
+    assert.deepEqual(fourth.running.map(t => [t.id, t.status, t.subagents]).sort((x, y) => x[0].localeCompare(y[0])), [[A, 'tool', undefined], [B, 'tool', 1]], '长回合按对话库实时改动时间算在跑，后台子代理归入主对话');
     sum.close();
   });
 
