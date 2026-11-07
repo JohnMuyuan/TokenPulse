@@ -67,6 +67,7 @@
   - `dist/TokenPulse-0.3.79-Setup.exe.blockmap`（SHA256: `5485E0ED6E19D552FECF8DF2B1B212C2D7FEBAE36078BF610C098E264D006846`）
   - `dist/latest.yml`（SHA256: `A77A227C3AD328AE6D5678DB066ECB92BA38C19B47B1B79BC93F415A20F2C88D`）
   - `dist/win-unpacked/TokenPulse.exe`
+  - **Git 提交与发布状态**：已提交（Commit `5406683`）、已打标签 `v0.3.79` 并推送到 `origin/main`；GitHub Release `v0.3.79` 已正式发布（https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.79 ），全部 4 项安装包与元数据附件均已上传并通过 SHA256 摘要校验。
 
 - **进程与资源释放状态（严格遵循 AGENTS.md 规范）**：
   - **进程检查**：PowerShell 执行 `Get-Process node, electron -ErrorAction SilentlyContinue`，确认当前 0 遗留 `node.exe`、0 遗留 `electron.exe`。
