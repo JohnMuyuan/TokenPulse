@@ -1,11 +1,12 @@
 {
   "name": "tokenpulse",
-  "version": "0.3.78",
+  "version": "0.3.79",
   "private": true,
   "description": "TokenPulse — Your AI usage, at a glance.",
   "author": "TokenPulse",
   "main": "build/main/index.js",
   "scripts": {
+    "build": "npm run compile",
     "compile": "tsc -p tsconfig.json",
     "start": "npm run compile && electron .",
     "dev": "npm run compile && electron . --dev",

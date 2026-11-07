@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; font-src 'self';">
   <title>TokenPulse · 用量与额度</title>
   <link rel="stylesheet" href="app.css">
@@ -427,37 +428,110 @@
       <section class="settings-panel" data-panel="alerts" role="tabpanel" hidden><div id="settings-alerts"></div></section>
 
       <section class="settings-panel" data-panel="data" role="tabpanel" hidden>
-        <div class="setting-block">
-          <div class="setting-title">数据位置</div>
-          <p class="setting-hint">用量账本、额度采样历史和设置都只保存在本机 <code>~/.tokenpulse/</code>，不会上传。删掉用量账本会从头重扫、不丢数据；额度采样历史官方不提供，删了就找不回来。</p>
-          <button id="open-data" class="btn"><svg class="icon"><use href="#i-folder"/></svg>打开数据目录</button>
-          <button id="open-log" class="btn" type="button"><svg class="icon"><use href="#i-folder"/></svg>打开日志</button>
-          <p class="setting-hint">额度刷不出、登录不成功或别的地方出问题时，把日志 <code>logs/tokenpulse.log</code> 发给帮你排查的人：里面是 TokenPulse 发的每个请求（地址、状态码、耗时）、你的操作、登录过程和报错。不记 token、请求内容和会话正文，链接参数已去掉，邮箱已打码。</p>
+        <!-- Data & Cache Telemetry Metric Cards -->
+        <div class="setting-block setting-card">
+          <div class="setting-group-head">
+            <svg class="icon"><use href="#i-cache"/></svg>
+            <div>
+              <div class="setting-title">存储与缓存概览</div>
+              <p class="setting-hint">TokenPulse 采用纯本地存储，所有用量账本、配置与会话索引均保存在本机。</p>
+            </div>
+          </div>
+          <div id="data-metrics" class="data-metrics-grid">
+            <div class="data-stat-card">
+              <small>用量账本</small>
+              <b id="data-metric-files">-</b>
+              <span id="data-metric-requests">0 条请求记录</span>
+            </div>
+            <div class="data-stat-card">
+              <small>会话缓存</small>
+              <b id="data-metric-sessions">-</b>
+              <span>40 项分页惰性加载</span>
+            </div>
+            <div class="data-stat-card">
+              <small>排查日志</small>
+              <b>tokenpulse.log</b>
+              <span>脱敏记录，无 Token</span>
+            </div>
+            <div class="data-stat-card">
+              <small>内存回收</small>
+              <b id="data-metric-mem">自动 (300s)</b>
+              <span>切页卸载 · 窗口离开清理</span>
+            </div>
+          </div>
         </div>
-        <div class="setting-block">
-          <div class="setting-title">tokens.ci 自动上传</div>
-          <p class="setting-hint">按你设的间隔，由 TokenPulse 运行 tokens.ci 的官方工具，把用量上传到 tokens.ci 排行榜。上传的数据由那个工具自己扫描，只有 Token 数、型号和时间；TokenPulse 自己的账本仍然只在本机。</p>
+
+        <!-- Data Directory & Logs Card -->
+        <div class="setting-block setting-card">
+          <div class="setting-group-head">
+            <svg class="icon"><use href="#i-folder"/></svg>
+            <div>
+              <div class="setting-title">数据位置与日志</div>
+              <p class="setting-hint">数据存储在 <code>~/.tokenpulse/</code>。删掉用量账本会从头重扫、不丢数据；额度采样历史删了无法恢复。</p>
+            </div>
+          </div>
+          <div class="setting-actions-row">
+            <button id="open-data" class="btn"><svg class="icon"><use href="#i-folder"/></svg>打开数据目录</button>
+            <button id="open-log" class="btn" type="button"><svg class="icon"><use href="#i-folder"/></svg>打开日志</button>
+            <button id="data-trim-cache" class="btn" type="button"><svg class="icon"><use href="#i-restore"/></svg>清理渲染缓存</button>
+          </div>
+          <p class="setting-subhint">日志 <code>logs/tokenpulse.log</code> 记录请求状态与操作，链接参数已脱敏，邮箱已打码。</p>
+        </div>
+
+        <!-- tokens.ci Card -->
+        <div class="setting-block setting-card">
+          <div class="setting-group-head">
+            <svg class="icon"><use href="#i-up"/></svg>
+            <div>
+              <div class="setting-title">tokens.ci 自动上传</div>
+              <p class="setting-hint">按你设的间隔，由 TokenPulse 运行 tokens.ci 的官方工具，把用量上传到 tokens.ci 排行榜。上传的数据由那个工具自己扫描，只有 Token 数、型号和时间；TokenPulse 自己的账本仍然只在本机。</p>
+            </div>
+          </div>
           <button id="open-tokens-ci" class="btn" type="button"><svg class="icon"><use href="#i-up"/></svg>设置 tokens.ci 上传</button>
         </div>
-        <div class="setting-block">
-          <div class="setting-title">API Key 余额监控</div>
-          <p class="setting-hint">DeepSeek 按量付费，没有订阅额度。填一个 DeepSeek 开放平台的 API Key，TokenPulse 按「设置 → 通用」里的额度查询间隔查余额，低于你设的数时提醒。有几个账号可以填几个，每个账号在额度详情里各有一页。Key 只保存在这台电脑上，只用来查余额，查余额不花钱。</p>
-          <button id="open-deepseek-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加 DeepSeek 账号</button>
-          <p class="setting-hint">自己买的第三方中转站 Key 也可以监控：填站点地址和 Key，能看到余额、Key 的额度和限速窗口、每天的用量。支持 sub2api 和 new-api / one-api 搭的站。Key 只发给你填的那个站点。</p>
-          <button id="open-relay-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加第三方 Key</button>
+
+        <!-- API Key Monitoring Card -->
+        <div class="setting-block setting-card">
+          <div class="setting-group-head">
+            <svg class="icon"><use href="#i-plus"/></svg>
+            <div>
+              <div class="setting-title">API Key 余额监控</div>
+              <p class="setting-hint">DeepSeek 按量付费，没有订阅额度。填一个 DeepSeek 开放平台的 API Key，TokenPulse 按「设置 → 通用」里的额度查询间隔查余额，低于你设的数时提醒。有几个账号可以填几个，每个账号在额度详情里各有一页。Key 只保存在这台电脑上，只用来查余额，查余额不花钱。</p>
+            </div>
+          </div>
+          <div class="setting-actions-row">
+            <button id="open-deepseek-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加 DeepSeek 账号</button>
+            <button id="open-relay-balance" class="btn" type="button"><svg class="icon"><use href="#i-plus"/></svg>添加第三方 Key</button>
+          </div>
         </div>
-        <div class="setting-block">
-          <div class="setting-title">供应商配置备份</div>
-          <p class="setting-hint">TokenPulse 每次改动 Claude / Codex / Grok 的配置文件前都会先让你确认，并自动留一份备份；接管前的原件也单独保存。可以在这里一键还原，或打开只读保护。</p>
+
+        <!-- Provider Config Backups Card -->
+        <div class="setting-block setting-card">
+          <div class="setting-group-head">
+            <svg class="icon"><use href="#i-lock"/></svg>
+            <div>
+              <div class="setting-title">供应商配置备份</div>
+              <p class="setting-hint">TokenPulse 每次改动 Claude / Codex / Grok 的配置文件前都会先让你确认，并自动留一份备份；接管前的原件也单独保存。可以在这里一键还原，或打开只读保护。</p>
+            </div>
+          </div>
           <button id="open-config-backups" class="btn" type="button"><svg class="icon"><use href="#i-lock"/></svg>打开配置保护</button>
         </div>
-        <div class="setting-block">
-          <div class="setting-title">从 CC Switch 导入</div>
-          <p class="setting-hint">只读 CC Switch 的本地库，补上 TokenPulse 自己没有的那部分：CLI 已经清掉的老会话、OpenCode 这类不扫描的工具。同一天同一个工具两边都有时只算 TokenPulse 自己的，不会重复。走 CC Switch 代理的请求还会用它记下的上游返回型号来核验。</p>
+
+        <!-- CC Switch Import Card -->
+        <div class="setting-block setting-card">
+          <div class="setting-group-head">
+            <svg class="icon"><use href="#i-route"/></svg>
+            <div>
+              <div class="setting-title">从 CC Switch 导入</div>
+              <p class="setting-hint">只读 CC Switch 的本地库，补上 TokenPulse 自己没有的那部分：CLI 已经清掉的老会话、OpenCode 这类不扫描的工具。同一天同一个工具两边都有时只算 TokenPulse 自己的，不会重复。走 CC Switch 代理的请求还会用它记下的上游返回型号来核验。</p>
+            </div>
+          </div>
           <div id="cc-switch-card" class="update-card"></div>
           <div id="cc-switch-pref"></div>
         </div>
-        <div class="setting-block methodology-copy">
+
+        <!-- Methodology -->
+        <div class="setting-block methodology-copy setting-card">
           <div class="setting-title">统计口径</div>
           <h3>本机用量</h3>
           <p>读取 Claude Code、Codex CLI、Grok Build、DeepSeek Harness、pi 和 Antigravity 的会话记录，并按天补上 CC Switch 里有、本机会话已经没有的记录。时间范围按本地自然日（含今天）计算，对比紧邻的上一段等长时间；今天尚未结束。</p>

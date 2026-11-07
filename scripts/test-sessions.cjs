@@ -150,7 +150,11 @@ assert.deepStrictEqual(byKind.claude.usage, {
     tokenShare: 100,
     requestShare: 100,
     costShare: 100,
+    avgRoundDurationMs: 6000,
   }],
+  avgRoundDurationMs: 6000,
+  totalActiveDurationMs: 6000,
+  avgTokensPerSec: 100,
 }, 'Claude 会话用量：同一条回复拆多行要去重，缓存命中率与节省金额计算准确');
 assert.strictEqual(byKind.codex.usage.tokens, 10500);
 assert.strictEqual(byKind.codex.usage.cacheHitRate, 60);
@@ -175,12 +179,21 @@ assert.strictEqual(bash.name, 'Bash');
 assert(bash.output.includes('file.txt') && !bash.error);
 assert.strictEqual(claude.truncated, 0);
 assert.deepStrictEqual(claude.usage, byKind.claude.usage, '详情与列表摘要的 usage 一致');
+const claudeAsst = claude.messages.filter(m => m.role === 'assistant');
+assert.strictEqual(claudeAsst.length, 2);
+assert.strictEqual(claudeAsst[1].durationMs, 6000, 'Claude final assistant reply receives 6000ms round duration');
+assert.strictEqual(claudeAsst[1].latencyEstimated, true, 'Claude latency is marked as estimated (≈)');
+assert.strictEqual(claudeAsst[1].model, 'claude-opus-5', 'Assistant message includes model identifier');
 
 // Codex：developer / AGENTS.md / environment_context 不算用户说的；AllAi 的前缀剥掉；event_msg 不重复；中断变事件
 const codex = sessions.getSession('codex', 'codex-1');
 assert.deepStrictEqual(talk(codex.messages), ['user:列出文件', 'assistant:已完成。']);
 assert(codex.messages.some(m => m.role === 'tool' && m.name === 'shell' && m.output.includes('file.txt')));
 assert(codex.messages.some(m => m.role === 'event' && m.text === '已中断'));
+const codexAsst = codex.messages.find(m => m.role === 'assistant');
+assert.strictEqual(codexAsst.durationMs, 3000, 'Codex round duration is 3000ms');
+assert.strictEqual(codexAsst.latencyEstimated, true);
+assert.strictEqual(codexAsst.model, 'gpt-6');
 
 // Grok：分块拼回整句；失败的工具标出来
 const grok = sessions.getSession('grok', 'grok-1');
@@ -222,7 +235,7 @@ const piDir = path.join(process.env.PI_CODING_AGENT_DIR, 'sessions', '--D--Demo-
 const piRows = id => [
   { type: 'session', version: 3, id, timestamp: '2026-09-24T14:00:00Z', cwd: project },
   { type: 'message', id: 'a', parentId: null, timestamp: '2026-09-24T14:00:01Z', message: { role: 'user', content: [{ type: 'text', text: '你好' }] } },
-  { type: 'message', id: 'b', parentId: 'a', timestamp: '2026-09-24T14:00:02Z', message: { role: 'assistant', model: 'claude-sonnet-5', usage: { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 0, reasoning: 100, cost: { total: 0.0114 } }, content: [{ type: 'text', text: '嗯' }] } },
+  { type: 'message', id: 'b', parentId: 'a', timestamp: '2026-09-24T14:00:02Z', durationMs: 2500, message: { role: 'assistant', model: 'claude-sonnet-5', durationMs: 2500, usage: { input: 1000, output: 500, cacheRead: 3000, cacheWrite: 0, reasoning: 100, cost: { total: 0.0114 } }, content: [{ type: 'text', text: '嗯' }] } },
 ];
 const piFile = path.join(piDir, '2026-09-24T14-00-00-000Z_pi-1.jsonl');
 const piOther = path.join(piDir, '2026-09-24T14-10-00-000Z_pi-2.jsonl');
@@ -237,6 +250,16 @@ assert(piOne && piOne.usage);
 assert.strictEqual(piOne.usage.tokens, 4500);
 assert.strictEqual(piOne.usage.cacheHitRate, 75);
 assert.strictEqual(piOne.usage.costUsd, 0.0114);
+assert.strictEqual(piOne.usage.avgRoundDurationMs, 2500);
+assert.strictEqual(piOne.usage.totalActiveDurationMs, 2500);
+assert.strictEqual(piOne.usage.avgTokensPerSec, 200);
+const piDetail = sessions.getSession('pi', 'pi-1');
+assert(piDetail, 'pi-1 detail can be retrieved');
+const piAsst = piDetail.messages.find(m => m.role === 'assistant');
+assert(piAsst, 'pi assistant message found');
+assert.strictEqual(piAsst.durationMs, 2500, 'pi explicit durationMs is preserved directly');
+assert.strictEqual(piAsst.latencyEstimated, false, 'pi latency is measured directly (no ≈)');
+assert.strictEqual(piAsst.model, 'claude-sonnet-5');
 const piText = sessions.sessionTextFile(piFile);
 fs.mkdirSync(path.dirname(piText), { recursive: true });
 fs.writeFileSync(piText, '缓存的文字');
@@ -404,6 +427,28 @@ assert.deepStrictEqual(ev('codex', { type: 'error', message: 'in-process app-ser
 assert.deepStrictEqual(ev('grok', { params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '好' } } } }), { delta: '好' });
 assert.deepStrictEqual(ev('grok', { update: { sessionUpdate: 'tool_call', title: 'read_file', _meta: { 'x.ai/tool': { name: 'Read' } } } }), { tool: 'Read' });
 assert.deepStrictEqual(ev('grok', { params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '我说的' } } } }), {}, '自己发的那句不当成回复');
+
+// 3-Tier 延迟关联系数及睡眠保护
+const sleepGap = sessions.correlateLatency({ startAt: 10000, endAt: 10000 + 35 * 60 * 1000 });
+assert.strictEqual(sleepGap.durationMs, undefined, 'Sleep guard omits durationMs when turn gap > 30 minutes');
+assert.strictEqual(sleepGap.latencyEstimated, undefined);
+
+const directTier1 = sessions.correlateLatency({ directDurationMs: 1200, startAt: 1000, endAt: 3000 });
+assert.strictEqual(directTier1.durationMs, 1200, 'Tier 1 uses directDurationMs directly');
+assert.strictEqual(directTier1.latencyEstimated, false, 'Tier 1 latency is not estimated');
+
+const deltaTier2 = sessions.correlateLatency({ startAt: 1000, endAt: 4500 });
+assert.strictEqual(deltaTier2.durationMs, 3500, 'Tier 2 computes delta endAt - startAt');
+assert.strictEqual(deltaTier2.latencyEstimated, true, 'Tier 2 latency is marked estimated');
+
+const sub100ms = sessions.correlateLatency({ startAt: 1000, endAt: 1050 });
+assert.strictEqual(sub100ms.durationMs, undefined, 'Sub-100ms turns are dropped as non-inference artifacts');
+
+assert.strictEqual(sessions.formatLatency(3500, true), '≈3.5s');
+assert.strictEqual(sessions.formatLatency(1200, false), '1.2s');
+assert.strictEqual(sessions.formatLatency(450, false), '450ms');
+assert.strictEqual(sessions.formatLatency(450, true), '≈450ms');
+assert.strictEqual(sessions.formatLatency(null), null);
 
 (async () => {
   // 主进程的删除入口：pi、DeepSeek 不再拦着；找不到时报错

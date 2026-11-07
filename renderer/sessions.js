@@ -9,12 +9,16 @@
  * 所有文字都用 textContent 放进去，会话内容里的 HTML / 脚本不会被执行。
  */
 (function () {
+  const LIST_CHUNK = 40;
+  const MSG_CHUNK = 40;
   const S = {
     items: [], loaded: false, loading: false, listAt: 0,
     search: '', kind: 'all', project: 'all',
     key: '', detail: null, detailLoading: false, openKey: '',
-    /** 从最后往前显示多少个「块」（一段工具调用算一块）。 */
-    visible: 160,
+    /** 会话列表当前渲染数量（分批分块渲染，初始 40 项）。 */
+    listLimit: LIST_CHUNK,
+    /** 从最后往前显示多少个「块」（一段工具调用算一块，初始 40 块）。 */
+    visible: MSG_CHUNK,
     /** 正在进行的回复：{ runId, key, prompt, text, tools, error } */
     run: null,
     mode: 'readonly',
@@ -68,6 +72,25 @@
   function usd(n) {
     const v = Number(n) || 0;
     return v <= 0 ? '$0.00' : v < 0.01 ? '$' + v.toFixed(4) : '$' + v.toFixed(2);
+  }
+  function formatLatency(ms, estimated = false) {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '';
+    const prefix = estimated ? '≈' : '';
+    if (ms < 1000) return `${prefix}${Math.round(ms)}ms`;
+    const sec = (ms / 1000).toFixed(1).replace(/\.0$/, '');
+    return `${prefix}${sec}s`;
+  }
+  function formatDuration(ms) {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return '';
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    if (ms < 60000) return (ms / 1000).toFixed(1).replace(/\.0$/, '') + 's';
+    let m = Math.floor(ms / 60000);
+    let s = Math.round((ms % 60000) / 1000);
+    if (s >= 60) {
+      m += 1;
+      s = 0;
+    }
+    return `${m}m ${s}s`;
   }
 
   function mark(kind, cls = 'sw-mark') {
@@ -195,16 +218,37 @@
     host.replaceChildren(el('div', { class: 'sw' }, [markLayout(aside, 'sessions:list'), markLayout(N.main, 'sessions:detail')]));
 
     N.search.addEventListener('input', () => {
-      S.search = N.search.value; drawList();
+      S.search = N.search.value;
+      S.listLimit = LIST_CHUNK;
+      drawList();
       clearTimeout(searchTimer);
       searchTimer = setTimeout(searchContent, 350);
     });
-    N.refresh.addEventListener('click', () => loadList(true));
+    N.refresh.addEventListener('click', () => {
+      S.listLimit = LIST_CHUNK;
+      loadList(true);
+    });
     N.kinds.addEventListener('click', event => {
       const hit = event.target.closest('[data-kind]'); if (!hit) return;
-      S.kind = hit.dataset.kind; drawList();
+      S.kind = hit.dataset.kind;
+      S.listLimit = LIST_CHUNK;
+      drawList();
     });
-    N.project.addEventListener('change', () => { S.project = N.project.value; drawList(); });
+    N.project.addEventListener('change', () => {
+      S.project = N.project.value;
+      S.listLimit = LIST_CHUNK;
+      drawList();
+    });
+    // 列表向下滚动时自动追加下一批数据（每次追加 40 项）
+    N.list.addEventListener('scroll', () => {
+      if (N.list.scrollTop + N.list.clientHeight >= N.list.scrollHeight - 160) {
+        const total = visibleItems().length;
+        if (S.listLimit < total) {
+          S.listLimit = Math.min(total, S.listLimit + LIST_CHUNK);
+          drawList();
+        }
+      }
+    }, { passive: true });
     N.list.addEventListener('click', event => {
       const hit = event.target.closest('[data-key]'); if (hit) select(hit.dataset.key);
     });
@@ -329,6 +373,7 @@
     const seq = ++S.searchSeq;
     if (q.replace(/\s+/g, '').length < 2) {
       S.hits = null; S.terms = []; S.searching = false; S.searchNote = '';
+      S.listLimit = LIST_CHUNK;
       setJump(); drawList(); return;
     }
     S.searching = true; S.searchNote = '正在搜索对话内容…';
@@ -346,7 +391,7 @@
       S.hits = null; S.terms = [];
       S.searchNote = '对话内容没搜成，只按标题和项目筛选';
     } finally {
-      if (seq === S.searchSeq) { S.searching = false; drawList(); setJump(); drawMain(false); }
+      if (seq === S.searchSeq) { S.searching = false; S.listLimit = LIST_CHUNK; drawList(); setJump(); drawMain(false); }
     }
   }
 
@@ -411,23 +456,54 @@
     if (S.loading && !S.items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note' }, [el('span', { class: 'sw-spinner' }), '正在读取本机会话…'])); return; }
     if (!S.items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note', text: S.loaded ? '还没有找到本机 Agent 的会话。' : '' })); return; }
     if (!items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note', text: '没有符合条件的会话。' })); return; }
+    // 若当前选中项在更靠后的位置，自适应扩展 listLimit 保证选中项立即可见
+    if (S.key) {
+      const activeIdx = items.findIndex(item => item.key === S.key);
+      if (activeIdx >= S.listLimit) {
+        S.listLimit = Math.min(items.length, Math.ceil((activeIdx + 1) / LIST_CHUNK) * LIST_CHUNK);
+      }
+    }
+    const renderLimit = Math.min(items.length, Math.max(LIST_CHUNK, S.listLimit));
     const nodes = [];
     let group = '';
-    for (const item of items) {
+    for (let i = 0; i < renderLimit; i++) {
+      const item = items[i];
       const g = groupOf(item.updatedAt);
       if (g !== group) { group = g; nodes.push(el('div', { class: 'sw-group', text: g })); }
       const active = item.key === S.key;
       const running = S.run && S.run.key === item.key;
       const hit = S.search.trim() ? S.hits?.get(item.key) : null;
       const snippet = hit?.snippets?.[0];
+
+      const hasUsage = item.usage && item.usage.tokens > 0;
+      const usageBadge = hasUsage
+        ? el('span', { class: 'sw-item-usage', translate: 'no', text: `${compact(item.usage.tokens)}${item.usage.costUsd > 0 ? ' · ≈' + usd(item.usage.costUsd) : ''}` })
+        : el('span', { class: 'sw-item-usage unrecorded', text: '未统计用量' });
+
+      const avgLat = item.avgRoundDurationMs || item.usage?.avgRoundDurationMs;
+      const isEstLat = item.kind === 'claude' || item.kind === 'codex' || item.kind === 'grok';
+      const latencyBadge = avgLat > 0
+        ? el('span', { class: 'sw-item-latency', title: isEstLat ? '均轮耗时（估算值）' : '均轮耗时' }, [
+            el('span', { class: 'sw-item-latency-icon', text: '⏱️' }),
+            formatLatency(avgLat, isEstLat)
+          ])
+        : null;
+
+      const primaryModel = item.models && item.models.length ? item.models[0] : '';
+      const modelBadge = primaryModel
+        ? el('span', { class: 'sw-item-model mono', translate: 'no', text: primaryModel, title: item.models.join(', ') })
+        : null;
+
       nodes.push(el('button', { type: 'button', class: `sw-item${active ? ' active' : ''}${hit ? ' has-hit' : ''}`, role: 'option', 'aria-selected': String(active), 'data-key': item.key }, [
         mark(item.kind),
         el('span', { class: 'sw-item-body' }, [
           el('span', { class: 'sw-item-top' }, [el('b', { text: item.title, title: item.title, translate: 'no' }), el('time', { text: shortTime(item.updatedAt) })]),
           el('span', { class: 'sw-item-meta' }, [
             el('span', { class: 'sw-item-project', text: item.project, translate: 'no' }),
-            el('span', { text: `${number(item.turns)} 轮` }),
-            item.usage && item.usage.tokens > 0 ? el('span', { class: 'sw-item-usage', translate: 'no', text: `${compact(item.usage.tokens)}${item.usage.costUsd > 0 ? ' · ≈' + usd(item.usage.costUsd) : ''}` }) : null,
+            modelBadge,
+            el('span', { class: 'sw-item-turns', text: `${number(item.turns)} 轮` }),
+            usageBadge,
+            latencyBadge,
             hit ? el('span', { class: 'sw-hit-count', text: `${number(hit.count)} 处` }) : null,
             running ? el('span', { class: 'sw-live', text: '回复中' }) : null
           ]),
@@ -435,7 +511,18 @@
         ])
       ]));
     }
+    if (renderLimit < items.length) {
+      const remaining = items.length - renderLimit;
+      const moreBtn = el('button', { type: 'button', class: 'btn sw-list-more', text: `加载更多（剩余 ${number(remaining)} 项）` });
+      moreBtn.addEventListener('click', () => {
+        S.listLimit = Math.min(items.length, S.listLimit + LIST_CHUNK);
+        drawList();
+      });
+      nodes.push(el('div', { class: 'sw-list-more-wrap' }, [moreBtn]));
+    }
+    const savedScroll = N.list.scrollTop;
     N.list.replaceChildren(...nodes);
+    N.list.scrollTop = savedScroll;
   }
 
   async function loadList(force = false, quiet = false) {
@@ -470,7 +557,7 @@
     // 搜索结果里点的正好是现在开着的这段：直接跳到第一处
     if (!changed && S.jump?.key === key && S.jump.index < 0 && S.detail?.key === key) { S.jump.index = 0; drawMain(false); return; }
     if (changed) {
-      saveDraft(); S.key = key; S.visible = 160; S.openGroups.clear();
+      saveDraft(); S.key = key; S.visible = MSG_CHUNK; S.openGroups.clear();
       // 从搜索结果点进来：打开后直接跳到第一处命中
       setJump(key);
       if (S.jump && S.search.trim()) S.jump.index = 0;
@@ -490,22 +577,66 @@
     }
   }
 
-  function saveDraft() { if (S.key && N.input) S.drafts[S.key] = N.input.value; }
+  function saveDraft() {
+    if (S.key && N.input) {
+      const keys = Object.keys(S.drafts);
+      if (keys.length >= 50 && !S.drafts[S.key]) delete S.drafts[keys[0]];
+      S.drafts[S.key] = N.input.value;
+    }
+  }
 
   function usageBox(d) {
     const u = d.usage;
-    if (!u || !(u.tokens > 0)) return [];
+    const isEst = d.kind === 'claude' || d.kind === 'codex' || d.kind === 'grok';
+
+    if (!u || !(u.tokens > 0)) {
+      const avgLat = d.avgRoundDurationMs;
+      const pills = el('div', { class: 'sw-usage-pills' }, [
+        el('span', { class: 'sw-usage-pill faint', text: '未统计用量' }),
+        avgLat > 0 ? el('span', { class: 'sw-usage-pill', text: `⏱️ 均轮 ${formatLatency(avgLat, isEst)}` }) : null
+      ].filter(Boolean));
+
+      const toggleText = el('span', { text: S.usageOpen ? '收起用量详情' : '用量详情' });
+      const toggle = el('button', { type: 'button', class: 'sw-usage-toggle', 'aria-expanded': String(S.usageOpen) }, [
+        toggleText,
+        icon('chevron', 'icon sw-caret')
+      ]);
+      const bar = el('div', { class: 'sw-usage-bar' }, [
+        pills,
+        el('div', { class: 'sw-usage-right' }, [toggle])
+      ]);
+
+      const emptyState = el('div', { class: 'sw-usage-empty' }, [
+        el('span', { class: 'sw-usage-empty-icon' }, [icon('usage')]),
+        el('b', { class: 'sw-usage-empty-title', text: '该会话未记录 Token 用量' }),
+        el('p', { class: 'sw-usage-empty-desc', text: '由于 CLI 记录格式或未启用用量统计，未获取到详细 Token 消耗' })
+      ]);
+      const panel = el('div', { class: 'sw-usage-panel', hidden: S.usageOpen ? null : '' }, [emptyState]);
+
+      toggle.addEventListener('click', () => {
+        S.usageOpen = !S.usageOpen;
+        panel.hidden = !S.usageOpen;
+        toggle.setAttribute('aria-expanded', String(S.usageOpen));
+        toggleText.textContent = S.usageOpen ? '收起用量详情' : '用量详情';
+        if (window.PulseI18n?.lang() === 'en') window.PulseI18n.apply(toggleText);
+      });
+      return [bar, panel];
+    }
+
     const models = u.models || [];
     const pills = el('div', { class: 'sw-usage-pills' }, [
       el('span', { class: 'sw-usage-pill', text: `总 Token ${compact(u.tokens)}`, title: `输入 ${number(u.input)} / 输出 ${number(u.output)}${u.reasoning ? ' / 思考 ' + number(u.reasoning) : ''}` }),
       el('span', { class: 'sw-usage-pill', text: `缓存命中 ${(u.cacheHitRate || 0).toFixed(1)}%` }),
       el('span', { class: 'sw-usage-pill', text: `API 等价 ≈ ${usd(u.costUsd)}` }),
-      u.cacheSavedUsd > 0.0001 ? el('span', { class: 'sw-usage-pill good', text: `缓存省下 ≈ ${usd(u.cacheSavedUsd)}` }) : null
-    ]);
+      u.cacheSavedUsd > 0.0001 ? el('span', { class: 'sw-usage-pill good', text: `缓存省下 ≈ ${usd(u.cacheSavedUsd)}` }) : null,
+      u.avgRoundDurationMs ? el('span', { class: 'sw-usage-pill', text: `⏱️ 均轮 ${formatLatency(u.avgRoundDurationMs, isEst)}` }) : null
+    ].filter(Boolean));
+
     const miniBar = models.length ? el('div', { class: 'sw-usage-mini-bar', 'aria-hidden': 'true' }, models.map((m, i) => paint(
       el('span', { class: 'sw-usage-mini-seg', title: `${m.model}: ${(m.tokenShare || 0).toFixed(1)}%` }),
       { width: `${Math.max(3, m.tokenShare || 0)}%`, background: MODEL_COLORS[i % MODEL_COLORS.length] }
     ))) : null;
+
     const toggleText = el('span', { text: S.usageOpen ? '收起用量详情' : '用量详情' });
     const toggle = el('button', { type: 'button', class: 'sw-usage-toggle', 'aria-expanded': String(S.usageOpen) }, [
       toggleText,
@@ -521,11 +652,19 @@
       el('b', { class: 'sw-usage-kpi-val', text: val, translate: 'no' }),
       el('span', { class: 'sw-usage-kpi-sub', text: sub })
     ]);
+
+    const avgLat = u.avgRoundDurationMs || d.avgRoundDurationMs;
+    const latFormatted = avgLat > 0 ? formatLatency(avgLat, isEst) : '—';
+    const speedSub = u.avgTokensPerSec
+      ? `⚡ ${u.avgTokensPerSec} T/s${u.totalActiveDurationMs ? ' · 总活动 ' + formatDuration(u.totalActiveDurationMs) : ''}`
+      : (u.totalActiveDurationMs ? `活动耗时 ${formatDuration(u.totalActiveDurationMs)}` : '未测得速度');
+
     const kpis = el('div', { class: 'sw-usage-kpis' }, [
       kpi('总 Token 消耗', compact(u.tokens), `输入 ${compact(u.input)} · 输出 ${compact(u.output)}${u.reasoning ? ` · 思考 ${compact(u.reasoning)}` : ''}`),
       kpi('缓存命中率', `${(u.cacheHitRate || 0).toFixed(1)}%`, `缓存读 ${compact(u.cacheRead)}${u.cacheWrite ? ` · 缓存写 ${compact(u.cacheWrite)}` : ''}`),
       kpi('API 等价花费', `≈ ${usd(u.costUsd)}`, `共 ${number(u.requests)} 次模型调用 · 均每轮 ${compact(Math.round(u.tokens / Math.max(1, d.turns || 1)))}`),
-      kpi('缓存省下费用', `≈ ${usd(u.cacheSavedUsd)}`, `无缓存原价 ≈ ${usd(u.uncachedCostUsd)}`, u.cacheSavedUsd > 0.0001 ? 'good' : '')
+      kpi('缓存省下费用', `≈ ${usd(u.cacheSavedUsd)}`, `无缓存原价 ≈ ${usd(u.uncachedCostUsd)}`, u.cacheSavedUsd > 0.0001 ? 'good' : ''),
+      kpi('均轮耗时与速度', latFormatted, speedSub)
     ]);
 
     const shareOf = m => S.usageBasis === 'requests' ? (m.requestShare || 0) : S.usageBasis === 'cost' ? (m.costShare || 0) : (m.tokenShare || 0);
@@ -561,13 +700,14 @@
       el('div', { class: 'sw-usage-basis', role: 'group', 'aria-label': '模型占比分布' }, basisBtns)
     ]);
 
-    const tableWrap = el('div', { class: 'sw-usage-table-wrap' }, [
+    const tableWrap = el('div', { class: 'sw-usage-table-wrap', tabindex: '0', role: 'region', 'aria-label': '模型用量明细' }, [
       el('table', { class: 'sw-usage-table' }, [
         el('thead', {}, [el('tr', {}, [
           el('th', { text: '模型' }),
           el('th', { text: '调用次数 / 占比' }),
           el('th', { text: '总 Token / 占比' }),
           el('th', { text: '输入 / 输出' }),
+          el('th', { text: '均轮耗时' }),
           el('th', { text: '缓存命中率' }),
           el('th', { text: 'API 等价 / 占比' }),
           el('th', { text: '缓存省下' })
@@ -580,6 +720,7 @@
           el('td', { text: `${number(m.requests)} 次 (${(m.requestShare || 0).toFixed(1)}%)` }),
           el('td', { text: `${compact(m.tokens)} (${(m.tokenShare || 0).toFixed(1)}%)`, translate: 'no' }),
           el('td', { text: `${compact(m.input)} / ${compact(m.output)}`, translate: 'no' }),
+          el('td', { text: m.avgRoundDurationMs ? formatLatency(m.avgRoundDurationMs, isEst) : '—', translate: 'no' }),
           el('td', { text: `${(m.cacheHitRate || 0).toFixed(1)}%`, translate: 'no' }),
           el('td', { text: `≈ ${usd(m.costUsd)} (${(m.costShare || 0).toFixed(1)}%)`, translate: 'no' }),
           el('td', { class: m.cacheSavedUsd > 0.0001 ? 'good' : '', text: m.cacheSavedUsd > 0.0001 ? `≈ ${usd(m.cacheSavedUsd)}` : '—', translate: 'no' })
@@ -606,14 +747,45 @@
     const item = S.items.find(entry => entry.key === d.key);
     const merged = item && !d.usage ? { ...d, usage: item.usage } : d;
     const agent = AGENTS[d.kind];
+
+    const allModels = d.models || [];
+    const modelChips = allModels.slice(0, 2).map(model => el('span', { class: 'sw-chip mono', text: model }));
+    if (allModels.length > 2) {
+      const remainingModels = allModels.slice(2);
+      const moreChip = el('button', { type: 'button', class: 'sw-chip mono sw-chip-more', title: remainingModels.join(', '), 'aria-label': '更多模型' }, [
+        el('span', { text: `+${remainingModels.length}` })
+      ]);
+      moreChip.addEventListener('click', () => {
+        openOptionMenu(moreChip, '涉及模型', allModels.map(m => ({ value: m, label: m })), null, () => {});
+      });
+      modelChips.push(moreChip);
+    }
+
+    const avgLat = merged.usage?.avgRoundDurationMs || merged.avgRoundDurationMs || item?.avgRoundDurationMs;
+    const isEstLat = d.kind === 'claude' || d.kind === 'codex' || d.kind === 'grok';
+    const latencyChip = avgLat > 0
+      ? el('span', { class: 'sw-chip sw-chip-latency', title: isEstLat ? '均轮耗时（估算值）' : '均轮耗时' }, [
+          el('span', { class: 'sw-chip-icon', text: '⏱️' }),
+          el('span', { text: `均轮 ${formatLatency(avgLat, isEstLat)}` })
+        ])
+      : null;
+
+    const totalActiveMs = merged.usage?.totalActiveDurationMs;
+    const activeChip = totalActiveMs > 0
+      ? el('span', { class: 'sw-chip', title: '总活动耗时' }, [icon('clock'), el('span', { text: `活动 ${formatDuration(totalActiveMs)}` })])
+      : null;
+
     const chips = [
       el('span', { class: 'sw-chip', title: d.cwd || '', translate: 'no' }, [icon('folder'), d.project]),
       el('span', { class: 'sw-chip' }, [mark(d.kind, 'sw-chip-mark'), agent.name]),
       d.createdAt ? el('span', { class: 'sw-chip', title: `${fullTime(d.createdAt)} → ${fullTime(d.updatedAt)}` }, [icon('clock'), `${shortTime(d.createdAt)} → ${shortTime(d.updatedAt)}`]) : null,
       el('span', { class: 'sw-chip' }, [icon('sessions'), `${number(d.turns)} 轮对话`]),
       d.toolCount ? el('span', { class: 'sw-chip' }, [icon('terminal'), `${number(d.toolCount)} 次工具调用`]) : null,
-      ...(d.models || []).slice(0, 2).map(model => el('span', { class: 'sw-chip mono', text: model }))
-    ];
+      ...modelChips,
+      activeChip,
+      latencyChip
+    ].filter(Boolean);
+
     const copyPath = button('复制项目地址', 'copy', 'btn', { title: d.cwd || '这个会话没有记录项目地址' });
     copyPath.disabled = !d.cwd;
     copyPath.addEventListener('click', () => copy(d.cwd, '项目地址已复制'));
@@ -659,7 +831,7 @@
       delete S.drafts[d.key];
       S.items = await api.sessions();
       S.loaded = true; S.listAt = Date.now();
-      S.key = ''; S.detail = null; S.detailLoading = false; S.visible = 160; S.openGroups.clear();
+      S.key = ''; S.detail = null; S.detailLoading = false; S.visible = MSG_CHUNK; S.openGroups.clear();
       drawList(); drawMain();
       const after = visibleItems();
       const next = after[Math.min(oldIndex, after.length - 1)];
@@ -718,11 +890,34 @@
     const copyBtn = el('button', { type: 'button', class: 'sw-copy', title: '复制', 'aria-label': '复制这条消息' }, [icon('copy')]);
     copyBtn.addEventListener('click', () => copy(message.text, '已复制'));
     const isUser = message.role === 'user';
+    const footItems = [];
+
+    if (!isUser && message.model) {
+      footItems.push(el('span', { class: 'sw-bubble-model mono', translate: 'no', text: message.model }));
+    }
+    if (!isUser && typeof message.durationMs === 'number' && message.durationMs > 0) {
+      const latText = formatLatency(message.durationMs, message.latencyEstimated);
+      footItems.push(el('span', { class: 'sw-bubble-latency', title: message.latencyEstimated ? '耗时（估算值）' : '耗时' }, [
+        el('span', { class: 'sw-chip-icon', text: '⏱️' }),
+        latText
+      ]));
+    }
+    if (!isUser && typeof message.tokensPerSec === 'number' && message.tokensPerSec > 0) {
+      footItems.push(el('span', { class: 'sw-bubble-speed', title: '生成速度' }, [
+        el('span', { class: 'sw-chip-icon', text: '⚡' }),
+        `${message.tokensPerSec} T/s`
+      ]));
+    }
+    if (message.at) {
+      footItems.push(el('time', { text: hm(message.at), title: fullTime(message.at) }));
+    }
+    footItems.push(copyBtn);
+
     return el('div', { class: `sw-row ${message.role} ${extraClass}`.trim(), 'data-mid': message.id }, [
       isUser ? null : mark(kind, 'sw-avatar'),
       el('div', { class: 'sw-bubble' }, [
         isUser ? el('div', { class: 'sw-plain', text: message.text, translate: 'no' }) : rich(message.text),
-        el('div', { class: 'sw-bubble-foot' }, [message.at ? el('time', { text: hm(message.at), title: fullTime(message.at) }) : null, copyBtn])
+        el('div', { class: 'sw-bubble-foot' }, footItems)
       ])
     ]);
   }
@@ -731,13 +926,43 @@
     const all = blocks(d.messages);
     const hidden = Math.max(0, all.length - S.visible);
     const nodes = [];
+
+    // 计算每轮对话的轮次索引和耗时
+    const turnMap = new Map();
+    let currentTurnIndex = 0;
+    let currentTurnUserBlock = null;
+
+    for (const block of all) {
+      if (block.role === 'user') {
+        currentTurnIndex++;
+        currentTurnUserBlock = block;
+        turnMap.set(block, { index: currentTurnIndex, durationMs: undefined, estimated: false });
+      } else if (block.role === 'assistant' && currentTurnUserBlock) {
+        if (typeof block.durationMs === 'number' && block.durationMs > 0) {
+          const entry = turnMap.get(currentTurnUserBlock);
+          if (entry && !entry.durationMs) {
+            entry.durationMs = block.durationMs;
+            entry.estimated = Boolean(block.latencyEstimated);
+          }
+        }
+      }
+    }
+
     if (hidden || d.truncated) {
       const more = button(hidden ? `显示更早的 ${number(hidden)} 段` : '', 'up', 'btn sw-earlier');
       if (hidden) more.addEventListener('click', () => {
-        const before = host.scrollHeight - host.scrollTop;
-        S.visible += 200; drawMain(false);
-        // 保持当前看到的位置不动
-        N.scroller.scrollTop = N.scroller.scrollHeight - before;
+        if (!N.scroller) return;
+        const prevScrollHeight = N.scroller.scrollHeight;
+        const prevScrollTop = N.scroller.scrollTop;
+        S.visible = Math.min(all.length, S.visible + MSG_CHUNK);
+        drawMessages(d, host);
+        highlightIn(host);
+        requestAnimationFrame(() => {
+          if (N.scroller) {
+            const newScrollHeight = N.scroller.scrollHeight;
+            N.scroller.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+          }
+        });
       });
       nodes.push(el('div', { class: 'sw-earlier-wrap' }, [
         hidden ? more : null,
@@ -752,6 +977,20 @@
         lastDay = dayStart(at);
       }
       if (at) lastAt = at;
+
+      // 轮次分隔线（每轮提问前渲染清晰的轮次指示）
+      if (block.role === 'user' && turnMap.has(block)) {
+        const turnInfo = turnMap.get(block);
+        const latTag = turnInfo.durationMs
+          ? ` · 耗时 ${formatLatency(turnInfo.durationMs, turnInfo.estimated)}`
+          : '';
+        nodes.push(el('div', { class: 'sw-round-divider' }, [
+          el('span', { class: 'sw-round-tag' }, [
+            el('span', { text: `第 ${turnInfo.index} 轮${latTag}` })
+          ])
+        ]));
+      }
+
       if (block.role === 'tools') nodes.push(toolGroup(block));
       else if (block.role === 'event') nodes.push(el('div', { class: 'sw-row event' }, [el('span', { text: block.text })]));
       else nodes.push(bubble(block, d.kind));
@@ -834,6 +1073,29 @@
     N.scroller = el('div', { class: 'sw-scroll' });
     const inner = el('div', { class: 'sw-messages' });
     N.scroller.append(inner);
+    let loadingEarlier = false;
+    N.scroller.addEventListener('scroll', () => {
+      if (loadingEarlier || !N.scroller) return;
+      // 向上滚动接近顶部（<= 80px）时，自动触发懒加载前置更早的消息
+      if (N.scroller.scrollTop <= 80) {
+        const all = blocks(d.messages);
+        if (S.visible < all.length) {
+          loadingEarlier = true;
+          const prevScrollHeight = N.scroller.scrollHeight;
+          const prevScrollTop = N.scroller.scrollTop;
+          S.visible = Math.min(all.length, S.visible + MSG_CHUNK);
+          drawMessages(d, inner);
+          highlightIn(inner);
+          requestAnimationFrame(() => {
+            if (N.scroller) {
+              const newScrollHeight = N.scroller.scrollHeight;
+              N.scroller.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+            }
+            loadingEarlier = false;
+          });
+        }
+      }
+    }, { passive: true });
     drawMessages(d, inner);
     highlightIn(inner);
     const focused = document.activeElement === N.input;
@@ -946,6 +1208,9 @@
   /* ---------------- 对外 ---------------- */
 
   window.PulseSessions = {
+    count() {
+      return S.items?.length || 0;
+    },
     open(key) {
       const value = String(key || ''), split = value.indexOf(':');
       const kind = split > 0 ? value.slice(0, split) : '', id = split > 0 ? value.slice(split + 1) : '';
@@ -961,13 +1226,26 @@
         else loadList(true);
       } else loadList();
     },
+    hide() {
+      saveDraft();
+      if (N.scroller) N.scroller.replaceChildren();
+      S.detail = null;
+      N.drawn = false;
+    },
     show() {
       build();
       drawList();
       if (!S.loaded) loadList();
       // 列表放了半分钟以上再悄悄刷新一遍（有索引缓存，几十毫秒）；对话区不跟着重画，免得打断阅读和输入
       else if (Date.now() - S.listAt > 30000 && !S.run) loadList(false, true);
-      if (!N.drawn) { N.drawn = true; drawMain(false); }
+      if (!N.drawn) {
+        N.drawn = true;
+        if (S.key && !S.detail) {
+          select(S.key, true);
+        } else {
+          drawMain(false);
+        }
+      }
     }
   };
 })();

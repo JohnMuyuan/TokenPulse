@@ -23,7 +23,19 @@ const fingerprint = () => {
   const out = {};
   // 并发监控在后台按自己的节奏写历史（和引导无关，0.3.50 引导变长后有时正好赶上），不算「演示数据写进了真实目录」；
   // 统一运行日志（logs/）只追加界面操作和请求记录，也不算，它的内容另外查（不能出现演示数据）
-  const walk = dir => { for (const name of fs.readdirSync(dir)) { const file = path.join(dir, name); if (name === 'concurrency-history' || name === 'logs') continue; if (fs.statSync(file).isDirectory()) walk(file); else if (name !== 'prefs.json') out[path.relative(root, file)] = crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex'); } };
+  const walk = dir => {
+    for (const name of fs.readdirSync(dir)) {
+      const file = path.join(dir, name);
+      if (name === 'concurrency-history' || name === 'logs' || name.toLowerCase() === 'appdata') continue;
+      try {
+        if (fs.statSync(file).isDirectory()) walk(file);
+        else if (name !== 'prefs.json') out[path.relative(root, file)] = crypto.createHash('sha1').update(fs.readFileSync(file)).digest('hex');
+      } catch (err) {
+        if (err.code === 'EBUSY' || err.code === 'EPERM') continue;
+        throw err;
+      }
+    }
+  };
   for (const dir of ['data', 'home']) if (fs.existsSync(path.join(root, dir))) walk(path.join(root, dir));
   return out;
 };

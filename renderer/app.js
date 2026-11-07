@@ -642,7 +642,7 @@ function modelWeekMini(row) {
   return el('div', { class: 'quota-mini model-week', 'data-model': row.model }, [
     el('div', { class: 'quota-mini-head' }, [modelWeekTitle(row), el('span', { class: 'mini-used' }, [el('span', { class: 'num', text: ended ? '等待确认' : `已用 ${percent(row.used)}` })])]),
     ended ? el('div', { class: 'track' }) : track(row.used, row.used >= 75, '已用额度'),
-    el('div', { class: 'mini-reset' }, [icon('clock'), modelWeekReset(row)])
+    el('div', { class: 'mini-reset', 'data-reset-at': row.resetAt, 'data-reset-format': 'full' }, [icon('clock'), modelWeekReset(row)])
   ]);
 }
 function track(pct, warning = false, label = '已用额度', identity = '') {
@@ -845,7 +845,7 @@ function quotaCard({ kind, key, account }, pool = null) {
     const windowLabel = account.five && account.week ? '当前较低窗口' : report === account.week ? '周额度' : '5 小时额度';
     const hero = el('div', { class: 'quota-hero-text' }, [
       el('span', { class: 'quota-hero-label', text: `${stale ? '上次' : ''}${windowLabel}剩余` }),
-      el('span', { class: 'quota-hero-value', text: waiting ? '等待新采样' : report?.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' }),
+      el('span', { class: 'quota-hero-value', 'data-reset-at': report?.resetAt, 'data-reset-format': 'short', text: waiting ? '等待新采样' : report?.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' }),
       el('span', { class: 'quota-hero-sub', text: report?.resetAt && !waiting ? `${date(report.resetAt)} · 本地时间` : '旧窗口已结束' })
     ]);
     const ringNode = ring({ five: account.five, week: account.week, account });
@@ -866,7 +866,7 @@ function quotaCard({ kind, key, account }, pool = null) {
       body.push(el('div', { class: 'quota-mini' }, [
         el('div', { class: 'quota-mini-head' }, [title, usedText]),
         pending ? el('div', { class: 'track' }) : track(win.used, pressured(win), '已用额度', both ? name : ''),
-        el('div', { class: 'mini-reset' }, [icon('clock'), pending ? '旧窗口已结束，正在等待新数据' : win.resetAt ? `${duration(win.resetAt - Date.now())}后重置 · ${date(win.resetAt)}` : '接口未提供重置时间'])
+        el('div', { class: 'mini-reset', 'data-reset-at': win.resetAt, 'data-reset-format': 'full' }, [icon('clock'), pending ? '旧窗口已结束，正在等待新数据' : win.resetAt ? `${duration(win.resetAt - Date.now())}后重置 · ${date(win.resetAt)}` : '接口未提供重置时间'])
       ]));
     }
     for (const row of account.modelWeeks || []) body.push(modelWeekMini(row));
@@ -1187,7 +1187,7 @@ function windowPanel(label, report, account) {
   const pending = waitingReset(account, report), stale = isStale(account), unknown = stale || pending;
   panel.append(el('div', { class: 'window-number' }, [el('strong', { text: pending ? '—' : percent(Math.max(0, 100 - report.used)) }), el('span', { text: stale ? '上次采样剩余' : '剩余额度' })]));
   const bar = pending ? el('div', { class: 'track' }) : track(report.used, pressured(report)); bar.classList.add('window-track'); panel.append(bar);
-  panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { text: report.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' })]));
+  panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { 'data-reset-at': report.resetAt, 'data-reset-format': 'short', text: report.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' })]));
   const caution = pressured(report) || unknown;
   panel.append(el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(report, account)]));
   // 周额度窗口里再列按型号单独算的周额度（Claude Max 的 Fable）：和总的周额度分开计，哪个先用完都会被限制
@@ -1199,7 +1199,7 @@ function windowPanel(label, report, account) {
         return el('div', { class: 'model-week-row', 'data-model': row.model }, [
           el('div', { class: 'model-week-line' }, [modelWeekTitle(row), el('span', { class: 'num', text: ended ? '等待确认' : `剩余 ${percent(Math.max(0, 100 - row.used))}` })]),
           ended ? el('div', { class: 'track' }) : track(row.used, row.used >= 75, '已用额度'),
-          el('div', { class: 'mini-reset' }, [icon('clock'), ...(ended ? [modelWeekReset(row)] : [el('span', { text: `已用 ${percent(row.used)}` }), ' · ', el('span', { text: modelWeekReset(row) })])])
+          el('div', { class: 'mini-reset', 'data-reset-at': row.resetAt, 'data-reset-format': 'full' }, [icon('clock'), ...(ended ? [modelWeekReset(row)] : [el('span', { text: `已用 ${percent(row.used)}` }), ' · ', el('span', { text: modelWeekReset(row) })])])
         ]);
       })
     ]));
@@ -2832,6 +2832,7 @@ function navigate(page, options = {}) {
   if (page !== 'concurrency') window.PulseConcurrency?.hide();
   if (page !== 'providers') window.PulseProviders?.hide();
   if (page !== 'pet') window.PulseDeskPet?.hide();
+  if (page !== 'sessions') window.PulseSessions?.hide?.();
   const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '工具配置、本地路由、官方账号续期、网络和出口、数据目录，集中检查一遍，并告诉你去哪里处理。体检只读，不改任何配置。'], concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
@@ -2871,12 +2872,13 @@ function setThemeMode(mode) {
 /* ---------------- 选项选择器（设置页通用，参照 AllAi 的 OptionSelect） ---------------- */
 
 let menuOwner = null;
+let menuOpenedAt = 0;
 function closeOptionMenu(restoreFocus = false) {
   const menu = $('option-menu');
   if (menu.hidden) return;
   menu.hidden = true;
   menuOwner?.setAttribute('aria-expanded', 'false');
-  if (restoreFocus) menuOwner?.focus();
+  if (restoreFocus) menuOwner?.focus({ preventScroll: true });
   menuOwner = null;
 }
 function openOptionMenu(trigger, label, options, value, pick) {
@@ -2894,6 +2896,7 @@ function openOptionMenu(trigger, label, options, value, pick) {
   }));
   menu.hidden = false;
   menuOwner = trigger;
+  menuOpenedAt = performance.now();
   trigger.setAttribute('aria-expanded', 'true');
   // 菜单挂在 body 上、按触发按钮定位：放在设置页的滚动区里会被裁掉。
   const rect = trigger.getBoundingClientRect(), width = Math.min(Math.max(rect.width, 280), window.innerWidth - 24);
@@ -2901,7 +2904,7 @@ function openOptionMenu(trigger, label, options, value, pick) {
   menu.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
   const height = menu.offsetHeight;
   menu.style.top = `${window.innerHeight - rect.bottom - 12 >= height ? rect.bottom + 6 : Math.max(12, rect.top - height - 6)}px`;
-  (menu.querySelector('[aria-checked="true"]') || menu.querySelector('.option-item'))?.focus();
+  (menu.querySelector('[aria-checked="true"]') || menu.querySelector('.option-item'))?.focus({ preventScroll: true });
 }
 function optionSelect({ id, label, options, value, onChange }) {
   const text = el('span', { class: 'ui-select-text' });
@@ -2937,7 +2940,7 @@ $('option-menu').addEventListener('keydown', event => {
 document.addEventListener('pointerdown', event => {
   if (menuOwner && !$('option-menu').contains(event.target) && !menuOwner.contains(event.target)) closeOptionMenu();
 });
-window.addEventListener('scroll', event => { if (!$('option-menu').contains(event.target)) closeOptionMenu(); }, true);
+window.addEventListener('scroll', event => { if (!$('option-menu').contains(event.target) && performance.now() - menuOpenedAt > 80) closeOptionMenu(); }, true);
 
 /* ---------------- 设置 ---------------- */
 
@@ -2960,15 +2963,9 @@ const QUIET_ROW = { key: 'quotaQuietBackground', title: '后台账号少查一�
   { value: true, label: '后台账号每 30 分钟查一次', hint: '少发请求，后台账号的额度会旧一些' }] };
 const PREF_ROWS = {
   general: [
-    { key: 'closeToTray', title: '关闭窗口时', hint: '收进托盘后照常每分钟记录用量，额度按设置里的间隔继续查。真正退出请用托盘图标的右键菜单。', options: [
-      { value: true, label: '收进托盘继续运行', hint: '默认。后台记录不中断' },
-      { value: false, label: '直接退出', hint: '关掉窗口就结束进程，期间不记录用量' }] },
-    { key: 'autoLaunch', title: '开机自启', hint: '登录电脑后自动在托盘里开始记录。只对安装版和免安装版生效，开发模式不会写入启动项。', options: [
-      { value: true, label: '开机自动启动', hint: '默认。电脑开着就一直记' },
-      { value: false, label: '不自动启动', hint: '需要时手动打开' }] },
-    { key: 'startMinimized', title: '启动时', hint: '手动打开 TokenPulse 时是否弹出窗口。开机自启那一次总是直接进托盘。', options: [
-      { value: false, label: '显示窗口', hint: '默认' },
-      { value: true, label: '直接进入托盘', hint: '点托盘图标再打开窗口' }] }
+    { key: 'closeToTray', title: '关闭窗口时', hint: '收进托盘后照常每分钟记录用量，额度按设置里的间隔继续查。真正退出请用托盘图标的右键菜单。', type: 'switch', onLabel: '收进托盘继续运行', offLabel: '直接退出' },
+    { key: 'autoLaunch', title: '开机自启', hint: '登录电脑后自动在托盘里开始记录。只对安装版和免安装版生效，开发模式不会写入启动项。', type: 'switch', onLabel: '开机自动启动', offLabel: '不自动启动' },
+    { key: 'startMinimized', title: '启动时', hint: '手动打开 TokenPulse 时是否弹出窗口。开机自启那一次总是直接进托盘。', type: 'switch', onLabel: '直接进入托盘', offLabel: '显示窗口' }
   ],
   alerts: [
     { key: 'notifyAt', title: '额度提醒', hint: '任一官方额度窗口（5 小时或每周）的已用比例达到这个值时，发一条系统通知。同一个窗口只提醒一次，重置后重新计算。', custom: value => `已用 ${value}% 时提醒`, options: [
@@ -2980,15 +2977,54 @@ const PREF_ROWS = {
       { value: 95, label: '已用 95% 时提醒', hint: '快用完才提醒' }] },
     { key: 'pressureWeek', title: '周额度「达到上限」提示', hint: '按最近趋势会在重置前用完时，进度条和徽标什么时候变色。「断档」指用完之后到重置之间没额度可用的那段时间占剩余时间的比例。只影响颜色和文字语气，预测本身照常显示。', options: PRESSURE_OPTIONS('default') },
     { key: 'pressureFive', title: '5 小时额度「达到上限」提示', hint: '同上，单独给 5 小时窗口设。这个窗口本来就是拿来用完的，默认比周额度宽松。', options: PRESSURE_OPTIONS('relaxed') },
-    { key: 'notifyMismatch', title: '型号核验提醒', hint: '新请求的返回型号和请求的对不上、或者响应格式不像官方时，发一条系统通知，点开直接跳到请求记录。', options: [
-      { value: true, label: '发现就提醒', hint: '默认' },
-      { value: false, label: '不提醒', hint: '只在请求记录页和侧栏红点里显示' }] },
+    { key: 'notifyMismatch', title: '型号核验提醒', hint: '新请求的返回型号和请求的对不上、或者响应格式不像官方时，发一条系统通知，点开直接跳到请求记录。', type: 'switch', onLabel: '发现就提醒', offLabel: '不提醒' },
     { key: 'weeklySummary', title: '每周小结', hint: '每周一 9 点以后发一条系统通知，概括上周（周一到周日）的用量、和前一周的对比、用得最多的模型和缓存省下的钱；那时软件没开，就在这周第一次打开时补发。点开可以生成周报卡片。', options: [
       { value: true, label: '每周一提醒', hint: '默认' },
       { value: false, label: '不提醒', hint: '周报仍可以在分享卡片里随时查看' }] }
   ]
 };
-function settingRow(title, hint, control) {
+function prefToggle({ id, label, value, onLabel, offLabel, onChange }) {
+  const status = el('span', { class: 'dps-switch-label', text: value ? (onLabel || '开启') : (offLabel || '关闭') });
+  const knob = el('span', { class: 'dps-knob' });
+  const button = el('button', {
+    type: 'button',
+    id,
+    class: 'dps-switch' + (value ? ' on' : ''),
+    role: 'switch',
+    'aria-checked': String(Boolean(value)),
+    'aria-label': label
+  }, [knob]);
+
+  Object.defineProperty(button, 'checked', {
+    get() { return this.getAttribute('aria-checked') === 'true'; },
+    set(v) {
+      const next = Boolean(v);
+      this.classList.toggle('on', next);
+      this.setAttribute('aria-checked', String(next));
+      status.textContent = next ? (onLabel || '开启') : (offLabel || '关闭');
+    }
+  });
+
+  button.addEventListener('click', async () => {
+    const next = button.getAttribute('aria-checked') !== 'true';
+    button.checked = next;
+    if (await onChange(next) === false) {
+      button.checked = !next;
+    }
+  });
+
+  return el('div', { class: 'dps-switch-control' }, [status, button]);
+}
+function settingRow(title, hint, control, isFlexRow = false) {
+  if (isFlexRow) {
+    return el('div', { class: 'setting-block setting-flex-row' }, [
+      el('div', { class: 'setting-label-col' }, [
+        el('div', { class: 'setting-title', text: title }),
+        hint ? el('p', { class: 'setting-hint', text: hint }) : null
+      ].filter(Boolean)),
+      control
+    ]);
+  }
   return el('div', { class: 'setting-block' }, [el('div', { class: 'setting-title', text: title }), el('p', { class: 'setting-hint', text: hint }), control]);
 }
 async function savePref(key, value) {
@@ -2998,6 +3034,16 @@ async function savePref(key, value) {
 }
 function prefRow(row, prefs) {
   const value = prefs[row.key];
+  if (row.type === 'switch') {
+    return settingRow(row.title, row.hint, prefToggle({
+      id: 'pref-' + row.key,
+      label: row.title,
+      value: Boolean(value),
+      onLabel: row.onLabel,
+      offLabel: row.offLabel,
+      onChange: next => savePref(row.key, next)
+    }), true);
+  }
   // 手改过 prefs.json、值不在预设里时，把它当成一个选项显示出来，而不是显示「未选择」。
   const options = row.options.some(option => option.value === value) || !row.custom ? row.options : [...row.options, { value, label: row.custom(value), hint: '当前自定义值' }];
   return settingRow(row.title, row.hint, optionSelect({ id: 'pref-' + row.key, label: row.title, value, options, onChange: next => savePref(row.key, next) }));
@@ -3214,6 +3260,15 @@ function quotaIntervalRow(prefs) {
     save,
   ]));
 }
+function renderDataMetrics(snapshot) {
+  if (!$('data-metric-files')) return;
+  const files = snapshot?.fileCount || 0;
+  const requests = snapshot?.totals?.all?.requests || 0;
+  $('data-metric-files').textContent = `${number(files)} 个会话文件`;
+  $('data-metric-requests').textContent = `${number(requests)} 条请求记录`;
+  const sessionCount = window.PulseSessions?.count?.() || 0;
+  if ($('data-metric-sessions')) $('data-metric-sessions').textContent = sessionCount ? `${number(sessionCount)} 个会话` : '40 项分页惰性加载';
+}
 function renderSettings(prefs) {
   $('settings-general').replaceChildren(
     settingRow('外观', '深浅色。选「跟随系统」就跟着 Windows 的设置走。', optionSelect({ id: 'pref-theme', label: '外观', value: themeMode, options: THEME_OPTIONS, onChange: setThemeMode })),
@@ -3230,6 +3285,7 @@ function renderSettings(prefs) {
     ...PREF_ROWS.general.map(row => prefRow(row, prefs)));
   $('settings-alerts').replaceChildren(...PREF_ROWS.alerts.map(row => prefRow(row, prefs)));
   renderCcSwitch(current?.ccSwitch, prefs);
+  renderDataMetrics(current);
 }
 function showSettingsTab(tab) {
   closeOptionMenu();
@@ -3246,6 +3302,7 @@ async function openSettings(tab = 'general') {
   try { prefs = await api.readPrefs(); }
   catch { showStatus('设置读取失败，请重试。', true); return; }
   renderSettings(prefs);
+  renderDataMetrics(current);
   $('prefs-status').textContent = '修改后自动保存';
   openModal('settings');
   showSettingsTab(tab);
@@ -3789,6 +3846,20 @@ async function runAccountAction(action, kind, id, button) {
 }
 $('open-data').addEventListener('click', async () => { try { const error = await api.openDataDir(); if (error) $('prefs-status').textContent = '无法打开数据目录：' + error; } catch { $('prefs-status').textContent = '无法打开数据目录'; } });
 $('open-log').addEventListener('click', async () => { try { if (!await api.openLog()) $('prefs-status').textContent = '还没有日志：TokenPulse 运行一会儿后才会有'; } catch { $('prefs-status').textContent = '无法打开日志'; } });
+$('data-trim-cache')?.addEventListener('click', async () => {
+  const btn = $('data-trim-cache');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    window.PulseSessions?.hide?.();
+    if (window.gc) window.gc();
+    settingsDone('渲染缓存已清理，内存已释放');
+  } catch {
+    settingsDone('缓存已清理');
+  } finally {
+    btn.disabled = false;
+  }
+});
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && layoutEdit && !menuOwner && $('settings').hidden && $('range-popover').hidden) {
     event.preventDefault();
@@ -3859,5 +3930,45 @@ api.onOpenPage?.(target => {
 api.onError(message => { bootFailed(); showStatus(message, true); });
 api.onRefreshOk?.(message => { toast(message, { kind: 'success', key: 'refresh-quota', ms: 5600 }); });
 api.onRefreshWarn?.(message => { toast(message, { kind: 'warning', key: 'refresh-quota', ms: 5600 }); });
+api.onWindowAway?.(away => {
+  if (away) {
+    window.PulseSessions?.hide?.();
+  } else if (state.page === 'sessions') {
+    window.PulseSessions?.show?.();
+  }
+});
 api.snapshot().then(receive).catch(() => { bootFailed(); showStatus('本地数据读取失败，请点击刷新重试。', true); });
-setInterval(() => { if (current && !document.hidden) render({ ...current, now: Date.now() }); }, 30000);
+
+function updateRelativeTimes() {
+  const now = Date.now();
+  if ($('today-label')) {
+    $('today-label').textContent = new Date().toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
+  }
+  if (current?.scannedAt && $('stamp')) {
+    $('stamp').textContent = `${date(current.scannedAt)} 已更新`;
+  }
+  for (const node of document.querySelectorAll('.time-ago, [data-time-ago]')) {
+    const at = Number(node.dataset.timeAgo || node.dataset.at);
+    if (at) node.textContent = duration(now - at);
+  }
+  for (const node of document.querySelectorAll('[data-reset-at]')) {
+    const resetAt = Number(node.dataset.resetAt);
+    if (!resetAt) continue;
+    const isFull = node.dataset.resetFormat === 'full';
+    if (resetAt <= now) {
+      node.textContent = node.dataset.endedText || '旧窗口已结束，正在等待新数据';
+    } else {
+      node.textContent = isFull
+        ? `${duration(resetAt - now)}后重置 · ${date(resetAt)}`
+        : `${duration(resetAt - now)}后重置`;
+    }
+  }
+  for (const node of document.querySelectorAll('[data-eta-at]')) {
+    const etaAt = Number(node.dataset.etaAt);
+    if (!etaAt) continue;
+    if (etaAt > now) {
+      node.textContent = `约 ${duration(etaAt - now)} 后达到上限`;
+    }
+  }
+}
+setInterval(() => { if (current && !document.hidden) updateRelativeTimes(); }, 30000);

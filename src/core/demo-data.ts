@@ -75,8 +75,14 @@ export function writeDemoData(dataDir: string, now = Date.now()) {
   // 保证这一周里至少两段：一段已标注（实心）、一段待标注（虚线），引导里两种都要演示
   for (const back of [1, 3]) {
     if (chats.filter((c) => c.from > weekReset0 - WEEK).length >= 2) break;
-    const from = midnight(now) - back * 86400000 + 20 * 3600000;
-    if (from > weekReset0 - WEEK && !chats.some((c) => Math.abs(c.from - from) < 3 * 3600000)) chats.push({ from, to: from + 50 * MINUTE, cost: 24 });
+    const from = midnight(now) - back * 86400000 + 20 * 3600000, to = from + 50 * MINUTE;
+    if (from > weekReset0 - WEEK) {
+      for (let i = sessions.length - 1; i >= 0; i--) {
+        const [a, b] = sessions[i];
+        if (a <= to + 30 * MINUTE && b >= from - 30 * MINUTE) sessions.splice(i, 1);
+      }
+      if (!chats.some((c) => Math.abs(c.from - from) < 3 * 3600000)) chats.push({ from, to, cost: 24 });
+    }
   }
   chats.sort((a, b) => a.from - b.from);
 

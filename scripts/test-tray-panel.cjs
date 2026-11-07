@@ -44,3 +44,4 @@ assert.equal(panelBounds({ x: 1890, y: 500, width: 24, height: 24 }, { x: 0, y: 
 // 副屏在左边（坐标是负的）、内容比屏幕还高
 assert.deepEqual(panelBounds({ x: -300, y: 1048, width: 24, height: 24 }, { x: -1920, y: 0, width: 1920, height: 1040 }, { width: 340, height: 2000 }), { x: -458, y: 10, width: 340, height: 1020 });
 console.log('PASS tray panel: placed next to the tray icon on any taskbar edge, kept inside the work area');
+process.exit(0);

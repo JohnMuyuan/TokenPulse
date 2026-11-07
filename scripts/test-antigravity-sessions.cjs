@@ -40,7 +40,8 @@ function conversation(id, steps) {
   const db = new DatabaseSync(path.join(agy, 'conversations', id + '.db'));
   db.exec('create table steps (idx integer primary key, step_type integer, status integer, metadata blob, step_payload blob); create table gen_metadata (idx integer primary key, data blob, size integer);');
   steps.forEach(([type, status, payload], idx) => db.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(idx, type, status, payload));
-  const gen = msg(1, str(19, 'gemini-4-argon-b'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M417')));
+  const duration = (no, ms) => msg(no, num(1, Math.floor(ms / 1000)), num(2, Math.floor((ms % 1000) * 1e6)));
+  const gen = msg(1, str(19, 'gemini-4-argon-b'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M417')), duration(11, 450), duration(12, 1550));
   db.prepare('insert into gen_metadata values (?, ?, ?)').run(0, gen, gen.length);
   db.close();
 }
@@ -71,6 +72,7 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
     assert.deepEqual([item.key, item.title, item.project, item.cwd, item.turns, item.messageCount, item.toolCount, item.models, item.resumeCommand, item.createdAt],
       [`antigravity:${A}`, '额度卡片分组', 'demo-app', path.join(root, 'demo-app'), 1, 2, 2, ['gemini-4-argon'], '', T0]);
     assert.equal(item.preview, '改好了：两组额度各占一行。');
+    assert.strictEqual(item.avgRoundDurationMs, 2000);
     assert.deepEqual(item.usage, {
       requests: 2,
       input: 20000,
@@ -99,7 +101,11 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
         tokenShare: 100,
         requestShare: 100,
         costShare: 100,
+        avgRoundDurationMs: 2000,
       }],
+      avgRoundDurationMs: 2000,
+      totalActiveDurationMs: 2000,
+      avgTokensPerSec: 500,
     });
     pass('antigravity sessions: listed from the summary database with title, project, turns, tools, model labels and session usage');
 
@@ -108,9 +114,14 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
     assert.deepEqual(detail.messages.map(m => [m.role, m.role === 'tool' ? m.name : m.text]), [
       ['user', '把首页的额度卡片改成分组显示'], ['tool', 'view_file'], ['tool', 'run_command'], ['assistant', '改好了：两组额度各占一行。'],
     ], '思考过程不展示；工具调用挂上结果');
-    const [, view, run] = detail.messages;
+    const [, view, run, replyMsg] = detail.messages;
     assert.deepEqual([view.summary, view.output, view.error], ['D:\\demo-app\\card.js', 'function card() {}', undefined]);
     assert.deepEqual([run.summary, run.output, run.error], ['npm test', '1 failing', true], '出错的工具步骤标出来');
+    assert.strictEqual(replyMsg.durationMs, 2000, 'Antigravity totalMs parsed from protobuf metadata');
+    assert.strictEqual(replyMsg.firstTokenMs, 450, 'Antigravity TTFT parsed from gen_metadata field 11');
+    assert.strictEqual(replyMsg.latencyEstimated, false, 'Direct measured flag is false');
+    assert.strictEqual(replyMsg.model, 'gemini-4-argon');
+    assert.strictEqual(replyMsg.tokensPerSec, 300, 'Generation speed tokensPerSec is calculated (600 output tokens in 2s = 300 T/s)');
     assert.equal(sessions.getSession('antigravity', SUB), null);
     pass('antigravity sessions: the detail shows user messages, replies and tool calls with their output (thinking hidden, failed tools marked)');
 

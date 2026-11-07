@@ -1153,4 +1153,5 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录删不掉不影响结果 */ }
   if (failed) process.exit(1);
+  process.exit(0);
 })();

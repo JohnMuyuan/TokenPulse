@@ -314,7 +314,18 @@ export type AgyStepUsage = {
 
 export type AgyStep =
   | { kind: "user"; at: number; text: string }
-  | { kind: "reply"; at: number; text: string; modelId: number; tools: { id: string; name: string; args: string }[]; usage?: AgyStepUsage }
+  | {
+      kind: "reply";
+      at: number;
+      text: string;
+      modelId: number;
+      tools: { id: string; name: string; args: string }[];
+      usage?: AgyStepUsage;
+      durationMs?: number;
+      firstTokenMs?: number;
+      tokensPerSec?: number;
+      isMeasured?: boolean;
+    }
   | { kind: "result"; at: number; id: string; name: string; args: string; output: string; error: boolean };
 
 export const USER_INPUT = 14, TOOL_STEP = 132;
@@ -345,15 +356,76 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
         const input = rawInput + cacheRead + cacheWrite;
         const usage: AgyStepUsage | undefined = u && (input > 0 || output > 0) ? { input, output, cacheRead, cacheWrite, reasoning } : undefined;
         const modelId = pbNumber(payloadMeta, 11) || pbNumber(colMeta, 11) || pbNumber(u, 1);
-        if (modelId && !models[modelId]) {
-          try {
-            const genInfo = pbMessage(payloadMeta, 20) ?? pbMessage(colMeta, 20);
-            const data = (genModel?.get(pbNumber(genInfo, 3)) as { data?: Uint8Array } | undefined)?.data;
-            const found = data ? generationModel(Buffer.from(data)) : null;
-            if (found) models[modelId] = found;
-          } catch { /* 老对话没有 gen_metadata 表：型号留空 */ }
+
+        const genInfo = pbMessage(payloadMeta, 20) ?? pbMessage(colMeta, 20);
+        const hasGenIdx = genInfo ? (pbFields(genInfo)?.some((f) => f.no === 3) ?? false) : false;
+        const genIdx = hasGenIdx ? pbNumber(genInfo, 3) : -1;
+        const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
+        const genParsed = genData ? parseGenerationMeta(Buffer.from(genData)) : null;
+
+        if (modelId) {
+          const key = String(modelId);
+          if (!models[key] && genParsed?.model) {
+            models[key] = {
+              model: genParsed.model,
+              ...(genParsed.enum ? { enum: genParsed.enum } : {}),
+              ...(genParsed.label ? { label: genParsed.label } : {}),
+            };
+          } else if (genParsed?.label && models[key] && !models[key].label) {
+            models[key].label = genParsed.label;
+          }
         }
-        if (text.trim() || tools.length || usage) out.push({ kind: "reply", at, text, modelId, tools, ...(usage ? { usage } : {}) });
+
+        const startAt = pbTime(pbMessage(payloadMeta, 1)) || pbTime(pbMessage(colMeta, 1));
+        const viewableAt = pbTime(pbMessage(payloadMeta, 6)) || pbTime(pbMessage(colMeta, 6));
+        const finishedAt = pbTime(pbMessage(payloadMeta, 7)) || pbTime(pbMessage(colMeta, 7));
+        const completedAt = pbTime(pbMessage(payloadMeta, 8)) || pbTime(pbMessage(colMeta, 8));
+
+        const rawFirstTokenMs = genParsed?.firstTokenMs ?? 0;
+        const streamingMs = genParsed?.streamingMs ?? 0;
+        const hasStreamTiming = rawFirstTokenMs > 0 || streamingMs > 0;
+        const replyAt = hasStreamTiming
+          ? (finishedAt || completedAt || viewableAt || startAt)
+          : (viewableAt || finishedAt || completedAt || startAt);
+
+        const totalMs = hasStreamTiming
+          ? (rawFirstTokenMs > 0 && streamingMs > 0
+              ? rawFirstTokenMs + streamingMs
+              : finishedAt && startAt && finishedAt > startAt
+                ? finishedAt - startAt
+                : completedAt && startAt && completedAt > startAt
+                  ? completedAt - startAt
+                  : rawFirstTokenMs || streamingMs)
+          : (finishedAt && startAt && finishedAt > startAt
+              ? finishedAt - startAt
+              : completedAt && startAt && completedAt > startAt
+                ? completedAt - startAt
+                : 0);
+
+        const outNoThink = Math.max(0, output - reasoning);
+        const isBufferedToolCall =
+          rawFirstTokenMs > 0 &&
+          outNoThink >= 150 &&
+          (streamingMs <= 0 || outNoThink / (streamingMs / 1000) > 500);
+
+        const firstTokenMs = isBufferedToolCall || rawFirstTokenMs <= 0 ? undefined : rawFirstTokenMs;
+        const tokensPerSec = totalMs >= 200 && totalMs <= 30 * 60_000 && output > 0
+          ? Math.round((output / (totalMs / 1000)) * 10) / 10
+          : undefined;
+
+        if (text.trim() || tools.length || usage) {
+          out.push({
+            kind: "reply",
+            at: replyAt || at,
+            text,
+            modelId,
+            tools,
+            ...(usage ? { usage } : {}),
+            ...(totalMs > 0 ? { durationMs: totalMs, isMeasured: true } : {}),
+            ...(firstTokenMs != null ? { firstTokenMs } : {}),
+            ...(tokensPerSec != null ? { tokensPerSec } : {}),
+          });
+        }
       } else if (row.step_type === TOOL_STEP) {
         if (!payload) continue;
         const call = pbMessage(meta, 4);

@@ -5,7 +5,7 @@ import { ConcurrencyService } from './concurrency-monitor';
 import { concurrencyMonitor, providerScopes, type ConcurrencyLiveState } from '../core/concurrency';
 import { readOfficialAccountStore } from '../core/accounts';
 import { DOMAINS } from "../core/egress";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, session, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, session, shell, Tray } from "electron";
 import { countRouteLog, passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
 import { accountSpeed, speedSeries } from "../core/pass-speed";
 import { copyShareCard, renderShareCard, saveShareCard, shareMilestones, shareMonth, shareWeek } from "./share";
@@ -58,6 +58,7 @@ import { TokensUploader } from "./tokens-ci";
 import { DeepSeekBalance } from "./deepseek-balance";
 import { AntigravityQuota } from "./antigravity-quota";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
+
 
 /**
  * TokenPulse 的主进程。
@@ -552,8 +553,17 @@ function notifyAutoSwitch(event: AutoSwitchEvent) {
   note.show();
 }
 
-/** 已经通知过的请求，免得同一条在下一轮扫描里又弹一次。 */
+const MAX_NOTIFIED_REQUESTS = 500;
+/** 已经通知过的请求，免得同一条在下一轮扫描里又弹一次。上限 500 条 FIFO 淘汰，防止常驻内存无界增长。 */
 const notifiedRequests = new Set<string>();
+
+function recordNotifiedRequest(key: string) {
+  if (notifiedRequests.size >= MAX_NOTIFIED_REQUESTS) {
+    const oldest = notifiedRequests.values().next().value;
+    if (oldest !== undefined) notifiedRequests.delete(oldest);
+  }
+  notifiedRequests.add(key);
+}
 
 /**
  * 型号核验出问题的请求，弹一条通知。一轮里有好几条就合成一条，点开直接跳到请求记录。
@@ -562,7 +572,7 @@ const notifiedRequests = new Set<string>();
 function notifyRequests(snapshot: Snapshot) {
   const alerts = (snapshot.requestAlerts ?? []).filter((row) => !notifiedRequests.has(row.key));
   if (!alerts.length || !readPrefs().notifyMismatch || !Notification.isSupported()) return;
-  for (const row of alerts) notifiedRequests.add(row.key);
+  for (const row of alerts) recordNotifiedRequest(row.key);
   const mismatch = alerts.filter((row) => row.status === "mismatch");
   const first = mismatch[0] ?? alerts[0];
   const title = mismatch.length
@@ -686,7 +696,19 @@ function scheduleQuotaChecks() {
 function setWindowAway(away: boolean) {
   if (windowAway === away) return;
   windowAway = away;
-  if (away) return;
+  if (win && !win.isDestroyed()) {
+    win.webContents.send("window-away", away);
+  }
+  if (away) {
+    if (win && !win.isDestroyed()) {
+      win.webContents.session.clearCache().catch(() => {});
+    }
+    session.defaultSession.clearCache().catch(() => {});
+    if (typeof global.gc === "function") {
+      global.gc();
+    }
+    return;
+  }
   if (snapshotHeld && lastSnapshot) win?.webContents.send("snapshot", lastSnapshot);
   snapshotHeld = false;
   if (Date.now() - lastScanAt >= SCAN_EVERY_MS) backgroundRefresh(false);
@@ -1015,6 +1037,37 @@ for (const key of Object.keys(process.env)) if (!(key in cleanEnv)) delete proce
  * 必须在 app ready 之前设置。
  */
 app.commandLine.appendSwitch("disable-gpu-rasterization");
+app.commandLine.appendSwitch("js-flags", "--expose-gc");
+
+/**
+ * 空闲内存修剪（0.3.56 / M2）：
+ * 当系统空闲超过 300 秒（5 分钟）时，主动清理会话缓存并触发 V8 垃圾回收。
+ * 当用户恢复操作后重置状态，等待下一次空闲。
+ */
+let idleTrimmed = false;
+function setupIdleMonitor() {
+  const IDLE_THRESHOLD_SECONDS = 300;
+  const idleCheckInterval = setInterval(() => {
+    try {
+      const idleSeconds = powerMonitor.getSystemIdleTime();
+      if (idleSeconds >= IDLE_THRESHOLD_SECONDS) {
+        if (!idleTrimmed) {
+          idleTrimmed = true;
+          session.defaultSession.clearCache().catch(() => {});
+          if (win && !win.isDestroyed()) win.webContents.session.clearCache().catch(() => {});
+          if (typeof global.gc === "function") {
+            global.gc();
+          }
+        }
+      } else {
+        idleTrimmed = false;
+      }
+    } catch {
+      // 忽略部分无桌面会话环境中获取空闲时间的异常
+    }
+  }, 60_000);
+  idleCheckInterval.unref?.();
+}
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -1038,6 +1091,7 @@ if (!app.requestSingleInstanceLock()) {
     }
     // 必须在第一次写 prefs.json 之前判断：全新安装要走新手引导，而且不用再看「这版有什么新东西」
     configureReadOnly(() => readPrefs().agentReadOnly === true);
+    setupIdleMonitor();
     const fresh = !prefsExist();
     const prefs = readPrefs();
     // --hidden 只影响本次自启，不能永久改掉用户手动启动时的偏好。

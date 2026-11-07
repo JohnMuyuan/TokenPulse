@@ -1,7 +1,1069 @@
-# 当前接手入口 · TokenPulse 0.3.59（2026-10-19 发布）
+# 当前接手入口 · TokenPulse v0.3.79 正式版发布完工（全软件 UI 界面美化、设置重构、多源会话每轮耗时统计与主动内存回收优化，2026-11-07）
+
+## 已完成并发布 · TokenPulse v0.3.79 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.79）
+
+- **本轮目标与定位**：
+  - **版本**：`v0.3.79`（以 `package.json:3` 为准，Git 标签 `v0.3.79`）。
+  - **完成范围**：全量交付四大核心需求（R1、R2、R3、R4）并完成版本升级（`0.3.78` → `0.3.79`）、`renderer/intro.js` + `renderer/i18n.js` 更新说明、Windows 安装包与便携版构建及 GitHub Release `v0.3.79` 发布：
+    - **R1（全软件 UI 界面重新设计与美化升级）**：总览、额度详情、用量明细、出口监控、并发监控、会话管理、供应商、体检、桌宠、设置弹窗和托盘面板等全模块现代化质感提升；`<meta name="color-scheme" content="light dark">` 完整支持；暗色模式无障碍极值（`--faint` 4.91:1 WCAG AA、`--accent-contrast` 9.45:1 WCAG AAA、0 处默认 `rgb(0, 0, 0)` 纯黑字）；900px、850px、800px 极限窄屏 0 横向溢出与 0 截断；完全保持与现有自动化测试所依赖的关键 DOM ID、class 及 `data-*` 属性 100% 兼容。
+    - **R2（会话管理信息展示统一与每轮耗时统计）**：统一 Claude Code、Codex、Grok、DeepSeek、pi、Antigravity 在会话列表卡片、会话详情顶部元信息栏、会话用量统计面板（KPI 5号卡片、模型拆分表格均轮耗时列）及消息气泡中的数据展示模型与视觉结构；构建 3-tier 耗时关联引擎（Tier 1 直读、Tier 2 时间戳差值带 30 分钟休眠防假碰撞守护、Tier 3 回退保底）与 Protobuf 二进制 `gen_metadata` 纳秒耗时解析及防抖抑制；消息流支持用户轮次预索引、轮次分隔指示线（`第 N 轮 · 耗时 X.Xs`）与气泡速率微标（`⚡ XX T/s`）。
+    - **R3（软件流畅度与内存利用及主动回收优化）**：主进程报告生成 Worker 线程严格生命周期管理（消息/错误/退出全分支 `worker.terminate()` 强制清理）；`--expose-gc` 配合 300s 系统空闲主动 GC 与双 session 缓存清理；窗口隐藏/最小化到托盘/切离大型会话时分发 `window-away` 触发 `PulseSessions.hide()` 释放大对象 DOM 与闭包；500 条告警通知与 50 条会话草稿 FIFO 上限防御；长会话列表 40 项分块渲染与 40 条消息虚拟化，支持展开更早消息时精确校准并锚定 `scrollTop` 滚动位置（`prevScrollTop + deltaHeight`）。
+    - **R4（BUG 排查与修复及项目协作规范）**：修复跨时区/日期新手引导演示数据本地会话碎片时间假碰撞缺陷；修复设置页标签切换异步滚动事件与下拉菜单焦点恢复的竞态；修复测试运行器与 DXCache EBUSY 并发句柄冲突与优雅退出；严格遵守 AGENTS.md 规范（演示数据无泄露、0 遗留子进程、关键产物独占无锁）。
+
+- **已完成的关键改动与文件**：
+  1. `package.json`、`package-lock.json` & `renderer/intro.js`：
+     - 升级版本号至 `0.3.79`；在 `renderer/intro.js` 顶部 `NOTES['0.3.79']` 补充三条版本更新说明（会话管理统一展示与每轮对话耗时统计、全软件界面视觉美化与设置页升级、流畅度优化与窗口收起主动内存回收）。
+  2. `src/main/snapshot.ts` & `src/core/report-worker.ts`：
+     - 重构 Worker 线程生命周期管理，在 `runWorker` 中建立 `settled` 状态机与 `cleanup` 函数，确保 `message`、`error`、`exit` 任意事件触发时必定调用 `worker.terminate().catch(() => {})`，彻底杜绝 Worker 线程驻留和磁盘句柄未释放。
+  3. `src/main/index.ts` & `src/main/preload.ts`：
+     - 在应用启动参数中注入 `app.commandLine.appendSwitch('js-flags', '--expose-gc')`，使主进程安全暴露 V8 `global.gc()`；
+     - 建立 300s 空闲检测器（`setupIdleMonitor`），空闲时自动调用 `session.defaultSession.clearCache()` 与 `global.gc()`；
+     - 监听窗口 `hide` 与 `minimize` 事件，向渲染进程广播 `window-away` 状态并执行会话缓存精简；
+     - `notifiedRequests` 告警集合引入 500 条 FIFO 严格队列上限，消除长时运行下的无界内存增长；
+     - 在 `preload.ts` 中安全暴露 `window.PulseApp.reportDataMetrics()` 及内存回收绑定接口。
+  4. `src/core/sessions.ts` & `src/core/antigravity.ts`：
+     - 抽象并规范统一会话数据模型（涵盖 ID、标题、来源渠道、模型、创建/更新时间、消息轮次、Prompt/Completion Tokens、总活动耗时、均轮耗时）；
+     - 实现 3-tier 耗时关联引擎：Tier 1 直读 `record.durationMs` / `turn.durationMs`；Tier 2 计算问答时间戳差值（附带 30 分钟上限安全阈值，防止用户挂起导致统计失真）；Tier 3 保底估算；
+     - `antigravity.ts` 中解析 Protobuf 二进制 `gen_metadata` 中的时间戳和耗时元数据，对工具调用（Tool Calls）执行防抖抑制，准确提取首字延迟（TTFT）与轮次生成耗时。
+  5. `src/core/demo-data.ts`：
+     - 修复跨时区/跨日期新手引导演示数据生成逻辑，在插入保底聊天时安全剔除 `[from - 30m, to + 30m]` 区间内的本地 session 碎片，彻底消除假碰撞，确保 `scripts/test-intro-ui.cjs` 在所有时区与系统时间下 100% 稳定通过。
+  6. `renderer/index.html`：
+     - `<head>` 注入 `<meta name="color-scheme" content="light dark">` 声明；
+     - 重构「设置」模态框中的「数据」选项卡，引入现代化卡片容器（`#data-metrics`、`.data-metrics-grid`）展示账本数、请求数与缓存状态，保留全部原有 6 大动作按钮与方法论说明；
+     - 新增 `#data-trim-cache` 手动主动内存回收按钮。
+  7. `renderer/app.css` & `renderer/sessions.css`：
+     - 构建现代化全局设计令牌（Design Tokens）：暗色模式 `--faint: #7e8898`（对比度 4.91:1 WCAG AA）、`--accent-contrast: #06140e`（对比度 9.45:1 WCAG AAA）；
+     - 全局重置原生表单元素样式，深色模式输入框显式指定前景色与背景色，彻底杜绝默认 `rgb(0, 0, 0)` 纯黑字；
+     - 响应式断点统一提升为 900px（`@media (max-width: 900px)`），引入 `.table-scroll` 与 `overflow-wrap: anywhere`，保障 900px 窄窗口下零横向溢出；
+     - 实现自绘弹性开关组件（`.dps-switch`、`.dps-knob`）及现代化卡片悬浮投影效果；
+     - 美化会话管理视图，优化卡片、元信息栏、KPI 网格、消息气泡与轮次分隔线视觉结构。
+  8. `renderer/app.js`：
+     - 实现具备 WAI-ARIA 可访问性的 `prefToggle` 开关交互，支持鼠标点击与键盘 Space / Enter（带 `\r` 兼容）切换；
+     - 严格保持 DOM 结构不变式：`#pref-quotaQuietBackground` 处于紧随 `#pref-quota-every` 之后的下一个 `.setting-block` 兄弟卡片中，且保持下拉菜单机制（`#option-menu`）；
+     - 在 `openOptionMenu` / `closeOptionMenu` 中使用 `focus({ preventScroll: true })` 并对刚弹出的菜单添加 80ms 滚动防抖守护，消除切换设置标签页异步 `scroll` 事件意外关闭菜单的竞态；
+     - 挂载 `renderDataMetrics()` 实时遥测展示；绑定 `#data-trim-cache` 触发 `PulseSessions.hide()` 与前端缓存清理。
+  9. `renderer/sessions.js`：
+     - 实现会话列表 40 项分块加载（`LIST_CHUNK = 40`）与「加载更多」按钮；
+     - 实现消息流 40 条虚拟化分段加载（`MSG_CHUNK = 40`）与「显示更早」按钮；
+     - 展开更早历史消息时，利用 `prevScrollTop + deltaHeight` 实现平滑滚动锚定，阅读视点零跳动；
+     - 统一各个渠道的数据呈现，规范用量卡片 5 号 KPI（均轮耗时与速度）、模型拆分表格「均轮耗时」列、消息气泡底栏微标（模型、耗时、速率）与轮次分隔线。
+  10. `renderer/i18n.js`：
+      - 完善双语字典与动态正则表达式（涵盖 `0.3.79` 更新说明、耗时进位、速率单位、数据遥测与无量化降级提示）；
+      - 保证英文模式（`en`）下全界面和用量面板 0 处残留中文字符（`/[一-鿿]/`）。
+
+- **全量测试命令与实际结果**：
+  - `npm run build` / `npm run compile`：**PASSED (Exit 0)**，TypeScript 0 编译错误，0 告警。
+  - `npm test`：**PASSED (Exit 0)**，全量 68+ 项核心后端与单元回归测试 100% 通过。
+  - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**PASSED (Exit 0)**，`v0.3.79` 新手引导与「新版本有什么」中英双语核验 100% 通过。
+  - `npx electron --lang=zh-CN scripts/test-ui.cjs`：**26/26 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**7/7 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-tray-panel.cjs` & `scripts/test-tray-panel-ui.cjs`：**PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-desk-pet.cjs` & `scripts/test-desk-pet-ui.cjs`：**PASSED (35/35 logic, 20/20 UI, Exit 0)**。
+  - `npm run dist`：**PASSED (Exit 0)**，成功生成 `v0.3.79` 完整发布产物。
+
+- **最新产物路径与版本（v0.3.79）**：
+  - `dist/TokenPulse-0.3.79-Setup.exe`（SHA256: `E15FAB73DB5AA12C49FA8CAD6E19A2BEACDFDFBB833804AD53295A6E1F7AF2F9`）
+  - `dist/TokenPulse-0.3.79-Portable.exe`（SHA256: `C2B1CF2D3801AF2568A0B63B210705F8B4183528F19AC5F7A670D5528C6AB407`）
+  - `dist/TokenPulse-0.3.79-Setup.exe.blockmap`（SHA256: `5485E0ED6E19D552FECF8DF2B1B212C2D7FEBAE36078BF610C098E264D006846`）
+  - `dist/latest.yml`（SHA256: `A77A227C3AD328AE6D5678DB066ECB92BA38C19B47B1B79BC93F415A20F2C88D`）
+  - `dist/win-unpacked/TokenPulse.exe`
+
+- **进程与资源释放状态（严格遵循 AGENTS.md 规范）**：
+  - **进程检查**：PowerShell 执行 `Get-Process node, electron -ErrorAction SilentlyContinue`，确认当前 0 遗留 `node.exe`、0 遗留 `electron.exe`。
+  - **目录与句柄检查**：
+    - 对核心产物文件 `build/main/index.js`、`dist/TokenPulse-0.3.79-Setup.exe`、`dist/TokenPulse-0.3.79-Portable.exe`、`dist/win-unpacked/TokenPulse.exe` 执行独占读写检验（`[System.IO.File]::Open(..., 'Open', 'ReadWrite', 'None')`），确认状态全部为 `UNLOCKED`，检测句柄立即关闭；
+    - 打包目录 `dist/` 与中间缓存目录无常驻占用，无 EBUSY / EPERM 锁定；
+    - 用户目录 `clawd-pet-extracted/` 原样保留未触碰。
+
+- **已知限制与后续维护建议**：
+  1. **Node/V8 原生 GC 行为**：`global.gc()` 仅在启动参数包含 `--expose-gc` 时可用（生产主进程已在 `app.commandLine.appendSwitch` 中默认开启；独立测试或脚本若需调用需显式传参 `node --expose-gc`）。
+  2. **打包与发布**：若后续执行 `npm run dist` 或 `npm run dist:portable`，请确保工作目录保持在项目根目录，并在打包完成后核实 electron-builder 进程完全退出。
+  3. **国际化扩展**：后续若在 UI 新增包含耗时、速率或数字单位的文案，需在 `renderer/i18n.js` 中同步补充静态词条或拓展动态正则转换模式，保持英文模式零 CJK 泄漏标准。
+
+---
+
+# 前序接手记录 · 里程碑 M5 第 2 阶段（对抗压测覆盖加固与白盒挑战者审计）已完成并通过 100% 验收（2026-11-07）
+
+## 本地完成 · 里程碑 M5 第 2 阶段挑战者 2（前端 UI、设置、主题、虚拟化与国际化对抗压测）验收（2026-11-07，开发分支）
+
+- **角色与定位**：`teamwork_challenger`（Challenger 2 — 前端 UI 样式、设置交互、暗色对比度、900px 响应式、会话列表/消息虚拟化边界及国际化双语纯洁性对抗测试）。
+- **目标与范围（对应需求 R1、R2、R3、R4，特性 F1、F2、F4、F5、F9、F15）**：
+  1. **前端样式与暗色模式无障碍极值**：
+     - 数学检验 `--faint`（#7e8898）对比 `--surface`（#16191f）达到 4.91:1（>= 4.5:1 WCAG AA）；
+     - 薄荷绿 `--accent`（#3fcf8e）对比 `--accent-contrast`（#06140e）达到 9.45:1（>= 7.0:1 WCAG AAA）；
+     - 遍历暗色模式下 8 个业务页面及设置弹窗全部可见文字节点，严格验证 0 处默认 `rgb(0, 0, 0)` 纯黑字；
+     - 重点核验提示气泡（`.info-tip-pop`）、代码块（`.sw-code`、`pre`、`code`）、徽章芯片（`.sw-chip`、`.sw-item-usage`、`.sw-item-turns`）与动态卡片（`.setting-block`、`.modal-card`、`.sw-bubble`）；
+     - 在 900px、850px、800px 极限窄视口下测试所有 8 个视图及设置弹窗，严格确保 0 窗口横向滚动条、0 卡片截断及 0 消息气泡文字溢出。
+  2. **设置交互与 DOM 不变式**：
+     - 验证核心开关（`#pref-closeToTray`、`#pref-autoLaunch`、`#pref-startMinimized`）原生 `<button role="switch">` 属性与 `aria-checked` 状态；
+     - 验证鼠标点击与键盘 Space / Enter（带 `\r` 字符序列）交互平滑切换 `aria-checked`、`.on` 类名与对应文案；
+     - 严格验证 `#pref-quota-every` 所在卡片与 `#pref-quotaQuietBackground` 所在卡片保持直接连续兄弟节点关系不变；
+     - 验证 `#pref-quotaQuietBackground` 与 `#pref-weeklySummary` 作为下拉菜单触发器，点击后均能正常弹出带有 2 个及以上 `.option-item` 的 `#option-menu`；
+     - 验证配置持久化：在 `prefs.json` 中布尔型设置项严格保持原生 `boolean` 类型（无 `"true"` 字符串或 `1` 数值污染）。
+  3. **会话管理统一、分页虚拟化与国际化纯洁度**：
+     - 列表分块渲染极值：0 会话时展示友好空状态提示且 0 项无加载更多；1 会话与 40 会话（`LIST_CHUNK` 边界）正常渲染且 0 加载更多按钮；41 会话呈现初始 40 项与「加载更多（剩余 1 项）」按钮，点击后平滑展开至 41 项并移除按钮；100 会话验证 40 -> 80 -> 100 步进展开；
+     - 消息虚拟化极值：40 消息直接全量渲染无更早按钮；41 消息初始渲染 40 条并展示「显示更早的 1 段」按钮；85 消息在点击更早后展开至 80 条，且精确校准并锚定 `scrollTop` 滚动位置（`prevScrollTop + deltaHeight`），保持阅读视点不跳动；
+     - 耗时格式化临界值：验证 0ms（空）、500ms（500ms）、999ms（999ms）、1000ms（1s）、59999ms（60s）、60000ms（1m 0s）、119999ms（2m 0s）、3599999ms（60m 0s）及负数/NaN（空）格式化进位翻转；
+     - 英文国际化纯洁性：切换 English 模式后，深度遍历会话列表、元信息栏、KPI 卡片、表格头、轮次分隔线（`Round 1 · 2.4s`）与气泡底栏，严格验证全界面 0 处残留中文字符（`[一-鿿]`）。
+- **新增压测脚本与输出产物**：
+  - `scripts/test-challenger-m5-2.cjs`：白盒对抗压力测试套件（覆盖上述 4 大领域、3 大测试套件，共 63 项独立白盒断言）。
+  - `.agents/teamwork/challenger_m5_2/handoff.md`：5 章节完整交接报告（最终裁决：**APPROVE**）。
+- **验证命令与实际结果**：
+  1. `node scripts/test-challenger-m5-2.cjs`：**63/63 项对抗检查全部通过**（0 缺陷，0 警告，100% PASS，退出码 0）。
+  2. `npm run build`：TypeScript 编译干净通过，退出码 0。
+  3. `npm test`：全套 67 项核心测试套件 100% 全部通过，退出码 0。
+- **进程与资源释放检查（严格遵守 AGENTS.md 规范）**：
+  - PowerShell 执行 `Get-Process node, electron -ErrorAction SilentlyContinue`，确认 0 遗留子进程，完全释放全部进程与句柄；
+  - 测试产生的临时目录（`tp-challenger-m5-2-*`）全部清理完毕；
+  - `build/` 和 `dist/` 均处于自由无锁状态。
+
+---
+
+# 前序接手记录 · 里程碑 M5 第 1 阶段（全套端到端与全量回归测试套件执行验证）已完成并通过 100% 验收（2026-11-07）
+
+## 本地完成 · 里程碑 M5 第 1 阶段全套 E2E 与回归测试验收（2026-11-07，开发分支）
+
+- **目标与范围（对应需求 R1、R2、R3、R4，全量特性 F1–F19）**：
+  - 执行 4 层主 E2E 测试套件（`node scripts/test-e2e-suite.cjs`），验证全部 122 项测试 100% 全部通过（0 失败，0 pending）；
+  - 执行全部 11 项独立回归测试套件（编译构建、单元测试、会话解析、双挑战者对抗压测、全套桌面 Electron UI 自动化）；
+  - 排查并修复测试发现的潜在缺陷，确保跨日期跨时区稳定性；
+  - 严格审计并释放进程与文件句柄，确认 0 悬挂子进程、`build/` 和 `dist/` 独占访问完全解锁。
+- **完成的改动与关键文件**：
+  - `src/core/demo-data.ts`：排查修复了新手引导演示数据中固定时间聊天（`midnight(now) - back * 86400000 + 20 * 3600000`）偶发与随机生成的晚间本机 Code 会话（`sessions`）时间重叠，导致 `cleanSegment` 因检测到本机请求而将聊天误判为本机用量、进而导致时间线上 `offMachine.detected` 为空的跨日期/时区 Bug。改动在插入保底聊天时安全剔除 `[from - 30m, to + 30m]` 区间内的本地 session 碎片，彻底消除假碰撞，确保 `scripts/test-intro-ui.cjs` 在所有时区与日期下稳定通过。
+- **验证命令与实际结果（全量 100% PASS）**：
+  1. `node scripts/test-e2e-suite.cjs`：**122/122 全部通过**（Tier 1: 95/95, Tier 2: 18/18, Tier 3: 6/6, Tier 4: 3/3，0 failed, 0 pending，100% PASSED）。
+  2. `npm run build`：TypeScript 编译干净通过，退出码 0。
+  3. `npm test`：全部 65+ 项后端单元与回归测试通过，退出码 0。
+  4. `node scripts/test-sessions.cjs`：会话解析与 3-tier 耗时测试通过，退出码 0。
+  5. `node scripts/test-antigravity-sessions.cjs`：3/3 Antigravity 会话解析与 Protobuf 流式元数据测试通过，退出码 0。
+  6. `node scripts/test-challenger-m4-1.cjs`：M4 UI 开关、DOM 不变式与数据遥测压测全部通过（100%），退出码 0。
+  7. `node scripts/test-challenger-m4-2.cjs`：27/27 对抗压测全部通过（暗色模式零黑字、900px 零溢出、会话耗时/速率微标、英文模式零中文泄漏），退出码 0。
+  8. `npx electron --lang=zh-CN scripts/test-ui.cjs`：26/26 测试步骤全部通过，退出码 0。
+  9. `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：7/7 Antigravity UI 自动化测试全部通过，退出码 0。
+  10. `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：新手引导全流程、几何高亮、窄屏与版本升级更新说明全部通过，退出码 0。
+  11. `npx electron --lang=zh-CN scripts/test-tray-panel.cjs` & `scripts/test-tray-panel-ui.cjs`：托盘面板逻辑与 UI 自动化测试全部通过，退出码 0。
+  12. `npx electron --lang=zh-CN scripts/test-desk-pet.cjs` & `scripts/test-desk-pet-ui.cjs`：35/35 桌宠逻辑与 20/20 桌宠 UI 自动化测试全部通过，退出码 0。
+- **进程与资源释放检查（严格遵守 AGENTS.md 规范）**：
+  - PowerShell 执行 `Get-Process node, electron -ErrorAction SilentlyContinue`，确认 0 遗留子进程，无任何悬挂进程。
+  - 项目根目录构建产物 `build/main/index.js` 执行独占读写打开检测（`fs.openSync(..., 'r+')`），确认完全 `UNLOCKED` 且立即释放句柄；`dist/` 目录访问正常，无 EBUSY / EPERM 锁定。
+  - 本轮测试产生的临时沙箱目录全部彻底清空。
+
+---
+
+# 前序接手记录 · 里程碑 M4（全局 UI 现代化、设置面板优化与会话界面统一）已落地并通过全量验证（2026-11-07）
+
+## 本地完成 · 里程碑 M4 全局 UI 现代化与会话界面落地验证（2026-11-07，开发分支）
+
+- **目标与范围（对应需求 R1、R4、R5，特性 F1、F2、F4、F5）**：
+  - **F1 全局现代主题系统与暗色模式无障碍优化**：
+    - 在 `renderer/index.html` 的 `<head>` 中添加 `<meta name="color-scheme" content="light dark">`（修复 E2E F1.3）；
+    - 保留不变契约 `:root[data-theme=dark] { --sidebar: #121419; --surface: #16191f; }`（满足 `test-ui.cjs:655` 及 F1.2 严格比对）；
+    - 将暗色模式下的 `--faint` 从 `#626a77` 提升到 `#7e8898`，确保在所有暗色表面达到 >= 4.80:1 WCAG AA 对比度；
+    - 在 `:root` 与 `:root[data-theme=dark]` 中分别定义 `--accent-contrast`（亮色 `#ffffff`，暗色薄荷绿 `--accent: #3fcf8e` 对应 `--accent-contrast: #06140e`），解决高亮按钮/状态徽章/选中文本可读性；
+    - 原生表单元素（`button, input, select, textarea`）统一重置继承样式 `font: inherit; color: inherit;`，并为输入框明确指定深色背景与文本色，杜绝深色模式下出现默认 `rgb(0, 0, 0)` 黑字；
+    - 响应式断点统一从 `860px` 调整为 `900px`，大卡片网格在 900px 时优雅单列折叠，表格容器具备 `.table-scroll { overflow-x: auto; max-width: 100%; }` 与 `overflow-wrap: anywhere;` 防溢出保护，保证在 900px 宽度下 `scrollWidth <= window.innerWidth`（通过 F1.4）。
+  - **F2 设置面板卡片式优化与交互重构**：
+    - 完整保留全部 5 个设置选项卡：`general`、`accounts`、`alerts`、`data`、`about`；
+    - 核心布尔开关（`closeToTray`、`autoLaunch`、`startMinimized`、`notifyMismatch`）升级为自绘平滑弹簧动画交互式 `.dps-switch` 开关组件（含 `.dps-knob` 和可编程无障碍 `.checked` 属性）；
+    - 严格保持测试强约束不变式：`pref-quotaQuietBackground` 与 `pref-weeklySummary` 继续使用 `optionSelect`（满足 `scripts/test-ui.cjs` 和 `scripts/test-share-ui.cjs` 对 `#option-menu` 的显式断言）；
+    - 严格保证 `pref-quotaQuietBackground` 处于紧随 `#pref-quota-every` 之后的下一个 `.setting-block` 兄弟元素中（满足 `test-ui.cjs:142` 的 DOM 结构断言）；
+    - 重构「数据」面板，引入卡片化 `.setting-card` 结构与 4 张遥测指标卡片（`#data-metrics`、`.data-metrics-grid`：用量账本文件数与请求数、会话缓存项数、脱敏排查日志说明、内存回收与清理策略）；
+    - 严格保留并完全对齐全部 6 个专属动作按钮 ID：`#open-data`、`#open-log`、`#open-tokens-ci`、`#open-deepseek-balance`、`#open-relay-balance`、`#open-config-backups`，以及 `.setting-block.methodology-copy`；
+    - 新增 `#data-trim-cache` 按钮，绑定主动式渲染缓存清理与 V8 垃圾回收（`PulseSessions.hide()` + `window.gc()`）。
+  - **F4/F5 会话管理界面统一、轮次耗时与生成速率呈现**：
+    - 左侧会话卡片（`.sw-item`）：保留 `.sw-item-usage`（无测量用量时渲染语义化 `.unrecorded` 降级文本 `未统计用量`，满足 `test-antigravity-ui.cjs` 断言），新增主模型标识微标（`.sw-item-model`）与每轮耗时徽章（`⏱️ 3.5s` 或 `⏱️ ≈3.5s`）；
+    - 顶部会话栏（`.sw-head`）：渲染模型芯片（多于 2 个模型时带有 `+N` 溢出弹窗芯片）、会话总活动耗时芯片（`活动 8.4s`）以及平均每轮耗时芯片（`⏱️ 均轮 3.8s`）；
+    - 用量面板（`.sw-usage-panel`）：新增第 5 块核心 KPI 卡片「均轮耗时与速度」（展示 `formatLatency(avgLat)` 与速率/总活动时长 `⚡ XX T/s · 总活动 X.Xs`），在模型拆分明细表格中新增「均轮耗时」列，表格容器使用无障碍区域包裹（`tabindex="0" role="region" aria-label="模型用量明细"`），并针对无用量统计的会话提供友好的空状态卡片（`.sw-usage-empty`）；
+    - 消息气泡列表：在助理消息气泡底栏（`.sw-bubble-foot`）追加对应模型、每轮耗时（`⏱️`）与生成速率微标（`⚡`）；
+    - 轮次分隔线：在 `drawMessages()` 中预索引用户轮次，在每轮提问上方渲染清晰的轮次指示线 `.sw-round-divider`（`第 N 轮 · 耗时 X.Xs`）；
+    - 响应式支持：1200px 3列用量卡片、900px 2列表格及单列折叠会话布局；
+    - 双语国际化（`renderer/i18n.js`）：新增静态词典翻译与动态正则表达式转换模式，保证在英文模式下全界面与 `.sw-usage-panel` 完全不含中文字符（通过 `test-antigravity-ui.cjs:185` 的 `!/[一-鿿]/` 严格断言）。
+- **完成的改动与关键文件（严格限定 6 个前端专属文件）**：
+  1. `renderer/index.html`：添加 `<meta name="color-scheme" content="light dark">`；重构设置「数据」选项卡为现代化卡片布局（`#data-metrics` 遥测网格、`#data-trim-cache` 缓存清理按钮），保留所有历史按钮与统计口径。
+  2. `renderer/app.css`：完善暗色与亮色模式变量（`--accent-contrast`、`--faint: #7e8898`）；定义现代卡片提升阴影、表单元素继承、`.dps-switch` 弹簧开关与 `.dps-knob`；新增设置面板网格与数据指标卡样式；将全局响应式断点统一更新为 `@media (max-width: 900px)`，增加表格滚动防溢出。
+  3. `renderer/app.js`：实现 `prefToggle` 组件（生成包含 `.dps-knob` 及可访问属性的开关）；将常规设置项迁移至开关组件，保持 `quotaQuietBackground` 与 `weeklySummary` 为下拉菜单；实现 `renderDataMetrics()` 实时渲染文件数与请求数；绑定 `#data-trim-cache` 内存回收处理器。
+  4. `renderer/sessions.js`：实现 `formatLatency()` 与 `formatDuration()`；在列表项中增加主模型徽章与耗时微标，未测量用量项优雅降级；顶部头栏增加模型溢出芯片、活跃耗时与均轮耗时；用量面板扩展第 5 块耗时与速度 KPI 卡、明细表均轮耗时列与无用量空状态；消息底栏添加模型、耗时与速率；渲染每轮对话之间的轮次分割指示器 `.sw-round-divider`；在 `PulseSessions` 导出 `count()`。
+  5. `renderer/sessions.css`：为会话模型标签、用量降级、耗时与速度微标、溢出菜单、用量空状态、气泡底栏扩展项、轮次分割线及 5 列 KPI 网格添加完整样式；适配 1200px / 900px 响应式折叠。
+  6. `renderer/i18n.js`：在 `EN` 词典中补充会话耗时、速度、空状态及设置数据指标翻译项；在 `PATTERNS` 中添加 `⏱️ 均轮`、`第 N 轮 · 耗时`、`⚡ XX T/s`、请求记录数与会话索引数等动态替换规则。
+- **验证命令与实际结果**：
+  - `npm run build`：TypeScript 编译干净通过，退出码 0。
+  - `node scripts/test-e2e-suite.cjs --milestone=m4`：**30/30 M4 端到端测试 100% 全部通过**（F1: 5/5, F2: 5/5, F4: 5/5, F5: 5/5, F17: 5/5, F18: 5/5，0 失败，0 pending）。
+  - `npx electron --lang=zh-CN scripts/test-ui.cjs`：**26/26 测试步骤全部通过**，退出码 0。
+  - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**7/7 测试全部通过**（包括暗色模式无黑字、900px 无溢出、英文模式 `!/[一-鿿]/` 无中文字符泄漏验证），退出码 0。
+  - `node scripts/test-tray-panel.cjs`：全部通过，退出码 0。
+  - `node scripts/test-desk-pet.cjs`：全部通过，退出码 0。
+  - `node scripts/test-sessions.cjs` & `node scripts/test-antigravity-sessions.cjs`：会话核心解析全部通过，退出码 0。
+- **进程与资源释放检查（严格遵守 AGENTS.md 规范）**：
+  - 构建与全量测试执行后，执行 PowerShell `Get-Process electron, node` 检查确认 0 遗留子进程，无任何悬挂进程。
+  - 项目根目录构建产物 `build/` 及前端静态资源无任何文件锁占用，无 EBUSY / EPERM 锁定。
+
+---
+
+# 前序接手记录 · 里程碑 M3（多源会话数据架构与每轮耗时关联系数引擎）已落地并通过全量验证（2026-11-07）
+
+## 本地完成 · 里程碑 M3 核心引擎落地与全量契约测试验证（2026-11-07，开发分支）
+
+- **目标与范围（对应需求 R2，特性 F6、F7、F8）**：
+  - 增强统一会话数据模型（`SessionMessage`、`SessionUsage`、`SessionModelUsage`、`SessionSummary`），补充每轮耗时 `durationMs`、首字延迟 `firstTokenMs`、生成速率 `tokensPerSec`、对应模型 `model`、估算标记 `latencyEstimated`、会话及模型级平均轮耗时 `avgRoundDurationMs`、会话有效活跃时长 `totalActiveDurationMs`、平均速率 `avgTokensPerSec` 与可恢复命令标记 `resumable`；
+  - 实现轮次状态跟踪机制（`currentTurnStartAt`、`currentTurnUserIndex`、`currentTurnAssistantIndices`）与 3-Tier 耗时关联引擎（Tier 1: 直接测量/精准测量；Tier 2: 轮次时间差估算，含 100ms 假事件剔除与 30 分钟休眠保护；Tier 3: 优雅回退兜底）；
+  - 实现与本地路由台账（`routeReturned`）的多源关联；
+  - 提取 Antigravity 原生 Protobuf `gen_metadata` 生成元数据与步骤流式时间戳，并具备整包工具调用快速假首字（>500 T/s 且 >=150 tokens）自动抑制与校正机制；
+  - 覆盖全部 6 大 CLI / Agent 会话来源：Claude Code、Codex CLI、Grok Build、DeepSeek Harness、pi、Antigravity；
+  - 更新会话单元测试与 E2E 测试套件（`test-sessions.cjs`、`test-antigravity-sessions.cjs`、`scripts/e2e/tier1-features.cjs`）。
+- **完成的改动与关键文件（严格限定专属文件）**：
+  1. `src/core/antigravity.ts`：在 `readAntigravityConversation` 中解码 Protobuf `gen_metadata`，提取 `firstTokenMs`、`streamingMs` 与实际耗时，过滤整包工具调用假首字，计算步骤级与轮次级生成速度 `tokensPerSec`，返回精确的 `isMeasured: true` 步骤属性。
+  2. `src/core/sessions.ts`：
+     - 类型定义全面增强（`SessionMessage`、`SessionUsage`、`SessionModelUsage`、`SessionSummary`）；
+     - 导出 `correlateLatency`（Tier 1/2/3 耗时关联与 30 分钟休眠保护）与 `formatLatency`（支持 `≈` 估算前缀与毫秒/秒级自适应格式化）；
+     - 递增 `INDEX_VERSION = 4` 自动失效旧索引；
+     - 在 `Builder` 类中建立轮次生命周期（`closeTurn()`、`addAssistantIndex()`），在每轮助理消息上注入 `durationMs`、`model`、`latencyEstimated`，在 `buildUsage()` 与 `summarize()` 中聚合计算会话级与模型级 `avgRoundDurationMs`、`totalActiveDurationMs` 与 `avgTokensPerSec`；
+     - 完善 6 大提供商的解析逻辑：Claude（提取 requestId/message.id、模型名、轮次时间差）、Codex（提取 token_usage_record 的 responseId、模型名、轮次耗时）、Grok（提取分块模型、关联轮次耗时）、DeepSeek（提取 stream 真实首字与持续时间作为 Tier 1，或回退轮次时间差）、pi（直接提取 message/row 中的 `durationMs` 作为 Tier 1）、Antigravity（聚合步骤时间戳与流式元数据作为 Tier 1）。
+  3. `scripts/test-sessions.cjs`：更新 mock 会话数据与严格的 usage 断言（含 `avgRoundDurationMs: 6000`、`totalActiveDurationMs: 6000`、`avgTokensPerSec: 100` 等），补充 pi `durationMs: 2500` 直接测量断言，补充 3-Tier 耗时关联、休眠保护与格式化逻辑测试。
+  4. `scripts/test-antigravity-sessions.cjs`：更新 mock 数据库会话数据注入 Protobuf `duration` 生成元数据，断言会话级活跃耗时（2000ms）、生成速率（500 T/s）及步骤级真实速率（300 T/s）与首字延迟（450ms）。
+  5. `scripts/e2e/tier1-features.cjs`：F6.1–F6.5（多源时间戳提取）、F7.1–F7.5（3-Tier 耗时引擎与休眠保护）、F8.1–F8.5（统一会话数据模型与跨 IPC 序列化）测试 100% 通过。
+- **验证命令与实际结果**：
+  - `npm run build`：编译无报错，退出码 0。
+  - `node scripts/test-sessions.cjs`：全部会话解析、用量统计与 3-Tier 关联测试通过，退出码 0。
+  - `node scripts/test-antigravity-sessions.cjs`：3/3 Antigravity 会话与元数据测试全部通过，退出码 0。
+  - `node scripts/test-e2e-suite.cjs --milestone=m3`：**15/15 M3 测试用例 100% 全部通过**（F6/F7/F8 全部 PASS，0 pending，0 failure）。
+  - `npm test`：全套 60+ 后端单元测试及回归套件通过，退出码 0。
+- **进程与资源释放检查（AGENTS.md 规范）**：
+  - 构建与测试后经 `Get-Process node, electron` 检查，结果为 0 驻留进程，无遗留背景进程。
+  - 产物目录 `build/` 及代码文件句柄全部释放，无 EBUSY / EPERM 锁定。
+
+---
+
+## 前序完成 · 里程碑 M2 核心引擎改造与 100% 契约验证（2026-11-07，开发分支）
+
+- **目标与范围（对应需求 R3，特性 F10、F11、F12、F13、F14、F15、F16）**：
+  - 彻底治理主进程 Worker 线程驻留与内存泄漏；
+  - 建立主进程主动内存回收、空闲监控、V8 显式垃圾回收与会话缓存清理机制；
+  - 建立渲染进程切页/离开会话生命周期通知，卸载大型会话 DOM 并释放会话详情 JSON；
+  - 实现会话列表 40 项分块惰性追加与消息区域 40 块虚拟化滚动锚定（零抖动）；
+  - 解耦 30 秒全局轮询渲染与相对时间局部文本更新，消除重绘与输入卡顿。
+- **完成的改动与关键文件（严格限定 6 个专属文件）**：
+  1. `src/main/snapshot.ts`：在 `runWorker` 的 `message`、`error` 与 `exit` 事件回调中增加严格的 `cleanup` 与 `worker.terminate().catch(() => {})` 终止调用，避免孤儿线程累积。
+  2. `src/core/report-worker.ts`：将 `listSessions()` 会话索引构建移至 `parentPort!.postMessage(snapshot)` 之前，确保主线程终止 worker 前磁盘 I/O 已经安全完成。
+  3. `src/main/index.ts`：
+     - 在启动命令行注入 `app.commandLine.appendSwitch('js-flags', '--expose-gc')` 暴露 V8 `global.gc`；
+     - 在 `setWindowAway` 中向渲染进程派发 `window-away` IPC 事件，并在窗口离开时主动调用 `session.defaultSession.clearCache()`、`win.webContents.session.clearCache()` 与 `global.gc()`；
+     - 引入 `setupIdleMonitor` 周期检测 `powerMonitor.getSystemIdleTime()`，在空闲超 300 秒时自动触发缓存修剪与 V8 垃圾回收；
+     - 将 `notifiedRequests` 告警集合使用 FIFO 策略严格限制在 500 条上限内。
+  4. `src/main/preload.ts`：在 ContextBridge 暴露 `onWindowAway: (handler) => ...` 安全事件监听通道。
+  5. `renderer/app.js`：
+     - 在 `navigate(page)` 切页离开 `sessions` 时主动调用 `window.PulseSessions?.hide?.()`；
+     - 注册 `api.onWindowAway` 监听，离开时 hide 会话，恢复时重新 show 会话；
+     - 实现 `updateRelativeTimes()` 局部文本更新，解耦 30 秒定时器中的全局全量 `render()` 重绘；
+     - 为配额倒计时节点补充 `data-reset-at` 属性支持原位刷新。
+  6. `renderer/sessions.js`：
+     - 实现 `PulseSessions.hide()` 卸载 `.sw-messages` 消息 DOM、释放 `S.detail = null`、保存草稿并重置渲染标记；
+     - 优化 `PulseSessions.show()` 支持从 `S.detail = null` 无缝自动恢复；
+     - 实现会话列表 40 项分批渲染（`LIST_CHUNK = 40`）与 `N.list` 被动滚动监听追加；
+     - 实现消息区域 40 块初始渲染（`MSG_CHUNK = 40`）与 `N.scroller` 顶部滚动零抖动高度补偿加载；
+     - 将 `S.drafts` 草稿字典限制在 50 条 FIFO 上限内。
+- **验证命令与实际结果**：
+  - `npm run build`：编译无报错，退出码 0。
+  - `node scripts/test-e2e-suite.cjs --milestone=m2`：**35/35 测试用例 100% 全部通过**（F10/F11/F12/F13/F14/F15/F16 均通过，0 pending，0 failure）。
+  - `node scripts/test-e2e-suite.cjs`：**121/122 全部通过**，仅剩 1 个属于 M4 的 F1.3（`<meta name="color-scheme">`）。
+  - `npm test`：全部后端单元测试与回归套件通过，退出码 0。
+  - `npx electron --lang=zh-CN scripts/test-ui.cjs`：26/26 全部通过，退出码 0。
+  - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：7/7 全部通过，退出码 0。
+  - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：全部通过，退出码 0。
+  - `node scripts/test-tray-panel.cjs` & `node scripts/test-desk-pet.cjs`：全部通过，退出码 0。
+- **进程与资源释放检查（AGENTS.md 规范）**：
+  - 构建与测试后经 `Get-Process node, electron` 检查，所有测试及 Worker 子进程均已完全终止，无遗留驻留进程。
+  - 产物目录及代码文件句柄全部释放，无 EBUSY / EPERM 锁定。
+
+---
+
+## 历史接手记录
+
+### 0.3.78 已正式发布（2026-11-06）
+
+## 0.3.78 已正式发布（2026-11-06 本地时间，GitHub 记录 2026-11-07T04:04Z，用户说「OK 这两个修复算一个小版本来发布吧 辛苦你啦~」）
+
+- 内容：下面两节「排查并修复 Antigravity `gemini-4-argon-b` 首字延迟（TTFT）偏慢与整包工具调用假首字问题」与「修复 Antigravity 周额度整窗折算被放大至 ~80 亿 Token 的 Bug」（那两节写的「版本仍 0.3.77、未提交」指当时）。`renderer/intro.js` 加 `0.3.78` 两条更新说明 + `renderer/i18n.js` 英文翻译及提前重置时间提示正则；`git fetch` 远端没有新提交；`npm version 0.3.78 --no-git-tag-version`。
+- 升版本后：`npm test` 退出 0（全部后端单元测试通过，含 `test-antigravity-usage` 9/9）；界面测试 `test-antigravity-ui` 7/7、`test-ui` 26/26 均退出 0。
+- `npm run dist` 退出 0；`node dist/verify-0.3.78.cjs`：184 个运行时文件一致，版本 `0.3.78`，ASAR SHA256 `3756f0e06f6659ffcb0ba680844da91b31c989256b2c21863c03318ff5add3c4`。校验值 `dist/assets-0.3.78.sha256`（Setup `794910a2…77ea`、Portable `ebd9c55e…c5cd`、blockmap `55bef7ba…e0da`、latest.yml `eae3fffa…a39ca`），说明 `dist/release-0.3.78.md`。
+- Git：提交 `dc4ee8f`（9 个文件，扫过无凭证 / 邮箱 / 会话链接 / 本机接口令牌；不含 `HANDOFF.md` 和 `clawd-pet-extracted/`），标签 `v0.3.78`；`main` 和标签已推送，远端均指向 `dc4ee8f`。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.78 ：先建草稿，上传 4 个附件后核对大小和 GitHub SHA256 与本地 `dist/assets-0.3.78.sha256` 一致，正式发布并设为 `latest`。
+- 待确认：用户更新后在真实界面确认 Antigravity 周额度整窗折算与「窗口已提前重置」提示、以及用量明细里 `gemini-4-argon-b` 的首字延迟修正；没走过自动更新安装。
+- 收尾：没有遗留本轮的 `electron` / `node` / `gh` 进程；用户安装版 TokenPulse 未动；`dist` 0.3.78 产物和 `win-unpacked/resources/app.asar` 独占打开检测均为 `UNLOCKED`（检测句柄立即关闭）；工作目录在项目根目录。`HANDOFF.md` 仍未提交（项目惯例）。
+
+## 本地完成 · 排查并修复 Antigravity `gemini-4-argon-b` 首字延迟（TTFT）偏慢与整包工具调用假首字问题（2026-11-06，当时版本仍 0.3.77、未提交，后并入 0.3.78）
+
+- 用户提问：「为什么用量明细里面的 Argon-b 首字很慢啊 这是真的慢还是本来就是 BUG？你能帮我查查吗？」
+- 本机 SQLite 数据库（`steps.metadata` 与 `gen_metadata`）实测核查结论（共 995 次 `gemini-4-argon-b` 调用对比 357 次 `gemini-3.8-flash` 调用）：
+  1. **底层字段含义**：`gen_metadata` 的 `field 11`（`f11_ms`）严格等于 `steps.metadata.6 (first_viewable_at) - steps.metadata.1 (start_at)`；`field 12`（`f12_ms`）严格等于 `steps.metadata.7 (finished_at) - steps.metadata.6 (first_viewable_at)`。
+  2. **一半是「真慢」（约 6s～11s，中位数 9.3s）**：
+     - `gemini-4-argon-b` 对应 `Gemini 4 Argon (High)`（高思考档位旗舰模型），你本机每次请求的平均输入上下文高达 **13.7 万～14.4 万 Tokens**，且平均每次先进行 **412～605 Tokens 的内部思考（Thinking）**。
+     - 当模型没有输出可见思考文本块（`step_payload.20.3` 为空）时，内部思考期间不会触发 `first_viewable_at`，因此 14 万 Token 的 Prefill + 内部思考时间全算在 `field 11` 里（相比之下 `gemini-3.8-flash` 中位首字仅 `2.0s～2.7s`）。
+  3. **另一半是「协议与统计导致的假慢 Bug」（15s～129s 的离谱首字）**：
+     - 你本机 995 次 `gemini-4-argon-b` 调用里，有 **901 次（90.6%）是纯工具调用步骤**（如 `write_file`、`edit_file`、`run_command`、`send_message`，无聊天正文）。
+     - Google Gemini 的工具调用（Function Calling）不在流式过程里逐字推送 JSON，而是**在服务端把整个工具调用 JSON 完整生成完后，一次性作为一个块下发**。
+     - 当某一步既没有聊天正文也没有可见思考块、直接调工具写文件时（例如 `5b9f789c` 会话的 `step 32`，调 `write_file` 一次性写了 `16,120` 个代码 Token），服务端花了 **129.10 秒**生成完整个文件后才发回第一个可见块，导致 Antigravity 把整整 **`129.10s`（2m 9s）全部记进了 `field 11`（首字延迟）**，而把 `field 12`（流式耗时）记成了 **`48 毫秒`**！本机 629 次单工具调用里有 455 次（72%）的 `field 12` 中位数只有 `112ms`。
+- 已完成改动及关键文件：
+  - `src/core/antigravity.ts`：
+    - 在 `readAntigravityGenerations` 中识别服务端整包缓冲的工具调用（`isBufferedToolCall`：当非思考输出 `outNoThink >= 150` Tokens 且 `streamingMs <= 0 || outNoThink / (streamingMs / 1000) > 500`，即表观流式速度超过物理极限 500 Token/秒时），不再把包含整段工具代码生成时间的 `rawFirstTokenMs` 误记为 `firstTokenMs`（首字显示为 `—`，仅保留真实 `totalMs` 总耗时与 `tokensPerSec`）。
+  - `src/core/usage-scan.ts`：
+    - 将 `ANTIGRAVITY_STATE_VERSION` 从 `2` 升至 `3`，下次扫描自动重算已有 Antigravity 请求记录的 `timing`，并将整包返回步骤的 `timing.stream` 设为 `false`（悬停提示 `Antigravity 本地记录 · 非流式`）。
+  - `scripts/test-antigravity-usage.cjs`：
+    - 新增整包缓冲大工具调用（`output: 16155, thinking: 35, f11: 129000ms, f12: 48ms`）不把 129s 误记为 `firstTokenMs` 的回归断言（`9/9 antigravity checks passed`）。
+
+## 本地完成 · 修复 Antigravity 周额度整窗折算被放大至 ~80 亿 Token 的 Bug（补齐提前重置切段与半途采样分子/分母对齐）（2026-11-06，版本仍 0.3.77、未提交）
+
+- 用户反馈：「为啥我们 tokenpulse 估计我的账号周额度有 80 亿 Token 啊？这是假的吧，你是不是没有考虑 Google 会偶尔重置的因素？但是我记得我其他模型厂商都有做用了重置卡之后的代码呀。你没注意到吗？」
+- 根因定位（已结合用户本机 `antigravity-quota.json` 采样与请求账本实测复盘）：
+  1. **缺少 `windowSegments` 式的提前重置（`moved` / `kept`）窗口切段**：
+     - 用户第一个周周期（`resetAt = 2026-11-13T04:17:55Z`，起点 `2026-11-06T04:17:55Z`）在 `04:17Z` 至 `17:15Z` 消耗了 `1.26 亿` Tokens，周已用升至 `4.7%`。
+     - 随后在 `2026-11-07T02:29:33Z`（距原定重置还有 6 天），Google 提前将该周额度重置为 `0%` 并将 `weekResetAt` 顺延至 `2026-11-14T02:35:22Z`（与 Codex 的 `moved` 重置卡行为完全一致）。
+     - 原先 `src/main/antigravity-quota.ts` 的 `buildWindowInsight` 没有像 `src/core/quota-monitor.ts` 的 `windowSegments` 那样在提前重置处截断前一段的 `endAt` 并钳制后一段的 `startAt`，导致旧周期的 `[startAt, endAt]` 仍跨越到 11 月 13 日，把重置后的新增请求也吞入旧周期。
+  2. **半途开始采样时的分子/分母区间错配（核心放大根源）**：
+     - 用户在 `12:26Z` 升级到 `0.3.76` 后才开始记录周额度采样，首个周采样已为 `3.4%`（`minUsed = 3.3%`），末次采样为 `4.7%`。
+     - 原代码写的是 `const delta = maxUsed >= minUsed + 0.5 ? maxUsed - minUsed : maxUsed`（算出 `delta = 4.7% - 3.3% = 1.4%`，仅代表 `12:26Z` 之后的涨幅），但分子 `cRows` 却从整窗起点 `04:17Z` 开始累加全部 `1.26 亿 + 重置后 = 1.30+ 亿` Tokens（对应完整的 `4.7% + 0.8%` 消耗），导致用整窗全部 Token 除以半途 `1.4%`（早期 `delta` 更小时甚至 `< 1.1%`），把真实的 **~26.9 亿 Tokens**（约为 5 小时窗口容量 `5.78 亿` 的 4.65 倍，与官方扣额比 `19.9% ÷ 4.7% = 4.23` 完全吻合）放大了 3 倍以上变成 **80+ 亿 Tokens**。
+  3. **缺少 `MIN_CAPACITY_PCT = 2` 最小折算阈值**：
+     - `src/core/quota-monitor.ts` 要求窗口段至少消耗 `>= 2%` 才参与整窗容量折算，而 `antigravity-quota.ts` 原先设成了 `0.2%`，导致刚重置后 `0.2%`–`0.4%` 的微小舍入抖动被放大 250–500 倍。
+- 已完成改动及关键文件：
+  - `src/main/antigravity-quota.ts`：
+    - 新增并导出 `agyWindowSegments(windowKind, groupKeyStr, history, currentQuota, now)`（对标 `src/core/quota-monitor.ts` 的 `windowSegments`）：
+      - 按 `resetAt` 聚合周期，并自动合并 `0%` 空闲窗口顺延的采样（避免把未开始使用的浮动 `resetAt` 误判为提前重置）；
+      - 当上一段有用量且在 `previous.endAt - SAME_WINDOW_MS` 之前出现了新的 `resetAt` 周期（Google 顺延式提前重置），将上一段 `endAt` 截断在重置点并标记 `endedByReset = "moved"`，新段标记 `startedByReset = "moved"` 且 `startAt` 不早于上一段末次采样；
+      - 当同一 `resetAt` 周期内百分比大幅回落（归零或掉 `>= 3` 个百分点，忽略 `< 1%` 的普通接口重算微抖），在回落前切开并标记 `endedByReset = "kept"` / `startedByReset = "kept"`。
+    - 修复 `buildWindowInsight` 的折算分子/分母对齐与阈值：
+      - 统一执行 `MIN_CAPACITY_PCT = 2`（`< 2%` 的窗口段不单独外推整窗容量）；
+      - 对半途开始采样的窗口段（`first.used >= 1.5`），检查 `[segment.startAt, first.at)` 是否有本机请求记录：若有本机记录（本机 `.pb` 日志完整覆盖窗口起点），分子取 `[segment.startAt, endBound]` 全部 Token、分母取 `targetPt.used`；若无本机记录，分子只取 `[first.at, endBound]`、分母取 `targetPt.used - first.used`。
+    - `buildTimelineWindow` 同步接入 `agyWindowSegments`，在时间线周期选择器中识别并标注 `resetCard: Boolean(seg.startedByReset || seg.endedByReset)`。
+  - `renderer/antigravity-quota.js`、`renderer/i18n.js`：
+    - 当 5 小时窗口或周额度窗口带有 `startedByReset` 时，渲染与 Claude/Codex 一致的 `.reset-card-note` 提示条（`窗口已提前重置，重置日期已顺延 · 从 ... 起算` / `窗口已提前重置，重置日期不变 · 从 ... 起算`）；
+    - 当窗口已用 `< 2%` 尚无历史折算样本时，副标题明确提示 `已用不到 2%，暂不折算整窗容量`；补齐中英双语词条。
+  - `scripts/test-antigravity-usage.cjs`：
+    - 新增 `agyWindowSegments` 对提前重置（`moved`）切段、旧段 `endAt` 截断与新段 `startAt` 钳制的单元测试（`9/9 antigravity checks passed`）。
+- 实测本机修复效果（只读验证）：
+  - `Gemini Models` 5 小时整窗折算：`5.78 亿 Tokens`（`$252.49`，4 个周期样本累计 `23.1%`）；
+  - `Gemini Models` 周额度整窗折算：从原先虚高的 **80+ 亿 Tokens** 回落为真实的 **`26.9 亿 Tokens`**（`$1,163.64`，约为 5 小时窗口的 4.65 倍），当前重置后周窗口正确标记 `startedByReset: "moved"`，本机周已用准确统计重置后的 `726.9 万 Tokens`。
+- 测试命令与实际结果：
+  - `npm.cmd run compile`：退出 0。
+  - `node scripts/test-antigravity-usage.cjs`：退出 0（`9/9 antigravity checks passed`）。
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：退出 0（`7/7 antigravity UI checks passed`）。
+- 收尾检查：
+  - 本轮启动的所有测试进程均已退出，无遗留 `electron.exe` / `node.exe` 工作区进程；用户安装版 `TokenPulse.exe` 未动。
+- 下一步：向用户解释 80 亿 Token 的产生原因与修复结果，等待用户确认是否需要打包/发布新版本。
+
+## 0.3.77 已正式发布（2026-11-06 本地时间，GitHub 记录 2026-11-06T15:22:05Z，用户说「OK 那你直接发布吧~」）
+
+- 内容：下面两节「会话管理新增每段对话的详细用量看板」与「修复 Antigravity 额度池在窗口重置后合并为一个的 Bug」（那两节写的「版本仍 0.3.76、未提交」指当时）。`renderer/intro.js` 加 `0.3.77` 两条更新说明 + `renderer/i18n.js` 英文翻译；`README.md` 的 `### Sessions` 补齐 6 类会话每段对话的模型占比、Token、缓存命中率、API 等价费用与缓存省下估算说明；`git fetch` 远端没有新提交；`npm version 0.3.77 --no-git-tag-version`。
+- 升版本后：`npm test` 退出 0（全部后端单元测试通过）；界面测试 `test-antigravity-ui` 7/7、`test-ui` 26/26 均退出 0。
+- `npm run dist` 退出 0；`node dist/verify-0.3.77.cjs`：184 个运行时文件一致，版本 `0.3.77`，ASAR SHA256 `aee3d4016c48c3d5199229f895a365e0c09eb27ad268b0d1793b7b824bc00b85`。校验值 `dist/assets-0.3.77.sha256`（Setup `a3c4c82f…8059`、Portable `f9ddaf16…7539`、blockmap `d7d60b7b…7b1c`、latest.yml `26e2074d…1927`），说明 `dist/release-0.3.77.md`。
+- Git：提交 `3ffa33a`（14 个文件，扫过无凭证 / 邮箱 / 会话链接 / 本机接口令牌；不含 `HANDOFF.md` 和 `clawd-pet-extracted/`），标签 `v0.3.77`；`main` 和标签已推送，远端均指向 `3ffa33a`。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.77 ：先建草稿，4 个附件一次上传成功，大小和 GitHub SHA256 与本地 `dist/assets-0.3.77.sha256` 一致后正式发布；`latest` 指向 `v0.3.77`。
+- 待确认：用户更新后在真实界面查看会话管理的每段对话用量条、展开模型占比明细板，以及 Antigravity 窗口重置后的双池分离；没走过自动更新安装。
+- 收尾：没有遗留本轮的 `electron` / `node` / `gh` 进程；只剩用户安装版 TokenPulse（6 个进程，未动）；`dist` 0.3.77 产物和 `win-unpacked/resources/app.asar` 独占打开检测均为 `UNLOCKED`（检测句柄立即关闭）；工作目录在项目根目录。`HANDOFF.md` 仍未提交（项目惯例）。
+
+## 本地完成 · 会话管理新增每段对话的详细用量看板（模型占比、Token、缓存命中率、API 等价费用与缓存省下估算）（2026-11-06，当时版本仍 0.3.76、未提交，后并入 0.3.77）
+
+- 用户需求：在「会话管理」里为每个会话展示详细统计（用了哪些模型、按 Token/调用次数/API 费用的模型占比、总 Token 与输入/输出/缓存拆解、缓存命中率、消耗 Token 等价 API 美元费用、缓存省下的 API 费用估算）。
+- 已完成改动及关键文件：
+  - `src/core/antigravity.ts`：
+    - `readAntigravityConversation` 同时读取 `steps.metadata`（或 `step_payload.5`）里的 `field 9` 用量（`rawInput`、`output`、`cacheWrite`、`cacheRead`、`thinking`），在 `reply` 步骤上附加 `usage?: AgyStepUsage`。
+  - `src/core/sessions.ts`：
+    - 新增并导出 `SessionModelUsage` 与 `SessionUsage`，挂入 `SessionSummary.usage`（及 `SessionDetail.usage`），并将 `INDEX_VERSION` 升至 `3` 以自动刷新本机 `sessions-index.json` 索引。
+    - `Builder` 新增 `addUsage` / `buildUsage`，结合 `estimateCost` 与 `displayModel` 计算每个模型及整段会话的 `tokens`、`input`、`output`、`cacheRead`、`cacheWrite`、`reasoning`、`cacheHitRate`（`cacheRead / input * 100`）、`costUsd`（API 等价费用）、`uncachedCostUsd`（假设全部输入不命中缓存的原价）与 `cacheSavedUsd`（缓存省下费用），以及每个模型的 `tokenShare`、`requestShare`、`costShare`。
+    - 6 类会话解析器（`parseClaude`、`parseCodex`、`parseGrok`、`parseDeepseek`、`parsePi`、`parseAntigravity`）全部接入逐次调用用量汇总（含 Claude 同 `requestId`/`message.id` 去重、`<synthetic>` 过滤、Codex `token_usage_record` 与旧版 `token_count` 去重、Grok `modelUsage` 与 `costUsdTicks`、DeepSeek 闲忙时单价、pi 消息与压缩条目、Antigravity 步骤用量）。
+  - `renderer/sessions.js`、`renderer/sessions.css`、`renderer/i18n.js`：
+    - 左侧会话列表每张卡片（`.sw-item-meta`）新增紧凑 `.sw-item-usage` 标签（如 `11K · ≈$0.04`）。
+    - 右侧会话详情顶部新增紧凑汇总条 `.sw-usage-bar`（展示总 Token、缓存命中率、API 等价费用、绿色的缓存省下金额徽章、多色模型占比微缩条，以及「用量详情 / 收起用量详情」切换按钮 `.sw-usage-toggle`）。
+    - 点击展开 `.sw-usage-panel` 完整明细板：① 4 张核心 KPI 卡片（总 Token 消耗、缓存命中率、API 等价花费、缓存省下费用）；② 模型占比分布多色分段条 `.sw-model-stack`（支持「按 Token / 按调用次数 / 按 API 费用」一键切换口径）与图例；③ 多列模型明细表 `.sw-usage-table`（模型、调用次数/占比、总 Token/占比、输入/输出、缓存命中率、API 等价/占比、缓存省下）。
+    - `renderer/i18n.js` 补齐全部新增静态词条与动态正则模板翻译。
+  - `scripts/test-sessions.cjs`、`scripts/test-antigravity-sessions.cjs`、`scripts/test-antigravity-ui.cjs`：
+    - 补齐 6 类会话的 `summary.usage` / `detail.usage` 断言，以及会话管理界面 `.sw-item-usage`、`.sw-usage-bar`、展开 `.sw-usage-panel` 与英文模式 0 中文残留的 UI 自动化测试。
+- 测试命令与实际结果：
+  - `npm.cmd run compile`：退出 0。
+  - `node scripts/test-sessions.cjs`：退出 0。
+  - `node scripts/test-antigravity-sessions.cjs`：退出 0（`3/3 antigravity session checks passed`）。
+  - `node scripts/test-antigravity-usage.cjs`：退出 0（`8/8 antigravity checks passed`）。
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：退出 0（`7/7 antigravity UI checks passed`）。
+  - `npx.cmd electron --lang=zh-CN scripts/test-ui.cjs`：退出 0（`26/26 PASS`）。
+- 收尾检查：
+  - 本轮启动的所有测试进程均已退出，无遗留 `electron.exe` / `node.exe` 工作区进程；用户安装版 `TokenPulse.exe`（6 个进程）未动。
+- 下一步：等待用户确认是否一起打包并发布新版本（如 `0.3.77`）。
+
+## 本地完成 · 修复 Antigravity 额度池在窗口重置后合并为一个的 Bug（2026-11-06，版本仍 0.3.76、未提交）
+
+- 用户反馈：「当一个窗口重置后，这两个额度池竟然合并为一个了，这是怎么回事？这是BUG吗？」
+- 根因定位（已实测复现）：
+  1. **真实 `RetrieveUserQuotaSummary` 字段名差异**：真实接口返回 `response.groups[].displayName`（如 `"Gemini Models"`、`"Claude and GPT models"`）、`description`、`buckets[].bucketId`（如 `"gemini-weekly"`、`"gemini-5h"`、`"3p-weekly"`、`"3p-5h"`）与 `buckets[].displayName`（`"Five Hour Limit Remaining"`、`"Weekly Limit Remaining"`），而 `parseSummaryGroups` 原先只读了 `raw.title`、`bucket.id`、`bucket.title`，导致真实环境里 `sg.title` 与 `sg.bucketIds` 为空，`matchSummaryGroup` 里的按模型家族匹配（`byFamily`）未命中。
+  2. **未用池的动态 `resetTime` 抖动 + 兜底近似匹配碰撞**：对于 100% 剩余的 `Claude and GPT models`（`used = 0%`），Antigravity 每次 RPC 动态返回 `now + 5h`，导致 `GetUserStatus` 与 `RetrieveUserQuotaSummary` 的 `resetTime` 相差约 1 秒，精确相等匹配未命中，退化到最后一行 `Math.abs(sg.five.used - used) <= 0.2`。重置前 Gemini 5h 已用 `8.8%`、Claude/GPT 已用 `0%`，各自命中不同组；**一旦 Gemini 5 小时窗口重置为 `0.1%`**，`Math.abs(0.1 - 0) <= 0.2` 成立，Claude/GPT 也命中了 `summaryGroups[0]`（Gemini 组，`sg:0`），两个额度池遂合并成了同一个分组。
+- 已完成改动及关键文件：
+  - `src/core/antigravity.ts`：
+    - `parseSummaryGroups` 同时兼容 `raw.displayName || raw.title`、`raw.description`、`bucket.bucketId || bucket.id`、`bucket.displayName || bucket.title` 以及 `/5-?hour|five\s+hour/i`。
+    - `matchSummaryGroup` **优先按模型家族（`gemini` vs `claude|gpt|3p`）匹配** `sg.title`、`sg.description`、`sg.bucketIds`；未知家族再按 `sameResetTime(sg.five.resetAt, resetAt, 10_000)` 匹配；**移除**仅按 `Math.abs(sg.five.used - used) <= 0.2` 兜底匹配的分支。
+    - `parseAntigravityStatus` 在无 `summaryJson` 时的分组 key 加上 `poolCategory(family)` 前缀（`${poolCategory(family)}|${remaining}|${resetAt ?? ""}`），防止两个池同为 100% 剩余且同秒重置时合并。
+  - `src/main/antigravity-quota.ts`：
+    - 新增 `isMixedPoolModels` 与 `sanitizeStored(raw)`：启动加载 `antigravity-quota.json` 时自动过滤掉因该 Bug 产生的混池采样（同时含 `gemini` 与 `claude|gpt` 的合并组），若 `last.groups` 被污染则自动从最近一条干净采样恢复，避免 7 天走势图或离线状态残留合并线。
+  - `scripts/test-antigravity-usage.cjs`：
+    - 新增窗口刚重置（Gemini `0.9991438` vs Claude/GPT `1`，且两次 RPC `resetTime` 差 1 秒）及真实 `RetrieveUserQuotaSummary` 字段结构的回归断言。
+- 测试命令与实际结果：
+  - `npm.cmd run compile`：退出 0。
+  - `node scripts/test-antigravity-usage.cjs`：退出 0（`8/8 antigravity checks passed`）。
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：退出 0（`7/7 antigravity UI checks passed`）。
+- 收尾检查：
+  - 本轮启动的测试进程已全部退出，无遗留 `electron.exe` / `node.exe` 工作区进程；用户安装版 `TokenPulse.exe`（6 个进程）未动。
+- 下一步：等待用户确认是否立即打包并发布 `0.3.77`（或先在本地重新打包安装更新）。
+
+## 0.3.76 已正式发布（2026-11-06 本地时间，GitHub 记录 2026-11-06T12:24:23Z，用户说「OK 那你发布到Github上吧 文案要模仿之前的release哦~」）
+
+- 内容：下面一节「重新深度适配 Google Antigravity」（那节写的「版本仍 0.3.75、未提交」指当时）。`renderer/intro.js` 加 `0.3.76` 两条更新说明 + `renderer/i18n.js` 英文翻译；`README.md` 的支持表补齐 Antigravity 的 5 小时与周额度窗口、容量折算、时间线、流式速度和本账号请求说明；`git fetch` 合入远端 `b61f418`（知识库自动更新到 2026.11.06）；`npm version 0.3.76 --no-git-tag-version`。
+- 升版本后：`npm test` 退出 0（813 PASS）；界面测试 `test-antigravity-ui` 7/7、`test-layout-ui` 9/9、`test-ui` 26/26（第一次跑遇到已知的 option-menu 偶发超时，重跑 26 PASS 退出 0）、`test-desk-pet-ui` 20/20 均退出 0。
+- `npm run dist` 退出 0；`node dist/verify-0.3.76.cjs`：184 个运行时文件一致，版本 `0.3.76`，ASAR SHA256 `7178bd4f9ed301aaaa4701c0aef024a95672572c8d759a89b21b2f0c5bad4cc5`。校验值 `dist/assets-0.3.76.sha256`（Setup `378bccde…1b76`、Portable `94d8c532…cf1b`、blockmap `11f52ddb…f1bb`、latest.yml `416e488a…d743`），说明 `dist/release-0.3.76.md`。
+- Git：提交 `50b1aa7`（20 个文件，扫过无凭证 / 邮箱 / 会话链接 / 本机接口令牌；不含 `HANDOFF.md` 和 `clawd-pet-extracted/`），标签 `v0.3.76`；`main` 和标签已推送，远端均指向 `50b1aa7`。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.76 ：先建草稿，4 个附件一次上传成功，大小和 GitHub SHA256 与本地 `dist/assets-0.3.76.sha256` 一致后正式发布；`latest` 指向 `v0.3.76`；公开 `latest.yml` 与本地逐字节相同。
+- 待确认：用户更新后在真实界面查看 Antigravity 的 5 小时与周额度、容量趋势、时间线、模型换算、速度走势和请求记录；没走过自动更新安装。
+- 收尾：没有遗留本轮的 `electron` / `node` / `gh` 进程；只剩用户安装版 TokenPulse（6 个进程，未动）；`dist` 0.3.76 产物和 `win-unpacked/resources/app.asar` 独占打开检测均为 `UNLOCKED`（检测句柄立即关闭）；自己测试留下的 `tokenpulse-agy-*` 临时目录已删；工作目录在项目根目录。`HANDOFF.md` 仍未提交（项目惯例）。
+
+## 本地完成 · 重新深度适配 Google Antigravity（2026-11-06，当时版本仍 0.3.75、未提交，后并入 0.3.76）
+
+- 用户反馈：0.3.75 里的 Antigravity 适配很不够用，主要问题是 ① 没有周额度显示；② 记录和展示的细节远不如 Claude 等其他模型厂商详细，要求重新适配。
+- 根因与实测发现：
+  1. **周额度（Weekly Quota）接口**：Antigravity 的 language server 除了 `GetUserStatus`（只返回 ~5 小时的 `clientModelConfigs[].quotaInfo`）外，还提供 `POST /exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`（Connect 协议，同端口 + CSRF token），返回 `quotaSummary.quotaGroups[]`，其中每个模型分组同时包含 `window_type: "five_hour"` 和 `window_type: "weekly"`（或 `weeklyQuotaInfo` / `seven_day`）的 `remainingPercentage` / `remainingFraction` 与 `resetTime`。
+  2. **本地 SQLite `gen_metadata` 的丰富字段未读取**：每条生成的 `ChatModelCall`（`data.1`）除了 `17.2` 的 Token 用量，还包含 `11` `time_to_first_token`（`google.protobuf.Duration`，含 `seconds=0` 的纯纳秒首字延迟）、`12` `streaming_duration`（流式输出耗时）、`21` `model_display_name`（直读人类可读模型标签，如 `Gemini 3.8 Pro (High)`，无需等额度接口刷新才有标签）、`19` 内部返回模型名（如 `gemini-3.8-pro-b`、`claude-opus-5-5-thinking`）以及 `20` 里的 `request_id`。
+  3. **额度详情与请求明细缺项**：原版 Antigravity 额度页只有简陋的分组卡片和 4 个本机数字，缺少像 Claude / Codex 额度页那样的双窗口（5 小时 + 周额度）独立预测与容量折算、额度容量趋势、24 小时本机柱状图、7 天双窗口（5h 实线 + 周虚线）走势、模型与思考等级时间线（`#quota-model-timeline`）、模型速度面板（`speedPanel`）、模型整窗容量换算表（`换一种模型，整窗能用多少`）以及该账号的请求与核验明细表；逐条请求记录里也缺少 `returned`、`requestId`、流式速度与首字耗时、单次请求的 5 小时 / 周额度占用估算，且 `gemini-*-b`/`-n` 被误判为型号不一致、`gpt-oss` 缺参考单价。
+- 已完成改动及关键文件：
+  - `src/core/protobuf-lite.ts`：新增 `pbDurationMs(buf)` 解析 `google.protobuf.Duration`（支持 `seconds = 0` 的亚秒级 `nanos`）。
+  - `src/core/antigravity.ts`：
+    - `parseGenerationMeta` / `readAntigravityGenerations`：从 `gen_metadata` 提取 `firstTokenMs`、`totalMs`、`tokensPerSec`、`requestId`、`returned`（内部返回型号）与 `chat.21` `model_display_name`；`resolveModel` 优先用枚举标签表，缺失时直接回退 `chat.21` 标签，并把 `(Thinking)` 归一为 `effort: "high"`。
+    - `parseAntigravityStatus(json, summaryJson?)` / `fetchAntigravityStatus`：并发请求 `GetUserStatus` 与 `RetrieveUserQuotaSummary`（后者失败不阻塞主状态），合并每组的 `week: { used, resetAt }`、`title`、组内各档位明细 `models: AgyModelQuotaItem[]` 以及 `credits: AgyCredits`。
+  - `src/core/usage-scan.ts`：`ANTIGRAVITY_STATE_VERSION = 2`（`state.agyV`）自动触发已有 Antigravity 会话增量重扫以补齐旧记录的耗时/首字/内部型号；`scanAntigravity` 写入 `returned`、`requestId`、`effortSource: "model_label"`、`timing: { stream: true, ms, firstTokenMs, tokensPerSec, provider: "Antigravity" }`。
+  - `src/core/request-verify.ts`、`knowledge/manual.json`、`knowledge/models.json`：加 `^(gemini-[\w.-]+?)-(?:b|n)$` 别名规则（核验说明识别 Antigravity 内部型号后缀 `-b`/`-n` 为型号一致）、渠道名显示 `Google Antigravity`，补 `gpt-oss` 参考单价（输入 $0.15 / 输出 $0.60 / 缓存读 $0.075 每百万）。
+  - `src/main/antigravity-quota.ts`、`src/main/index.ts`、`src/main/preload.ts`：
+    - `AntigravityQuota` 保存并采样每组的 `five` 与 `week` 双窗口数据；新增 `buildInsight()` 计算每组 5 小时与周窗口的消耗速度、重置时预计用量、用尽时间、窗口内本机用量、整窗容量折算（Tokens / 美元参考 / 剩余可跑 Tokens）、组内模型档位本机调用分布、历史容量趋势、24 小时柱状图、7/30 天汇总、按模型与思考等级的 5h/周整窗换算表（`modelCapacities`）以及带核验和耗时的最近请求列表（`recentRequests`）。
+    - 新增 `timeline(query)` 与 `speed(days)`，注册 IPC `antigravity-quota:timeline`、`antigravity-quota:speed` 并暴露到 `preload.ts`。
+  - `renderer/model-study.js`：支持 `query.kind === 'antigravity'` 的时间线（5 小时 / 周周期切换、上方叠最高组额度折线、下方画各模型 × 思考等级轨道）。
+  - `renderer/antigravity-quota.js`、`renderer/antigravity.css`、`renderer/app.js`、`renderer/i18n.js`：
+    - 总览卡片：双环展示最低组的 5 小时（外环）与周额度（内环），每组同时列出 5 小时剩余和周额度剩余及各自重置时间。
+    - 额度详情页：每组并列展示「5 小时窗口」与「周额度窗口」子卡、组内 Token 与费用（本机已用 + 整窗折算）、速度与时间、组内模型档位芯片；下方依次展示「额度容量趋势」面板、「本机用量 + 最近 24 小时柱状图」、「最近 7 天的额度（5h 实线 + 周虚线）」、「模型与思考等级 · 时间线」、「模型速度」、「换一种模型，整窗能用多少（支持切换周整窗 / 5 小时整窗）」以及「这个账号的请求」明细表。
+    - `renderer/app.js`：`quotaShare` 支持 Antigravity 请求的 5 小时 / 周额度占比估算；请求列表和详情识别 `Antigravity 本地记录` 的流式首字与速度；`LAYOUT` 注册 `quota:agy-capacity`、`quota:agy-models`、`quota:agy-requests`。
+    - `renderer/i18n.js`：补齐全部新增界面文案与正则模板的英文翻译。
+- 测试命令与实际结果：
+  - `npm.cmd run compile`：退出 0（无编译错误）。
+  - `node scripts/test-antigravity-usage.cjs`：退出 0（`8/8 antigravity checks passed`，新增 `RetrieveUserQuotaSummary` 周额度合并与 `gen_metadata` 首字/流式耗时/`model_display_name` 测试）。
+  - `node scripts/test-antigravity-sessions.cjs`：退出 0（`3/3 antigravity session checks passed`）。
+  - `node scripts/test-usage-scan.cjs`：退出 0（`16/16 通过`）。
+  - `node scripts/test-requests.cjs`：退出 0（`64/64 通过`）。
+  - `node scripts/test-model-study.cjs`：退出 0（`16/16 model study checks passed`）。
+  - `node scripts/test-desk-pet.cjs`：退出 0（`34/34 desk pet checks passed`）。
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：退出 0（`7/7 antigravity UI checks passed`，覆盖总览与详情页 5h+周额度、容量趋势、模型换算、本账号请求、深色模式、900px 宽度不溢出、英文 100% 翻译、无敏感信息泄露）。
+  - `npx.cmd electron --lang=zh-CN scripts/test-layout-ui.cjs`：退出 0（`9/9 PASS`）。
+- 未执行的验证与已知限制：
+  - 本轮未升版本号、未执行 `npm run dist` 打包或 Git 提交/发布（等待用户确认界面效果与是否打包发布）。
+  - 周额度数据依赖本机运行中的 Antigravity 语言服务响应 `RetrieveUserQuotaSummary`（若旧版 Antigravity 未返回周窗口，界面会友好提示刷新或显示已有的 5 小时窗口）。
+- 收尾与资源释放检查：
+  - 已删除本会话 scratch 临时探针脚本；已清理 `%TEMP%\tokenpulse-agy-*` 临时目录。
+  - 核对进程列表：本轮启动的 `electron.exe` / `node.exe` 测试进程已全部退出，仅剩用户本机已安装的 `C:\Users\7ipny\AppData\Local\Programs\TokenPulse\TokenPulse.exe`（6 个进程，未触碰）。
+  - 非破坏性独占句柄检测（检测后立即 `Dispose()`）：`dist\win-unpacked\TokenPulse.exe` 与 `dist\win-unpacked\resources\app.asar` 均为 `UNLOCKED`。工作目录留在项目根目录，`clawd-pet-extracted/` 未触碰。
+
+## 0.3.75 已正式发布（2026-11-05 本地时间，GitHub 记录 2026-11-06T05:54:42Z，用户说「你直接发布吧」）
+
+- 内容：下面一节「适配 Google Antigravity」（那节写的「版本仍 0.3.74、未提交」指当时）。intro.js 加 0.3.75 三条 + i18n 英文；README 的支持表和会话文件表加 Antigravity；`git fetch` 远端没有新提交；`npm version 0.3.75 --no-git-tag-version`。
+- 升版本后：`npm test` 退出 0（812 PASS）；test-ui 26、test-antigravity-ui 7、test-desk-pet-ui 20、test-layout-ui 9、test-pi-ui 5 退出 0；test-intro-ui 仍是日期相关的老失败（在第一项前就失败，所以 0.3.75 的「新内容」弹窗没被这个测试覆盖，只做了语法检查）。
+- `npm run dist` 退出 0；`node dist/verify-0.3.75.cjs`：184 个运行时文件一致，版本 0.3.75，ASAR SHA256 `58e3192f772193bb957bf020bc0da70ed8760d363359a8d58f8c48449448d945`。校验值 `dist/assets-0.3.75.sha256`（Setup `82184e63…69cf`、Portable `6cbab9e3…cc33`、latest.yml `9da8caa9…a9a`），说明 `dist/release-0.3.75.md`。
+- Git：提交 `f7b4aad`（46 个文件，扫过无凭证 / 邮箱 / 会话链接 / 本机接口令牌；不含 HANDOFF.md 和 `clawd-pet-extracted/`），标签 `v0.3.75`；main 和标签经代理推送，远端都指向 `f7b4aad`。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.75 ：先建草稿，4 个附件一次上传成功，大小和 GitHub SHA256 与本地一致后发布；latest 指向 v0.3.75；公开 `latest.yml` 与本地逐字节相同；公开下载的 Setup SHA256 一致。
+- 待确认：用户更新后在真实界面看 Antigravity 卡片、额度页、用量和会话；真实环境里没点过删除对话；没走过自动更新安装。
+- 收尾：没有遗留本轮的 electron / 打包器 / gh 进程；只剩用户安装版 TokenPulse（6 个进程，未动）；dist 0.3.75 产物和 app.asar 未被占用；自己测试留下的 `tokenpulse-agy-*` 临时目录已删；工作目录在项目根目录。HANDOFF.md 仍未提交（项目惯例）。
+
+## 本地完成 · 适配 Google Antigravity（2026-11-05，当时版本仍 0.3.74、未提交，后并入 0.3.75）
+
+- 收尾（四步都完成后）：`npm test` 退出 0（812 PASS）；界面 test-ui 26、test-antigravity-ui 7、test-desk-pet-ui 20、test-layout-ui 9、test-deepseek-balance-ui 9、test-pool-quota-ui 12、test-share-ui 6、test-pi-ui 5、test-provider-pool-ui、test-agent-switch-ui 5、test-model-weeks-ui 3 退出 0；test-intro-ui 仍是日期相关的老失败（见下）。本地 `--win dir` 退出 0，`dist/win-unpacked`（版本 0.3.74）含 antigravity 的四个文件；已发布 0.3.74 资产 `sha256sum -c dist/assets-0.3.74.sha256` 全 OK。只剩用户安装版 TokenPulse（6 个进程，未动），dist 关键文件未被占用。
+- 测试隔离：Antigravity 目录默认跟着用户目录（os.homedir）走，只隔离了 CLI 目录变量、没隔离用户目录的测试会读到真实的 ~/.gemini/antigravity（test-sessions 因此失败过）。已给 test-sessions / test-desk-pet / test-dashboard 和另外 11 个同类测试加 `TOKENPULSE_ANTIGRAVITY_DIR`（指临时目录）。以后新测试要么隔离 USERPROFILE，要么设这个变量。
+- 临时目录：界面测试退出时 Electron 自己的 userData 还被占着，`%TEMP%\tokenpulse-*-ui-*` 会留下（老现象，各界面测试都有）；这次只删了自己新建测试留下的 12 个 `tokenpulse-agy-*`，其他前缀的没动（可能是别的会话的）。
+- 没做 / 没验证：真实 Antigravity 上没点过删除（只用假接口测过 DeleteCascadeTrajectory 的请求格式，真实删除后它会不会删对话库文件没看到，TokenPulse 以对话列表库里有没有这一行为准）；Antigravity 账号多开 / 切账号、额度的 Google 云端接口（Antigravity 关着时也能查）没做；额度窗口时长没写死（按重置时间），GetUserStatus 里的 availablePromptCredits / Flow credits 没展示。
+
+- 用户选了全部四项，顺序：① 用量明细 → ② 额度显示 → ③ 桌宠认出 Antigravity 在干活 → ④ 会话管理。
+- ① 用量（后端完成、界面来源色已加，待整体界面验证）：
+  - 新文件 `src/core/protobuf-lite.ts`（无 schema 的 protobuf 读取）、`src/core/antigravity.ts`（目录 `TOKENPULSE_ANTIGRAVITY_DIR` 可覆盖；对话库列表、-wal 合并的大小/时间、工作区、`readAntigravityGenerations`、型号标签 `antigravity-models.json`、`resolveModel`；额度 `antigravityHub` / `parseAntigravityStatus` / `fetchAntigravityStatus`）。
+  - `usage-scan.ts`：Kind/SOURCES 加 `antigravity`/「Antigravity」；`scanAntigravity`（offset = 下一步 idx；还在生成的那步停住，卡住 1 小时以上跳过；输入加回缓存读写；型号用额度接口的标签转成 ID 写法 + 档位，没有标签时用内部名，标签出现后 `agyUnlabeled` 触发整份重算）；`scanLocalUsage` 里单独一段循环。`request-log.ts` / `request-verify.ts` 加 kind。
+  - 界面：`brand.js` 加 `antigravity`（Gemini 四角星外形，单色）；`--antigravity` 颜色（app.css 亮/暗、share-card.css）；app.js / share-card.js / usage-cache.js / usage-insights.js 的来源表；index.html + i18n 统计口径句子。
+  - 测试 `scripts/test-antigravity-usage.cjs`（6 项，已加进 npm test，在 test-pi-usage 后面）全过。真实数据只读跑过：3 个对话 534 次生成，标签到位后显示 gemini-3.8-flash / medium、gemini-4-argon / high 等。
+  - 注意：标签只在额度刷新时写（第 2 步接上 `fetchAntigravityStatus` 之后才会在正式运行里出现）。
+- ② 额度（完成，未提交）：照 DeepSeek 余额的方式单独做，不进 quota.ts 的「5 小时 + 周」那套。
+  - `src/main/antigravity-quota.ts`：`AntigravityQuota`（共用 prefs 查询间隔；Antigravity 没开时留最后一次；按组记 30 天采样，相同结果 10 分钟一条；过提醒线 notifyAt 按组每窗口提醒一次；存 `antigravity-quota.json`，不存令牌邮箱）。修过一个 bug：返回值要在 finally 之后取，否则界面一直显示「正在查询」、刷新按钮禁用。本机请求 `agent: false`（不复用长连接）。
+  - `index.ts`：实例、IPC `antigravity-quota:state/refresh`、reschedule、启动时查一次、退出 stop；`preload.ts` `antigravityQuota`。
+  - `renderer/antigravity-quota.js` + `antigravity.css`：总览卡片（双环 = 两组、每组一行）、额度详情标签与页面（每组一张窗口卡：剩余、重置、按本窗口采样估速度和重置时用量；7 天走势图；本机用量 + 跳到用量明细并切筛选）；`agy-mode` 隐藏官方账号那两块。app.js 接入（卡片、标签、renderQuota 分支、LAYOUT 三个键 + 总览卡片键）；i18n 一段 + 4 条 PATTERN，`(…|Antigravity) 额度`。
+  - 测试 `scripts/test-antigravity-ui.cjs`（6 项，已进 test:ui）全过；截图自查过（测试数据）。`npm test` 807 PASS 退出 0；test-ui 26、test-layout-ui 9、test-deepseek-balance-ui 9、test-pool-quota-ui 12、test-share-ui 6 退出 0。
+  - `test-intro-ui` 失败「时间线上待标注、已标注都有」：用已发布的 0.3.74 包（TOKENPULSE_TEST_APP 指 dist/win-unpacked/resources/app.asar）跑也一样失败，是测试数据跟日期有关，不是这次改动；没修。
+- 步骤状态编号（从 language_server.exe 里的 protobuf 描述读出）：PENDING 1、RUNNING 2、DONE 3、INVALID 4、CLEARED 5、CANCELED 6、ERROR 7、GENERATING 8、WAITING 9（等批准）、QUEUED 11、INTERRUPTED 12；运行状态 IDLE 1、RUNNING 2、CANCELING 3、BUSY 4。`antigravity.ts` 的 `STEP` / `STEP_OPEN`。用量扫描据此修正：取消 / 出错的生成算结束（有用量照记），只有生成中、排队、等批准才停住等（测试加了一项，7 项全过）。
+- ③ 桌宠（完成，未提交）：`antigravity.ts` 新增 `readAntigravityActivity` / `conversationPhase` / `sqliteTime`；`agent-activity.ts` TaskKind 加 `antigravity`、roots 加 `antigravity`（= Antigravity 目录），scan 里把判断做成 `consider()` 共用，Antigravity 按对话列表库的运行状态 + 最后几步（等批准 → waiting，非回复步骤在跑 → tool），子代理（nesting_depth > 0）跳过；`desk-pet.ts` 的 watcher 也认 `conversation_summaries.db(-wal)`。测试：`test-desk-pet.cjs` 加一项（35 PASS），`test-desk-pet-ui` 20 PASS。真实数据只读跑过，认出了刚结束的对话。
+- ④ 会话管理（完成，未提交）：`antigravity.ts` 新增 `readAntigravityConversation`（step_payload：14 用户 19.2、15 回复 20.1 正文 / 20.3 思考不展示 / 20.7 工具调用、132 工具执行 5.4 + 140.2.1 输出；每个型号读一条 gen_metadata）、`antigravitySummaries`、`deleteAntigravityConversation`（本机接口 `DeleteCascadeTrajectory {cascadeId}`，Antigravity 没开就报错、不碰文件）、`prepareOptional`（gen_metadata 表不存在也能读）。`sessions.ts`：AgentKind 加 `antigravity`、`parseAntigravity`（标题 / 工作区取对话列表库，列表库里没有的和子代理不列）、`antigravityListStamp`（对话库 + -wal + 列表库 + 型号标签文件）、`forgetSession`（只清 TokenPulse 的索引和搜索缓存）。`main/index.ts`：isAgentKind、回复 / 终端里继续都拒绝（「Antigravity 的对话请在 Antigravity 里继续。」）、DELETE_METHOD；`session-reply.ts` 删除走 Antigravity 接口。`renderer/sessions.js`：AGENTS、筛选（有对话才出现）、`IDE_ONLY` 去掉回复按钮和「在终端里继续」、底部说明；sessions.css 品牌色；i18n 五条。测试：新增 `scripts/test-antigravity-sessions.cjs`（3 项，已进 npm test）；test-antigravity-ui 加会话页一项（7 项）。真实数据只读解析过 3 个对话（轮数、工具、输出、项目目录都对）。
+
+- 用户：买了 Google AI（账号显示 Google AI Ultra），希望 ChatGPT / Claude 在 TokenPulse 里有的功能，Antigravity 也支持。
+- 本机安装：`%LOCALAPPDATA%\Programs\Antigravity`（Electron 44.5.1，language server 2.29.0），用户数据 `%APPDATA%\Antigravity`，Agent 数据 `~/.gemini/antigravity`。`~/.gemini` 下的 `oauth_creds.json` 等是 Gemini CLI 的，不是 Antigravity 的。
+- 额度（已实测可读）：`~/.gemini/antigravity/daemon/hub_<port>.json` 里有 `httpPort` 和 `csrfToken`；`POST http://127.0.0.1:<httpPort>/exa.language_server_pb.LanguageServerService/GetUserStatus`，头 `x-codeium-csrf-token`、`connect-protocol-version: 1`、JSON body。返回 `userStatus.cascadeModelConfigData.clientModelConfigs[]`：`label`（如「Gemini 3.8 Flash (High)」「Claude Opus 5.5 (Low)」）、`quotaInfo.remainingFraction`、`quotaInfo.resetTime`；按共用额度分组（当时 Gemini 一组、Claude + GPT-OSS 一组，各自重置时间，离重置约 4～5 小时）。`userTier.name`（Google AI Ultra）、`planStatus.planInfo.planName`、`availablePromptCredits / availableFlowCredits`。只有 Antigravity 开着时能问到；邮箱和名字也在返回里，别打印。
+- 用量（已确认字段）：每个对话一个 SQLite `~/.gemini/antigravity/conversations/<id>.db`（运行中有 -wal）；表 `gen_metadata(idx, data BLOB)` 每次生成一条 protobuf。`data.1.17.2` 是用量：1 模型数字 id、2 输入、3 输出（= 9 思考 + 10 回复）、4 缓存写入（推测）、5 缓存读取、6 api provider、7 message id、11 response id；`data.1.19` 模型名（如 `gemini-3.8-flash`），`data.1.20` 键值对里有 `model_enum`、`request_id`、`trajectory_id`。时间戳还没找（`steps.metadata` 里可能有）。对话列表 `conversation_summaries.db` 的 `conversation_summaries` 表：标题、step_count、last_modified_time、workspace_uris、status、not_fully_idle 等。
+- 调研脚本在本会话 scratchpad（agy-probe.cjs / agy-tier.cjs / agy-pb.cjs），只读，不进仓库。
+- 下一步：等用户确认要做哪些、先后顺序；然后从额度 + 用量扫描开始。
+
+## 0.3.74 已正式发布（用户说「那你提升一个小版本号然后帮我发布吧」）
+
+- 内容：下面一节「自定义提示音恢复默认报演示模式」（那节写的「版本仍 0.3.73、未提交」指当时）。intro.js 加 0.3.74 一条 + i18n 英文（界面里「恢复默认」英文是「Reset」，说明里用同一个词）；`git fetch` 远端没有新提交；`npm version 0.3.74 --no-git-tag-version`。
+- 升版本后：`npm test` 在 `test-pool-insight.cjs:203` 失败（当时 23:36，时间相关）；单独把时钟往前拨 4 小时（`node -r` 预加载改 `Date`，脚本用完删了）跑它 9 PASS 退出 0，确认只跟当前时刻有关；它后面 46 个脚本逐个跑全过（421 PASS）；`ELECTRON_RUN_AS_NODE=1 npx electron scripts/test-desk-pet.cjs` 34 PASS；`test-ui` 26、`test-intro-ui` 3、`test-desk-pet-ui` 20、`test-layout-ui` 9 均退出 0。
+- `npm run dist` 退出 0；`node dist/verify-0.3.74.cjs`：179 个运行时文件一致，版本 0.3.74，ASAR SHA256 `f94421624ecda0d44713d8a9ba92baa6f6545b08b28124478302ddb975a2dc2d`。校验值 `dist/assets-0.3.74.sha256`（Setup `11240247…1ec5`、Portable `4585f965…cb42`、latest.yml `89903276…bde8`），说明 `dist/release-0.3.74.md`。0.3.73 的 Setup / Portable / blockmap 仍与 `assets-0.3.73.sha256` 一致（latest.yml 已换成 0.3.74 的，正常）。
+- Git：提交 `d1c9eeb`（10 个文件，扫过无凭证 / 私人邮箱 / 会话链接；不含 HANDOFF.md 和 `clawd-pet-extracted/`），标签 `v0.3.74`；main 和标签经代理推送，远端都指向 `d1c9eeb`。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.74 ：先建草稿，4 个附件一次上传成功，大小和 GitHub SHA256 与本地一致后发布；latest 指向 v0.3.74；公开 `latest.yml` 与本地逐字节相同；公开下载的 Setup SHA256 一致。
+- 待确认：没有实际走过自动更新安装；用户更新后点一次「任务做完」的「恢复默认」确认只读的 `done.mp3` 能删掉。`test-pool-insight` 贴近半夜失败的问题还没修（测试数据问题，不影响功能）。
+- 收尾：没有遗留本轮的 electron / 打包器 / gh 进程；还在跑的是用户安装版 TokenPulse（6 个进程，未动）；`dist` 0.3.74 产物和 `app.asar` 未被占用；工作目录在项目根目录。HANDOFF.md 仍未提交（项目惯例）。
+
+## 本地完成 · 自定义提示音「恢复默认」提示「演示模式下不能更改」（2026-11-03，当时版本仍 0.3.73、未提交，后并入 0.3.74）
+
+- 用户：想把自定义铃声恢复默认，提示演示模式下不能改。用户并不在演示模式。
+- 原因：用户本机日志 `~/.tokenpulse/logs` 里每次点「恢复默认」都是 `desk-pet:remove-sound（done）失败：EPERM, Permission denied …pet-sounds\done.mp3`；那份副本是只读的（导入时选的源文件只读，Windows 上 `copyFileSync` 把只读属性带进了数据目录）。Electron 44 里 `fs.rmSync` 删只读文件报 EPERM（已用 `ELECTRON_RUN_AS_NODE=1 npx electron` 实测；独立的 Node 24 能删，所以 `node` 跑的测试本来暴露不了）。界面 `desk-pet-settings.js` 的 catch 不分原因一律显示「演示模式下不能更改」。自定义宠物导入 / 删除有同样问题（复制图片带只读，删宠物报「删除失败」）。
+- 改动：`src/core/paths.ts` 新增 `copyIntoData`（复制后改回可写；目标是只读旧副本先改可写再覆盖）和 `removeFromData`（EPERM/EACCES 时递归改可写再删，不跟符号链接）；`pet-sound-file.ts` 导入 / 换格式 / 恢复默认、`pet-pack.ts` 导入（两处复制、两处失败清理）和删除都改用它们。`src/main/index.ts` 两个导入 handler 的文件系统错误换成「复制失败，请检查数据目录权限」并 `console.error` 记日志（`errorText`）。`renderer/desk-pet-settings.js` 只有 `api.isDemo()` 时才说演示模式，否则「恢复默认失败，请检查数据目录权限」/「导入失败」；`i18n.js` 两条英文。
+- 用户本机现有的只读 `done.mp3`：没有替用户改；装上带这次修复的版本后点「恢复默认」会自动处理。临时办法：去掉该文件的只读属性后再点。
+- 用户追问「别的铃声也会有吗、要升级就能好、不用用户操作」：五种提示音走同一套代码，都已覆盖；升级后「恢复默认」/「换一个」（同格式覆盖、换格式删旧的）遇到旧版本留下的只读副本会自己改可写再处理，用户不用动文件。测试加了五种都只读的情况（恢复默认 3 种、换格式 2 种）；`node` 和 `ELECTRON_RUN_AS_NODE=1 npx electron scripts/test-desk-pet.cjs` 都 34 PASS；临时把 build 里的两个辅助函数换回旧做法后 Electron 下这项失败，`tsc` 重新编译恢复后通过。注意：`npm test` 用普通 node 跑这个脚本，Node 24 本身能删只读文件，所以 EPERM 那条路径只有在 Electron 下跑才测得到。
+- 测试：`scripts/test-desk-pet.cjs` 加一项（只读源文件导入后副本可写；只读旧副本能覆盖、能恢复默认；只读图片的自定义宠物能删）。`npm test` 跑到 `test-pool-insight.cjs:203` 失败（`confidence.of` 6 ≠ 7，跑的时候本地 23:27，是之前记过的贴近半夜的时间相关问题，这次没碰相关文件）；它后面 46 个脚本逐个跑完全过（421 PASS）；`test-desk-pet-ui` 20 PASS 退出 0。
+- 打包：本地 `--win dir` 退出 0，`dist/win-unpacked`（版本 0.3.73）含本节改动；已发布 0.3.73 资产 `sha256sum -c dist/assets-0.3.73.sha256` 全部 OK。收尾只剩用户安装版 TokenPulse（20:21 / 21:50 启动的 6 个进程，未动），`dist` 关键文件未被占用。
+
+## 0.3.73 已正式发布（用户说「提升一个小版本号然后帮我发布吧」）
+
+- 内容：下面四节（Fable 周额度、号池「获取模型」、号池成员被删后不能保存、编辑布局后账号行多出滚动条；那几节写的「版本仍 0.3.72、未提交」指当时）。
+- intro.js 加 0.3.73 四条 + i18n 英文；README 补了 Claude 按型号周额度、号池获取模型 / 已删除成员；`test:ui` 加上 `test-model-weeks-ui`；`npm version 0.3.73 --no-git-tag-version`。
+- 升版本后：`npm test` 退出 0（800 PASS）；`test-ui` 第一次整体超时（「UI timed out」，跑到第 9 项，已知偶发），重跑 26 PASS 退出 0；`test-intro-ui` 3、`test-layout-ui` 9、`test-provider-pool-ui`、`test-model-weeks-ui` 3、`test-agent-switch-ui` 5、`test-pool-quota-ui` 12、`test-pi-ui` 5 均退出 0。
+- `npm run dist` 退出 0；`node dist/verify-0.3.73.cjs`：179 个运行时文件一致，版本 0.3.73，ASAR SHA256 `d4801bf1dddd74e0ad2e0ebb22982e5a0efe62a7c056db357d7e627dd7006a6c`。校验值 `dist/assets-0.3.73.sha256`（Setup `d1ce63fd…2ac6`、Portable `19af2ba7…0c39`、latest.yml `d3177d68…7128`），说明 `dist/release-0.3.73.md`。
+- Git：提交 `6745045`（21 个文件，扫过无凭证 / 私人邮箱 / 会话链接；不含 HANDOFF.md 和 `clawd-pet-extracted/`），标签 `v0.3.73`；main 和标签经代理（127.0.0.1:7890）推送，远端都指向 `6745045`。推送前 `git fetch` 远端没有新提交。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.73 ：先建草稿，4 个附件逐个上传一次就成功，大小和 GitHub 的 SHA256 与本地一致后才发布；latest 指向 v0.3.73；公开 `latest.yml` 与本地逐字节相同；公开下载的 Setup SHA256 一致（`d1ce63fd…2ac6`）。
+- 待确认：没有实际走过自动更新安装；Fable 周额度和号池「获取模型」只用测试数据和脚本实测过，用户更新后在真实界面看一眼。
+- 收尾：没有遗留本轮的 electron / 打包器 / gh 进程；还在跑的是用户安装版 TokenPulse（6 个进程，未动）；`dist` 里 0.3.73 产物和 `win-unpacked/resources/app.asar` 独占打开检测未被占用；工作目录在项目根目录。HANDOFF.md 仍未提交（项目惯例），`clawd-pet-extracted/` 来源不明未动。
+
+## 本地完成 · 编辑布局后额度详情只剩一两个账号，下面还留着滚动条（2026-11-03，版本仍 0.3.72，未提交、未发布）
+
+- 用户：编辑布局里把额度详情的账号标签藏到只剩一两个，出现了只有账号多到装不下时才有的灰色滑块。
+- 原因（已用一次性数据目录 + 假账号在 Electron 里复现）：点「完成」时 `setLayoutEdit(false)` 先 `renderQuota()` 重画标签并量宽度，后 `applyLayout()` 才关右边的布局面板（`body.layout-panel-open` 给 `.workspace` 加 336px 右内边距）。量的那一刻这一行只有 318px，两个长邮箱名标签 450px 装不下 → 滚动条显示；面板关掉后变成 654px，但没有窗口 resize、也没有再重画，就一直留着。
+- 改动：`renderer/app.js` 在 `#account-tabs` 上加 ResizeObserver，宽度一变就在下一帧调 `markAccountTabEdges()`（重算两端淡出和滚动条）。放到下一帧是因为同一帧里重算会触发「ResizeObserver loop completed with undelivered notifications」（藏掉滚动条后页面变矮、整页滚动条消失、这一行又变宽）。侧栏收起、标题变长之类的宽度变化也一起覆盖到。
+- 测试：`scripts/test-ui.cjs` 账号滚动条那段加一项（先把这一行挤窄、等一帧、量出滚动条，再放宽，不重画也要把滚动条和淡出收掉）；去掉修复时这一项会失败，恢复修复后通过。`test-ui` 退出 0（26 PASS；第一次跑遇到过已知的 option-menu 偶发超时，重跑通过）；`npm test` 退出 0（800 PASS）；`test-model-weeks-ui` 3、`test-pool-quota-ui` 12、`test-provider-pool-ui` 退出 0。没截图。
+- 打包：本地 `--win dir` 退出 0，`dist/win-unpacked`（20:03 生成，版本 0.3.72）含这一节和下面三节的改动；已发布的 0.3.72 Setup / Portable / latest.yml SHA256 不变。收尾只剩用户自己装的 TokenPulse（6 个进程，未动），`dist` 关键文件独占打开检测未被占用。
+
+## 本地完成 · 号池里有已删除的账号 / 供应商时改不了号池（2026-11-03，版本仍 0.3.72，未提交、未发布，用户没说升版本）
+
+- 用户：「号池里如果有已删除的账号 那么就无法更改号池的信息了 因为会提示“号池里有找不到的官方账号，请刷新后重选”」。原因：设置里删掉账号（或删掉供应商）不会改号池，号池里还留着 id；`saveProviderImpl` 校验成员时对找不到的账号报这句错，编辑页又没法取消勾选一个已经不在列表里的账号，所以一直保存不了。
+- 改动：
+  - `src/core/agent-switch.ts` `saveProviderImpl`：校验前先把已经不存在的成员（供应商 `byId` 找不到、账号不在 official-accounts 里）移出；全部都删了报「号池里的成员都已删除，请在「成员」里重新选择」；还在但不合格的（别家的账号、别的工具的供应商等）照旧报原来的错。保存出错时号池不变。`PoolMemberView` 加 `missing?: boolean`，`poolMemberView` 对找不到的成员标 `missing`。
+  - `renderer/agent-switch.js` `poolOrder` / 新增 `memberMissing`：「成员 → 顺序」里已删除的成员名称划线、旁边标「已删除，保存时移出」（供应商按当前列表判断，账号按已保存视图的 `missing`）。`agent-switch.css` `.pv-pool-order li.missing`、`.pv-member-gone`；`i18n.js` 两条英文。
+- 测试：`scripts/test-pool-models.cjs` 加第 5 组（删账号 + 删供应商后视图标 missing、照原成员保存成功且只剩还在的、全删报错、别家账号照旧报错、报错不改号池）；`scripts/test-provider-pool-ui.cjs` 加一段（设置里删掉 qa-one 后打开号池「成员」，看到划线和提示，保存后只剩 qa-two，页面没出现旧错误）。`npm test` 退出 0（800 PASS）；`test-provider-pool-ui`、`test-agent-switch-ui` 5、`test-pool-quota-ui` 12 退出 0。这次没截图。
+- 没做：删除账号 / 供应商时不会主动去改号池（仍是下次保存号池时移出；转发时本来就会跳过找不到的成员）。
+- 打包：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0；`dist/win-unpacked`（19:51 生成，版本 0.3.72）含本节和下面两节的改动；已发布的 0.3.72 Setup / Portable / latest.yml SHA256 与 `dist/assets-0.3.72.sha256` 一致。收尾只剩用户自己装的 TokenPulse（6 个进程，未动）；`dist/win-unpacked/TokenPulse.exe`、`app.asar`、Setup 以独占方式打开检测均未被占用（检测句柄已关闭）。
+
+## 本地完成 · 号池编辑页能「获取模型」（2026-11-03，版本仍 0.3.72，未提交、未发布，用户没说升版本）
+
+- 用户：「Claude Code的本地号池 为啥不能请求上游获取可用模型呢 还要让用户自己输入？」原因：「获取模型」只做在单个供应商的编辑页（需要地址 + 密钥），号池没有自己的地址和密钥，编辑页只有手填的「默认模型」。
+- 实测：官方 `GET https://api.anthropic.com/v1/models?limit=100` 用 Claude Code 的 OAuth 令牌 + `anthropic-beta: oauth-2025-04-20` 能用，返回 14 个模型（含 claude-fable-5-1），字段 id / display_name / max_input_tokens 等；默认一页 20 个，所以要带 limit。
+- 改动：
+  - `src/core/agent-proxy.ts`：`fetchUpstreamModels(baseUrl, apiKey, official?)`，official = "claude-oauth" 时带 oauth beta、anthropic-version、`?limit=1000`。
+  - `src/core/agent-switch.ts`：新增 `listPoolModels({ app, id?, members? })`：挨个问成员（编辑页没保存的成员也行，没传就用已保存号池的）；供应商用它自己的地址和密钥；官方 Claude 账号用 `resolveAccountCredential` 的令牌（和 `poolTargets` 同一把，`AGENT_SWITCH_POOL_BASE` 测试替换也一样），过期跳过、不续期；Codex / Grok 官方账号说明「没有可用的模型列表接口」。合并后按「几个成员有」排序，同样多的按成员顺序 + 上游顺序。一个都没问到也不抛错，按成员返回原因。结果里没有凭据。
+  - `src/main/index.ts` `agent:pool-models`、`src/main/preload.ts` `agentPoolModels`。
+  - `renderer/agent-switch.js` `poolModelField`：号池「基本信息」里模型框下面加「获取模型」，模型以小标签列出，部分成员才有的虚线框 + 「1/2」并有提示，点一下填进模型框；没问到的成员逐条列在下方；成员中途变了就作废结果。`agent-switch.css` 样式、`i18n.js` 英文（顺带补了「获取模型失败」「获取模型超时」等原来没有的英文）。输入框 name 仍是 model，保存逻辑不变。
+- 测试：新增 `scripts/test-pool-models.cjs`（4 组，已进 `npm test`）；`scripts/test-provider-pool-ui.cjs` 加一段（假官方接口，选成员后点获取、看排序 / 1/2 / 填入 / 界面无凭据）。`npm test` 退出 0（799 PASS）；`test-provider-pool-ui`、`test-agent-switch-ui` 5、`test-provider-feedback-ui`、`test-pool-quota-ui` 12、`test-ui` 26、`test-model-weeks-ui` 3、`test-pi-ui` 5 都退出 0。截图只用演示数据。
+- 没做 / 没验证：没在真实界面里用真实号池点过（官方接口只用脚本以当前登录实测过）；Grok 官方账号其实有 /models（`agent-switch.ts` 里读 Grok 自己的缓存），这次没接；供应商那条路仍只发 Bearer，有些只认 x-api-key 的 Anthropic 中转可能拿不到（单个供应商编辑页一直是这样）。
+- 打包：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0；`dist/win-unpacked` 版本 0.3.72，含本节和下一节的改动；已发布的 0.3.72 Setup、latest.yml SHA256 不变。
+- 过程记录：Git Bash 里 `python3` 是应用商店占位程序，会一直卡住（这次卡了 2 分钟后手动停掉，没有遗留进程）；改文件用 Edit 或 node。
+
+## 本地完成 · 显示 Claude 按型号的周额度（Fable），只限 Max 及以上（2026-11-03，版本仍 0.3.72，未提交、未发布，用户没说升版本）
+
+- 用户：「我现在已经登陆了第一个账号了 你可以改一下了……只有Max及以上的账号显示这个额度条 Pro不显示 因为Pro不能用Fable」。
+- 实测第一个账号（只打印结构）：`limits[]` 有 `{kind:"weekly_scoped", scope.model.display_name:"Fable", percent, resets_at}`；凭据和 TokenPulse 账号库里 `subscriptionType` 仍是 pro（登录时快照，过时），`/api/oauth/profile` 返回 `has_claude_max: true`、`organization_type: claude_max`、`rate_limit_tier: default_claude_max_5x`。
+- 改动：
+  - `src/core/quota.ts`：`OfficialQuota.modelWeeks`；`claudeModelWeeks(json)` 只认 weekly_scoped + 型号名、百分比是数字的行；`claudeTierOf(profile)`：has_claude_max / organization_type 含 max、team、enterprise / rate_limit_tier 含 max → max，Pro、免费版 → basic，认不出 → undefined；`claudeTier` 只在额度返回里**有**按型号的行时才调 `/api/oauth/profile`（Pro 不多发请求，现有测试的 curl 计数不变），按账号缓存 6 小时，失败沿用上次、30 分钟后再试，日志用 `errorText` 不带令牌。只有 max 才把 modelWeeks 带出去；没带 plan（`plan` 会被 model-study 拿去判断套餐变化，故意不碰）。日志行加「Fable 周 x%」。
+  - `src/core/quota-history.ts`：`QuotaSample.models`，`same()` 比较它（只有 Fable 变了也记一条）。`src/core/quota-monitor.ts`：`AccountReport.modelWeeks`（取最后一次采样）。
+  - 渲染：`renderer/app.js` 首页卡片在 5 小时 / 周额度下面加「Fable 周额度」一行（`modelWeekMini`），额度页「周额度窗口」里加「按型号的周额度」块（上面一排仍是两张卡片）；不影响圆环和「当前较低窗口」。`app.css` 新样式，`i18n.js` 两条英文。
+  - 顺手修：`i18n.js` 的「(.+)后重置 · (.+)」英文模板以前把时长原样拼进去（英文界面显示「resets in 4 天 4 小时」），现在时长也翻译。5 小时 / 周额度那两行同样受益。
+- 测试（日志在本会话 scratchpad）：新增 `scripts/test-model-weeks.cjs`（6 组，已进 `npm test`）、`scripts/test-model-weeks-ui.cjs`（3 组，演示数据，中英文）。`npm test` 退出 0（795 PASS）；`test-ui` 26、`test-model-weeks-ui` 3、`test-pi-ui` 5、`test-cache-ui` 1、`test-tokens-ci-ui` 3，均退出 0。用真实账号两个接口的返回喂给编译后的 `claudeModelWeeks` / `claudeTierOf`：得到 Fable 0%、max（只读，不写文件、不刷新令牌）。截图只用演示数据。
+- 打包：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0；`dist/win-unpacked` 版本 0.3.72，asar 里有新代码；已发布的 0.3.72 Setup、latest.yml SHA256 不变。
+- 没做 / 没验证：托盘面板、桌宠、刷新提示（「已刷新。…」那句）、额度提醒都没加 Fable；没用打包后的测试版连真实账号跑过；Team / Enterprise 按「Max 及以上」处理，但没有真实账号验证过它们的返回。
+- Git：未提交。收尾：本轮的 electron / 打包器进程都已退出，见下面检查；用户的安装版 TokenPulse 和 pi 没动。
+
+## 调查记录 · Claude 按型号的周额度（如 Fable）没有显示（2026-11-03，只调查、没改代码；已由上一节实现）
+
+- 用户反馈：第一个 Claude 账号开了 Max，但 TokenPulse 里看不到 Fable 额度的用量。
+- 原因：`src/core/quota.ts` 的 `claudeQuota` 只读 `/api/oauth/usage` 返回的 `five_hour`、`seven_day`。按型号分的周额度在返回的 `limits[]` 里，`kind: "weekly_scoped"`、`scope.model.display_name`（如 "Fable"）、`percent`、`resets_at`、`severity`，TokenPulse 整个没读；旧字段 `seven_day_opus` / `seven_day_sonnet` 也没读。Claude Code 2.1.318 的 `/usage` 就是读这些行显示「Current week (Fable)」，还会按服务端开关 `tengu_usage_overage_included_models` 过滤。
+- 实测（用 Claude Code 当前登录查一次，只打印结构；脚本在本会话 scratchpad `claude-usage-shape.cjs`）：当前登录是 TokenPulse 里的第 2 个 Claude 账号，套餐 pro，`limits` 只有 `session`、`weekly_all` 两行，没有按型号的行。
+- **没验证**：第 1 个账号（用户说的 Max）的返回里到底有没有 Fable 行。TokenPulse 没存它的令牌（`official-accounts.json` 里只有 `cliAuth` 的登录信息），只有它是 Claude Code 当前登录时才查得到。两个账号本地记的 `subscriptionType` 都是 pro，来源 `sign_in`，即登录时的快照，登录后升级不会更新。
+- 待做（用户还没决定）：读 `limits[]` 的 `weekly_scoped` 行，在额度卡片上多显示一行「本周 · <型号>」，没有这行时不显示。
+
+## 0.3.72 已正式发布（2026-11-02 本地时间，GitHub 记录 2026-11-02T08:25:26Z；用户说「提升一个小版本号然后帮我发布吧」）
+
+- 内容：下面一节「用量扫描和用量明细支持 pi」（那节写的「版本仍 0.3.71、未提交」指当时）。
+- `git fetch` 远端没有新提交。intro.js 加 0.3.72 一条 + i18n 英文（「Unverifiable」和界面用词一致）；`npm version 0.3.72 --no-git-tag-version`。
+- 升版本后：`npm test` 退出 0（789 PASS，`test-backend-0372.log`）；`test-ui` 26 PASS、`test-pi-ui` 5 PASS、`test-cache-ui` 1 PASS，均退出 0（`ui-0372-*.log`，日志在本会话 scratchpad）。
+- `npm run dist` 退出 0（`build-release-0372.log`）；`node dist/verify-0.3.72.cjs`：179 个运行时文件一致，版本 0.3.72，ASAR SHA256 `d9e264dd9f95bf3ace5dcc37abf1739dae95b82502d32c3edc53587b9193b82a`。产物和校验值：`dist/TokenPulse-0.3.72-Setup.exe`、`-Portable.exe`、`dist/assets-0.3.72.sha256`，说明 `dist/release-0.3.72.md`。
+- Git：提交 `d418bca`（15 个文件；扫过无凭证 / 私人邮箱 / 会话链接；不含 HANDOFF.md 和 `clawd-pet-extracted/`），标签 `v0.3.72`，main 和标签已推送，远端都指向 `d418bca`。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.72 ：先建草稿再经代理（127.0.0.1:7890）逐个上传，4 个附件第一次就都 uploaded，大小和 GitHub 的 SHA256 与本地一致后才发布。latest 指向 v0.3.72；公开 `latest.yml` 与本地逐字节相同；公开下载的 Setup SHA256 一致（`1f2099a4…4d37`）。
+- 待确认：用户更新后在真实界面看一眼 pi 的用量；真实的压缩、分支摘要、分叉记录出现后再核对一次（本机当时还没有这几种）。没有实际走过自动更新安装。DeepSeek 应用内回复是否受 `standard` 预设影响仍待确认（见 0.3.71 一节）。
+- 收尾：没有遗留本轮的 electron / 打包器进程；还在跑的是用户安装版 TokenPulse 和用户自己的 pi，没动；工作目录在项目根目录。HANDOFF.md 仍未提交（项目惯例）。
+
+## 本地完成 · 用量扫描和用量明细支持 pi（2026-11-01 ~ 11-02，当时版本仍 0.3.71、未提交，后并入 0.3.72）
+
+- 用户问 pi 的消耗为什么在用量明细里没有，要求接上：「要是我们的软件扫不到我们本身支持的agent那很不好」。
+- 改动：
+  - `src/core/usage-scan.ts`：`Kind` / `SOURCES` / `roots()` 加 pi（`piDir()/sessions`），新增 `piRow`，`scanFile` 里读 header 的 cwd 和分叉时刻（`FileState.piForkAt`）、`model_change`、每条回复自带的 `thinkingLevel`；`durationMs` 算估算速度。没动 `STATE_VERSION`：新文件自动扫，别家不用全量重扫。
+  - `src/core/request-log.ts`（`RequestKind`、来源名、`sessionOf` 从 `<时间>_<id>.jsonl` 取会话 ID）、`src/core/request-verify.ts`（和 DeepSeek 同一分支：无返回型号就无法核验，不能落到 Grok 文案）。
+  - 渲染层：`app.js` 图标、`usage-cache.js` 打开会话、`share-card.js` / `usage-insights.js` 颜色（pi 没有品牌色，用中性 `#64748b`），`index.html` + `i18n.js` 说明文案，`README.md` 来源表。
+- 口径（照 pi 自己的 `getSessionStats`，`dist/core/agent-session.js`）：assistant 消息、toolResult 上的嵌套调用用量、`usage` 条目、`compaction`、`branch_summary` 都算，被放弃的分支也算（请求确实发过）；全零的跳过。input 不含缓存，TokenPulse 口径要加回 cacheRead + cacheWrite。分叉把旧条目连时间戳复制进新文件，header 带 `parentSession` 时早于 header.timestamp 的不计，原文件删了也不补算。费用优先 pi 的 `cost.total`；记 0 的 DeepSeek 型号按单价表 + 高峰时段算（和 deepseekRow 一致），其余走按型号估算。条目 id 只在单文件内唯一，记录 id 用 `<文件名>:<条目 id>`。
+- 不算进官方账号：`KIND_OF_SOURCE`、`ACCOUNT_OF_KIND` 故意不加 pi。pi 的 Anthropic 是 API Key，不占订阅额度。
+- **已查明、不用处理**：pi 的供应商名 `tokenpulse_route` 只是写进 pi 配置的名字，请求直连上游。本机转发记录 5194 行里没有 DeepSeek 流量，所以不会和转发重复记账，也走不到 `withRoute` 的型号比对（否则显示名 `DeepSeek-V4.1-Flash` 和返回型号可能误报不一致）。将来若让 pi 真的走本地路由，要回头看这里。
+- 测试（日志在本会话 scratchpad）：
+  - 新增 `scripts/test-pi-usage.cjs`（6 组，已进 `npm test`）：口径、费用、型号、思考等级、速度、增量读、半行等待、分叉去重、跨会话 id 不撞、文件重写、不存对话内容。`scripts/test-pi-ui.cjs` 加用量页检查（工具筛选、明细、总量、图标），夹具最后一行补了换行（没换行会被当成没写完的行）。
+  - 本机真实 pi 数据只读核对（HOME 和数据目录都指临时目录，真实账本没动）：7 个文件 452 次调用，调用数、input、output、cacheRead、cacheWrite 和原始文件逐项相等；pi 自记 10.78 美元，DeepSeek 记 0 的按单价表补上后约 11.39 美元；7 个会话、4 个项目。
+  - 最终：`npm test` 退出 0，789 PASS（2026-11-02 00:05，`npm-test-final.log`）。`npx electron --lang=zh-CN scripts/test-pi-ui.cjs` 退出 0（5 PASS），`test-cache-ui.cjs` 退出 0，`test-ui.cjs` 26 PASS（00:03 之后连续 3 遍）。
+  - **这几个测试和当下时刻有关，都和本次改动无关，断言都没改**（接手时遇到别当回归）：
+    - `test-pool-insight.cjs:203`（`6 !== 7`）：按每 24 小时一个采样造数据，夏令时结束后错开一格。用预加载脚本（scratchpad `shift-now.cjs`）平移日期：夏令时切换前和 11-08 起都过，11-01 晚到 11-07 的 23:5x 失败；而真实 11-02 00:05 又通过，所以还看一天里的时刻，这一周内可能时过时不过。
+    - `test-ui.cjs:617` `one bar per hour`：11-01 当天 25 小时，日期过了就好。
+    - 刚过 0 点几分钟内，「几分钟前」的夹具落到前一天：`test-cache-analysis`（`2 !== 1`）、`test-ui.cjs:287`（`QA-speed`，夹具是 2 分钟前）确认属此类；`test-ui.cjs:442`（`#request-rows`）只出现一次，夹具同类，大概率同因，没有单独证实。
+    - `test-ui.cjs` 的 `option-menu` 超时偶发。工作区和干净 HEAD（临时 worktree，已删）交替各跑 4 遍，都是 3 遍 26 PASS、1 遍失败，HEAD 也会卡在这里，判定是既有的不稳定，原因没查。
+    - Windows 上 Node 不认 `TZ` 环境变量（实测仍是 PST），改时区的测法无效，别再用。
+- 打包：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build-pi-usage2.log`）。`dist/win-unpacked/TokenPulse.exe`，版本仍 0.3.71，已确认 app.asar 里有 `piRow` 和渲染层改动。只更新 win-unpacked：**不要在没升版本时跑 `npm run dist`，会覆盖已发布的 0.3.71 附件**。打包前后 `TokenPulse-0.3.71-Setup.exe`、`latest.yml` 的 SHA256 校验不变。
+- 没验证：没用打包好的 `win-unpacked` 读真实数据开过（真实核对走的是编译后的 `build/core` + 临时数据目录，界面只用了测试数据）；分享卡片和用量洞察的 pi 配色没截图看；真实文件里还没有 `compaction`、`branch_summary`、`usage` 条目和分叉（本机 7 个文件都没有），这几种只有按 pi 源码造的夹具验证过。
+- 已知限制：pi 的「型号一致」核验做不了，文件里没有上游返回的型号，全部显示「无法核验」。pi 走 Anthropic API Key 的请求不归到任何账号，是预期。
+- Git：未提交、未发布。`clawd-pet-extracted/` 来源不明，未跟踪，别提交。收尾状态见下一条。
+- 收尾：没有遗留本轮的 electron / 打包器进程；还在跑的是用户安装版 TokenPulse 和用户自己的两个 pi（`node.exe`，23968、10052），没动。工作目录在项目根目录。
+，GitHub 记录 2026-11-02T06:11:15Z；用户说「提交并且发布吧，升级一个小版本号」）
+
+- 内容：下面一节「删除 pi、DeepSeek 的对话」（下面写的「版本仍 0.3.70、未提交」指当时）。
+- `git fetch` 发现远端两个机器人提交（f461d3b、04ba33e，只改 knowledge/models.json），工作区有改动但文件不重叠，`git merge --ff-only` 快进到 04ba33e 后再升版本。
+- intro.js 加 0.3.71 一条 + i18n 英文；`npm version 0.3.71 --no-git-tag-version`。升版本后：`npm test` 退出 0（783 PASS，`test-backend-0371.log`）；`test-intro-ui` 3 PASS；`test-pi-ui` 4 PASS（日志在本会话 scratchpad）。**没有重跑 `test-ui.cjs`**（夏令时那条今天原样过不了，见下一节），没跑完整 `npm run test:ui`。
+- `npm run dist` 退出 0（`build-release-0371.log`）；`node dist/verify-0.3.71.cjs`：179 个运行时文件一致，版本 0.3.71，ASAR SHA256 `c66ddee3f0079666a05f4e430ee1147f76a7c3e2169b17f776014a2d84e9f984`。`dist/assets-0.3.71.sha256`（Setup 112745207、Portable 112487985、blockmap 119827、latest.yml 352）；发布正文 `dist/release-0.3.71.md`。
+- Git：提交 `3fbc91c`（10 个文件；扫过无凭证 / 私人邮箱 / 会话链接，命中的只有目录名 `session_projcache`；不含 HANDOFF.md 和 `clawd-pet-extracted/`），轻量标签 `v0.3.71`（和 v0.3.70 同类型），推送前确认远端无新提交，main 与标签已推送。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.71 ：先建草稿再经代理（127.0.0.1:7890）逐个上传，4 个附件第一次就都 uploaded、大小和本地一致；已转正式（非草稿、非预发布）；`releases/latest` 指向 v0.3.71；公开 latest.yml 和本地逐字节一致；经代理下载 Setup.exe，SHA256 和 `dist/assets-0.3.71.sha256` 一致。Portable 没有下载回来校验。
+- 收尾：没有遗留 electron / node / DeepSeek Harness 进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开；打包结束时 shell 曾停在 dist，已退回，工作目录在项目根目录。用户安装版 TokenPulse 没动，会收到自动更新提示。HANDOFF.md 仍未提交，`clawd-pet-extracted/` 仍未跟踪。
+- 待确认：用户用真实对话试删除（Harness 真实界面删除后的样子没看过）；DeepSeek 应用内回复是否受 `standard` 预设影响（见下一节「顺带发现」）。
+
+## 本地完成 · 会话管理支持删除 pi、DeepSeek Harness 的对话（2026-11-01，当时版本仍 0.3.70、未提交，后并入 0.3.71）
+
+- 用户反馈 pi、DeepSeek 的对话删不掉；追加「不想要归档，要删除」。原因：接入时特意关掉的（菜单隐藏 + 主进程报错），不是做不到。
+- 两家的情况（查的本机安装：pi 1.4.0 的 `dist/modes/interactive/components/session-selector.js`；DeepSeek Harness 0.2.1 的 app.asar）：
+  - pi：`/resume` 列表里的删除就是先试 `trash` 命令、再 `unlink`，只动这一个 `.jsonl`；分叉的 `parentSession` 只是指针，它自己删也不管。
+  - DeepSeek Harness：persistence 没有删除接口，只有 `archiveSession`（工作区归档）。会话 ID 是 `session-<uuid>`，目录 `sessions/<项目>/session-<uuid>/`；子代理是平级目录（header `origin=subagent` + `parentSession`）；分叉（`isSeeded`）自带完整日志，不依赖父会话，不跟着删。别处引用只有 `storages/session_projcache/sessions/<id>.json` 和 `storages/workspace.json`（`global.archivedSessionIds`、`global.pinnedSessionIds`、`tables.workspaces[*].sessionIds`），扫过 `.dsh/profiles`、storages 没有别的。`workspace.json` 是 temp + rename、last-write-wins，TokenPulse 用 `writeJson` 同样写法。
+- 改动：
+  - `src/core/sessions.ts`：`deleteLocalSessionFiles` 通用化（`removalPaths` 按 kind 核对路径在根目录内：Claude 同名 + sidecar；pi 第一行 header.id 等于会话 id（**不看文件名**，改过名的文件也要能删，内容不符时不删）；DeepSeek 目录名等于 id，删整个目录）；`deepseekSubagents` 顺 `parentSession` 找全子代理（多层）；`forgetDeepseekSessions` 清缓存和 workspace.json（失败不影响删除）。删掉 `deleteClaudeSession`。
+  - `src/main/session-reply.ts`：去掉 DeepSeek 拦截，错误改「找不到这段对话的会话记录文件」。`src/main/index.ts`：去掉 pi 拦截，确认框文案放进 `DELETE_METHOD`。`renderer/sessions.js`：菜单不再隐藏。`renderer/i18n.js`：两段确认框 + 错误文案的英文。
+  - 用量不受影响：`usage-scan.ts` 的账本按文件记，文件没了但有 `days` 的保留（:1174）。
+- 测试（日志在本会话 scratchpad）：
+  - `npm test` 退出 0（783 PASS，`test-backend-delete2.log`）。`scripts/test-sessions.cjs` 新增 pi（只删本段、搜索缓存、改名能删、索引过期不删错）、DeepSeek（主会话 + 两层子代理、分叉和别的会话不动、缓存、workspace.json 只去 ID）、Codex / Grok 不走本地、id 带路径拒绝、主进程入口。
+  - `npx electron --lang=zh-CN scripts/test-pi-ui.cjs` 退出 0（4 PASS），新增真实点「更多 → 删除对话」：取消不动；pi、DeepSeek 确认后文件和列表项都没了（确认框是打桩的）。
+  - **`test-ui.cjs` 今天原样跑不过，和本次改动无关**：2026-11-01 是美国夏令时结束日（一天 25 小时），`scripts/test-ui.cjs:617` 用 `getHours() + 1` 算今天的小时数，实际多 1（21 点多 `23 !== 22`、22 点多 `24 !== 23`）；`TZ=Asia/Shanghai` 对渲染进程没生效。临时拷一份只把这条比较换掉（`scripts/_tmp-test-ui-dst.cjs`，已删除）：第 1 遍开头 `option-menu` 等待超时（以前记过的偶发），第 2 遍 26 PASS 退出 0。原样还有一次 `:424` 的 `15 !== 7`（第 1 遍），之后没再出现，原因没查。这条测试断言没改；下一次换时制当天还会失败（2027-03 夏令时开始那天会少 1）。
+  - 真实 Harness 验证（临时 `USERPROFILE` + `DSH_HOME`，只放两个几乎空的会话，没放凭证，脚本 scratchpad `dsh-real-check.cjs`、`dsh-web-check.cjs`；临时目录已删）：TokenPulse 删除后 `--session-id <被删>` 报 `does not exist`；保留的会话删除前后报同一句（见下）；没有 `inconsistent`。`dsh web --no-open` 完整 host：清理干净、故意留孤儿 ID（等于删除时 Harness 开着写回旧状态）两种都运行满 25 秒没退出，保留的会话还在。
+- 打包（当时的本地测试包，后被 0.3.71 正式打包覆盖）：`npx electron-builder --win dir` 退出 0，`dist/win-unpacked/TokenPulse.exe`（版本 0.3.70，2026-11-01 22:02）；核对 asar 里 sessions / session-reply / index / 渲染 sessions / i18n 和 build、renderer 逐字节相同，没有 clawd 文件。
+- 没验证：没在 Harness 的真实界面上看过删除后的列表（只看了 host 不崩）；Harness 开着时删除，列表要重启才更新、孤儿 ID 留着时界面长什么样没看，所以确认框让用户先关掉；真实 Harness 子代理目录本机没有样本，header 字段来自它的源码；没有删用户任何真实会话（`.dsh` 7 个、pi 8 个都还在）。没跑完整 `npm run test:ui`。
+- 已知限制：pi 会话还在终端里开着时删除，pi 下次写入会重新创建文件（只有新的那几行，没有 header，TokenPulse 不列），确认框已提示先退出；删除后留下的空项目目录不清。
+- 顺带发现（没改）：真实 Harness 对 `agentPreset=standard` 的会话报 `runs under agent preset "standard", which the one-shot runner does not compose`，本机 7 个 DeepSeek 会话 header 都带 agentPreset。TokenPulse 在应用内回复 DeepSeek 用的正是 `--profile headless --session-id`，可能回复不了这类会话，待用真实账号确认。
+- 收尾：没有遗留 electron / node / DeepSeek Harness 进程；`dist/win-unpacked` 的 exe 和 app.asar 能独占打开；用户安装版 TokenPulse（`AppData\Local\Programs\TokenPulse`）在运行、没动；工作目录在项目根目录。
+
+## 0.3.70 已正式发布（2026-10-30，用户说「发布吧」）
+
+- 内容：下面一节「整窗容量折算偏小」的修复（下面写的「版本仍 0.3.69、未提交」指当时）。
+- intro.js 加 0.3.70 一条 + i18n 英文；`npm version 0.3.70 --no-git-tag-version`。`npm test` 退出 0（783 PASS，`test-backend-0370.log`）；`test-intro-ui` 3 PASS。
+- `npm run dist` 退出 0（`build-release-0370.log`）；`node dist/verify-0.3.70.cjs`：179 个运行时文件一致，版本 0.3.70，ASAR SHA256 `4d47d7cdfdc1cdd7842bba411dbac961533ff545d53cd00811a5da678fc83002`；asar 里有修复（`aligned`）、没有 clawd 文件。`dist/assets-0.3.70.sha256`（Setup 112743965、Portable 112486815、blockmap 119880、latest.yml 352）；发布正文 `dist/release-0.3.70.md`。
+- Git：fetch 远端无新提交；提交 `66dbba9`（6 个文件；扫过无凭证 / 私人邮箱 / 会话链接；不含 HANDOFF.md 和 `clawd-pet-extracted/`），标签 `v0.3.70`，main 与标签已推送。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.70 ：先建草稿再经代理逐个上传，4 个附件第一次就都 uploaded、大小和本地一致；已转正式（非草稿、非预发布）；`releases/latest` 指向 v0.3.70；公开 latest.yml 和本地逐字节一致。
+- 收尾：没有遗留 node / electron 进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开；工作目录在项目根目录。HANDOFF.md 仍未提交，`clawd-pet-extracted/` 仍未跟踪。
+
+## 本地完成 · 整窗容量折算偏小（「已用 + 剩余」比整窗还多）（2026-10-30，当时版本仍 0.3.69、未提交，后并入 0.3.70）
+
+- 用户反馈：朋友的周额度「本窗口已用（本机）」1,046,690,794 比「整窗容量折算」969,884,982 还大；用户本机「已用 + 剩余可用」也大于整窗。
+- 用本机真实数据复现（复制 `~/.tokenpulse` 到 scratchpad `tpdata` 跑 `buildSnapshot`，没碰正在运行的 TokenPulse 数据；诊断脚本 scratchpad `diag-capacity.cjs`）：Claude 账号 0 周窗口 61%，本机 437.7M、容量 680.2M；账号 1 18%，135.4M、686.1M。
+- 根因（`src/core/quota-offmachine.ts` `cleanSegment`）：官方百分比只给整数，区间按「涨满 1 点」切。采样隔 30 分钟以上（睡眠 / 没开 TokenPulse）时整段丢掉、锚点挪到空档后，但空档里百分比没变——丢了这段 Token（账号 0 共 6 段 22.6M），那零点几个点的进度却算进了下一个区间。61 个点全算、Token 少算 5.2%，容量偏小，正好等于偏差比 1.05（账号 1：8 段 11.9M，偏差 8.8%，比 1.10）。
+- 修复：空档期间百分比没变 → 不丢，接着累积；空档期间涨了 / 回落 → 锚点不在跳点上，到下一次跳点的那个区间也丢掉（`aligned`）；窗口第一个采样还是 0% → 从 `segment.startAt` 算起，第一次采样前的请求也算。修后本机账号 0 容量 717M，已用 + 剩余 = 整窗（比 1.00）；账号 1 比 1.05，剩下的 6.3M 全是最后一次跳点之后的用量（官方显示 18%、实际约 18.9%），整数百分比造成，最多差 1 个点，不是 bug。历史容量折线也会跟着变（偏小的往上修）。
+- 测试：`scripts/test-shared-quota.cjs` 新增一项（空档没涨点接着累积、空档涨了丢第一个区间、窗口开头 0% 从窗口开始算；旧代码得 100000、新代码 200000，已实测旧代码失败），5 PASS。
+- 全量验证（日志在本会话 scratchpad）：`npm test` 退出 0（783 PASS，`test-backend-capacity.log`）；`test-model-study-ui` 4 PASS、`test-pool-quota-ui` 12 PASS；`test-ui.cjs` 跑了三遍：第 1 遍 9 PASS 后 90 秒看门狗超时，第 2 遍第 1 项后等元素超时（位置不同），第 3 遍 26 PASS 退出 0——按以前记过的偶发处理，原因没查。没跑完整 `npm run test:ui`。
+- 没做：「剩余可用」没扣掉最后一次跳点之后的本机用量（整数百分比带来的最多 1 个点的偏差，可以再改）；朋友的数据没看到，推断他也是同一个原因（电脑睡眠多）。
+- 收尾：复制出来的数据目录 `tpdata` 已删除；没有遗留 electron / node 进程；没碰 dist；工作目录在项目根目录。Git 未提交（`src/core/quota-offmachine.ts`、`scripts/test-shared-quota.cjs`、HANDOFF.md）。
+- 下一步：用户决定是否升版本发布（按约定升版本 = 打包 + 提交 + 推送 + Release，上传一律走代理）；发布时 intro.js 写一条「整窗容量折算不再偏小」。
+
+## 0.3.69 已正式发布（2026-10-30）
+
+- 用户换了代理节点后，Portable.exe 经代理第一次就传上去了。Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.69 ：标题「TokenPulse 0.3.69」，非草稿、非预发布，4 个附件 uploaded，大小和本地一致；`releases/latest` 指向 v0.3.69；公开 latest.yml 和本地逐字节一致；从 Release 经代理下载 Setup.exe / Portable.exe，SHA256 和 `dist/assets-0.3.69.sha256` 一致（包括那次直连上传的 Setup.exe）。
+- 收尾：没有遗留 node / electron 进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开；工作目录在项目根目录。用户安装版 TokenPulse 没动，会收到自动更新提示。HANDOFF.md 仍未提交，`clawd-pet-extracted/` 仍未跟踪。
+- 以后上传 GitHub 一律走代理（127.0.0.1:7890），不要直连；代理固定在某个大小掐断时，请用户换节点。
+
+## 0.3.69 发布过程记录（2026-10-30，用户追加「我不是让你上传到 github 吗？不然用户更新呀」；下面写的「草稿、未发布」是当时状态）
+
+- 远端有机器人提交 `7d89f26`（知识库自动更新，只改 knowledge/models.json），本地提交变基到它后面 → `3735466`。
+- `npm run dist` 退出 0（`build-release-0369.log`，本会话 scratchpad）；`node dist/verify-0.3.69.cjs`：179 个运行时文件一致，版本 0.3.69，ASAR SHA256 `936666f64c3d811358d75839aba41724e48a278dc41c1f6b7e675f3f26e689d1`；asar 里有 inferGrok、没有 clawd 文件。`dist/assets-0.3.69.sha256`（Setup 112743295、Portable 112486086、blockmap 119890、latest.yml 352）；发布正文 `dist/release-0.3.69.md`。
+- Git：标签 `v0.3.69` 已建，main（3735466）和标签已推送。
+- Release：第一次 `gh release create`（一次带 4 个附件）报 blockmap「already exists」后 gh 自己删了草稿。第二次先建草稿（id 429207769，tag v0.3.69）再逐个传：blockmap、latest.yml 已 uploaded；**Setup.exe、Portable.exe 上传失败**——经本机代理 127.0.0.1:7890 时连接被断（wsasend forcibly closed / EOF），之后连 api.github.com 的小请求也 EOF。草稿未发布，用户还收不到更新。
+- 之后：Setup.exe 用 curl 直连（`--noproxy`）传成功（201，112743295 字节，state uploaded）——**用户随后明确说「不要绕开（代理），多试几次」，以后上传一律走代理，不要直连**；那次直连在用户消息到达前已经传完。Portable.exe 走代理又试了 18 次（gh 8 次 + curl `--proxy http://127.0.0.1:7890` 10 次），每次传到 7.5～8.3 MB、约 2.5 秒就被代理断开（curl exit 56 / wsasend forcibly closed），是代理端对大上传的限制，重试没用。
+- 现状：草稿 429207769 有 Setup.exe、blockmap、latest.yml（自动更新只用这三个），缺 Portable.exe；草稿没发布。
+- 用户选「我换代理节点，你再传」：**等用户说换好了**，再经代理传 Portable.exe（`gh release upload v0.3.69 dist/TokenPulse-0.3.69-Portable.exe --clobber`）；四个附件齐了再发布。收尾：没有遗留 node / electron 进程，工作目录在项目根目录；dist 里的 0.3.69 产物要留着等上传。
+- 下一步：传完核对 4 个附件大小，`gh release edit v0.3.69 --draft=false --latest`，再核对 releases/latest 和公开 latest.yml。
+
+## 0.3.69 本地提交（2026-10-30，用户说「提升一个小版本直接提交」；后来已推送，见上一节）
+
+- 内容：下面一节「桌宠认出 Grok Build / DeepSeek Harness / pi」的全部改动（下面写的「版本仍 0.3.68、未提交」指当时）。
+- intro.js 加 0.3.69 一条 + i18n 英文；`npm version 0.3.69 --no-git-tag-version`（package.json / package-lock.json）。
+- 测试（日志在本会话 scratchpad）：`npm test` 退出 0（782 PASS，`test-backend-0369.log`）；`npx electron scripts/test-intro-ui.cjs` 退出 0（3 PASS）；升版本前 desk pet UI 20 PASS（见下一节）。没跑完整 `npm run test:ui`。
+- Git：提交 `488d07f`（9 个文件；扫过无凭证 / 私人邮箱 / 会话链接；不含 HANDOFF.md 和 `clawd-pet-extracted/`）。**没打 tag、没推送、没打包、没建 Release**（用户只说提交）。HANDOFF.md 仍未提交，`clawd-pet-extracted/` 仍未跟踪（不要提交）。
+- 收尾：没有遗留 electron / node 进程；没碰 dist；工作目录在项目根目录。
+- 下一步（用户要发布时）：`npm run dist`、校验、打 `v0.3.69` 标签、推送、建 Release。
+
+## 本地完成 · 桌宠认出 Grok Build / DeepSeek Harness / pi 在干活（2026-10-30，当时版本仍 0.3.68、未提交，后并入 0.3.69）
+
+- 用户反馈：桌宠认不出 Grok Build 在干活；之后追加「顺便把 Pi 等第三方 Agent 都加上」。
+- 原因：桌宠的任务扫描器 `src/core/agent-activity.ts` 只扫 Claude projects 和 Codex sessions 两个目录，`TaskKind` 只有 claude / codex，根本没读 `~/.grok/sessions`（会话列表 `sessions.ts` 是支持的，桌宠这条线漏了）。不是扫描策略写错，是没适配。
+- 改动（检查点 1，代码 + 单项测试完成）：
+  - `src/core/agent-activity.ts`：`TaskKind` 加 grok / deepseek / pi；`inferGrok`（user_message_chunk 开始、tool_call 没有 status=completed/failed 的 tool_call_update 算在跑工具、turn_completed 的 stop_reason end_turn/cancelled/error → ok/interrupted/error；工具名取 `_meta["x.ai/tool"].name`；时间戳是秒，`stamp()` 小于 1e10 的数字乘 1000）、`inferDeepseek`（turn/start、turn/end reason.kind、tool/call / tool/result；approval/asked 没 decided 直接 status=waiting）、`inferPi`（user 开始，assistant stopReason toolUse / stop / length / error / aborted）；`grokHead` / `deepseekHead` / `piHead`；`askOf` 把 Grok 的 `ask_user_question` / `exit_plan_mode` 按 AskUserQuestion / ExitPlanMode 显示；`liveStatus` 对 status=waiting 按 ASK_STALE_MS 算过期。`ActivityRoots` 加可选 grok / deepseek / pi（不给就不扫，旧测试只给前三个）；`discover` 扫 `sessions/<工作目录>/<会话>/updates.jsonl`、`.dsh/sessions/<项目>/session-*/session.v4.jsonl.zstd`（整份 zstd 解开，不能只读两头）、`.pi/agent/sessions/<项目>/*.jsonl`。Grok summary.json `session_kind=subagent`、DeepSeek `delegationDepth>0` 的不算单独任务；Grok 子代理按主会话 tail 里 subagent_spawned 没 finished 的 id 挂成 SubEntry（`kind: "grok"`，同工作目录下 `<id>/updates.jsonl`），沿用 Claude 子代理那套（计数、防「可能在等你」、主会话结束后台子代理还跑算在跑）。
+  - `src/main/desk-pet.ts`：`TASK_ACCOUNT` 加 grok → grok 账号额度（DeepSeek / pi 没官方额度，不映射）；fs.watch 过滤改成 `.jsonl` 或 `.jsonl.zstd`。
+  - 文案：设置页任务说明（`renderer/desk-pet-settings.js` + `i18n.js` 英文）、README Desk pet 段。
+  - 测试：`scripts/test-desk-pet.cjs` 新增两项（三家的推断；扫描器读三家目录 + Grok 子代理 + DeepSeek 批准等你 + pi 中断不庆祝），`node scripts/test-desk-pet.cjs` 33 PASS。另用本机真实 Grok 会话逐行截断干跑 `inferGrok`，状态转换都对（只打印状态，没输出会话内容）。
+- 已知限制：Grok 的权限确认（要你批准跑命令）不写进 updates.jsonl，只能靠「工具 90 秒没结果 → 可能在等你」；Grok headless 会话（`grok -p`，别的程序拿 Grok 当后端时也是）照样算任务；子代理开出去的事件掉出 64 KB 结尾时认不到那个子代理；DeepSeek turn/end 只在本机见过 `completed`，其它 reason.kind 按关键字猜（cancel/interrupt/abort → 中断，error/fail → 出错）；pi 没有提问工具，不弹问题卡片。
+- 全量验证（日志在本会话 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\d9f88c6a-e576-4a13-928c-eda7f8b1fe9f\scratchpad`）：`npm test` 退出 0（782 PASS，`test-backend.log`）；`npx electron scripts/test-desk-pet-ui.cjs` 退出 0（20 PASS，`test-desk-ui.log`）。设置页中文原文和 i18n 键核对一致。
+- 没做：完整 `npm run test:ui`（只跑了 desk pet UI）；真机上开着 Grok / DeepSeek Harness / pi 跑一轮看桌宠（本机 DeepSeek / pi 只有旧会话）；`npm run dist`；intro.js 更新说明（等定版本号再写）。
+- 收尾：没有遗留 electron / node 进程；TokenPulse.exe 全是用户安装版（10-29 22:06、10-30 01:45 启动），没动；没碰 dist；工作目录在项目根目录。Git 未提交（`clawd-pet-extracted/` 仍未跟踪，不要提交）。
+- 下一步：用户在真实 Grok 会话里试；要发布时升版本、intro.js 写一条「桌宠认得 Grok Build、DeepSeek Harness、pi 在干活」。
+
+## 0.3.68 已正式发布（2026-10-26，用户说「升级一个小版本，然后发布到 GitHub」）
+
+- 内容：下面一节「桌宠被别的窗口盖住 + 极简模式支持四条边」的全部改动。
+- `npm run dist` 退出 0（日志 `build-release-0368.log` 在本会话 scratchpad）；`node dist/verify-0.3.68.cjs`：179 个运行时文件一致，ASAR SHA256 `bb9210d6d7f530c065e76ca9bb2b61aaae907ce056e544009cd32bf6c26bc62f`，版本 0.3.68；asar 里没有 clawd 文件。`dist/assets-0.3.68.sha256`（Setup 112741413、Portable 112484256、blockmap 119861、latest.yml 352）；发布正文 `dist/release-0.3.68.md`。
+- Git：fetch 远端无新提交；提交 `b356bea`（14 个文件；扫过无凭证 / 私人邮箱 / 会话链接；不含 HANDOFF.md 和 `clawd-pet-extracted/`），标签 `v0.3.68`，main 与标签已推送。**HANDOFF.md 仍未提交，`clawd-pet-extracted/` 仍未跟踪**。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.68 ：标题「TokenPulse 0.3.68」，非草稿、非预发布，4 个附件 uploaded、大小和本地一致；`releases/latest` 指向 v0.3.68；公开 latest.yml 和本地逐字节一致。
+- 收尾：没有遗留 electron / node / 打包器进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开；工作目录在项目根目录；临时 worktree（对比 0.3.67 用）已删，删前先单独拆掉 node_modules 链接，项目 node_modules 完好。用户安装版 TokenPulse（6:31 启动）没动，会收到自动更新提示。
+- 已知：本次发布期间用户在改屏幕缩放（175% ↔ 150%），会让 desk pet UI 测试第一项「中等大小」偶发得到 241×143（0.3.67 同样如此，Electron 非整数缩放取整）；test-ui.cjs 设置菜单有偶发超时。
+- 测试过程（检查点 1）：intro.js 加 0.3.68 两条 + i18n 英文；`npm version 0.3.68 --no-git-tag-version`。`npm test` 退出 0（780 PASS）。`npm run test:ui` 跑了三遍：第 1 遍 test-ui.cjs 设置菜单超时（单独重跑：一次「下一帧才排版」失败、一次 26 PASS，没改过相关代码，按偶发）；第 2 遍到 desk pet UI 前全过，desk pet 第一项「中等大小」得到 241×143——当时用户在改屏幕缩放（175% → 150%），之后单独重跑通过；临时 worktree 对比 0.3.67 在 150% 屏幕内同样是 241×143、不随时间变，不是回归；第 3 遍 desk pet 前 120 PASS，失败在本轮新加的「左右露出一样多」容差 2px 太紧（39 / 36），改成 4px 后单独跑两次 20 PASS。下一步：`npm run dist`、校验、提交、打 tag、推送、建 Release。
+
+## 本地完成 · 桌宠被别的窗口盖住 + 极简模式支持四条边（2026-10-26，当时版本仍 0.3.67、未提交，后并入 0.3.68）
+
+- 用户反馈：① 桌宠有时被别的应用窗口盖住，不知道怎么复现；② 极简模式只能贴右边，要支持左边，最好也支持上下边（上边「倒挂金钩」）。
+- ① 原因：Windows 上置顶窗口之间「后来的在上面」。宠物窗口 `focusable: false`、从不激活，别的程序的置顶窗口（视频小窗、截图工具、别的桌宠等）一出来就压住它，宠物再也回不到最上面。已用临时 Electron 脚本 + user32 `GetTopWindow/GetWindow` 实测复现：后出现的置顶窗口在上、1.5 秒后仍在上；再调一次 `setAlwaysOnTop(true, "pop-up-menu")` 宠物回到最上面，焦点仍在另一个窗口（不抢焦点）。
+  - 修复（`src/main/desk-pet.ts`）：`keepOnTop()` 每 3 秒（`TOPMOST_EVERY_MS`）、`powerMonitor` resume / unlock-screen、换屏幕 / 改分辨率后，把宠物、问题卡片、气泡依次重设置顶。设置关了置顶、宠物不可见、右键菜单开着（`menuOpen`，popup 前置 true、callback 置 false）、TokenPulse 自己别的置顶窗口（托盘面板）开着时不动。没用 `moveTop()`（担心高 DPI 下的坐标问题，未验证）。
+- ② 四条边：
+  - `src/core/desk-pet-model.ts`：新设置 `deskPetEdge`（left/right/top/bottom，默认 right，`normalizeDeskPet` 收）；`miniPose(edge)`（左右沿用 `MINI_POSE`，上 tuck 0.6 / peek 0.85、下 0.5 / 0.8 露出身高比例）；`miniBounds(..., edge)`；`miniSpriteBox` 取代 `miniSpriteCenter`（气泡、问题卡片按露出来那截估）；`edgeReached` 取代 `reachesRightEdge`（左右上离边 8px，下边要沉进去 25% 身高才算，避免平时站在底边上就藏起来；角上取伸出多的）；`flingPath` 返回 `edge`（任意一边撞上时速度 > 0.6 都贴边，原来只有右边）。
+  - `src/main/desk-pet.ts`：`settle` / 甩出去按边贴；右键菜单「极简模式」改子菜单（贴到屏幕左边 / 右边 / 倒挂在屏幕上边 / 藏到屏幕下边）；`setDeskPetMini(on, edge?)`，`leaveAnchor` 按边算出来落在哪（上边不往上跳、直接掉下来）；从上下边拽出来时 dy 改成抓身子中间。`index.ts` 的 `saveMini(on, edge)` 一起写 `deskPetEdge`。
+  - `renderer/desk-pet.js`：`layout()` 四条边——左边是右边以窗口中线镜像（left' = W − left − 2·o.x，transform 前加 `scaleX(-1)`）；下边脚沉到窗口底下；上边 `rotate(180deg)` 绕脚吊在顶上；变换存进 `xf`（逆矩阵）给 `hitAt` 用；眼睛方向左边翻 x、上边翻 x 和 y；主题包自带的极简动画、图片宠物的 `peek` 图只在左右边用（上下边照平时的动画摆）。`desk-pet.css`：`body[data-edge]` 下提示条 / 额度标签位置，上边 `dp-swing` 荡秋千（`rotate` 属性 ±5°，拖动和减少动画时关）。
+  - 文案：右键菜单 4 个新词条 + 设置页极简模式说明（`renderer/i18n.js`、`renderer/desk-pet-settings.js`）。intro.js（新版本介绍）没加，等定版本号时再写。
+- 测试（日志在本会话 scratchpad）：`node scripts/test-desk-pet.cjs` 31 PASS（模型测试改成四条边：`miniBounds` / `miniSpriteBox` / `miniPose` / `edgeReached` / `flingPath.edge` / `deskPetEdge` 收值）；`electron scripts/test-desk-pet-ui.cjs` 20 PASS（新增一项：右 / 左 / 上 / 下各自贴边藏着、露出多少、悬停探出更多、移开缩回、退出，左右露出一样多，上边倒过来且在荡）；`npm test` 退出 0（780 PASS）；`npm run test:ui` 退出 0（126 PASS，这次没有偶发失败）。全量 UI 之后又加了托盘面板的保护，重新 compile 后单独重跑 desk pet 单元 31 PASS、UI 20 PASS。另用演示数据（内置松鼠）截了四条边 tuck / peek 的图自查。
+- 没做：真实屏幕上手动拖到各边、真实别的程序置顶窗口长时间实测；多屏、缩放 150% 下的上下边；`npm run dist`。
+- 收尾：没有遗留 electron / node 进程（只有用户 6:31 自己启动的已安装版 TokenPulse，没动）；本轮没打包、没碰 dist；工作目录在项目根目录。Git 未提交（HANDOFF.md 和 `clawd-pet-extracted/` 仍是之前就有的未提交 / 未跟踪状态）。
+
+## 0.3.67 已正式发布（2026-10-24）
+
+- 用户说「升级一个小版本，然后发布到 GitHub」→ 0.3.67，包含下面三节（第一期主题包、眼睛跟随 + 后台账号少查一点、第二期）的全部改动（下面三节里的「未提交、版本仍 0.3.66」指当时）。
+- intro.js 加 0.3.67 五条、i18n.js 英文（「后台账号少查一点」沿用设置里已有的翻译）；`npm version 0.3.67 --no-git-tag-version`。
+- 测试（日志在本会话 scratchpad）：`npm test` 退出 0（780 PASS，`test-backend-0367.log`）。`npm run test:ui` 退出 1：链条最后一项 `test-desk-pet-ui` 的「气泡 8 秒后自己收起」提前收起一次（`test-ui-0367.log`，前面 112 PASS 全过）；单独重跑两次都退出 0（各 19 PASS，`test-desk-retry-0367-1/2.log`），之前本轮也单独 / 补跑通过 4 次，按偶发处理，原因未查。
+- `npm run dist` 退出 0（`build-release-0367.log`）；`node dist/verify-0.3.67.cjs`：179 个运行时文件一致，ASAR SHA256 `818b55477f79c244131e5ced80a20a241e574839b80d627ea0f78fc3820478d9`，产品版本 0.3.67；不含 clawd 文件；`dist/assets-0.3.67.sha256`（Setup 112738158、Portable 112480933、blockmap 119844、latest.yml 352）；发布正文 `dist/release-0.3.67.md`。
+- Git：fetch 远端无新提交；提交 `c6378f8`（35 个文件；扫过无凭证 / 私人邮箱 / 会话链接；不含 HANDOFF.md 和 `clawd-pet-extracted/`），标签 `v0.3.67`，main 与标签已推送。**HANDOFF.md 仍未提交，`clawd-pet-extracted/` 仍未跟踪**。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.67 ：标题「TokenPulse 0.3.67」，非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.67；公开 latest.yml 与本地逐字节一致。
+- 收尾：没有遗留的 electron / node / 打包器进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开；工作目录在项目根目录。用户安装版 TokenPulse（21:36 启动）没动，会收到自动更新提示。
+- 已知：`test-deepseek-balance-ui`（本轮第二期全量时）和 `test-desk-pet-ui` 气泡自动收起（本次发布前）在全量链条里偶发失败，单独跑稳定通过。
+
+## 桌宠主题包第二期 · 本地测试版完成（2026-10-24，未提交、版本仍 0.3.66、用户没说发布）
+
+- 用户要求开始做第二期（包含下面两节第一期 + 眼睛 / 后台账号少查的全部未提交改动）。范围：随机待机（idleAnimations）、多会话分档 + 子代理（workingTiers / jugglingTiers）、极简模式按状态用主题自己的动画（miniMode）、任务在跑时更快扫描。
+- 检查点 1（代码 + 单项测试完成）：
+  - `src/core/pet-theme.ts`：idleAnimations 留 `mirrorOnRightSide`；`timings.mouseIdleTimeout`（默认 20 秒，3 秒～10 分钟）；miniMode 存 `offsetRatio`（默认 0.5）、`peek.offsetRatio`（默认 0.12）、`timings.autoReturn`，补 mini-peek-hold / mini-sleep-peek；没有 mini-idle 不算支持极简。
+  - `renderer/pet-theme.js`：`visualOf` 新参数 subagents / seed / right / mini / peek / peekHold；干活优先级 在问你 > 子代理（jugglingTiers，没有用 states.juggling）> 思考 / 工具（workingTiers 按任务数，一档多个文件按 seed 挑）；动作 `idle:N` 放第 N 个随机待机（mirror）；`miniOf` 极简映射（miniEnter → mini-enter / mini-enter-sleep，庆祝 mini-happy，挥手 / 出错 / 吓一跳 / 戳 mini-alert，探头 mini-peek → 到时 mini-peek-hold 或回 mini-idle，睡觉 mini-sleep / mini-sleep-peek，干活 mini-working，退 mini-idle）；`durations` 加 `idle:N`、`miniEnter`（默认 15 帧）；`peekHoldMs`；ThemeView `show(file, key, mirror)`、`miniLeft()`、mini-idle 也挂眼睛跟随。
+  - `renderer/pet-engine.js` Controller：`fidgets` / `fidgetGap` 可换掉内置随机小动作；`ctx.fidgetAfter`（鼠标多久没动才开始数）。
+  - `renderer/desk-pet.js`：`tune()` 给主题宠物设时长和随机待机（间隔 10～30 秒，鼠标 mouseIdleTimeout 没动、没悬停没拖动、设置里随机小动作开着、没开减少动画）；进入干活抽 `workSeed`；主题有极简动画时不歪、按 offsetRatio 藏、探头滑 peek.offsetRatio（stage transform 必须写 `none`，样式表默认 translateX(-50%)）；进极简放 miniEnter；探头不另外挥手；`right` 按窗口在屏幕哪半边。
+  - `src/core/agent-activity.ts`：`inferClaude(lines, { sidechain })`；`toolEndsTurn: true` 的 tool_result 算这一轮结束（子代理交结果；本机主会话里没有这种行）；扫描器读 `<会话>/subagents/*.jsonl`（discover 时收 `SUB_STALE_MS` 5 分钟内动过的），没结束的算在跑，记到 `AgentTask.subagents`；主会话活动时间取两边最近；这一轮结束但后台子代理还在跑的算 `tool / Agent` 在跑；`poke()`、`watchRoots()`。
+  - `src/main/desk-pet.ts`：view 加 `subagents`；扫描改成 setTimeout 循环（有任务 1 秒、空闲 4 秒）+ `fs.watch` 递归盯 Claude projects 和 Codex sessions（.jsonl 变了 300ms 后扫，两次至少隔 500ms，新文件先 poke），`stopTimers` 关 watcher、`scanGen` 防旧循环续命；气泡扫描后只在内容变了或满 4 秒才重发（`pushBubble(true)`，不然一秒一次会盖掉测试注入的数据）。
+  - 测试：`node scripts/test-desk-pet.cjs` 31 PASS（新增子代理扫描、主题第二期字段、档位 / 子代理 / 随机待机 / 极简映射、Controller 随机待机；旧夹具里的子代理改成已结束的）；`electron scripts/test-desk-pet-ui.cjs --lang=zh-CN` 19 PASS（新增第二期一项：子代理姿势、鼠标 3 秒不动放随机待机、极简 mini-enter / 不歪 / 藏一半 / 眼睛跟随 / 探头滑 25% / 回 mini-idle；量身体位置前等 150ms 过渡）。
+- README 自定义宠物那句补了第二期支持的内容。
+- 全量测试（日志在本会话 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\4af5ec46-054c-46ca-9a92-bc74840092d4\scratchpad`）：`npm test` 退出 0（780 PASS，`test-backend-p2.log`）。`npm run test:ui` 退出 1：链条前面 68 PASS，`test-deepseek-balance-ui` 超时（以前也偶发，和本轮无关，`test-ui-p2.log`）；它和后面没跑到的 10 项逐个补跑全部退出 0（62 PASS，`test-ui-p2-rest.log`）。
+- 截图自查（`capture-p2.cjs`，临时数据目录 + 自己画的方块主题，没用 Clawd 素材；产物 `shots/p2-tile.png`）：子代理时抛球、随机待机、极简 mini-enter / 藏一半 / 悬停探出都正常。
+- 本地测试版：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build-p2.log`）；`dist\win-unpacked\resources\app.asar`（21:25）SHA256 `83e2482c9fe1925b4a042f110bc92392cab7486704f202a0b41a73eedc8a76dd`，含新代码（`check-asar.cjs` 确认），不含 clawd 文件。
+- 收尾：无本轮残留的 electron / node / python；TokenPulse.exe 全是用户安装版（20:45 / 21:11 启动），没动；exe 和 app.asar 独占打开通过；工作目录在项目根目录。
+- 已知限制 / 没验证：没用真实 Clawd 主题在真机看过第二期（用户可自己导入试）；子代理只认 Claude Code（Codex 子会话仍不计）；被停掉的子代理不写结束行，要 5 分钟没动才不算；新子代理文件靠 fs.watch 触发重扫，watcher 建不起来时最多晚 30 秒发现；主题 carrying / sweeping 状态没有对应事件，不用；mirrorOnRightSide 按窗口在当前屏幕哪半边判断，多屏没专门测；极简模式里 hitBox 用主题的（mini 动画没写 fileHitBoxes 时用 default）。
+- 下一步：用户试用；要发布时升版本、`renderer/intro.js` 写更新说明（第一期 + 眼睛跟随 + 后台账号少查一点 + 第二期）。**`clawd-pet-extracted/` 不要提交进仓库**。
+
+## 眼睛跟随去延迟 + 「后台账号少查一点」开关 · 本地测试版完成（2026-10-24，未提交、版本仍 0.3.66、用户没说发布）
+
+- 本节包含下面「导入 Clawd on Desk 格式主题包（第一期）」的全部改动（都还没提交）。用户已在自己电脑上导入 Clawd 原版主题试用（只本机看，不传播、不截图、不进仓库）。
+
+- 用户反馈：主题宠物的眼睛跟鼠标有明显延迟。原因叠了几层：主进程停 3 秒后 150ms 才采一次；渲染端 `Controller.look` 每帧（每秒 10 帧）只往目标走 30%（~0.7 秒到九成，大头）；主题 SVG 自带 `transition: transform 0.2s`；眼睛只在 10 帧循环里更新。
+- 已改（检查点 1，眼睛部分完成）：`src/main/desk-pet.ts` 光标 16ms 采一次（1.5 秒没动后隔一次，约 32ms），系统空闲时间改成一秒查一次；`renderer/pet-engine.js` `aim()` 直接把 look 设成目标（鼠标驱动立刻到位），自己东张西望的平滑系数 0.3→0.5；`renderer/desk-pet.js` 收到光标马上 `draw()`；`renderer/pet-theme.js` 跟随用的 eyes / body / shadow 元素内联 `transition: transform 60ms ease-out`（FOLLOW_MS）盖掉主题自带的。测试：`test-desk-pet.cjs` 加 aim 立刻到位的断言（退出 0）；`test-desk-pet-ui.cjs` 改成发光标后紧接着检查就到位、0.06s 过渡、量身体位置前先看正前方（退出 0，18 PASS）。实测（scratchpad `measure-eyes.cjs`，临时目录 + 自画方块主题）：鼠标动 → 眼睛 style 改好，静止后第一下中位 17ms / 最大 47ms，连续移动中位 16ms / 最大 31ms。
+- 「后台账号少查一点」开关（检查点 2，代码和单项测试完成）：
+  - 新 `src/core/quota-quiet.ts`：`foregroundAccounts(extra)`（各家 CLI 当前登录的 + 调用方给的号池成员 / 桌宠固定看的账号）、`quietPick(foreground, checks, now)`（在用的照查；后台的离上次查到或上次去查满 `QUIET_EVERY_MS` 30 分钟才查；「上次去查」记在内存，查失败也不每轮重试）、`QUIET_STALE_MS` 45 分钟。
+  - `src/core/quota.ts`：`fetchOfficialQuota(force, gate, pick?)`，不查的账号这一轮不发请求、也不报问题；续期（renewStoredCredentials）照旧对所有账号。
+  - `src/core/cli-auto-switch.ts`：抽出 `candidatesOf` / `dueOf`；新 `autoSwitchStale(deps)`：该切号（当前账号到触发线、不在冷却）时，额度超过 `FRESH_MS` 5 分钟或没有的候选账号。
+  - `src/core/agent-switch.ts`：新 `poolAccountIds()`。
+  - `src/main/prefs.ts`：`quotaQuietBackground`（默认 false）。`src/main/index.ts`：只有定时器那轮（`backgroundRefresh(true, false, true)` → `quotaScheduled`）且没手动刷新时才挑；之后 `autoSwitchStale` 有候选就再临时查一次再跑自动切号；`publishSnapshot` 前 `markQuiet` 给后台账号标 `quiet`（`foregroundNow()` 10 秒缓存，~/.claude.json 可能很大）；改开关不额外查（试过关掉时立刻全查一轮，会在 test-ui 的滚动测试中途重画页面，偶发失败，已去掉）。
+  - 界面：设置「通用」额度查询间隔下面一行「后台账号少查一点」（`QUIET_ROW`）；额度详情对后台账号显示中性色说明 `.quiet-note`，过期阈值 15→45 分钟（`staleAfter`）；托盘小面板、桌宠气泡对 quiet 账号 30→45 分钟（`TrayPanelAccount.quiet`、bubble account.quiet）；`renderer/i18n.js` 英文（过期句改成带分钟数的 pattern）。`AccountReport.quiet` 类型。
+  - 测试：`test-quota-fetch.cjs` 64/64（新增 8 项：挑选、29/31 分钟、出错也等满、号池算在用、不传全查）；`test-cli-auto-switch.cjs` 32/32（新增 5 项）；`test-tray-panel.cjs` 通过（quiet 透传）；`test-ui.cjs`（--lang=zh-CN）退出 0、26 PASS（新增设置项默认值、位置、切换保存）。截图自查（scratchpad `capture-quiet.cjs`，演示数据）：额度详情说明、超过 45 分钟的过期提示、设置行、深色都正常。
+- 全量测试（日志在本会话 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\4af5ec46-054c-46ca-9a92-bc74840092d4\scratchpad`）：`npm test` 退出 0（776 PASS，`test-backend-quiet.log`）。`npm run test:ui` 退出 1：`test-agent-switch-ui` 的侧栏宽度断言 236 !== 76（窄窗口默认收起，和本轮改动无关，`test-ui-quiet.log`）；单独重跑退出 0（5 PASS，`test-agent-ui-retry.log`）；链条后面没跑到的 17 项逐个补跑全部退出 0（87 PASS，`test-ui-quiet-rest.log`）。
+- 本地测试版：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build-eyes-quiet.log`）；`dist\win-unpacked\resources\app.asar`（20:37）SHA256 `89827f90173b63c873d251bf7e182b5175614f12a576511fe9f6deb28993a8f2`，含 quota-quiet.js、pet-theme.js、svg-sanitize.js，不含 clawd 文件。
+- 收尾：无本轮残留的 electron / node / python；TokenPulse.exe 全是用户安装版（19:55 / 20:02 启动），没动；exe 和 app.asar 独占打开通过；工作目录在项目根目录。
+- 已知 / 没验证：真机上 Clawd 主题的眼睛跟手感需用户确认（实测数字是自画主题、屏幕外窗口量的）；「后台账号少查一点」没在真实多账号环境跑过（单测用假 curl）；后台账号的凭据续期照旧（约每 8 小时一次 refresh，不算额度查询）；`test-agent-switch-ui` 侧栏宽度偶发失败，原因未查。
+- 下一步：用户试用；要发布时升版本、`renderer/intro.js` 写更新说明（主题包导入、转晕 / 想法泡泡、眼睛跟随、后台账号少查一点）。
+
+## 导入 Clawd on Desk 格式主题包（第一期）· 本地测试版完成（2026-10-24，未提交、版本仍 0.3.66、用户没说发布）
+
+- 用户确认：不带任何对方素材，只做「能导入 Clawd on Desk 格式的主题包（theme.json + SVG）」，先做第一期、出本地测试版。代码全部自己写，不参考 `clawd-pet-extracted/upstream/` 的 AGPL 实现（只看了 theme.json 字段、SVG 结构和格式文档 theme-state-ui.md）。
+- 第一期范围：格式读取 + SVG 消毒（导入时、加载时各一遍）；SVG 主题渲染（Shadow DOM 里放消毒后的 SVG，桌宠窗口 CSP 的 style-src 加 'unsafe-inline'，脚本仍只允许 'self'）；眼睛跟随（eyeTracking 的 eyes / body / shadow id）；思考和执行工具分开（view.phase）；绕圈晕倒（同方向两圈、停顿 500ms 重来、冷却 12 秒；内置三只也加晕的样子）；点击 / 双击 / 连点 / 拖动对应主题的 reactions。旧 GIF 包不受影响。
+- 计划改的文件：新 `src/core/svg-sanitize.ts`、`src/core/pet-theme.ts`、`renderer/pet-theme.js`；改 `src/core/pet-pack.ts`、`src/core/desk-pet-model.ts`、`src/main/desk-pet.ts`、`renderer/desk-pet.{js,html,css}`、`renderer/pet-engine.js`、`renderer/desk-pet-settings.js`、`src/main/index.ts`（导入对话框文字）、`renderer/i18n.js`；测试 `scripts/test-desk-pet.cjs`、`scripts/test-desk-pet-ui.cjs`（用自己画的小测试主题）。
+- 实现要点：`svg-sanitize.ts` 自己写的分词 + 白名单重建（去 script / foreignObject / on* / 外部 href 和 url() / DOCTYPE 拒收 / CSS 去 @import 和外部 url），幂等；`pet-theme.ts` 读 theme.json（在 dir、dir/assets、dir/assets/svg 找文件；150 个文件、SVG 2MB、位图 5MB、整套 20MB 上限；缺的文件丢掉并给导入警告）；导入后存成 pet.json `{kind:"theme",theme}` + 平铺文件（SVG 存消毒后的，加载时再消毒一遍）；`renderer/pet-theme.js` 的 ThemeView 负责缩放对齐（contentBox / baselineY）、眼睛跟随、hitBox、状态映射（visualOf）。`petPhase()`：tool > thinking > waiting。光标采样 50ms（静止 3 秒后 150ms）。内置三只也加了「转晕」和思考时的想法泡泡。
+- 测试（日志在本会话 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\4af5ec46-054c-46ca-9a92-bc74840092d4\scratchpad`）：`node scripts/test-desk-pet.cjs` 27 PASS（新增 8 项）；`electron scripts/test-desk-pet-ui.cjs` 18 PASS（新增主题包一项，日志里无 CSP 报错）；全量 `npm test` 退出 0（763 PASS，`test-backend-theme.log`）；`npm run test:ui` 退出 0（124 PASS，`test-ui-theme.log`，这次 deepseek 没超时）。截图自查（`capture-theme.cjs` + 临时数据目录 + 自己画的方块主题，产物 `shots/tile.png`）：待机看向鼠标、思考、转晕、极简缩着 / 探头、内置三只的泡泡和转晕都正常。README 自定义宠物一句补了 Clawd on Desk 格式。
+- 本地测试版：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build-theme.log`）；`dist\win-unpacked\resources\app.asar`（10:24）SHA256 `5f9361843846c0ba1d080e79ab84d83fb591f186801f201fd8d9b597e5b2026a`，含 build/core/pet-theme.js、build/core/svg-sanitize.js、renderer/pet-theme.js，不含任何 clawd 文件。
+- 收尾：无本轮残留的 electron / node / python（在跑的 node 是 PersonalPage 的 vite dev / preview，TokenPulse.exe 全是用户安装版，都没动）；exe 和 app.asar 独占打开通过；工作目录在项目根目录。
+- 已知限制 / 没验证：没用真实的 Clawd on Desk 主题包验证过（仓库里只有自己画的测试主题，`clawd-pet-extracted/` 的素材不能用）；第二期才做：随机待机（idleAnimations）、多会话分档的完整逻辑、极简模式各状态的图、discreteSampling / 配饰等字段、任务在跑时更快扫描；桌宠窗口 CSP 的 style-src 加了 'unsafe-inline'（SVG 自带 `<style>` 需要，脚本仍只允许 'self'）。
+- 下一步：用户试用；要发布时再升版本、在 `renderer/intro.js` 写更新说明。**`clawd-pet-extracted/` 不要提交进仓库**。
+
+## 外部诉求：把 Clawd on Desk 的 Clawd 角色和交互接进桌宠（2026-10-24，只读评估，未改代码）
+
+- 来源：项目根目录下未跟踪的 `clawd-pet-extracted/`（他人提供，106 个文件 1.8 MB）：需求文档 `给TokenPulse作者的Clawd互动适配需求.md`、Clawd on Desk 1.4.0 原版 50 个 SVG + `theme.json`、AGPL 源码（`upstream/`）、提取者写的 `src/clawd-pet.js` 适配层。只读过，没运行里面的任何脚本。
+- 结论（跟下面 2026-10-23 那次调查一致）：**素材和代码都不能进 TokenPulse**。`assets/LICENSE` 写明美术 All Rights Reserved，Clawd 形象归 Anthropic、禁商用，除个人使用 Clawd on Desk 本身外不得复制 / 修改 / 分发；代码 AGPL-3.0-only，TokenPulse 没有 LICENSE、公开发布。包的 README 只写了「按你已取得开发者同意的前提」，不是书面授权。
+- 需求里的功能本身合理，大部分已有（睡眠序列、双击戳、连点张望、拖动、甩、极简探头、完成 / 出错 / 中断区分、问题卡片）。还没有、可以自己重写的：眼睛跟随鼠标（现在只有身体微倾）、绕圈眩晕、thinking 和执行工具分开（`petMode` 只有 idle / work / sleep）、多会话分档、自定义宠物随机小动作（`fidget` 限内置）、极简模式按状态换图、活跃期更快的扫描（现 4 秒）。
+- 等用户决定是否做、做哪些；`clawd-pet-extracted/` 留在原处没动（不要提交进仓库）。
+- 用户随后提出新方向（当时还在讨论；后来已按第一期开工完成，见上一节）：不带任何美术，只让 TokenPulse 能导入 Clawd on Desk 格式的主题包（theme.json + SVG）。我的意见：可以做；按 theme.json 和格式文档自己写读取 / 渲染，不参考 `upstream/` 的 AGPL 实现；导入时消毒 SVG（去 script / foreignObject / on* / 外部引用）；对外只说「支持 Clawd on Desk 格式主题包」，不提供一键读取对方安装目录或转换工具；仓库测试用自己画的小测试主题。等用户确认第一期范围。
+
+## 0.3.66 已正式发布（2026-10-24）
+
+- 用户说「发布吧，升级一个小版本号」→ 0.3.66，只含下一节的「自定义宠物不再一直冒汗」（下一节里的「未提交、版本仍 0.3.65」指当时）。
+- 已完成：intro.js 加 0.3.66 一条、i18n.js 英文；`npm version 0.3.66 --no-git-tag-version`。
+- 测试（日志在本会话 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\60aabb1e-ff5e-4fac-9e61-fe3bc898d3a1\scratchpad`）：`npm test` 退出 0（755 PASS，`test-backend-0366.log`）。`npm run test:ui` 退出 1：`test-deepseek-balance-ui` 超时（`test-ui-0366.log`，之前也偶发过），链条在它那里停下；单独重跑两次都退出 0（各 9 PASS，`test-deepseek-retry-1/2.log`）；后面没跑到的 10 项（tray-panel … desk-pet）逐个补跑全部退出 0（51 PASS，`test-ui-0366-rest.log`）。
+- `npm run dist` 退出 0（`build-release-0366.log`）；`node dist/verify-0.3.66.cjs`：175 个运行时文件一致，ASAR SHA256 `6c16f1364cc9bbf8f857cceab0194ac194c6c86b5be4ee49c2520c9428554b18`，产品版本 0.3.66.0；`dist/assets-0.3.66.sha256`（Setup 112716263、Portable 112459100、blockmap 119846、latest.yml 352）；发布正文 `dist/release-0.3.66.md`。
+- Git：fetch 远端无新提交；提交 `6020897`（6 个文件；扫过无凭证 / 私人邮箱 / 会话链接），标签 `v0.3.66`，main 与标签已推送。**HANDOFF.md 仍未提交**。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.66 ：标题「TokenPulse 0.3.66」，非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.66；公开 latest.yml 与本地逐字节一致。
+- 收尾：没有遗留的 electron / node / 打包器进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开；工作目录在项目根目录。用户安装版 TokenPulse 没动，会收到自动更新提示。
+- 已知：`test-deepseek-balance-ui` 在全量链条里偶发超时，单独跑稳定通过，原因未查。
+
+## 0.3.65 之后：自定义宠物额度紧张时不再一直冒汗 · 本地测试版完成（未提交、版本仍 0.3.65、用户没说发布）
+
+- 用户反馈：自用的 Clawd 桌宠一直在流汗。原因：内置宠物额度紧张（`petQuota` 的 mood = tight：剩余 < 15%，或任一窗口 pressure = high）时平时只皱眉，靠 `Controller.nervous` 隔 20～40 秒紧张 2～3 秒；但自定义宠物的 `imageKey()` 只要 mood 是 tight 就一直用 tight 图，Clawd 的 tight.gif 是循环的抖动 + 汗珠，看起来一直在冒汗。
+- 改动：`renderer/desk-pet.js` 的 `imageKey()` 改成 `view.mood === 'tight' && ctl.nervous` 才用 tight 图；`draw()` 把当前图写到 `dp-stage` 的 `data-image`（方便检查）。`scripts/test-desk-pet-ui.cjs`：测试宠物包加 tight 状态，断言紧张时平时是 idle、隔一阵换 tight、两三秒后回 idle。
+- 测试：`scripts/test-desk-pet-ui.cjs` 16 PASS（只跑了这一项；改动只在桌宠窗口的渲染脚本里，没跑全量）。本地测试版：`npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build-sweat.log`），app.asar SHA256 前 16 位 `C99395A52BB7CA71`，确认含新判断。收尾：无残留 electron / node / python；exe 和 app.asar 独占打开通过；用户安装版没动。
+- 下一步：用户说发布时升版本（下一个是 0.3.66）、intro.js 写一条。
+
+## 0.3.65 已正式发布（2026-10-24）
+
+- 用户说「可以编译并且发布啦」，没指定版本号 → 按惯例升小版本 0.3.65，包含下面两节（探头 + 提示音、问题卡片 + 自定义提示音）；下面两节里的「未提交」「版本仍 0.3.64」指当时。
+- 已完成：`renderer/intro.js` 加 0.3.65 三条、`renderer/i18n.js` 英文；`npm version 0.3.65 --no-git-tag-version`；`npm test` 退出 0（755 PASS，`test-backend-0365.log`）、`npm run test:ui` 退出 0（123 PASS，`test-ui-0365.log`），日志在本会话 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\60aabb1e-ff5e-4fac-9e61-fe3bc898d3a1\scratchpad`；`npm run dist` 退出 0（`build-release-0365.log`）；`node dist/verify-0.3.65.cjs`：175 个运行时文件一致，ASAR SHA256 `1df991dd8c10fa18cae61d87d2f9f13c7686693fc9ea6075ad79987dbcf78983`，win-unpacked 产品版本 0.3.65.0；`dist/assets-0.3.65.sha256`（Setup 112716062、Portable 112458837、blockmap 119768、latest.yml 352）；发布正文 `dist/release-0.3.65.md`。
+- Git：fetch 远端无新提交；提交 `fabd176`（24 个文件；暂存区扫过无凭证 / 私人邮箱 / 会话链接），标签 `v0.3.65`，main 与标签已推送。**HANDOFF.md 仍未提交**（按约定只留本地）。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.65 ：标题「TokenPulse 0.3.65」，非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.65；公开 latest.yml 与本地逐字节一致。
+- 收尾：没有遗留的 electron / node / 打包器进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开（句柄已 Dispose）；工作目录在项目根目录。用户安装版 TokenPulse（00:53 启动）仍在运行，未安装 / 升级、未关闭——会收到自动更新提示。
+- 未验证（真机）：Claude Code 真实提问时卡片弹出的时机、真实 Codex request_user_input、MP3 / M4A 自定义音频解码、多显示器下卡片位置。
+
+## 问题卡片 + 自定义提示音 · 本地测试版完成（2026-10-24，未提交、版本仍 0.3.64、用户没说发布）
+
+- 用户要求：① 提示音支持用户自己选音频；② Claude Code 等 Agent 在任务中提问时显示在右下角。可参考 `D:\CodePorject\Exmaple\clawd-on-desk-main` 的代码但不照抄（只看了它的 agent-questions 文档、PermissionRequest HTTP hook 的做法、`codex-user-input.js` 的 Codex 记录格式；实现是自己写的）。
+- 取舍：clawd 用 PermissionRequest HTTP hook 才能在卡片上直接作答，要改 `~/.claude/settings.json`；TokenPulse 桌宠一直是「只读会话文件、不改 CLI 配置」，所以这次**只显示、不作答**，卡片写「回到终端里回答」。若用户以后要在卡片上直接回答，需要装 hook（另议）。
+- 改动：
+  - `src/core/agent-activity.ts`：`askOf()`（Claude `AskUserQuestion`、`ExitPlanMode`，Codex `request_user_input`；字数个数有上限、去控制字符）；`Inferred.ask` / `AgentTask.ask`（调用写进会话、还没有对应 tool_result / function_call_output；新一轮或中断清掉）；`liveStatus` 在问你立即算 waiting，`ASK_STALE_MS` 60 分钟没动才丢；`ActivityState.asked`（新问题只报一次，第一次扫描不报，不再算进 needsYou）。真实会话里核过 AskUserQuestion 的字段结构（只看字段名）；Codex 本机没有真实 request_user_input 记录，按 clawd 的解析格式写。
+  - `src/main/desk-pet.ts`：问题卡片窗口 `desk-pet-ask.html`（透明、不抢焦点、置顶，`askBounds` 放屏幕可用区右下角，挡住宠物时挪到宠物头顶 / 左边；最多 3 张，多的写「还有 N 个」；「知道了」按 `任务key|调用id` 记、回答后清掉）；扫描到 asked 发 `alert ask`；视图加 `volume`、`mute`、`sounds`（种类→导入时间）、`asking`；气泡任务列表的 chip 写「在问你」。
+  - 新文件 `src/core/pet-sound-file.ts`：每种提示音（done / ask / waiting / error / empty）可换成自己的音频，按文件头认 WAV/MP3/OGG/FLAC/M4A，2 MB 以内，复制到数据目录 `pet-sounds/<种类>.<扩展名>` + `sounds.json`。
+  - `src/core/desk-pet-model.ts`：新偏好 `deskPetVolume`（默认 70）、`deskPetMute`（默认 []）、`deskPetAsk`（默认开）；`askBounds()`。
+  - `renderer/pet-sound.js`：新增 ask 调子（一低一高）；`setCustom()` 用 Web Audio 解码自己的音频，播放最多 5 秒、超长淡出；音量参数。`renderer/desk-pet.js`：按 mute / volume 响，视图里 sounds 变了重新要数据；ask 挥手；悬停提示「N 个在问你」。
+  - 新文件 `renderer/desk-pet-ask.{html,css,js}`（沿用气泡的像素风变量）；`renderer/desk-pet-settings.js(.css)`：「问题卡片」开关、音量、「每种提示音」列表（单独开关、试听、换成自己的 / 换一个、恢复默认）；说明文字；`renderer/i18n.js` 英文。IPC：`desk-pet:ask-data/ask-size/ask-action/sounds/sound-data/import-sound/remove-sound`（preload 同名）。
+- 测试：`node scripts/test-desk-pet.cjs` 19 PASS（新增提问识别、扫描 asked、偏好、askBounds、音频文件导入、自定义音频播放）；`scripts/test-desk-pet-ui.cjs` 16 PASS（新增单独静音和音量、问题卡片弹出 / 知道了 / 计划卡片 / 回答后收起、设置页卡片开关 / 音量 / 静音 / 导入 WAV / 恢复默认），超时从 90 秒放宽到 150 秒。全量 `npm test` 退出 0（755 行 PASS，scratchpad `test-backend-ask.log`）；`npm run test:ui` 退出 0（123 行 PASS，`test-ui-ask.log`）。截图自查（临时目录假数据，`capture-ask.cjs`）：卡片浅色 / 深色、设置页提示音列表正常。
+- 本地测试版：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build-ask.log`）；`dist\win-unpacked\resources\app.asar`（02:11）SHA256 前 16 位 `C10EE44FBBA4878A`，确认含 desk-pet-ask、pet-sound-file、askBounds、request_user_input、deskPetMute。收尾：只剩用户安装版 TokenPulse（00:53 启动），没动；无残留 electron / node / python；exe 和 app.asar 独占打开检测通过。
+- 没验证：真机上 Claude Code 提问时会话文件是不是马上写入 tool_use（按已知行为判断会；卡片最多晚 4 秒，扫描间隔）；真实 Codex request_user_input；真实 mp3 / m4a 文件的解码（测试只用了 WAV）；多显示器下卡片位置。
+- 下一步：用户试用；要发布时再升版本、在 `renderer/intro.js` 写更新说明（含上一节的探头、提示音）。
+
+## 0.3.64 之后：极简模式改成探头、提示音 · 本地测试版完成（2026-10-24，未提交、版本仍 0.3.64、用户还没说发布）
+
+- 用户反馈 1：极简模式「直接一半藏在屏幕边上」太直接，应该是探出头来。改成以身体脚底中点为轴往左歪：`src/core/desk-pet-model.ts` 的 `MINI_POSE = { tuck: { tilt: 30, show: 0.55 }, peek: { tilt: 20, show: 0.75 } }`（替换 MINI_SHOW / MINI_PEEK；show = 探出屏幕的宽度占身宽的比例），`miniSpriteCenter` 改为屏幕右边减四分之一画面宽；`renderer/pet-engine.js` 新增 `BODY`（三只内置宠物身体占的格子，不含松鼠橡果堆），极简模式下松鼠不画橡果堆；`renderer/desk-pet.js` 的 `layout()` 按身体框算轴心、`rotate()`，自定义宠物按 idle 图不透明范围量身体框（`measurePack`），`hitAt` 按旋转反算；`renderer/desk-pet.css` 过渡加 transform。截图自查（scratchpad 的 `capture-clawd.cjs` + `tile_shots.py`，临时数据目录、只用测试数据）：Clawd、松鼠、仓鼠、章鱼平时只探出头和一只眼，悬停时探出身子。
+- 用户反馈 2：完成任务、报错时给提示音（自由发挥）。`src/core/agent-activity.ts`：`Inferred.ended`（ok / interrupted / error；Claude 的 `isApiErrorMessage`、中断，Codex 的 `error` / `turn_aborted`），`ActivityState` 加 `failed`、`needsYou`（刚变成「可能在等你」），`finished` 不再包含出错和用户中断的。`src/main/desk-pet.ts`：发 `{ type: "alert", kind: "error" | "waiting" | "empty" }`（额度同账号刚用完发 empty），视图带 `sound`。新偏好 `deskPetSound`（默认开）。新文件 `renderer/pet-sound.js`（Web Audio 现场合成，四种调子，0.4～0.5 秒），`desk-pet.html` 和 `index.html` 都加载；`renderer/desk-pet.js` 的 `chime()`（1.5 秒内只响一声；出错吓一跳、在等你挥手、极简模式探出来 4 秒）；设置页「提示音」开 / 关，打开时试听；说明文字和英文已加。离线渲染自查：peak 0.18～0.23、时长 0.39～0.53 秒，WAV 在 scratchpad `pet-sound-*.wav`。
+- 测试：`node scripts/test-desk-pet.cjs` 15 PASS；`scripts/test-desk-pet-ui.cjs` 全部 PASS（新增提示音、极简模式改成按角度 / 探出宽度断言、设置页提示音开关）。全量：`npm test` 退出 0（751 行 PASS，scratchpad `test-backend-sound.log`）；`npm run test:ui` 退出 0（121 行 PASS，`test-ui-sound.log`）。中途另一次全量 test:ui 里 `test-deepseek-balance-ui` 超时，单独跑两次都 PASS、这次全量也 PASS，判断为偶发，与本次改动无关。
+- 本地测试版：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0；`dist\win-unpacked\resources\app.asar`（01:33）SHA256 前 16 位 `298fff55784af8dd`，确认 asar 里有 `pet-sound.js`、`MINI_POSE`、`isApiErrorMessage`，两个 html 都引用了 `pet-sound.js`。收尾：只剩用户安装版 TokenPulse（00:53 启动），没动；没有残留 electron / node / python；dist 两个文件独占打开检测都可以打开；截图脚本的临时目录已删。
+- 没验证：真机上的探头手感和提示音实际听感（只做了离线渲染和测试替身）；Claude Code 真实 API 报错行、Codex 真实 `error` 事件的格式按已知字段写的，没拿真实出错会话验证；「额度用完」提示音只在主进程逻辑里，UI 测试没覆盖到这条路径。
+- 下一步：用户试用测试版；要发布时再升版本、在 `renderer/intro.js` 加更新说明（0.3.64 的说明里写的是「只露半个身子」，新版要说明改成探头）。
+- 会话交接（2026-10-24）：用户说先到这里、开新对话。结束时核对过：工作区就是上面这些未提交改动（13 个修改 + 新文件 `renderer/pet-sound.js`，HANDOFF.md 不提交）；进程只剩用户安装版 TokenPulse（00:53 启动），没有残留 electron / node / python。提示音试听 WAV 在旧会话 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\47b7d8fc-bb9b-4fd3-b8b4-f4f31d389cb8\scratchpad\pet-sound-*.wav`。新会话先等用户对探头手感和提示音的反馈，没说发布就不升版本、不提交。
 
 > 新接手的 AI 先读本节，再读 AGENTS.md 和实际代码。下方保留的开发/发布流水仅适用于标明的版本和阶段；其中「进行中」「未提交」「待验收」不代表当前状态。
 
+## 0.3.64 已正式发布（2026-10-24）
+
+- 用户说把桌宠交互重写和「自定义宠物拖不动」修复算作同一版本，升一个小版本发布 → 0.3.64。
+- 已完成：`npm version 0.3.64 --no-git-tag-version`；`renderer/intro.js` 加 0.3.64 三条、`renderer/i18n.js` 英文；`npm test` 退出 0（750 PASS，`test-backend-0364.log`）、`npm run test:ui` 退出 0（120 PASS，`test-ui-0364.log`），日志在 scratchpad；`npm run dist` 退出 0（`build-release-0364.log`）；`node dist/verify-0.3.64.cjs`：170 个运行时文件一致，ASAR SHA256 `eaecd252fde304879b508e33763a30782294b51abcb9dcd6bffb97e82dcc7ede`，win-unpacked 产品版本 0.3.64.0；`dist/assets-0.3.64.sha256`（Setup 112705301、Portable 112448146、blockmap 119911、latest.yml 352）；发布正文 `dist/release-0.3.64.md`。
+- Git：fetch 远端无新提交；提交 `56966d7`（16 个文件；暂存区扫过无凭证 / 私人邮箱 / 会话链接），标签 `v0.3.64`，main 与标签已推送。**HANDOFF.md 仍未提交**（按约定只留本地）。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.64 ：标题「TokenPulse 0.3.64」，非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.64；公开 latest.yml 与本地逐字节一致。
+- 收尾：没有遗留的 electron / node / 打包器进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开（句柄已 Dispose）；工作目录在项目根目录。用户安装版 TokenPulse（00:41 启动，用户自己重启的）仍在运行，未安装 / 升级、未关闭——会收到自动更新提示。
+- 未验证：真鼠标的甩、拖到右边自动贴边、菜单跳进跳出、拖自定义宠物（测试在屏幕外模式下跑，这些靠用户实机确认）；多显示器贴边。
+- 仓库外自用 Clawd 包已含新状态（见下一节），用户需在「桌宠」页删掉旧 Clawd 重新导入。
+
+## 桌宠交互（自己重写，选项 ③）· 已随 0.3.64 发布（2026-10-24；下面的「未提交、未发布」「版本仍 0.3.63」指当时）
+
+- 用户选 ③：在 TokenPulse 自己的桌宠里重写交互，美术原创；**只看 clawd-on-desk 的功能说明（docs/guides/features），不看、不抄它的实现代码和素材**。版本未指定 → 不升版本、不发布，只本地测试版。
+- 方案：`renderer/pet-engine.js` 加地面影子 + 待机身体朝鼠标微倾；睡眠序列（Controller：系统 60 秒没操作 → 打哈欠 → 打盹点头 30 秒 → 倒下 → 睡；有操作：睡着的吓一跳再揉眼睛、打盹的揉眼睛），主进程每秒把 `powerMonitor.getSystemIdleTime()` 发给宠物窗口（测试的屏幕外模式不发，由测试自己发）；点击：单击延迟 300ms 开气泡、双击「戳一下」（>< 眼、压扁、怒气符号）、连点 4 下东张西望（问号）；甩：松手时按最后约 80ms 的速度滑行、摩擦减速、碰边反弹（纯函数 flingPath 在 desk-pet-model.ts），落地播 land；贴边极简模式：拖到 / 甩到屏幕右边缘或右键「极简模式」→ 窗口贴右边，宠物藏一半，鼠标移上来探出身挥手，任务完成探出来庆祝，进出用抛物线跳；新偏好 `deskPetMini`。自定义宠物包新增可选状态 poke / doze / look / wave / peek（缺了按旧状态代替）。之后给仓库外的自用 Clawd 包补这些状态。
+- 改动（全部未提交，版本仍 0.3.63）：
+  - `renderer/pet-engine.js`：影子 / 前倾、doze 状态、poke / lookaround / flop / wave 动作和特效（问号、怒气、小 z）；`Controller` 的睡眠序列（`idle()`、`rouse()`、`setMode()`、`stateOf()`、`drowseTick()`、动作队列）；`Clicks` 连点计数；导出 `Clicks`、`DOZE_AFTER`、`DOZE_MS`。
+  - `src/core/desk-pet-model.ts`：`deskPetMini` 偏好、`MINI_SHOW/MINI_PEEK/MINI_SNAP`、`miniBounds`、`miniSpriteCenter`、`reachesRightEdge`、`releaseVelocity`、`flingPath`、`jumpPoint`。
+  - `src/main/desk-pet.ts`：拖动记轨迹、松手甩出（`flyTimer`，屏幕外测试模式不甩）、`settle()` 落地 / 贴边、`setDeskPetMini()` 抛物线跳、从边上拖出来退出极简、右键菜单「极简模式（贴到屏幕右边）/ 退出极简模式」、气泡对准露出的那截、空闲秒数 `desk-pet-idle`、`resetDeskPetPosition` 同时退出极简。
+  - `src/main/index.ts`（`saveMini`）、`src/main/preload.ts`（`onIdle`）、`renderer/desk-pet.js`（连点、睡眠、fly / landed、极简布局 + 悬停探出挥手、气泡 / 庆祝时探出）、`renderer/desk-pet.css`（mini 样式）、`src/core/pet-pack.ts`（PET_STATES 加 poke / doze / look / wave / peek）、`renderer/desk-pet-settings.js` + `renderer/i18n.js`（说明文字、菜单英文）。
+  - 章鱼的影子按它的脚（第 46 行左右）放在 y=48.6，松鼠 / 仓鼠 54.6（截图自查发现章鱼影子离身体太远后修的）。
+  - `renderer/desk-pet.js` 的 `setPointerCapture` 包了 try/catch（指针已失效时照样按点击处理）；悬停提示改在每帧 `draw()` 里按 `ctl.stateOf()` 更新（打盹 / 睡着是宠物自己走到的，没有新的状态推送）。
+- 测试（2026-10-24 实测）：
+  - `scripts/test-desk-pet.cjs` 14 PASS（新增：甩 / 极简 / 跳的纯函数、睡眠序列、连点、新动作和 doze 对三只宠物都画得出且会动、贴边不画影子）。
+  - `scripts/test-desk-pet-ui.cjs` 14 PASS（新增：双击戳一下不开气泡、四连点东张西望、`desk-pet-idle` 70 秒 → 打哈欠 / 打盹 / 提示「在打盹」、0 秒 → 揉眼睛醒、`setDeskPetMini(true)` → 贴边露 45%、悬停探出 85% + wave、移开缩回、从边上拖出来退出极简）。
+  - 全套里第一次跑这个 UI 测试失败过一次：屏幕外的宠物窗口被 Windows 算成被遮挡（`visibilityState = hidden`），页面按设计停帧，动作一直不结束。测试里加了 `app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')`，之后单独连跑 8 次都 PASS。
+  - `npm test` 退出码 0（750 行 PASS）；`npm run test:ui` 退出码 0（120 行 PASS）。
+  - 截图自查（只用演示数据）：三只宠物 idle / lean / doze / poke / lookaround / flop / wave 帧拼图，看过。
+  - 没做：真机上用真鼠标甩、拖到屏幕右边自动贴边、菜单跳进跳出的手感（测试在屏幕外模式下不甩、不跳、不按屏幕边自动贴边）；多显示器贴边。需要用户在本地测试版上手动试。
+- 本地测试版（第一次，已被下面「追加修复」后的 00:34 版本替换）：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出码 0，产物 `dist\win-unpacked\TokenPulse.exe`（2026-10-24 00:19），`resources\app.asar` SHA256 前 16 位 `a623c598926767f0`，已确认 asar 里是新代码（`setDeskPetMini`、`function peek`、`class Clicks`）。没有 `npm run dist`、没有安装包、没升版本、没提交、没发布。
+- 进程 / 占用：收尾时只剩用户安装版 TokenPulse（`C:\Users\7ipny\AppData\Local\Programs\TokenPulse\TokenPulse.exe`，23:36 启动，0.3.63 自动更新后），没动；没有残留的 electron / node / 打包进程；`dist\win-unpacked\TokenPulse.exe` 和 `resources\app.asar` 独占打开检测都可以打开（检测句柄已关）。
+- 仓库外自用 Clawd 包：`D:\CodePorject\Tools\TokenPulse-pets\make_clawd.py` 加了 poke（压扁、> < 眼、怒气）、doze（耷拉眼皮点头、小 z）、look（眼睛左右看、问号）、wave（左手挥）、peek（贴边时朝左看、眨眼）和对应的眼睛 / 手势，已重新生成到 `D:\CodePorject\Tools\TokenPulse-pets\clawd`（13 个状态，约 405 KB），用 `build/core/pet-pack.js` 的 `readPetFolder` 校验通过。导入是复制，用户之前导入过的旧版要在「桌宠」页删掉重新导入才有新状态。
+- 追加修复（2026-10-24，用户反馈）：**自定义宠物拖不动，一拖是拖出一张图片**。原因：自定义宠物用 `<img id="dp-img">` 显示，没禁浏览器自带的图片拖放，按住一动就开始原生拖图（拖出虚影），Chromium 随即发 pointercancel，我们自己的拖动收不到 pointermove；内置宠物是 canvas，没有这个问题。修法：`renderer/desk-pet.html` 的 img 加 `draggable="false"`；`renderer/desk-pet.css` 给 `.dp-stage img` 加 `-webkit-user-drag: none; pointer-events: none`（事件交给 stage）；`renderer/desk-pet.js` 加 `pointercancel` → 按松手处理、`document` 上 `dragstart` 一律 `preventDefault`。`scripts/test-desk-pet-ui.cjs` 在导入自定义宠物后断言 img 不可拖（draggable / pointer-events / user-drag / dragstart 被拦）、在图片中间按下移动能开始拖动且窗口跟着假光标走。修后：桌宠 UI 测试 PASS、`node scripts/test-desk-pet.cjs` 14 PASS、`npm run test:ui` 退出码 0（120 行 PASS）；没重跑全量 `npm test`（只改了渲染端三个文件和 UI 测试）。重新打本地测试版：退出码 0，`dist\win-unpacked\resources\app.asar`（00:34）SHA256 前 16 位 `342be21754c97580`，确认 asar 里有 `draggable="false"` 和 `user-drag: none`。收尾进程只剩用户安装版，dist 两个文件独占打开检测都可以打开。真鼠标拖自定义宠物待用户确认。
+- 已知限制：极简模式只贴屏幕右边；宠物窗口被别的窗口全挡住时（`visibilityState = hidden`）不走帧，睡眠序列也暂停，露出来后接着走；自定义宠物没有甩出去的转圈动画，只用 drag / land 两张图。
+
+## 用户想用 clawd-on-desk 的皮肤和交互（2026-10-23，只读调查，未改代码）
+
+- 核实 `D:\CodePorject\Exmaple\clawd-on-desk-main`：代码 AGPL-3.0；`assets/LICENSE` 写明美术「All Rights Reserved」，除「个人使用 Clawd on Desk 本身」外**不得复制、修改、分发或使用**；Clawd 形象归 Anthropic（粉丝作品、禁商用），三花猫 / 云宝归作者鹿鹿（@rullerzhou-afk）。TokenPulse 仓库没有 LICENSE、公开发布。结论：**不能把它的皮肤放进或导入 TokenPulse，也不能拷它的代码**；交互可以按功能说明自己重写（不看、不抄实现）。
+- 另：Clawd on Desk 自带「额度环」（设置 → Sessions → 额度环 → 采集本机 Claude 使用信息，走 Claude Code 官方 statusline 的 rate_limits，不额外请求官方）；它的自定义 HTTP 接口只收状态，不收额度。
+- 给用户的选项：① 继续用 Clawd on Desk 当桌宠（打开它的额度环），TokenPulse 桌宠关掉；② 向作者要书面授权后再做导入；③ 在 TokenPulse 里自己重写眼神跟随、睡眠序列、双击戳/连点、贴边探头、甩动拖拽等交互，配原创美术（用户自用的 Clawd 包在仓库外 `TokenPulse-pets\clawd`）。等用户选。
+
+## 0.3.63 已正式发布（2026-10-23）
+
+- 用户说「升级一个小版本号然后就直接编译并发布」：`npm version 0.3.63 --no-git-tag-version`；`renderer/intro.js` 加 0.3.63 两条（限流自动放慢、统一运行日志）、`renderer/i18n.js` 补英文（node --check 通过）。代码内容见下一节。
+- 发布前验证（日志在 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\47b7d8fc-bb9b-4fd3-b8b4-f4f31d389cb8\scratchpad`）：`npm test` 退出 0，746 PASS（`test-backend-0363.log`）；`npm run test:ui` 退出 0，117 PASS（`test-ui-0363.log`）；`npm run dist` 退出 0（`build-release-0363.log`）；`node dist/verify-0.3.63.cjs`：170 个运行时文件逐字节一致，ASAR SHA256 `61a72c09aa9da6b0decf0dd7761af2d142495397ff60b9acdd319c2012553994`；win-unpacked 产品版本 0.3.63.0。附件 SHA256 在 `dist/assets-0.3.63.sha256`：Setup 112698587 字节、Portable 112441370、blockmap 119704、latest.yml 352。发布正文 `dist/release-0.3.63.md`。
+- Git：fetch 远端无新提交；提交 `0f6b088`（23 个文件；暂存区扫过无真实凭证/私人邮箱/会话链接，测试里的 token 是 `"Q".repeat(60)` 假值），标签 `v0.3.63`，main 与标签已推送。**HANDOFF.md 仍未提交**（按之前约定只留本地）。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.63 ：标题「TokenPulse 0.3.63」，非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.63；公开 latest.yml 与本地逐字节一致。
+- 收尾：近 1 小时没有遗留 electron / node / 打包器进程；四个附件和 win-unpacked exe / app.asar 可独占打开（句柄已 Dispose）；工作目录在项目根目录。用户安装目录的旧版 TokenPulse（21:59 启动）仍在运行，未安装/升级、未关闭——会收到自动更新提示。
+- 未验证：同下一节（没在朋友机器上证实 429、没用真实官方接口验证 Retry-After、没看真实安装版的日志内容、新按钮没截图）。
+- 下一步：朋友更新到 0.3.63 后再看提示；还刷不出就让其发 `~/.tokenpulse/logs/tokenpulse.log`（设置 →「数据」→「打开日志」），看 `[net]` 和 `[quota]` 行。候选新功能（未做，等用户决定）：经 TokenPulse 路由时从响应头 `anthropic-ratelimit-unified-5h/7d-utilization` 取额度、省掉查询；本机没在用的账号降低查询频率。
+
+## 额度 429 退避 + 提示分类 + 统一运行日志 · 本地测试版完成（2026-10-23，已随 0.3.63 发布；下面的「未提交、未发布」「版本仍 0.3.62」指当时）
+
+- 起因：朋友两个 Claude 账号刷新一直提示「这次没问到最新额度，还是显示上次的数字」。这句是 `quotaIssueNotice` 的兜底，429 / 5xx / 返回 HTML / 200 但没数字都落到它，原因不显示也不落盘；额度默认每 60 秒查、429 不退避。推断最可能是 `/api/oauth/usage` 限流（**未在朋友机器上证实**）。用户要求三点全做，日志做成「统一大日志」。版本未指定 → 不升版本、不发布。
+- ① 429 退避：`src/core/curl.ts` curlJson 加 `-D -` 读响应头（`splitHeaders` 剥掉代理 CONNECT 段）、`parseRetryAfter`；≥400 抛 `HttpError(status, retryAfterMs, errorType)`（message 仍是 `http 状态码`，401/403 仍抛 "auth"；4xx/5xx 的 HTML 现在报 http 状态码而不是 not json）。`src/core/quota.ts` 每账号冷却：等待＝max(退避 2→4→8 分钟封顶 15, Retry-After 封顶 60 分钟)，冷却中不发请求（手动刷新也不发），查到一次清零；导出 `rateLimitWaitMs`、`resetQuotaCooldowns`。issue 新增 reason `rate-limited` + `retryAt`；detail 改用 `errorText`（curl 的 stderr，不再是带 token 的整条命令行）。
+- ② 提示分开说：限流「被官方限流了（HTTP 429），约 HH:MM 再自动查」、5xx「官方服务器出错（HTTP n）」、其它 HTTP、「返回的不是额度数据，可能被代理或网络拦截了」、「返回里没有额度数字」，认不出的才用老兜底句；非限流/登录类问题末尾加「详细原因已记在日志（设置 →「数据」→「打开日志」）。」。i18n.js 加了对应英文（品牌版和通用版各 6 条 + 词条）。
+- ③ 统一运行日志 `~/.tokenpulse/logs/tokenpulse.log`：新 `src/core/app-log.ts`（本地时间 + 级别 + 分类；脱敏：家目录→~、链接参数、Authorization/api-key/cookie、邮箱打码、≥32 字符长串；单行 600 字；4 MB 轮换留 tokenpulse.1/2.log；写失败不影响功能、目录被删会重建）。记录内容：curlJson/curlPost/curlBinary 每个请求（方法、域名+路径、状态码、耗时、错误类型、Retry-After、非 JSON 的类型和大小、curl 报错）；`upstreamRequest`（含路由转发、DeepSeek 余额、探测；本机地址成功不记；只在有 callback 时听 response）；每轮额度结果（每账号数字或没查到的原因与冷却时间）；刷新提示原文；续期（renew-log.ts 同时写一行）；更新器和知识库检查；登录过程（login-log.ts 改为写进统一日志，分类 `login 家#编号`，`loginLogFile()` 指向统一日志；0.3.62 留下的 login-log.txt 不动）。新 `src/main/app-log-setup.ts`（index.ts 第一个 import，加载即装）：包 ipcMain.handle 记操作（不记参数，只带 "claude" 这类短标识；prefs:write 记键名和开关/数字值；QUIET 只读通道只记失败或 >5 秒）、console.error/warn、unhandledRejection（改为 console.warn 输出并记录）、uncaughtExceptionMonitor（只旁观）、各窗口界面进程退出/卡死/preload 出错/界面 console error、子进程退出、启动时版本系统时区和去 anthropic/chatgpt 走不走代理、退出。设置「数据」页按钮改「打开日志」（IPC `open-log`，preload `openLog`），说明文字改写；oauth.ts 失败提示改指向「打开日志」。
+- 测试（实际执行，日志在 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\47b7d8fc-bb9b-4fd3-b8b4-f4f31d389cb8\scratchpad`）：新 `scripts/test-app-log.cjs` 23 项（真实 curl 打本机临时 HTTP 服务：200/429+Retry-After/503 HTML/200 HTML/401/连不上/POST；脱敏、轮换、目录重建、upstreamRequest 记录），已加进 npm test；`test-quota-fetch.cjs` 扩到 56 项（分类提示与英文、429 冷却不发请求、清零后重算、503 不冷却、curl 超时 detail 不带命令行、日志里打码不带 token）；`test-oauth-login.cjs` 按新分类和「打开日志」改断言 15/15；`test-ui.cjs:931` 断言改新文案；`test-intro-ui.cjs` 指纹排除 logs/（同 concurrency-history 的理由），另断言运行日志里没有 claude:demo。`npm test` 退出 0，**746 PASS**（`test-backend.log`）；`npm run test:ui` 第一次在 intro 指纹失败（就是 logs/ 那条），修后全串退出 0，**117 PASS**（`test-ui.log`）。
+- 打包：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build.log`）；`dist/win-unpacked/TokenPulse.exe` 产品版本 0.3.62.0（**没升版本**，和已发布 0.3.62 同号），app.asar 内含 app-log-setup.js / app-log.js / rateLimitWaitMs / open-log。dist 里 Setup/Portable/latest.yml 仍是 0.3.62 正式版。
+- 未验证：没在朋友机器上复现 429；没用真实官方接口验证 Retry-After 是否真的会给（没给就走 2 分钟起的退避）；没启动真实安装版看真实日志内容（用户的正式版在运行，用的是真实数据）；「打开日志」按钮和英文文案没截图。
+- 已知限制：冷却只在内存里，重启 TokenPulse 清零；Grok 的 grpc 请求只记状态码，不参与 429 冷却；路由转发的 AI 请求每次一行，用得多时日志轮换更快（4 MB×3）；日志里保留账号别名原文（邮箱会打码）。
+- 用户插问（Claude Code 的 /usage）：本机 claude.exe 2.1.310 里 /usage 只在打开时请求 `/api/oauth/usage`（网关模式另有 5 分钟节流读取）；平时 5h/7d 用量来自每次对话响应头 `anthropic-ratelimit-unified-5h/7d-utilization`、`-reset`，传给状态栏 `rate_limits`，不落盘（压缩代码里看的，大致可信）。建议：经 TokenPulse 路由时直接读响应头、有新数据的账号跳过查询；本机没在用的账号降低频率；状态栏桥接只做可选项。**未实现，等用户决定。**
+- Git / 安装 / 发布：**全部未提交**；未安装、未发布。收尾：本轮启动的 electron/node/打包进程都已结束（近 2 小时只有用户安装目录的正式版 TokenPulse，21:59 启动，5 个进程，未动）；`dist/win-unpacked/TokenPulse.exe` 和 `resources/app.asar` 可独占打开（句柄已 Dispose）；工作目录在项目根目录。
+- 下一步：等用户决定是否升版本发布（朋友要用需要新版）、是否做「读响应头省查询」。
+
+## 用户自用的 Clawd 宠物包第二版：小一号、更接近官方比例（2026-10-24，不进仓库，不涉及版本）
+
+- 用户觉得原来的 Clawd 太大，要求重画：小一点、风格更接近官方，但不要一模一样。
+- `D:\CodePorject\Tools\TokenPulse-pets\make_clawd.py` 重写：72x56 画布里身体只有 24x14（原来 42x24），放在底边中间，上面留给效果；平涂橙色、竖条眼睛、两侧小短手、四条小短腿，比例照官方终端里的 Clawd 小图标（宽约为高的 1.5～1.7 倍，眼睛靠两边）。自己的改动：四角削圆、底边和腿用深一号的橙、腮红、没有深色描边，表情和动作都是自己画的。没有参考 clawd-on-desk 的素材。
+- 13 个状态都有（idle、work、sleep、celebrate、tight、empty、drag、startle、poke、doze、look、wave、peek）；举手改成斜着往外上方伸（竖着举像角）；笔记本放低，不挡眼睛；汗珠挪到头的右上角外面。
+- 旧版备份：`make_clawd_v1.py`、`clawd-v1\`（同一个文件夹下）。新包已生成到 `D:\CodePorject\Tools\TokenPulse-pets\clawd`（约 237 KB），用 `build/core/pet-pack.js` 的 `readPetFolder` 校验通过（13 个状态）。
+- 自查：放大预览图看过；另用临时数据目录跑 TokenPulse、导入这个包、截桌宠窗口（scratchpad 里的 `capture-clawd.cjs`，只用测试数据），平时和极简模式都正常显示、背景透明。截图脚本的临时目录退出时没删掉，已手动删除；没有残留进程。
+- 用户要做的：在「桌宠」页删掉旧的 Clawd，再导入 `D:\CodePorject\Tools\TokenPulse-pets\clawd`（导入是复制，旧的不会自动更新）。
+
+## 用户自用的 Clawd 自定义宠物包（2026-10-23，不进仓库；第一版，已被上面的第二版替换）
+
+- 用户想要 Clawd 形象的桌宠。Clawd 形象属 Anthropic，按阶段一的约定**不内置、不进仓库、不随 Release 发**；只做成用户自己导入的自定义宠物包，放在仓库外 `D:\CodePorject\Tools\TokenPulse-pets\clawd\`（pet.json + 8 个状态的透明 GIF，576×448＝72×56 像素格放大 8 倍，共约 269 KB）。生成脚本 `D:\CodePorject\Tools\TokenPulse-pets\make_clawd.py`（Pillow，`python -I make_clawd.py <输出目录> [预览图.png]`），原创逐格绘制，没有用 clawd-on-desk 的素材。
+- 验证：用 `build/core/pet-pack.js` 的 `readPetFolder` 校验通过（8 个状态都识别为 gif）；预览图在亮/暗底色上自查过（修了 Zzz 糊成一团、彩纸盖到身上）。**没有在真实桌宠窗口里导入看效果**，也没改用户的 `~/.tokenpulse/pets`。
+
+## 0.3.62 已正式发布（2026-10-23）
+
+- 用户说「升级一个小版本号然后直接发布」：`npm version 0.3.62 --no-git-tag-version`；`renderer/intro.js` 加 0.3.62 两条、`renderer/i18n.js` 补英文（CRLF 保持，`node --check` 通过）。内容见下一节（系统代理登录修复、Claude 资料路径修复、登录日志）。
+- 发布前验证（日志在 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\e5a8e787-8146-43ce-a559-3cc5c2a0080c\scratchpad`）：`npm test` 退出 0，704 PASS（`test-backend-0362.log`）；`npm run test:ui` 退出 0，117 PASS（`test-ui-0362.log`）；`npm run dist` 退出 0（`build-release-0362.log`）；`node dist/verify-0.3.62.cjs`：168 个运行时文件逐字节一致，ASAR SHA256 `375a6488429649435d0a4e29c4945b6fa187133bf8e133889af2846d643a1077`；win-unpacked 产品版本 0.3.62.0。附件 SHA256 在 `dist/assets-0.3.62.sha256`：Setup 112692912 字节、Portable 112435695、blockmap 119718、latest.yml 352。发布正文 `dist/release-0.3.62.md`。
+- Git：fetch 远端无新提交；提交 `ca7062a`（14 个文件，暂存区扫过无凭证/私人邮箱/会话链接；测试里的 token 是 `"A".repeat(48)` 之类假值），标签 `v0.3.62`，main 与标签已推送。**HANDOFF.md 仍未提交**（按之前约定只留本地）。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.62 ：标题「TokenPulse 0.3.62」，非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.62；公开 latest.yml 与本地逐字节一致。
+- 收尾：近 1 小时没有遗留 electron / node / 打包器进程；四个附件和 win-unpacked exe / app.asar 可独占打开（句柄已 Dispose）；工作目录在项目根目录。用户安装目录的旧版 TokenPulse（20:59 启动）仍在运行，未安装/升级、未关闭。
+- 未验证：同下一节（没在朋友机器上证实根因、没走真实浏览器登录、新按钮没截图）。
+- 下一步：朋友更新到 0.3.62 后再试登录；还不行就让其发 `~/.tokenpulse/login-log.txt`。
+- 后续反馈（10-24）：用户贴来朋友 0.3.62 的登录日志，「重新授权」成功：日志写着「代理：按系统代理补上 HTTPS_PROXY=http://127.0.0.1:7890」（说明朋友机器环境变量里没有代理、只有系统代理），CLI 为 npm 版 Claude Code 2.1.301，20 秒成功、有邮箱。与根因推断一致，但没有旧版失败时的日志，严格说不是对照实验。
+
+## OAuth 登录「没有检测到登录成功」排查 + 登录日志（2026-10-23，已随 0.3.62 发布；下面的「未提交、未发布」「同号 0.3.61」指当时）
+
+- 用户反馈：朋友在浏览器 OAuth 授权成功，TokenPulse 却提示「没有检测到 OAuth 登录成功」（该提示＝CLI 已退出、临时目录里没读到新凭据）。用户要求排查，排查不出就加日志系统。版本未指定，不升版本、不发布。
+- 诊断（本机只读核实）：① `runLogin`（`src/main/oauth.ts`）spawn 登录 CLI 时 `stdio: "ignore"`，CLI 的报错全丢，所以界面只能说「没检测到」。② 登录子进程只继承环境变量，不带系统代理；本机 Claude Code 2.1.310 的 claude.exe 里没有读 Windows 系统代理（Internet Settings）的代码，换 token 的地址是 `https://platform.claude.com/v1/oauth/token`；本机直连该域名返回 403、走代理 200。推断：朋友只开了「系统代理」、没设 HTTPS_PROXY 时，浏览器能授权，CLI 换 token 直连被拒后退出 → 就是这个提示（本机有用户级 HTTPS_PROXY，所以本机正常）。**未在朋友机器上证实。** ③ 0.3.60 回归：登录时 CLI 跑在 `CLAUDE_CONFIG_DIR=临时目录/.claude`，账号资料写在 `临时目录/.claude/.claude.json`，但 `claudeProfileFile(临时目录)` 读的是 `临时目录/.claude.json` → 新登录的 Claude 账号没有邮箱、身份退回 token 哈希，「重新授权」会报账号不一致。
+- 计划：登录子进程按系统代理补 HTTPS_PROXY/HTTP_PROXY（环境里没有时）；修 ③ 并在凭据出现后等资料落盘；新增登录日志（CLI 输出脱敏、退出码、临时目录文件名/大小、判定原因），设置「数据」里加「打开登录日志」，失败提示指向日志；补测试。
+- 改动：`src/core/upstream-proxy.ts` 新增 `systemProxyEnv`（环境里没代理、系统代理是 HTTP 代理时，给子进程补 HTTPS_PROXY/HTTP_PROXY，NO_PROXY 补 localhost/127.0.0.1/::1）；`src/core/credentials.ts` `claudeProfileFile(home, isolated)` / `readCliAccounts(kind, home, isolated)`，`src/core/cli-switch.ts` `readCliSnapshot(..., isolated)`；新文件 `src/core/login-log.ts`（`~/.tokenpulse/login-log.txt`，脱敏：家目录→~、链接参数去掉、邮箱打码、≥32 字符长串隐藏、去终端控制符；超 512 KB 留后一半；会自己建数据目录）；`src/main/oauth.ts` runLogin：stdout/stderr 改为 pipe 进日志（stdin 仍 ignore），记 TokenPulse 版本/系统、CLI 路径、代理情况、CLI 版本（在另一个空目录跑 `--version`，不等它）、退出码、`describeLoginDir` 临时目录结构（只看结构不读值）和判定；检测到凭据后等 CLI 自己退出（≤3 秒），Claude 没邮箱时最多等到 10 秒；失败提示后面加「详细过程已记在登录日志（设置 →「数据」→「打开登录日志」）。」；`index.ts` IPC `open-login-log`（有日志就在文件夹里选中，没有就开数据目录并返回 false）、`preload.ts` `openLoginLog`、`renderer/index.html` 数据页按钮＋说明、`app.js` 点击处理、`i18n.js` 英文 6 条；新测试 `scripts/test-oauth-login.cjs`（假 claude.cmd / codex.cmd 走真实 runLogin：资料晚写、403 失败、系统代理补全、脱敏、临时目录删除；仅 Windows），已加进 `npm test` 末尾。写测试时发现并修了日志自己的 bug：第一次登录时数据目录还没建，第一行丢失。
+- 测试（实际执行，日志在 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\e5a8e787-8146-43ce-a559-3cc5c2a0080c\scratchpad`）：`node scripts/test-oauth-login.cjs` 15/15，连跑多次稳定；`npm test` 退出 0，**704 PASS**（`test-backend.log`，689＋15）；`npm run test:ui` 退出 0，**117 PASS**（`test-ui.log`）。之后只改了一句日志措辞（SOCKS 系统代理不补的说法），重新 compile 后 test-oauth-login 仍 15/15。
+- 打包：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build.log`）；`dist/win-unpacked/TokenPulse.exe` 产品版本 0.3.61.0（**没升版本**，和已发布的 0.3.61 同号），asar 里有 `build/core/login-log.js` 和 `open-login-log` 按钮。dist 里 Setup/Portable/latest.yml 仍是 0.3.61 正式版。
+- 未验证：没有在朋友机器上复现，根因 ② 是推断；没用真实浏览器走一遍真实 Claude/Codex/Grok 登录（会动真实账号）；新按钮和英文文案没截图自查；系统代理是 SOCKS 或 PAC 返回 SOCKS 时不会补（parsePacResult 只认 HTTP 代理），日志里会写「直连」。
+- Git / 安装 / 发布：**全部未提交**；未安装、未发布。朋友要用需要新版本：用户要求时再升版本（建议 0.3.62，并在 intro.js 加更新说明）、`npm run dist`、发 Release。临时让朋友绕过：在系统环境变量里设 `HTTPS_PROXY=http://127.0.0.1:<代理端口>` 后重启 TokenPulse，或代理开 TUN 模式。
+- 收尾：本轮启动的 Electron / Node / 打包进程都已结束（近 2 小时启动的只有用户安装目录的正式版 TokenPulse，20:59 启动，未动）；`dist/win-unpacked/TokenPulse.exe`、`resources/app.asar` 可独占打开（句柄已 Dispose）；工作目录在项目根目录。
+- 下一步：等用户决定是否升版本发布；朋友装上新版后若还失败，让其发 `~/.tokenpulse/login-log.txt`（设置 →「数据」→「打开登录日志」）。
+
+## 0.3.61 已正式发布 · 桌宠（2026-10-23）
+
+- 用户试用反馈三项改完后说「应该可以了，编译安装包并发布」。版本沿用之前按用户要求升好的 0.3.61，没再改版本号。
+- 发布前验证（最终代码，日志在 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\4f6addf9-6997-42a7-bb6a-d550a065de4b\scratchpad`）：`npm test` 退出 0，689 PASS（`test-backend-0361.log`）；`npm run test:ui` 全串退出 0，117 PASS（`test-ui-0361.log`）。
+- 打包：`npm run dist` 退出 0（`build-release-0361.log`）。`node dist/verify-0.3.61.cjs`：167 个运行时文件逐字节一致，ASAR SHA256 `b029cc94f2b10b9b104485d83c4cdca9a8f98af181aaf332d14f9e4ccdaffcb9`；win-unpacked 产品版本 0.3.61.0。附件 SHA256 在 `dist/assets-0.3.61.sha256`：Setup 112690262 字节、Portable 112433108、blockmap 119797、latest.yml 352。发布正文 `dist/release-0.3.61.md`。
+- Git：fetch 远端无新提交；提交 `9372ac6`（28 个文件：桌宠全部代码、测试、版本、说明；提交前扫过暂存区无凭证/私人邮箱/会话链接），标签 `v0.3.61`，main 与标签已推送。**HANDOFF.md 仍未提交**（含 10-19 审计记录，按之前约定只留本地）。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.61 ：标题「TokenPulse 0.3.61」，非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.61；公开 latest.yml 与本地逐字节一致。
+- 收尾：近 1 小时内没有遗留的 electron / node / 打包器进程；四个附件和 win-unpacked 的 exe / app.asar 都能独占打开（句柄已 Dispose）；工作目录在项目根目录。用户安装目录的旧版 TokenPulse（02:34 启动）仍在运行，没有安装/升级、没有关闭——用户会收到自动更新提示。
+- 未验证（同下面反馈三项一节）：真鼠标拖动、真实桌面上的气泡位置和手感、多账号下「正在用的账号」的挑选、英文气泡截图；没有安装新版实际运行。
+- 下一步：等用户装上 0.3.61 后的反馈。阶段二候选：更多工具的任务状态、任务完成提示、点任务定位到具体会话。
+
+## 0.3.61 桌宠试用反馈三项 · 完成（2026-10-23，已随 0.3.61 发布；下面的「未提交、未发布」指当时）
+
+- 用户试用阶段一后提了三点，方案经用户确认（「都按你的建议来」）：① 拖着停住、鼠标没松开时宠物持续漂移；② 额度紧张时别一直流汗喘气，改成隔一阵来一次；③ 点开不要用托盘面板那种卡片，改成像素风对话气泡，显示正在用的账号的额度。附带确认：气泡里任务只留一行摘要（点开会话管理），完整任务列表放右键「查看任务」；「额度跟哪个账号」默认改为跟着正在用的，仍可手动固定；鼠标不在气泡上 8 秒自动收起。**版本仍是 0.3.61，没升版本、没提交、没发布。**
+- ① 拖动漂移：根因实测确认——本机屏幕缩放 1.5，`setBounds({...getBounds(), x, y})` 在部分坐标每调一次窗口大一像素（scratchpad `drift/main.js`：50 次涨 50px；`setPosition` 一样涨；只有固定大小的 setBounds 稳定，非整数倍缩放下可能固定差 1px 但不再增长）。宠物画在窗口底边中间，看起来就是在漂。修法（`src/main/desk-pet.ts` deskPetDrag）：大小固定用 `petWindowSize`、光标没动不碰窗口、松手按自己算的位置存脚下中点；`renderer/desk-pet.js` pointermove 时没按左键按松手处理（漏掉松手的保险）。
+- ② 流汗节奏：`renderer/pet-engine.js` Controller 加 `nervousTick` / `nervous`，按真实时间：变紧张后 1～2.5 秒来一次，之后每 20～40 秒、剩不到 10% 每 15～25 秒，每次 2～3 秒；睡觉、做动作（拖动/庆祝…）时不插入；额度用完不冒汗。三只宠物平时只皱眉，紧张那几秒才冒汗、张嘴喘、身体一缩一缩、抖动。ctx 可传 `nervous` 覆盖（测试/预览用）。
+- ③ 对话气泡：新建 `renderer/desk-pet-bubble.html/js/css`（透明窗口；2px 像素描边四角缺一格、阶梯投影；SVG 拼的像素尾巴，朝下/朝左/朝右；宠物说一句话＋账号名和套餐＋5 小时/周额度各 10 格「剩多少亮多少」＋重置时间＋一行任务摘要；30 分钟没更新额度时提示；右键「查看任务」是任务列表；Esc/失焦/再点宠物收起，鼠标不在上面 8 秒自己收起；中文系统字体，英文走 L()）。`src/core/desk-pet-model.ts` 加 `PetUsing` / `pickPetAccount`（没指定账号时：有任务在跑的工具 claude→claude、codex→chatgpt 的 CLI 当前登录账号，其次刚完成任务的、再其次记住的最近用过的；那家当前登录的没额度数据取那家第一个；都不知道取排第一的账号那家的当前登录账号）、`bubbleBounds`（默认头顶尾巴朝下；上面放不下放右边，再放不下放左边；BUBBLE_EDGE 6 / BUBBLE_TAIL 12），删掉 cardBounds。`src/main/desk-pet.ts` 卡片改气泡（当前登录账号按登录文件 mtime+size 缓存，`~/.claude.json` 可能很大；导出 `openDeskPetBubble`；右键菜单改为「查看额度」「查看任务」…；失焦收起用自己记的 bubbleShown 判断——Windows 上 hide() 引起的 blur 会晚到、那时 isVisible() 还是 true；气泡开着时宠物窗口 body.talking 藏悬停提示）。index.ts / preload.ts 的 IPC 改为 `desk-pet:bubble-data/size/action`、`desk-pet-bubble`。**撤回了 tray-panel.* 的宠物模式**（`?mode=pet`），只保留上一轮为英文界面量高度加的两处通用修复（queueMicrotask 再量一次、ResizeObserver）；撤回前的 diff 存在 scratchpad `tray-panel-pet-mode.diff`。文案：设置页（「跟着正在用的账号」默认项、说明、流汗说明）、intro.js 0.3.61 条目、app.js 桌宠页副标题、README Desk pet 一节、i18n.js（改 9 条、加「查看额度」「查看任务」、删 3 条不再用的）。
+- 测试（实际执行，日志在 scratchpad `C:\Users\7ipny\AppData\Local\Temp\claude\D--CodePorject-Tools-TokenPulse\4f6addf9-6997-42a7-bb6a-d550a065de4b\scratchpad`）：`scripts/test-desk-pet-ui.cjs` 新增拖动测试（假光标、屏幕外坐标）——**修复前失败**「光标不动，宠物不漂、窗口不变大」，修复后通过；卡片测试换成气泡 4 组（点开/任务摘要打开会话管理、查看任务列表、格子/恢复时间/过期/侧边尾巴/Esc、8 秒自动收起）。`scripts/test-desk-pet.cjs` 加流汗节奏一组、账号挑选与气泡定位断言。`npm test` 退出 0，**689 PASS**（`test-backend.log`）。`npm run test:ui` 第一次全串在 `test-quota-pressure-ui.cjs` 超时失败（等 track-fill warning，和桌宠无关；单独连跑 2 次都通过，其后各脚本单独跑全部通过，`test-ui.log` / `test-ui-rest.log`）；**第二次全串退出 0，117 PASS**（`test-ui-2.log`；113 − 原桌宠 7 组 + 新 11 组）。桌宠 UI 测试单独连跑 2 次稳定。
+- 视觉自查：scratchpad `bubble-shots.cjs` 用测试数据只截气泡窗口（`shots-bubble/`：亮/暗、额度够/紧张/用完、尾巴朝下/左/右、任务列表），据此把任务列表加宽到 312px、日期式重置时间加空格。没截桌面、没用真实数据。
+- 打包：`npm run icons && npm run compile && npx electron-builder --win dir --publish never` 退出 0（`build.log`）。`dist/win-unpacked/TokenPulse.exe` 产品版本 0.3.61.0；app.asar 内有 desk-pet-bubble.*、拖动固定大小、nervousTick，tray-panel 已无宠物模式（scratchpad `verify-asar.cjs`）。dist 里的 Setup/Portable/latest.yml 仍是 0.3.60 正式版，未重新生成。
+- 未验证：真鼠标拖动（漂移修复只用假光标和独立复现脚本验证）、真实桌面上气泡的位置和尾巴朝向、点宠物时气泡失焦/再点关闭的手感、8 秒自动收起在真鼠标悬停下的表现；「正在用的账号」没在真实多账号环境里观察（只有单元测试，读了本机 official-accounts.json 只确认 id 是 kind:ref 格式）；英文气泡没截图。
+- 已知限制：气泡第一次打开时先按默认大小放，页面量好后再挪一次（可能闪一下）；气泡窗口透明的外沿（描边/尾巴旁几像素）不点击穿透；最近用过的工具只记在内存里，重启 TokenPulse 后没任务时回到排第一的账号那家。
+- Git / 安装：**全部未提交**；未安装、未发布。用户安装目录的正式版（02:34 启动，4 个进程）仍在运行，未动。
+- 收尾：本轮启动的 Electron / Node / 打包进程都已结束（近 3 小时启动的只剩用户的正式版）；`dist/win-unpacked/TokenPulse.exe` 和 `resources/app.asar` 可独占打开（句柄已 Dispose）；工作目录在项目根目录。
+- 下一步：等用户试用反馈；用户要求时再提交 / 发布。
+
+## 0.3.61 本地测试版 · 桌宠（阶段一）完成（2026-10-22，已被上面 10-23 的反馈修改取代：卡片改成了气泡、拖动和流汗已修）
+
+- 需求与约定：用户反馈看额度要开主界面太麻烦，要桌宠：点一下看额度，同时显示 Agent 任务。参考了 `D:\CodePorject\Exmaple\clawd-on-desk-main`（AGPL-3.0，**只借鉴思路，没有拷代码和美术**；Clawd 形象属 Anthropic，不使用）。三只原创像素宠物：松鼠栗栗（默认，用户最喜欢）、仓鼠豆豆、章鱼墨墨；形象和动作由用户在私有预览 https://claude.ai/artifact/29nCjSHuDNCSnUUX74TqBf 第二版确认。**桌宠默认关闭**。任务状态只读会话文件推断，不改任何 CLI 配置（hooks 实时模式以后再说，需用户主动开）。版本按用户要求升到 0.3.61，**只做本地编译测试版，不提交、不发布**。
+- 后端：`src/core/agent-activity.ts`（Claude 看 user 提问 / tool_use / tool_result / end_turn / system turn_duration、stop_hook_summary / 中断；Codex 看 task_started / function_call / *_output / task_complete / turn_aborted；10 分钟没动的未结束轮次不算在跑；工具调用 90 秒无结果标「可能在等你」；扫描器 30 秒全扫两小时内动过的文件、4 秒 stat 变化，大文件只读头尾各 64 KB；子代理跳过；第一次扫描不报「刚完成」）、`src/core/desk-pet-model.ts`（deskPet* 设置项与收口、宠物跟的额度＝指定账号或第一个账号两个窗口里用得多的那个，用完 empty、压力 high 或剩不到 15% 为 tight；有任务 work，5 分钟无操作 sleep；窗口/卡片定位）、`src/core/pet-pack.ts`（自定义宠物文件夹：pet.json + 各状态图，按文件头只收 PNG/GIF/WebP/JPEG，单张 5 MB、整套 20 MB、最多 20 个，复制到 `~/.tokenpulse/pets/pet-xxxxxxxx/`）、`src/main/desk-pet.ts`（透明、不抢焦点、不占任务栏的宠物窗口；只在宠物像素上接鼠标，其余点击穿透；主进程轮询光标实现拖动并保存脚下中点；右键菜单；卡片窗口复用 `tray-panel.html?mode=pet`，失焦收起、2 分钟后销毁；额度涨 ≥30 点发 restock、任务刚完成发 celebrate；屏幕变化时拉回可见区域）。`prefs.ts` 加字段；`index.ts` 接线（applyPrefs 规范化、快照推送、IPC、before-quit 和「关窗即退出」时销毁）；`preload.ts` 加 `deskPet`；`sessions.ts` 导出 claudeUserText / codexUserText。
+- 前端：`renderer/pet-engine.js`（从预览移植的像素引擎 + Controller + paint）、`desk-pet.html/js/css`（宠物窗口；该窗口不加载 app.css，自己定义了 `[hidden]`）、`desk-pet-settings.js/css`（侧栏新页「桌宠」：总开关、实时预览、选宠物、导入/双击删除自定义宠物、大小、不透明度、窗口层级、额度跟哪个账号、空闲小动作、自定义宠物额度标签、放回右下角、格式说明）；`tray-panel.*` 宠物模式（任务列表，点任务打开会话管理；无退出、无供应商；英文下 i18n 换字后再量一次高度）；`index.html`、`app.js`（NAV_PAGES 加 pet）、`i18n.js`（英文）、`intro.js`（0.3.61 两条）、`README.md`（Desk pet 一节）。
+- 测试（实际执行）：`npm test` 退出 0，**688 PASS**（0.3.60 为 679，新增 `scripts/test-desk-pet.cjs` 9 组），日志 `test-backend-0361.log`；`npm run test:ui` 全串退出 0，**113 PASS**（新增 `scripts/test-desk-pet-ui.cjs` 7 组；`scripts/test-layout-ui.cjs` 的默认页面清单改为 9 个），日志 `test-ui-0361.log`（其中 Error 行为测试内模拟失败）。用测试数据做了视觉自查（scratchpad 的 `visual-check.cjs` 用 capturePage 截宠物窗口、卡片、桌宠页，不截桌面），据此修了三处自动测试没发现的问题：宠物窗口 `[hidden]` 不生效把宠物顶出窗口、英文卡片高度量早了被截底、选宠物卡片里多出文字「null」，已补进 UI 测试。
+- 打包：`npm run icons && npm run compile && electron-builder --win dir --publish never` 退出 0（`build-0361.log`）。产物 `dist/win-unpacked/TokenPulse.exe`，产品版本 **0.3.61.0**，app.asar 内新文件齐全、package.json 版本 0.3.61（scratchpad 的 `verify-asar.cjs` 核对）。已覆盖原 0.3.60 的 win-unpacked；dist 里的 Setup/Portable/latest.yml 仍是 0.3.60 正式版，未重新生成。
+- 未验证：没有在真实桌面上手动拖动、右键菜单、点击穿透（自动测试里窗口在屏幕外，拖动依赖真实光标，没测）；多显示器 / 不同缩放下的定位只做了纯函数测试；没有用真实 Claude / Codex 会话长时间观察状态推断；英文界面只做了视觉自查。
+- 已知限制：任务状态只支持 Claude Code 和 Codex（Grok / DeepSeek / pi 是阶段二）；「可能在等你」只是推断；全屏应用时自动隐藏没有做（Electron 没有现成接口，需要原生代码）；自定义宠物只能导入文件夹，不收 zip；点任务只打开会话管理页，不定位到那条会话。
+- Git / 安装：**全部未提交**（16 个修改 + 12 个新文件；HANDOFF.md 里仍含 10-19 审计记录，按之前约定只留本地）；未安装、未发布。用户安装目录的正式版（19:19 启动）仍在运行，未动。
+- 收尾：本轮启动的 Electron / Node / 打包进程都已结束（只剩用户的正式版 TokenPulse）；`dist/win-unpacked/TokenPulse.exe` 和 `resources/app.asar` 可独占打开（句柄已 Dispose）；工作目录在项目根目录。
+- 下一步：等用户试用反馈；用户要求提交或发布时再提交 / `npm run dist` / 发 Release。阶段二候选：更多工具的任务状态、任务完成气泡、点任务定位到具体会话。
+
+## 桌宠（阶段一）· 代码完成，跑全量测试中（2026-10-22 检查点 3，已被上面取代）
+
+- 新增 renderer：`pet-engine.js`（由预览引擎移植，加 Controller / paint，mood 可由主进程直接给）、`desk-pet.html/js/css`（宠物窗口：命中像素才接鼠标、拖动、右键菜单、悬停提示、自定义宠物图片 + 额度标签）、`desk-pet-settings.js/css`（侧栏「桌宠」页）；`tray-panel.*` 加 `?mode=pet`（任务列表、无退出/供应商、有「桌宠设置」）；`index.html` 侧栏 + `#i-pet` 图标 + 页面；`app.js` NAV_PAGES 加 pet；`i18n.js` 英文；`intro.js` 0.3.61 说明。
+- 测试：新增 `scripts/test-desk-pet.cjs`（9 组 PASS）与 `scripts/test-desk-pet-ui.cjs`（7 组 PASS，连跑两次稳定），已加进 `npm test` / `npm run test:ui` 末尾。`npm version 0.3.61 --no-git-tag-version` 已执行。
+- 下一步：全量 `npm test`、`npm run test:ui`，然后 `electron-builder --win dir` 本地打包（不发布），收尾核对进程和 dist 占用。
+
+## 桌宠（阶段一）· 实现中（2026-10-22 检查点 2，已被上面取代）
+
+- 用户已确认第二版预览，开工。**已写好并通过 tsc（未测试）**：`src/core/agent-activity.ts`（只读会话文件推断任务状态：Claude 看 end_turn / turn_duration / tool_use，Codex 看 task_started / task_complete / turn_aborted；扫描器 30 秒全扫、4 秒看变化）、`src/core/pet-pack.ts`（自定义宠物文件夹校验/导入/列表/删除，按文件头只收 PNG/GIF/WebP/JPEG）、`src/core/desk-pet-model.ts`（设置项、额度挑选、睡觉判断、窗口/卡片位置，纯函数）、`src/main/desk-pet.ts`（透明宠物窗口、点击穿透、拖动、右键菜单、卡片窗口复用 tray-panel.html?mode=pet）；`prefs.ts` 加 deskPet* 字段；`index.ts` 接线（applyPrefs 规范化、快照推送、IPC、before-quit 销毁、关窗即退出时销毁桌宠）；`preload.ts` 加 `deskPet` 接口；`sessions.ts` 导出 claudeUserText / codexUserText。
+- 待做：renderer（pet-engine.js 从预览移植、desk-pet.html/js/css、tray-panel 宠物卡片模式、「桌宠」设置页 + 侧栏、i18n、intro 0.3.61）、测试（test-desk-pet.cjs、test-desk-pet-ui.cjs 并加入 npm 脚本）、版本 0.3.61、本地打包。
+
+## 桌宠（阶段一）· 形象设计确认（2026-10-22 检查点 1，已被上面取代）
+
+- 需求：用户反馈看额度要开主界面太麻烦，要一个桌宠，点击查看额度，同时显示 Agent 任务情况。参考了 `D:\CodePorject\Exmaple\clawd-on-desk-main`（AGPL-3.0，**只借鉴思路，不拷代码和美术素材**；Clawd 形象属 Anthropic，不使用）。
+- 已和用户确认的范围：阶段一做三只内置原创像素宠物（松鼠栗栗＝默认/用户最喜欢、仓鼠豆豆、章鱼墨墨）+ 独立的桌宠设置界面（切换宠物、大小、透明度、全屏隐藏、位置重置、上传自定义宠物包：pet.json + 各状态图片，只收图片、限大小、复制到 `~/.tokenpulse/pets/`）。桌宠**默认关闭**。任务状态第一版只读会话文件推断（不改任何 CLI 配置），hooks 实时模式留到以后且需用户主动开启。
+- 版本规则：用户说「提升一个小版本号」→ 0.3.61；**只做本地编译测试版，不发布**。
+- 当前进度：还没改仓库代码。形象预览第二版已发布为私有 artifact https://claude.ai/artifact/29nCjSHuDNCSnUUX74TqBf ，源文件在会话 scratchpad 的 `pet-preview/tokenpulse-pets.html`（72×56 像素格、运行时绘制的引擎 + 三只宠物的状态/小动作/鼠标跟随/拖拽）。等用户确认形象和动作后再开工；正式实现时把 `/*ENGINE-START*/…/*ENGINE-END*/` 之间的引擎移植进 renderer。
+- 下一步：用户确认预览 → 实现桌宠窗口（透明、置顶、不占任务栏、单窗口）+ 点击卡片（复用 `trayPanelData`）+ 会话文件推断任务状态 + 设置界面 + 自定义宠物包导入 + 测试 → `npm version 0.3.61 --no-git-tag-version` → 本地编译打包，不发布。
+
+## 0.3.60 已正式发布 · 切换 Claude 登录后用量记到上一个账号（2026-10-22）
+
+- 发布状态（用户授权「升一个小版本直接发布」）：`npm version 0.3.60 --no-git-tag-version`；`renderer/intro.js` 加 0.3.60 更新说明一条、`renderer/i18n.js` 补英文（两文件 CRLF，用 scratchpad 脚本按 `\r\n` 插入，`node --check` 通过）。
+- 发布验证：`npm test` 退出 0，679 PASS（`test-backend-0360.log`）；`npm run test:ui` 全串退出 0，106 PASS（`test-ui-0360.log`，其中 Error 行为测试内模拟失败）；`npm run dist` 退出 0（`build-release-0360.log`）；`node dist/verify-0.3.60.cjs`：154 个运行时文件逐字节一致，ASAR SHA256 `e27f987a12b4463649ea5b0a88d338cd7283fb6c5293bc8d182bb3799b56cd95`；win-unpacked 产品版本 0.3.60.0。附件 SHA256 `dist/assets-0.3.60.sha256`：Setup 112649865 字节、Portable 112392644、blockmap 119779、latest.yml 352。发布正文 `dist/release-0.3.60.md`。
+- Git：提交 `16c6786`（只含代码/版本/说明/测试 7 个文件），标签 `v0.3.60`；推送前 fetch 远端无新提交，main 与标签已推送。**HANDOFF.md 未提交**——其中有 10-19 仓库清理审计记录，按上一轮决定只留本地。
+- Release https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.60 ：非草稿、非预发布，4 个附件 uploaded 且大小与本地一致；`releases/latest` 指向 v0.3.60；公开 latest.yml 与本地一致。
+- 收尾：四个产物及 win-unpacked exe/asar 均可独占打开（句柄已 Dispose）；无 Electron/打包器残留；在跑的 node 进程均早于本会话启动，不是本轮的；用户安装目录的正式版 0.3.59 仍在运行，未安装/升级、未关闭。
+- 以下为修复诊断与源码说明：
+- 用户反馈：在设置里一键切换 Claude CLI 登录后，token 消耗仍记在之前的账号上。
+- 本机只读诊断（未改用户数据）：`~/.tokenpulse/cli-logins.json` 显示 10-22 05:00 切回账号 A；但之后新开的 Claude Code 会话 `session_context.userEmail` 和 bridge owner 仍是账号 B，直到约 15:19。额度历史证明真实消耗在 A（A 周用量 48→60，B 停在 15）。`resolveAccount` 对「换号之后写入的会话邮箱」优先于时间线，于是记到 B。
+- 根因：本机存在 `~/.claude/.claude.json`（别的工具留下的小文件，含 machineID/userID/oauthAccount），`CLAUDE_CONFIG_DIR` 未设置。旧代码只要该文件存在就优先读写它，而 Claude Code 此时只读 `~/.claude.json`。所以切换时新账号资料写进了 Claude Code 不读的文件，TokenPulse 自己读身份也读它（时间线看似正确），Claude Code 却一直报旧账号的邮箱，直到它自己下次刷新资料。
+- 改动：`src/core/credentials.ts` 新增导出 `claudeProfileFile(home)`：设了 CLAUDE_CONFIG_DIR（且是本机 home）用该目录，否则只用 `home/.claude.json`；`claudeAccounts` 与 `src/core/cli-switch.ts` 都改用它（删除 cli-switch 里的旧本地函数）。`scripts/test-cli-switch.cjs` 加了干扰文件：身份按 `~/.claude.json` 认、切换不写干扰文件。
+- 验证：改动前新断言失败（读到 uuid-stray）；改动后 `npm test` 退出 0，679 条 PASS（日志 `test-backend-0360-claude-profile.log`）。用户需安装 0.3.60 才生效。
+- 未验证：没有在真实账号上实际一键切换再看归属（只用测试夹具验证）。
+- 已知限制：已经记错的历史（约 10-22 05:00–15:19 被记到 B，以及更早几次切换后的同类窗口）不会自动纠正——会话文件里写的就是旧邮箱，重扫仍按它归属。未删除用户的 `~/.claude/.claude.json`（来源不明，修复后不再影响）。
+
+**状态**：0.3.60 已发布，当前没有进行中的工程任务。
+
+## 仓库展示内容清理 · 已完成并读回验证（2026-10-19）
+
+- 本轮目标：检查账号所有仓库可能暴露个人所在地的内容，并按用户追加选择将个人介绍和项目主说明改为英文；TokenPulse 软件版本保持 **0.3.59**。
+- 实际范围：29 个仓库（21 公开、8 私有）的简介、主 README、递归文件目录，选定的个人资料/配置文件；每库最多 10 个账号归属的近期提交抽样。GitHub 代码搜索索引有漏项，不作为无风险证明；没有宣称全历史/全源码/全图片均已清理。
+- 已完成：10 个中文仓库简介改为英文；22 个仓库共 28 个文件已通过 GitHub Contents API 提交到各自默认分支，逐文件读回内容完全一致；全部 29 个简介复查为英文或空白。保留上游署名、许可证、中文语言包和语言专属文档；仅将选定的本人标识、个人站点关联和本机路径泛化。Telegram 小工具的地区坐标/时区/姓名默认值改为明确标注的公共地标、UTC 和通用姓名，移除手机号区号示例；用户显式配置仍优先。
+- 提交身份：本轮远端提交统一使用 GitHub noreply 身份与 UTC 时间；已设置 **本 TokenPulse 仓库**的 local user.name/user.email 为相同身份，未改全局 Git 配置。报告不复述任何历史邮箱或私人资料原文。
+- TokenPulse Git：远端文档提交 **a5c60d6642833318d2f828db43d5159b58ee8dad** 已发布到 main；本地通过 `git -c http.sslBackend=openssl pull --ff-only` 快进同步成功。README.md 已提交/远端生效；本 HANDOFF.md 的本轮审计记录仅本地修改，**未提交、未推送**，以免将审计内容公开。发布标签 v0.3.59 仍指向 a9270c3。
+- 验证实际结果：聊天 visualization 目录的 `verify-changes.cjs` 退出 0（配置默认值、显式覆盖、间隔下限、缺失/非法参数、JSON、Markdown 围栏及相对链接）；`node --check telegram-check.mjs` 退出 0；28 文件远端读回完全匹配，29 个简介复查通过。未运行真实 Telegram 登录、未向真实账号发请求；TokenPulse 未改运行时代码，未执行 npm test / UI 全串、编译、打包、安装或软件 Release。
+- 产物/证据：`C:\Users\7ipny\.codex\visualizations\2026\10\19\01a15354-32e7-75f2-9977-1cfba207cd68\repository-review.md`（逐文件 commit 链接及限制）；同目录 `file-results.json`、`readback-results.json`、`description-results.json`、`verification.json`、`history-summary.json`。临时材料不加入本仓库。
+- 已知限制：历史提交抽样仍见非 noreply 邮箱及中文提交说明；未重写历史、强推、删除/改名仓库、改变可见性或删除 Release；未全面处理其他分支/标签、Release 正文和二进制、Issues/PR、截图、所有源码注释、部署站点、Fork 或缓存。邮箱服务商/中文本身不证明居住地。若继续，先逐库明确历史清理范围并准备备份/影响清单，再取得历史重写授权；当前没有失败的文件写入或读回。
+- 环境问题及处理：Node 子进程运行 gh 报 EPERM，改用 PowerShell 直接调用；Git 默认 schannel 报 SEC_E_NO_CREDENTIALS，用单次 `-c http.sslBackend=openssl` 成功同步，未修改全局 TLS 配置；Git 元数据写入经工具授权完成。Markdown licenses/ 目录误报已修正并重验无未解析相对链接。
+- 资源收尾：本轮启动的审计/修改/读回命令会话均正常结束；没有启动应用、watcher 或后台预览。dist/latest.yml、0.3.59 Setup/Portable、win-unpacked exe/app.asar 全部可独占只读打开，检测句柄已 finally Dispose。Win32_Process/CIM 进程明细查询被拒绝，不能据此宣称系统无残留进程；未关闭任何用户进程。工作目录仍为项目根目录。
+- 下一步：本轮默认分支展示清理已完成；需要更深层隐私处理时按上述限制制定独立范围，不把本轮结果称为彻底匿名。
+### 后续只读诊断：TweakerAll 两次 build 失败（2026-10-19）
+
+- 用户询问清理期间的两次失败；已核对 run 39226679344 / 39226682614（提交 4ecca595 / d010308c），分别只改 README.md / README_EN.md。工作流 `on: [push, pull_request]` 无路径过滤，因此两次文档提交各触发一次 build。
+- 两份实际 job 日志（117974550214 / 117974561541）均在 `gradle build --no-daemon` 的项目配置/依赖解析阶段失败：`Could not find fi.dy.masa.malilib:malilib-fabric-26.1.2:0.28.8`；尚未进入 Java 编译。build.gradle 仍声明该依赖，未被本轮修改。未验证是远端撤包、坐标问题还是其他解析原因，不能写成已确定上游移除。
+- 工作流使用系统 Gradle，日志实际为 9.8.1；仓库 wrapper 是 9.5.1，这是另一个可复现性问题，但没有证据表明它导致本次缺失依赖。
+- 本轮仅解释与诊断，未改 CI/依赖、未重跑构建、未取消/删除失败记录。上一轮没有检查提交后的 CI 是遗漏；远端内容读回通过不代表 build 通过。
+- `gh run view --log-failed` 因默认缓存目录写权限失败，改用 `gh api .../actions/jobs/<id>/logs` 成功读取；未启动本地构建/预览或长期进程，未访问 dist 产物。本 HANDOFF 更新仍仅本地，未提交/推送。
 ## 0.3.59 已正式发布 · 额度预测「达到上限」提示降敏 + 宽松程度设置（2026-10-19）
 
 用户反馈：额度详情里只要按趋势算出来会在重置前用完，进度条就从绿变黄，太敏感、让人焦虑。本轮改为**分级**：预测事实照旧保留，只有真正会"断档"一段时间才变色。
@@ -64,7 +1126,7 @@
 | 项目 | 当前事实 |
 |---|---|
 | 软件 | Windows 桌面应用 TokenPulse，当前版本 **0.3.59**，已于 2026-10-19 正式发布 |
-| Git | 分支 `main`；发布代码提交 `a9270c3` = 标签 `v0.3.59`，已推送；本文件更新作为其后的单独提交 |
+| Git | 分支 `main`，当前 HEAD `a5c60d6`（英文 README，已推送并同步）；发布代码 `a9270c3` = 标签 `v0.3.59`；本 HANDOFF 的本轮审计记录未提交 |
 | 发布代码 | `v0.3.59` → `a9270c3`；上一版 `v0.3.58` → `7b898bd` |
 | GitHub | [v0.3.59 Release](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.59)，非草稿、非预发布；`releases/latest` 和公开 `latest.yml` 均为 0.3.59 |
 | 本机运行 | 安装目录中的 **0.3.58.0** 仍在运行（主 PID 本次 `6748`），未升级；它会通过自动更新收到 0.3.59。PID 只用于本次核对 |

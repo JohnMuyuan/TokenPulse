@@ -12,14 +12,25 @@ import type { SearchResult } from "../core/session-search";
 function runWorker<T>(workerData: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, "..", "core", "report-worker.js"), { workerData });
-    let received = false;
+    let settled = false;
+
+    const cleanup = () => {
+      if (!settled) settled = true;
+      worker.terminate().catch(() => {});
+    };
+
     worker.once("message", (result: T) => {
-      received = true;
+      cleanup();
       resolve(result);
     });
-    worker.once("error", reject);
+    worker.once("error", (err) => {
+      cleanup();
+      reject(err);
+    });
     worker.once("exit", (code) => {
-      if (!received) reject(new Error(`统计线程提前退出 (${code})`));
+      const wasSettled = settled;
+      cleanup();
+      if (!wasSettled) reject(new Error(`统计线程提前退出 (${code})`));
     });
   });
 }

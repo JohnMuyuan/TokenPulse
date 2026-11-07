@@ -190,6 +190,11 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     ipcRenderer.on("window-state", listener);
     return () => ipcRenderer.off("window-state", listener);
   },
+  onWindowAway: (handler: (away: boolean) => void) => {
+    const listener = (_event: unknown, away: boolean) => handler(Boolean(away));
+    ipcRenderer.on("window-away", listener);
+    return () => ipcRenderer.off("window-away", listener);
+  },
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
   exportCsv: (content: string, kind?: "requests") => (demo ? blocked() : ipcRenderer.invoke("export-csv", content, kind)),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */

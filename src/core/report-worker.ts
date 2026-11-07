@@ -65,13 +65,13 @@ if (workerData.deepseek) {
     pageSize: 1,
   });
   snapshot.requestFlags = { flagged: week.counts.mismatch + week.counts.suspect, mismatch: week.counts.mismatch, suspect: week.counts.suspect, latest: week.latestFlagAt || 0 };
-  parentPort!.postMessage(snapshot);
   if (workerData.scan) {
     try {
-      // 快照已经发出去了，顺手把会话索引更新一下：第一次打开会话页从 3~5 秒变成几十毫秒
+      // 在发送快照前更新会话索引，确保主线程调用 worker.terminate() 时内部磁盘 I/O 已经全部完成
       listSessions();
     } catch (error) {
       console.error("[TokenPulse] 预读会话索引失败", error);
     }
   }
+  parentPort!.postMessage(snapshot);
 }
