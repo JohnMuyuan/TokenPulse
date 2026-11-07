@@ -241,8 +241,9 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const modelId = pbNumber(meta, 11) || pbNumber(usage, 1);
       const key = String(modelId);
       const genInfo = pbMessage(meta, 20);
-      const hasGenIdx = genInfo ? (pbFields(genInfo)?.some((f) => f.no === 3) ?? false) : false;
-      const genIdx = hasGenIdx ? pbNumber(genInfo, 3) : -1;
+      // Protobuf3 中 gen_idx = 0（对话第 1 次生成，对应 gen_metadata.idx = 0）属于默认标量值，序列化时省略 field 3；
+      // 只要 genInfo 子消息存在，pbNumber(genInfo, 3) 读出的 0 就是合法的 gen_idx = 0。
+      const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;
       const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
       const genBuf = toBuf(genData);
       const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
@@ -373,8 +374,7 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
         const modelId = pbNumber(payloadMeta, 11) || pbNumber(colMeta, 11) || pbNumber(u, 1);
 
         const genInfo = pbMessage(payloadMeta, 20) ?? pbMessage(colMeta, 20);
-        const hasGenIdx = genInfo ? (pbFields(genInfo)?.some((f) => f.no === 3) ?? false) : false;
-        const genIdx = hasGenIdx ? pbNumber(genInfo, 3) : -1;
+        const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;
         const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
         const genBuf = toBuf(genData);
         const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;

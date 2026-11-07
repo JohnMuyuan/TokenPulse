@@ -48,18 +48,23 @@
   4. `scripts/test-desk-pet-ui.cjs`、`scripts/test-desk-pet.cjs`、`package.json`、`package-lock.json`、`renderer/intro.js` & `renderer/i18n.js`：
      - 新增问题卡片超长文本不溢出回归测试、Claude 并行工具与 `api-request` / `<task-notification>` / `progress` 自适应扩窗测试、Codex 中间事件恢复测试、DeepSeek Harness `ask_user_question` / `exit_plan_mode` 提问卡片测试、Grok 超大工具输出与 Antigravity `.db-wal` 保活及子代理归并测试；
      - 版本号升级至 `0.3.81`，补充 `0.3.81` 版本更新说明与英文翻译词条。
+  5. **后续追加（本机 7 次「未知模型」排查修复 & 仓库模型知识库更新 `2026.11.07`）**：
+     - **7 次「未知模型」真相与根因**：排查 `~/.tokenpulse/requests/2026-11.jsonl` 中 7 条 `model: "未知模型"` 记录（`c1e44be5:1`、`03c0a178:1`、`580c35cd:1`、`6c525a31:1`、`d435d17e:1`、`f8736e3e:1`、`92fd7850:1`），全部为 Antigravity 子代理对话的第 1 步模型回复（`step.idx = 1`，对应 `gen_metadata.idx = 0`），真实模型均为 **`gemini-3.8-flash-tiered`**（`MODEL_PLACEHOLDER_M322`，`modelId = 1322`）。因为 Protobuf3 在 `gen_idx = 0`（`meta.20.3 = 0`）时省略默认标量值 `0`，此前 `src/core/antigravity.ts` 要求 `pbFields(genInfo)?.some(f => f.no === 3)` 为真才读取 `gen_metadata`，导致对话刚完成第 1 步即被扫描时 `genIdx = -1` 漏读 `gen_metadata[0]` 并回退为 `"未知模型"`；
+     - **修复与知识库同步**：在 `src/core/antigravity.ts`（`readAntigravityGenerations` 与 `readAntigravityConversation`）中改为 `const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;`，在 `src/core/usage-scan.ts` 中将 `ANTIGRAVITY_STATE_VERSION` 升至 `4` 以自动重扫修正首步记录；在 `knowledge/manual.json` 中为 Antigravity Gemini 内部后缀别名补充 `-tiered`（`^(gemini-[\w.-]+?)-(?:b|n|tiered)$`）并为 `capabilities.claude` 补充 `claude-sonnet-5-5`，重新生成并推送 `knowledge/models.json`（版本 `2026.11.07`）。
 - **验证结果**：
   - `npm run build`：**PASSED (Exit 0)**。
   - `node scripts/test-desk-pet.cjs`：**35/35 PASSED (Exit 0)**。
   - `npx electron --lang=zh-CN scripts/test-desk-pet-ui.cjs`：**20/20 PASSED (Exit 0)**。
   - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASSED (Exit 0)**。
+  - `node scripts/test-knowledge-update.cjs`：**PASSED (Exit 0)**。
   - `node scripts/test-antigravity-usage.cjs`：**9/9 PASSED (Exit 0)**。
   - `node scripts/test-antigravity-sessions.cjs`：**3/3 PASSED (Exit 0)**。
+  - `node scripts/test-model-study.cjs`：**16/16 PASSED (Exit 0)**。
 - **最新产物路径与版本（v0.3.81）**：
-  - `dist/TokenPulse-0.3.81-Setup.exe`（SHA256: `6D7C2401630569958B6007EAA3F7176E3E0014C016E78813963B17DBBF2961F5`）
-  - `dist/TokenPulse-0.3.81-Portable.exe`（SHA256: `83293A06671DE436ECA98F00EA72812F3831C3AEFF20EFA9F4500530B065EB4F`）
-  - `dist/TokenPulse-0.3.81-Setup.exe.blockmap`（SHA256: `DEC0F71A11182625CA33397AC94CB4E2111800F4E63C8CAC0090151045CB3881`）
-  - `dist/latest.yml`（SHA256: `66471A6393C13D9197AB175C958F4BD09237AA91A0C0CD52A4334E25E5B7F958`）
+  - `dist/TokenPulse-0.3.81-Setup.exe`（SHA256: `4D6EFB004F5AE73726BF487BA0F24272EB7ACE35D0145BB63AB5F6E18FED9B2B`）
+  - `dist/TokenPulse-0.3.81-Portable.exe`（SHA256: `8EE07EF2B6FEA16260F7488096038C425E9C37160DBCA521542E57F592637BFA`）
+  - `dist/TokenPulse-0.3.81-Setup.exe.blockmap`（SHA256: `39AAC863D9EF61B4AB0D14EAE0A98F6050FF6AD0C28840FD62740AB4E4C04718`）
+  - `dist/latest.yml`（SHA256: `CD6FCBB63A8C283475A77E3A9ACF9214084E4E78E7172F57D68BE31AD59F1517`）
   - `dist/win-unpacked/TokenPulse.exe`
   - **Git 提交与发布状态**：代码已提交至 `main`、已打标签 `v0.3.81` 并推送到 `origin/main`；GitHub Release `v0.3.81` 已正式发布（https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.81 ），全部 4 项安装包与元数据附件均已上传。
   - **进程与文件锁状态**：本轮启动的构建与测试进程已全部退出；`build/main/index.js`、`build/core/agent-activity.js`、`dist/TokenPulse-0.3.81-Setup.exe`、`dist/TokenPulse-0.3.81-Portable.exe`、`dist/latest.yml`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测句柄已立即关闭）。

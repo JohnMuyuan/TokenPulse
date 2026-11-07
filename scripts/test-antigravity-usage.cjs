@@ -35,7 +35,7 @@ function stepMeta({ start, end, modelId, gen, input, output, cacheRead = 0, cach
   return Buffer.concat([
     time(1, start), num(3, 2), ...(end ? [time(6, end), time(7, end + 50), time(8, end + 50)] : []),
     msg(9, num(1, modelId), num(2, input), num(3, output), ...(cacheWrite ? [num(4, cacheWrite)] : []), num(5, cacheRead), num(6, 24), str(7, 'bot-x'), num(9, thinking), num(10, output - thinking), str(11, response)),
-    num(11, modelId), msg(20, str(1, 'traj'), num(2, 0), num(3, gen), str(4, 'conv')),
+    num(11, modelId), msg(20, str(1, 'traj'), ...(gen > 0 ? [num(3, gen)] : []), str(4, 'conv')),
   ]);
 }
 const genMeta = (name, modelEnum) => Buffer.concat([str(2, 'xx'), str(4, 'uuid'), msg(1, str(19, name), msg(20, str(1, 'model_enum'), str(2, modelEnum)), msg(20, str(1, 'request_id'), str(2, 'r')))]);
