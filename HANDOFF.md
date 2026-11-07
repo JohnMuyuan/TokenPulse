@@ -1,4 +1,60 @@
-# 当前接手入口 · TokenPulse v0.3.79 正式版发布完工（全软件 UI 界面美化、设置重构、多源会话每轮耗时统计与主动内存回收优化，2026-11-07）
+# 当前接手入口 · TokenPulse v0.3.80 正式版发布完工（主进程与后台扫描内存占用专项修复，2026-11-07）
+
+## 已完成并发布 · TokenPulse v0.3.80 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.80）
+
+- **本轮目标与定位**：
+  - **版本**：`v0.3.80`（以 `package.json:3` 为准，Git 标签 `v0.3.80`）。
+  - **根因诊断**：
+    1. Electron / Node 24 启用 V8 指针压缩（Pointer Compression）时，同一 OS 进程内的主线程与 `worker_threads` 共享同一个 4 GB V8 虚拟地址笼与 `PagePool`；当 `report-worker.ts` 在生成快照、查询请求流水或全量重扫会话索引时冲高至 **280–301 MB RSS**，V8 向 OS 提交的物理内存页会留在主进程 `PagePool` 中，即使 `worker.terminate()` 后主进程 Working Set 仍保持在 **255–307 MB**（加上 GPU / 渲染进程合计约 500 MB）。
+    2. `src/core/request-log.ts` 的 `readMonth` 此前对整月 `.jsonl`（如 `2026-10.jsonl` 12.2 MB、`2026-11.jsonl` 7.2 MB）执行 `fs.readFileSync + split("\n")`，一次性生成数万条切片字符串与对象并撑爆 V8 新生代（Young Generation），导致大量临时对象晋升至老生代（Old Space）；且 `report.ts` 的 `officialRows()` 全量解析了所有工具（含 Antigravity）并执行代理核验。
+    3. `src/core/antigravity.ts` 的 `readAntigravityGenerations` 与 `readAntigravityConversation` 使用 `.all()` 一次性将数千步 `step_payload` BLOB（单个 55 MB 对话库含 27.3 MB BLOB）全量读入内存并执行 `Buffer.from(u8)` 拷贝；桌宠每秒轮询的 `conversationPhase` 每次重新打开全部 `.db` 文件。
+    4. `src/core/sessions.ts` 的 `antigravityListStamp` 将全局 `conversation_summaries.db` 的时间戳混入每个 `<id>.db` 的缓存印章，导致当前活跃对话每次更新摘要都会使全部 70 个历史对话库（共 622.4 MB，含 221.6 MB 的 `nested` 子代理库）缓存同时失效，并在 `report-worker.ts` 每 60 秒后台扫描时反复重扫。
+
+- **已完成的关键改动与文件**：
+  1. `src/core/request-log.ts`、`src/core/report.ts` & `src/core/route-ledger.ts`：
+     - 将 `readMonth` 重构为 256 KB 分块流式生成器 `streamMonth(name, hint, skipAntigravity)`，逐行解析并立即释放，让临时记录留在 V8 新生代内被 Scavenger 回收；
+     - 新增 `capacityOnly` 快速通道与轻量 `toCapacityRow`，供 `report.ts` 的 `officialRows()` 按 `quota-history.json` 最早采样范围读取 Claude / Codex / Grok 官方账号请求，跳过非相关工具的 `JSON.parse`、代理核验与全量分面统计；
+     - 将时间、日期（带按日边界缓存的 `dayOf`）和来源过滤提前到 `seen` 去重集合之前，并为非全量导出查询引入 `keepLimit` 增量排序截断；
+     - 将 `ccSwitchRecords` 的代理匹配改为按 `${source}\u0000${output}` 哈希索引（$O(1)$ 查找）；按文件大小与 `mtimeMs` 缓存 `usage-rollups.json` 归属表与最早请求时间；
+     - 在 `route-ledger.ts` 中复用空 `Map` 常量、消除高频闭包分配并按天缓存 `monthNamesAround(at)`，避免在数万条请求循环中重复创建 `Date` 与空 `Map`。
+  2. `src/core/antigravity.ts` & `src/main/antigravity-quota.ts`：
+     - 在 `openDb` 中设置 `PRAGMA cache_size = -2000; PRAGMA temp_store = MEMORY;` 限制单连接 SQLite 页缓存；
+     - 新增零拷贝 `toBuf(u8)`（`Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength)`），并将 `readAntigravityGenerations` 与 `readAntigravityConversation` 改为 `stmt.iterate()` 游标流式迭代（对话详情仅查询 `where step_type in (14, 15, 132)`），55 MB 对话库解析内存增量从 `+66 MB` 降至 `+9 MB`；
+     - 为 `conversationPhase` 增加按文件大小与 `mtimeMs` 的 `phaseCache` 并在 `readAntigravityActivity` 中跳过 `nested` 子代理对话库；
+     - 为 `splitModelLabel` 增加记忆化缓存，并为 `AntigravityQuota` 增加 15 秒 `insightCache` 及 `refreshNow` 单次状态计算复用。
+  3. `src/core/sessions.ts` & `src/core/report-worker.ts`：
+     - 修复 `antigravityListStamp(file, labelsMtime)`，使每个 `<id>.db` 的缓存印章仅依赖自身（含 `-wal`）与 `antigravity-models.json` 修改时间；`listSessions()` 在循环前一次性读取 `antigravitySummaries()`，将最新标题与工作区直接覆盖到缓存摘要上，并在打开 SQLite 前跳过 `nested` 子代理对话库；
+     - 导出 `hasCurrentSessionIndex()`，`report-worker.ts` 仅在会话索引尚未建立或版本升级时后台预热 `listSessions()`，不再每 60 秒后台重扫正在活跃生成的长对话库。
+  4. `package.json`、`package-lock.json`、`renderer/intro.js` & `renderer/i18n.js`：
+     - 版本号升级为 `0.3.80`，补充 `0.3.80` 版本更新说明与英文翻译词条。
+
+- **实测内存与性能对比结果**：
+  - `worker(scan: false)` 完成后进程 RSS：**281.9 MB → 151.4 MB**（降低 **130.5 MB**）。
+  - `worker(scan: true)` 全量扫描完成后进程 RSS：**301.3 MB → 153.5 MB**（降低 **147.8 MB / ~49%**）。
+  - 主进程 `worker(scan: true)` + `AntigravityQuota.state()` 联合运行后 RSS：**307 MB → 167.3 MB**（`heapUsed` 仅 **34.4 MB**）。
+  - 全部自动化测试验证：
+    - `npm run build`：**PASSED (Exit 0)**
+    - `node scripts/test-antigravity-sessions.cjs`：**3/3 PASSED**
+    - `node scripts/test-antigravity-usage.cjs`：**9/9 PASSED**
+    - `node scripts/test-requests.cjs`：**64/64 PASSED**
+    - `node scripts/test-sessions.cjs`：**PASSED**
+    - `node scripts/test-dashboard.cjs`：**7/7 PASSED**
+    - `node scripts/test-features.cjs`：**46/46 PASSED**
+    - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASSED**
+    - `npx electron --lang=zh-CN scripts/test-ui.cjs`：**26/26 PASSED**
+
+- **最新产物路径与版本（v0.3.80）**：
+  - `dist/TokenPulse-0.3.80-Setup.exe`（SHA256: `480B1007489F67C1D6C8180B1E9A2E826C2253649E8E3270D44431FDC7331B8B`）
+  - `dist/TokenPulse-0.3.80-Portable.exe`（SHA256: `0DB145626AD1917C284AC293F338A4BBF75944EFBA1112E4A568924A67811C34`）
+  - `dist/TokenPulse-0.3.80-Setup.exe.blockmap`（SHA256: `F1570A687FF35D09CCDDAE33FCCF4100DD42B70A4820252CDEDE3131B63272CB`）
+  - `dist/latest.yml`（SHA256: `BD415C8684667F7BAD67FF0F15F4FA578F026D673B8ECAD145E6AD78A904FD7E`）
+  - `dist/win-unpacked/TokenPulse.exe`
+  - **Git 提交与发布状态**：代码已提交（Commit `075771f`）、已打标签 `v0.3.80` 并推送到 `origin/main`；GitHub Release `v0.3.80` 已正式发布（https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.80 ），全部 4 项安装包与元数据附件均已上传并通过 SHA256 摘要核验。
+  - **进程与文件锁状态**：本轮启动的构建与测试进程已全部退出；`build/main/index.js`、`dist/TokenPulse-0.3.80-Setup.exe`、`dist/TokenPulse-0.3.80-Portable.exe`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测句柄已立即关闭）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.79 正式版发布完工（全软件 UI 界面美化、设置重构、多源会话每轮耗时统计与主动内存回收优化，2026-11-07）
 
 ## 已完成并发布 · TokenPulse v0.3.79 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.79）
 
