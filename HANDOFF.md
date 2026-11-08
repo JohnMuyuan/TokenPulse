@@ -1,4 +1,53 @@
-# 当前接手入口 · TokenPulse v0.3.83 正式版发布完工（Antigravity CLI 全面适配，2026-11-07）
+# 当前接手入口 · TokenPulse v0.3.84 正式版发布完工（模型速度走势补齐谷歌/Antigravity 模型、并发监控适配 Antigravity & CLI、会话列表归集子代 Token 用量，2026-11-08）
+
+## 已完成并发布 · TokenPulse v0.3.84 正式版验收与 GitHub Release（2026-11-08，主分支 `main`，版本 v0.3.84）
+
+- **本轮目标与问题现象**：
+  - **版本**：`v0.3.84`（以 `package.json:3` 为准，Git 标签 `v0.3.84`）。
+  1. **「模型速度走势」缺失谷歌（Antigravity）模型**：用量明细表格有谷歌模型速度，但 `#page-usage` 底部的「模型速度走势」折线图没有任何谷歌/Antigravity 模型。
+  2. **「并发监控」未适配 Antigravity 及其 CLI**：并发监控页的监控范围（`coverage`）、实时计数与供应商/账号明细表中没有 Antigravity 和 Antigravity CLI。
+  3. **「会话列表」未归集 Antigravity 子代（Subagents）用量**：Antigravity 主会话通过 `invoke_subagent` 或 `/teamwork` 派出的子代理（含多层嵌套子代理，`nesting_depth > 0`）在独立的 `<subId>.db` 中消耗了大量模型额度，但会话列表与会话详情只统计了主会话 `<parentId>.db` 自身的步骤，导致子代消耗被漏计。
+- **根因诊断与完成改动**：
+  1. **修复「模型速度走势」缺失谷歌 / Antigravity 模型（`src/core/pass-speed.ts`、`renderer/usage-insights.js`、`renderer/i18n.js`）**：
+     - **根因**：`speedSeries()` 此前仅读取本地代理转发日志 `route-log/*.jsonl` 以及 `requests/*.jsonl` 中带 `"estimate"` 且 `kind` 为 `claude-code` / `codex` 的记录。而 Antigravity 从本机 SQLite `gen_metadata` 提取的实测流式速度与首字延迟写在 `requests/*.jsonl` 的 `row.timing` 中（无实测流式耗时时写在 `row.estimate` 中），且 `APP_OF_REQUEST` 未包含 `antigravity`、`deepseek-harness`、`pi`。
+     - **修复**：在 `src/core/pass-speed.ts` 中扩展 `APP_OF_REQUEST` 覆盖 `antigravity`、`deepseek-harness`、`pi`；新增 `requestSpeedRows()` 与 `measuredRequestRows()` 从 `requests/*.jsonl` 统一提取 `antigravity` / `deepseek-harness` 的实测 `timing`（含 `tokensPerSec` 与 `firstTokenMs`，`estimated: false`）与各工具的 `estimate`（`estimated: true`）并合入 `speedSeries()`；在 `renderer/usage-insights.js` 的 `APP_SOURCE` 中补齐 `antigravity: 'Antigravity'`、`deepseek: 'DeepSeek Harness'`、`pi: 'pi'`，本机日志实测速度的来源显示为 `官方登录（本机日志）`。
+  2. **适配 Antigravity 与 Antigravity CLI 到「并发监控」（`src/core/concurrency.ts`、`src/core/antigravity.ts`、`src/main/index.ts`、`renderer/concurrency.js`、`renderer/i18n.js`）**：
+     - **根因**：`src/main/index.ts` 的 `concurrencyState()` 仅注册了本地代理转发的 5 个工具，未注册 Antigravity 与 Antigravity CLI；`renderer/concurrency.js` 的 `APP` 字典也缺少 `antigravity`、`antigravity-cli`、`deepseek`、`pi`。
+     - **修复**：
+       - 在 `src/core/concurrency.ts` 的 `ConcurrencyMonitor` 中新增 `setExternal(key, scopes, counts)`，支持将外部本机监控的实时并发（`requests`、`clients`、`upstream`）合入 `global` 与对应供应商/账号行，并自动触发峰值分桶记录与状态推送；
+       - 在 `src/core/antigravity.ts` 中新增 `readAntigravityLiveConcurrency()`，分别统计 `~/.gemini/antigravity`（IDE）与 `~/.gemini/antigravity-cli`（CLI）当前运行中的主对话、并行子代理请求数与活跃 `hub_*.json` 连接数；
+       - 在 `src/main/index.ts` 的 `concurrencyState()` 中注册 `provider:antigravity`（`Antigravity · 本机监控`）、`provider:antigravity-cli`（`Antigravity CLI · 本机监控`）及 `account:antigravity`，将 `antigravity` 与 `antigravity-cli` 加入 `concurrencyCoverage`，并每 2 秒同步一次本机实时并发计数；
+       - 在 `renderer/concurrency.js` 的 `APP` 映射中补齐 `antigravity`、`antigravity-cli`、`deepseek`、`pi`。
+  3. **会话列表与详情归集 Antigravity 子代（含多层嵌套子代理）Token 用量（`src/core/antigravity.ts`、`src/core/sessions.ts`）**：
+     - **根因**：`parseAntigravity()` 与 `listSessions()` 跳过了 `summary.nested === true` 的子代理会话（避免子代理把列表刷屏），但解析主会话时只读取了主会话自身的 `<id>.db`，未将其派生的子代 `<subId>.db` 用量归集到主会话的 `Builder` 中。
+     - **修复**：
+       - 在 `src/core/antigravity.ts` 的 `antigravitySummaries()` 中解析 `parent_conversation_id`（`parentId`）；新增 `antigravitySubagentFilesByRoot()` 按主对话 ID 递归归集所有层级的子代 `.db` 文件（最多 8 层，带环路保护）；新增带文件时间戳缓存的轻量级 `readAntigravitySubagentUsage(file, known)`，只读 `steps` 表的 `metadata` 列（当 `metadata` 为空时按需回退 `step_payload` 字段 5）且每个未知数字型号 ID 仅查一次 `gen_metadata`；同时在 `deleteAntigravityConversation()` 删除 CLI 本地会话时一并清理其子代会话文件；
+       - 在 `src/core/sessions.ts` 中将 `INDEX_VERSION` 升至 `6`；`antigravityListStamp()` 将主会话下属所有子代 `.db(-wal)` 的大小和修改时间纳入缓存签名（子代更新时自动失效重算主会话）；`parseAntigravity()` 同时通过摘要库 `parentId` 树与主对话 `invoke_subagent` 工具输出中的 `conversationId` 收集全部子代 `.db`，将子代的模型、输入/输出/缓存/思考 Token、调用次数、活跃耗时（`Builder.addDuration`）及最新时间（`Builder.touchAt`）完整归集到主会话中。
+  4. **版本升级与更新说明（`package.json`、`package-lock.json`、`renderer/intro.js`、`renderer/i18n.js`）**：
+     - 版本号升级至 `0.3.84`，补充 `0.3.84` 版本更新说明与中英文翻译词条。
+- **验证命令与实际结果**：
+  - `npm run build`：**PASSED (Exit 0)**。
+  - `node scripts/test-antigravity-sessions.cjs`：**5/5 PASSED (Exit 0)**（新增一级+二级嵌套子代 Token 与调用次数归集断言）。
+  - `node scripts/test-antigravity-usage.cjs`：**10/10 PASSED (Exit 0)**。
+  - `node scripts/test-pass-speed.cjs`：**PASSED (Exit 0)**（新增 Antigravity 本机实测 `timing` 与 `estimate` 纳入 `speedSeries` 断言）。
+  - `node scripts/test-speed-estimate.cjs`：**2/2 PASSED (Exit 0)**。
+  - `node scripts/test-concurrency.cjs`：**PASSED (Exit 0)**（新增 `setExternal` 对 Antigravity IDE + CLI 并发汇总断言）。
+  - `npx electron --lang=zh-CN scripts/test-concurrency-ui.cjs`：**PASSED (Exit 0)**（新增 `antigravity` 与 `antigravity-cli` 监控范围卡片渲染断言）。
+  - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**7/7 PASSED (Exit 0)**。
+  - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASSED (Exit 0)**。
+  - `npm run dist`：**PASSED (Exit 0)**。
+- **最新产物路径与版本（v0.3.84）**：
+  - `dist/TokenPulse-0.3.84-Setup.exe`（SHA256: `0A38B472BD95E7FDBF11A4C8BA79483BDFA93F7508AFA1FEB114F29F81B425DC`）
+  - `dist/TokenPulse-0.3.84-Portable.exe`（SHA256: `C5B8B5AC4F57C1822639D2E3269E5BDA1628F3D02790F1D113FE51AFE6426D5C`）
+  - `dist/TokenPulse-0.3.84-Setup.exe.blockmap`（SHA256: `702E03CB4BD40230CC2DC690BE47F052B36E0B26EE6E9F12DCED886CD0CD104D`）
+  - `dist/latest.yml`（SHA256: `617B419F1C9F6D74AF802EDAECA0BE4418C6D123D78B9F006AC6304B242C3E84`）
+  - `dist/win-unpacked/TokenPulse.exe`
+  - **Git 提交与发布状态**：代码已提交至 `main`、已打标签 `v0.3.84` 并推送到 `origin/main`；GitHub Release `v0.3.84` 已正式发布（https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.84 ），全部 4 项安装包与元数据附件均已上传。
+  - **进程与文件锁状态**：本轮启动的构建与测试进程已全部退出；`build/main/index.js`、`build/core/antigravity.js`、`build/core/pass-speed.js`、`build/core/concurrency.js`、`build/core/sessions.js`、`dist/TokenPulse-0.3.84-Setup.exe`、`dist/TokenPulse-0.3.84-Portable.exe`、`dist/TokenPulse-0.3.84-Setup.exe.blockmap`、`dist/latest.yml`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测句柄已立即关闭）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.83 正式版发布完工（Antigravity CLI 全面适配，2026-11-07）
 
 ## 已完成并发布 · TokenPulse v0.3.83 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.83）
 

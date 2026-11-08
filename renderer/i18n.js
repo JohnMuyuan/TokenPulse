@@ -1251,6 +1251,9 @@
     "输出速度（Token/秒）": "Output speed (tokens/s)",
     "Codex 现在不是用官方登录（配置里选了别的供应商或地址）。透明转发只对官方登录有效，请先切回官方登录。": "Codex is not using the official sign-in right now (its config selects another provider or address). Pass-through works only with the official sign-in; switch back first.",
     "官方登录（透明转发）": "Official sign-in (pass-through)",
+    "官方登录（本机日志）": "Official sign-in (local log)",
+    "Antigravity · 本机监控": "Antigravity · Local monitor",
+    "Antigravity CLI · 本机监控": "Antigravity CLI · Local monitor",
     // 额度详情 · 模型速度（0.3.35）
     "模型速度 ": "Model speed ",
     "模型速度": "Model speed",
@@ -2887,6 +2890,13 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.84 更新说明
+    '模型速度走势补齐 Antigravity（Google）与 DeepSeek Harness 模型': 'Model speed trends now include Antigravity (Google) and DeepSeek Harness models',
+    '用量明细底部的「模型速度走势」现在包含 Antigravity 与 DeepSeek Harness 从本机会话库记下的实测流式出字速度和首字延迟（无需开启透明转发），可按工具、模型和思考等级对比走势。': 'The “Model speed trends” chart at the bottom of Usage now includes measured streaming output speed and first-token latency recorded in local session databases by Antigravity and DeepSeek Harness (without enabling pass-through), filterable by tool, model and effort level.',
+    '并发监控支持 Antigravity 与 Antigravity CLI': 'Concurrency monitoring for Antigravity and Antigravity CLI',
+    '并发监控页的监控范围与供应商/账号明细表新增「Antigravity · 本机监控」与「Antigravity CLI · 本机监控」，每 2 秒同步本机运行中的主对话、并行子代理请求数与活跃连接数并计入历史峰值。': 'The Concurrency page coverage cards and provider/account breakdown now include “Antigravity · Local monitor” and “Antigravity CLI · Local monitor”, syncing active main turns, parallel subagent requests and live connections every 2 seconds and recording peak history.',
+    '会话列表与详情归集 Antigravity 子代（Subagents）Token 用量': 'Antigravity subagent token usage rolled up into parent conversations in Sessions',
+    'Antigravity 主会话通过 invoke_subagent 或 /teamwork 派出的子代理（含多层嵌套子代理）所消耗的输入、输出、缓存与思考 Token、调用次数和耗时，现在完整归集到主会话的用量统计中，不再漏计。': 'Input, output, cache and reasoning tokens, call counts and active duration consumed by subagents (including multi-level nested subagents) spawned via invoke_subagent or /teamwork are now rolled up into the parent Antigravity conversation in Sessions.',
     // 0.3.83 更新说明
     '支持 Antigravity CLI（agy.exe）：新对话、终端继续、应用内流式回复与本地删除': 'Antigravity CLI (agy.exe) support: new sessions, terminal resume, in-app streaming replies and local deletion',
     '全面适配 Antigravity CLI：自动扫描 ~/.gemini/antigravity-cli 的对话、Token 用量与额度；会话管理支持用 Antigravity 开启新对话/新项目、在终端里用 agy.exe --conversation 继续、在 TokenPulse 内直接流式回复，以及在未打开桌面端时直接删除本地 CLI 会话；桌宠同步识别 CLI 任务与 ask_question 提问卡片。': 'Full support for Antigravity CLI: automatically scans conversations, token usage and quota from ~/.gemini/antigravity-cli; Sessions supports starting new conversations or projects with Antigravity, resuming in the terminal via agy.exe --conversation, streaming replies right inside TokenPulse, and deleting local CLI conversations without opening the desktop app; the desk pet also tracks CLI tasks and ask_question cards.',

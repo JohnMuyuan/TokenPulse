@@ -43,6 +43,7 @@ export class ConcurrencyMonitor {
   private scopes = new Map<string, ConcurrencyScope>([[GLOBAL.id, GLOBAL]]);
   private requests = new Map<symbol, string[]>();
   private sockets = new Map<Socket, { side: 'clients' | 'upstream'; scopes: Map<string, ConcurrencyScope>; contexts: Map<string, Set<string>>; close: () => void }>();
+  private external = new Map<string, { scopes: ConcurrencyScope[]; counts: Counts }>();
   private rejected = new Map<string, number>();
   private episodes = new Map<string, { alert: ConcurrencyAlert; recovering?: number }>();
   private notified = new Map<string, number>();
@@ -78,7 +79,38 @@ export class ConcurrencyMonitor {
         for (const scope of associated.filter(scope => !common.includes(scope))) { const row = rows.get(scope.id); if (row) row.supported[entry.side] = 0; }
       } else for (const scope of associated) rows.get(scope.id)![entry.side]++;
     }
+    for (const entry of this.external.values()) {
+      const g = rows.get('global');
+      for (const metric of METRICS) {
+        const val = entry.counts[metric] || 0;
+        if (!val) continue;
+        if (g) g[metric] += val;
+        for (const scope of entry.scopes) {
+          const row = rows.get(scope.id);
+          if (row) row[metric] += val;
+        }
+      }
+    }
     return { at: this.now(), rows: [...rows.values()].map(row => ({ ...row, supported: { ...row.supported }, rule: row.rule && { ...row.rule } })), alerts: [...this.episodes.values()].map(value => ({ ...value.alert })), settings: structuredClone(this.settings) };
+  }
+  setExternal(key: string, scopes: ConcurrencyScope[], counts: Counts) {
+    this.register(scopes);
+    const clean: Counts = {
+      requests: Math.max(0, Math.round(counts.requests || 0)),
+      clients: Math.max(0, Math.round(counts.clients || 0)),
+      upstream: Math.max(0, Math.round(counts.upstream || 0)),
+    };
+    const prev = this.external.get(key);
+    const sameScopes = prev && prev.scopes.length === scopes.length && prev.scopes.every((s, i) => s.id === scopes[i]?.id);
+    const sameCounts = prev && METRICS.every(m => prev.counts[m] === clean[m]);
+    if (sameScopes && sameCounts) return;
+    if (!clean.requests && !clean.clients && !clean.upstream) {
+      if (!prev) return;
+      this.external.delete(key);
+    } else {
+      this.external.set(key, { scopes, counts: clean });
+    }
+    this.changed();
   }
   /** Global reservation survives pool attempts; member reservations do not. */
   admit(scopes: ConcurrencyScope[], global = true, reportRejection = true): { release: () => void } | { error: ConcurrencyAlert } {
@@ -171,6 +203,7 @@ export class ConcurrencyMonitor {
   currentBucket() { return this.bucket && this.sparseBucket(); }
   clear() {
     this.requests.clear();
+    this.external.clear();
     for (const [socket, entry] of this.sockets) socket.off('close', entry.close);
     this.sockets.clear(); this.changed();
   }

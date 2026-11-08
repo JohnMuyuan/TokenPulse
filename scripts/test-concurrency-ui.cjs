@@ -95,6 +95,14 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await e("navigate('overview')"); state.rows[0].requests = 9; wc.send('concurrency-state', state); await pause(60); assert.equal(await e("document.querySelector('.cm-card strong').textContent"), '5', 'hidden view unsubscribes');
     state.coverage[0].monitored = false; await e("navigate('concurrency')"); await until("document.querySelector('.cm-card strong').textContent==='—'");
     assert.deepEqual(await e("[...document.querySelectorAll('.cm-coverage .cm-chip')].map(c=>[c.dataset.app,c.classList.contains('on'),c.querySelector('.cm-chip-state').textContent])"), [['codex', false, '直连未监控']]);
+    state.coverage = [{ app: 'codex', monitored: false }, { app: 'antigravity', monitored: true }, { app: 'antigravity-cli', monitored: true }];
+    wc.send('concurrency-state', state); await pause(60);
+    assert.deepEqual(await e("[...document.querySelectorAll('.cm-coverage .cm-chip')].map(c=>[c.dataset.app,c.querySelector('b').textContent,c.classList.contains('on')])"), [
+      ['codex', 'Codex', false],
+      ['antigravity', 'Antigravity', true],
+      ['antigravity-cli', 'Antigravity CLI', true],
+    ]);
+    state.coverage = [{ app: 'codex', monitored: false }]; wc.send('concurrency-state', state); await pause(60);
     await e("setThemeMode('dark');document.getAnimations().filter(a=>Number.isFinite(a.effect.getComputedTiming().endTime)).forEach(a=>a.finish())"); const win = BrowserWindow.fromWebContents(wc); win.setSize(900, 800); await pause(100);
     assert.equal(await e("document.querySelector('#page-concurrency').scrollWidth<=document.querySelector('#page-concurrency').clientWidth+1"), true);
     win.setSize(700, 800); await pause(100); assert.equal(await e("document.querySelector('#page-concurrency').scrollWidth<=document.querySelector('#page-concurrency').clientWidth+1"), true);

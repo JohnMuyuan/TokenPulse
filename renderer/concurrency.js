@@ -10,7 +10,16 @@
   const metrics = { requests: '活跃 AI 请求', clients: '客户端连接', upstream: '上游连接' };
   const METRIC_NOTE = { requests: '等待上游和正在出字的请求', clients: '工具连到 TokenPulse 的连接', upstream: 'TokenPulse 连到上游的连接' };
   const METRIC_ICON = { requests: 'requests', clients: 'terminal', upstream: 'globe' };
-  const APP = { claude: ['Claude Code', 'Claude Code'], desktop: ['Claude 桌面端', 'Claude Code'], codex: ['Codex', 'Codex CLI'], grok: ['Grok CLI', 'Grok Build'] };
+  const APP = {
+    claude: ['Claude Code', 'Claude Code'],
+    desktop: ['Claude 桌面端', 'Claude Code'],
+    codex: ['Codex', 'Codex CLI'],
+    grok: ['Grok CLI', 'Grok Build'],
+    deepseek: ['DeepSeek Harness', 'DeepSeek Harness'],
+    pi: ['pi', 'pi'],
+    antigravity: ['Antigravity', 'Antigravity'],
+    'antigravity-cli': ['Antigravity CLI', 'Antigravity'],
+  };
   const KIND = { provider: '供应商', account: '账号', unattributed: '未归属', shared: '共享' };
   const t = text => window.PulseI18n?.lang?.() === 'en' ? window.PulseI18n.t(text) : text;
   const scopeLabel = row => row.id.startsWith('provider:pass-') ? row.id.slice(14) + ' · ' + t('官方透明转发') : row.kind === 'unattributed' ? (row.id.includes(':') ? row.id.split(':')[1] + ' · ' : '') + t('未归属') : t(row.label);

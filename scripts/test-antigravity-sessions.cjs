@@ -46,8 +46,8 @@ function conversation(id, steps) {
   db.close();
 }
 const summaries = new DatabaseSync(path.join(agy, 'conversation_summaries.db'));
-summaries.exec('create table conversation_summaries (conversation_id text primary key, title text, workspace_uris text, status text, nesting_depth integer, last_modified_time datetime)');
-const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace into conversation_summaries values (?, ?, ?, ?, ?, ?)').run(id, title, JSON.stringify([pathToFileURL(path.join(root, 'demo-app')).href]), 'CASCADE_RUN_STATUS_IDLE', nesting, '2026-11-05 03:10:00.0000000+00:00');
+summaries.exec('create table conversation_summaries (conversation_id text primary key, parent_conversation_id text, title text, workspace_uris text, status text, nesting_depth integer, last_modified_time datetime)');
+const summary = (id, title, nesting = 0, parentId = '') => summaries.prepare('insert or replace into conversation_summaries values (?, ?, ?, ?, ?, ?, ?)').run(id, parentId, title, JSON.stringify([pathToFileURL(path.join(root, 'demo-app')).href]), 'CASCADE_RUN_STATUS_IDLE', nesting, '2026-11-05 03:10:00.0000000+00:00');
 
 (async () => {
   try {
@@ -124,6 +124,20 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
     assert.strictEqual(replyMsg.tokensPerSec, 300, 'Generation speed tokensPerSec is calculated (600 output tokens in 2s = 300 T/s)');
     assert.equal(sessions.getSession('antigravity', SUB), null);
     pass('antigravity sessions: the detail shows user messages, replies and tool calls with their output (thinking hidden, failed tools marked)');
+
+    // 子代（含多层嵌套子代理）消耗的 Token 归入主对话统计，但子代理自己不单独出现在列表里
+    const SUB1 = 'eeeeeeee-2222-4000-8000-000000000005';
+    const SUB2 = 'ffffffff-2222-4000-8000-000000000006';
+    conversation(SUB1, [[14, 3, userStep(T0 + 6000, '子代理 1 任务')], [15, 3, replyStep(T0 + 7000, { text: '子代理 1 完成', usage: { input: 3000, output: 500, cacheRead: 2000, thinking: 100 } })]]);
+    summary(SUB1, '子代理 1', 1, A);
+    conversation(SUB2, [[14, 3, userStep(T0 + 8000, '子代理 2 任务')], [15, 3, replyStep(T0 + 9000, { text: '子代理 2 完成', usage: { input: 1000, output: 500, cacheRead: 4000, thinking: 50 } })]]);
+    summary(SUB2, '子代理 2', 2, SUB1);
+    const listWithSubs = sessions.listSessions().filter(s => s.kind === 'antigravity');
+    assert.deepEqual(listWithSubs.map(s => s.id), [A], '嵌套子代仍不单独成行');
+    assert.equal(listWithSubs[0].usage.requests, 4, '主对话 2 次 + 一级子代 1 次 + 二级子代 1 次 = 4 次模型调用');
+    assert.equal(listWithSubs[0].usage.tokens, 32000, '主对话 21000 + 子代1 (3000+2000+500=5500) + 子代2 (1000+4000+500=5500) = 32000');
+    assert.equal(sessions.getSession('antigravity', A).usage.tokens, 32000, '详情页用量同样归集子代 Token');
+    pass('antigravity sessions: nested subagent usage (including multi-level children) is aggregated into the root session');
 
     // 删除：没开着就拒绝，不碰文件；开着就请它自己删（DeleteCascadeTrajectory），删完清掉 TokenPulse 的索引
     const reply = require('../build/main/session-reply');

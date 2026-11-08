@@ -7,7 +7,19 @@ import { dataFile, piDir, readJson, writeJson } from "./paths";
 import { zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
-import { antigravityConversationFiles, antigravityStamp, antigravitySummaries, readAntigravityConversation, readModelLabels, resolveModel, type AgySummary } from "./antigravity";
+import {
+  antigravityConversationFiles,
+  antigravityDirs,
+  antigravityStamp,
+  antigravitySubagentFilesByRoot,
+  antigravitySummaries,
+  readAntigravityConversation,
+  readAntigravitySubagentUsage,
+  readModelLabels,
+  resolveModel,
+  type AgyModel,
+  type AgySummary,
+} from "./antigravity";
 import { routeReturned } from "./route-ledger";
 
 /**
@@ -175,7 +187,7 @@ const MAX_TEXT = 40_000;
 const MAX_TOOL_TEXT = 6_000;
 /** 详情最多带回这么多条（超长会话只给最后这些，前面标出省略了多少）。 */
 const MAX_MESSAGES = 4_000;
-const INDEX_VERSION = 5;
+const INDEX_VERSION = 6;
 
 type Parsed = Omit<SessionDetail, "truncated"> & { file: string };
 type IndexEntry = { size: number; mtimeMs: number; summary: SessionSummary | null };
@@ -237,7 +249,7 @@ function toolSummary(name: string, input: unknown) {
       return input.split("\n")[0].slice(0, 160);
     }
   } else if (input && typeof input === "object") args = input as Record<string, unknown>;
-  for (const key of ["command", "cmd", "CommandLine", "file_path", "path", "filePath", "AbsolutePath", "Path", "pattern", "query", "Query", "url", "description", "prompt", "Prompt", "toolSummary", "skill"]) {
+  for (const key of ["command", "cmd", "CommandLine", "file_path", "path", "filePath", "AbsolutePath", "Path", "pattern", "query", "Query", "url", "description", "Role", "prompt", "Prompt", "toolSummary", "skill"]) {
     const value = args[key];
     if (typeof value === "string" && value.trim()) return value.replace(/\s+/g, " ").trim().slice(0, 160);
     if (Array.isArray(value) && value.length) return value.map(String).join(" ").slice(0, 160);
@@ -294,12 +306,26 @@ class Builder {
   private tools = new Map<string, Extract<SessionMessage, { role: "tool" }>>();
   models = new Set<string>();
   private usageByModel = new Map<string, RawModelUsage>();
+  private extraDurations: { model?: string; durationMs: number }[] = [];
+  extraUpdatedAt = 0;
   private seq = 0;
 
   // Turn tracking state
   private currentTurnStartAt: number | undefined = undefined;
   private currentTurnUserIndex: number = -1;
   private currentTurnAssistantIndices: number[] = [];
+
+  addDuration(model: string, durationMs?: number) {
+    if (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 100) {
+      this.extraDurations.push({ model: model || undefined, durationMs: Math.round(durationMs) });
+    }
+  }
+
+  touchAt(at?: number) {
+    if (typeof at === "number" && Number.isFinite(at) && at > this.extraUpdatedAt) {
+      this.extraUpdatedAt = at;
+    }
+  }
 
   addUsage(
     model: string,
@@ -404,6 +430,16 @@ class Builder {
           const list = modelDurations.get(msg.model) ?? [];
           list.push(msg.durationMs);
           modelDurations.set(msg.model, list);
+        }
+      }
+    }
+    for (const extra of this.extraDurations) {
+      if (extra.durationMs >= 100) {
+        roundDurations.push(extra.durationMs);
+        if (extra.model) {
+          const list = modelDurations.get(extra.model) ?? [];
+          list.push(extra.durationMs);
+          modelDurations.set(extra.model, list);
         }
       }
     }
@@ -1077,16 +1113,41 @@ function readModelLabelsMtime() {
   try { return fs.statSync(dataFile("antigravity-models.json")).mtimeMs; } catch { return 0; }
 }
 
-/** 对话库 + -wal + 型号标签文件的大小和时间：不混入公共 conversation_summaries.db，避免任一对话状态更新时全量失效重扫 600MB+ SQLite。 */
-function antigravityListStamp(file: string, labelsMtime = readModelLabelsMtime()) {
+/** 对话库 + 子代对话库 + -wal + 型号标签文件的大小和时间：不混入公共 conversation_summaries.db，避免任一对话状态更新时全量失效重扫 600MB+ SQLite。 */
+function antigravityListStamp(file: string, labelsMtime = readModelLabelsMtime(), subFiles: string[] = []) {
   const own = antigravityStamp(file);
   if (!own) throw new Error("gone");
-  return { size: own.size, mtimeMs: Math.max(own.mtimeMs, labelsMtime) };
+  let size = own.size;
+  let mtimeMs = Math.max(own.mtimeMs, labelsMtime);
+  for (const subFile of subFiles) {
+    const sub = antigravityStamp(subFile);
+    if (sub) {
+      size += sub.size;
+      mtimeMs = Math.max(mtimeMs, sub.mtimeMs);
+    }
+  }
+  return { size, mtimeMs };
 }
 
-function parseAntigravity(file: string, preloadedSummary?: AgySummary | null, preloadedLabels?: Record<string, string>): Parsed | null {
+function findConvDbFile(convId: string, preferConvDir: string): string | null {
+  const local = path.join(preferConvDir, `${convId}.db`);
+  if (fs.existsSync(local)) return local;
+  for (const root of antigravityDirs()) {
+    const candidate = path.join(root, "conversations", `${convId}.db`);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function parseAntigravity(
+  file: string,
+  preloadedSummary?: AgySummary | null,
+  preloadedLabels?: Record<string, string>,
+  preloadedSubFiles?: string[],
+): Parsed | null {
   const id = path.basename(file, ".db");
-  const summary = preloadedSummary !== undefined ? preloadedSummary : antigravitySummaries()?.get(id);
+  const allSummaries = preloadedSummary !== undefined && preloadedSubFiles !== undefined ? null : antigravitySummaries();
+  const summary = preloadedSummary !== undefined ? preloadedSummary : allSummaries?.get(id);
   if (!summary || summary.nested) return null;
   let read: ReturnType<typeof readAntigravityConversation>;
   try { read = readAntigravityConversation(file); } catch { return null; }
@@ -1097,6 +1158,10 @@ function parseAntigravity(file: string, preloadedSummary?: AgySummary | null, pr
   let turnFirstTokenMs: number | undefined;
   let turnOutputTokens = 0;
   let turnHasMeasured = false;
+  const subFileSet = new Set<string>(
+    preloadedSubFiles ?? (allSummaries ? antigravitySubagentFilesByRoot(allSummaries).get(id) ?? [] : []),
+  );
+  const convDir = path.dirname(file);
 
   for (const step of read.steps) {
     if (step.kind === "user") {
@@ -1135,8 +1200,39 @@ function parseAntigravity(file: string, preloadedSummary?: AgySummary | null, pr
       for (const tool of step.tools) b.tool(tool.id, tool.name, tool.args, step.at);
     } else {
       b.toolResult(step.id, step.output, step.error);
+      if (step.name === "invoke_subagent" && step.output) {
+        for (const match of step.output.matchAll(/"conversationId"\s*:\s*"([0-9a-f-]{36})"/gi)) {
+          const subDb = findConvDbFile(match[1], convDir);
+          if (subDb && path.resolve(subDb).toLowerCase() !== path.resolve(file).toLowerCase()) {
+            subFileSet.add(subDb);
+          }
+        }
+      }
     }
   }
+
+  if (subFileSet.size) {
+    const knownModels: Record<string, AgyModel> = { ...read.models };
+    for (const subFile of subFileSet) {
+      let subRows: ReturnType<typeof readAntigravitySubagentUsage> = [];
+      try { subRows = readAntigravitySubagentUsage(subFile, knownModels); } catch { continue; }
+      for (const row of subRows) {
+        const model = resolveModel(knownModels[row.modelId], labels);
+        const modelName = model.model !== "未知模型" ? model.model : "";
+        if (modelName) b.models.add(modelName);
+        b.addUsage(modelName || "未知模型", {
+          input: row.input,
+          output: row.output,
+          cacheRead: row.cacheRead,
+          cacheWrite: row.cacheWrite,
+          reasoning: row.reasoning,
+        });
+        if (row.durationMs) b.addDuration(modelName || "未知模型", row.durationMs);
+        if (row.at) b.touchAt(row.at);
+      }
+    }
+  }
+
   return summarize("antigravity", id, b, summary.workspace, summary.title, file);
 }
 
@@ -1152,6 +1248,7 @@ function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefi
   const title = oneLine(cliTitle) || (firstUser ? oneLine(firstUser.text).slice(0, 80) : `${project} · ${AGENT_NAMES[kind]}`);
   const times = messages.map((message) => message.at).filter((at): at is number => typeof at === "number");
   let updatedAt = times.length ? Math.max(...times) : undefined;
+  if (b.extraUpdatedAt > 0) updatedAt = Math.max(updatedAt ?? 0, b.extraUpdatedAt);
   try {
     // 会话文件最后写入的时间比最后一条消息的时间更准（Grok 的分块没有时间戳）
     updatedAt = Math.max(updatedAt ?? 0, fs.statSync(file).mtimeMs);
@@ -1261,18 +1358,23 @@ export function listSessions(): SessionSummary[] {
   let changed = !stored || stored.version !== INDEX_VERSION;
   const agySummaries = antigravitySummaries();
   const agyLabelsMtime = readModelLabelsMtime();
+  const allSources = sources();
+  const agyFiles = allSources.find((s) => s.kind === "antigravity")?.files ?? [];
+  const agySubFilesByRoot = agySummaries ? antigravitySubagentFilesByRoot(agySummaries, agyFiles) : new Map<string, string[]>();
   let agyLabels: Record<string, string> | undefined;
-  for (const { kind, files } of sources()) {
+  for (const { kind, files } of allSources) {
     for (const file of files) {
       let agySummary: AgySummary | null | undefined;
+      let agySubFiles: string[] | undefined;
       if (kind === "antigravity") {
         const id = path.basename(file, ".db");
         agySummary = agySummaries ? agySummaries.get(id) ?? null : undefined;
         if (agySummary !== undefined && (!agySummary || agySummary.nested)) continue;
+        agySubFiles = agySubFilesByRoot.get(id) ?? [];
       }
       let stat: { size: number; mtimeMs: number };
       try {
-        stat = kind === "antigravity" ? antigravityListStamp(file, agyLabelsMtime) : fs.statSync(file);
+        stat = kind === "antigravity" ? antigravityListStamp(file, agyLabelsMtime, agySubFiles) : fs.statSync(file);
       } catch {
         continue;
       }
@@ -1296,7 +1398,7 @@ export function listSessions(): SessionSummary[] {
         continue;
       }
       if (kind === "antigravity" && !agyLabels) agyLabels = readModelLabels();
-      const parsed = kind === "antigravity" ? parseAntigravity(file, agySummary, agyLabels) : parseFile(kind, file);
+      const parsed = kind === "antigravity" ? parseAntigravity(file, agySummary, agyLabels, agySubFiles) : parseFile(kind, file);
       next.files[file] = { size: stat.size, mtimeMs: stat.mtimeMs, summary: parsed ? stripFile(parsed) : null };
       changed = true;
     }

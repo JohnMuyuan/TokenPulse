@@ -22,10 +22,18 @@ import { dataFile } from "./paths";
  * 包含首字之前的等待，比转发时量到的偏慢；画图时单独成线、标「≈」，不和量到的混在一起。
  * 按文件大小和修改时间缓存解析结果：流水文件可能有几十 MB。
  */
-export type EstimateRow = { at: number; app: string; kind: string; model: string; effort: string; speed: number; output: number; ref?: string; email?: string; accountAt?: number };
-const APP_OF_REQUEST: Record<string, string> = { "claude-code": "claude", codex: "codex" };
+export type EstimateRow = { at: number; app: string; kind: string; model: string; effort: string; speed: number; first?: number; estimated?: boolean; output: number; ref?: string; email?: string; accountAt?: number };
+const APP_OF_REQUEST: Record<string, string> = {
+  "claude-code": "claude",
+  codex: "codex",
+  antigravity: "antigravity",
+  "deepseek-harness": "deepseek",
+  pi: "pi",
+};
+const LOCAL_TIMING_KINDS = new Set<string>(["antigravity", "deepseek-harness"]);
 const estimateCache = new Map<string, { size: number; mtimeMs: number; rows: EstimateRow[] }>();
-export function estimatedRows(since: number, now = Date.now()): EstimateRow[] {
+
+function requestSpeedRows(since: number, now = Date.now()): EstimateRow[] {
   const dir = dataFile("requests");
   let files: string[] = [];
   try { files = fs.readdirSync(dir).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)).sort(); } catch { return []; }
@@ -43,16 +51,54 @@ export function estimatedRows(since: number, now = Date.now()): EstimateRow[] {
       // 同一条请求重扫时会再追加一次：按 kind + id 去重，留最后一份
       const byId = new Map<string, EstimateRow>();
       for (const line of text.split("\n")) {
-        if (!line.includes('"estimate"')) continue;
+        if (!line.includes('"estimate"') && !line.includes('"timing"')) continue;
         let row: Record<string, unknown>;
         try { row = JSON.parse(line); } catch { continue; }
-        const estimate = row.estimate as { tokensPerSec?: unknown } | undefined;
-        const speed = positive(estimate?.tokensPerSec), app = APP_OF_REQUEST[String(row.kind)];
-        if (!speed || !app || row.compaction) continue;
+        const kind = String(row.kind || "");
+        const app = APP_OF_REQUEST[kind];
+        if (!app || row.compaction) continue;
         const model = String(row.model || "").slice(0, 120);
         if (!model || model === "未知模型") continue;
-        byId.set(String(row.kind) + "\u0000" + String(row.id), { at: Number(row.at), app, kind: String(row.kind), model, effort: typeof row.effort === "string" ? row.effort.slice(0, 20) : "", speed, output: Number(row.output) || 0,
-          ...(typeof row.accountRef === "string" ? { ref: row.accountRef } : {}), ...(typeof row.accountEmail === "string" ? { email: row.accountEmail } : {}), ...(typeof row.accountAt === "number" ? { accountAt: row.accountAt } : {}) });
+        const effort = typeof row.effort === "string" ? row.effort.slice(0, 20) : "";
+        const accountFields = {
+          ...(typeof row.accountRef === "string" ? { ref: row.accountRef } : {}),
+          ...(typeof row.accountEmail === "string" ? { email: row.accountEmail } : {}),
+          ...(typeof row.accountAt === "number" ? { accountAt: row.accountAt } : {}),
+        };
+        if (LOCAL_TIMING_KINDS.has(kind) && row.timing && typeof row.timing === "object") {
+          const timing = row.timing as { tokensPerSec?: unknown; firstTokenMs?: unknown; firstByteMs?: unknown };
+          const speed = positive(timing.tokensPerSec);
+          const first = positive(timing.firstTokenMs ?? timing.firstByteMs);
+          if (speed || first) {
+            byId.set(kind + "\u0000" + String(row.id), {
+              at: Number(row.at),
+              app,
+              kind,
+              model,
+              effort,
+              speed,
+              ...(first ? { first } : {}),
+              estimated: false,
+              output: Number(row.output) || 0,
+              ...accountFields,
+            });
+            continue;
+          }
+        }
+        const estimate = row.estimate as { tokensPerSec?: unknown } | undefined;
+        const speed = positive(estimate?.tokensPerSec);
+        if (!speed) continue;
+        byId.set(kind + "\u0000" + String(row.id), {
+          at: Number(row.at),
+          app,
+          kind,
+          model,
+          effort,
+          speed,
+          estimated: true,
+          output: Number(row.output) || 0,
+          ...accountFields,
+        });
       }
       hit = { size: stat.size, mtimeMs: stat.mtimeMs, rows: [...byId.values()] };
       estimateCache.set(file, hit);
@@ -60,6 +106,14 @@ export function estimatedRows(since: number, now = Date.now()): EstimateRow[] {
     for (const row of hit.rows) if (row.at >= since && row.at <= now + 60_000) out.push(row);
   }
   return out;
+}
+
+export function estimatedRows(since: number, now = Date.now()): EstimateRow[] {
+  return requestSpeedRows(since, now).filter((row) => row.estimated !== false && row.speed > 0);
+}
+
+export function measuredRequestRows(since: number, now = Date.now()): EstimateRow[] {
+  return requestSpeedRows(since, now).filter((row) => row.estimated === false && (row.speed > 0 || (row.first ?? 0) > 0));
 }
 
 export type SpeedBucket = { at: number; median: number; low: number; high: number; count: number; firstTokenMs: number | null };
@@ -189,6 +243,19 @@ export function speedSeries(days: number, now = Date.now(), withEstimates = true
       const via = speedVia(row);
       rows.push({ at, key: [app, model, fast ? "fast" : "", effort, via].join("|"), app, model, fast, effort, via, speed, first });
     }
+  }
+  for (const row of measuredRequestRows(since, now)) {
+    rows.push({
+      at: row.at,
+      key: [row.app, row.model, "", row.effort, ""].join("|"),
+      app: row.app,
+      model: row.model,
+      fast: false,
+      effort: row.effort,
+      via: "",
+      speed: row.speed,
+      first: row.first ?? 0,
+    });
   }
   if (withEstimates) for (const row of estimatedRows(since, now)) rows.push({ at: row.at, key: [row.app, row.model, "", row.effort, "", "estimated"].join("|"), app: row.app, model: row.model, fast: false, effort: row.effort, via: "", speed: row.speed, first: 0, estimated: true });
   if (!rows.length) return { from: since || now - 7 * DAY, to: now, bucketMs: DAY, lines: [], total: 0 };

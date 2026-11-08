@@ -14,6 +14,11 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.84': [
+      ['trend', '模型速度走势补齐 Antigravity（Google）与 DeepSeek Harness 模型', '用量明细底部的「模型速度走势」现在包含 Antigravity 与 DeepSeek Harness 从本机会话库记下的实测流式出字速度和首字延迟（无需开启透明转发），可按工具、模型和思考等级对比走势。'],
+      ['trace', '并发监控支持 Antigravity 与 Antigravity CLI', '并发监控页的监控范围与供应商/账号明细表新增「Antigravity · 本机监控」与「Antigravity CLI · 本机监控」，每 2 秒同步本机运行中的主对话、并行子代理请求数与活跃连接数并计入历史峰值。'],
+      ['sessions', '会话列表与详情归集 Antigravity 子代（Subagents）Token 用量', 'Antigravity 主会话通过 invoke_subagent 或 /teamwork 派出的子代理（含多层嵌套子代理）所消耗的输入、输出、缓存与思考 Token、调用次数和耗时，现在完整归集到主会话的用量统计中，不再漏计。'],
+    ],
     '0.3.83': [
       ['sessions', '支持 Antigravity CLI（agy.exe）：新对话、终端继续、应用内流式回复与本地删除', '全面适配 Antigravity CLI：自动扫描 ~/.gemini/antigravity-cli 的对话、Token 用量与额度；会话管理支持用 Antigravity 开启新对话/新项目、在终端里用 agy.exe --conversation 继续、在 TokenPulse 内直接流式回复，以及在未打开桌面端时直接删除本地 CLI 会话；桌宠同步识别 CLI 任务与 ask_question 提问卡片。'],
     ],

@@ -58,6 +58,15 @@ async function unit() {
   m.trackSocket(socket, 'clients', [scope('one')]); m.trackSocket(socket, 'clients', [scope('one')]); assert.equal(row(m).clients, 1, 'upgrade/reuse deduplicated');
   m.trackSocket(socket, 'clients', [scope('two')]); assert.equal(row(m).clients, 1); assert.equal(row(m, 'shared').clients, 1); assert.equal(row(m, 'provider:one').supported.clients, 0);
   socket.emit('close'); assert.equal(row(m).clients, 0);
+  const agyScopes = [{ id: 'provider:antigravity', label: 'Antigravity · 本机监控', kind: 'provider' }, { id: 'account:antigravity', label: 'Antigravity · Pro', kind: 'account' }];
+  const agyCliScopes = [{ id: 'provider:antigravity-cli', label: 'Antigravity CLI · 本机监控', kind: 'provider' }, { id: 'account:antigravity', label: 'Antigravity · Pro', kind: 'account' }];
+  m.setExternal('antigravity', agyScopes, { requests: 2, clients: 1, upstream: 2 });
+  m.setExternal('antigravity-cli', agyCliScopes, { requests: 1, clients: 1, upstream: 1 });
+  assert.deepEqual([row(m).requests, row(m).clients, row(m).upstream], [3, 2, 3], 'external Antigravity IDE + CLI concurrency aggregates into global');
+  assert.deepEqual([row(m, 'provider:antigravity').requests, row(m, 'provider:antigravity-cli').requests, row(m, 'account:antigravity').requests], [2, 1, 3]);
+  m.setExternal('antigravity', agyScopes, { requests: 0, clients: 0, upstream: 0 });
+  m.setExternal('antigravity-cli', agyCliScopes, { requests: 0, clients: 0, upstream: 0 });
+  assert.deepEqual([row(m).requests, row(m).clients, row(m).upstream], [0, 0, 0]);
   assert.ok(buckets.some(bucket => bucket.rows.global.max.requests >= 1));
   assert.ok(m.currentBucket().rows.global.max.requests >= 3, 'sub-minute spike preserved');
   at += 60001; m.tick(); assert.equal(m.currentBucket().rows.global.rejected, 0, 'rejection totals do not accumulate across minutes');

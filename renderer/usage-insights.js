@@ -370,13 +370,13 @@
   const SPEED_RANGES = [['1', '24 小时'], ['7', '7 天'], ['30', '30 天'], ['0', '全部']];
   const SPEED_METRICS = [['speed', '速度'], ['first', '首字']];
   const LINE_COLORS = ['#2f7de1', '#e0683a', '#14a37f', '#9b5de5', '#d19a00', '#e0457b', '#0ea5a4', '#7a9a2e', '#8d6e63', '#5c6bc0', '#c2185b', '#00838f'];
-  const APP_SOURCE = { claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok Build' };
+  const APP_SOURCE = { claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok Build', deepseek: 'DeepSeek Harness', pi: 'pi', antigravity: 'Antigravity' };
   const DEFAULT_LINES = 6;
   const speedView = { range: '0', metric: 'speed', app: 'all', hidden: new Set(), picked: new Set(), data: null, key: '', at: 0, loading: false, error: false };
   const lineKey = line => [line.app, line.model, line.fast ? 'fast' : '', line.effort, line.via, line.estimated ? 'estimated' : ''].join('|');
   // 0.3.53：按日志时间戳估算的线名字前面带「≈」，经由写「日志估算」
   const lineName = line => (line.estimated ? '≈ ' : '') + line.model + (line.fast ? ' · 快速' : '') + (line.effort ? ` · ${line.effort}` : '');
-  const lineVia = line => line.estimated ? '日志估算' : line.via || '官方登录（透明转发）';
+  const lineVia = line => line.estimated ? '日志估算' : line.via || ((line.app === 'antigravity' || line.app === 'deepseek') ? '官方登录（本机日志）' : '官方登录（透明转发）');
   const unitOf = (line, value) => (line.estimated ? '≈ ' : '') + value;
   const secondsText = ms => (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' 秒';
   let speedBody = null;

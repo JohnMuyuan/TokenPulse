@@ -475,7 +475,7 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
   });
 }
 
-export type AgySummary = { id: string; title: string; workspace?: string; nested: boolean; at: number };
+export type AgySummary = { id: string; title: string; workspace?: string; nested: boolean; parentId?: string; at: number };
 /** 对话列表库里的标题、工作区（合并 Antigravity IDE 与 Antigravity CLI 两个目录的摘要库）。删掉的对话不在这里。读不到返回 null。 */
 export function antigravitySummaries(dir: string | string[] = antigravityDirs()): Map<string, AgySummary> | null {
   const dirs = Array.isArray(dir) ? dir : [dir];
@@ -490,11 +490,15 @@ export function antigravitySummaries(dir: string | string[] = antigravityDirs())
         for (const row of db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[]) {
           const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
           if (!id) continue;
+          const parentId = typeof row.parent_conversation_id === "string" && row.parent_conversation_id.trim()
+            ? row.parent_conversation_id.trim()
+            : undefined;
           const item: AgySummary = {
             id,
             title: typeof row.title === "string" ? row.title : "",
             workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null),
-            nested: Number(row.nesting_depth || 0) > 0,
+            nested: Number(row.nesting_depth || 0) > 0 || Boolean(parentId),
+            ...(parentId ? { parentId } : {}),
             at: sqliteTime(row.last_modified_time),
           };
           const prev = merged.get(id);
@@ -502,11 +506,13 @@ export function antigravitySummaries(dir: string | string[] = antigravityDirs())
             merged.set(id, item);
           } else {
             const newer = item.at >= prev.at;
+            const nextParent = newer ? (item.parentId || prev.parentId) : (prev.parentId || item.parentId);
             merged.set(id, {
               id,
               title: newer ? (item.title || prev.title) : (prev.title || item.title),
               workspace: newer ? (item.workspace || prev.workspace) : (prev.workspace || item.workspace),
               nested: prev.nested || item.nested,
+              ...(nextParent ? { parentId: nextParent } : {}),
               at: Math.max(prev.at, item.at),
             });
           }
@@ -515,6 +521,142 @@ export function antigravitySummaries(dir: string | string[] = antigravityDirs())
     } catch { /* 某个库正在写时跳过 */ }
   }
   return anyLoaded ? merged : null;
+}
+
+/** 按主对话 ID 归集所有子代（含多层嵌套子代理，如 teamwork 协调器再派出的子代理）的 .db 文件路径。 */
+export function antigravitySubagentFilesByRoot(
+  summaries: Map<string, AgySummary> | null = antigravitySummaries(),
+  convFiles: string[] = antigravityConversationFiles(),
+): Map<string, string[]> {
+  const byRoot = new Map<string, string[]>();
+  if (!summaries || !summaries.size) return byRoot;
+  const fileById = new Map<string, string>();
+  for (const file of convFiles) {
+    fileById.set(path.basename(file, ".db").toLowerCase(), file);
+  }
+  const rootOf = (id: string): string => {
+    let cur = id;
+    const seen = new Set<string>([cur]);
+    for (let depth = 0; depth < 8; depth++) {
+      const parentId = summaries.get(cur)?.parentId;
+      if (!parentId || seen.has(parentId)) break;
+      seen.add(parentId);
+      cur = parentId;
+    }
+    return cur;
+  };
+  for (const [id, sum] of summaries) {
+    if (!sum.nested && !sum.parentId) continue;
+    const rootId = rootOf(id);
+    if (!rootId || rootId === id) continue;
+    const file = fileById.get(id.toLowerCase());
+    if (!file) continue;
+    const list = byRoot.get(rootId) ?? [];
+    list.push(file);
+    byRoot.set(rootId, list);
+  }
+  return byRoot;
+}
+
+export type AgySubagentUsageRow = {
+  at: number;
+  modelId: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  durationMs?: number;
+};
+
+const subagentUsageCache = new Map<string, { size: number; mtimeMs: number; rows: AgySubagentUsageRow[]; models: Record<string, AgyModel> }>();
+
+/**
+ * 轻量读取子代（subagent）对话库中的模型调用用量与耗时：
+ * 只扫 steps.metadata，同型号数字 ID 仅查一次 gen_metadata，避免反序列化数百兆完整提示词。
+ */
+export function readAntigravitySubagentUsage(file: string, known: Record<string, AgyModel>): AgySubagentUsageRow[] {
+  const stamp = antigravityStamp(file);
+  if (stamp) {
+    const hit = subagentUsageCache.get(file);
+    if (hit && hit.size === stamp.size && hit.mtimeMs === stamp.mtimeMs) {
+      for (const [k, v] of Object.entries(hit.models)) {
+        if (!known[k]) known[k] = v;
+        else if (v.label && !known[k].label) known[k] = { ...known[k], label: v.label };
+      }
+      return hit.rows;
+    }
+  }
+  const localModels: Record<string, AgyModel> = {};
+  const rows = withDb(file, (db) => {
+    const out: AgySubagentUsageRow[] = [];
+    const genModel = prepareOptional(db, "select data from gen_metadata where idx = ?");
+    const stepStmt = db.prepare("select status, metadata, case when metadata is null then step_payload else null end as step_payload from steps where step_type = 15 order by idx");
+    for (const rawRow of stepStmt.iterate()) {
+      const row = rawRow as { status: number; metadata: Uint8Array | null; step_payload: Uint8Array | null };
+      const meta = toBuf(row.metadata) ?? pbMessage(toBuf(row.step_payload), 5);
+      if (!meta) continue;
+      const usage = pbMessage(meta, 9);
+      if (!usage) continue;
+      const rawInput = pbNumber(usage, 2);
+      const output = pbNumber(usage, 3);
+      const cacheWrite = pbNumber(usage, 4);
+      const cacheRead = pbNumber(usage, 5);
+      const reasoning = pbNumber(usage, 9);
+      const input = rawInput + cacheRead + cacheWrite;
+      if (input <= 0 && output <= 0) continue;
+      const modelId = pbNumber(meta, 11) || pbNumber(usage, 1);
+      if (modelId) {
+        const key = String(modelId);
+        const cur = localModels[key] ?? known[key];
+        if (!cur || !cur.label) {
+          const genInfo = pbMessage(meta, 20);
+          const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;
+          const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
+          const genBuf = toBuf(genData);
+          const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
+          if (genParsed?.model && !cur) {
+            const entry: AgyModel = {
+              model: genParsed.model,
+              ...(genParsed.enum ? { enum: genParsed.enum } : {}),
+              ...(genParsed.label ? { label: genParsed.label } : {}),
+            };
+            localModels[key] = entry;
+            known[key] = entry;
+          } else if (genParsed?.label && cur && !cur.label) {
+            const entry: AgyModel = { ...cur, label: genParsed.label };
+            localModels[key] = entry;
+            known[key] = entry;
+          }
+        }
+      }
+      const startAt = pbTime(pbMessage(meta, 1));
+      const viewableAt = pbTime(pbMessage(meta, 6));
+      const finishedAt = pbTime(pbMessage(meta, 7));
+      const completedAt = pbTime(pbMessage(meta, 8));
+      const at = finishedAt || completedAt || viewableAt || startAt;
+      const endAt = finishedAt || completedAt || viewableAt;
+      const durationMs = endAt && startAt && endAt > startAt && endAt - startAt <= 30 * 60_000
+        ? endAt - startAt
+        : undefined;
+      out.push({
+        at,
+        modelId,
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        reasoning,
+        ...(durationMs ? { durationMs } : {}),
+      });
+    }
+    return out;
+  });
+  if (stamp) {
+    if (subagentUsageCache.size > 512) subagentUsageCache.clear();
+    subagentUsageCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, rows, models: localModels });
+  }
+  return rows;
 }
 
 function removeCliConversationLocal(dir: string, id: string): boolean {
@@ -565,8 +707,12 @@ export async function deleteAntigravityConversation(id: string) {
     }
   }
   if (inCli) {
-    removeCliConversationLocal(cliRoot, id);
-    for (const root of antigravityDirs()) removeSummaryRow(root, id);
+    const subFiles = antigravitySubagentFilesByRoot().get(id) ?? [];
+    const targetIds = new Set<string>([id, ...subFiles.map((f) => path.basename(f, ".db"))]);
+    for (const targetId of targetIds) {
+      removeCliConversationLocal(cliRoot, targetId);
+      for (const root of antigravityDirs()) removeSummaryRow(root, targetId);
+    }
   }
 }
 
@@ -850,6 +996,52 @@ export function antigravityHub(): Hub | null {
     }
   }
   return hubs.sort((a, b) => b.at - a.at)[0] ?? null;
+}
+
+function countLiveHubsInDir(root: string): number {
+  const dir = path.join(root, "daemon");
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir).filter((name) => /^hub_\d+\.json$/.test(name)); } catch { return 0; }
+  const pids = new Set<number>();
+  for (const name of names) {
+    try {
+      const file = path.join(dir, name);
+      const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+      const pid = Number(raw.pid), httpPort = Number(raw.httpPort), csrfToken = typeof raw.csrfToken === "string" ? raw.csrfToken : "";
+      if (!pid || !httpPort || !csrfToken) continue;
+      try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") continue; }
+      pids.add(pid);
+    } catch { /* 忽略 */ }
+  }
+  return pids.size;
+}
+
+function countDirLiveConcurrency(dir: string, allDirs: string[], now: number): { requests: number; clients: number; upstream: number } {
+  const hubs = countLiveHubsInDir(dir);
+  const items = readSingleDirActivity(now - 5 * 60_000, dir, allDirs, now);
+  const activeRoots = items.filter((item) => !item.nested && item.running && now - item.at <= 5 * 60_000);
+  let requests = 0;
+  for (const root of activeRoots) {
+    if (root.phase === "waiting") continue;
+    requests += Math.max(1, root.subagents ?? 0);
+  }
+  const clients = Math.max(activeRoots.length, hubs);
+  return { requests, clients, upstream: requests };
+}
+
+/** 统计 Antigravity IDE 与 Antigravity CLI 当前本机实时并发（活跃 AI 请求、客户端连接、上游流式请求）。 */
+export function readAntigravityLiveConcurrency(now = Date.now()): {
+  ide: { requests: number; clients: number; upstream: number };
+  cli: { requests: number; clients: number; upstream: number };
+} {
+  const ideDir = antigravityDir();
+  const cliDir = antigravityCliDir();
+  const allDirs = antigravityDirs();
+  const ide = countDirLiveConcurrency(ideDir, allDirs, now);
+  const cli = path.resolve(cliDir).toLowerCase() === path.resolve(ideDir).toLowerCase()
+    ? { requests: 0, clients: 0, upstream: 0 }
+    : countDirLiveConcurrency(cliDir, allDirs, now);
+  return { ide, cli };
 }
 
 function postLocal(port: number, token: string, method: string, body: unknown, timeoutMs = 8000): Promise<unknown> {

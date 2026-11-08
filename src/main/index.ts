@@ -2,7 +2,8 @@
 import { logAppStart } from "./app-log-setup";
 import { ExitMonitor } from "./egress-monitor";
 import { ConcurrencyService } from './concurrency-monitor';
-import { concurrencyMonitor, providerScopes, type ConcurrencyLiveState } from '../core/concurrency';
+import { concurrencyMonitor, providerScopes, type ConcurrencyLiveState, type ConcurrencyScope } from '../core/concurrency';
+import { antigravityCliDir, antigravityDir, readAntigravityLiveConcurrency } from '../core/antigravity';
 import { readOfficialAccountStore } from '../core/accounts';
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, session, shell, Tray } from "electron";
@@ -112,16 +113,46 @@ const antigravityQuota = new AntigravityQuota({
 /** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
 const tokensUploader = new TokensUploader({ publish: state => { if (win && !win.isDestroyed()) win.webContents.send("tokens-ci-state", state); } });
 let concurrencyCatalogAt = 0;
+let concurrencyAgyAt = 0;
+let concurrencyAgyScopes: { ide: ConcurrencyScope[]; cli: ConcurrencyScope[] } = {
+  ide: [{ id: 'provider:antigravity', label: 'Antigravity · 本机监控', kind: 'provider' }],
+  cli: [{ id: 'provider:antigravity-cli', label: 'Antigravity CLI · 本机监控', kind: 'provider' }],
+};
 let concurrencyCoverage: { app: string; monitored: boolean }[] = [];
 function concurrencyState(): ConcurrencyLiveState {
-  if (Date.now() - concurrencyCatalogAt > 5000) {
-    concurrencyCatalogAt = Date.now();
+  const now = Date.now();
+  if (now - concurrencyCatalogAt > 5000) {
+    concurrencyCatalogAt = now;
     const view = coreAgentView();
+    const accounts = readOfficialAccountStore().accounts.filter(account => !account.hidden);
     concurrencyMonitor.register(view.providers.map(provider => ({ id: 'provider:' + provider.id, label: provider.name, kind: 'provider' as const })));
-    concurrencyMonitor.register(readOfficialAccountStore().accounts.filter(account => !account.hidden).map(account => ({ id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' as const })));
+    concurrencyMonitor.register(accounts.map(account => ({ id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' as const })));
     concurrencyMonitor.register(['claude', 'codex', 'grok', 'deepseek', 'pi'].flatMap(app => providerScopes(app)));
-    concurrencyCoverage = Object.keys(view.proxy.apps).map(app => ({ app, monitored: view.proxy.running && (view.proxy.apps[app as keyof typeof view.proxy.apps] || (view.pass[app as keyof typeof view.pass]?.on && view.pass[app as keyof typeof view.pass]?.connected) || false) }));
+    const agyLast = antigravityQuota.state().last;
+    const agyIdeMonitored = antigravityQuota.installed() || fsSync.existsSync(path.join(antigravityDir(), 'conversation_summaries.db'));
+    const agyCliMonitored = Boolean(resolveCli('antigravity')) || fsSync.existsSync(path.join(antigravityCliDir(), 'conversation_summaries.db'));
+    const agyAccountScope: ConcurrencyScope[] = (agyIdeMonitored || agyCliMonitored)
+      ? [{ id: 'account:antigravity', label: `Antigravity${agyLast?.tier ? ' · ' + agyLast.tier : agyLast?.plan ? ' · ' + agyLast.plan : ''}`, kind: 'account' }]
+      : [];
+    concurrencyAgyScopes = {
+      ide: [{ id: 'provider:antigravity', label: 'Antigravity · 本机监控', kind: 'provider' }, ...agyAccountScope],
+      cli: [{ id: 'provider:antigravity-cli', label: 'Antigravity CLI · 本机监控', kind: 'provider' }, ...agyAccountScope],
+    };
+    concurrencyMonitor.register([...concurrencyAgyScopes.ide, ...concurrencyAgyScopes.cli]);
+    concurrencyCoverage = [
+      ...Object.keys(view.proxy.apps).map(app => ({ app, monitored: view.proxy.running && (view.proxy.apps[app as keyof typeof view.proxy.apps] || (view.pass[app as keyof typeof view.pass]?.on && view.pass[app as keyof typeof view.pass]?.connected) || false) })),
+      { app: 'antigravity', monitored: agyIdeMonitored },
+      { app: 'antigravity-cli', monitored: agyCliMonitored },
+    ];
     concurrencyMonitor.setAvailable(concurrencyCoverage.some(item => item.monitored));
+  }
+  if (now - concurrencyAgyAt > 2000) {
+    concurrencyAgyAt = now;
+    try {
+      const live = readAntigravityLiveConcurrency(now);
+      concurrencyMonitor.setExternal('antigravity', concurrencyAgyScopes.ide, live.ide);
+      concurrencyMonitor.setExternal('antigravity-cli', concurrencyAgyScopes.cli, live.cli);
+    } catch { /* ignore transient sqlite lock */ }
   }
   return { ...concurrencyService.state(), coverage: concurrencyCoverage };
 }

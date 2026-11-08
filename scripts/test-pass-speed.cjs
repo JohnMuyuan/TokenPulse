@@ -106,6 +106,21 @@ try {
     const merged = speedSeries(7, now).lines.filter((line) => line.model === "grok-x");
     assert.deepEqual(merged.map((line) => [line.via, line.count, line.tokensPerSec]), [["Team", 3, 50]], "一个号池一条线");
     assert.deepEqual(passSpeed(7).filter((row) => row.model === "grok-x").map((row) => [row.via, row.count]), [["Team", 3]], "供应商页的汇总也合成一行");
+    // Antigravity 本机日志实测速度（requests/<月>.jsonl 的 timing）与估算速度（estimate）也纳入模型速度走势
+    const reqDir = path.join(root, "requests");
+    fs.mkdirSync(reqDir, { recursive: true });
+    const reqFile = path.join(reqDir, `${new Date(now).getFullYear()}-${String(new Date(now).getMonth() + 1).padStart(2, "0")}.jsonl`);
+    fs.writeFileSync(reqFile, [
+      { id: "agy:1", at: now - 2000, kind: "antigravity", model: "gemini-4-argon", effort: "high", output: 400, timing: { stream: true, ms: 10000, firstTokenMs: 1200, tokensPerSec: 40, provider: "Antigravity" } },
+      { id: "agy:2", at: now - 1500, kind: "antigravity", model: "gemini-4-argon", effort: "high", output: 600, timing: { stream: true, ms: 12000, firstTokenMs: 1600, tokensPerSec: 50, provider: "Antigravity" } },
+      { id: "agy:3", at: now - 1200, kind: "antigravity", model: "gemini-3.8-flash", effort: "medium", output: 300, estimate: { ms: 5000, tokensPerSec: 60 } },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const agyLines = speedSeries(7, now).lines.filter((line) => line.app === "antigravity");
+    assert.deepEqual(agyLines.map((line) => [line.model, line.effort, Boolean(line.estimated), line.count, line.tokensPerSec, line.firstTokenMs]), [
+      ["gemini-4-argon", "high", false, 2, 45, 1400],
+      ["gemini-3.8-flash", "medium", true, 1, 60, null],
+    ], "Antigravity 本机实测速度与首字延迟、估算速度都出现在模型速度走势里");
+    assert.deepEqual(speedSeries(7, now, false).lines.filter((line) => line.app === "antigravity").map((line) => line.model), ["gemini-4-argon"], "不要估算时仍保留 Antigravity 实测速度");
   } finally { Date.now = real; }
   console.log("PASS pass speed: per-account, per-model speed trend from the permanent forwarding log (median and quartiles per hour / day / week, attributed by the CLI login at the time)");
 } finally {
