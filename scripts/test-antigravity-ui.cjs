@@ -157,7 +157,7 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await shot('agy-usage');
     pass('antigravity UI: local usage from Antigravity conversations, with a link that opens Usage filtered to Antigravity');
 
-    // 会话管理：Antigravity 的对话列出来、能看；没有「回复」「在终端里继续」
+    // 会话管理：Antigravity 的对话列出来、能看；支持 Antigravity CLI 的「回复对话」「在终端里继续」「复制继续命令」
     const KEY = 'antigravity:cccccccc-0000-4000-8000-000000000003';
     await e("navigate('sessions')");
     await until(`document.querySelector('.sw-item[data-key="${KEY}"]')`, 20000);
@@ -172,15 +172,15 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await e("document.querySelector('.sw-usage-toggle').click()");
     assert.equal(await e("document.querySelector('.sw-usage-panel').hidden"), false, '点击展开会话用量详情');
     assert.match(await text('.sw-usage-panel'), /总 Token 消耗[\s\S]*缓存命中率[\s\S]*API 等价花费[\s\S]*模型占比分布[\s\S]*gemini-4-argon/);
-    assert.equal(await e("[...document.querySelectorAll('.sw-actions button')].some(b => b.textContent.includes('回复对话'))"), false, '不能在这里回复');
-    assert.match(await text('.sw-composer'), /Antigravity 的对话请在 Antigravity 里继续/);
+    assert.equal(await e("[...document.querySelectorAll('.sw-actions button')].some(b => b.textContent.includes('回复对话'))"), true, '支持在 TokenPulse 里通过 Antigravity CLI 回复');
+    assert.ok(await e("!!document.querySelector('.sw-composer textarea')"), '展示 Antigravity 回复输入框');
     await e("document.querySelector('.sw-actions button[aria-haspopup=menu]').click()");
     await until("!document.getElementById('option-menu').hidden");
     const menu = await text('#option-menu');
-    assert.ok(!menu.includes('在终端里继续') && menu.includes('删除对话'), menu);
+    assert.ok(menu.includes('在终端里继续') && menu.includes('复制继续命令') && menu.includes('agy.exe --conversation cccccccc-0000-4000-8000-000000000003') && menu.includes('删除对话'), menu);
     await e("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
     await shot('agy-sessions');
-    pass('antigravity UI: sessions lists and shows Antigravity conversations, without reply or terminal actions');
+    pass('antigravity UI: sessions lists and shows Antigravity conversations, with CLI reply and terminal resume actions');
 
     // 有一组用完：刷新后卡片变红
     mode = 'out';

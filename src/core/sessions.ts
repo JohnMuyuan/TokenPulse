@@ -175,7 +175,7 @@ const MAX_TEXT = 40_000;
 const MAX_TOOL_TEXT = 6_000;
 /** 详情最多带回这么多条（超长会话只给最后这些，前面标出省略了多少）。 */
 const MAX_MESSAGES = 4_000;
-const INDEX_VERSION = 4;
+const INDEX_VERSION = 5;
 
 type Parsed = Omit<SessionDetail, "truncated"> & { file: string };
 type IndexEntry = { size: number; mtimeMs: number; summary: SessionSummary | null };
@@ -237,7 +237,7 @@ function toolSummary(name: string, input: unknown) {
       return input.split("\n")[0].slice(0, 160);
     }
   } else if (input && typeof input === "object") args = input as Record<string, unknown>;
-  for (const key of ["command", "cmd", "file_path", "path", "filePath", "pattern", "query", "url", "description", "prompt", "skill"]) {
+  for (const key of ["command", "cmd", "CommandLine", "file_path", "path", "filePath", "AbsolutePath", "Path", "pattern", "query", "Query", "url", "description", "prompt", "Prompt", "toolSummary", "skill"]) {
     const value = args[key];
     if (typeof value === "string" && value.trim()) return value.replace(/\s+/g, " ").trim().slice(0, 160);
     if (Array.isArray(value) && value.length) return value.map(String).join(" ").slice(0, 160);
@@ -252,7 +252,8 @@ function projectName(cwd: string | undefined, fallback: string) {
 }
 
 function commandOf(kind: AgentKind, id: string) {
-  if (kind === "deepseek" || kind === "antigravity") return "";
+  if (kind === "deepseek") return "";
+  if (kind === "antigravity") return `agy.exe --conversation ${id}`;
   if (kind === "pi") return `pi --session ${id}`;
   return kind === "codex" ? `codex resume ${id}` : `${kind === "claude" ? "claude" : "grok"} --resume ${id}`;
 }

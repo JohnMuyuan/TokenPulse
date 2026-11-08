@@ -3,6 +3,7 @@ import path from "path";
 import {
   antigravityConversationFiles,
   antigravityDir,
+  antigravityDirs,
   antigravityHub,
   fetchAntigravityStatus,
   splitModelLabel,
@@ -964,7 +965,7 @@ export class AntigravityQuota {
   }
 
   installed() {
-    return fs.existsSync(antigravityDir()) || Boolean(this.stored.last);
+    return antigravityDirs().some((dir) => fs.existsSync(dir)) || Boolean(this.stored.last);
   }
 
   private recentRows(now = this.now()): RequestRow[] {
@@ -1259,7 +1260,7 @@ export class AntigravityQuota {
   /** 查一次。同时只跑一个；没装 Antigravity 的不查。manual：用户点了刷新，查不到也要把原因告诉界面。 */
   refresh(manual: boolean): Promise<AgyQuotaState> {
     if (this.pending) return this.pending;
-    if (!manual && !fs.existsSync(antigravityDir())) return Promise.resolve(this.state());
+    if (!manual && !antigravityDirs().some((dir) => fs.existsSync(dir))) return Promise.resolve(this.state());
     this.pending = this.refreshNow(manual).finally(() => { this.pending = undefined; });
     return this.pending;
   }

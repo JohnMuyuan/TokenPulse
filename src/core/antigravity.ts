@@ -24,6 +24,16 @@ export function antigravityDir() {
   return process.env.TOKENPULSE_ANTIGRAVITY_DIR || path.join(os.homedir(), ".gemini", "antigravity");
 }
 
+export function antigravityCliDir() {
+  if (process.env.TOKENPULSE_ANTIGRAVITY_CLI_DIR) return process.env.TOKENPULSE_ANTIGRAVITY_CLI_DIR;
+  if (process.env.TOKENPULSE_ANTIGRAVITY_DIR) return path.join(path.dirname(process.env.TOKENPULSE_ANTIGRAVITY_DIR), "antigravity-cli");
+  return path.join(os.homedir(), ".gemini", "antigravity-cli");
+}
+
+export function antigravityDirs(): string[] {
+  return [...new Set([antigravityDir(), antigravityCliDir()])];
+}
+
 type Statement = { all: (...args: unknown[]) => unknown[]; get: (...args: unknown[]) => unknown; iterate: (...args: unknown[]) => IterableIterator<unknown> };
 type Database = { prepare: (sql: string) => Statement; exec?: (sql: string) => void; close: () => void };
 const openDb = (file: string): Database => {
@@ -44,14 +54,23 @@ function withDb<T>(file: string, fn: (db: Database) => T): T {
   try { return fn(db); } finally { db.close(); }
 }
 
-/** 对话库文件：只要 <UUID>.db。 */
+/** 对话库文件：只要 <UUID>.db（同时扫描 Antigravity IDE 与 Antigravity CLI 数据目录，同名 UUID 取最近修改的一份）。 */
 export function antigravityConversationFiles(): string[] {
-  const dir = path.join(antigravityDir(), "conversations");
-  try {
-    return fs.readdirSync(dir).filter((name) => /^[0-9a-f-]{36}\.db$/i.test(name)).map((name) => path.join(dir, name));
-  } catch {
-    return [];
+  const byName = new Map<string, { file: string; mtimeMs: number }>();
+  for (const root of antigravityDirs()) {
+    const dir = path.join(root, "conversations");
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (!/^[0-9a-f-]{36}\.db$/i.test(name)) continue;
+      const file = path.join(dir, name);
+      const mtimeMs = antigravityStamp(file)?.mtimeMs ?? 0;
+      const key = name.toLowerCase();
+      const prev = byName.get(key);
+      if (!prev || mtimeMs > prev.mtimeMs) byName.set(key, { file, mtimeMs });
+    }
   }
+  return [...byName.values()].map((item) => item.file);
 }
 
 /** 对话库连同 -wal 的大小和改动时间：WAL 模式下新内容先写进 -wal，主库要等合并才变。 */
@@ -66,16 +85,18 @@ export function antigravityStamp(file: string): { size: number; mtimeMs: number 
 /** 对话 ID → 工作区目录（第一个）。读不到就是空的。 */
 export function antigravityWorkspaces(): Map<string, string> {
   const out = new Map<string, string>();
-  const file = path.join(antigravityDir(), "conversation_summaries.db");
-  if (!fs.existsSync(file)) return out;
-  try {
-    withDb(file, (db) => {
-      for (const row of db.prepare("select conversation_id, workspace_uris from conversation_summaries").all() as { conversation_id: string; workspace_uris: string | null }[]) {
-        const first = workspacePath(row.workspace_uris);
-        if (row.conversation_id && first) out.set(row.conversation_id, first);
-      }
-    });
-  } catch { /* 正在写或者格式变了：没有项目目录也照样统计 */ }
+  for (const root of antigravityDirs()) {
+    const file = path.join(root, "conversation_summaries.db");
+    if (!fs.existsSync(file)) continue;
+    try {
+      withDb(file, (db) => {
+        for (const row of db.prepare("select conversation_id, workspace_uris from conversation_summaries").all() as { conversation_id: string; workspace_uris: string | null }[]) {
+          const first = workspacePath(row.workspace_uris);
+          if (row.conversation_id && first) out.set(row.conversation_id, first);
+        }
+      });
+    } catch { /* 正在写或者格式变了：没有项目目录也照样统计 */ }
+  }
   return out;
 }
 
@@ -455,24 +476,98 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
 }
 
 export type AgySummary = { id: string; title: string; workspace?: string; nested: boolean; at: number };
-/** 对话列表库里的标题、工作区。删掉的对话不在这里（Antigravity 删除时会把这一行去掉）。读不到返回 null。 */
-export function antigravitySummaries(dir = antigravityDir()): Map<string, AgySummary> | null {
-  const file = path.join(dir, "conversation_summaries.db");
-  if (!fs.existsSync(file)) return null;
-  try {
-    return withDb(file, (db) => new Map((db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[]).flatMap((row) => {
-      const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
-      return id ? [[id, { id, title: typeof row.title === "string" ? row.title : "", workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null), nested: Number(row.nesting_depth || 0) > 0, at: sqliteTime(row.last_modified_time) }] as [string, AgySummary]] : [];
-    })));
-  } catch { return null; }
+/** 对话列表库里的标题、工作区（合并 Antigravity IDE 与 Antigravity CLI 两个目录的摘要库）。删掉的对话不在这里。读不到返回 null。 */
+export function antigravitySummaries(dir: string | string[] = antigravityDirs()): Map<string, AgySummary> | null {
+  const dirs = Array.isArray(dir) ? dir : [dir];
+  const merged = new Map<string, AgySummary>();
+  let anyLoaded = false;
+  for (const root of dirs) {
+    const file = path.join(root, "conversation_summaries.db");
+    if (!fs.existsSync(file)) continue;
+    try {
+      withDb(file, (db) => {
+        anyLoaded = true;
+        for (const row of db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[]) {
+          const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
+          if (!id) continue;
+          const item: AgySummary = {
+            id,
+            title: typeof row.title === "string" ? row.title : "",
+            workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null),
+            nested: Number(row.nesting_depth || 0) > 0,
+            at: sqliteTime(row.last_modified_time),
+          };
+          const prev = merged.get(id);
+          if (!prev) {
+            merged.set(id, item);
+          } else {
+            const newer = item.at >= prev.at;
+            merged.set(id, {
+              id,
+              title: newer ? (item.title || prev.title) : (prev.title || item.title),
+              workspace: newer ? (item.workspace || prev.workspace) : (prev.workspace || item.workspace),
+              nested: prev.nested || item.nested,
+              at: Math.max(prev.at, item.at),
+            });
+          }
+        }
+      });
+    } catch { /* 某个库正在写时跳过 */ }
+  }
+  return anyLoaded ? merged : null;
 }
 
-/** 请开着的 Antigravity 删掉一段对话（和它自己的对话列表里删除一样）。没开着就报错，不碰文件。 */
+function removeCliConversationLocal(dir: string, id: string): boolean {
+  let removed = false;
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const file = path.join(dir, "conversations", `${id}.db${suffix}`);
+    if (fs.existsSync(file)) {
+      try { fs.rmSync(file, { force: true }); if (!suffix) removed = true; } catch { /* 忽略 */ }
+    }
+  }
+  for (const target of [
+    path.join(dir, "brain", id),
+    path.join(dir, "annotations", `${id}.pbtxt`),
+    path.join(dir, "presence", `${id}.lock`),
+  ]) {
+    try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  }
+  return removed;
+}
+
+function removeSummaryRow(dir: string, id: string) {
+  const file = path.join(dir, "conversation_summaries.db");
+  if (!fs.existsSync(file)) return;
+  try {
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (file: string) => Database };
+    const db = new DatabaseSync(file);
+    try {
+      db.exec?.("PRAGMA busy_timeout = 500;");
+      (db.prepare("delete from conversation_summaries where conversation_id = ?") as Statement & { run?: (...args: unknown[]) => unknown }).run?.(id);
+    } finally {
+      db.close();
+    }
+  } catch { /* 正在写或只读时跳过 */ }
+}
+
+/** 请开着的 Antigravity 删掉一段对话（或直接清理 Antigravity CLI 的本机对话记录）。 */
 export async function deleteAntigravityConversation(id: string) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("对话 ID 不对");
+  const cliRoot = antigravityCliDir();
+  const inCli = fs.existsSync(path.join(cliRoot, "conversations", `${id}.db`));
   const hub = antigravityHub();
-  if (!hub) throw new Error("Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）");
-  await postLocal(hub.httpPort, hub.csrfToken, "DeleteCascadeTrajectory", { cascadeId: id });
+  if (!hub && !inCli) throw new Error("Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）");
+  if (hub) {
+    try {
+      await postLocal(hub.httpPort, hub.csrfToken, "DeleteCascadeTrajectory", { cascadeId: id });
+    } catch (error) {
+      if (!inCli) throw error;
+    }
+  }
+  if (inCli) {
+    removeCliConversationLocal(cliRoot, id);
+    for (const root of antigravityDirs()) removeSummaryRow(root, id);
+  }
 }
 
 /* ---------------- 桌宠：哪些对话在跑 ---------------- */
@@ -492,16 +587,19 @@ export type AgyActivity = {
   at: number; since: number;
   phase?: "thinking" | "tool" | "waiting";
   ended?: "ok" | "interrupted" | "error";
+  tool?: string;
+  ask?: { id: string; name: string; args: string; at: number };
 };
 
-/** 「2026-11-06 04:52:41.2188695+00:00」这种：空格换 T，秒的小数留三位。 */
+/** 「2026-11-06 04:52:41.2188695+00:00」这种：空格换 T，秒的小数留三位。0001-01-01 等无效零值按 0 算。 */
 export function sqliteTime(value: unknown): number {
   if (typeof value !== "string" || !value) return 0;
   const text = value.trim().replace(" ", "T").replace(/(\.\d{3})\d+/, "$1");
-  return Date.parse(text) || 0;
+  const parsed = Date.parse(text);
+  return parsed > 0 ? parsed : 0;
 }
 
-type PhaseResult = Pick<AgyActivity, "phase" | "ended"> & { open?: boolean };
+type PhaseResult = Pick<AgyActivity, "phase" | "ended" | "tool" | "ask"> & { open?: boolean };
 const phaseCache = new Map<string, { size: number; mtimeMs: number; value: PhaseResult }>();
 
 /** 一个对话最后几步：在跑的时候分出在想 / 工具 / 等你；空闲了看最后一次回复怎么结束的。 */
@@ -512,16 +610,31 @@ export function conversationPhase(file: string, knownStamp?: { size: number; mti
   if (hit && hit.size === stamp.size && hit.mtimeMs === stamp.mtimeMs) return hit.value;
   try {
     const value = withDb(file, (db) => {
-      const tail = db.prepare("select step_type, status from steps order by idx desc limit 6").all() as { step_type: number; status: number }[];
+      const tail = db.prepare("select step_type, status, metadata from steps order by idx desc limit 6").all() as { step_type: number; status: number; metadata?: Uint8Array | null }[];
       if (!tail.length) return {};
       const open = tail.some((step) => STEP_OPEN.has(step.status));
-      const phase = tail.some((step) => step.status === STEP.WAITING) ? "waiting" as const
+      let tool: string | undefined;
+      let ask: AgyActivity["ask"] | undefined;
+      for (const step of tail) {
+        if (step.step_type !== TOOL_STEP || !STEP_OPEN.has(step.status)) continue;
+        const meta = toBuf(step.metadata);
+        const call = pbMessage(meta, 4);
+        const id = pbString(call, 1);
+        const name = pbString(call, 2);
+        const args = pbString(call, 3);
+        if (name && !tool) tool = name;
+        if (name === "ask_question" || name === "ask_user_question" || name === "exit_plan_mode") {
+          ask = { id: id || "ask", name, args, at: pbTime(pbMessage(meta, 1)) || stamp.mtimeMs };
+          break;
+        }
+      }
+      const phase = (ask || tail.some((step) => step.status === STEP.WAITING)) ? "waiting" as const
         : tail.some((step) => step.step_type === MODEL_REPLY && STEP_OPEN.has(step.status)) ? "thinking" as const
         : tail.some((step) => step.step_type !== MODEL_REPLY && STEP_OPEN.has(step.status)) ? "tool" as const
         : "thinking" as const;
       const reply = tail.find((step) => step.step_type === MODEL_REPLY && !STEP_OPEN.has(step.status));
       const ended = reply?.status === STEP.ERROR ? "error" as const : reply && (reply.status === STEP.CANCELED || reply.status === STEP.INTERRUPTED) ? "interrupted" as const : "ok" as const;
-      return { phase, ended, open };
+      return { phase, ended, open, ...(tool ? { tool } : {}), ...(ask ? { ask } : {}) };
     });
     if (phaseCache.size > 128) phaseCache.clear();
     phaseCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, value });
@@ -529,8 +642,7 @@ export function conversationPhase(file: string, knownStamp?: { size: number; mti
   } catch { return {}; }
 }
 
-/** 最近 since 之后动过的对话。读不到（没装、正在写）返回空的。 */
-export function readAntigravityActivity(since: number, dir = antigravityDir(), now = Date.now()): AgyActivity[] {
+function readSingleDirActivity(since: number, dir: string, allDirs: string[], now: number): AgyActivity[] {
   const file = path.join(dir, "conversation_summaries.db");
   if (!fs.existsSync(file)) return [];
   let rows: Record<string, unknown>[] = [];
@@ -555,6 +667,16 @@ export function readAntigravityActivity(since: number, dir = antigravityDir(), n
     }
     return cur;
   };
+  const resolveConvDb = (id: string) => {
+    const local = path.join(dir, "conversations", id + ".db");
+    if (fs.existsSync(local)) return local;
+    for (const other of allDirs) {
+      if (other === dir) continue;
+      const candidate = path.join(other, "conversations", id + ".db");
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return local;
+  };
   const byId = new Map<string, AgyActivity>();
   const activeSubs = new Map<string, { count: number; at: number }>();
   const buildItem = (row: Record<string, unknown>, forceKeep = false): AgyActivity | null => {
@@ -567,7 +689,7 @@ export function readAntigravityActivity(since: number, dir = antigravityDir(), n
     const sumRunning = !killed && (/RUNNING|BUSY|CANCELING/.test(status) || notFullyIdle);
     const nested = Number(row.nesting_depth || 0) > 0;
     if (!forceKeep && !sumRunning && sumAt < since) return null;
-    const db = path.join(dir, "conversations", id + ".db");
+    const db = resolveConvDb(id);
     const stamp = (!nested || sumRunning) ? antigravityStamp(db) : null;
     const info = !nested && stamp ? conversationPhase(db, stamp) : {};
     const dbOpen = !nested && !killed && !!info.open && !!stamp && stamp.mtimeMs > sumAt + 1000 && now - stamp.mtimeMs < 60_000;
@@ -620,6 +742,37 @@ export function readAntigravityActivity(since: number, dir = antigravityDir(), n
     }
   }
   return [...byId.values()];
+}
+
+/** 最近 since 之后动过的对话（支持同时扫描 Antigravity IDE 与 Antigravity CLI 目录并按会话合并）。读不到返回空的。 */
+export function readAntigravityActivity(since: number, dir: string | string[] = antigravityDirs(), now = Date.now()): AgyActivity[] {
+  const dirs = Array.isArray(dir) ? dir : [dir];
+  if (dirs.length === 1) return readSingleDirActivity(since, dirs[0], dirs, now);
+  const merged = new Map<string, AgyActivity>();
+  for (const d of dirs) {
+    for (const item of readSingleDirActivity(since, d, dirs, now)) {
+      const prev = merged.get(item.id);
+      if (!prev) {
+        merged.set(item.id, item);
+        continue;
+      }
+      const preferItem = item.running !== prev.running ? item.running : item.at >= prev.at;
+      const pri = preferItem ? item : prev;
+      const sec = preferItem ? prev : item;
+      const subagents = Math.max(prev.subagents ?? 0, item.subagents ?? 0) || undefined;
+      merged.set(item.id, {
+        ...pri,
+        running: prev.running || item.running,
+        nested: prev.nested || item.nested,
+        at: Math.max(prev.at, item.at),
+        since: Math.max(prev.since, item.since),
+        title: pri.title || sec.title,
+        workspace: pri.workspace || sec.workspace,
+        ...(subagents ? { subagents } : {}),
+      });
+    }
+  }
+  return [...merged.values()];
 }
 
 /* ---------------- 额度（本机 language server） ---------------- */
@@ -680,19 +833,21 @@ type Hub = { pid: number; httpPort: number; csrfToken: string; at: number };
 
 /** 还活着的 language server。hub 文件可能是上次没删掉的，按进程还在不在挑最新的一个。 */
 export function antigravityHub(): Hub | null {
-  const dir = path.join(antigravityDir(), "daemon");
-  let names: string[] = [];
-  try { names = fs.readdirSync(dir).filter((name) => /^hub_\d+\.json$/.test(name)); } catch { return null; }
   const hubs: Hub[] = [];
-  for (const name of names) {
-    try {
-      const file = path.join(dir, name);
-      const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
-      const pid = Number(raw.pid), httpPort = Number(raw.httpPort), csrfToken = typeof raw.csrfToken === "string" ? raw.csrfToken : "";
-      if (!pid || !httpPort || !csrfToken) continue;
-      try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") continue; }
-      hubs.push({ pid, httpPort, csrfToken, at: fs.statSync(file).mtimeMs });
-    } catch { /* 写到一半、格式不对：跳过 */ }
+  for (const root of antigravityDirs()) {
+    const dir = path.join(root, "daemon");
+    let names: string[] = [];
+    try { names = fs.readdirSync(dir).filter((name) => /^hub_\d+\.json$/.test(name)); } catch { continue; }
+    for (const name of names) {
+      try {
+        const file = path.join(dir, name);
+        const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+        const pid = Number(raw.pid), httpPort = Number(raw.httpPort), csrfToken = typeof raw.csrfToken === "string" ? raw.csrfToken : "";
+        if (!pid || !httpPort || !csrfToken) continue;
+        try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") continue; }
+        hubs.push({ pid, httpPort, csrfToken, at: fs.statSync(file).mtimeMs });
+      } catch { /* 写到一半、格式不对：跳过 */ }
+    }
   }
   return hubs.sort((a, b) => b.at - a.at)[0] ?? null;
 }
@@ -741,17 +896,19 @@ function poolCategory(family: string): string {
 }
 
 function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
-  const root = (summaryJson as { response?: { groups?: unknown }; groups?: unknown } | null);
-  const rawGroups = (root?.response?.groups ?? root?.groups) as Record<string, unknown>[] | undefined;
+  const root = (summaryJson as { response?: { groups?: unknown }; command?: { data?: { groups?: unknown } }; groups?: unknown } | null);
+  const rawGroups = (root?.response?.groups ?? root?.command?.data?.groups ?? root?.groups) as Record<string, unknown>[] | undefined;
   if (!Array.isArray(rawGroups) || !rawGroups.length) return [];
   const out: ParsedSummaryGroup[] = [];
   rawGroups.forEach((raw, idx) => {
     if (!raw || typeof raw !== "object") return;
     const title = typeof raw.displayName === "string" && raw.displayName.trim()
       ? raw.displayName.trim()
-      : typeof raw.title === "string"
+      : typeof raw.title === "string" && raw.title.trim()
         ? raw.title.trim()
-        : "";
+        : typeof raw.name === "string"
+          ? raw.name.trim()
+          : "";
     const description = typeof raw.description === "string" ? raw.description.trim() : "";
     const buckets = Array.isArray(raw.buckets) ? (raw.buckets as Record<string, unknown>[]) : [];
     const bucketIds: string[] = [];
@@ -766,14 +923,18 @@ function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
           : "";
       const bTitle = typeof bucket.displayName === "string" && bucket.displayName
         ? bucket.displayName
-        : typeof bucket.title === "string"
+        : typeof bucket.title === "string" && bucket.title
           ? bucket.title
-          : "";
+          : typeof bucket.name === "string"
+            ? bucket.name
+            : "";
       const win = typeof bucket.window === "string" ? bucket.window : "";
       if (id) bucketIds.push(id);
-      const remaining = Math.min(1, Math.max(0, Number(bucket.remainingFraction ?? 0) || 0));
+      const rawRem = bucket.remainingFraction ?? bucket.remaining_fraction;
+      const remaining = Math.min(1, Math.max(0, Number(rawRem ?? 0) || 0));
       const used = Math.round((1 - remaining) * 1000) / 10;
-      const resetAt = typeof bucket.resetTime === "string" && bucket.resetTime ? bucket.resetTime : undefined;
+      const rawReset = bucket.resetTime ?? bucket.reset_time;
+      const resetAt = typeof rawReset === "string" && rawReset ? rawReset : undefined;
       const quota: AgyWindowQuota = { used, ...(resetAt ? { resetAt } : {}) };
       if (win === "weekly" || /weekly/i.test(id) || /week/i.test(bTitle)) week = quota;
       else if (win === "5h" || /5h/i.test(id) || /5-?hour|five\s+hour/i.test(bTitle)) five = quota;

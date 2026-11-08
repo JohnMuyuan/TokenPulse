@@ -930,7 +930,6 @@ async function sessionOf(kind: unknown, id: unknown) {
 /** 在 TokenPulse 里直接回复（见 session-reply.ts）。必须在原项目目录里跑：Agent 读写的是这个目录。 */
 async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unknown) {
   if (kind === "pi") throw new Error("pi 会话请在终端里继续。");
-  if (kind === "antigravity") throw new Error("Antigravity 的对话请在 Antigravity 里继续。");
   const hit = await sessionOf(kind, id);
   if (typeof prompt !== "string" || !prompt.trim()) throw new Error("回复内容是空的");
   if (prompt.length > 100_000) throw new Error("回复内容太长");
@@ -951,11 +950,10 @@ async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unk
 async function openInTerminal(kind: unknown, id: unknown) {
   const hit = await sessionOf(kind, id);
   if (hit.kind === "deepseek") throw new Error("DeepSeek Harness 没有交互式命令行，不能在终端里继续");
-  if (hit.kind === "antigravity") throw new Error("Antigravity 的对话请在 Antigravity 里继续。");
   const session = hit.session;
   const cwd = session.cwd && fsSync.existsSync(session.cwd) ? session.cwd : undefined;
   // 终端里的 CLI 走的是那个 PowerShell 的网络环境：出口检测放在终端里做（见 session-reply.ts 的 exitGuardScript）
-  const guard = hit.kind === "pi" ? null : exitMonitor.launchRule(CLI_PROVIDER[hit.kind]);
+  const guard = hit.kind === "pi" || hit.kind === "antigravity" ? null : exitMonitor.launchRule(CLI_PROVIDER[hit.kind]);
   openTerminal(hit.kind, hit.id, cwd, guard);
   return { ok: true, command: sessionCommand(hit.kind, hit.id), guarded: guardMode(guard) };
 }
@@ -964,8 +962,8 @@ const CLI_PROVIDER = { claude: "claude", codex: "chatgpt", grok: "grok" } as con
 const CLI_NAME = { claude: "Claude Code", codex: "Codex", grok: "Grok" } as const;
 /** 本机装了哪几家的 CLI（新对话只能用装了的）；guarded：哪几家设了出口 IP 白名单（启动前会先测出口）。 */
 function installedClis() {
-  const kinds = ["claude", "codex", "grok", "pi"] as const;
-  return { ...Object.fromEntries(kinds.map((kind) => [kind, resolveCli(kind) !== null])), guarded: Object.fromEntries(kinds.map((kind) => [kind, kind === "pi" ? null : guardMode(exitMonitor.launchRule(CLI_PROVIDER[kind]))])) };
+  const kinds = ["claude", "codex", "grok", "pi", "antigravity"] as const;
+  return { ...Object.fromEntries(kinds.map((kind) => [kind, resolveCli(kind) !== null])), guarded: Object.fromEntries(kinds.map((kind) => [kind, kind === "pi" || kind === "antigravity" ? null : guardMode(exitMonitor.launchRule(CLI_PROVIDER[kind]))])) };
 }
 /** 项目文件夹：必须是已经存在的目录的绝对路径。 */
 function projectFolder(value: unknown) {
@@ -979,10 +977,10 @@ function projectFolder(value: unknown) {
 /** 开一个新对话（0.3.16）：在项目文件夹里打开终端，启动选的那个 CLI。新会话由 CLI 自己建，之后会出现在会话列表里。 */
 function startConversation(kind: unknown, folder: unknown) {
   if (kind === "deepseek") throw new Error("DeepSeek Harness 的新任务不从终端开始。打开已有会话后可以在这里回复。");
-  if (kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "pi") throw new Error("请选择一个工具");
+  if (kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "pi" && kind !== "antigravity") throw new Error("请选择一个工具");
   const cwd = projectFolder(folder);
   if (!resolveCli(kind)) throw new Error("没有找到这个工具的命令行程序，请先安装它的 CLI");
-  const guard = kind === "pi" ? null : exitMonitor.launchRule(CLI_PROVIDER[kind]);
+  const guard = kind === "pi" || kind === "antigravity" ? null : exitMonitor.launchRule(CLI_PROVIDER[kind]);
   openTerminal(kind, null, cwd, guard);
   return { ok: true, cwd, guarded: guardMode(guard) };
 }
@@ -999,7 +997,7 @@ const DELETE_METHOD: Record<AgentKind, string> = {
   grok: "将调用 grok sessions delete <会话 ID> 永久删除这段对话。此操作无法撤销。",
   deepseek: "DeepSeek Harness 没有删除功能；TokenPulse 会删除本机的会话记录和它派出的子代理记录。如果 Harness 正开着，请先关掉再删，否则它的列表要重启后才更新。此操作无法撤销。",
   pi: "TokenPulse 会删除本机的会话记录文件，和在 pi 的 /resume 列表里删除一样。如果这段对话还开着，请先退出。此操作无法撤销。",
-  antigravity: "TokenPulse 会请开着的 Antigravity 删除这段对话，和在它自己的对话列表里删除一样。Antigravity 没开着时删不了。此操作无法撤销。",
+  antigravity: "Antigravity CLI 的对话会直接删除本机的会话记录文件；Antigravity 桌面端的对话会请开着的 Antigravity 删除。此操作无法撤销。",
 };
 
 /** 永久删除一段对话：先由主进程弹确认框，再调用各家 CLI（Claude、pi、DeepSeek 删本机文件）。 */

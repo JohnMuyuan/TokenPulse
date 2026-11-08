@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { cliDir } from "./credentials";
 import { piDir } from "./paths";
-import { antigravityDir, readAntigravityActivity } from "./antigravity";
+import { antigravityCliDir, antigravityDir, readAntigravityActivity } from "./antigravity";
 import { claudeUserText, codexUserText, dshRoot } from "./sessions";
 import { zstdFrames } from "./zstd-frames";
 
@@ -86,8 +86,8 @@ const ASK_LIMITS = { questions: 4, options: 6, header: 40, question: 300, label:
 const cut = (value: unknown, max: number) => { const text = str(value).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").trim(); return text.length > max ? text.slice(0, max - 1) + "…" : text; };
 /** 工具调用是不是在问你；是的话收成要显示的样子（字数、个数都有上限）。不是返回 null。 */
 export function askOf(name: string, input: unknown, id: string, at: number): AgentAsk | null {
-  // Grok 的同名工具按 Claude 的样子显示
-  const tool = name === "exit_plan_mode" ? "ExitPlanMode" : name === "ask_user_question" ? "AskUserQuestion" : name;
+  // Grok / Antigravity 的同名工具按 Claude 的样子显示
+  const tool = name === "exit_plan_mode" ? "ExitPlanMode" : name === "ask_user_question" || name === "ask_question" ? "AskUserQuestion" : name;
   let value = input;
   if (typeof value === "string") { try { value = JSON.parse(value); } catch { return null; } }
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -99,10 +99,12 @@ export function askOf(name: string, input: unknown, id: string, at: number): Age
     if (!item || typeof item !== "object") continue;
     const question = cut(item.question, ASK_LIMITS.question);
     if (!question) continue;
-    const options = ((Array.isArray(item.options) ? item.options.slice(0, ASK_LIMITS.options) : []) as Row[])
-      .map((option) => ({ label: cut(option?.label, ASK_LIMITS.label), description: cut(option?.description, ASK_LIMITS.description) }))
+    const options = ((Array.isArray(item.options) ? item.options.slice(0, ASK_LIMITS.options) : []) as unknown[])
+      .map((option) => typeof option === "string"
+        ? { label: cut(option, ASK_LIMITS.label), description: "" }
+        : { label: cut((option as Row)?.label, ASK_LIMITS.label), description: cut((option as Row)?.description, ASK_LIMITS.description) })
       .filter((option) => option.label);
-    questions.push({ header: cut(item.header, ASK_LIMITS.header), question, options, multi: item.multiSelect === true });
+    questions.push({ header: cut(item.header, ASK_LIMITS.header), question, options, multi: item.multiSelect === true || item.is_multi_select === true });
   }
   return questions.length ? { id, tool, at, questions } : null;
 }
@@ -474,12 +476,12 @@ type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; auxS
 /** 子代理的会话文件（Claude 的 subagents/、Grok 的子会话）；parent 是主会话文件。 */
 type SubEntry = { file: string; kind: "claude" | "grok"; parent: string; size: number; mtimeMs: number; inferred: Inferred | null; read: boolean };
 /** grok / deepseek / pi / antigravity 不给就不扫（测试只给前三个）。antigravity 是 ~/.gemini/antigravity 本身。 */
-export type ActivityRoots = { claude: string; codex: string; codexIndex: string; grok?: string; deepseek?: string; pi?: string; antigravity?: string };
+export type ActivityRoots = { claude: string; codex: string; codexIndex: string; grok?: string; deepseek?: string; pi?: string; antigravity?: string; antigravityCli?: string };
 export function defaultRoots(): ActivityRoots {
   return {
     claude: path.join(cliDir("claude"), "projects"), codex: path.join(cliDir("chatgpt"), "sessions"), codexIndex: path.join(cliDir("chatgpt"), "session_index.jsonl"),
     grok: path.join(cliDir("grok"), "sessions"), deepseek: path.join(dshRoot(), "sessions"), pi: path.join(piDir(), "sessions"),
-    antigravity: antigravityDir(),
+    antigravity: antigravityDir(), antigravityCli: antigravityCliDir(),
   };
 }
 const DEEPSEEK_FILE = "session.v4.jsonl.zstd";
@@ -583,7 +585,7 @@ export class ActivityScanner {
     return false;
   }
   /** 值得盯着的目录（里面的 .jsonl 变了就该看一次）。 */
-  watchRoots() { return [this.roots.claude, this.roots.codex, this.roots.grok, this.roots.deepseek, this.roots.pi, this.roots.antigravity].filter((dir): dir is string => !!dir); }
+  watchRoots() { return [this.roots.claude, this.roots.codex, this.roots.grok, this.roots.deepseek, this.roots.pi, this.roots.antigravity, this.roots.antigravityCli].filter((dir): dir is string => !!dir); }
 
   /** 各主会话下正在跑的子代理：个数、最近一次动静。 */
   private async scanSubs(now: number) {
@@ -730,15 +732,18 @@ export class ActivityScanner {
       if (now - entry.mtimeMs > KEEP_MS) this.entries.delete(entry.file);
     }
     // Antigravity：对话状态在它自己的对话列表库里（见 antigravity.ts 的 readAntigravityActivity），子代理不单独算（归入主对话的 subagents）
-    if (this.roots.antigravity) {
+    const agyDirs = [this.roots.antigravity, this.roots.antigravityCli].filter((dir): dir is string => !!dir);
+    if (agyDirs.length) {
       const alive = new Set<string>();
-      for (const item of readAntigravityActivity(now - KEEP_MS, this.roots.antigravity, now)) {
+      for (const item of readAntigravityActivity(now - KEEP_MS, agyDirs, now)) {
         if (item.nested) continue;
         alive.add(item.id);
         const holder = this.agy.get(item.id) ?? {};
         this.agy.set(item.id, holder);
+        const ask = item.running && item.ask ? askOf(item.ask.name, item.ask.args, item.ask.id, item.at) ?? undefined : undefined;
+        const toolName = item.tool || (item.phase === "tool" && item.subagents ? "Agent" : undefined);
         const inferred: Inferred = item.running
-          ? { status: item.phase === "waiting" ? "waiting" : item.phase === "tool" ? "tool" : "thinking", since: item.since, at: item.at, ...(item.phase === "tool" && item.subagents ? { tool: "Agent" } : {}) }
+          ? { status: item.phase === "waiting" ? "waiting" : item.phase === "tool" ? "tool" : "thinking", since: item.since, at: item.at, ...(toolName ? { tool: toolName } : {}), ...(ask ? { ask } : {}) }
           : { status: "done", since: item.since, at: item.at, doneAt: item.at, ...(item.ended ? { ended: item.ended } : {}) };
         const task: AgentTask = { key: `antigravity:${item.id}`, kind: "antigravity", agent: AGENT.antigravity, id: item.id, title: clip(item.title || "未命名会话"), project: path.basename(item.workspace || ""), status: "thinking", since: 0, updatedAt: 0 };
         consider(holder, task, inferred, item.at, item.subagents ? { count: item.subagents } : undefined);

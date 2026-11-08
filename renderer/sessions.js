@@ -42,7 +42,7 @@
     antigravity: { name: 'Antigravity', short: 'Antigravity', brand: 'antigravity' }
   };
   /** Antigravity 不是命令行工具：不能在终端里继续、不能在这里回复，只能看、搜、删。 */
-  const IDE_ONLY = new Set(['antigravity']);
+  const IDE_ONLY = new Set();
   const DAY = 86400000;
   /** 0.3.16：这一家设了出口 IP 白名单时，TokenPulse 启动的 CLI 会先测出口。 */
   const GUARD_NOTES = { ip: '启动前会先在终端里检测出口 IP，不在白名单就不会启动。', region: '启动前会先在终端里检测出口地区，不在地区白名单就不会启动。' };
@@ -286,7 +286,7 @@
     const folders = knownFolders();
     let chosen = folder || currentFolder() || folders[0]?.cwd || '';
     const currentKind = S.detail?.kind || S.items.find(item => item.key === S.key)?.kind;
-    let kind = [currentKind, 'claude', 'codex', 'grok', 'pi'].find(k => k && clis[k]) || '';
+    let kind = [currentKind, 'claude', 'codex', 'grok', 'pi', 'antigravity'].find(k => k && clis[k]) || '';
 
     const select = el('select', { class: 'sw-new-folder', 'aria-label': '项目文件夹' });
     const path = el('p', { class: 'sw-new-path', translate: 'no' });
@@ -299,7 +299,7 @@
     };
     const browse = button('选择文件夹…', 'folder', 'btn', { 'data-action': 'browse' });
     const tools = el('div', { class: 'sw-new-tools', role: 'radiogroup', 'aria-label': '用哪个工具' });
-    const drawTools = () => tools.replaceChildren(...['claude', 'codex', 'grok', 'pi'].map(k => {
+    const drawTools = () => tools.replaceChildren(...['claude', 'codex', 'grok', 'pi', 'antigravity'].map(k => {
       const b = el('button', { type: 'button', class: 'sw-new-tool' + (kind === k ? ' on' : ''), role: 'radio', 'aria-checked': String(kind === k), 'data-kind': k, disabled: clis[k] ? null : '' }, [
         mark(k), el('b', { text: AGENTS[k].name, translate: 'no' }), el('small', { text: clis[k] ? '已安装' : '没有找到 CLI' })
       ]);
@@ -313,7 +313,7 @@
     function sync() {
       start.disabled = !chosen || !kind;
       note.classList.remove('bad');
-      note.textContent = !['claude', 'codex', 'grok', 'pi'].some(k => clis[k]) ? '本机没有找到 Claude Code、Codex、Grok 或 pi 的命令行程序，请先安装。' : !chosen ? '先选一个项目文件夹。' : guardNote(clis.guarded?.[kind]) ? (clis.guarded[kind] === 'region' ? '这个工具设了出口地区白名单：' : '这个工具设了出口 IP 白名单：') + guardNote(clis.guarded[kind]) : '';
+      note.textContent = !['claude', 'codex', 'grok', 'pi', 'antigravity'].some(k => clis[k]) ? '本机没有找到 Claude Code、Codex、Grok、pi 或 Antigravity 的命令行程序，请先安装。' : !chosen ? '先选一个项目文件夹。' : guardNote(clis.guarded?.[kind]) ? (clis.guarded[kind] === 'region' ? '这个工具设了出口地区白名单：' : '这个工具设了出口 IP 白名单：') + guardNote(clis.guarded[kind]) : '';
     }
     const card = el('section', { class: 'modal-card sw-new-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'sw-new-title' }, [
       el('header', { class: 'sw-new-head' }, [el('div', {}, [

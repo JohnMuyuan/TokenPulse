@@ -398,6 +398,10 @@
     "Antigravity 的对话请在 Antigravity 里继续。": "Continue Antigravity conversations in Antigravity.",
     "Antigravity 的对话请在 Antigravity 里继续。删除时会请开着的 Antigravity 自己删。": "Continue Antigravity conversations in Antigravity. Deleting asks the running Antigravity to delete it.",
     "TokenPulse 会请开着的 Antigravity 删除这段对话，和在它自己的对话列表里删除一样。Antigravity 没开着时删不了。此操作无法撤销。": "TokenPulse asks the running Antigravity to delete this conversation, the same as deleting it from its own list. It can't be deleted while Antigravity is closed. This can't be undone.",
+    "Antigravity CLI 的对话会直接删除本机的会话记录文件；Antigravity 桌面端的对话会请开着的 Antigravity 删除。此操作无法撤销。": "Antigravity CLI conversations are deleted directly from local session files; Antigravity desktop conversations ask the running Antigravity to delete them. This can't be undone.",
+    "本机没有找到 Claude Code、Codex、Grok、pi 或 Antigravity 的命令行程序，请先安装。": "No command-line tool for Claude Code, Codex, Grok, pi, or Antigravity was found on this computer. Install one first.",
+    "Antigravity CLI 回复失败": "Antigravity CLI reply failed",
+    "没找到 Antigravity CLI (agy.exe)，请先安装官方程序": "Antigravity CLI (agy.exe) wasn't found. Install the official CLI first",
     "Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）": "Antigravity isn't running. Open Antigravity first, then delete the conversation (it deletes it itself, so its list doesn't keep a broken entry)",
     "对话 ID 不对": "Invalid conversation ID",
     "没有重置时间": "No reset time",
@@ -2883,6 +2887,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.83 更新说明
+    '支持 Antigravity CLI（agy.exe）：新对话、终端继续、应用内流式回复与本地删除': 'Antigravity CLI (agy.exe) support: new sessions, terminal resume, in-app streaming replies and local deletion',
+    '全面适配 Antigravity CLI：自动扫描 ~/.gemini/antigravity-cli 的对话、Token 用量与额度；会话管理支持用 Antigravity 开启新对话/新项目、在终端里用 agy.exe --conversation 继续、在 TokenPulse 内直接流式回复，以及在未打开桌面端时直接删除本地 CLI 会话；桌宠同步识别 CLI 任务与 ask_question 提问卡片。': 'Full support for Antigravity CLI: automatically scans conversations, token usage and quota from ~/.gemini/antigravity-cli; Sessions supports starting new conversations or projects with Antigravity, resuming in the terminal via agy.exe --conversation, streaming replies right inside TokenPulse, and deleting local CLI conversations without opening the desktop app; the desk pet also tracks CLI tasks and ask_question cards.',
     // 0.3.82 更新说明
     '修复：Antigravity 时间线切换历史周期丢失账号，周额度窗口提醒卡片重叠': 'Fixed: Antigravity timeline losing its account when switching historical cycles, and overlapping warning card in the weekly quota box',
     '修复「模型与思考等级 · 时间线」在切换历史周期时丢失 Antigravity / DeepSeek / 号池账号并显示空状态的问题；修复周额度窗口内提前重置说明与上方预警卡片贴边重叠及浅色模式下进度条底槽隐形的问题；补齐 Antigravity 子代理首步生成型号读取与最新模型知识库。': 'Fixed the “Models & effort · Timeline” section losing Antigravity, DeepSeek or pool accounts and showing an empty state when switching to historical cycles; fixed the early-reset note overlapping the warning banner and the invisible progress track in light mode inside the weekly quota box; fixed model resolution on first-step Antigravity subagent replies and updated the bundled model knowledge base.',

@@ -277,6 +277,32 @@ function addSteps(file, steps) {
     assert.equal(segs[1].startAt, baseT + 22 * HOUR, '第二段起点不早于重置点，不会吞入重置前 Token');
     pass('antigravity quota: agyWindowSegments splits early resets (moved/kept) and clamps segment boundaries');
 
+    // Antigravity CLI（~/.gemini/antigravity-cli）：CLI 会话同样被扫描入账，并识别 snake_case 的 RetrieveUserQuotaSummary
+    const agyCli = a.antigravityCliDir();
+    fs.mkdirSync(path.join(agyCli, 'conversations'), { recursive: true });
+    const convCli = 'ffffffff-0000-4000-8000-000000000006';
+    const cliFile = path.join(agyCli, 'conversations', convCli + '.db');
+    const cliDb = new DatabaseSync(cliFile);
+    cliDb.exec('create table steps (idx integer primary key, step_type integer, status integer, has_subtrajectory numeric, metadata blob, step_payload blob); create table gen_metadata (idx integer primary key, data blob, size integer);');
+    cliDb.prepare('insert into steps (idx, step_type, status, metadata) values (?, ?, ?, ?)').run(0, 15, 3, stepMeta({ start: now - 5000, end: now - 3000, modelId: 1319, gen: 0, input: 1200, output: 300 }));
+    const cliGen = genMeta('gemini-3.8-flash', 'MODEL_PLACEHOLDER_M319');
+    cliDb.prepare('insert into gen_metadata (idx, data, size) values (?, ?, ?)').run(0, cliGen, cliGen.length);
+    cliDb.close();
+    const cliSum = new DatabaseSync(path.join(agyCli, 'conversation_summaries.db'));
+    cliSum.exec('create table conversation_summaries (conversation_id text, title text, workspace_uris text, status text)');
+    cliSum.prepare('insert into conversation_summaries values (?, ?, ?, ?)').run(convCli, '', JSON.stringify([require('node:url').pathToFileURL(path.join(root, 'cli-proj')).href]), 'CASCADE_RUN_STATUS_IDLE');
+    cliSum.close();
+    const rCli = scan.scanLocalUsage();
+    assert.deepEqual(rCli.records.map(x => [x.id, x.model, x.cwd, x.input, x.output]), [[convCli + ':0', 'gemini-3.8-flash', path.join(root, 'cli-proj'), 1200, 300]]);
+    const snakeSummary = {
+      groups: [
+        { name: 'Gemini Models', buckets: [{ id: 'gemini_weekly', window: 'weekly', remaining_fraction: 0.7, reset_time: '2026-11-12T09:00:00Z' }] },
+      ],
+    };
+    const parsedSnake = a.parseAntigravityStatus(status, snakeSummary);
+    assert.deepEqual([parsedSnake.groups[0].title, parsedSnake.groups[0].week?.used], ['Gemini Models', 30]);
+    pass('antigravity CLI usage: scans antigravity-cli conversations with workspace cwd and parses snake_case quota summary');
+
     console.log(`${checks}/${checks} antigravity checks passed`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

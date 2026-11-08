@@ -422,6 +422,31 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     steps(C, [[15, 8]]);
     const fourth = await scanner.scan();
     assert.deepEqual(fourth.running.map(t => [t.id, t.status, t.subagents]).sort((x, y) => x[0].localeCompare(y[0])), [[A, 'tool', undefined], [B, 'tool', 1]], '长回合按对话库实时改动时间算在跑，后台子代理归入主对话');
+    // Antigravity CLI 目录（antigravityCli）与 ask_question 提问卡片提取
+    const agyCli = path.join(root, 'antigravity-cli-pet');
+    fs.mkdirSync(path.join(agyCli, 'conversations'), { recursive: true });
+    const varint = n => { const out = []; let v = BigInt(n); do { let b = Number(v & 0x7fn); v >>= 7n; if (v) b |= 0x80; out.push(b); } while (v); return Buffer.from(out); };
+    const bytes = (no, buf) => Buffer.concat([varint(no * 8 + 2), varint(buf.length), buf]);
+    const pStr = (no, s) => bytes(no, Buffer.from(s, 'utf8'));
+    const pMsg = (no, ...parts) => bytes(no, Buffer.concat(parts));
+    const D = 'dddddddd-1111-4000-8000-000000000004';
+    const cliSum = new DatabaseSync(path.join(agyCli, 'conversation_summaries.db'));
+    cliSum.exec('create table conversation_summaries (conversation_id text primary key, title text, workspace_uris text, status text, nesting_depth integer, killed numeric, last_modified_time datetime, last_user_input_time datetime)');
+    cliSum.prepare('insert into conversation_summaries values (?, ?, ?, ?, ?, 0, ?, ?)').run(D, 'CLI 架构确认', JSON.stringify([require('node:url').pathToFileURL(path.join(root, 'cli-app')).href]), 'CASCADE_RUN_STATUS_RUNNING', 0, '0001-01-01 00:00:00+00:00', '0001-01-01 00:00:00+00:00');
+    const cliDb = new DatabaseSync(path.join(agyCli, 'conversations', D + '.db'));
+    cliDb.exec('create table steps (idx integer primary key, step_type integer, status integer, metadata blob);');
+    const askMeta = pMsg(4, pStr(1, 'call_ask_1'), pStr(2, 'ask_question'), pStr(3, JSON.stringify({ questions: [{ question: '使用哪种存储方案？', options: ['SQLite', 'JSONL'], is_multi_select: false }] })));
+    cliDb.prepare('insert into steps (idx, step_type, status, metadata) values (?, ?, ?, ?)').run(0, 14, 3, null);
+    cliDb.prepare('insert into steps (idx, step_type, status, metadata) values (?, ?, ?, ?)').run(1, 132, 9, askMeta);
+    cliDb.close();
+    cliSum.close();
+    const cliScanner = new activity.ActivityScanner({ claude: path.join(root, 'none'), codex: path.join(root, 'none'), codexIndex: path.join(root, 'none.jsonl'), antigravity: agy, antigravityCli: agyCli });
+    assert.ok(cliScanner.watchRoots().includes(agyCli));
+    const fifth = await cliScanner.scan();
+    const cliTask = fifth.running.find(t => t.id === D);
+    assert.ok(cliTask, '扫描到 antigravityCli 目录的会话');
+    assert.equal(cliTask.tool, 'ask_question');
+    assert.deepEqual(cliTask.ask?.questions, [{ header: '', question: '使用哪种存储方案？', options: [{ label: 'SQLite', description: '' }, { label: 'JSONL', description: '' }], multi: false }]);
     sum.close();
   });
 

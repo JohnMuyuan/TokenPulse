@@ -70,7 +70,7 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
     assert.deepEqual(list.map(s => s.id), [A], '子代理、对话列表里已经没有的不列');
     const item = list[0];
     assert.deepEqual([item.key, item.title, item.project, item.cwd, item.turns, item.messageCount, item.toolCount, item.models, item.resumeCommand, item.createdAt],
-      [`antigravity:${A}`, '额度卡片分组', 'demo-app', path.join(root, 'demo-app'), 1, 2, 2, ['gemini-4-argon'], '', T0]);
+      [`antigravity:${A}`, '额度卡片分组', 'demo-app', path.join(root, 'demo-app'), 1, 2, 2, ['gemini-4-argon'], `agy.exe --conversation ${A}`, T0]);
     assert.equal(item.preview, '改好了：两组额度各占一行。');
     assert.strictEqual(item.avgRoundDurationMs, 2000);
     assert.deepEqual(item.usage, {
@@ -146,6 +146,43 @@ const summary = (id, title, nesting = 0) => summaries.prepare('insert or replace
       assert.equal(sessions.getSession('antigravity', A), null);
     } finally { server.close(); }
     pass('antigravity sessions: deleting asks the running Antigravity (DeleteCascadeTrajectory) and refuses when it is closed, without touching files');
+
+    // Antigravity CLI（~/.gemini/antigravity-cli）：无头模式的 0001-01-01 时间戳回退到文件 mtime；无需打开 IDE 即可直接删本地文件；CLI 回复与终端命令解析
+    const agyCli = a.antigravityCliDir();
+    for (const dir of [path.join(agyCli, 'conversations'), path.join(agyCli, 'brain'), path.join(agyCli, 'annotations')]) fs.mkdirSync(dir, { recursive: true });
+    const cliId = 'dddddddd-2222-4000-8000-000000000004';
+    const cliDbFile = path.join(agyCli, 'conversations', cliId + '.db');
+    const cliDb = new DatabaseSync(cliDbFile);
+    cliDb.exec('create table steps (idx integer primary key, step_type integer, status integer, metadata blob, step_payload blob); create table gen_metadata (idx integer primary key, data blob, size integer);');
+    cliDb.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(0, 14, 3, userStep(T0 + 10000, '在 CLI 里跑一次检查'));
+    cliDb.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(1, 15, 3, replyStep(T0 + 12000, { text: 'CLI 检查通过。', usage: { input: 500, output: 100 } }));
+    cliDb.close();
+    fs.mkdirSync(path.join(agyCli, 'brain', cliId), { recursive: true });
+    fs.writeFileSync(path.join(agyCli, 'annotations', cliId + '.pbtxt'), 'last_user_view_time {}');
+    const cliSummaries = new DatabaseSync(path.join(agyCli, 'conversation_summaries.db'));
+    try {
+      cliSummaries.exec('create table conversation_summaries (conversation_id text primary key, title text, workspace_uris text, status text, nesting_depth integer, last_modified_time datetime)');
+      cliSummaries.prepare('insert into conversation_summaries values (?, ?, ?, ?, ?, ?)').run(cliId, '', JSON.stringify([pathToFileURL(path.join(root, 'cli-proj')).href]), 'CASCADE_RUN_STATUS_IDLE', 0, '0001-01-01 00:00:00+00:00');
+    } finally {
+      cliSummaries.close();
+    }
+    const cliList = sessions.listSessions().filter(s => s.kind === 'antigravity');
+    assert.deepEqual(cliList.map(s => [s.id, s.title, s.project, s.resumeCommand]), [[cliId, '在 CLI 里跑一次检查', 'cli-proj', `agy.exe --conversation ${cliId}`]]);
+    await reply.deleteSession('antigravity', cliId);
+    assert.equal(fs.existsSync(cliDbFile), false, 'CLI 会话无需打开 IDE 即可直接删掉本地 .db');
+    assert.equal(fs.existsSync(path.join(agyCli, 'brain', cliId)), false, '同名的 brain 目录一并清理');
+    assert.equal(fs.existsSync(path.join(agyCli, 'annotations', cliId + '.pbtxt')), false, 'annotations 一并清理');
+    assert.deepEqual(sessions.listSessions().filter(s => s.kind === 'antigravity'), []);
+
+    assert.deepEqual(reply.replyArgs('antigravity', A, 'readonly'), ['--conversation', A, '--output-format', 'stream-json', '--mode', 'plan']);
+    assert.deepEqual(reply.replyArgs('antigravity', A, 'edit'), ['--conversation', A, '--output-format', 'stream-json', '--mode', 'accept-edits']);
+    assert.match(reply.terminalScript('antigravity', A, 'D:\\demo-app'), /Get-Command agy\.exe[\s\S]*'--conversation' 'aaaaaaaa-2222-4000-8000-000000000001'/);
+    assert.deepEqual(reply.readEvent('antigravity', JSON.stringify({ event: 'step_update', step_update: { text_delta: '你好' } }), false), { delta: '你好' });
+    assert.deepEqual(reply.readEvent('antigravity', JSON.stringify({ event: 'step_update', step_update: { tool: { name: 'run_command', detail: 'npm test' } } }), true), { tool: 'run_command npm test' });
+    assert.deepEqual(reply.readEvent('antigravity', JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: '完整回复' } }), false), { final: '完整回复' });
+    assert.deepEqual(reply.readEvent('antigravity', JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: '完整回复' } }), true), {});
+    assert.deepEqual(reply.readEvent('antigravity', JSON.stringify({ event: 'error', error: '连接中断' }), false), { error: '连接中断' });
+    pass('antigravity CLI sessions: scanned from antigravity-cli, deleted locally without IDE, and stream-json reply/terminal commands work');
 
     console.log(`${checks}/${checks} antigravity session checks passed`);
   } finally {

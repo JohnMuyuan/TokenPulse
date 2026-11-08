@@ -1,4 +1,53 @@
-# 当前接手入口 · TokenPulse v0.3.82 正式版发布完工（Antigravity 时间线历史周期切换修复 & 周额度窗口卡片 UI 修复，2026-11-07）
+# 当前接手入口 · TokenPulse v0.3.83 正式版发布完工（Antigravity CLI 全面适配，2026-11-07）
+
+## 已完成并发布 · TokenPulse v0.3.83 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.83）
+
+- **本轮目标**：
+  - **版本**：`v0.3.83`（以 `package.json:3` 为准，Git 标签 `v0.3.83`）。
+  - 用户安装了 **Antigravity CLI (`agy.exe`)**，要求将 Claude Code CLI 作为模板，为 TokenPulse 全面适配 Antigravity CLI，并提升一个小版本发布到 GitHub Release。
+- **本机 Antigravity CLI 实测结构与协议核验**：
+  1. **可执行文件与双路径区分**：
+     - 真正的 Antigravity CLI 为 `%LOCALAPPDATA%\agy\bin\agy.exe`（`Antigravity CLI v0.2.3 (Standalone)`，Go 编译），而 `%LOCALAPPDATA%\Programs\Antigravity\bin\agy.cmd` 是启动 Electron IDE 桌面端的脚本。因此 CLI 探测与 PowerShell 启动命令统一显式匹配 `agy.exe`。
+  2. **本地数据存储目录（`~/.gemini/antigravity-cli`）**：
+     - Antigravity CLI 默认独立使用 `~/.gemini/antigravity-cli`（与桌面端 `~/.gemini/antigravity` 并列），拥有完全一致的 `conversations/<id>.db`（`steps` / `gen_metadata` Protobuf 表结构）、`conversation_summaries.db`、`daemon/hub_*.json`、`brain/<id>`、`annotations/<id>.pbtxt`。
+     - 注意：CLI 在无头打印模式下写入 `conversation_summaries.db` 时，`last_modified_time` 可能为 `'0001-01-01 00:00:00+00:00'`（`Date.parse` 为负数），需过滤 `<= 0` 时间戳并回退到 `<id>.db(-wal)` 文件修改时间。
+  3. **命令行与无头流式回复（`stream-json`）**：
+     - 恢复会话：`agy.exe --conversation <id>`。
+     - 无头流式回复：`agy.exe --conversation <id> --output-format stream-json --mode accept-edits|plan`，当 `stdin` 为管道时自动进入无头打印模式并从 `stdin` 读取提示词（无需且不能传空 `-p`）。
+     - 流式输出 NDJSON 事件：`step_update`（含 `text_delta`、`tool.name`/`tool.detail` 或 `tool_name`、`error`）、`result`（含 `status`、`response`、`error`）、`error`。
+- **已完成的关键改动与文件**：
+  1. **`src/core/antigravity.ts`**：
+     - 新增 `antigravityCliDir()` 与 `antigravityDirs()`，同时覆盖 `~/.gemini/antigravity`（桌面端）与 `~/.gemini/antigravity-cli`（CLI）；
+     - `antigravityConversationFiles()`、`antigravityWorkspaces()`、`antigravitySummaries()`、`antigravityHub()` 均升级为跨双目录扫描与合并（按最新文件修改时间去重，优先保留非空标题与工作区）；
+     - `sqliteTime()` 将 `<= 0` 的时间戳（如 `0001-01-01`）归零，避免产生负数时间戳；
+     - `deleteAntigravityConversation(id)` 支持对 CLI 会话直接清理本地文件（`conversations/<id>.db` 及 `-wal`/`-shm`、`brain/<id>`、`annotations/<id>.pbtxt`、`presence/<id>.lock` 以及两边的 `conversation_summaries.db` 行），无需打开 Antigravity 桌面端；纯桌面端会话仍通过 `DeleteCascadeTrajectory` 请运行中的 Antigravity 删除；
+     - `conversationPhase()` 与 `readAntigravityActivity()` 支持跨双目录合并活动状态，并从步骤 `metadata`（字段 4）提取当前工具名与 `ask_question` 提问参数；`parseSummaryGroups()` 兼容 `RetrieveUserQuotaSummary` 的 snake_case 字段（`remaining_fraction`、`reset_time`、`name`）。
+  2. **`src/core/sessions.ts`、`src/main/session-reply.ts`、`src/main/index.ts`、`renderer/sessions.js`、`renderer/intro.js` & `renderer/i18n.js`**：
+     - `src/core/sessions.ts`：`commandOf("antigravity", id)` 返回 `` `agy.exe --conversation ${id}` ``；`toolSummary()` 补充 `CommandLine`、`AbsolutePath`、`Path`、`Query`、`Prompt`、`toolSummary` 参数提取；`INDEX_VERSION` 升至 `5`；
+     - `src/main/session-reply.ts`：`resolveCli("antigravity")` 解析 `%LOCALAPPDATA%\agy\bin\agy.exe` / `~/.local/bin/agy.exe` / `where("agy.exe")`（可由 `TOKENPULSE_AGY_CLI` 覆盖）；`terminalScript` 支持 `agy.exe` 新建会话与 `--conversation <id>` 恢复会话；`replyArgs` 与 `readEvent` 支持 `agy.exe` 的 `stream-json` 流式回复与工具调用展示；
+     - `src/main/index.ts` & `renderer/sessions.js`：解除 Antigravity 会话的 `IDE_ONLY` 限制，开放「开一个新对话 / 新项目」「在终端里继续」「复制继续命令」「回复对话」，并补充 `0.3.83` 版本更新说明与中英文翻译词条。
+  3. **`src/core/agent-activity.ts` & `src/main/antigravity-quota.ts`**：
+     - `ActivityScanner` 默认监听并扫描 `antigravity` 与 `antigravityCli` 双目录；`askOf` 支持将 Antigravity 的 `ask_question`（含字符串数组 `options` 与 `is_multi_select`）转换为桌宠问题卡片；
+     - `AntigravityQuotaService.installed()` 与 `refresh()` 同时检测桌面端与 CLI 目录。
+- **验证命令与实际结果**：
+  - `npm run build`：**PASSED (Exit 0)**。
+  - `node scripts/test-antigravity-sessions.cjs`：**4/4 PASSED (Exit 0)**（含 `antigravity-cli` 会话扫描、无需 IDE 本地删除、`replyArgs`/`terminalScript`/`readEvent` 流式事件解析）。
+  - `node scripts/test-antigravity-usage.cjs`：**10/10 PASSED (Exit 0)**（含 `antigravity-cli` 用量入账与 snake_case 额度汇总解析）。
+  - `node scripts/test-desk-pet.cjs`：**PASSED (Exit 0)**（含 `antigravityCli` 目录监听与 `ask_question` 桌宠问题卡片提取）。
+  - `npx electron scripts/test-antigravity-ui.cjs`：**7/7 PASSED (Exit 0)**（含会话管理页「回复对话」按钮、回复输入框、「在终端里继续」与 `agy.exe --conversation` 复制命令、深色模式与英文翻译零残留）。
+  - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASSED (Exit 0)**。
+- **最新产物路径与版本（v0.3.83）**：
+  - `dist/TokenPulse-0.3.83-Setup.exe`（SHA256: `0DB44D54236A0B8055BBB613F8AED863D800D2F90E367526D071603988ADED45`）
+  - `dist/TokenPulse-0.3.83-Portable.exe`（SHA256: `0B9C9AAE68771F6893FF7B24ACB58059DD4979364912D07BF35F2FA1D33A0793`）
+  - `dist/TokenPulse-0.3.83-Setup.exe.blockmap`（SHA256: `7DE791EBC35741342C945D75D4A4721F66D5546DFA6CCA28BB6A799F48CECBA9`）
+  - `dist/latest.yml`（SHA256: `6ECFC3FBF05C965FA36E4643ABC63932916A6AFE036BE4582C1CEDDEB4C36C2C`）
+  - `dist/win-unpacked/TokenPulse.exe`
+  - **Git 提交与发布状态**：代码已提交至 `main`、已打标签 `v0.3.83` 并推送到 `origin/main`；GitHub Release `v0.3.83` 已正式发布（https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.83 ），全部 4 项安装包与元数据附件均已上传。
+  - **进程与文件锁状态**：本轮启动的构建与测试进程已全部退出；`build/main/index.js`、`build/core/antigravity.js`、`build/main/session-reply.js`、`dist/TokenPulse-0.3.83-Setup.exe`、`dist/TokenPulse-0.3.83-Portable.exe`、`dist/latest.yml`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测句柄已立即关闭）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.82 正式版发布完工（Antigravity 时间线历史周期切换修复 & 周额度窗口卡片 UI 修复，2026-11-07）
 
 ## 已完成并发布 · TokenPulse v0.3.82 正式版验收与 GitHub Release（2026-11-07，主分支 `main`，版本 v0.3.82）
 

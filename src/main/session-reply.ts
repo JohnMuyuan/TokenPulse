@@ -116,6 +116,17 @@ export function resolveCli(kind: AgentKind): { file: string; prefix: string[]; e
     if (fs.existsSync(exe) && fs.existsSync(cli)) return { file: exe, prefix: [cli], env: { ELECTRON_RUN_AS_NODE: "1" } };
     return null;
   }
+  if (kind === "antigravity") {
+    const override = process.env.TOKENPULSE_AGY_CLI;
+    if (override && fs.existsSync(override)) return { file: override, prefix: [] };
+    const local = process.env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+    const file = [
+      path.join(local, "agy", "bin", "agy.exe"),
+      path.join(home, ".local", "bin", "agy.exe"),
+      ...where("agy.exe"),
+    ].find((candidate) => fs.existsSync(candidate) && /\.exe$/i.test(candidate));
+    return file ? { file, prefix: [] } : null;
+  }
   const name = kind === "claude" ? "claude" : "grok";
   const known = kind === "claude" ? path.join(home, ".local", "bin", "claude.exe") : path.join(home, ".grok", "bin", "grok.exe");
   const file = [known, ...where(`${name}.exe`)].find((candidate) => fs.existsSync(candidate));
@@ -229,9 +240,10 @@ export function exitGuardScript(kind: AgentKind, guard: ExitGuard) {
 }
 
 export function terminalScript(kind: AgentKind, id: string | null, cwd?: string, fallbackExe?: string, guard?: ExitGuard | null) {
-  const name = kind === "pi" ? "pi" : kind === "claude" ? "claude" : kind === "codex" ? "codex" : "grok";
+  // Antigravity IDE 安装时会在 PATH 里放一个 agy.cmd（启动 Electron 桌面端），真正的 CLI 是 agy.exe
+  const name = kind === "pi" ? "pi" : kind === "claude" ? "claude" : kind === "codex" ? "codex" : kind === "antigravity" ? "agy.exe" : "grok";
   // id 为 null：开一个新对话（0.3.16），不带任何参数，和用户自己在这个目录里敲命令一样
-  const args = id === null ? "" : (kind === "codex" ? ["resume", id] : [kind === "pi" ? "--session" : "--resume", id]).map(quotePs).join(" ");
+  const args = id === null ? "" : (kind === "codex" ? ["resume", id] : [kind === "pi" ? "--session" : kind === "antigravity" ? "--conversation" : "--resume", id]).map(quotePs).join(" ");
   return [
     cwd ? `Set-Location -LiteralPath ${quotePs(cwd)}` : "",
     // 设了出口白名单（IP 优先，没有 IP 就看地区）：先测，不符合就到此为止（脚本里的 return），下面两行不会执行
@@ -271,6 +283,9 @@ export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFi
   if (kind === "pi") throw new Error("pi 会话请在终端里继续。");
   // headless 文档：dsh --profile headless --json --session-id <id>，任务用 - 从 stdin 读。新任务不带 session-id。
   if (kind === "deepseek") return ["--profile", "headless", "--json", ...(id ? ["--session-id", id] : []), "-"];
+  if (kind === "antigravity") {
+    return ["--conversation", id, "--output-format", "stream-json", "--mode", mode === "edit" ? "accept-edits" : "plan"];
+  }
   if (kind === "claude") {
     return ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--resume", id, "--permission-mode", mode === "edit" ? "acceptEdits" : "dontAsk"];
   }
@@ -343,6 +358,28 @@ export function readEvent(kind: AgentKind, line: string, streamed: boolean): { d
     return {};
   }
   if (!row || typeof row !== "object") return {};
+  if (kind === "antigravity") {
+    const evt = typeof row.event === "string" ? row.event : typeof row.type === "string" ? row.type : "";
+    if (evt === "step_update") {
+      const step = row.step_update && typeof row.step_update === "object" ? row.step_update : row;
+      if (typeof step.text_delta === "string" && step.text_delta) return { delta: step.text_delta };
+      const toolObj = step.tool && typeof step.tool === "object" ? step.tool : step.tool_info && typeof step.tool_info === "object" ? step.tool_info : null;
+      const toolName = typeof toolObj?.name === "string" ? toolObj.name : typeof step.tool_name === "string" ? step.tool_name : "";
+      const toolDetail = typeof toolObj?.detail === "string" ? toolObj.detail : "";
+      if (toolName) return { tool: (toolDetail ? `${toolName} ${toolDetail}` : toolName).slice(0, 160) };
+      if (typeof step.error === "string" && step.error) return { error: step.error };
+      return {};
+    }
+    if (evt === "result") {
+      const res = row.result && typeof row.result === "object" ? row.result : row;
+      const err = typeof res.error === "string" ? res.error : "";
+      if (err || (typeof res.status === "string" && /fail|error/i.test(res.status))) return { error: err || "Antigravity CLI 回复失败" };
+      if (!streamed && typeof res.response === "string" && res.response) return { final: res.response };
+      return {};
+    }
+    if (evt === "error") return { error: String(row.error || row.message || "Antigravity CLI 回复失败") };
+    return {};
+  }
   if (kind === "deepseek") {
     if (row.type === "text" && typeof row.text === "string") return { delta: row.text };
     if (row.type === "tool_call") return { tool: String(row.name || row.tool || "工具").slice(0, 160) };
@@ -414,7 +451,7 @@ export function startReply(
   const key = `${options.kind}:${options.id}`;
   if ([...runs.values()].some((run) => run.key === key)) throw new Error("这段会话正在回复，等它结束或先停止");
   const cli = resolveCli(options.kind);
-  if (!cli) throw new Error(`没找到 ${options.kind === "claude" ? "Claude Code" : options.kind === "codex" ? "Codex CLI" : options.kind === "deepseek" ? "DeepSeek Harness" : "Grok Build"}，请先安装官方程序`);
+  if (!cli) throw new Error(`没找到 ${options.kind === "claude" ? "Claude Code" : options.kind === "codex" ? "Codex CLI" : options.kind === "deepseek" ? "DeepSeek Harness" : options.kind === "antigravity" ? "Antigravity CLI (agy.exe)" : "Grok Build"}，请先安装官方程序`);
   const runId = `r${Date.now()}-${seq++}`;
   let promptFile: string | undefined;
   if (options.kind === "grok") {

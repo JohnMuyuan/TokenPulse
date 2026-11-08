@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.83': [
+      ['sessions', '支持 Antigravity CLI（agy.exe）：新对话、终端继续、应用内流式回复与本地删除', '全面适配 Antigravity CLI：自动扫描 ~/.gemini/antigravity-cli 的对话、Token 用量与额度；会话管理支持用 Antigravity 开启新对话/新项目、在终端里用 agy.exe --conversation 继续、在 TokenPulse 内直接流式回复，以及在未打开桌面端时直接删除本地 CLI 会话；桌宠同步识别 CLI 任务与 ask_question 提问卡片。'],
+    ],
     '0.3.82': [
       ['quota', '修复：Antigravity 时间线切换历史周期丢失账号，周额度窗口提醒卡片重叠', '修复「模型与思考等级 · 时间线」在切换历史周期时丢失 Antigravity / DeepSeek / 号池账号并显示空状态的问题；修复周额度窗口内提前重置说明与上方预警卡片贴边重叠及浅色模式下进度条底槽隐形的问题；补齐 Antigravity 子代理首步生成型号读取与最新模型知识库。'],
     ],
