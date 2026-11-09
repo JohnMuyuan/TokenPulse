@@ -10,7 +10,7 @@
   - `dist/TokenPulse-0.3.85-Setup.exe.blockmap`（SHA256 `D551D2B694B634CDD994E74D31B9660344BCD33669A01E515F82C0FC0C98A355`）
   - `dist/latest.yml`（version 0.3.85，SHA256 `07E7D170DE9E28E211D3EDBC1AD2E20179A58119988819BB9E54EF14733CA43C`）
   - 以上 4 个文件与 `dist/win-unpacked/TokenPulse.exe` 独占句柄检测均 UNLOCKED；打包后无 electron / app-builder / makensis 残留进程。
-- **Git / GitHub**：提交、打标签 `v0.3.85`、推送和 GitHub Release 的结果见本节末尾（完成后更新）。
+- **Git / GitHub（已完成）**：发布提交 `540a4c4`（`release: v0.3.85 …`）已推送到 `origin/main`，标签 `v0.3.85` 已推送；GitHub Release `v0.3.85` 已正式发布（非草稿、非预发布）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.85 ，4 个附件（Setup.exe、Portable.exe、blockmap、latest.yml）大小和 SHA256 与本地一致。说明文件 `dist/release-0.3.85.md`。推送全程走代理 `127.0.0.1:7890`。未纳入提交：用户的 `clawd-pet-extracted/`（来源不明，未动）。
 
 本轮两项工作的细节：
 1. Antigravity 时间线按额度池分开 + 只有周额度的供应商（SuperGrok）去掉 5 小时窗口（见下方第一节）。
