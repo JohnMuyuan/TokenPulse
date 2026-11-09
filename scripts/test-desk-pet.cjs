@@ -458,6 +458,9 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
       { deskPet: false, deskPetKind: 'squirrel', deskPetScale: 2, deskPetOpacity: 30, deskPetOnTop: true, deskPetAccount: '', deskPetFidget: false, deskPetBadge: true, deskPetPos: null });
     assert.deepEqual(model.normalizeDeskPet({ deskPetKind: 'pet-0a1b2c3d', deskPetScale: '3', deskPetOpacity: 85.4, deskPetPos: { x: 100.6, y: -200.2 } }), { deskPetKind: 'pet-0a1b2c3d', deskPetScale: 3, deskPetOpacity: 85, deskPetPos: { x: 101, y: -200 } });
     assert.deepEqual(model.normalizeDeskPet({ theme: 'dark' }), {}, '不认识的字段不动');
+    // 动画帧率：默认 30，只认 30 / 60 / 120
+    assert.equal(prefs.deskPetFps, 30, '帧率默认 30');
+    assert.deepEqual([30, 60, 120, '60', 300, 0, 'fast', null].map(v => model.normalizeDeskPet({ deskPetFps: v }).deskPetFps), [30, 60, 120, 60, 30, 30, 30, 30]);
     assert.equal(prefs.deskPetMini, false, '极简模式默认关');
     assert.equal(prefs.deskPetSound, true, '提示音默认开');
     assert.deepEqual(model.normalizeDeskPet({ deskPetSound: 0 }), { deskPetSound: true }, '只有明确的 false 才算关');

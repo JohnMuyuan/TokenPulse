@@ -43,8 +43,14 @@ export type DeskPetPrefs = {
   deskPetMute: SoundKind[];
   /** Agent 问你问题（选择题、计划等你批准）时，在屏幕右下角弹出问题卡片。 */
   deskPetAsk: boolean;
+  /**
+   * 动画帧率上限（每秒几帧）：30 / 60 / 120。主题宠物的 CSS 动画不限帧时跟着显示器刷新率画，
+   * 高刷屏（300 Hz）上透明置顶窗口每秒重画几百次，鼠标会一顿一顿的（2026-11-09）。默认 30。
+   */
+  deskPetFps: number;
 };
-export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false, deskPetEdge: "right", deskPetSound: true, deskPetVolume: 70, deskPetMute: [], deskPetAsk: true };
+export const PET_FPS = [30, 60, 120] as const;
+export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false, deskPetEdge: "right", deskPetSound: true, deskPetVolume: 70, deskPetMute: [], deskPetAsk: true, deskPetFps: 30 };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 export const PACK_ID = /^pet-[a-f0-9]{8}$/;
@@ -66,6 +72,7 @@ export function normalizeDeskPet(patch: Record<string, unknown>): Partial<DeskPe
   if ("deskPetVolume" in patch) { const value = Math.round(Number(patch.deskPetVolume)); out.deskPetVolume = Number.isFinite(value) ? clamp(value, 0, 100) : DESK_PET_DEFAULTS.deskPetVolume; }
   if ("deskPetMute" in patch) out.deskPetMute = Array.isArray(patch.deskPetMute) ? SOUND_KINDS.filter((kind) => (patch.deskPetMute as unknown[]).includes(kind)) : [];
   if ("deskPetAsk" in patch) out.deskPetAsk = patch.deskPetAsk !== false;
+  if ("deskPetFps" in patch) { const fps = Number(patch.deskPetFps); out.deskPetFps = (PET_FPS as readonly number[]).includes(fps) ? fps : DESK_PET_DEFAULTS.deskPetFps; }
   if ("deskPetPos" in patch) {
     const pos = patch.deskPetPos as { x?: unknown; y?: unknown } | null;
     const x = Number(pos?.x), y = Number(pos?.y);

@@ -43,6 +43,8 @@
     "额度跟哪个账号": "Quota account", "宠物表现的剩余额度取这个账号的 5 小时和周窗口里用得多的那一个，点宠物冒出的气泡里也显示这个账号。": "The pet shows this account's remaining quota, using whichever of its 5-hour and weekly windows is more used. The speech bubble shows this account too.",
     "跟着正在用的账号": "The account in use", "默认。有任务在跑的工具当前登录的账号；没有任务时用最近用过的": "Default. The account signed in to the tool that's running a task, or the one used most recently", "已选的账号（现在没有额度数据）": "Selected account (no quota data now)",
     "空闲时": "When idle", "没有任务在跑时，每隔二三十秒随机做一个小动作。": "With no tasks running, it does a little random action every 20–30 seconds.", "偶尔做小动作": "Do little actions now and then", "安静待着": "Stay still",
+    "动画帧率": "Animation frame rate", "主题宠物的动画每秒最多画几帧。帧率越高动作越顺，也越占 CPU 和显卡；高刷新率屏幕上帧率太高，鼠标可能会一顿一顿的。": "The most frames per second a theme pet's animations draw. Higher is smoother but uses more CPU and GPU; on high-refresh screens a high frame rate can make the mouse stutter.",
+    "30 帧": "30 fps", "60 帧": "60 fps", "120 帧": "120 fps", "默认，省电，像素风看不出区别": "Default, saves power, looks the same for pixel art", "更顺": "Smoother", "最顺，开销约为 30 帧的 3 倍": "Smoothest, about 3× the cost of 30 fps",
     "自定义宠物的额度标签": "Quota label for custom pets", "自己导入的宠物画不出额度，在它右下角显示剩余百分比和任务数。只对自定义宠物有效。": "Imported pets can't draw quota, so a label in the corner shows the remaining percentage and task count. Custom pets only.", "显示": "Show", "不显示": "Hide",
     "剩余额度：松鼠看身边的橡果堆，仓鼠看腮帮子，章鱼看身体颜色。额度紧张时皱着眉，隔一阵冒一下汗；用完会发呆；额度重置时补满一下。": "Remaining quota: the squirrel's acorn pile, the hamster's cheeks, the octopus's color. When quota is tight it frowns and breaks into a sweat now and then; it zones out when it's gone, and refills when quota resets.",
     "任务：本机的 Claude Code、Codex、Grok Build、DeepSeek Harness 或 pi 有任务在跑时，宠物开始干活；任务做完会庆祝一下。只读会话文件，不改任何工具的配置。": "Tasks: when Claude Code, Codex, Grok Build, DeepSeek Harness or pi is running a task on this computer, the pet gets to work and celebrates when it finishes. It only reads session files and never changes any tool's config.",
@@ -2893,6 +2895,11 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.86 更新说明
+    '修复：开着桌宠时鼠标一顿一顿、不跟手': 'Fix: the mouse stuttered and lagged while the desk pet was on',
+    '桌宠不再用全系统的鼠标钩子判断鼠标在不在它身上，TokenPulse 忙的时候整台电脑的鼠标不会再跟着卡；主题宠物的动画也不再按显示器刷新率（高刷屏每秒几百次）重画，CPU 和显卡占用降到原来的约三分之一。': 'The desk pet no longer uses a system-wide mouse hook to tell whether the cursor is over it, so the whole computer’s mouse no longer hitches when TokenPulse is busy. Theme pet animations also stop redrawing at the display’s refresh rate (hundreds of times a second on high-refresh screens), cutting CPU and GPU use to about a third.',
+    '桌宠设置新增「动画帧率」': 'New desk pet setting: animation frame rate',
+    '可以选 30 / 60 / 120 帧，默认 30 帧：省电，像素风看不出区别；想要更顺可以调高，开销会跟着变大。': 'Choose 30, 60 or 120 fps. The default 30 fps saves power and looks the same for pixel art; go higher for smoother motion at a higher cost.',
     // 0.3.85 更新说明
     'Antigravity 时间线按额度池分开画': 'Antigravity timeline split by quota pool',
     '「模型与思考等级 · 时间线」里，Antigravity 的 Gemini 组和 Claude / GPT 组各有一张 5 小时卡和一张周额度卡：周期按各自的重置时间切，曲线只画这一组的已用百分比，请求也只算这一组的型号，两个额度池不再混在一起。': 'In the Model & effort timeline, Antigravity’s Gemini group and Claude / GPT group each get their own 5-hour and weekly cards: cycles follow each pool’s own reset times, the curve shows only that pool’s used %, and only that pool’s models are counted, so the two quota pools no longer mix.',

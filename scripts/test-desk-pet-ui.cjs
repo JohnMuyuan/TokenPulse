@@ -68,6 +68,27 @@ app.whenReady().then(async () => {
     assert.equal(await hover(2, 2), false, '透明的角落');
     console.log('PASS desk pet UI: hover only counts on the pet itself, not the transparent corners');
 
+    // 点击穿透时窗口收不到 mousemove（不再用 forward 的全局鼠标钩子，它会让主进程一忙整台电脑的鼠标就卡）：
+    // 靠主进程 16 毫秒的光标轮询把窗口内坐标发过去判断。光标是假的，按窗口位置换算成屏幕坐标
+    {
+      const realPoint = screen.getCursorScreenPoint, b = pet.getBounds();
+      let at = { x: b.x + 2, y: b.y + 2 };
+      screen.getCursorScreenPoint = () => ({ ...at });
+      try {
+        const hovering = () => js("document.body.classList.contains('hover')");
+        await until(async () => !(await hovering()), '透明角落：穿透');
+        at = { x: Math.round(b.x + box.x), y: Math.round(b.y + box.y) };
+        await until(hovering, '轮询到光标在宠物身上：接鼠标');
+        at = { x: b.x + 2, y: b.y + 3 };
+        await until(async () => !(await hovering()), '回到透明角落：穿透');
+        at = { x: Math.round(b.x + box.x), y: Math.round(b.y + box.y) };
+        await until(hovering, '又回到宠物身上');
+        at = { x: b.x - 400, y: b.y - 400 };
+        await until(async () => !(await hovering()), '光标出了窗口：补上漏掉的离开');
+      } finally { screen.getCursorScreenPoint = realPoint; }
+      console.log('PASS desk pet UI: without the forwarding mouse hook, the main-process cursor poll still tells pet pixels from transparent ones');
+    }
+
     // 拖动：光标停住、鼠标没松开时，宠物也要停住。屏幕缩放 150% 时反复 setBounds(getBounds()) 窗口会一像素一像素长大，
     // 宠物画在底边中间，看起来就是自己在漂。光标是假的（测试时不动真鼠标），位置挑在屏幕外
     const realCursor = screen.getCursorScreenPoint;
@@ -434,6 +455,14 @@ app.whenReady().then(async () => {
     await until(() => prefsFile().deskPetAsk === false, '不弹问题卡片存下来');
     await pickOption('dps-ask', '弹出卡片');
     await until(() => prefsFile().deskPetAsk === true, '弹问题卡片存下来');
+    // 动画帧率：默认 30，选 120 存下来并送到宠物窗口，再改回 30
+    assert.match(await mjs("document.getElementById('dps-fps').textContent"), /^30 帧/);
+    await pickOption('dps-fps', '120 帧');
+    await until(() => prefsFile().deskPetFps === 120, '120 帧存下来');
+    await until(() => js('window.__petFrameCap.fps === 120'), '宠物窗口换成 120 帧上限');
+    await pickOption('dps-fps', '30 帧');
+    await until(() => prefsFile().deskPetFps === 30, '改回 30 帧');
+    await until(() => js('window.__petFrameCap.fps === 30'), '宠物窗口回到 30 帧上限');
     await pickOption('dps-volume', '50%');
     await until(() => prefsFile().deskPetVolume === 50, '音量存下来');
     assert.deepEqual(await mjs("[...document.querySelectorAll('.dps-sound')].map(row => row.dataset.kind)"), ['done', 'ask', 'waiting', 'error', 'empty']);
@@ -534,6 +563,23 @@ app.whenReady().then(async () => {
     pet.webContents.send('desk-pet-state', idleView);
     await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg'"), '待机动画');
     assert.equal(await js(`getComputedStyle(${sroot}.querySelector('.bob')).animationName`), 'bob', '动画自带的 CSS 生效（只在 Shadow DOM 里）');
+    // 限帧：主题 SVG 的无限动画被接管（暂停、按 30 帧手动推进），不跟着显示器刷新率（用户的 300 Hz 屏）每秒重画几百次
+    const cap = await js(`new Promise(resolve => {
+      const bob = ${sroot}.querySelector('.bob').getAnimations()[0];
+      if (!bob) return resolve(null);
+      const seen = new Set(), from = performance.now();
+      const tick = () => { seen.add(bob.currentTime); if (performance.now() - from < 1000) requestAnimationFrame(tick); else resolve({ state: bob.playState, steps: seen.size, fps: window.__petFrameCap.fps }); };
+      setTimeout(() => requestAnimationFrame(tick), 100);
+    })`);
+    assert.ok(cap, '主题的无限动画存在');
+    assert.equal(cap.state, 'paused', '动画已被接管（暂停后手动推进）');
+    assert.equal(cap.fps, 30);
+    assert.ok(cap.steps >= 15 && cap.steps <= 40, `1 秒里动画时间只推进了约 30 次（实际 ${cap.steps} 次），动画仍在走、但不按刷新率重画`);
+    // 设置里改成 60 帧：状态里带上 fps，宠物窗口跟着换上限；改回 30
+    pet.webContents.send('desk-pet-state', { ...idleView, fps: 60 });
+    await until(() => js('window.__petFrameCap.fps === 60'), '帧率上限换成 60');
+    pet.webContents.send('desk-pet-state', { ...idleView, fps: 999 });
+    await until(() => js('window.__petFrameCap.fps === 30'), '不认识的帧率回到 30');
     assert.equal(await js(`getComputedStyle(${sroot}.getElementById('eyes-js')).transitionDuration`), '0.06s', '跟随用的元素：自带的 0.2 秒过渡换成很短的，不拖尾');
     assert.equal(await js("getComputedStyle(document.body).transitionDuration"), '0s', '不影响外面');
     // 身体画在舞台底边中间附近、大小按身体框放大（先让它看正前方：身体会跟着眼睛挪）

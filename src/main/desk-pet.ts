@@ -2,7 +2,10 @@
  * 桌宠（0.3.61）：桌面上一只像素小动物，表现剩余额度和本机 Agent 在不在干活；点一下冒出一个像素对话气泡，写着正在用的账号的额度。
  *
  * - 默认关闭，在「桌宠」页打开。关着的时候不建窗口、不扫会话文件。
- * - 宠物窗口透明、不占任务栏、不抢焦点；只有点在宠物身上才接鼠标，透明的地方点下去落到后面的窗口（setIgnoreMouseEvents + forward）。
+ * - 宠物窗口透明、不占任务栏、不抢焦点；只有点在宠物身上才接鼠标，透明的地方点下去落到后面的窗口（setIgnoreMouseEvents）。
+ *   不用 { forward: true }：Windows 上它靠一个全系统的低级鼠标钩子（WH_MOUSE_LL）转发鼠标移动，钩子跑在主进程的 UI 线程上，
+ *   主进程同步忙一下（扫会话、读 SQLite、写日志），整台电脑的鼠标都会一顿一顿的（2026-11-09 用户反馈「鼠标一抽一抽、不跟手」）。
+ *   改成用眼睛跟鼠标那个 16 毫秒的光标轮询：光标进了宠物窗口范围就把窗口内坐标发过去，宠物窗口自己判断是不是在宠物身上。
  * - 置顶：Windows 上置顶窗口之间谁后来谁在上面，别的程序的置顶窗口（视频小窗、截图工具、别的桌宠……）一出来就压住宠物，
  *   而宠物从不抢焦点，自己回不到最上面。所以每隔几秒、电脑醒来 / 解锁、换屏幕后把宠物和它的卡片、气泡重新提到最上面（keepOnTop）。
  * - 任务状态只读会话文件推断（core/agent-activity.ts）：盯着会话目录，有文件变了马上看一次；另外空闲 4 秒、有任务在跑 1 秒兜底看一次。
@@ -139,7 +142,7 @@ function createPet() {
   });
   pet = next;
   interactive = false;
-  next.setIgnoreMouseEvents(true, { forward: true });
+  next.setIgnoreMouseEvents(true);
   next.setMenuBarVisibility(false);
   next.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   next.loadFile(path.join(__dirname, "..", "..", "renderer", "desk-pet.html"), { query: { theme: prefs.theme } });
@@ -242,8 +245,13 @@ function startTimers() {
     // 睡眠序列要知道电脑多久没人动（键盘鼠标都算）；一秒看一次，变了才发。测试时（屏幕外）由测试自己发
     if (!OFFSCREEN() && now - idleAt >= 1000) { idleAt = now; const idle = idleSeconds(); if (idle !== lastIdle) { lastIdle = idle; pet.webContents.send("desk-pet-idle", idle); } }
     const point = screen.getCursorScreenPoint(), bounds = pet.getBounds(), sprite = spriteSize();
-    const rel = { x: Math.round(point.x - (bounds.x + bounds.width / 2)), y: Math.round(point.y - (bounds.y + bounds.height - sprite.height * 0.55)) };
-    const key = `${Math.round(rel.x / 4)},${Math.round(rel.y / 4)}`;
+    const rel: { x: number; y: number; cx?: number; cy?: number } = { x: Math.round(point.x - (bounds.x + bounds.width / 2)), y: Math.round(point.y - (bounds.y + bounds.height - sprite.height * 0.55)) };
+    // 光标在宠物窗口范围里：带上窗口内坐标，宠物窗口拿它判断是不是点在宠物身上（见文件开头：不用 forward 的鼠标钩子）。
+    // 这时按像素比较，进出宠物身子不会晚一格
+    const cx = point.x - bounds.x, cy = point.y - bounds.y;
+    const inside = cx >= 0 && cy >= 0 && cx < bounds.width && cy < bounds.height;
+    if (inside) { rel.cx = cx; rel.cy = cy; }
+    const key = inside ? `in:${cx},${cy}` : `${Math.round(rel.x / 4)},${Math.round(rel.y / 4)}`;
     if (key === lastCursor) return;
     lastCursor = key; movedAt = now;
     pet.webContents.send("desk-pet-cursor", rel);
@@ -298,7 +306,7 @@ export function deskPetView() {
   const quota = petQuota(options.snapshot(), prefs.deskPetAccount, options.title, prefs.deskPetAccount ? undefined : petUsing());
   const running = activity?.running ?? [];
   return {
-    pet: prefs.deskPetKind, scale: prefs.deskPetScale, theme: prefs.theme, fidget: prefs.deskPetFidget, badge: prefs.deskPetBadge,
+    pet: prefs.deskPetKind, scale: prefs.deskPetScale, theme: prefs.theme, fidget: prefs.deskPetFidget, badge: prefs.deskPetBadge, fps: prefs.deskPetFps,
     sound: prefs.deskPetSound, volume: prefs.deskPetVolume, mute: prefs.deskPetMute,
     // 换成自己音频的提示音：种类 → 导入时间（变了宠物窗口重新要一次数据）
     sounds: Object.fromEntries(Object.entries(listPetSounds()).map(([kind, item]) => [kind, item!.at])),
@@ -347,7 +355,7 @@ export function deskPetReady() {
 export function deskPetHit(on: boolean) {
   if (!pet || pet.isDestroyed() || drag || on === interactive) return;
   interactive = on;
-  pet.setIgnoreMouseEvents(!on, { forward: true });
+  pet.setIgnoreMouseEvents(!on);
 }
 
 export function deskPetDrag(phase: "start" | "end") {

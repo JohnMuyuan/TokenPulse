@@ -238,6 +238,7 @@
     if (!next) return;
     const changedPet = !view || view.pet !== next.pet, changedScale = !view || view.scale !== next.scale, wasEdge = edgeOf(), wasWork = view?.mode === 'work';
     view = next;
+    setFrameCap(view.fps);
     document.documentElement.dataset.theme = view.theme === 'dark' ? 'dark' : 'light';
     if (changedPet || !ctl) {
       ctl = new Pet.Controller(BUILT_IN.includes(view.pet) ? view.pet : 'squirrel'); ctl.idleSec = idleSec; shownKey = '';
@@ -373,6 +374,12 @@
   api.onState(apply);
   api.onPack(next => { setPack(next); draw(); });
   api.onCursor(rel => {
+    // 点击穿透时收不到 mousemove（主进程不再用 forward 的全局鼠标钩子）：用主进程轮询到的窗口内坐标判断鼠标在不在宠物身上。
+    // 光标已经出了窗口范围（cx 为空）而还挂着 hover：漏掉的 mouseleave，补上
+    if (!dragging && !press) {
+      if (rel.cx != null) setHover(hitAt(rel.cx, rel.cy));
+      else if (hovering) setHover(false);
+    }
     if (!ctl) return;
     // 鼠标位置是按屏幕算的：宠物贴左边时左右翻着、倒挂时上下左右都反着，眼睛要反过来看
     const edge = edgeOf();
@@ -407,6 +414,59 @@
     draw();
   });
   api.ready().then(data => { setPack(data?.pack || null); apply(data?.view); }).catch(() => undefined);
+
+  /*
+   * CSS 动画限帧：主题包宠物的 SVG 自带无限循环的 CSS 动画（呼吸、眨眼、蹦跳），极简模式倒挂时舞台在摆，眼睛跟鼠标用很短的 transition。
+   * 浏览器按显示器刷新率画这些动画：用户的屏幕是 300 Hz，这个透明、置顶的窗口就每秒重画 300 次，Windows 也要跟着每秒重新合成 300 次
+   * （实测 GPU 进程常驻约 30% 单核、宠物窗口约 35%），鼠标跟着一顿一顿（2026-11-09 用户反馈，关掉桌宠就好）。
+   * 这里把窗口里所有动画（含主题 SVG 所在的 Shadow DOM）接过来：一出现就暂停，再按每秒 petFps 帧手动推进时间。
+   * 动画本身的节奏不变，只是每秒画的次数封顶；像素画 30 帧看不出区别。窗口藏起来时不推进。
+   * 帧率在桌宠设置里选（30 / 60 / 120，默认 30），随状态一起送来（view.fps）。
+   */
+  const FPS_CHOICES = [30, 60, 120];
+  let petFps = 30, capTimer = null;
+  const adopted = new WeakMap();
+  const timelineNow = () => document.timeline.currentTime ?? performance.now();
+  function adopt(animation) {
+    if (adopted.has(animation)) return;
+    // 记下它在文档时间线上「从哪一刻开始」：之后 currentTime = 现在 - 起点，节奏和自己播放时一样
+    adopted.set(animation, timelineNow() - (animation.currentTime ?? 0));
+    try { animation.pause(); } catch { /* 已经被取消了 */ }
+  }
+  function petAnimations() {
+    const list = document.getAnimations();
+    const inner = svgHost.shadowRoot?.getAnimations?.() || [];
+    for (const animation of inner) if (!list.includes(animation)) list.push(animation);
+    return list;
+  }
+  function stepAnimations() {
+    if (document.visibilityState === 'hidden') return;
+    const now = timelineNow();
+    for (const animation of petAnimations()) {
+      adopt(animation);
+      const at = now - adopted.get(animation);
+      // 放完了的一次性动画停在最后一格，不再每格去碰它
+      const end = animation.effect?.getComputedTiming?.().endTime;
+      if (Number.isFinite(end) && at >= end && (animation.currentTime ?? 0) >= end) continue;
+      if (animation.currentTime !== at) try { animation.currentTime = Number.isFinite(end) ? Math.min(at, end) : at; } catch { /* 已经被取消了 */ }
+    }
+  }
+  // 新动画一出现就接过来（鼠标在动时眼睛的 transition 一直在换新的），不让它先按 300 Hz 跑到下一格
+  const onAnimationStart = event => { for (const animation of event.target.getAnimations?.() || []) adopt(animation); };
+  for (const target of [document, svgHost.shadowRoot].filter(Boolean)) {
+    target.addEventListener('animationstart', onAnimationStart, true);
+    target.addEventListener('transitionrun', onAnimationStart, true);
+  }
+  function setFrameCap(fps) {
+    const next = FPS_CHOICES.includes(Number(fps)) ? Number(fps) : 30;
+    if (capTimer && next === petFps) return;
+    petFps = next;
+    clearInterval(capTimer);
+    capTimer = setInterval(stepAnimations, Math.round(1000 / petFps));
+  }
+  setFrameCap(30);
+  // 测试用：看现在接管了几个动画、帧率上限多少
+  window.__petFrameCap = { get fps() { return petFps; }, adopted: () => petAnimations().filter(animation => adopted.has(animation) && animation.playState === 'paused').length, total: () => petAnimations().length };
 
   // 每秒 10 帧；系统开了「减少动画」时每秒 2 帧、不做随机小动作。窗口被藏起来的时候不画
   let last = 0;

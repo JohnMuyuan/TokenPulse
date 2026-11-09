@@ -153,6 +153,8 @@
       row('dps-account', '额度跟哪个账号', '宠物表现的剩余额度取这个账号的 5 小时和周窗口里用得多的那一个，点宠物冒出的气泡里也显示这个账号。', p.deskPetAccount, accounts, value => save({ deskPetAccount: value })),
       row('dps-fidget', '空闲时', '没有任务在跑时，每隔二三十秒随机做一个小动作。', p.deskPetFidget, [
         { value: true, label: '偶尔做小动作', hint: '默认' }, { value: false, label: '安静待着' }], value => save({ deskPetFidget: value })),
+      row('dps-fps', '动画帧率', '主题宠物的动画每秒最多画几帧。帧率越高动作越顺，也越占 CPU 和显卡；高刷新率屏幕上帧率太高，鼠标可能会一顿一顿的。', p.deskPetFps ?? 30, [
+        { value: 30, label: '30 帧', hint: '默认，省电，像素风看不出区别' }, { value: 60, label: '60 帧', hint: '更顺' }, { value: 120, label: '120 帧', hint: '最顺，开销约为 30 帧的 3 倍' }], value => save({ deskPetFps: value })),
       row('dps-ask', '问题卡片', 'Claude Code 用选择题问你、计划写好等你批准，或者 Codex 向你要信息时，在屏幕右下角弹出卡片，写着问题和选项。回答还是回到终端里。', p.deskPetAsk, [
         { value: true, label: '弹出卡片', hint: '默认' }, { value: false, label: '不弹' }], value => save({ deskPetAsk: value })),
       row('dps-sound', '提示音', '任务做完、在问你、出错停下、可能在等你确认、额度用完时，桌宠会响一声短短的提示音。每种都可以换成你自己的音频。', p.deskPetSound, [

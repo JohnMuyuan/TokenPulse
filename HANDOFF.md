@@ -1,4 +1,43 @@
-# 当前接手入口 · TokenPulse v0.3.85 正式发布（Antigravity 时间线按额度池分开、周额度单独占一行、桌面端对话导入 CLI 继续，2026-11-09）
+# 当前接手入口 · TokenPulse v0.3.86 正式发布（桌宠导致鼠标不跟手的修复 + 动画帧率选项，2026-11-09）
+
+## 发布状态 · v0.3.86
+
+- **版本**：`0.3.86`（`package.json` / `package-lock.json`，用户 2026-11-09 要求「直接发布」）。`renderer/intro.js` 加 0.3.86 更新说明 2 条（`pet` 图标），`renderer/i18n.js` 补英文。
+- **发版前验证**：`npm run build` PASS；`node scripts/test-desk-pet.cjs` 0 失败；Electron：`test-desk-pet-ui` 21 PASS、`test-intro-ui` 3 PASS、`test-weekly-only-ui` 4 PASS、`test-antigravity-ui` 7 PASS；`test-antigravity-timeline` 6/6、`test-antigravity-cli-import` 8/8。
+- **打包**：`npm run dist` PASS；app.asar 已确认含帧率选项、限帧、轮询命中（`rel.cx`）、`'0.3.86'` 说明，且无 `forward: true`。
+  - `dist/TokenPulse-0.3.86-Setup.exe`（112814119 B，SHA256 `BD9267B402383ED81B09031AEA28DDA3265C4D2E1B0A1AF7E80250AB76FC60F7`）
+  - `dist/TokenPulse-0.3.86-Portable.exe`（112556968 B，SHA256 `290791117511FF8261CCA6DCB0311862B12806C39D9C8B0B3F243F84C4200D11`）
+  - `dist/TokenPulse-0.3.86-Setup.exe.blockmap`（SHA256 `2603E7AE3490BC88BA6A3E3C832B1F52F88D4F43E37CD040EF662A52203C944B`）
+  - `dist/latest.yml`（version 0.3.86，SHA256 `F2BC9B0C11C4A7667627912923C67A28786E8B0C37DAC151751169F6CEE2B621`）
+  - 以上与 `dist/win-unpacked/TokenPulse.exe` 句柄 UNLOCKED；无 electron / app-builder / makensis 残留进程。
+- **Git / GitHub**：见本节末尾（推送和 Release 完成后更新）。
+
+## 本轮修复细节
+
+- **用户已确认**：关掉桌宠，鼠标就恢复正常。（用户未单独试用测试版，直接要求发布。）
+- **第二项修复 · 动画限帧**（本地，未提交）：用户屏幕 300 Hz，主题宠物 `pet-f62c2c82`（35 个 SVG、231 处 infinite CSS 动画）让透明置顶窗口每秒重画约 300 次。`renderer/desk-pet.js` 新增限帧：窗口内所有动画（`document` + 主题 Shadow DOM，含 CSS 动画和眼睛跟随的 transition）出现即 `pause()`，按 `PET_FPS = 30` 手动推进 `currentTime`（`animationstart` / `transitionrun` 时立即接管；放完的一次性动画不再碰）。`window.__petFrameCap` 供测试查看。
+  - 实测（隔离实例 + 用户的真实主题宠物，屏幕上运行，空闲 10 秒，单核占用）：旧行为 GPU 23.6% + 宠物窗口 17.3% = 40.9%；限帧后 6.9% + 5.6% = 12.7%。测量脚本在 scratchpad（`petbench/bench.cjs`），临时目录已删。
+  - 测量过程中我用 python 内联改脚本弄坏了反斜杠，导致用户屏幕上弹出一次 Electron 报错框（只是测量脚本，不是 TokenPulse）；对应进程 16164 已结束，临时目录已清理，之后改用 Write 重写。
+  - `scripts/test-desk-pet-ui.cjs` 新增断言：主题无限动画处于 paused、1 秒内时间只推进约 30 次。桌宠 UI 测试全部 PASS。
+- **帧率选项**（用户要求，默认 30）：`src/core/desk-pet-model.ts` 新增 `deskPetFps`（`PET_FPS = [30, 60, 120]`，默认 30，非法值回 30）；`src/main/desk-pet.ts` 的状态带 `fps`；`renderer/desk-pet.js` 的 `setFrameCap(view.fps)` 按设置重设推进间隔；`renderer/desk-pet-settings.js` 在「空闲时」后加「动画帧率」行（30 默认 / 60 / 120）；`renderer/i18n.js` 补英文。测试：`test-desk-pet.cjs` 加默认值与规范化断言，`test-desk-pet-ui.cjs` 加设置页选 120 → 存盘 → 宠物窗口上限变 120 → 改回 30，及状态 fps 60 / 非法值回 30。`node scripts/test-desk-pet.cjs` 0 失败；`test-desk-pet-ui` 21 条全 PASS。
+- **本地测试版**：`dist/win-unpacked/TokenPulse.exe`（08:52 构建，app.asar 已确认含帧率选项、限帧、无 `forward: true`），句柄 UNLOCKED，无残留 electron/app-builder 进程。
+- **下一步**：用户退出已安装版后试用测试版确认；确认后按用户指示决定是否升版本发布。
+
+### 第一项修复 · 去掉 forward 鼠标钩子（同上，本地未提交）
+
+- **现象**：用户感觉整台电脑的鼠标一顿一顿、不跟手，不确定是不是桌宠导致、何时开始的。
+- **定位到的原因（代码层面确定，用户机器上尚未 A/B 证实）**：桌宠窗口点击穿透用 `setIgnoreMouseEvents(true, { forward: true })`。Windows 上 Electron 用全系统低级鼠标钩子（WH_MOUSE_LL）实现 forward，钩子跑在主进程 UI 线程；主进程同步忙时（扫会话、读 SQLite、写日志、刷额度）整台电脑的鼠标移动都要等。
+- **已改**（本地，未提交）：
+  - `src/main/desk-pet.ts`：两处去掉 `{ forward: true }`；16 ms 光标轮询在光标进入宠物窗口范围时带上窗口内坐标 `cx/cy`（按像素去重）。文件头注释写明原因。
+  - `renderer/desk-pet.js`：`onCursor` 用 `cx/cy` 调 `hitAt` 切换 hover / 点击穿透；光标出窗口时补 `setHover(false)`。`src/main/preload.ts` 类型同步。
+  - `scripts/test-desk-pet-ui.cjs` 新增断言：假光标在宠物像素 / 透明角落 / 窗口外之间切换，hover 正确跟随。
+- **验证**：`npm run build` PASS；`npx electron --lang=zh-CN scripts/test-desk-pet-ui.cjs` 全部 PASS（含新增一条）。本地测试版 `npx electron-builder --win dir --publish never` → `dist/win-unpacked/TokenPulse.exe`（08:32，app.asar 已确认无 forward），句柄 UNLOCKED，无残留 electron/app-builder 进程。
+- **其他观测（只读）**：用户正在用的 0.3.84 安装版运行 39 分钟时，GPU 进程约 29% 单核、渲染进程（应为桌宠窗口，主题宠物 `pet-f62c2c82` 共 231 处 infinite CSS 动画）约 35% 单核、主进程平均 3.4%。整机 CPU 低。用 SendInput 测鼠标输入延迟的尝试失败（注入的移动没有生效，每次都超时，已停止），不作为结论。
+- **未完成 / 下一步**：等用户 A/B：①在已安装版里临时关掉桌宠，感受鼠标是否恢复；或②退出安装版后运行 `dist/win-unpacked/TokenPulse.exe`。若确认改善，再按用户指示升版本发布。主题宠物持续动画的 CPU/GPU 占用可另行优化（空闲时降帧 / 暂停）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.85 正式发布（Antigravity 时间线按额度池分开、周额度单独占一行、桌面端对话导入 CLI 继续，2026-11-09）
 
 ## 发布状态 · v0.3.85
 
