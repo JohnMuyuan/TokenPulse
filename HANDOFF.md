@@ -10,7 +10,8 @@
   - `dist/TokenPulse-0.3.86-Setup.exe.blockmap`（SHA256 `2603E7AE3490BC88BA6A3E3C832B1F52F88D4F43E37CD040EF662A52203C944B`）
   - `dist/latest.yml`（version 0.3.86，SHA256 `F2BC9B0C11C4A7667627912923C67A28786E8B0C37DAC151751169F6CEE2B621`）
   - 以上与 `dist/win-unpacked/TokenPulse.exe` 句柄 UNLOCKED；无 electron / app-builder / makensis 残留进程。
-- **Git / GitHub**：见本节末尾（推送和 Release 完成后更新）。
+- **Git / GitHub（已完成）**：发布提交 `ffee7a6` 已推送到 `origin/main`，标签 `v0.3.86` 已推送；GitHub Release `v0.3.86` 已正式发布（非草稿、非预发布）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.86 ，4 个附件大小和 SHA256 与本地一致。说明文件 `dist/release-0.3.86.md`。推送走代理 `127.0.0.1:7890`。未纳入提交：`clawd-pet-extracted/`（来源不明，未动）。
+- **用户侧**：用户正在用的是 0.3.84 安装版，需更新到 0.3.86（自动更新或手动安装）后才生效。
 
 ## 本轮修复细节
 
