@@ -812,11 +812,22 @@
       { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
     ].filter(Boolean);
     openOptionMenu(anchor, '更多操作', menu, null, async value => {
-      if (value === 'command') copy(d.resumeCommand, '继续命令已复制');
+      if (value === 'command') {
+        // Antigravity 桌面端的对话要先导入 CLI 的数据目录，粘贴命令才能接上历史
+        if (d.kind === 'antigravity') {
+          try { await api.prepareSessionResume?.(d.kind, d.id); }
+          catch (error) { showStatus(cleanError(error, '没能把这段对话导入 Antigravity CLI。'), true); return; }
+        }
+        copy(d.resumeCommand, '继续命令已复制');
+      }
       if (value === 'id') copy(d.id, '会话 ID 已复制');
       if (value === 'delete') await deleteConversation(d);
       if (value === 'terminal') {
-        try { const result = await api.openSessionTerminal(d.kind, d.id); showStatus(guardNote(result?.guarded) ? '已打开终端。' + guardNote(result.guarded) : '已在终端里打开这段会话。'); }
+        try {
+          const result = await api.openSessionTerminal(d.kind, d.id);
+          const note = result?.imported === 'imported' ? '已把桌面端的这段对话导入 Antigravity CLI，' : result?.imported === 'kept' ? 'CLI 里已接着聊过这段对话，沿用 CLI 那份，' : '';
+          showStatus(guardNote(result?.guarded) ? '已打开终端。' + guardNote(result.guarded) : note ? note + '已在终端里打开。' : '已在终端里打开这段会话。');
+        }
         catch (error) { showStatus(cleanError(error, '打不开终端，请确认对应的 CLI 已安装。'), true); }
       }
     });

@@ -1,4 +1,63 @@
-# 当前接手入口 · TokenPulse v0.3.84 正式版发布完工（模型速度走势补齐谷歌/Antigravity 模型、并发监控适配 Antigravity & CLI、会话列表归集子代 Token 用量，2026-11-08）
+# 当前接手入口 · TokenPulse v0.3.85 正式发布（Antigravity 时间线按额度池分开、周额度单独占一行、桌面端对话导入 CLI 继续，2026-11-09）
+
+## 发布状态 · v0.3.85
+
+- **版本**：`0.3.85`（`package.json` / `package-lock.json`，用户 2026-11-09 要求发布并提交）。`renderer/intro.js` 加 0.3.85 更新说明 3 条，`renderer/i18n.js` 补英文。
+- **发版前验证**：`npm run build` PASS；`test-intro-ui` 3/3、`test-antigravity-ui` 7/7、`test-weekly-only-ui` 4/4、`test-antigravity-timeline` 6/6、`test-antigravity-cli-import` 8/8、`test-model-study` 16/16（其余回归见下方第一、二节）。
+- **打包**：`npm run dist` PASS，app.asar 内已确认包含 `prepareAntigravityCliConversation`、`timelineWindows`、无 5 小时窗口判断和 `'0.3.85'` 说明。
+  - `dist/TokenPulse-0.3.85-Setup.exe`（112811863 B，SHA256 `87601607177BFECC5953E1E7326144C852E13622FADDCE7B9831AF6B6E220FFB`）
+  - `dist/TokenPulse-0.3.85-Portable.exe`（112554640 B，SHA256 `54F8EE51CC731AB62493A04A12372B3F71034A73BD8A90D58B009DFDFF69235C`）
+  - `dist/TokenPulse-0.3.85-Setup.exe.blockmap`（SHA256 `D551D2B694B634CDD994E74D31B9660344BCD33669A01E515F82C0FC0C98A355`）
+  - `dist/latest.yml`（version 0.3.85，SHA256 `07E7D170DE9E28E211D3EDBC1AD2E20179A58119988819BB9E54EF14733CA43C`）
+  - 以上 4 个文件与 `dist/win-unpacked/TokenPulse.exe` 独占句柄检测均 UNLOCKED；打包后无 electron / app-builder / makensis 残留进程。
+- **Git / GitHub**：提交、打标签 `v0.3.85`、推送和 GitHub Release 的结果见本节末尾（完成后更新）。
+
+本轮两项工作的细节：
+1. Antigravity 时间线按额度池分开 + 只有周额度的供应商（SuperGrok）去掉 5 小时窗口（见下方第一节）。
+2. Antigravity 桌面端对话「在终端里继续」历史为空（见下方第二节）。
+
+## 一、「模型与思考等级 · 时间线」按 Antigravity 额度池分开；无 5 小时窗口的供应商只留周额度
+
+- **问题**：Antigravity 有两个额度池（`Gemini Models` 组、`Claude and GPT models` 组），每个池各有 5 小时 + 周额度窗口，重置时间不同。旧时间线只有一对 5 小时 / 周卡：周期按「第一个有用量的组」切，曲线取各组最大值，请求不分组 → 两个池的用量混在一起。另外 SuperGrok 只有周额度，额度页仍放一张「接口未提供此窗口」的 5 小时空卡。
+- **改动**：
+  - `src/main/antigravity-quota.ts`：`buildTimelineWindow` 增加 `group` 参数——周期用这一组自己的 `agyWindowSegments`，曲线 / 当前已用只取这一组，结果带 `group`。`timeline()` 有分组时返回 `windows: [{ id: "g0-five" | "g0-week" | "g1-five" | ..., kind, label: "<组名> · 5 小时/周额度", group }]` 和对应 id 的数据；请求按 `groupMatchesModel` 归到一个组（匹配不上的归第一组，不丢）；`cycles` 查询按窗口 id；没有分组时退回旧的 `five` / `week` 两张卡。
+  - `renderer/model-study.js`：时间线按 `data.windows` 画卡（`data-window` 为窗口 id，class 仍为 `five`/`week` 保持配色），选周期 / 缩放按窗口 id 分开记；新增 `timelineWindows()`——快照里的官方账号没有 `five` 且没切出过 5 小时周期时不画 5 小时卡（DeepSeek / 号池的「按天」不受影响）。曲线轨道名对分组卡显示「这一组已用」，Antigravity 说明与图例改写。「换一种模型，整窗能用多少」对无 5 小时账号：整窗预算只留周额度（`.ms-budgets.single`），排行去掉「5 小时整窗」列（`.no-five`），详情只留周窗口。
+  - `renderer/app.js` / `app.css`：额度页无 `five` 时不放 5 小时卡，`.quota-window-grid.single` 让周额度占满一行；容量趋势不给 5 小时选项。
+  - `renderer/model-study.css`、`renderer/i18n.js`：单列样式、900px 下的 no-five 排行；新增英文词条和 `(.+) · (5 小时|周额度)` 模式。
+- **测试**（全部实际运行）：
+  - 新增 `node scripts/test-antigravity-timeline.cjs`：6/6（每池一对卡、周期按各池重置时间、曲线不跨池取最大、请求按池和各自窗口归属、按卡选周期、无分组退回）。
+  - 新增 `npx electron --lang=zh-CN scripts/test-weekly-only-ui.cjs`：4/4（SuperGrok 周额度占满一行、无 5 小时卡 / 容量选项 / 时间线卡 / 整窗列；Claude 仍两张；900px 不溢出）。
+  - `scripts/test-antigravity-ui.cjs` 增加分池卡片、翻一个池不影响另一个池、英文标题断言：7/7。
+  - 回归：`test-antigravity-usage` 10/10、`test-antigravity-sessions` 5/5、`test-antigravity-cli-import` 8/8、`test-sessions` PASS、`test-model-study` 16/16、`test-quota-monitor` 79/79、`test-shared-quota` PASS；Electron：`test-model-study-ui`、`test-model-weeks-ui`、`test-pool-quota-ui`、`test-deepseek-balance-ui`、`test-layout-ui` 均 PASS。`npm run build` PASS。
+  - 截图自查（只用测试数据，存于本轮 scratchpad）：SuperGrok 周额度整行；Antigravity「Gemini Models · 5 小时 / 周额度」各自周期。
+- **未验证 / 限制**：没在打包版里用真实账号看；未跑 `npm run dist`。组 id 按 `last.groups` 顺序（g0、g1），如果 Antigravity 调整分组顺序，已选的历史周期会回到当前周期（无害）。
+- **进程与占用**：本轮测试的 electron 进程均已退出（`tasklist` 无 electron.exe；本机 TokenPulse.exe 是用户正在用的正式版，未触碰）；`build/main/antigravity-quota.js`、`build/main/index.js`、`build/core/antigravity.js` 句柄检测 UNLOCKED。`test-weekly-only-ui` 的临时目录已清理并在测试里加了清理；`%TEMP%` 里还有其他已有测试留下的 `tokenpulse-*` 目录（来源不能逐一确认，未删除）。
+
+## 二、修复：Antigravity 桌面端对话「在终端里继续」历史为空
+
+### 已完成（本地代码 + 测试），未提交 / 未打包 / 未发布
+
+- **现象**：会话页对 Antigravity 桌面端（IDE）的对话选「在终端里继续」，`agy.exe` 打开的是空白对话，看不到历史。
+- **根因（实测核对）**：桌面端数据在 `~/.gemini/antigravity`，Antigravity CLI 默认只用 `~/.gemini/antigravity-cli`。`agy.exe --conversation <桌面端ID>` 在 CLI 目录里找不到 `conversations/<id>.db`，就开一个同 ID 的空对话。用 `agy.exe acp` 的 `session/load` 对照：默认目录加载桌面端对话 → 0 条历史；把对话库快照进 CLI 目录后 → 回放出用户消息、回复和工具调用。同样的问题也影响 TokenPulse 内「回复对话」（无头 `agy --conversation` 没有上下文）和「复制继续命令」。
+  - `agy.exe --app-data-dir antigravity` 也能读到，但 CLI 会往桌面端目录写 `jetski_state.pbtxt`、`jetbox_summaries_proto.pb`、`implicit/`、`log/` 等，**不采用**（实验时产生的这几项已核对时间戳后删除，桌面端目录恢复原样）。
+- **改动**：
+  - `src/core/antigravity.ts`：新增 `prepareAntigravityCliConversation(id)`。用 `node:sqlite` 的 `backup()` 把桌面端对话库在线快照到 CLI 目录（桌面端开着也能拿到一致快照，先写临时文件再 rename），顺带复制 `brain/<id>`、`annotations/<id>.pbtxt`。导入记录在 `~/.tokenpulse/antigravity-cli-imports.json`（步数 + 桌面端库签名）：CLI 那份没新步骤而桌面端前进了 → 重新导入；CLI 里接着聊过 → 保留（`kept`）；CLI 里有同 ID 但非 TokenPulse 导入、步数更少（之前恢复出的空白对话）→ 先备份到 `~/.tokenpulse/antigravity-cli-backup/` 再导入；CLI 正开着这段对话无法替换时提示先关终端。`deleteAntigravityConversation` 对两边都有的对话要求桌面端在运行（避免只删 CLI 副本），并清理导入记录。
+  - `src/main/index.ts`：「在终端里继续」（`openInTerminal`）和「回复对话」（`replyInApp`）对 Antigravity 先调用导入；新增 IPC `sessions:prepare-resume`。
+  - `src/main/preload.ts`：`prepareSessionResume`。`renderer/sessions.js`：复制继续命令前先导入；终端打开后的提示说明「已导入 / 沿用 CLI 那份」。
+  - 新测试 `scripts/test-antigravity-cli-import.cjs`（临时目录，不碰真实数据）。
+- **验证命令与结果**：
+  - `npm run build`：PASSED。
+  - `node scripts/test-antigravity-cli-import.cjs`：8/8 PASSED。
+  - `node scripts/test-antigravity-sessions.cjs`：5/5；`node scripts/test-antigravity-usage.cjs`：10/10；`node scripts/test-sessions.cjs`：PASSED；`node scripts/test-session-search.cjs`：24/24；`npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：7/7。
+  - 真实环境端到端：Electron 运行时（`ELECTRON_RUN_AS_NODE`）对一段 6 步的桌面端对话执行导入 → `imported`，再次执行 → `current`，agy 打开后再执行仍为 `current`；随后 `agy acp` `session/load` 回放出 2 条用户消息、2 条回复、1 个工具调用。
+- **未验证**：没有手动操作 `agy.exe` 交互式 TUI 界面（ACP 与 TUI 走同一 language server 的加载路径，推断一致）；没有在打包版里点按钮实测；未跑 `npm run dist`。
+- **已知限制**：导入是「分叉」——在 CLI 里继续后的新内容不会回写到桌面端；之后桌面端再继续，CLI 那份会保留不覆盖。子代理对话库不复制（不影响主对话加载和继续）。
+- **进程与占用**：本轮的 agy acp / electron 测试进程均已退出（`tasklist` 无 agy.exe / electron.exe）；CLI 日志目录中本轮 4 个 `acp-server-20261109_*.log` 已删除；`build/core/antigravity.js`、`build/main/index.js`、`build/main/preload.js` 独占句柄检测 UNLOCKED。未触碰 `dist`。
+- **Git / 版本**：未升版本（仍 `0.3.84`），未提交、未发布。下一步：用户确认后再决定是否升版本 + 发布。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.84 正式版发布完工（模型速度走势补齐谷歌/Antigravity 模型、并发监控适配 Antigravity & CLI、会话列表归集子代 Token 用量，2026-11-08）
 
 ## 已完成并发布 · TokenPulse v0.3.84 正式版验收与 GitHub Release（2026-11-08，主分支 `main`，版本 v0.3.84）
 

@@ -222,6 +222,8 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("session-reply", listener);
   },
   openSessionTerminal: (kind: string, id: string) => ipcRenderer.invoke("sessions:terminal", kind, id),
+  /** 复制继续命令前的准备（Antigravity 桌面端对话导入 CLI）。 */
+  prepareSessionResume: (kind: string, id: string) => ipcRenderer.invoke("sessions:prepare-resume", kind, id),
   /** 新对话 / 新项目（0.3.16）：装了哪些 CLI、选文件夹、在文件夹里用某个 CLI 开新对话。 */
   sessionClis: () => ipcRenderer.invoke("sessions:clis"),
   pickProjectFolder: (start?: string) => (demo ? Promise.resolve(null) : ipcRenderer.invoke("sessions:pick-folder", start)),

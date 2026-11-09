@@ -508,6 +508,9 @@
     "每个模型 × 思考等级一条轨道，画的是本机 Antigravity 的对话请求；上方曲线是该周期最高一组的额度已用百分比。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。": "One lane per model × reasoning effort for local Antigravity requests; the curve above is the highest quota group used % in that cycle. Left-drag to pan, right-drag to zoom, Ctrl + wheel to zoom.",
     "每个模型 × 思考等级一条轨道，画的是本机 Antigravity 的对话请求": "One lane per model × reasoning effort for local Antigravity requests",
     "上方曲线是该周期最高一组的额度已用百分比。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。": "the curve above is the highest quota group used % in that cycle. Left-drag to pan, right-drag to zoom, Ctrl + wheel to zoom.",
+    "每个额度池（Gemini 组、Claude / GPT 组）各有一张 5 小时卡和一张周额度卡，周期按各自的重置时间切；轨道只画属于这一组型号的本机请求，上方曲线是这一组的已用百分比。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。": "Each quota pool (the Gemini group and the Claude / GPT group) gets its own 5-hour card and weekly card, with cycles cut at that pool's own reset times. Lanes show only local requests for that pool's models; the curve above is that pool's used %. Drag with the left button to pan, drag with the right button to zoom into a range, Ctrl + wheel to zoom.",
+    "绿色折线：这一组（额度池）在这个窗口的已用百分比。Gemini 组和 Claude / GPT 组各有自己的 5 小时、周额度窗口，重置时间不同，分开画。": "Green line: this pool's used % in this window. The Gemini group and the Claude / GPT group each have their own 5-hour and weekly windows with different reset times, so they are drawn separately.",
+    "这一组已用": "This pool used",
     "绿色折线：本机 Antigravity 报告的最高一组额度已用百分比。": "Green line: highest quota group used % reported by local Antigravity.",
     "模型轨道上的色块：本机 Antigravity 的请求，颜色越深思考等级越高。轨道名下面写着「等级 · 用了多久 · 占多少」。": "Blocks on model lanes: local Antigravity requests; darker means higher reasoning effort. Under each lane name: effort · time used · share.",
     "这段时间里还没有本机 Antigravity 的请求，点右上角 ‹ 往前看": "No local Antigravity requests in this period yet; use ‹ at the top right to look back",
@@ -2890,6 +2893,13 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.85 更新说明
+    'Antigravity 时间线按额度池分开画': 'Antigravity timeline split by quota pool',
+    '「模型与思考等级 · 时间线」里，Antigravity 的 Gemini 组和 Claude / GPT 组各有一张 5 小时卡和一张周额度卡：周期按各自的重置时间切，曲线只画这一组的已用百分比，请求也只算这一组的型号，两个额度池不再混在一起。': 'In the Model & effort timeline, Antigravity’s Gemini group and Claude / GPT group each get their own 5-hour and weekly cards: cycles follow each pool’s own reset times, the curve shows only that pool’s used %, and only that pool’s models are counted, so the two quota pools no longer mix.',
+    '只有周额度的供应商（如 SuperGrok）不再显示空的 5 小时窗口': 'Weekly-only providers (such as SuperGrok) no longer show an empty 5-hour window',
+    '没有 5 小时窗口的账号，额度详情里的周额度窗口单独占满一行；时间线、整窗换算和容量趋势也只保留周额度。': 'For accounts without a 5-hour window, the weekly window takes the full row in quota details, and the timeline, full-window conversion and capacity trend keep only the weekly window.',
+    '修复：Antigravity 桌面端的对话在终端里继续时历史为空': 'Fix: Antigravity desktop conversations opened blank when continued in the terminal',
+    '桌面端和 CLI 各用各的数据目录，agy.exe 找不到桌面端的对话就开了空白对话。现在「在终端里继续」「回复对话」「复制继续命令」会先把这段对话导入 CLI，历史完整可见；CLI 里接着聊过的不会被覆盖。': 'The desktop app and the CLI keep separate data folders, so agy.exe opened a blank conversation when it could not find a desktop one. Continue in terminal, Reply and Copy resume command now import the conversation into the CLI first so the full history shows; a copy you already continued in the CLI is never overwritten.',
     // 0.3.84 更新说明
     '模型速度走势补齐 Antigravity（Google）与 DeepSeek Harness 模型': 'Model speed trends now include Antigravity (Google) and DeepSeek Harness models',
     '用量明细底部的「模型速度走势」现在包含 Antigravity 与 DeepSeek Harness 从本机会话库记下的实测流式出字速度和首字延迟（无需开启透明转发），可按工具、模型和思考等级对比走势。': 'The “Model speed trends” chart at the bottom of Usage now includes measured streaming output speed and first-token latency recorded in local session databases by Antigravity and DeepSeek Harness (without enabling pass-through), filterable by tool, model and effort level.',
@@ -3110,6 +3120,8 @@
     P('配置备份读取失败：(.+)', m => `Couldn't read config backups: ${m[1]}`),
     P('(\\d+) 段待标注', m => `${m[1]} to mark`),
     P('显示 (.+) – (.+)', m => `Showing ${m[1]} – ${m[2]}`),
+    // Antigravity 时间线按额度池分卡：「Gemini Models · 5 小时」「Claude and GPT models · 周额度」
+    P('(.+) · (5 小时|周额度)', m => `${m[1]} · ${m[2] === '5 小时' ? '5-hour' : 'Weekly'}`),
     P('(.+)时间线(放大|缩小|回到整个周期|缩放)', m => `${v(m[1])} timeline ${({ '放大': 'zoom in', '缩小': 'zoom out', '回到整个周期': 'show whole cycle', '缩放': 'zoom' })[m[2]]}`),
     P('这段时间官方额度涨了 ([\\d.]+) 个百分点(?:，按 (.+) · (.+) 的整窗容量约相当于 (\\S+) Tokens)?。保存后这段不计入容量折算。', m => `Official quota rose ${m[1]} points in this period${m[2] ? `; with ${m[2]} · ${m[3]} full-window capacity that's about ${m[4]} tokens` : ''}. Once saved, it's excluded from capacity.`),
     P('(.+) – (.+) · 官方 \\+([\\d.]+)%', m => `${m[1]} – ${m[2]} · official +${m[3]}%`),

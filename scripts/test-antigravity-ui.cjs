@@ -146,6 +146,25 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.ok(!(await text('#quota-model-timeline')).includes('还没有带账号标识的官方额度周期'), '切换历史周期后正常显示 Antigravity 时间线');
     await e("document.querySelectorAll('#quota-model-timeline .ms-cycle.five .ms-step')[1].click()");
     await until("document.querySelector('#quota-model-timeline .ms-cycle.five .ms-cycle-pos')?.textContent === '1 / 2'");
+    // 两个额度池各有一张 5 小时、一张周额度卡：周期按各自的重置时间，曲线是各自的已用百分比
+    const pools = await e(`[...document.querySelectorAll('#quota-model-timeline .ms-cycle')].map(c => ({ w: c.dataset.window, group: c.dataset.group, kind: c.classList.contains('five') ? 'five' : 'week', title: c.querySelector('.ms-cycle-title b')?.textContent, range: c.querySelector('.ms-range')?.textContent }))`);
+    assert.deepEqual(pools.map(p => p.w), ['g0-five', 'g0-week', 'g1-five', 'g1-week'], 'Antigravity 每个额度池各一对 5 小时 / 周额度卡');
+    assert.deepEqual(pools.map(p => p.kind), ['five', 'week', 'five', 'week']);
+    assert.deepEqual(pools.map(p => p.group), [KEY_A, KEY_A, KEY_B, KEY_B]);
+    assert.deepEqual(pools.map(p => p.title), ['Gemini Models · 5 小时', 'Gemini Models · 周额度', 'Claude and GPT models · 5 小时', 'Claude and GPT models · 周额度']);
+    assert.notEqual(pools[0].range, pools[2].range, '两个池的 5 小时周期按各自的重置时间切，不共用一个窗口');
+    await e("document.querySelector('#quota-model-timeline').scrollIntoView({ block: 'start' })");
+    await shot('agy-timeline-pools');
+    // 只翻 Claude / GPT 那张 5 小时卡：Gemini 的卡不动
+    const geminiPos = await text('#quota-model-timeline .ms-cycle[data-window="g0-five"] .ms-cycle-pos');
+    const claudeTotal = (await text('#quota-model-timeline .ms-cycle[data-window="g1-five"] .ms-cycle-pos')).split('/ ')[1];
+    if (Number(claudeTotal) > 1) {
+      await e(`document.querySelector('#quota-model-timeline .ms-cycle[data-window="g1-five"] .ms-step').click()`);
+      await until(`document.querySelector('#quota-model-timeline .ms-cycle[data-window="g1-five"] .ms-cycle-pos')?.textContent?.startsWith('2 /')`);
+      assert.equal(await text('#quota-model-timeline .ms-cycle[data-window="g0-five"] .ms-cycle-pos'), geminiPos, '翻一个池的周期不影响另一个池');
+      await e(`document.querySelectorAll('#quota-model-timeline .ms-cycle[data-window="g1-five"] .ms-step')[1].click()`);
+      await until(`document.querySelector('#quota-model-timeline .ms-cycle[data-window="g1-five"] .ms-cycle-pos')?.textContent?.startsWith('1 /')`);
+    }
     pass('antigravity UI: the quota page shows each group with remaining, reset, pace forecast and a 7-day chart, without the official-account sections');
 
     // 本机用量：扫到的 Antigravity 对话；型号按额度接口的标签显示
@@ -219,6 +238,13 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await pause(400);
     const enPage = await text('#quota-detail');
     assert.ok(!/[一-鿿]/.test(enPage), enPage.match(/.{0,40}[一-鿿].{0,40}/)?.[0]);
+    // 按额度池分开的时间线卡片标题、曲线名也要翻完
+    await until("document.querySelector('#quota-model-timeline .ms-cycle[data-window=\"g1-week\"]')");
+    await pause(300);
+    const enTitles = await e(`[...document.querySelectorAll('#quota-model-timeline .ms-cycle-title b, #quota-model-timeline .ms-lane-name')].map(n => n.textContent).join(' | ')`);
+    assert.ok(!/[一-鿿]/.test(enTitles), enTitles);
+    assert.match(enTitles, /Gemini Models · 5-hour[\s\S]*Claude and GPT models · Weekly/);
+    assert.match(enTitles, /This pool used/);
     await e(`PulseSessions.open(${JSON.stringify(KEY)})`);
     await until("document.querySelector('.sw-usage-bar')");
     await e("if (document.querySelector('.sw-usage-panel')?.hidden) document.querySelector('.sw-usage-toggle').click()");

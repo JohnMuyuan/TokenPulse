@@ -100,6 +100,9 @@
 
   const Q = { host: null, loader: null, report: null, snapshot: null, sort: 'capacity', level: 'all', show: 'both', search: '', animate: false, open: new Set() };
 
+  /** 这个账号没有 5 小时窗口（如 SuperGrok 只有周额度）：整窗表只按周额度算，不留 5 小时的空格子。 */
+  const noFive = () => Boolean(Q.report && !Q.report.five && Q.report.week);
+  const studyWindows = () => noFive() ? WINDOWS.filter(([w]) => w === 'week') : WINDOWS;
   function quotaUpdate(snapshot, report) {
     Q.host ??= $('quota-model-study');
     if (!Q.host) return;
@@ -149,7 +152,7 @@
     const measuredRows = rows.filter(r => r.five.estimatedTokens != null || r.week.estimatedTokens != null).map(r => ({ ...r, key: r.key + '|measured', measuredRow: true, five: measuredView(r.five), week: measuredView(r.week) }));
     const inView = Q.show === 'measured' ? measuredRows : Q.show === 'estimate' ? rows : [...rows, ...measuredRows];
     const shown = sortRows(merge(inView.filter(r => (Q.level === 'all' || r.effort === Q.level) && (!needle || r.model.toLowerCase().includes(needle)))));
-    const list = el('div', { class: 'ms-rank', role: 'list' });
+    const list = el('div', { class: 'ms-rank' + (noFive() ? ' no-five' : ''), role: 'list' });
     const max = { five: Math.max(0, ...shown.map(r => r.five.capacityTokens || 0)), week: Math.max(0, ...shown.map(r => r.week.capacityTokens || 0)), relative: Math.max(0, ...shown.map(r => r.five.relative || 0)) };
     shown.forEach((row, i) => { const node = rankRow(row, i, max, data); list.append(node); if (Q.open.has(row.key)) { node.classList.add('open'); node.setAttribute('aria-expanded', 'true'); list.append(detailPanel(row, data)); } });
     if (!shown.length) list.append(empty(Q.show === 'measured' && !inView.length ? '还没有实测值：要有足够多整段只用同一个模型和等级的时段才测得出来。' : '没有符合条件的模型组合。'));
@@ -158,7 +161,7 @@
     const merged = shown.reduce((n, r) => n + (r.measuredRow ? 0 : r.efforts.length), 0), estimateRows = shown.filter(r => !r.measuredRow).length;
     host.replaceChildren(...[
       quotaHeading(),
-      el('div', { class: 'ms-budgets' }, WINDOWS.map(([w, label]) => budgetTile(w, label, data[w]))),
+      el('div', { class: 'ms-budgets' + (noFive() ? ' single' : '') }, studyWindows().map(([w, label]) => budgetTile(w, label, data[w]))),
       highlights(merge(rows), data),
       noBudget ? el('p', { class: 'ms-note', text: '最近 30 天里「额度上涨、同期本机有 Code 请求」的区间还不够多，暂不折算绝对 Token / 美元容量。下面的倍数仅比较 API 参考单价，不是官方额度倍数。' }) : null,
       el('div', { class: 'ms-toolbar' }, [
@@ -167,7 +170,7 @@
           el('button', { type: 'button', class: 'ms-chip' + (Q.level === id ? ' on' : ''), 'data-level': id, 'aria-pressed': String(Q.level === id), translate: id === 'all' ? null : 'no' }, [label, el('small', { text: String(id === 'all' ? rows.length : rows.filter(r => r.effort === id).length) })]))),
         el('div', { class: 'ms-legend' }, [el('span', {}, [el('i', { class: 'ms-key full' }), noBudget ? 'API 价格参考' : '按本机区间折算整窗']), el('span', {}, [el('i', { class: 'ms-key left' }), '按官方剩余比例估算'])])
       ]),
-      el('div', { class: 'ms-rank-head', 'aria-hidden': 'true' }, [el('span'), el('span', { text: '模型 · 思考等级' }), el('span', { text: '5 小时整窗' }), el('span', { text: '周整窗' })]),
+      el('div', { class: 'ms-rank-head' + (noFive() ? ' no-five' : ''), 'aria-hidden': 'true' }, [el('span'), el('span', { text: '模型 · 思考等级' }), noFive() ? null : el('span', { text: '5 小时整窗' }), el('span', { text: '周整窗' })]),
       list,
       el('p', { class: 'ms-note' }, [`共 ${number(merged)} 个组合，全部列出${merged > estimateRows ? `；同一模型里换算结果相同的等级合成一行（缺少等级专属数据时共享价格参考，不代表官方扣额相同）` : ''}。`, unknown?.recentCalls ? `另有 ${number(unknown.recentCalls)} 次调用没记录思考等级，不参与换算。` : '']),
       methodNote()
@@ -330,7 +333,7 @@
           el('small', { text: meta.join(' · ') })
         ])
       ]),
-      capCell(c5, 'five', max, data.five),
+      noFive() ? null : capCell(c5, 'five', max, data.five),
       capCell(cw, 'week', max, data.week)
     ]);
     paint(node, { '--i': Math.min(i, 24) });
@@ -401,7 +404,7 @@
       row.semantics === 'agent_count' ? '这个模型的等级控制协作智能体数量。' : null,
     ].filter(Boolean);
     return el('div', { class: 'ms-detail', role: 'region', 'aria-label': `${row.model} 详情`, 'data-key': row.key }, [
-      el('div', { class: 'ms-detail-wins' }, WINDOWS.map(winCard)),
+      el('div', { class: 'ms-detail-wins' + (noFive() ? ' single' : '') }, studyWindows().map(winCard)),
       el('dl', { class: 'ms-facts' }, facts),
       cautions.length ? el('div', { class: 'ms-cautions' }, cautions.map(t => el('p', {}, [icon('notice'), el('span', { text: t })]))) : null,
     ]);
@@ -727,10 +730,23 @@
     T.snapshot = snapshot;
     const accounts = timelineAccounts(snapshot);
     const next = accounts.find(a => a.accountId === preferred)?.accountId || '';
-    if (next !== T.accountId) { T.accountId = next; T.cycles = { five: '', week: '' }; T.focus = ''; T.zoom = { five: null, week: null }; T.edit = null; }
+    if (next !== T.accountId) { T.accountId = next; T.cycles = {}; T.focus = ''; T.zoom = {}; T.edit = null; }
     const report = accounts.find(a => a.accountId === T.accountId);
     if (!report) { T.loader.reset(); drawTimeline('none'); return; }
-    T.loader.load(`${T.accountId}|${T.cycles.five}|${T.cycles.week}`, { kind: report.kind, accountId: report.accountId, cycles: { ...(T.cycles.five ? { five: T.cycles.five } : {}), ...(T.cycles.week ? { week: T.cycles.week } : {}) } }, stampOf(snapshot, report));
+    // 选过的历史周期：键是窗口 id（普通账号 five / week；Antigravity 每个额度池各一对，如 g0-five、g1-week）
+    const cycles = Object.fromEntries(Object.entries(T.cycles).filter(([, id]) => id).sort(([a], [b]) => a.localeCompare(b)));
+    T.loader.load(`${T.accountId}|${Object.entries(cycles).map(([w, id]) => w + '=' + id).join('|')}`, { kind: report.kind, accountId: report.accountId, cycles }, stampOf(snapshot, report));
+  }
+  /**
+   * 要画哪几张周期卡：后端给了 windows（Antigravity 按额度池分）就照它；否则是 5 小时 + 周。
+   * 这家没有 5 小时窗口（如 SuperGrok 只有周额度）：账号快照里没有 five、也没切出过 5 小时周期，就不画那张空卡，周额度单独占一行。
+   */
+  function timelineWindows(data) {
+    if (Array.isArray(data?.windows) && data.windows.length) return data.windows.filter(w => data[w.id]).map(w => ({ id: w.id, kind: w.kind === 'week' ? 'week' : 'five', label: w.label || data.labels?.[w.id] || w.id }));
+    // 只看快照里的官方账号；DeepSeek / 号池（T.extra）的 five 是「按天」，不是额度窗口
+    const report = (T.snapshot?.accounts || []).find(a => a.accountId === T.accountId);
+    return WINDOWS.filter(([w]) => data?.[w] && (w !== 'five' || !report || report.five || data.five.cycles?.length || data.five.timeline?.length))
+      .map(([w, label]) => ({ id: w, kind: w, label: data.labels?.[w] || label }));
   }
   function reloadTimeline() { timelineUpdate(T.snapshot, T.accountId, T.extra); }
 
@@ -745,7 +761,7 @@
           : report?.kind === 'pool'
           ? '每个模型 × 思考等级一条轨道，画的是经过这个号池转发的请求；上方曲线是号池里官方账号每周额度已用的平均值。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。'
           : report?.kind === 'antigravity'
-          ? '每个模型 × 思考等级一条轨道，画的是本机 Antigravity 的对话请求；上方曲线是该周期最高一组的额度已用百分比。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。'
+          ? '每个额度池（Gemini 组、Claude / GPT 组）各有一张 5 小时卡和一张周额度卡，周期按各自的重置时间切；轨道只画属于这一组型号的本机请求，上方曲线是这一组的已用百分比。左键拖动平移，按住右键拖选一段可放大，Ctrl + 滚轮缩放。'
           : '每个模型 × 思考等级一条轨道，上方曲线是全账号官方额度已用百分比。额度涨了、同期本机没有 Code 请求的时段标在「本机以外」轨道上，可以补上用了什么模型。左键拖动平移，按住右键拖选一段可放大或标注，Ctrl + 滚轮缩放。' })
       ])
     ])])];
@@ -767,7 +783,7 @@
     T.width = host.clientWidth;
     const colors = colorMap(data);
     T.cards = {};
-    const cards = WINDOWS.map(([w, label]) => (T.cards[w] = cycleCard(w, data.labels?.[w] || label, data[w], colors, data)));
+    const cards = timelineWindows(data).map(({ id, kind, label }) => (T.cards[id] = cycleCard(id, label, data[id], colors, data, kind)));
     host.replaceChildren(...timelineHeading(), ...cards.map(c => c.node));
     for (const c of cards) c.redraw(mode === 'enter');
     applyFocus();
@@ -779,7 +795,7 @@
   /** 颜色跟着模型走（两条时间线一致）：按周期里的用量从多到少分配色相，等级用深浅区分。 */
   function colorMap(data) {
     const total = new Map();
-    for (const w of ['week', 'five']) for (const b of data[w].timeline) total.set(b.model, (total.get(b.model) || 0) + b.tokens);
+    for (const { id } of timelineWindows(data)) for (const b of data[id].timeline || []) total.set(b.model, (total.get(b.model) || 0) + b.tokens);
     const models = [...total].sort((a, b) => b[1] - a[1]).map(([m]) => m);
     return model => { const i = models.indexOf(model); return i < 0 ? HUES.at(-1) : HUES[i % (HUES.length - 1)]; };
   }
@@ -851,14 +867,15 @@
   function antigravityHelp() {
     return infoTip([
       el('b', { text: '时间线怎么看' }),
-      ...[['curve', '绿色折线：本机 Antigravity 报告的最高一组额度已用百分比。'],
+      ...[['curve', '绿色折线：这一组（额度池）在这个窗口的已用百分比。Gemini 组和 Claude / GPT 组各有自己的 5 小时、周额度窗口，重置时间不同，分开画。'],
         ['run', '模型轨道上的色块：本机 Antigravity 的请求，颜色越深思考等级越高。轨道名下面写着「等级 · 用了多久 · 占多少」。'],
         ['now', '绿色竖虚线：现在。']].map(([kind, text]) => el('span', { class: 'ms-help-row' }, [el('i', { class: 'ms-sw ' + kind, 'aria-hidden': 'true' }), el('span', { text })])),
       el('b', { text: '鼠标' }),
       el('span', { text: '左键拖动左右平移（放大后）· 按住右键拖选一段放大 · Ctrl + 滚轮缩放 · 点色块看详情。' }),
     ], '时间线怎么看', 'ms-tl-help', 'help');
   }
-  function cycleCard(w, label, study, colors, data) {
+  /** w：窗口 id（选周期、缩放、标注都按它记）；kind：five / week，决定颜色和周期长度的样式。 */
+  function cycleCard(w, label, study, colors, data, kind = w) {
     const sel = study.selected, index = sel ? study.cycles.findIndex(c => c.id === sel.id) : -1;
     const combos = summarize(study), plain = isPlain(study);
     const step = delta => {
@@ -878,7 +895,7 @@
     const zoomAll = zoomBtn('整个周期', `${label}时间线回到整个周期`, () => { T.zoom[w] = null; T.cards[w]?.redraw(false); });
     const zoom = sel ? el('div', { class: 'ms-zoom', role: 'group', 'aria-label': `${label}时间线缩放` }, [zoomLabel, zoomOut, zoomIn, zoomAll]) : null;
     const chart = el('div', { class: 'ms-tl', 'data-window': w });
-    const node = el('article', { class: `ms-cycle ${w}`, 'data-window': w }, [
+    const node = el('article', { class: `ms-cycle ${kind}`, 'data-window': w, ...(study.group ? { 'data-group': study.group.key } : {}) }, [
       el('div', { class: 'ms-cycle-head' }, [
         el('div', { class: 'ms-cycle-title' }, [el('i', { class: 'ms-dot' }), el('b', { text: plain ? label : `${label}周期` }),
           sel ? el('span', { class: 'ms-range', text: `${date(sel.startAt)} → ${date(sel.endAt)}` }) : null,
@@ -1025,7 +1042,7 @@
       node.append(svg('line', { class: 'ms-grid faint', x1: left, x2: right, y1: y(g), y2: y(g) }));
       const t = svg('text', { class: 'axis', x: left - 8, y: y(g) + 4, 'text-anchor': 'end' }); t.textContent = isBalance(study) ? (g === 50 ? '' : balanceText(study, study.balance.min + (study.balance.max - study.balance.min) * g / 100)) : `${g}%`; node.append(t);
     }
-    const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = isBalance(study) ? '余额' : isPool(study) ? '成员平均已用' : '官方总池已用'; node.append(bandLabel);
+    const bandLabel = svg('text', { class: 'ms-lane-name', x: 4, y: bandTop + bandH / 2 + 4 }); bandLabel.textContent = isBalance(study) ? '余额' : isPool(study) ? '成员平均已用' : study.group ? '这一组已用' : '官方总池已用'; node.append(bandLabel);
     // 官方已用的阶梯线：只取视图前后各一屏内的采样；从视图左边（或第一次采样）开始画
     const track = study.track.filter(p => p.at <= end + span);
     if (track.length) {

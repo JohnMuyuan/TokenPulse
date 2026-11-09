@@ -785,20 +785,30 @@ function buildModelCapacities(
 
 type Cycle = { id: string; startAt: number; endAt: number; resetAt: number; used: number; sampleAt: number; active: boolean; resetCard: boolean };
 
+/**
+ * 每个额度池（组）各自的 5 小时 / 周额度时间线。
+ * Antigravity 的 Gemini 组和 Claude / GPT 组各有一个 5 小时窗口、一个周额度窗口，重置时间各不相同；
+ * 以前只按「第一个有用量的组」切周期、曲线取各组最大值、请求不分组，两个池的用量混在一起。
+ * 现在周期按这一组自己的采样切，曲线是这一组自己的已用百分比，请求只算这一组的型号。
+ * group 为空：还没查到过额度分组，退回不分组的画法。
+ */
 function buildTimelineWindow(
   windowKind: "five" | "week",
   cycleId: string | undefined,
   last: AgyLast | undefined,
+  group: AgyGroupState | undefined,
   history: AgySample[],
   rows: RequestRow[],
   now: number,
 ) {
   const periodMs = windowKind === "five" ? FIVE_MS : WEEK_MS;
   const cycles: Cycle[] = [];
+  const groups = group ? [group] : (last?.groups ?? []);
+  const usedOf = (g: AgyGroupState) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) || 0;
+  const currentUsed = () => Math.max(0, ...groups.map(usedOf));
 
-  // 当前进行中的周期：优先按 agyWindowSegments 切出的实际窗口段（含提前重置分段）生成周期列表
-  const primaryGroup =
-    last?.groups?.find((g) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) > 0) ?? last?.groups?.[0];
+  // 当前进行中的周期：按 agyWindowSegments 切出的实际窗口段（含提前重置分段）生成周期列表
+  const primaryGroup = group ?? groups.find((g) => usedOf(g) > 0) ?? groups[0];
   const primaryQuota = primaryGroup
     ? windowKind === "five"
       ? { used: primaryGroup.used, resetAt: primaryGroup.resetAt }
@@ -813,9 +823,7 @@ function buildTimelineWindow(
     if (end <= now - KEEP_MS || end <= start) continue;
     const active = idx === segments.length - 1 && !seg.endedByReset && end > now;
     const lastPt = seg.points[seg.points.length - 1];
-    const used = active
-      ? Math.max(0, ...(last?.groups ?? []).map((g) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) || 0))
-      : lastPt?.used ?? 0;
+    const used = active ? currentUsed() : lastPt?.used ?? 0;
     cycles.push({
       id: `${start}:${end}`,
       startAt: start,
@@ -841,9 +849,7 @@ function buildTimelineWindow(
     const hasRows = rows.some((r) => r.at >= start && r.at < end);
     const hasSamples = history.some((s) => s.at >= start && s.at <= end);
     if (!active && !hasRows && !hasSamples) continue;
-    const used = active
-      ? Math.max(0, ...(last?.groups ?? []).map((g) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) || 0))
-      : 0;
+    const used = active ? currentUsed() : 0;
     cycles.push({
       id: `${start}:${end}`,
       startAt: start,
@@ -888,7 +894,10 @@ function buildTimelineWindow(
   }
 
   const pickPct = (s: AgySample) => {
-    const vals = s.groups.map((g) => (windowKind === "five" ? g.used : (g.weekUsed ?? g.used))).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+    const vals = s.groups
+      .filter((g) => !group || g.key === group.key)
+      .map((g) => (windowKind === "five" ? g.used : (g.weekUsed ?? g.used)))
+      .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     return vals.length ? Math.max(...vals) : null;
   };
   const track: { at: number; pct: number }[] = [];
@@ -904,13 +913,13 @@ function buildTimelineWindow(
       }
       track.push({ at: s.at, pct });
     }
-    if (selected.active && last?.groups?.length) {
-      const currentPct = Math.max(0, ...last.groups.map((g) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) || 0));
+    if (selected.active && last && groups.length) {
       if (!track.length || track[track.length - 1].at < (last.at || now)) {
-        track.push({ at: last.at || now, pct: currentPct });
+        track.push({ at: last.at || now, pct: currentUsed() });
       }
     }
   }
+  const curveLabel = windowKind === "five" ? "5 小时额度已用" : "周额度已用";
 
   const unknown = (r: RequestRow) => !r.effort || r.effort === "unknown";
   return {
@@ -924,7 +933,8 @@ function buildTimelineWindow(
     timeline: [...bins.values()].sort((a, b) => a.startAt - b.startAt),
     binMs,
     track,
-    curve: { label: windowKind === "five" ? "5 小时额度已用（最高组）" : "周额度已用（最高组）" },
+    curve: { label: group ? `${group.title || "这一组"} · ${curveLabel}` : `${curveLabel}（最高组）` },
+    ...(group ? { group: { key: group.key, title: group.title || "", models: group.models } } : {}),
     attribution: { intervals: [] as never[] },
     offMachine: { points: 0, markedPoints: 0, detected: [] as never[], marks: [] as never[] },
     totals: {
@@ -1196,16 +1206,45 @@ export class AntigravityQuota {
 
   timeline(query?: unknown) {
     const now = this.now();
-    const q = (query && typeof query === "object" ? query : {}) as { cycles?: { five?: unknown; week?: unknown } };
-    const cycle = (v: unknown) => (typeof v === "string" && /^\d{1,16}:\d{1,16}$/.test(v) ? v : undefined);
+    const q = (query && typeof query === "object" ? query : {}) as { cycles?: Record<string, unknown> };
+    const cycles = q.cycles && typeof q.cycles === "object" ? q.cycles : {};
+    const cycle = (id: string) => { const v = cycles[id]; return typeof v === "string" && /^\d{1,16}:\d{1,16}$/.test(v) ? v : undefined; };
     const rows = this.recentRows(now);
-    return {
-      kind: "antigravity",
-      accountId: "antigravity",
-      labels: { five: "5 小时", week: "周额度" },
-      five: buildTimelineWindow("five", cycle(q.cycles?.five), this.stored.last, this.stored.history, rows, now),
-      week: buildTimelineWindow("week", cycle(q.cycles?.week), this.stored.last, this.stored.history, rows, now),
-    };
+    const last = this.stored.last, history = this.stored.history;
+    const groups = last?.groups ?? [];
+    // 还没查到过分组：退回不分组的 5 小时 + 周额度两张卡
+    if (!groups.length) {
+      return {
+        kind: "antigravity",
+        accountId: "antigravity",
+        labels: { five: "5 小时", week: "周额度" },
+        windows: [{ id: "five", kind: "five", label: "5 小时" }, { id: "week", kind: "week", label: "周额度" }],
+        five: buildTimelineWindow("five", cycle("five"), last, undefined, history, rows, now),
+        week: buildTimelineWindow("week", cycle("week"), last, undefined, history, rows, now),
+      };
+    }
+    // 每条请求只归到一个池：先按型号匹配，匹配不上的（新型号、旧日志）放进第一组，不丢
+    const owner = new Map<RequestRow, number>();
+    for (const row of rows) {
+      const index = groups.findIndex((g) => groupMatchesModel(g, row.model || ""));
+      owner.set(row, index < 0 ? 0 : index);
+    }
+    const out: Record<string, unknown> = { kind: "antigravity", accountId: "antigravity", labels: {} };
+    const windows: { id: string; kind: "five" | "week"; label: string; group: string }[] = [];
+    groups.forEach((group, index) => {
+      const groupRows = rows.filter((row) => owner.get(row) === index);
+      const title = group.title || group.models.join(" / ") || `第 ${index + 1} 组`;
+      const kinds: ("five" | "week")[] = ["five", ...(group.week ? ["week" as const] : [])];
+      for (const kind of kinds) {
+        const id = `g${index}-${kind}`;
+        const label = `${title} · ${kind === "five" ? "5 小时" : "周额度"}`;
+        windows.push({ id, kind, label, group: group.key });
+        (out.labels as Record<string, string>)[id] = label;
+        out[id] = buildTimelineWindow(kind, cycle(id), last, group, history, groupRows, now);
+      }
+    });
+    out.windows = windows;
+    return out;
   }
 
   speed(days: number): SpeedSeries {

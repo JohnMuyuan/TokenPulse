@@ -848,6 +848,8 @@ td.n { font-variant-numeric: tabular-nums; }
 .context-meta { margin-left: auto; text-align: right; font-size: 13px; color: var(--muted); }
 
 .quota-window-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
+/* 只有周额度（没有 5 小时窗口的供应商，如 SuperGrok）：周额度占满一行 */
+.quota-window-grid.single { grid-template-columns: 1fr; }
 .window-number { display: flex; align-items: baseline; gap: 10px; margin: 18px 0 16px; }
 .window-number strong { font: 650 48px/1 var(--font-display); letter-spacing: -.035em; }
 .window-number span { color: var(--muted); font-size: 14px; }

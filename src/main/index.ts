@@ -3,7 +3,7 @@ import { logAppStart } from "./app-log-setup";
 import { ExitMonitor } from "./egress-monitor";
 import { ConcurrencyService } from './concurrency-monitor';
 import { concurrencyMonitor, providerScopes, type ConcurrencyLiveState, type ConcurrencyScope } from '../core/concurrency';
-import { antigravityCliDir, antigravityDir, readAntigravityLiveConcurrency } from '../core/antigravity';
+import { antigravityCliDir, antigravityDir, prepareAntigravityCliConversation, readAntigravityLiveConcurrency } from '../core/antigravity';
 import { readOfficialAccountStore } from '../core/accounts';
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, session, shell, Tray } from "electron";
@@ -971,6 +971,8 @@ async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unk
     const gate = await exitMonitor.gateLaunch(CLI_PROVIDER[hit.kind], CLI_NAME[hit.kind]);
     if (!gate.ok) throw new Error(gate.message);
   }
+  // Antigravity CLI 只读自己目录里的对话：桌面端的对话先导入，否则 CLI 看不到前面的历史
+  if (hit.kind === "antigravity") await prepareAntigravityCliConversation(hit.id);
   const runId = startReply({ kind: hit.kind, id: hit.id, cwd, prompt, mode: (mode === "edit" ? "edit" : "readonly") as ReplyMode }, (event) => {
     if (win && !win.isDestroyed()) win.webContents.send("session-reply", event);
   });
@@ -985,8 +987,14 @@ async function openInTerminal(kind: unknown, id: unknown) {
   const cwd = session.cwd && fsSync.existsSync(session.cwd) ? session.cwd : undefined;
   // 终端里的 CLI 走的是那个 PowerShell 的网络环境：出口检测放在终端里做（见 session-reply.ts 的 exitGuardScript）
   const guard = hit.kind === "pi" || hit.kind === "antigravity" ? null : exitMonitor.launchRule(CLI_PROVIDER[hit.kind]);
+  const imported = hit.kind === "antigravity" ? await prepareAntigravityCliConversation(hit.id) : undefined;
   openTerminal(hit.kind, hit.id, cwd, guard);
-  return { ok: true, command: sessionCommand(hit.kind, hit.id), guarded: guardMode(guard) };
+  return { ok: true, command: sessionCommand(hit.kind, hit.id), guarded: guardMode(guard), imported };
+}
+/** 「复制继续命令」之前：Antigravity 桌面端的对话先导入 CLI，粘贴命令才能接上历史。 */
+async function prepareResume(kind: unknown, id: unknown) {
+  const hit = await sessionOf(kind, id);
+  return { imported: hit.kind === "antigravity" ? await prepareAntigravityCliConversation(hit.id) : undefined };
 }
 /** CLI 对应出口监控里的哪一家。 */
 const CLI_PROVIDER = { claude: "claude", codex: "chatgpt", grok: "grok" } as const;
@@ -1489,6 +1497,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("sessions:reply", (_event, kind: unknown, id: unknown, prompt: unknown, mode: unknown) => replyInApp(kind, id, prompt, mode));
     ipcMain.handle("sessions:reply-stop", (_event, runId: unknown) => typeof runId === "string" && stopReply(runId));
     ipcMain.handle("sessions:terminal", (_event, kind: unknown, id: unknown) => openInTerminal(kind, id));
+    ipcMain.handle("sessions:prepare-resume", (_event, kind: unknown, id: unknown) => prepareResume(kind, id));
     ipcMain.handle("sessions:clis", () => installedClis());
     ipcMain.handle("sessions:new", (_event, kind: unknown, folder: unknown) => startConversation(kind, folder));
     ipcMain.handle("sessions:pick-folder", (_event, start: unknown) => pickProjectFolder(start));

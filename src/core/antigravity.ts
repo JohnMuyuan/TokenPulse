@@ -697,8 +697,10 @@ export async function deleteAntigravityConversation(id: string) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("对话 ID 不对");
   const cliRoot = antigravityCliDir();
   const inCli = fs.existsSync(path.join(cliRoot, "conversations", `${id}.db`));
+  // 从桌面端导入 CLI 的对话两边都有：只删 CLI 那份的话，桌面端那份还会出现在列表里
+  const inIde = cliRoot !== antigravityDir() && fs.existsSync(path.join(antigravityDir(), "conversations", `${id}.db`));
   const hub = antigravityHub();
-  if (!hub && !inCli) throw new Error("Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）");
+  if (!hub && (!inCli || inIde)) throw new Error("Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）");
   if (hub) {
     try {
       await postLocal(hub.httpPort, hub.csrfToken, "DeleteCascadeTrajectory", { cascadeId: id });
@@ -714,6 +716,126 @@ export async function deleteAntigravityConversation(id: string) {
       for (const root of antigravityDirs()) removeSummaryRow(root, targetId);
     }
   }
+  forgetCliImport(id);
+}
+
+/* ---------------- 桌面端对话交给 Antigravity CLI 继续 ---------------- */
+
+/*
+ * 桌面端（~/.gemini/antigravity）和 CLI（~/.gemini/antigravity-cli）各用各的数据目录。
+ * `agy.exe --conversation <桌面端对话 ID>` 只在 CLI 自己的目录里找对话库，找不到就开一个同 ID 的空白对话：
+ * 「在终端里继续」「回复对话」都看不到历史（2026-11-09 用 agy acp 的 session/load 核过：默认目录 0 条历史，
+ * 把对话库快照进 CLI 目录后能回放全部消息和工具调用）。
+ * `--app-data-dir antigravity` 虽然也能读到，但 CLI 会往桌面端目录写自己的状态文件和日志，所以不用。
+ *
+ * 做法：启动 CLI 前用 SQLite 在线备份把桌面端对话库快照成 CLI 目录里的同名对话库（桌面端开着、正在写也能拿到一致的快照），
+ * 顺带复制 brain/<id>（计划、产物）和 annotations/<id>.pbtxt。导入记录在 TokenPulse 数据目录里：
+ * - CLI 那份还没有新步骤、桌面端又往前走了 → 重新导入；
+ * - CLI 那份已经有新步骤（用户在 CLI 里接着聊过）→ 保留 CLI 那份，不覆盖；
+ * - CLI 里有同 ID、但不是 TokenPulse 导入的对话库，步数比桌面端少（多半是之前恢复出来的空白对话）→ 先备份到
+ *   TokenPulse 数据目录，再导入。
+ */
+type CliImportMark = { steps: number; ide: { size: number; mtimeMs: number }; at: number };
+const cliImportFile = () => dataFile("antigravity-cli-imports.json");
+
+function forgetCliImport(id: string) {
+  const marks = readJson<Record<string, CliImportMark>>(cliImportFile(), {});
+  if (!marks[id]) return;
+  delete marks[id];
+  try { writeJson(cliImportFile(), marks); } catch { /* 记录写不进去不影响删除 */ }
+}
+
+function stepCount(file: string): number {
+  return withDb(file, (db) => Number((db.prepare("SELECT COUNT(*) AS c FROM steps").get() as { c?: number } | undefined)?.c ?? 0));
+}
+
+function busyError(error: unknown) {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "EBUSY" || code === "EPERM" || code === "EACCES";
+}
+
+export type CliImportResult = "native" | "current" | "kept" | "imported";
+
+/**
+ * 让 Antigravity CLI 能接着这段对话：桌面端的对话导入（或刷新）到 CLI 目录。
+ * native：CLI 自己的对话或桌面端没有这段，什么都不用做；current：CLI 里已经是最新导入；
+ * kept：CLI 里那份已经接着聊过，保留它；imported：刚导入/刷新。
+ */
+export async function prepareAntigravityCliConversation(id: string): Promise<CliImportResult> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("对话 ID 不对");
+  const ideRoot = antigravityDir();
+  const cliRoot = antigravityCliDir();
+  if (path.resolve(ideRoot) === path.resolve(cliRoot)) return "native";
+  const ideFile = path.join(ideRoot, "conversations", `${id}.db`);
+  const cliFile = path.join(cliRoot, "conversations", `${id}.db`);
+  const ideStamp = antigravityStamp(ideFile);
+  if (!ideStamp) return "native";
+
+  const marks = readJson<Record<string, CliImportMark>>(cliImportFile(), {});
+  const mark = marks[id];
+  const ideSteps = stepCount(ideFile);
+  let backup = false;
+  if (fs.existsSync(cliFile)) {
+    let cliSteps: number;
+    try { cliSteps = stepCount(cliFile); } catch { cliSteps = -1; /* 坏掉或不是对话库：当成需要导入 */ }
+    if (mark) {
+      if (cliSteps > mark.steps) return "kept";
+      const ideMoved = ideSteps !== mark.steps || ideStamp.size !== mark.ide.size || ideStamp.mtimeMs !== mark.ide.mtimeMs;
+      if (!ideMoved && cliSteps === mark.steps) return "current";
+    } else {
+      if (cliSteps >= ideSteps) return "kept";
+      backup = cliSteps > 0;
+    }
+  }
+
+  const tmp = path.join(cliRoot, "conversations", `${id}.db.tokenpulse-${process.pid}.tmp`);
+  fs.mkdirSync(path.dirname(cliFile), { recursive: true });
+  const sqlite = require("node:sqlite") as { DatabaseSync: new (file: string, opts?: { readOnly?: boolean }) => Database; backup: (db: Database, file: string) => Promise<number> };
+  let importedSteps: number;
+  try {
+    const src = new sqlite.DatabaseSync(ideFile, { readOnly: true });
+    try { await sqlite.backup(src, tmp); } finally { src.close(); }
+    // 以快照里的步数为准：读步数到做快照之间桌面端可能又写了几步
+    importedSteps = stepCount(tmp);
+    if (fs.existsSync(cliFile)) {
+      // 先把旧库挪开：CLI 正开着这段对话时 Windows 不让挪，这时不能覆盖
+      const aside = backup
+        ? path.join(dataFile("antigravity-cli-backup"), `${id}-${Date.now()}.db`)
+        : `${cliFile}.tokenpulse-old-${process.pid}`;
+      if (backup) fs.mkdirSync(path.dirname(aside), { recursive: true });
+      try {
+        if (backup) {
+          // 备份要带上 -wal：新内容可能还没合并进主库
+          for (const suffix of ["-wal", "-shm"]) if (fs.existsSync(cliFile + suffix)) fs.copyFileSync(cliFile + suffix, aside + suffix);
+          fs.copyFileSync(cliFile, aside);
+          fs.rmSync(cliFile);
+        } else fs.renameSync(cliFile, aside);
+      } catch (error) {
+        if (busyError(error)) throw new Error("这段对话正在 Antigravity CLI 里打开，请先关掉那个终端再试");
+        throw error;
+      }
+      for (const suffix of ["-wal", "-shm"]) fs.rmSync(cliFile + suffix, { force: true });
+      if (!backup) fs.rmSync(aside, { force: true });
+    }
+    fs.renameSync(tmp, cliFile);
+  } finally {
+    for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(tmp + suffix, { force: true });
+  }
+
+  // 计划、产物等附件：CLI 里没有就复制；重新导入时用桌面端的新版本覆盖
+  const brain = path.join(ideRoot, "brain", id);
+  if (fs.existsSync(brain)) {
+    try { fs.cpSync(brain, path.join(cliRoot, "brain", id), { recursive: true, force: true, errorOnExist: false }); } catch { /* 附件复制失败不影响继续对话 */ }
+  }
+  const note = path.join(ideRoot, "annotations", `${id}.pbtxt`);
+  const cliNote = path.join(cliRoot, "annotations", `${id}.pbtxt`);
+  if (fs.existsSync(note) && !fs.existsSync(cliNote)) {
+    try { fs.mkdirSync(path.dirname(cliNote), { recursive: true }); fs.copyFileSync(note, cliNote); } catch { /* 同上 */ }
+  }
+
+  marks[id] = { steps: importedSteps, ide: ideStamp, at: Date.now() };
+  writeJson(cliImportFile(), marks);
+  return "imported";
 }
 
 /* ---------------- 桌宠：哪些对话在跑 ---------------- */

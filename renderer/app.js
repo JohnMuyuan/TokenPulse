@@ -1292,8 +1292,10 @@ function capacityChart(host, history, windowName, metric, animate) {
 function capacityPanel(account) {
   const host = el('div', { class: 'chart capacity-chart' });
   const note = el('p', { class: 'sample-caption' });
+  // 没有 5 小时窗口（如 SuperGrok）：容量趋势只有周额度，不给切到空的 5 小时
+  if (!account.five && account.week) state.capWindow = 'week';
   const windowSeg = el('div', { class: 'seg compact', 'aria-label': '额度窗口' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),
-    ...[['week', '周额度'], ['five', '5 小时']].map(([id, label]) => el('button', { 'data-cap-window': id, class: state.capWindow === id ? 'on' : null, text: label }))]);
+    ...[['week', '周额度'], ['five', '5 小时']].filter(([id]) => id !== 'five' || account.five || !account.week).map(([id, label]) => el('button', { 'data-cap-window': id, class: state.capWindow === id ? 'on' : null, text: label }))]);
   const metricSeg = el('div', { class: 'seg compact', 'aria-label': '单位' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),
     ...[['tokens', 'Tokens'], ['costUsd', '费用']].map(([id, label]) => el('button', { 'data-cap-metric': id, class: state.capMetric === id ? 'on' : null, text: label }))]);
   const draw = animate => {
@@ -1627,7 +1629,9 @@ function renderQuota() {
   if (blocked) host.append(blocked);
   if (isStale(account)) host.append(el('p', { class: 'stale-note' }, [icon('alert'), `最后一次成功查询是 ${date(checkedAt(account), true)}，已超过 ${staleAfter(account) / 60000} 分钟（可能是网络不通或凭据过期）。以下是历史记录，当前剩余额度需刷新确认。`]));
   else if (account.quiet) host.append(el('p', { class: 'quiet-note' }, [icon('info'), `后台账号，每 30 分钟查一次（设置里开了「后台账号少查一点」）。上次查到是 ${date(checkedAt(account), true)}，点「刷新数据」可以马上查。`]));
-  host.append(el('div', { class: 'quota-window-grid' }, [markLayout(windowPanel('5 小时窗口', account.five, account), 'quota:five'), markLayout(windowPanel('周额度窗口', account.week, account), 'quota:week')]));
+  // 这家没有 5 小时窗口（如 SuperGrok 只有周额度）：不放「接口未提供此窗口」的空卡，周额度单独占满一行
+  const noFive = !account.five && Boolean(account.week);
+  host.append(el('div', { class: 'quota-window-grid' + (noFive ? ' single' : '') }, [noFive ? null : markLayout(windowPanel('5 小时窗口', account.five, account), 'quota:five'), markLayout(windowPanel('周额度窗口', account.week, account), 'quota:week')]));
   if (kind === 'chatgpt') host.append(markLayout(probePanel(account), 'quota:probe'));
   const capacity = capacityPanel(account);
   host.append(markLayout(capacity, 'quota:capacity'));
