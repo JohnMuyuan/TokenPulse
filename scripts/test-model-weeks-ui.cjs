@@ -38,6 +38,11 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.match(await e(panelText), /按型号的周额度[\s\S]*Fable 周额度[\s\S]*剩余 70\.0%[\s\S]*已用 30\.0%/);
     assert.equal(await e("document.querySelectorAll('#quota-detail .quota-window-grid .panel').length"), 2, '窗口卡片还是两张');
     assert.ok(await e("!!document.querySelector('#quota-detail .quota-window-grid .panel:nth-child(2) .model-weeks') && !document.querySelector('#quota-detail .quota-window-grid .panel:nth-child(1) .model-weeks')"), '只在周额度窗口里');
+    // Fable 也有预测和 Token 指标，和总窗口同一套：本窗口已用、剩余可用、整窗容量折算、预计达到上限
+    const detail = await e("(() => { const d = document.querySelector('#quota-detail .model-week-row[data-model=Fable] .model-week-detail'); return d ? { line: d.querySelector('.prediction-line')?.textContent || '', labels: [...d.querySelectorAll('.metric-label')].map(n => n.textContent) } : null; })()");
+    assert.ok(detail, 'Fable 那一行有详细指标');
+    assert.match(detail.line, /按最近趋势|采样跨度还不够|近期没有新增用量/);
+    assert.deepEqual(detail.labels, ['本窗口已用（本机）', '剩余可用（估算）', '整窗容量折算', '预计达到上限']);
     await e("document.querySelector('#quota-detail .model-weeks').scrollIntoView({ block: 'center' })");
     await shot('model-weeks-quota');
     console.log('PASS model weeks UI: the weekly window panel lists weekly limits by model');

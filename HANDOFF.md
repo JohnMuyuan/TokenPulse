@@ -1,4 +1,36 @@
-# 当前接手入口 · TokenPulse v0.3.87 正式发布（型号核验两处误报修复，2026-11-09）
+# 当前接手入口 · TokenPulse v0.3.88 正式发布（Fable 周额度容量折算与预测 + Antigravity 整窗容量算法修复，2026-11-10）
+
+## 发布状态 · v0.3.88
+
+- **版本**：`0.3.88`（用户 2026-11-10：「检查 Antigravity 算法，没问题就直接升级版本然后发布」）。发版前先 `git merge --ff-only origin/main` 合入了 bot 的知识库更新 `669552b`（只改 `knowledge/models.json`）。`renderer/intro.js` 加 0.3.88 说明 2 条（`quota`），`renderer/i18n.js` 补英文。
+- **Antigravity 算法检查（用真实数据只读跑 `buildInsight`，脚本在 scratchpad：agycheck*.js）**：
+  - 窗口分段、各池 5 小时 / 周窗口的本机用量、速度、预测、按价换算各型号容量：逐项核对，数值自洽。
+  - **发现并修复**：整窗容量把 30 天里所有窗口「总 Token ÷ 总百分比」合在一起算。用户 11-07/08 主要用 `gemini-3.8-flash-tiered`（约 3100 万 Token / 1%），11-09 起只用 `gemini-4-argon`（约 180 万 / 1%），结果 Gemini 5 小时整窗显示约 14.5 亿 Token（最近窗口实际约 1.75–3.3 亿），高估约 7 倍；按价换算的型号容量也偏高约 2 倍。
+  - **修复**（`src/main/antigravity-quota.ts` 的 `buildWindowInsight`）：只用最近 6 个 5 小时窗口 / 3 个周窗口（`RECENT_CAPACITY_FIVE/WEEK`），取按已用百分比加权的中位数（新增导出 `weightedMedian`），费用同理。真实数据复核：Gemini 5 小时整窗 ≈ 1.97 亿；周窗口 65 亿反映本周确实以 Flash 为主（只有 2 个周样本）；Claude / GPT 组只有 1 个样本，不变。
+  - 新测试 `scripts/test-antigravity-capacity.cjs`（2/2）：加权中位数；10 个窗口中前 4 个和第 8 个是另一种用法时，容量仍跟着最近的用法（≈ 2 亿），对照全部窗口合并会高估 5 倍以上。
+- **发版前验证**：`npm run build` PASS；`test-antigravity-capacity` 2/2、`test-antigravity-usage` 10/10、`test-antigravity-timeline` 6/6、`test-antigravity-sessions` 5/5、`test-antigravity-cli-import` 8/8、`test-pass-speed` PASS、`test-concurrency` PASS、`test-model-weeks` 7/7、`test-quota-monitor` 79/79、`test-requests` 70/70；Electron：`test-antigravity-ui` 7、`test-model-weeks-ui` 3、`test-weekly-only-ui` 4、`test-intro-ui` 3、`test-desk-pet-ui` 21、`test-concurrency-ui` 1，全 PASS。
+- **打包**：`npm run dist` PASS，asar 已确认含 `'0.3.88'`、`weightedMedian`、`modelWeekDetail`、`rowsOfModelFamily`。
+  - `dist/TokenPulse-0.3.88-Setup.exe`（112816424 B，SHA256 `1E8CCBD9F2A656FB76EF4881FEE8562CBCA402D962BBB97F8B5988FD796DDCA1`）
+  - `dist/TokenPulse-0.3.88-Portable.exe`（112559214 B，SHA256 `A10A18933FD777C112EA557CEA48CC302A001DA7496FE13220F2D1F5CC3B22DF`）
+  - `dist/TokenPulse-0.3.88-Setup.exe.blockmap`（SHA256 `7AC61C9C5F4CB8F350717759E493EF9A8B797FEA90225667AE5ECD7B9714A9A7`）
+  - `dist/latest.yml`（version 0.3.88，SHA256 `6762B5BC0D33C940F9BF359CB0091B80FCA6ABED117242CBDCDC0F4336423974`）
+  - 句柄全部 UNLOCKED；无 electron / app-builder / makensis 残留进程。
+- **Git / GitHub**：见本节末尾（推送和 Release 完成后更新）。
+
+## 本轮第一部分 · Fable 周额度补齐容量折算与预测（已包含在 v0.3.88）
+
+- **问题**：Claude Max 的 Fable 按型号周额度只显示已用 / 重置时间，没有总窗口那样的「本窗口已用（本机）/ 剩余可用（估算）/ 整窗容量折算 / 预计达到上限」和预测一句话。
+- **改动（本地，未提交）**：
+  - `src/core/quota-monitor.ts`：`analyzeAccount` 对 `latest.models` 每一项调用 `analyzeWindow`（窗口 = 它自己的 resetAt 往前 7 天，`rollWindow` 处理过期；采样点取每条采样里该型号的 pct；用量只取该型号家族的请求）；结果放在 `modelWeeks[i].window`（新增可选字段，其余字段不变）。非「只在本机用 Code」账号同样去掉 capacity、标 `unattributed`。新增导出 `rowsOfModelFamily(rows, name)`：显示名去掉 claude 后取第一个英文词（Fable / Claude Fable / Fable 5.2 → fable），按非字母切开型号名匹配。
+  - `renderer/app.js`：新增 `modelWeekDetail(win, account)`，在周额度窗口的 Fable 行下面画预测一句话 + 2×2 指标（文案复用总窗口已有的中英文）；窗口已结束 / 没有 window 时不画。`renderer/app.css`：`.model-week-detail` 紧凑样式。
+  - 测试：`scripts/test-model-weeks.cjs` 新增一条（只算本周 Fable 请求、容量 = 400K ÷ 20% = 2M、起点按 Fable 重置往前 7 天、有趋势预测、总周额度仍算全部型号、共享账号不倒推容量、家族名匹配）；原 `modelWeeks` 精确比较改为忽略 `window`。`scripts/test-model-weeks-ui.cjs` 断言 Fable 行有预测和 4 个指标，英文检查覆盖新块。
+- **验证**：`npm run build` PASS；`test-model-weeks` 7/7；`test-quota-monitor` 79/79；`test-shared-quota` 0 FAIL；Electron：`test-model-weeks-ui` 3 PASS、`test-weekly-only-ui` 4、`test-intro-ui` 3、`test-layout-ui` 9、`test-model-study-ui` 0 FAIL（输出里的 `Simulated model study failure` 是测试故意造的失败）。演示数据截图自查：Fable 行预测 + 2×2 指标排版正常。无残留 electron 进程。
+- **未做**：未升版本、未提交、未打包、未发布（用户本轮没有要求）；没有在真实账号上看。
+- **注意**：本轮开始时仓库已被另一会话发布到 v0.3.87（`1c2059b`、`b884c76`，改的是型号核验，和本轮文件无重叠），本轮改动在其之上。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.87 正式发布（型号核验两处误报修复，2026-11-09）
 
 ## 发布状态 · v0.3.87
 

@@ -135,8 +135,12 @@ export type AccountReport = {
   quiet?: boolean;
   resetCredits?: number;
   plan?: string;
-  /** 按型号的周额度（Claude Max 的 Fable），取最后一次采样。resetAt 毫秒。 */
-  modelWeeks?: { model: string; used: number; resetAt?: number }[];
+  /**
+   * 按型号的周额度（Claude Max 的 Fable），取最后一次采样。resetAt 毫秒。
+   * window：和总的周额度一样的分析（本窗口本机这个型号用了多少、整窗容量折算、剩余可用、预计达到上限），
+   * 只拿这个型号的请求、这个型号自己的采样算。
+   */
+  modelWeeks?: { model: string; used: number; resetAt?: number; window?: WindowReport }[];
   /** 这份额度是哪个账号的（= 这组采样的账号）。 */
   accountId?: string;
   /** 这个账号的名字（邮箱），report.ts 从账号登记里补上。 */
@@ -397,6 +401,16 @@ function activeShareOf(rows: HourRow[], startAt: number | undefined, now: number
   }
   if (!hours.size) return undefined;
   return Math.min(1, hours.size / elapsedH);
+}
+
+/**
+ * 按型号的周额度只算这个型号的请求：额度接口给的是显示名（Fable、Claude Fable、Fable 5.2 都可能），
+ * 日志里是 claude-fable-5-1 这种。取显示名里第一个不是 claude 的英文词当家族名，型号名按非字母切开后含这个词才算。
+ */
+export function rowsOfModelFamily(rows: HourRow[], name: string) {
+  const family = name.toLowerCase().replace(/\bclaude\b/g, " ").match(/[a-z]+/)?.[0];
+  if (!family) return [];
+  return rows.filter((row) => row.model.toLowerCase().split(/[^a-z]+/).includes(family));
 }
 
 /** 当前窗口对应的最后一段（重置时间对得上才算，对不上就按接口给的起点）。 */
@@ -666,10 +680,38 @@ export function analyzeAccount(
     .filter((item) => item.tokens > 0 || item.costUsd > 0)
     .sort((a, b) => b.costUsd - a.costUsd || b.tokens - a.tokens);
 
+  /*
+   * 按型号的周额度（Claude Max 的 Fable）：和总的周额度一样分析。窗口按它自己的重置时间往前推 7 天，
+   * 采样点是每次采样里这个型号的百分比，用量只算这个型号的请求（型号名里有 Fable 这个词的，比如 claude-fable-5-1）。
+   */
+  const modelWeeks = latest?.models?.length
+    ? latest.models.map((row) => {
+        const resetAt = time(row.reset);
+        const rolled = rollWindow(row.pct, resetAt != null ? resetAt - WEEK_MS : undefined, resetAt, WEEK_MS, now);
+        const points = rolled.stale ? [] : pointsOf(samples, (sample) => sample.models?.find((item) => item.model === row.model)?.pct, rolled.startAt);
+        const window = analyzeWindow(
+          {
+            current: rolled.current,
+            startAt: rolled.startAt,
+            resetAt: rolled.resetAt,
+            points,
+            lookbackMs: 24 * HOUR_MS,
+            minSpanMs: 2 * HOUR_MS,
+            minElapsedMs: 4 * HOUR_MS,
+            completeLocalOnly: localOnly,
+            pressureRule: pressureRule(pressure.week, PRESSURE_DEFAULTS.week),
+          },
+          rowsOfModelFamily(scopedRows, row.model),
+          now,
+        );
+        return { model: row.model, used: row.pct, ...(resetAt != null ? { resetAt } : {}), window };
+      })
+    : undefined;
+
   // 日/小时 Code 用量不是整个账号的用量，不能反推整窗总容量。
   // 有来源声明的短时校准由 model-study 单独处理，不把它回填成历史真实容量。
   // 用户声明只在本机用 Code 的账号除外：它的已用百分比就是本机 Code 用掉的，可以直接折算。
-  if (!localOnly) for (const window of [week, five]) if (window) { delete window.capacity; window.capacityReason = "unattributed"; }
+  if (!localOnly) for (const window of [week, five, ...(modelWeeks ?? []).map((row) => row.window)]) if (window) { delete window.capacity; window.capacityReason = "unattributed"; }
   const protectedHistory = (): CapacityHistory => ({ points: [], skipped: { tooLow: 0, noLocal: 0 }, unavailableReason: "unattributed" });
   return {
     kind,
@@ -685,9 +727,7 @@ export function analyzeAccount(
         : latest?.at,
     resetCredits: latest?.resetCredits,
     plan: latest?.plan,
-    ...(latest?.models?.length
-      ? { modelWeeks: latest.models.map((row) => ({ model: row.model, used: row.pct, ...(Number.isFinite(Date.parse(row.reset ?? "")) ? { resetAt: Date.parse(row.reset!) } : {}) })) }
-      : {}),
+    ...(modelWeeks ? { modelWeeks } : {}),
     week,
     five,
     trend,

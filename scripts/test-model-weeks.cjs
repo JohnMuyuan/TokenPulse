@@ -91,9 +91,41 @@ const fetch = async () => { calls = []; return quota.fetchOfficialQuota(true); }
     const samples = history.readQuotaHistory().accounts.claude;
     assert.deepEqual(samples.map((s) => s.models?.[0]?.pct), [0, 12], "五小时、周都没变，Fable 变了也要记");
     const report = analyzeAccount("claude", samples, [], Date.now());
-    assert.deepEqual(report.modelWeeks, [{ model: "Fable", used: 12, resetAt: Date.parse(weekReset) }]);
+    assert.deepEqual(report.modelWeeks.map(({ window, ...row }) => row), [{ model: "Fable", used: 12, resetAt: Date.parse(weekReset) }]);
+    assert.equal(report.modelWeeks[0].window.used, 12, "按型号的周额度也有完整的窗口分析");
     assert.ok(/Fable 周 12\.0%/.test(fs.readFileSync(appLog.appLogFile(), "utf8")), "日志里有 Fable 的百分比");
     pass("Fable changes are sampled even when the 5-hour and weekly numbers stay the same; the account report carries them");
+
+    // Fable 周额度和总窗口一样有「本机已用 / 整窗容量折算 / 剩余可用 / 预计达到上限」：只算 Fable 的请求
+    {
+      const H = 3600000, now = Date.UTC(2026, 10, 10, 12), reset = now + 72 * H, start = reset - 7 * 24 * H;
+      const at = (h) => start + h * H;
+      // 窗口过了 96 小时，Fable 从 4% 涨到 20%（最近 24 小时每小时涨 0.2 个点）；总周额度另算
+      const s = [[48, 4, 10], [72, 15.2, 20], [96, 20, 30]].map(([h, fable, week]) => ({ at: at(h), account: "claude:a", week, weekReset: new Date(reset).toISOString(), models: [{ model: "Fable", pct: fable, reset: new Date(reset).toISOString() }] }));
+      const rows = [
+        { hour: at(50), model: "claude-fable-5-1", tokens: 300000, costUsd: 3, requests: 10, account: "claude:a" },
+        { hour: at(80), model: "claude-fable-5-2", tokens: 100000, costUsd: 1, requests: 4, account: "claude:a" },
+        { hour: at(81), model: "claude-opus-5-5", tokens: 900000, costUsd: 4, requests: 30, account: "claude:a" },
+        { hour: at(10) - 7 * 24 * H, model: "claude-fable-5-1", tokens: 777777, costUsd: 9, requests: 9, account: "claude:a" },
+      ];
+      const local = analyzeAccount("claude", s, rows, now, undefined, true).modelWeeks[0].window;
+      assert.equal(local.used, 20);
+      assert.equal(local.usedTokens, 400000, "只算这一周里 Fable 的请求：不算 Opus、不算上一周");
+      assert.equal(local.usedCostUsd, 4);
+      assert.ok(local.capacity && Math.abs(local.capacity.tokens - 2000000) < 1, `整窗容量 = 400K ÷ 20% = 2M（${local.capacity?.tokens}）`);
+      assert.equal(local.startAt, start, "窗口从 Fable 自己的重置时间往前推 7 天");
+      assert.ok(local.projectedAtReset != null && local.projectedAtReset > 20, "有按趋势的重置时预计使用");
+      assert.equal(analyzeAccount("claude", s, rows, now, undefined, true).week.usedTokens, 1300000, "总周额度照常算全部型号");
+      const shared = analyzeAccount("claude", s, rows, now).modelWeeks[0].window;
+      assert.equal(shared.capacity, undefined, "账号池含其他端时不倒推容量");
+      assert.equal(shared.capacityReason, "unattributed");
+      assert.equal(shared.usedTokens, 400000, "本机用了多少照常给");
+      // 家族名匹配：显示名带 Claude / 版本号也认
+      const { rowsOfModelFamily } = build("core/quota-monitor.js");
+      assert.deepEqual(["Fable", "Claude Fable", "Fable 5.2"].map((name) => rowsOfModelFamily(rows, name).length), [3, 3, 3]);
+      assert.equal(rowsOfModelFamily(rows, "Claude").length, 0, "只有 Claude 这个词时不乱认");
+      pass("the Fable weekly window gets local usage, full-window capacity, remaining and forecast from Fable requests only");
+    }
 
     // Pro：服务器就算返回了按型号的行也不显示
     quota.resetClaudeTiers();

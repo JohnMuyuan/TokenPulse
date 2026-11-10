@@ -344,6 +344,23 @@ function groupMatchesModel(group: { models: string[]; title?: string }, model: s
  * 0.2%–1% 时接口四舍五入或时间差一点点就会把整窗容量放大几十到几百倍。
  */
 const MIN_CAPACITY_PCT = 2;
+/** 整窗容量用最近几个窗口算（见 buildWindowInsight）。 */
+const RECENT_CAPACITY_FIVE = 6;
+const RECENT_CAPACITY_WEEK = 3;
+
+/** 加权中位数：[值, 权重]。按值排好，累计权重第一次过半的那个值；正好一半时取它和下一个的平均。 */
+export function weightedMedian(pairs: [number, number][]): number {
+  const list = pairs.filter(([value, weight]) => Number.isFinite(value) && weight > 0).sort((a, b) => a[0] - b[0]);
+  if (!list.length) return 0;
+  const half = list.reduce((sum, [, weight]) => sum + weight, 0) / 2;
+  let acc = 0;
+  for (let i = 0; i < list.length; i++) {
+    acc += list[i][1];
+    if (Math.abs(acc - half) < 1e-9 && i + 1 < list.length) return (list[i][0] + list[i + 1][0]) / 2;
+    if (acc > half) return list[i][0];
+  }
+  return list[list.length - 1][0];
+}
 
 /**
  * 把某一组在 5 小时窗口或周额度窗口下的历史采样切成连续的窗口段（对标 quota-monitor.ts 的 windowSegments）：
@@ -536,10 +553,6 @@ function buildWindowInsight(
   const local = summarizeRows(windowRows);
 
   const capacityHistory: AgyCapacityPoint[] = [];
-  let sumPoints = 0;
-  let sumTokens = 0;
-  let sumCost = 0;
-  let intervals = 0;
 
   for (const segment of segments) {
     if (!segment.points.length) continue;
@@ -581,11 +594,21 @@ function buildWindowInsight(
       ...(segment.startedByReset ? { startedByReset: segment.startedByReset } : {}),
       ...(segment.endedByReset ? { endedByReset: segment.endedByReset } : {}),
     });
-    sumPoints += usedPct;
-    sumTokens += cSum.tokens;
-    sumCost += cSum.costUsd;
-    intervals += 1;
   }
+
+  /*
+   * 整窗容量只用最近几个窗口（5 小时 6 个、周 3 个）合起来算，不用 30 天里的全部窗口。
+   * 1% 额度对应多少 Token 随用的型号变化很大（2026-11 用户实测：主要用 gemini-3.8-flash-tiered 的窗口约 3100 万 Token / 1%，
+   * 只用 gemini-4-argon 的窗口约 180 万 / 1%），30 天一起平均会被早先另一种用法的窗口带偏好几倍。
+   * 只看最近几个窗口，跟着现在的用法走；换了用法，几个窗口之后就跟上。
+   * 几个窗口之间取「按已用百分比加权的中位数」，不用「总 Token ÷ 总百分比」：后者会被一个用法不同的窗口
+   * （同样 1% 多出十几倍 Token）拉高好几倍，中位数不受个别窗口影响。
+   */
+  const recent = capacityHistory.slice(windowKind === "five" ? -RECENT_CAPACITY_FIVE : -RECENT_CAPACITY_WEEK);
+  let sumPoints = recent.reduce((sum, point) => sum + point.usedPct, 0);
+  const sumTokens = recent.reduce((sum, point) => sum + point.tokens, 0);
+  const sumCost = recent.reduce((sum, point) => sum + point.costUsd, 0);
+  let intervals = recent.length;
 
   let fullTokens: number | null = null;
   let fullCostUsd: number | null = null;
@@ -593,8 +616,8 @@ function buildWindowInsight(
   let confidence: AgyWindowCapacity["confidence"] = "insufficient";
 
   if (sumPoints >= MIN_CAPACITY_PCT && sumTokens > 0) {
-    fullTokens = Math.round((sumTokens / sumPoints) * 100);
-    fullCostUsd = sumCost > 0 ? Math.round(((sumCost / sumPoints) * 100) * 100) / 100 : null;
+    fullTokens = Math.round(weightedMedian(recent.map((point) => [point.fullTokens, point.usedPct])));
+    fullCostUsd = sumCost > 0 ? Math.round(weightedMedian(recent.map((point) => [point.fullCostUsd, point.usedPct])) * 100) / 100 : null;
     basis = intervals >= 2 && sumPoints >= 5 ? "measured" : "current";
     confidence = intervals >= 3 && sumPoints >= 15 ? "medium" : sumPoints >= 5 ? "low" : "current";
   } else if (!ended && used >= MIN_CAPACITY_PCT && local.tokens > 0) {

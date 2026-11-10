@@ -2895,6 +2895,11 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.88 更新说明
+    'Claude 的 Fable 周额度也有容量折算和预测了': 'Claude’s Fable weekly limit now gets capacity estimates and a forecast',
+    '额度详情里 Fable 那一行和总的周额度一样，显示本窗口本机用了多少、剩余可用、整窗容量折算、预计什么时候达到上限，以及一句按趋势的预测。只算 Fable 自己的请求。': 'In quota details the Fable row now shows the same things as the overall weekly window: local usage this window, estimated remaining, full-window capacity, when it would hit the limit, and a trend forecast. Only Fable’s own requests count.',
+    '修复：Antigravity 的整窗容量被早先的用法带偏': 'Fix: Antigravity full-window capacity was skewed by earlier usage',
+    '同样 1% 额度，用 Flash 和用 Argon 对应的 Token 能差十几倍。以前把 30 天里所有窗口合起来平均，换了用法后容量会被高估好几倍；现在只看最近几个窗口、取中位数，跟着你现在的用法走。': 'The same 1% of quota can mean over ten times more tokens on Flash than on Argon. Averaging every window from the last 30 days overestimated capacity several times after a change in usage; it now takes the median of the most recent windows, so it follows how you use it now.',
     // 0.3.87 更新说明
     '修复：Antigravity 接 Claude 时误报「型号不一致」': 'Fix: false “Model mismatch” for Claude via Antigravity',
     'Antigravity 会在返回的 Claude 型号名后面带上思考等级（如请求 claude-opus-5-5、返回 claude-opus-5-5-medium），以前被当成换了型号。现在识别为同一型号，详情里注明后缀是思考等级；之前的记录也会自动改判。': 'Antigravity appends the thinking effort to the returned Claude model name (request claude-opus-5-5, response claude-opus-5-5-medium), which used to be treated as a model swap. It is now recognized as the same model, with the details noting the suffix is the effort level; earlier records are re-judged automatically.',

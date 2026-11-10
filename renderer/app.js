@@ -1181,6 +1181,29 @@ function tokenMetric(label, value, extra = {}) {
   if (!value) return metric(label, '—', { sub: extra.missing || '样本不足，暂无法折算' });
   return metric(label, amount(value.tokens), { unit: 'Tokens', sub: money(value.costUsd), approx: cnApprox(value.tokens), ...extra });
 }
+/**
+ * 按型号的周额度（Fable）也给出和总窗口一样的判断：预测一句话 + 本机用了多少、还能用多少、整窗折合多少、什么时候用完。
+ * 数字只算这个型号的请求（见 quota-monitor.ts 的 rowsOfModelFamily）；文案和总窗口共用，判断规则也一样。
+ */
+function modelWeekDetail(win, account) {
+  const unknown = isStale(account) || waitingReset(account, win), waitText = '等待有效采样';
+  const caution = pressured(win) || unknown, capacity = win.capacity;
+  const willRunOut = !unknown && win.used < 100 && win.etaAt && win.runsOutBeforeReset;
+  const limit = unknown ? metric('预计达到上限', '—', { sub: waitText })
+    : win.used >= 100 ? metric('预计达到上限', '已用完', { sub: '等待重置', tone: 'warn' })
+    : willRunOut ? metric('预计达到上限', date(win.etaAt), { sub: `约 ${duration(win.etaAt - Date.now())}后`, tone: pressured(win) ? 'warn' : '' })
+    : metric('预计达到上限', win.ratePerH === 0 ? '暂无新增' : '不会', { sub: win.ratePerH === 0 ? '近期没有新增用量' : '重置前不会达到上限' });
+  return el('div', { class: 'model-week-detail' }, [
+    el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(win, account)]),
+    el('div', { class: 'metric-grid two' }, [
+      metric('本窗口已用（本机）', amount(win.usedTokens), { unit: 'Tokens', approx: cnApprox(win.usedTokens), sub: money(win.usedCostUsd) }),
+      unknown ? metric('剩余可用（估算）', '—', { sub: waitText }) : tokenMetric('剩余可用（估算）', byCapacity(win, 100 - win.used), { tone: 'accent' }),
+      unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : win.capacityReason === 'unattributed' ? '账号池含其他端，不能按本机日志倒推容量' : '已用不到 2%，暂无法折算' })
+        : tokenMetric('整窗容量折算', byCapacity(win, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } }),
+      limit
+    ])
+  ]);
+}
 function windowPanel(label, report, account) {
   const panel = el('article', { class: 'panel window-panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: label }), el('span', { class: 'section-tag', text: '官方额度窗口' })])]);
   if (!report) { panel.append(empty('接口未提供此窗口')); return panel; }
@@ -1199,7 +1222,8 @@ function windowPanel(label, report, account) {
         return el('div', { class: 'model-week-row', 'data-model': row.model }, [
           el('div', { class: 'model-week-line' }, [modelWeekTitle(row), el('span', { class: 'num', text: ended ? '等待确认' : `剩余 ${percent(Math.max(0, 100 - row.used))}` })]),
           ended ? el('div', { class: 'track' }) : track(row.used, row.used >= 75, '已用额度'),
-          el('div', { class: 'mini-reset', 'data-reset-at': row.resetAt, 'data-reset-format': 'full' }, [icon('clock'), ...(ended ? [modelWeekReset(row)] : [el('span', { text: `已用 ${percent(row.used)}` }), ' · ', el('span', { text: modelWeekReset(row) })])])
+          el('div', { class: 'mini-reset', 'data-reset-at': row.resetAt, 'data-reset-format': 'full' }, [icon('clock'), ...(ended ? [modelWeekReset(row)] : [el('span', { text: `已用 ${percent(row.used)}` }), ' · ', el('span', { text: modelWeekReset(row) })])]),
+          ended || !row.window ? null : modelWeekDetail(row.window, account)
         ]);
       })
     ]));
