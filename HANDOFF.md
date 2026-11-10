@@ -15,7 +15,7 @@
   - `dist/TokenPulse-0.3.88-Setup.exe.blockmap`（SHA256 `7AC61C9C5F4CB8F350717759E493EF9A8B797FEA90225667AE5ECD7B9714A9A7`）
   - `dist/latest.yml`（version 0.3.88，SHA256 `6762B5BC0D33C940F9BF359CB0091B80FCA6ABED117242CBDCDC0F4336423974`）
   - 句柄全部 UNLOCKED；无 electron / app-builder / makensis 残留进程。
-- **Git / GitHub**：见本节末尾（推送和 Release 完成后更新）。
+- **Git / GitHub（已完成）**：发布提交 `363b585` 已推送到 `origin/main`（在 bot 的 `669552b` 之上），标签 `v0.3.88` 已推送；GitHub Release `v0.3.88` 已正式发布（非草稿、非预发布）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.88 ，4 个附件大小和 SHA256 与本地一致。说明文件 `dist/release-0.3.88.md`。推送走代理 `127.0.0.1:7890`。未纳入提交：`clawd-pet-extracted/`（来源不明，未动）。
 
 ## 本轮第一部分 · Fable 周额度补齐容量折算与预测（已包含在 v0.3.88）
 
