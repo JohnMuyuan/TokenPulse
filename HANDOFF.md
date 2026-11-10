@@ -1,5 +1,21 @@
 # 当前接手入口 · TokenPulse v0.3.86 正式发布（桌宠导致鼠标不跟手的修复 + 动画帧率选项，2026-11-09）
 
+## 发布后本地改动（未提交、未升版本、未打包）· Codex 接自部署开源模型误报「响应存疑」
+
+- **现象**：用户在 Codex 里接 Colab 上用 Ollama 自部署的 `gpt-oss:20b`，用量明细把这些请求标成「响应存疑」。
+- **原因**：`src/core/request-verify.ts` 的 Codex 分支只要响应 ID 不是 OpenAI 官方的 `resp_` + 40 位以上十六进制就判存疑；Ollama 返回的是 `chatcmpl-…` 或 `resp_` + 短数字。
+- **已改**：新增 `isOpenAIHosted(model)`（`gpt-` / `o数字` / `codex` / `chatgpt` 开头，且不含 `gpt-oss`、`:`、`/`）。请求型号不是 OpenAI 托管型号时，ID 格式对不上只记一条说明「接的是开源或第三方模型…不按 OpenAI 官方格式核验」，不再判存疑；OpenAI 托管型号的规则不变。
+- **测试**：`npm run compile` PASS；`node scripts/test-requests.cjs` 66/66 通过（新增 2 条：`gpt-oss:20b` + `chatcmpl-123`、`qwen3-coder:30b` + `resp_123456` 都不判存疑；原「gpt-6-astra + chatcmpl → 存疑」仍通过）。未跑 Electron UI 测试，未打包。
+- **Git**：`src/core/request-verify.ts`、`scripts/test-requests.cjs` 本地修改未提交；未升版本。核验规则在查询时现算，下次构建后旧流水也会按新规则显示。
+- **下一步**：按用户指示决定是否随下个版本发布。
+
+## 发布后本地改动（未提交）· Antigravity 接 Claude 返回型号带思考等级被误报「型号不一致」
+
+- **现象**：Antigravity 里请求 `claude-opus-5-5`，返回型号是 `claude-opus-5-5-medium`，被判型号不一致。本机流水（`~/.tokenpulse/requests/2026-11.jsonl` 等，只统计了型号名）里有 158 条这种组合；Gemini 的 `-b` / `-n` 原本就已处理。
+- **已改**（`src/core/request-verify.ts`）：`normalizeModel` 末尾对 `claude-` 开头的型号去掉 `-thinking|low|medium|high|xhigh|max` 后缀（可叠加），规则写在代码里，不放可在线更新的知识库别名，避免远端旧知识库缺这条。Antigravity 分支遇到这种情况记说明「X 就是 Y，后缀 medium 是 Antigravity 附上的思考等级」。别家型号（如 `gpt-5.4-high`）不去后缀；请求 opus、返回 sonnet 仍判不一致。
+- **测试**：`npm run compile` PASS；`node scripts/test-requests.cjs` 70/70（新增 4 条）；`node scripts/test-final-model.cjs` 3/3；`node scripts/test-features.cjs` 46/46。未跑 Electron UI 测试，未打包。
+- **Git**：与上一节同批，本地未提交、未升版本。规则在查询时现算，更新后旧流水自动改判。
+
 ## 发布状态 · v0.3.86
 
 - **版本**：`0.3.86`（`package.json` / `package-lock.json`，用户 2026-11-09 要求「直接发布」）。`renderer/intro.js` 加 0.3.86 更新说明 2 条（`pet` 图标），`renderer/i18n.js` 补英文。

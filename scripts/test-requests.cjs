@@ -61,6 +61,17 @@ try {
     normalizeModel("Grok 4.6 Build") === "grok-4.6" &&
     normalizeModel("grok-4.6 · TokenPulse") === "grok-4.6");
   check("不会把 gpt-5 和 gpt-5.4 当成同一个（不做模糊包含）", normalizeModel("gpt-5") !== normalizeModel("gpt-5.4"));
+  const agEffort = verifyRequest({ kind: "antigravity", requested: "claude-opus-5-5", returned: "claude-opus-5-5-medium" });
+  check("Antigravity：claude-opus-5-5 → claude-opus-5-5-medium 只是带了思考等级，算一致",
+    agEffort.status === "match" && agEffort.reasons.some((r) => /思考等级/.test(r) && /medium/.test(r)), JSON.stringify(agEffort));
+  check("Claude 思考等级后缀（含 thinking、叠加）都去掉，但不会把 opus 和 sonnet 混为一谈",
+    normalizeModel("claude-sonnet-5-thinking") === "claude-sonnet-5" &&
+    normalizeModel("claude-opus-5-5-thinking-high") === "claude-opus-5-5" &&
+    normalizeModel("claude-opus-5-5-xhigh") === "claude-opus-5-5" &&
+    normalizeModel("claude-opus-5-5-medium") !== normalizeModel("claude-sonnet-5-5"));
+  check("别家型号不去等级后缀", normalizeModel("gpt-5.4-high") === "gpt-5.4-high");
+  const agWrong = verifyRequest({ kind: "antigravity", requested: "claude-opus-5-5", returned: "claude-sonnet-5-medium" });
+  check("Antigravity：请求 opus、返回 sonnet（带等级）仍判不一致", agWrong.status === "mismatch");
   const swapped = verifyRequest({ kind: "claude-code", requested: "claude-opus-5[1m]", returned: "claude-sonnet-5", responseId: official(1), requestId: req(1), official: false });
   check("请求 opus、返回 sonnet → 型号不一致", swapped.status === "mismatch" && /claude-opus-5\[1m\].*claude-sonnet-5/.test(swapped.reasons[0]), swapped.reasons[0]);
   const disguised = verifyRequest({ kind: "claude-code", requested: "claude-opus-5", returned: "claude-opus-5", responseId: "resp_" + "0".repeat(50), official: false });
@@ -77,6 +88,10 @@ try {
   check("Codex 不记返回型号 → 无法核验（格式正常）", codex.status === "unverified");
   const codexBad = verifyRequest({ kind: "codex", requested: "gpt-6-astra", responseId: "chatcmpl-abc", official: false });
   check("Codex 的响应 ID 不是 resp_ 格式 → 响应存疑", codexBad.status === "suspect");
+  const codexOss = verifyRequest({ kind: "codex", requested: "gpt-oss:20b", responseId: "chatcmpl-123", official: false });
+  check("Codex 接 Ollama 自部署的 gpt-oss:20b → 不误报存疑", codexOss.status !== "suspect" && codexOss.reasons.some((r) => /开源或第三方模型/.test(r)), JSON.stringify(codexOss));
+  const codexOss2 = verifyRequest({ kind: "codex", requested: "qwen3-coder:30b", responseId: "resp_123456", official: false });
+  check("Codex 接 Ollama 的 qwen3-coder:30b（resp_ 加短数字）→ 不误报存疑", codexOss2.status !== "suspect");
 
   /* ---------------- 扫描 → 流水 ---------------- */
   write(path.join(claudeDir, "s1.jsonl"), [

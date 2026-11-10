@@ -59,10 +59,31 @@ export function normalizeModel(model: string) {
   for (const rule of aliasRules()) out = out.replace(rule.test, rule.replace);
   // 空格、以及缀在型号后面的路由名，先收成同一种写法，再认 Grok Build 的 -build 和 Antigravity 内部后缀
   out = out.replace(/\s*·\s*tokenpulse$/i, "").replace(/\s+/g, "-");
-  return out.replace(/^(grok-[\d.]+)-build$/, "$1").replace(/^(gemini-[\w.-]+?)-(?:b|n)$/, "$1");
+  return out
+    .replace(/^(grok-[\d.]+)-build$/, "$1")
+    .replace(/^(gemini-[\w.-]+?)-(?:b|n)$/, "$1")
+    .replace(CLAUDE_EFFORT_SUFFIX, "$1");
+}
+
+/**
+ * Antigravity 接 Claude 时，返回型号会带上思考等级：请求 `claude-opus-5-5`、返回 `claude-opus-5-5-medium`。
+ * Anthropic 自己的型号名不会以这些词结尾，所以只对 claude- 开头的去掉，不影响别家型号。
+ */
+const CLAUDE_EFFORT_SUFFIX = /^(claude-[\w.-]+?)(?:-(?:thinking|low|medium|high|xhigh|max))+$/;
+
+/** 返回型号里带的思考等级（只认 Claude 的），没有就是 undefined。 */
+function claudeEffortOf(model: string) {
+  const m = model.trim().toLowerCase().match(CLAUDE_EFFORT_SUFFIX);
+  return m ? model.trim().slice(m[1].length + 1) : undefined;
 }
 
 const isClaude = (model?: string) => Boolean(model && /claude/i.test(model));
+/**
+ * 只有 OpenAI 自己托管的型号才该回 resp_ + 十六进制。gpt-oss 是开源权重，
+ * Ollama 的 `name:tag`、`org/name` 写法也都是本地或第三方部署，不算。
+ */
+const isOpenAIHosted = (model: string) =>
+  /^(gpt-|o\d|codex|chatgpt)/i.test(model.trim()) && !/gpt-oss|[:/]/i.test(model);
 const ANTHROPIC_MESSAGE = /^msg_[A-Za-z0-9]{24}$/;
 const ANTHROPIC_REQUEST = /^req_[A-Za-z0-9]{20,}$/;
 const OPENAI_RESPONSE = /^resp_[0-9a-f]{40,}$/;
@@ -142,12 +163,17 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
     if (proxy?.via === "tokenpulse") notes.push("经 TokenPulse 转发：返回型号是转发时从上游响应里读到的");
     else if (proxy) notes.push("经 CC Switch 代理：返回型号是代理从上游响应里读到的");
     else notes.push("Codex 会话文件不记录上游返回的型号，只能核对响应格式", "想核验 Codex 的返回型号：打开供应商页的「透明转发」（官方登录）或走本地路由，之后的请求就能核验");
-    if (responseId && !OPENAI_RESPONSE.test(responseId)) {
+    // 接的是开源 / 自部署模型（Ollama、vLLM 之类）：响应本来就不是 OpenAI 官方发的，ID 格式对不上不算问题
+    const model = requested ?? returned;
+    if (model && !isOpenAIHosted(model)) {
+      if (responseId && !OPENAI_RESPONSE.test(responseId)) notes.push(`这次请求接的是开源或第三方模型 ${model}（响应是 ${channel}），不按 OpenAI 官方格式核验`);
+    } else if (responseId && !OPENAI_RESPONSE.test(responseId)) {
       problems.push(`响应 ID 是 ${channel}（${idShape(responseId)}），不是 OpenAI 的 resp_ + 十六进制`);
     }
   } else if (kind === "antigravity") {
     if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");
     else if (!requested) notes.push("会话记录里没记下请求的型号");
+    else if (!mismatch && claudeEffortOf(returned)) notes.push(`${returned} 就是 ${requested}，后缀 ${claudeEffortOf(returned)} 是 Antigravity 附上的思考等级`);
     else if (!mismatch && normalizeModel(returned) !== returned.toLowerCase().trim()) notes.push(`${returned} 是 ${requested} 在 Antigravity 里的内部型号名`);
   } else if (kind === "deepseek-harness" || kind === "pi") {
     if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");

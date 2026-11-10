@@ -2895,6 +2895,11 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.87 更新说明
+    '修复：Antigravity 接 Claude 时误报「型号不一致」': 'Fix: false “Model mismatch” for Claude via Antigravity',
+    'Antigravity 会在返回的 Claude 型号名后面带上思考等级（如请求 claude-opus-5-5、返回 claude-opus-5-5-medium），以前被当成换了型号。现在识别为同一型号，详情里注明后缀是思考等级；之前的记录也会自动改判。': 'Antigravity appends the thinking effort to the returned Claude model name (request claude-opus-5-5, response claude-opus-5-5-medium), which used to be treated as a model swap. It is now recognized as the same model, with the details noting the suffix is the effort level; earlier records are re-judged automatically.',
+    '修复：Codex 接自部署开源模型时误报「响应存疑」': 'Fix: false “Suspicious response” for self-hosted open models in Codex',
+    '用 Ollama、vLLM 等自己部署的模型（如 gpt-oss:20b）时，响应 ID 本来就不是 OpenAI 官方格式，不再标成存疑，详情里注明接的是开源或第三方模型；OpenAI 官方型号的核验不变。': 'With self-hosted models served by Ollama, vLLM and the like (e.g. gpt-oss:20b), response IDs are naturally not in OpenAI’s official format, so they are no longer flagged as suspicious; the details note an open or third-party model is in use. Checks for OpenAI’s own models are unchanged.',
     // 0.3.86 更新说明
     '修复：开着桌宠时鼠标一顿一顿、不跟手': 'Fix: the mouse stuttered and lagged while the desk pet was on',
     '桌宠不再用全系统的鼠标钩子判断鼠标在不在它身上，TokenPulse 忙的时候整台电脑的鼠标不会再跟着卡；主题宠物的动画也不再按显示器刷新率（高刷屏每秒几百次）重画，CPU 和显卡占用降到原来的约三分之一。': 'The desk pet no longer uses a system-wide mouse hook to tell whether the cursor is over it, so the whole computer’s mouse no longer hitches when TokenPulse is busy. Theme pet animations also stop redrawing at the display’s refresh rate (hundreds of times a second on high-refresh screens), cutting CPU and GPU use to about a third.',
@@ -3274,6 +3279,7 @@
     P('首字 (\\S+)', m => `first ${m[1]}`),
     P('≈ ([\\d.]+) Token/秒', m => `≈ ${m[1]} tokens/s`),
     P('(\\S+) 是 (\\S+) 在 Antigravity 里的内部型号名', m => `${m[1]} is Antigravity's internal model name for ${m[2]}`),
+    P('(\\S+) 就是 (\\S+)，后缀 (\\S+) 是 Antigravity 附上的思考等级', m => `${m[1]} is ${m[2]}; the ${m[3]} suffix is the thinking effort Antigravity appends`),
     P(N + ' 个本机对话', m => `${m[1]} local conversations`),
     P(N + ' 个额度采样', m => `${m[1]} quota samples`),
     P('Prompt 积分 ' + N + ' / ' + N, m => `Prompt credits ${m[1]} / ${m[2]}`),
@@ -3512,6 +3518,7 @@
     P('经 (.+) 转发，属于官方云渠道', m => `Forwarded via ${m[1]}, an official cloud channel`),
     P('(.+) 是 (.+) 在 Grok Build 里的官方变体', m => `${m[1]} is the official Grok Build variant of ${m[2]}`),
     P('这次请求接的是第三方模型（响应是 (.+)），不是 Anthropic', m => `This request used a third-party model (response is ${v(m[1])}), not Anthropic`),
+    P('这次请求接的是开源或第三方模型 (\\S+)（响应是 (.+)），不按 OpenAI 官方格式核验', m => `This request used the open or third-party model ${m[1]} (response is ${v(m[2])}), so it is not checked against OpenAI's official format`),
     P('(.+)（进行中）', m => `${m[1]} (in progress)`),
     P('最后一次采样已用 (.+)', m => `Used ${m[1]} at the last sample`),
     P('本机用量 (.+) Tokens', m => `Local usage ${m[1]} tokens`),
