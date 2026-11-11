@@ -35,6 +35,14 @@
     ['luma', 'luma-color.svg', 'Luma', ['luma', 'lumalabs', 'dream-machine'], true],
     ['midjourney', 'midjourney.svg', 'Midjourney', ['midjourney'], false],
     ['ollama', 'ollama.svg', 'Ollama', ['ollama'], false],
+    // 2026-11-10 从 lobe-icons（packages/static-svg/icons）补的常见中转 / 模型商
+    ['openrouter', 'openrouter-color.svg', 'OpenRouter', ['openrouter'], true],
+    ['siliconcloud', 'siliconcloud-color.svg', '硅基流动', ['siliconflow', 'siliconcloud', '硅基'], true],
+    ['minimax', 'minimax-color.svg', 'MiniMax', ['minimax', 'minimaxi', 'abab', 'hailuo'], true],
+    ['mistral', 'mistral-color.svg', 'Mistral', ['mistral', 'mixtral', 'codestral', 'devstral', 'magistral'], true],
+    ['groq', 'groq.svg', 'Groq', ['groq'], false],
+    ['stepfun', 'stepfun-color.svg', '阶跃星辰', ['stepfun', '阶跃'], true],
+    ['xiaomimimo', 'xiaomimimo.svg', '小米 MiMo', ['xiaomimimo', 'mimo', 'xiaomi'], false],
   ].map(([id, file, label, keywords, color]) => ({ id, src: 'brand/presets/' + file, label, keywords, mono: !color }));
 
   function hostOf(text) {

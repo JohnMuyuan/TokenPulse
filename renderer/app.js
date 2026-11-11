@@ -15,7 +15,9 @@ const OAUTH_META = {
   claude: { name: 'Claude', brand: 'claude' },
   grok: { name: 'Grok', brand: 'grok' }
 };
-const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi', Antigravity: 'antigravity' };
+const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi', Antigravity: 'antigravity',
+  // CC Switch 导入的工具（core/cc-switch.ts 的 CC_SOURCES），图标来自 lobe-icons；认不出的还是首字母
+  'Gemini CLI': 'geminicli', OpenCode: 'opencode', Hermes: 'hermes', 'Copilot CLI': 'githubcopilot' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
 const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', models: [], project: '', channel: 'all', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
@@ -188,7 +190,7 @@ function avatar(kind, extra = '') {
   const brand = META[kind]?.brand || kind;
   return el('span', { class: `account-avatar ${kind} ${extra}`.trim(), 'aria-hidden': true }, [brandSvg(brand)]);
 }
-/** 没有官方图标的来源（OpenCode 等从 CC Switch 导入的）用首字母。 */
+/** 没有官方图标的来源（CC Switch 导入的、BRAND_OF_SOURCE 里没有的工具）用首字母。 */
 function letterMark(source) { return el('b', { class: 'letter-mark', text: String(source || '?').trim().charAt(0).toUpperCase() }); }
 function sourceLogo(source) {
   const brand = BRAND_OF_SOURCE[source];

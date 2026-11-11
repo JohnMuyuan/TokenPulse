@@ -1,4 +1,32 @@
-# 当前接手入口 · TokenPulse v0.3.88 正式发布（Fable 周额度容量折算与预测 + Antigravity 整窗容量算法修复，2026-11-10）
+# 当前接手入口 · TokenPulse v0.3.89 正式发布（补齐品牌图标，2026-11-10）
+
+## 发布状态 · v0.3.89
+
+- **版本**：`0.3.89`（用户 2026-11-10「升级版本然后发布」）。发布前 `git fetch` 确认 origin 没有新提交。`renderer/intro.js` 加 0.3.89 说明 1 条（图标 `overview`；`brand` 不是 index.html 里的 symbol，没用），`renderer/i18n.js` 补英文。
+- **发版前验证**：`npm run build` PASS；Electron：`test-intro-ui` 3、`test-antigravity-ui` 7、`test-provider-pool-ui` 1、`test-provider-feedback-ui` 1、`test-usage-projects-ui` 1、`test-layout-ui` 9、`test-desk-pet-ui` 21、`test-model-weeks-ui` 3，全 PASS；`test-antigravity-capacity` 2/2、`test-antigravity-usage` 10/10、`test-quota-monitor` 79/79。
+- **打包**：`npm run dist` PASS；asar 内确认 `'0.3.89'`、`PulseBrand.geminicli` / `hermes`、`'Copilot CLI': 'githubcopilot'`，并用 `@electron/asar` 列包确认 7 个新预设 SVG 都在（presets 共 34 项）。
+  - `dist/TokenPulse-0.3.89-Setup.exe`（112827374 B，SHA256 `D1C130981F6F79B230758C37BDE61AFDD3A09721A094A352AA993CF9F2CED328`）
+  - `dist/TokenPulse-0.3.89-Portable.exe`（112570158 B，SHA256 `49EA28F875383ADF016F39668D46C6D7F8D9EF6E4F3D574BD52466395184428C`）
+  - `dist/TokenPulse-0.3.89-Setup.exe.blockmap`（SHA256 `60EE537561830B37A86EA3E5DA0D0FC36334A6B83ABE03A6226227E71BF2CCF5`）
+  - `dist/latest.yml`（version 0.3.89，SHA256 `FC6429AEC002614675F445FF1E8A6804613ED1E549D87959272A4129ED72B930`）
+  - 句柄全部 UNLOCKED；无 electron / app-builder / makensis 残留进程。
+- **Git / GitHub**：见本节末尾（推送和 Release 完成后更新）。
+
+## 本轮内容 · 补齐缺失的品牌图标（已包含在 v0.3.89）
+
+- **来源**：用户下载的 lobe-icons 仓库 `D:\CodePorject\Exmaple\lobe-icons-master\lobe-icons-master`，取 `packages/static-svg/icons/` 下的 SVG（与项目已有图标同源，MIT）。
+- **工具图标（`renderer/brand.js`，单色路径、跟随 currentColor）**：用 scratchpad 的 `brand-import.js` 从 SVG 提取 path（检查 viewBox 24、无渐变 / 遮罩 / 自带颜色），追加到 brand.js 末尾：
+  - `antigravity` 换成 Antigravity 自己的 logo（`antigravity.svg`），去掉原来借用的 Gemini 四角星；
+  - 新增 `geminicli`（Gemini CLI）、`opencode`（OpenCode）、`hermes`（Hermes Agent，`hermesagent.svg`，path 约 19 KB）、`githubcopilot`（Copilot CLI）。
+  - `renderer/app.js` 的 `BRAND_OF_SOURCE` 加上 CC Switch 导入的四个来源名（与 `core/cc-switch.ts` 的 `CC_SOURCES` 一致）；认不出的来源仍用首字母。
+- **供应商预设头像（`renderer/brand/presets/` + `renderer/provider-avatars.js`）**：新增 7 个文件和预设：OpenRouter、硅基流动（siliconcloud）、MiniMax、Mistral、Groq、阶跃星辰（stepfun）、小米 MiMo（xiaomimimo），附自动匹配关键词。
+- **验证**：自动匹配检查（scratchpad `preset-check.js`）16/16：新 7 家按名称 / 地址认出，原有 xAI / DeepSeek / Kimi / 通义 / OpenAI / Copilot 等不变，Groq 的 `/openai/` 路径不会认成 OpenAI，普通中转仍为首字母。`test-antigravity-ui` 新增断言（五个来源都有 SVG 路径、未知来源首字母、Antigravity 不再是 Gemini 星）7 PASS；`test-provider-pool-ui` 预设数 25→32 并校验 7 张新图都能加载，PASS；`test-provider-feedback-ui`、`test-usage-projects-ui`、`test-layout-ui` PASS。演示数据截图自查：会话页 Antigravity 新 logo、五个工具图标并排渲染正常。无残留 electron 进程。
+- **仍缺**：无（lobe-icons 里本轮列出的图标全部找到）。
+- **未做**：未升版本、未提交、未打包、未发布（用户本轮没有要求）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.88 正式发布（Fable 周额度容量折算与预测 + Antigravity 整窗容量算法修复，2026-11-10）
 
 ## 发布状态 · v0.3.88
 

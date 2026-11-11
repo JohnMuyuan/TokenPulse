@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.89': [
+      ['overview', 'Antigravity 换上自己的图标，更多工具和供应商有了图标', 'Antigravity 不再借用 Gemini 的四角星；从 CC Switch 导入的 Gemini CLI、OpenCode、Hermes、Copilot CLI 不再只显示首字母。供应商头像新增 OpenRouter、硅基流动、MiniMax、Mistral、Groq、阶跃星辰、小米 MiMo，新建时按名称和地址自动认出。'],
+    ],
     '0.3.88': [
       ['quota', 'Claude 的 Fable 周额度也有容量折算和预测了', '额度详情里 Fable 那一行和总的周额度一样，显示本窗口本机用了多少、剩余可用、整窗容量折算、预计什么时候达到上限，以及一句按趋势的预测。只算 Fable 自己的请求。'],
       ['quota', '修复：Antigravity 的整窗容量被早先的用法带偏', '同样 1% 额度，用 Flash 和用 Argon 对应的 Token 能差十几倍。以前把 30 天里所有窗口合起来平均，换了用法后容量会被高估好几倍；现在只看最近几个窗口、取中位数，跟着你现在的用法走。'],

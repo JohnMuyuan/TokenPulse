@@ -2895,6 +2895,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.89 更新说明
+    'Antigravity 换上自己的图标，更多工具和供应商有了图标': 'Antigravity gets its own icon, and more tools and providers have icons',
+    'Antigravity 不再借用 Gemini 的四角星；从 CC Switch 导入的 Gemini CLI、OpenCode、Hermes、Copilot CLI 不再只显示首字母。供应商头像新增 OpenRouter、硅基流动、MiniMax、Mistral、Groq、阶跃星辰、小米 MiMo，新建时按名称和地址自动认出。': 'Antigravity no longer borrows Gemini’s sparkle; Gemini CLI, OpenCode, Hermes and Copilot CLI imported from CC Switch no longer show just a letter. Provider avatars add OpenRouter, SiliconFlow, MiniMax, Mistral, Groq, StepFun and Xiaomi MiMo, recognized automatically by name and address.',
     // 0.3.88 更新说明
     'Claude 的 Fable 周额度也有容量折算和预测了': 'Claude’s Fable weekly limit now gets capacity estimates and a forecast',
     '额度详情里 Fable 那一行和总的周额度一样，显示本窗口本机用了多少、剩余可用、整窗容量折算、预计什么时候达到上限，以及一句按趋势的预测。只算 Fable 自己的请求。': 'In quota details the Fable row now shows the same things as the overall weekly window: local usage this window, estimated remaining, full-window capacity, when it would hit the limit, and a trend forecast. Only Fable’s own requests count.',

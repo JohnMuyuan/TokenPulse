@@ -53,7 +53,9 @@ app.on('web-contents-created', (_e, contents) => contents.once('did-finish-load'
     // ---------- 头像：自动匹配 → 选预设 → 上传 ----------
     await click(`${P} .pv-head-actions button`, '添加供应商');
     await until(`document.querySelector('${P} .pv-avatar-grid')`);
-    assert.equal(await ev(`document.querySelectorAll('${P} .pv-avatar-tile').length`), 27, '自动 + 首字母 + 25 个 AllAi 预设');
+    assert.equal(await ev(`document.querySelectorAll('${P} .pv-avatar-tile').length`), 34, '自动 + 首字母 + 32 个预设（AllAi 的 25 个 + 2026-11-10 从 lobe-icons 补的 7 个）');
+    // 新补的几家（OpenRouter、硅基流动……）在选择器里都有，图片能加载
+    assert.equal(await ev(`(async () => { const imgs = [...document.querySelectorAll('${P} .pv-avatar-tile img')].filter(i => /openrouter|siliconcloud|minimax|mistral|groq|stepfun|xiaomimimo/.test(i.src)); await Promise.all(imgs.map(i => i.decode().catch(() => null))); return imgs.length + ':' + imgs.filter(i => i.naturalWidth > 0).length; })()`), '7:7', '新补的 7 个预设图标都在、都能加载');
     await ev(`(() => { const f = document.querySelector('${P} .pv-editor'); f.elements.name.value = 'DeepSeek 中转'; f.elements.name.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     assert.match(await ev(`document.querySelector('${P} .pv-avatar-now img')?.getAttribute('src') || ''`), /deepseek/, '名称里有 DeepSeek 时自动匹配');
     await ev(`document.querySelector('${P} .pv-avatar-tile[data-icon=kimi]').click()`);

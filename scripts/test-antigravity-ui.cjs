@@ -107,6 +107,18 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.equal(await e(`document.querySelectorAll('${card} .ring-value').length`), 2, '两组各一个环');
     assert.ok(hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') && hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary'));
     await shot('agy-overview');
+    // 工具图标（2026-11-10 从 lobe-icons 补齐）：Antigravity 用自己的 logo，CC Switch 导入的工具有图标，认不出的还是首字母
+    const logos = await e(`['Antigravity', 'Gemini CLI', 'OpenCode', 'Hermes', 'Copilot CLI', '没见过的工具'].map(s => { const n = sourceLogo(s); return { s, paths: n.querySelectorAll('svg path').length, letter: n.querySelector('.letter-mark')?.textContent || '' }; })`);
+    for (const row of logos.slice(0, 5)) assert.ok(row.paths > 0 && !row.letter, `${row.s} 有图标（${JSON.stringify(row)}）`);
+    assert.deepEqual(logos[5], { s: '没见过的工具', paths: 0, letter: '没' }, '认不出的工具用首字母');
+    assert.equal(await e("window.PulseBrand.antigravity.paths[0].d.startsWith('M21.751')"), true, 'Antigravity 用自己的 logo，不再借 Gemini 的四角星');
+    if (process.env.TP_SHOTS) {
+      await e(`(() => { const box = document.createElement('div'); box.id = 'logo-check'; box.style.cssText = 'position:fixed;left:40px;top:40px;z-index:99999;display:flex;gap:18px;padding:18px;background:var(--surface);border:1px solid var(--line);border-radius:12px';
+        for (const s of ['Antigravity', 'Gemini CLI', 'OpenCode', 'Hermes', 'Copilot CLI', '没见过的工具']) { const n = sourceLogo(s); n.style.cssText = 'width:56px;height:56px'; const svgEl = n.querySelector('svg'); if (svgEl) svgEl.style.cssText = 'width:34px;height:34px'; box.append(n); }
+        document.body.append(box); })()`);
+      await shot('logos-check');
+      await e("document.getElementById('logo-check').remove()");
+    }
     pass('antigravity UI: the overview has an Antigravity card with one row per quota group and a double ring');
 
     // 额度详情：Antigravity 的标签，两组各一张窗口卡、预测、走势图；没有官方账号那两块
