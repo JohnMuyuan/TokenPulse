@@ -10,7 +10,7 @@
   - `dist/TokenPulse-0.3.89-Setup.exe.blockmap`（SHA256 `60EE537561830B37A86EA3E5DA0D0FC36334A6B83ABE03A6226227E71BF2CCF5`）
   - `dist/latest.yml`（version 0.3.89，SHA256 `FC6429AEC002614675F445FF1E8A6804613ED1E549D87959272A4129ED72B930`）
   - 句柄全部 UNLOCKED；无 electron / app-builder / makensis 残留进程。
-- **Git / GitHub**：见本节末尾（推送和 Release 完成后更新）。
+- **Git / GitHub（已完成）**：发布提交 `a84cba4` 已推送到 `origin/main`，标签 `v0.3.89` 已推送；GitHub Release `v0.3.89` 已正式发布（非草稿、非预发布）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.89 ，4 个附件大小和 SHA256 与本地一致。说明文件 `dist/release-0.3.89.md`。推送走代理 `127.0.0.1:7890`。未纳入提交：`clawd-pet-extracted/`（来源不明，未动）。
 
 ## 本轮内容 · 补齐缺失的品牌图标（已包含在 v0.3.89）
 
