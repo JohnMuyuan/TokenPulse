@@ -91,12 +91,20 @@ try {
       + JSON.stringify({ at: now - 900, app: "codex", pass: true, status: 200, requestModel: "gpt-e", effort: "low", tokensPerSec: 33, firstTokenMs: 900, output: 300 }) + "\n");
     const efforts = passSpeed(7).filter((row) => row.model === "gpt-e").map((row) => [row.effort, row.count, row.tokensPerSec, row.low, row.high, row.firstTokenMs]);
     assert.deepEqual(efforts, [["high", 3, 32, 31, 33, 3400], ["low", 1, 33, 33, 33, 900]], "同一个型号不同思考等级分开：速度差不多，首字差很多");
-    // 用量明细的折线图（0.3.39）：一条线 = 工具 + 型号 + 快速 + 思考等级 + 经由，按时间分桶取中位数；0 = 全部
+    // 用量明细的折线图（0.3.39 / 0.3.91）：细粒度分桶 + 拆分 lines 与合并思考等级 mergedLines + P90 peak
     const { speedSeries } = require(path.join(__dirname, "..", "build", "core", "pass-speed.js"));
+    const sixHour = speedSeries(0.25, now);
+    assert.equal(sixHour.bucketMs, 10 * 60_000, "6 小时按 10 分钟分桶");
+    const oneDay = speedSeries(1, now);
+    assert.equal(oneDay.bucketMs, 15 * 60_000, "24 小时按 15 分钟分桶");
+    const monthSeries = speedSeries(30, now);
+    assert.equal(monthSeries.bucketMs, DAY, "30 天按天分桶");
     const week = speedSeries(7, now);
-    assert.equal(week.bucketMs, DAY, "7 天按天");
+    assert.equal(week.bucketMs, 3 * HOUR, "7 天按 3 小时细粒度分桶");
     const lineE = week.lines.filter((line) => line.model === "gpt-e").map((line) => [line.effort, line.count, line.tokensPerSec, line.firstTokenMs, line.buckets.length, line.buckets.at(-1).tokensPerSec]);
     assert.deepEqual(lineE, [["high", 3, 32, 3400, 1, 32], ["low", 1, 33, 900, 1, 33]]);
+    const mergedE = week.mergedLines.find((line) => line.model === "gpt-e");
+    assert.deepEqual([mergedE.effort, mergedE.efforts, mergedE.count, mergedE.tokensPerSec, mergedE.peak], ["", ["high", "low"], 4, 32.5, 33.7], "默认合并思考等级视图合并同一模型并保留 P90 峰值");
     assert.ok(week.lines.some((line) => line.model === "gpt-a" && line.fast) && week.lines.some((line) => line.via === "Relay"), "快速模式和第三方供应商各自一条线");
     const ever = speedSeries(0, now);
     assert.deepEqual([ever.bucketMs, ever.total > week.total], [7 * DAY, true], "全部：跨度长就按周，300 天前的也在");

@@ -253,6 +253,49 @@ export const MODEL_REPLY = 15;
 const STUCK_MS = 60 * 60_000;
 
 /**
+ * 计算一步生成的真实首字延迟与流式输出速度（与 agent-proxy 透明转发的「扣掉首包排队等待」口径对齐）：
+ * - 服务端整包缓冲的工具调用（如 read_file / write_file / edit_file，服务端拼完 JSON 一次性返回）：
+ *   field 11 (viewableAt - startAt) 吞入了排队与生成总耗时，field 12 (streamingMs) 只剩几十毫秒收尾（表观速度 > 500 T/s）。
+ *   此类不记首字延迟；仅在输出够长（>= 300 Token，生成耗时占主导）时用总耗时算速度，短工具包不把排队时间误算成几 Token/秒。
+ * - 正常流式回复（streamingMs >= 300ms）：
+ *   若思考块在首字前静默完成（总输出 ÷ streamingMs 虚高，而可见输出 ÷ streamingMs 正常），按可见输出算流式速度；
+ *   若思考块本身随流式推送（streamingMs 覆盖全部生成），按总输出 ÷ streamingMs 算流式速度。
+ */
+export function antigravityStreamMetrics(
+  output: number,
+  reasoning: number,
+  rawFirstTokenMs: number,
+  streamingMs: number,
+  totalMs: number,
+): { firstTokenMs: number; tokensPerSec: number } {
+  const outNoThink = Math.max(0, output - reasoning);
+  const isBufferedToolCall =
+    rawFirstTokenMs > 0 &&
+    outNoThink >= 20 &&
+    (streamingMs <= 0 || outNoThink / (streamingMs / 1000) > 500);
+  const firstTokenMs = isBufferedToolCall || rawFirstTokenMs <= 0 ? 0 : rawFirstTokenMs;
+  let tokensPerSec = 0;
+  if (!isBufferedToolCall && streamingMs >= 300 && streamingMs <= 30 * 60_000) {
+    const sec = streamingMs / 1000;
+    const allStreamTps = output / sec;
+    const visStreamTps = outNoThink / sec;
+    if (
+      reasoning > 0 &&
+      outNoThink >= 20 &&
+      (allStreamTps > 260 || (rawFirstTokenMs >= 2000 && visStreamTps >= 25 && allStreamTps > visStreamTps * 1.8))
+    ) {
+      if (visStreamTps <= 500) tokensPerSec = Math.round(visStreamTps * 10) / 10;
+    } else if (output >= 20 && allStreamTps <= 500) {
+      tokensPerSec = Math.round(allStreamTps * 10) / 10;
+    }
+  } else if (output >= 300 && totalMs >= 500 && totalMs <= 30 * 60_000) {
+    const tps = output / (totalMs / 1000);
+    if (tps <= 500) tokensPerSec = Math.round(tps * 10) / 10;
+  }
+  return { firstTokenMs, tokensPerSec };
+}
+
+/**
  * 读一个对话库里 from（含）之后完成了的模型回复。
  * next：下次从哪一步接着读——停在第一步还没完成的回复上，等它写完再算。
  * models：这次遇到、known 里还没有的数字 id 的型号。
@@ -319,18 +362,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
                 : rawFirstTokenMs || streamingMs)
         : 0;
       const reasoning = pbNumber(usage, 9);
-      const outNoThink = Math.max(0, output - reasoning);
-      // 服务端整包缓冲的工具调用（如直接调 write_file / edit_file 且无流式正文或可见思考块）：
-      // Gemini 在服务端拼完整个工具 JSON 后才一次性返回，导致 field 11 (viewableAt - startAt) 吞入了整段生成耗时（甚至长达 20s–129s），
-      // 而 field 12 (streamingMs) 只剩几十毫秒的收尾时间（表观流式速度 > 500 Token/秒）。此类不把整段生成耗时误记为「首字延迟」。
-      const isBufferedToolCall =
-        rawFirstTokenMs > 0 &&
-        outNoThink >= 150 &&
-        (streamingMs <= 0 || outNoThink / (streamingMs / 1000) > 500);
-      const firstTokenMs = isBufferedToolCall ? 0 : rawFirstTokenMs;
-      const tokensPerSec = totalMs >= 200 && totalMs <= 30 * 60_000 && output > 0
-        ? Math.round((output / (totalMs / 1000)) * 10) / 10
-        : 0;
+      const { firstTokenMs, tokensPerSec } = antigravityStreamMetrics(output, reasoning, rawFirstTokenMs, streamingMs, totalMs);
       const responseId = pbString(usage, 11);
       const messageId = pbString(usage, 7);
       const requestId = genParsed?.requestId || messageId;
@@ -459,16 +491,9 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
                 ? completedAt - startAt
                 : 0);
 
-        const outNoThink = Math.max(0, output - reasoning);
-        const isBufferedToolCall =
-          rawFirstTokenMs > 0 &&
-          outNoThink >= 150 &&
-          (streamingMs <= 0 || outNoThink / (streamingMs / 1000) > 500);
-
-        const firstTokenMs = isBufferedToolCall || rawFirstTokenMs <= 0 ? undefined : rawFirstTokenMs;
-        const tokensPerSec = totalMs >= 200 && totalMs <= 30 * 60_000 && output > 0
-          ? Math.round((output / (totalMs / 1000)) * 10) / 10
-          : undefined;
+        const metrics = antigravityStreamMetrics(output, reasoning, rawFirstTokenMs, streamingMs, totalMs);
+        const firstTokenMs = metrics.firstTokenMs > 0 ? metrics.firstTokenMs : undefined;
+        const tokensPerSec = metrics.tokensPerSec > 0 ? metrics.tokensPerSec : undefined;
 
         if (text.trim() || tools.length || usage) {
           out.push({

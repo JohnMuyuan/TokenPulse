@@ -281,8 +281,14 @@ app.on('web-contents-created', (_, contents) => {
       // 0.3.35：「模型与思考等级 · 时间线」紧跟在「最近 24 小时」和「本周额度采样」下面，不用滑到页面最底；后面是模型速度、这个账号的请求
       assert.deepEqual(await evaluate("[...document.getElementById('quota-detail').children].map(n => n.id || n.classList[n.classList.length - 1]).slice(-4)"), ['quota-history-grid', 'quota-model-timeline', 'speed-panel', 'account-requests']);
       assert.match(await evaluate("document.querySelector('#quota-model-timeline h2').textContent"), /模型与思考等级 · 时间线/);
-      // 模型速度：一个模型一行（共用时间轴），左边型号和次数、中间走势、右边中位数和对比条；默认看 30 天
+      // 模型速度：一个模型一行（共用时间轴），左边型号和次数、中间走势、右边中位数和对比条；默认看 24 小时
       await until("document.querySelectorAll('.speed-panel .speed-row:not(.speed-axis)').length === 2");
+      assert.equal(await evaluate("document.querySelector('.speed-panel [data-speed-range].on').textContent"), '24 小时');
+      assert.match(await evaluate("document.querySelector('.speed-panel .speed-name small').textContent"), /^2 次/);
+      assert.match(await evaluate("document.querySelector('.speed-panel .sample-caption').textContent"), /一小时/);
+      // 切到 30 天：包含更早那几天的记录（QA-speed-a 从 2 次变成 4 次）
+      await evaluate("document.querySelector('.speed-panel [data-speed-range=\"30\"]').click()");
+      await until("document.querySelector('.speed-panel .speed-name small')?.textContent.startsWith('4 次')");
       assert.equal(await evaluate("document.querySelector('.speed-panel [data-speed-range].on').textContent"), '30 天');
       assert.deepEqual(await evaluate("[...document.querySelectorAll('.speed-panel .speed-row:not(.speed-axis)')].map(r => [r.querySelector('.speed-name b').textContent, r.querySelector('.speed-name small').textContent, r.querySelector('.speed-value strong').textContent, r.querySelectorAll('.speed-dot').length, r.querySelectorAll('.speed-whisker').length, !!r.querySelector('.speed-line')])"),
         [['QA-speed-a', '4 次 · 首字 2.1 秒', '52', 2, 2, true], ['QA-speed-b', '1 次 · 首字 0.7 秒', '150', 1, 1, false]], '请求多的排前面；一天一个点，只有一个点时不连线');
@@ -295,12 +301,10 @@ app.on('web-contents-created', (_, contents) => {
       const speedBox = await evaluate("(() => { const r = document.querySelector('.speed-panel .speed-plot').getBoundingClientRect(); return { x: Math.round(r.right - 8), y: Math.round(r.top + r.height / 2) }; })()");
       await evaluate(`document.querySelector('.speed-panel .speed-plot').dispatchEvent(new MouseEvent('mousemove', { clientX: ${speedBox.x}, clientY: ${speedBox.y}, bubbles: true }))`);
       assert.match(await evaluate("document.querySelector('.speed-panel .speed-tip').textContent"), /QA-speed-a · [\s\S]*中位 62 Token\/秒[\s\S]*中间一半 61 – 63[\s\S]*2 次请求[\s\S]*首字 2 秒/);
-      // 换成 24 小时：只剩今天的，按小时一个点
+      // 换回 24 小时：只剩今天的，按小时一个点
       await evaluate("document.querySelector('.speed-panel [data-speed-range=\"1\"]').click()");
       await until("document.querySelector('.speed-panel .speed-name small')?.textContent.startsWith('2 次')");
       assert.match(await evaluate("document.querySelector('.speed-panel .sample-caption').textContent"), /一小时/);
-      await evaluate("document.querySelector('.speed-panel [data-speed-range=\"30\"]').click()");
-      await until("document.querySelector('.speed-panel .speed-name small')?.textContent.startsWith('4 次')");
       // 降智检测（0.3.41）：只有 ChatGPT 账号有；点了才测，测的时候按钮不能再点，结论和说明都写出来
       assert.equal(probeCalls.length, 0, '不点不测');
       assert.match(await evaluate("document.querySelector('.probe-panel').textContent"), /降智检测.*手动.*还没有检测过.*只在你点的时候测.*会用掉一点点额度.*不是官方公开的规则/);
@@ -406,7 +410,7 @@ app.on('web-contents-created', (_, contents) => {
         console.log('PASS 0.3.16 scroll guard: shrinking content keeps the scroll position (sync and next-frame clamps, view switch), padding shrinks as the user scrolls up, navigation resets');
       }
       await evaluate("document.getElementById('request-search').value='QA-model'; document.getElementById('request-search').dispatchEvent(new Event('input'))");
-      await until("!analysis.loading && filteredRecords.length === 22");
+      await until("Boolean(document.querySelector('#detail-filter-chips [data-key=\"search\"]')) && !analysis.loading && filteredRecords.length === 22");
       // 全年活跃度（0.3.38）：一年 365 格，只有今天有用量 → 今天是最深的一档；点它整页切到那一天，再换回原来的范围
       await until("document.querySelector('.year-panel .year-grid')");
       const year = await evaluate("(() => { const today = PulseData.dayKey(current.now); const cell = document.querySelector(`.year-cell[data-day=\"${today}\"]`); return [document.querySelectorAll('.year-grid .year-cell:not(.out)').length, document.querySelector('.year-count b').textContent, cell?.classList.contains('l4'), document.querySelectorAll('.year-grid .year-cell.l0').length, /最长连续 1 天/.test(document.querySelector('.year-panel .insight-summary').textContent)]; })()");
@@ -846,7 +850,7 @@ app.on('web-contents-created', (_, contents) => {
         assert.equal(await evaluate("document.getElementById('sw-new-title').textContent"), '在新项目里开始');
         assert.equal(await evaluate("document.querySelector('#sw-new .sw-new-path').textContent"), path.join(temp, 'My New ‘Project’'));
         assert.equal(await evaluate("document.querySelector('#sw-new .sw-new-folder').selectedOptions[0].textContent"), 'My New ‘Project’', '下拉里显示文件夹名');
-        assert.deepEqual(await evaluate("[...document.querySelectorAll('#sw-new .sw-new-tool')].map(b => b.dataset.kind + ':' + b.disabled + ':' + b.querySelector('small').textContent)"), ['claude:false:已安装', 'codex:false:已安装', 'grok:true:没有找到 CLI', 'pi:true:没有找到 CLI']);
+        assert.deepEqual(await evaluate("[...document.querySelectorAll('#sw-new .sw-new-tool')].map(b => b.dataset.kind + ':' + b.disabled + ':' + b.querySelector('small').textContent)"), ['claude:false:已安装', 'codex:false:已安装', 'grok:true:没有找到 CLI', 'pi:true:没有找到 CLI', 'antigravity:true:没有找到 CLI']);
         // 设了出口 IP 白名单的工具：对话框里说明启动前会先在终端里检测
         await evaluate("document.querySelector('#sw-new .sw-new-tool[data-kind=claude]').click()");
         assert.match(await evaluate("document.querySelector('#sw-new .sw-new-note').textContent"), /这个工具设了出口 IP 白名单：启动前会先在终端里检测出口 IP，不在白名单就不会启动。/);

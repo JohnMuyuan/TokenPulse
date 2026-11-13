@@ -1,4 +1,36 @@
-# 当前接手入口 · TokenPulse v0.3.90 正式发布（Google Antigravity Orchestrator 模式适配，2026-11-12）
+# 当前接手入口 · TokenPulse v0.3.91 正式发布（重做「模型速度走势」：默认 24 小时细粒度曲线、波峰校准与折叠图例，2026-11-13）
+
+## 发布状态 · v0.3.91
+
+- **版本**：`0.3.91`（用户 2026-11-13 反馈「模型速度走势有点不准确、短时提速波峰看不到、图像难看、模型多时未显示模型列表太长、默认时间段是全部而不是 24 小时」，并确认：① 看速度时同一模型不同思考等级默认合并成一条线、切到「首字」或点开关再拆开，开关保留；② 额度详情页单账号「模型速度」默认也改成 `24 小时`；③ 改完直接发布新版本到 GitHub）。发布前 `git fetch origin` 确认 `origin/main` 停在 `9f21d1f` 无新提交。`renderer/intro.js` 加 `0.3.91` 更新说明 1 条（`trend` 图标），`renderer/i18n.js` 补齐中英文词条与正则翻译。
+- **问题根因**：
+  1. **波峰消失与速度偏低**：旧版默认时间范围是 `"0"`（全部，按天/周取中位数），24 小时也只按 1 小时中位数聚合，10–20 分钟的提速脉冲被整格中位数抹平；同时 Antigravity 本地 protobuf 记录此前用 `output / (rawFirstTokenMs + streamingMs)` 计算 `tokensPerSec`，把上游排队与首字前等待（TTFT）以及 `< 300 Token` 整包缓冲短工具调用混入分母，拉低实测速度。
+  2. **折线图视觉杂乱**：`<polyline>` 在多天/多小时未使用的空白区间强行拉直斜线；单桶孤立点几乎看不见；`≈` 日志估算线与实测线同为实线难以区分；缺少波动范围带，悬停提示仅为纯文本换行。
+  3. **模型列表过长**：同一模型按思考等级拆成多条线（多达几十条），且所有未勾选模型全部平铺在图例网格中。
+- **主要改动**：
+  - `src/core/antigravity.ts` / `src/core/usage-scan.ts` / `src/core/sessions.ts`：新增并导出 `antigravityStreamMetrics()`，区分首包前静默思考与随流推送思考、扣掉首包排队等待，并过滤 `< 300 Token` 整包缓冲短工具调用的速度噪声（同时修补 `outNoThink >= 20` 整包工具调用对首字延迟的污染）；`ANTIGRAVITY_STATE_VERSION` 升至 `6`、`INDEX_VERSION` 升至 `8`，升级后自动重扫修正本地已有对话记录。
+  - `src/core/pass-speed.ts`：`speedSeries()` 分桶加密为 `<= 6.5h → 10 分钟`、`<= 2d → 15 分钟`、`<= 8d → 3 小时`、`<= 92d → 1 天`、`> 92d → 7 天`；`bucketStart()` 支持分钟与多小时本地对齐；`SpeedLine` 与 `SpeedLineBucket` 新增 `low (P25)`、`high (P75)`、`peak (P90)` 及 `firstLow/firstHigh/firstPeak`；同时返回按思考等级拆分的 `lines` 与跨思考等级合并的 `mergedLines`（含 `efforts` 列表）。
+  - `renderer/usage-insights.js` / `renderer/usage-insights.css`：默认时间段改为 `'1'`（`24 小时`）并新增 `'0.25'`（`6 小时`）档，默认展示前 `5` 条活跃线；新增 `role="switch"` 的「拆分思考等级」（看速度默认关、切首字自动开，可随时手动切换）与「看峰值 (P90)」开关，以及 `fallbackMergedLines()` 兜底；重做 SVG 画布（`300px` 高）：空闲超阈值自动断线、Fritsch–Carlson 单调三次样条平滑曲线、P25–P90 阴影区间带（`<= 2` 条线默认轻柔衬底，悬停图例单独聚焦高亮）、孤立单点光晕环、`≈` 估算线虚线样式、十字准星 + 同步圆点 + 对齐数据浮层；超过 5 条线时未显示模型收进原生 `<details class="speed-lines-more">` 折叠区（`>= 6` 个隐藏模型时附即时搜索框）。
+  - `renderer/app.js`：额度详情页单账号 `speedPanel` 默认时间范围 `state.speedRange` 从 `30` 改为 `1`（`24 小时`）。
+  - 测试脚本更新：`scripts/test-antigravity-usage.cjs`、`scripts/test-antigravity-sessions.cjs`、`scripts/test-pass-speed.cjs`、`scripts/test-speed-regressions.cjs`、`scripts/test-agent-switch-ui.cjs`、`scripts/test-deepseek-balance-ui.cjs`、`scripts/test-ui.cjs`（同步 24h 默认值，补齐细粒度分桶、思考等级合并/拆分、P90 峰值、`<details>` 折叠与搜索断言，并修复 `test-ui.cjs` 搜索防抖等待与新会话 CLI 列表断言）。
+- **发版前验证**：
+  - `npm run build` PASS；
+  - Node：`test-pass-speed` PASS、`test-speed-regressions` PASS、`test-speed-estimate` 2/2、`test-antigravity-usage` 11/11、`test-antigravity-sessions` 5/5、`test-antigravity-timeline` 7/7、`test-requests` 73/73、`test-features` 46/46、`test-quota-monitor` 79/79，全 PASS；
+  - Electron：`test-agent-switch-ui` PASS、`test-intro-ui` 3/3、`test-antigravity-ui` 7/7、`test-ui` PASS、`test-deepseek-balance-ui` PASS、`test-pool-quota-ui` PASS、`test-layout-ui` PASS；
+  - 视觉截图自查：使用合成演示数据渲染日间收起态与夜间展开态（验证 24h 平滑曲线、空闲断档断线、孤立点光晕、P25–P90 阴影带、悬停浮层与折叠搜索区排版正常）。其余未改动模块的 UI 脚本本轮未逐一重跑。
+- **打包与句柄检查**：
+  - `npm run dist` PASS；`@electron/asar` 校验 `app.asar` 含 `'0.3.91'`、`antigravityStreamMetrics`、`mergedLines`、`speed-split-effort`、`speed-peak-mode`、`speed-lines-more`（校验后立即 `asar.uncacheAll()`）。
+  - `dist/TokenPulse-0.3.91-Setup.exe`（112835934 B，SHA256 `2ACE9FABCB8613348B7A6153B56498FD994CAC92E574E3107007570D7850AB59`）
+  - `dist/TokenPulse-0.3.91-Portable.exe`（112578716 B，SHA256 `EF938314CCFB1B735D9BA1AB7A804262BD7F3BF58DB62E3BA5E4F9A74DF26FA4`）
+  - `dist/TokenPulse-0.3.91-Setup.exe.blockmap`（119916 B，SHA256 `E04A522B3CDA127DE19FAE45B099299F50E5F001C4F02591FB5EDC837C795B43`）
+  - `dist/latest.yml`（352 B，version `0.3.91`，SHA256 `B0C398BF5A90DE07D6C8FE88BBD479653978D87318867DE772310FB2FE7F5D81`）
+  - 上述 4 项及 `dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar`、`build/main/index.js` 独占打开关闭句柄检查均为 `UNLOCKED`；无 `electron.exe` / `app-builder.exe` / `makensis.exe` 残留子进程（用户本机已安装运行的 `TokenPulse.exe` 未动）。
+  - 未纳入提交：`clawd-pet-extracted/`（工作区已有未跟踪目录，未动）。
+- **Git / GitHub**：正在提交推送并创建正式 GitHub Release `v0.3.91`（说明文件 `dist/release-0.3.91.md`）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.90 正式发布（Google Antigravity Orchestrator 模式适配，2026-11-12）
 
 ## 发布状态 · v0.3.90
 

@@ -132,11 +132,17 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
     assert.match(await evaluate(`document.querySelector('${P} [data-action=open-speed]').closest('section').textContent`), /量到的速度在「用量明细」里.*思考等级分开一条线.*永久保存/);
     await evaluate(`document.querySelector('${P} [data-action=open-speed]').click()`);
     const SPEED = '.speed-lines-panel';
-    await until(`state.page === 'usage' && document.querySelectorAll('${SPEED} .speed-lines-chip').length === 2`);
+    await until(`state.page === 'usage' && document.querySelectorAll('${SPEED} .speed-lines-chip').length === 1`);
     assert.ok(speedReads > readsBefore + 1, '速度入口会重新读取预读缓存之后新增的记录');
     const chips = () => evaluate(`[...document.querySelectorAll('${SPEED} .speed-lines-chip')].map(c => [c.querySelector('.speed-lines-name').textContent, c.querySelector('small').textContent, c.querySelector('b').textContent, c.getAttribute('aria-pressed')])`);
-    assert.deepEqual(await chips(), [['claude-qa-5', '官方登录（透明转发）', '100', 'true'], ['claude-qa-5 · max', '官方登录（透明转发）', '98', 'true']], '思考等级分开一条线，图例写整段时间的中位速度');
-    assert.equal(await evaluate(`document.querySelector('${SPEED} [data-speed-range].on').dataset.speedRange`), '0', '默认看全部');
+    assert.equal(await evaluate(`document.querySelector('${SPEED} [data-speed-range].on').dataset.speedRange`), '1', '默认看 24 小时');
+    assert.equal(await evaluate(`document.querySelector('${SPEED} [data-action=speed-split-effort]').getAttribute('aria-checked')`), 'false', '看速度默认合并同一模型的不同思考等级');
+    assert.deepEqual(await chips(), [['claude-qa-5', '官方登录（透明转发）', '99', 'true']], '默认合并为一条线');
+    // 打开「拆分思考等级」开关：按思考等级拆开
+    await evaluate(`document.querySelector('${SPEED} [data-action=speed-split-effort]').click()`);
+    await until(`document.querySelectorAll('${SPEED} .speed-lines-chip').length === 2`);
+    assert.equal(await evaluate(`document.querySelector('${SPEED} [data-action=speed-split-effort]').getAttribute('aria-checked')`), 'true');
+    assert.deepEqual(await chips(), [['claude-qa-5', '官方登录（透明转发）', '100', 'true'], ['claude-qa-5 · max', '官方登录（透明转发）', '98', 'true']], '开启拆分思考等级后分开一条线，图例写整段时间的中位速度');
     assert.ok(await evaluate(`document.querySelectorAll('${SPEED} .speed-lines-dot').length >= 2`), '每条线至少一个点');
     // 换成首字：图例里的数字跟着换
     await evaluate(`document.querySelector('${SPEED} [data-speed-metric=first]').click()`);
@@ -187,7 +193,30 @@ app.on('web-contents-created', (_event, contents) => contents.once('did-finish-l
       failRange = false;
       await evaluate(`document.querySelector('${SPEED} [data-action=speed-lines-retry]').click()`);
       await until(`document.querySelector('${SPEED} .speed-lines-status span').textContent === '' && document.querySelector('${SPEED} [data-action=speed-lines-retry]').hidden`);
-      console.log('PASS speed graph DOM: short replies appear in first-token mode; delayed old ranges cannot replace the selected range');
+      // 模型很多时（12 个模型）：只常驻前 5 条已显示卡片，其余 7 个未显示模型默认折叠进 <details>，并支持搜索与峰值切换
+      ipcMain.removeHandler('pass-speed:series');
+      ipcMain.handle('pass-speed:series', () => {
+        const now = Date.now(), at = now - 900000;
+        const mk = i => ({ app: 'claude', model: `model-many-${String(i).padStart(2, '0')}`, via: '', effort: '', fast: false, count: 20 - i, speedCount: 20 - i, firstCount: 20 - i, tokensPerSec: 50 + i, low: 40 + i, high: 70 + i, peak: 110 + i, firstTokenMs: 900, lastAt: now - i * 1000, buckets: [{ at, count: 2, speedCount: 2, firstCount: 2, tokensPerSec: 50 + i, low: 40 + i, high: 70 + i, peak: 110 + i, firstTokenMs: 900 }] });
+        const list = Array.from({ length: 12 }, (_, i) => mk(i + 1));
+        return { from: at - 3600000, to: now, bucketMs: 900000, total: 120, lines: list, mergedLines: list };
+      });
+      await evaluate('window.PulseInsights.refreshSpeed()');
+      await until(`document.querySelector('${SPEED} .speed-lines-more') !== null`);
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-more').open`), false, '超过 5 条线时未显示模型默认收起');
+      assert.match(await evaluate(`document.querySelector('${SPEED} .speed-lines-more-summary').textContent`), /展开其余 7 个未显示的模型/);
+      assert.equal(await evaluate(`document.querySelectorAll('${SPEED} > .speed-lines-body > .speed-lines-legend .speed-lines-chip').length`), 5, '上方只平铺当前已显示的 5 个模型');
+      await evaluate(`document.querySelector('${SPEED} [data-action=speed-peak-mode]').click()`);
+      assert.equal(await evaluate(`document.querySelector('${SPEED} .speed-lines-chip b').textContent`), '111', '切换看峰值 (P90) 后图例更新为 P90 速度');
+      await evaluate(`document.querySelector('${SPEED} [data-action=speed-peak-mode]').click()`);
+      await evaluate(`document.querySelector('${SPEED} .speed-lines-more-summary').click()`);
+      await until(`document.querySelector('${SPEED} .speed-lines-more').open === true`);
+      await evaluate(`(() => { const inp = document.querySelector('${SPEED} .speed-lines-filter'); inp.value = 'model-many-12'; inp.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      assert.equal(await evaluate(`[...document.querySelectorAll('${SPEED} .speed-lines-inactive-grid .speed-lines-chip')].filter(c => !c.hidden).length`), 1, '搜索框即时过滤未显示模型');
+      await evaluate(`document.querySelector('${SPEED} .speed-lines-inactive-grid .speed-lines-chip:not([hidden])').click()`);
+      await until(`document.querySelectorAll('${SPEED} > .speed-lines-body > .speed-lines-legend .speed-lines-chip').length === 6`);
+      await evaluate(`(() => { const inp = document.querySelector('${SPEED} .speed-lines-filter'); if (inp) { inp.value = ''; inp.dispatchEvent(new Event('input', { bubbles: true })); } })()`);
+      console.log('PASS speed graph DOM: short replies appear in first-token mode; delayed old ranges cannot replace the selected range; hidden models collapse and filter cleanly');
     } finally {
       finishOld?.();
       ipcMain.removeHandler('pass-speed:series');

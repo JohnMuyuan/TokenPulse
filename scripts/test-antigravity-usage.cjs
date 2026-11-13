@@ -153,15 +153,25 @@ function addSteps(file, steps) {
       msg(20, str(1, 'request_id'), str(2, 'req-buffered-1')),
       str(21, 'Gemini 4 Argon (High)'),
     )]);
+    const shortBufferedGen = Buffer.concat([msg(1,
+      time(11, 32000),
+      time(12, 45),
+      str(19, 'gemini-4-argon-b'),
+      msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_UNKNOWN')),
+      msg(20, str(1, 'request_id'), str(2, 'req-buffered-short')),
+      str(21, 'Gemini 4 Argon (High)'),
+    )]);
     makeConversation(conv4, [
       { idx: 0, type: 15, status: 3, meta: stepMeta({ start: now - 10000, end: now - 6000, modelId: 1999, gen: 0, input: 800, output: 200 }) },
       { idx: 1, type: 15, status: 3, meta: stepMeta({ start: now - 150000, end: now - 20952, modelId: 1999, gen: 1, input: 120000, output: 16155, thinking: 35 }) },
-    ], [[0, richGen], [1, bufferedGen]]);
+      { idx: 2, type: 15, status: 3, meta: stepMeta({ start: now - 40000, end: now - 7955, modelId: 1999, gen: 2, input: 5000, output: 130, thinking: 20 }) },
+    ], [[0, richGen], [1, bufferedGen], [2, shortBufferedGen]]);
     r = scan.scanLocalUsage();
-    assert.equal(r.records.length, 2);
+    assert.equal(r.records.length, 3);
     assert.deepEqual([r.records[0].model, r.records[0].effort, r.records[0].returned, r.records[0].requestId], ['gemini-4-argon', 'high', 'gemini-4-argon-b', 'req-rich-1']);
-    assert.deepEqual(r.records[0].timing, { stream: true, ms: 4000, firstTokenMs: 1500, tokensPerSec: 50, provider: 'Antigravity' });
+    assert.deepEqual(r.records[0].timing, { stream: true, ms: 4000, firstTokenMs: 1500, tokensPerSec: 80, provider: 'Antigravity' }, '流式回复按纯出字阶段（200 Token ÷ 2.5s = 80）计速，不把 1.5s 首包等待算进分母');
     assert.deepEqual(r.records[1].timing, { stream: false, ms: 129048, tokensPerSec: 125.2, provider: 'Antigravity' }, '服务端整包缓冲的大工具调用不把 129 秒总生成时间误记成首字延迟');
+    assert.deepEqual(r.records[2].timing, { stream: false, ms: 32045, provider: 'Antigravity' }, '整包缓冲的短工具调用既不误记 32s 首字延迟，也不把排队等待算成 4 Token/秒');
     pass('antigravity usage: gen_metadata streaming timing (TTFT + duration), buffered tool-call TTFT guard, and fallback model_display_name are extracted');
 
     // 额度：GetUserStatus 按剩余比例 + 重置时间分组；用完的那组没有 remainingFraction

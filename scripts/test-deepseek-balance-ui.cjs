@@ -161,7 +161,10 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.equal(/本机以外|官方/.test(timelineText), false, '时间线里没有官方额度那一套说法');
     assert.match(await text(`${DETAIL} #quota-model-timeline .ms-cycle.week`), /DeepSeek-V4\.1-Flash/);
     assert.equal(await evaluate(`document.querySelector('${DETAIL} #quota-model-timeline .ms-cycle.week .ms-lane-logo path').getAttribute('fill')`), '#4D6BFE');
-    // 模型速度：从流水里的出字时间来，不提透明转发
+    // 模型速度：默认看 24 小时（今天只有 Flash），切到 30 天包含 6 天前的 Pro；从流水里的出字时间来，不提透明转发
+    await until(`document.querySelectorAll('${DETAIL} .speed-panel .speed-row:not(.speed-axis)').length === 1`, 30000);
+    assert.equal(await evaluate(`document.querySelector('${DETAIL} .speed-panel [data-speed-range].on').textContent`), '24 小时');
+    await click(`${DETAIL} .speed-panel [data-speed-range="30"]`);
     await until(`document.querySelectorAll('${DETAIL} .speed-panel .speed-row:not(.speed-axis)').length === 2`, 30000);
     const speedText = await text(`${DETAIL} .speed-panel`);
     assert.match(speedText, /模型速度\s*DeepSeek Harness.*自己在日志里记了每次回复的出字时间.*DeepSeek-V4\.1-Flash.*DeepSeek-V4-Pro/);

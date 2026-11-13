@@ -1761,7 +1761,7 @@ function speedBucketLabel(at, bucketMs) {
 }
 /** custom：数据不是从转发记录来的账号（DeepSeek 的速度是 Harness 自己记在日志里的），{ tag, hint, load(days), empty() }。 */
 function speedPanel(account, kind, custom = null) {
-  state.speedRange ??= 30;
+  state.speedRange ??= 1;
   const panel = el('article', { class: 'panel speed-panel' });
   const body = el('div', { class: 'speed-body' });
   const seg = el('div', { class: 'seg compact', 'aria-label': '时间范围' }, [el('span', { class: 'seg-thumb', 'aria-hidden': true }),

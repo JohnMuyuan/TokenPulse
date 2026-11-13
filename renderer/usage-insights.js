@@ -363,22 +363,145 @@
   }
 
   /*
-   * 模型速度走势（0.3.39）：经过 TokenPulse 的请求（透明转发、本地路由的号池和第三方供应商）量到的每秒 Token 数 / 首字延迟，画成折线。
-   * 一条线 = 工具 + 型号 + 快速模式 + 思考等级 + 经由：同一个型号不同思考等级每秒 Token 数差不多、首字差很多，不同中转站也不一样。
-   * 记录永久保存；不跟页面上面的时间范围走，自己选 24 小时 / 7 天 / 30 天 / 全部。线多了默认只画次数最多的 6 条，点图例开关。
+   * 模型速度走势（0.3.39 起，0.3.91 重做）：
+   * - 默认看「24 小时」（按 15 分钟细粒度分桶，6 小时按 10 分钟、7 天按 3 小时、30 天按天），不再被整天中位数抹平短时波峰；
+   * - 看「速度」时默认把同一型号的不同思考等级合并成一条线（切到「首字」自动拆开，也可随时点「拆分思考等级」开关手动切换）；
+   * - 支持「看峰值 (P90)」切换、空闲断档自动断线、单调三次样条平滑曲线、P25–P90 波动区间带、孤立点光晕，以及未显示模型折叠抽屉。
    */
-  const SPEED_RANGES = [['1', '24 小时'], ['7', '7 天'], ['30', '30 天'], ['0', '全部']];
+  const SPEED_RANGES = [['0.25', '6 小时'], ['1', '24 小时'], ['7', '7 天'], ['30', '30 天'], ['0', '全部']];
   const SPEED_METRICS = [['speed', '速度'], ['first', '首字']];
-  const LINE_COLORS = ['#2f7de1', '#e0683a', '#14a37f', '#9b5de5', '#d19a00', '#e0457b', '#0ea5a4', '#7a9a2e', '#8d6e63', '#5c6bc0', '#c2185b', '#00838f'];
+  const LINE_COLORS = ['#2563eb', '#ea580c', '#0d9488', '#8b5cf6', '#d97706', '#e11d48', '#0284c7', '#65a30d', '#7c3aed', '#c026d3', '#059669', '#dc2626'];
   const APP_SOURCE = { claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok Build', deepseek: 'DeepSeek Harness', pi: 'pi', antigravity: 'Antigravity' };
-  const DEFAULT_LINES = 6;
-  const speedView = { range: '0', metric: 'speed', app: 'all', hidden: new Set(), picked: new Set(), data: null, key: '', at: 0, loading: false, error: false };
-  const lineKey = line => [line.app, line.model, line.fast ? 'fast' : '', line.effort, line.via, line.estimated ? 'estimated' : ''].join('|');
+  const DEFAULT_LINES = 5;
+  const speedView = {
+    range: '1',
+    metric: 'speed',
+    splitEffort: null,
+    peakMode: false,
+    app: 'all',
+    hidden: new Set(),
+    picked: new Set(),
+    moreOpen: false,
+    filterText: '',
+    data: null,
+    key: '',
+    at: 0,
+    loading: false,
+    error: false,
+  };
+  const isSplitEffort = () => speedView.splitEffort ?? (speedView.metric === 'first');
+  const lineKey = (line, splitOn = isSplitEffort()) => [splitOn ? 'S' : 'M', line.app, line.model, line.fast ? 'fast' : '', splitOn ? line.effort : '', line.via, line.estimated ? 'estimated' : ''].join('|');
   // 0.3.53：按日志时间戳估算的线名字前面带「≈」，经由写「日志估算」
-  const lineName = line => (line.estimated ? '≈ ' : '') + line.model + (line.fast ? ' · 快速' : '') + (line.effort ? ` · ${line.effort}` : '');
+  const lineName = (line, splitOn = isSplitEffort()) => (line.estimated ? '≈ ' : '') + line.model + (line.fast ? ' · 快速' : '') + (splitOn && line.effort ? ` · ${line.effort}` : '');
   const lineVia = line => line.estimated ? '日志估算' : line.via || ((line.app === 'antigravity' || line.app === 'deepseek') ? '官方登录（本机日志）' : '官方登录（透明转发）');
+  const lineMetaText = (line, splitOn) => {
+    const base = lineVia(line);
+    if (!splitOn && Array.isArray(line.efforts) && line.efforts.length > 1) return `${base} · 含 ${line.efforts.join('/')}`;
+    return base;
+  };
   const unitOf = (line, value) => (line.estimated ? '≈ ' : '') + value;
   const secondsText = ms => (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' 秒';
+  const bucketUnitLabel = bucketMs => {
+    if (bucketMs < 3600000) return `${Math.max(1, Math.round(bucketMs / 60000))} 分钟`;
+    if (bucketMs === 3600000) return '一小时';
+    if (bucketMs < 86400000) return `${Math.round(bucketMs / 3600000)} 小时`;
+    return bucketMs > 86400000 ? '一周' : '一天';
+  };
+  /** 兼容测试桩未返回 mergedLines 时的兜底合并。 */
+  function fallbackMergedLines(lines) {
+    const groups = new Map();
+    for (const line of lines || []) {
+      const k = [line.app, line.model, line.fast ? 'fast' : '', line.via, line.estimated ? 'estimated' : ''].join('|');
+      const g = groups.get(k);
+      if (!g) {
+        groups.set(k, {
+          ...line,
+          effort: '',
+          efforts: line.effort ? [line.effort] : [],
+          buckets: (line.buckets || []).map(b => ({ ...b })),
+        });
+      } else {
+        if (line.effort && !g.efforts.includes(line.effort)) g.efforts.push(line.effort);
+        const prevSpeed = g.speedCount || 0, addSpeed = line.speedCount || 0;
+        const prevFirst = g.firstCount || 0, addFirst = line.firstCount || 0;
+        if (line.tokensPerSec != null && addSpeed > 0) {
+          g.tokensPerSec = g.tokensPerSec == null || !prevSpeed ? line.tokensPerSec : Math.round(((g.tokensPerSec * prevSpeed + line.tokensPerSec * addSpeed) / (prevSpeed + addSpeed)) * 10) / 10;
+          g.peak = Math.max(g.peak ?? g.tokensPerSec ?? 0, line.peak ?? line.tokensPerSec ?? 0);
+          g.high = Math.max(g.high ?? g.tokensPerSec ?? 0, line.high ?? line.tokensPerSec ?? 0);
+          g.low = g.low == null ? (line.low ?? line.tokensPerSec) : Math.min(g.low, line.low ?? line.tokensPerSec);
+        }
+        if (line.firstTokenMs != null && addFirst > 0) {
+          g.firstTokenMs = g.firstTokenMs == null || !prevFirst ? line.firstTokenMs : Math.round((g.firstTokenMs * prevFirst + line.firstTokenMs * addFirst) / (prevFirst + addFirst));
+        }
+        g.count = (g.count || 0) + (line.count || 0);
+        g.speedCount = prevSpeed + addSpeed;
+        g.firstCount = prevFirst + addFirst;
+        g.lastAt = Math.max(g.lastAt || 0, line.lastAt || 0);
+        const byAt = new Map(g.buckets.map(b => [b.at, b]));
+        for (const b of line.buckets || []) {
+          const cur = byAt.get(b.at);
+          if (!cur) { byAt.set(b.at, { ...b }); continue; }
+          const cs = cur.speedCount || 0, bs = b.speedCount || 0;
+          if (b.tokensPerSec != null && bs > 0) {
+            cur.tokensPerSec = cur.tokensPerSec == null || !cs ? b.tokensPerSec : Math.round(((cur.tokensPerSec * cs + b.tokensPerSec * bs) / (cs + bs)) * 10) / 10;
+            cur.peak = Math.max(cur.peak ?? cur.tokensPerSec ?? 0, b.peak ?? b.tokensPerSec ?? 0);
+            cur.high = Math.max(cur.high ?? cur.tokensPerSec ?? 0, b.high ?? b.tokensPerSec ?? 0);
+            cur.low = cur.low == null ? (b.low ?? b.tokensPerSec) : Math.min(cur.low, b.low ?? b.tokensPerSec);
+          }
+          const cf = cur.firstCount || 0, bf = b.firstCount || 0;
+          if (b.firstTokenMs != null && bf > 0) {
+            cur.firstTokenMs = cur.firstTokenMs == null || !cf ? b.firstTokenMs : Math.round((cur.firstTokenMs * cf + b.firstTokenMs * bf) / (cf + bf));
+          }
+          cur.count = (cur.count || 0) + (b.count || 0);
+          cur.speedCount = cs + bs;
+          cur.firstCount = cf + bf;
+        }
+        g.buckets = [...byAt.values()].sort((a, b) => a.at - b.at);
+      }
+    }
+    return [...groups.values()].sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
+  }
+  /** 单调三次样条（Fritsch–Carlson）：圆润平滑且严格不越界、不产生假波峰。 */
+  function monotonePath(pts) {
+    const n = pts.length;
+    if (n < 2) return '';
+    if (n === 2) return `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}L${pts[1][0].toFixed(1)},${pts[1][1].toFixed(1)}`;
+    const dx = [], dy = [], m = [];
+    for (let i = 0; i < n - 1; i++) {
+      dx.push(Math.max(0.5, pts[i + 1][0] - pts[i][0]));
+      dy.push(pts[i + 1][1] - pts[i][1]);
+      m.push(dy[i] / dx[i]);
+    }
+    const t = new Array(n);
+    t[0] = m[0];
+    t[n - 1] = m[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (m[i - 1] * m[i] <= 0) t[i] = 0;
+      else {
+        const w1 = 2 * dx[i] + dx[i - 1], w2 = dx[i] + 2 * dx[i - 1];
+        t[i] = (w1 + w2) / (w1 / m[i - 1] + w2 / m[i]);
+      }
+    }
+    for (let i = 0; i < n - 1; i++) {
+      if (m[i] === 0) { t[i] = 0; t[i + 1] = 0; continue; }
+      const a = t[i] / m[i], b = t[i + 1] / m[i], h = Math.hypot(a, b);
+      if (h > 3) { const s = 3 / h; t[i] = s * a * m[i]; t[i + 1] = s * b * m[i]; }
+    }
+    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 0; i < n - 1; i++) {
+      const step = dx[i] / 3;
+      const c1x = pts[i][0] + step, c1y = pts[i][1] + t[i] * step;
+      const c2x = pts[i + 1][0] - step, c2y = pts[i + 1][1] - t[i + 1] * step;
+      d += `C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${pts[i + 1][0].toFixed(1)},${pts[i + 1][1].toFixed(1)}`;
+    }
+    return d;
+  }
+  function bandAreaPath(upper, lower) {
+    if (upper.length < 2 || lower.length !== upper.length) return '';
+    const topPath = monotonePath(upper);
+    const revLower = monotonePath(lower.slice().reverse());
+    return `${topPath}L${revLower.slice(1)}Z`;
+  }
   let speedBody = null;
   let speedRequest = 0;
   function loadSpeedLines(force = false) {
@@ -407,7 +530,7 @@
     retry.addEventListener('click', () => loadSpeedLines(true));
     const panel = el('article', { class: 'panel insight-panel speed-lines-panel' }, [
       el('div', { class: 'panel-heading' }, [
-        el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 的请求（透明转发、号池、第三方供应商）量到的速度。同一个型号用不同的思考等级、经不同的供应商分开一条线，同一个号池里的几个账号合成一条。没经过 TokenPulse 的请求按会话日志的时间戳估算，名字前面标「≈」，比实际偏慢；记录永久保存，不跟上面的时间范围走。' })]),
+        el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 转发与本机实测（Antigravity、DeepSeek Harness）量到的真实流式速度。看速度时默认把同一型号的不同思考等级合成一条线，切到「首字」自动拆开，也可随时点下方开关切换；未经过转发的请求按会话日志估算并标「≈」。' })]),
         el('div', { class: 'speed-lines-tools' }, [metricSeg, rangeSeg]),
       ]),
       el('div', { class: 'speed-lines-status', role: 'status' }, [el('span'), retry]),
@@ -435,115 +558,390 @@
     panel.querySelector('.speed-lines-status span').textContent = speedView.loading && speedView.data ? '正在读取所选范围，暂显示上次结果。' : speedView.error && speedView.data ? '读取所选范围失败，仍显示上次结果。' : '';
     panel.querySelector('[data-action=speed-lines-retry]').hidden = !speedView.error;
   }
+  function makeSpeedSwitch(label, checked, action, title, onToggle) {
+    const btn = el('button', {
+      type: 'button',
+      role: 'switch',
+      class: 'speed-toggle' + (checked ? ' on' : ''),
+      'aria-checked': String(checked),
+      'data-action': action,
+      title,
+    }, [
+      el('i', { class: 'speed-toggle-track', 'aria-hidden': 'true' }, [el('span', { class: 'speed-toggle-thumb' })]),
+      el('span', { class: 'speed-toggle-label', text: label }),
+    ]);
+    btn.addEventListener('click', onToggle);
+    return btn;
+  }
   function fillSpeed(resync = false, detached = false) {
     const body = speedBody;
     if (!body || (!detached && !body.isConnected)) return;
     syncSpeedState(resync);
     const data = speedView.data;
     if (!data) { body.replaceChildren(empty(speedView.error ? '速度记录读取失败，请重试。' : '正在读取…')); return; }
-    const apps = [...new Set(data.lines.map(line => line.app))];
+    const splitOn = isSplitEffort();
+    const peakOn = speedView.peakMode;
+    const sourceLines = splitOn ? (data.lines || []) : (Array.isArray(data.mergedLines) ? data.mergedLines : fallbackMergedLines(data.lines));
+    const apps = [...new Set(sourceLines.map(line => line.app))];
     if (speedView.app !== 'all' && !apps.includes(speedView.app)) speedView.app = 'all';
     const first = speedView.metric === 'first';
     const sampleCount = item => (first ? item.firstCount : item.speedCount) ?? item.count;
-    const all = data.lines.filter(line => (speedView.app === 'all' || line.app === speedView.app) && (first ? line.firstTokenMs != null : line.tokensPerSec != null)).sort((a, b) => sampleCount(b) - sampleCount(a) || b.lastAt - a.lastAt);
+    const linePrimaryVal = line => {
+      if (first) {
+        const ms = peakOn ? (line.firstPeak ?? line.firstTokenMs) : line.firstTokenMs;
+        return ms == null ? null : ms;
+      }
+      return peakOn ? (line.peak ?? line.tokensPerSec) : line.tokensPerSec;
+    };
+    const all = sourceLines
+      .filter(line => (speedView.app === 'all' || line.app === speedView.app) && linePrimaryVal(line) != null)
+      .sort((a, b) => sampleCount(b) - sampleCount(a) || b.lastAt - a.lastAt);
     if (!all.length) {
-      const open = el('button', { type: 'button', class: 'btn', text: '去打开透明转发' });
+      const actions = el('div', { class: 'speed-empty-actions' });
+      if (speedView.range !== '0') {
+        const fallbackRange = speedView.range === '0.25' ? ['1', '看最近 24 小时'] : speedView.range === '1' ? ['7', '看最近 7 天'] : ['0', '看全部记录'];
+        const wider = el('button', { type: 'button', class: 'btn', 'data-action': 'speed-lines-wider', text: fallbackRange[1] });
+        wider.addEventListener('click', () => { speedView.range = fallbackRange[0]; loadSpeedLines(true); syncSpeedState(true); });
+        actions.append(wider);
+      }
+      const open = el('button', { type: 'button', class: speedView.range !== '0' ? 'btn ghost' : 'btn', text: '去打开透明转发' });
       open.addEventListener('click', () => { navigate('providers'); window.PulseProviders?.open('pass'); });
-      body.replaceChildren(el('div', { class: 'empty speed-empty' }, [el('p', { text: '这段时间还没有量到速度。在供应商页打开「透明转发」，或者用本地路由（号池、第三方供应商），用一会儿这里就有走势。' }), open]));
+      actions.append(open);
+      body.replaceChildren(el('div', { class: 'empty speed-empty' }, [
+        el('p', { text: '这段时间还没有量到速度。可以切到更长的时间段查看，或在供应商页打开「透明转发」、使用本地路由后再看走势。' }),
+        actions,
+      ]));
       return;
     }
-    // 显示哪几条：用户点过的按用户的；没点过的，次数最多的前几条
-    const visible = all.filter((line, i) => !speedView.hidden.has(lineKey(line)) && (i < DEFAULT_LINES || speedView.picked.has(lineKey(line))));
-    const colorOfLine = new Map(all.map((line, i) => [lineKey(line), LINE_COLORS[i % LINE_COLORS.length]]));
-    const valueOf = bucket => first ? (bucket.firstTokenMs == null ? null : bucket.firstTokenMs / 1000) : bucket.tokensPerSec;
+    // 显示哪几条：用户点过的按用户的；没点过的，默认取当前时间段最活跃的前 DEFAULT_LINES 条
+    const visible = all.filter((line, i) => {
+      const k = lineKey(line, splitOn);
+      return !speedView.hidden.has(k) && (i < DEFAULT_LINES || speedView.picked.has(k));
+    });
+    const visibleSet = new Set(visible.map(line => lineKey(line, splitOn)));
+    const colorOfLine = new Map(all.map((line, i) => [lineKey(line, splitOn), LINE_COLORS[i % LINE_COLORS.length]]));
+    const valueOf = bucket => {
+      if (first) {
+        const ms = peakOn ? (bucket.firstPeak ?? bucket.firstTokenMs) : bucket.firstTokenMs;
+        return ms == null ? null : ms / 1000;
+      }
+      return peakOn ? (bucket.peak ?? bucket.tokensPerSec) : bucket.tokensPerSec;
+    };
+    const lowOf = bucket => {
+      if (first) {
+        const ms = bucket.firstLow ?? bucket.firstTokenMs;
+        return ms == null ? null : ms / 1000;
+      }
+      return bucket.low ?? bucket.tokensPerSec;
+    };
+    const highOf = bucket => {
+      if (first) {
+        const ms = bucket.firstPeak ?? bucket.firstHigh ?? bucket.firstTokenMs;
+        return ms == null ? null : ms / 1000;
+      }
+      return bucket.peak ?? bucket.high ?? bucket.tokensPerSec;
+    };
     const unitText = value => first ? secondsText(value * 1000) : `${value} Token/秒`;
 
-    // 折线
+    // 折线画布
     const chartHost = el('div', { class: 'chart speed-lines-chart' });
-    const w = Math.max(360, body.clientWidth || speedView.width || 800), h = 280, left = 58, right = 16, top = 14, bottom = 30;
-    const end = data.from + Math.max(1, Math.ceil((data.to - data.from) / data.bucketMs)) * data.bucketMs;
-    const xOf = at => left + Math.min(1, Math.max(0, (at + data.bucketMs / 2 - data.from) / (end - data.from))) * (w - left - right);
-    const peak = visible.reduce((max, line) => line.buckets.reduce((value, bucket) => Math.max(value, valueOf(bucket) ?? 0), max), 0);
-    const max = niceCeil(peak * 1.08);
-    const yOf = value => top + (1 - value / max) * (h - top - bottom);
+    const w = Math.max(360, body.clientWidth || speedView.width || 820), h = 300, left = 56, right = 18, top = 24, bottom = 32;
+    const end = Math.max(data.from + data.bucketMs, data.from + Math.max(1, Math.ceil((data.to - data.from) / data.bucketMs)) * data.bucketMs);
+    const spanMs = Math.max(data.bucketMs, end - data.from);
+    const xOf = at => left + Math.min(1, Math.max(0, (at + data.bucketMs / 2 - data.from) / spanMs)) * (w - left - right);
+    const peakVal = visible.reduce((max, line) => line.buckets.reduce((val, bucket) => {
+      const v = valueOf(bucket);
+      if (v == null) return max;
+      const hi = visible.length <= 2 ? (highOf(bucket) ?? v) : v;
+      return Math.max(val, v, hi);
+    }, max), 0);
+    const max = niceCeil(peakVal * 1.1);
+    const yOf = value => top + (1 - Math.min(max, Math.max(0, value)) / max) * (h - top - bottom);
     const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': first ? '各模型的首字延迟走势' : '各模型的速度走势' });
+
+    const unitAxis = svg('text', { class: 'axis speed-axis-unit', x: left - 8, y: 13, 'text-anchor': 'end' });
+    unitAxis.textContent = first ? '秒' : 'Token/s';
+    node.append(unitAxis);
+
     for (const g of [0, 0.25, 0.5, 0.75, 1]) {
       const yy = yOf(max * g);
-      node.append(svg('line', { class: 'grid', x1: left, x2: w - right, y1: yy, y2: yy }));
+      node.append(svg('line', { class: g === 0 ? 'grid base' : 'grid', x1: left, x2: w - right, y1: yy, y2: yy }));
       const label = svg('text', { class: 'axis', x: left - 8, y: yy + 4, 'text-anchor': 'end' });
       label.textContent = first ? `${Math.round(max * g * 10) / 10}s` : String(Math.round(max * g));
       node.append(label);
     }
+
     const stamp = at => {
       const day = new Date(at), locale = dateLocale();
-      if (data.bucketMs <= 3600000) return day.toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+      if (data.bucketMs < 86400000) return day.toLocaleString(locale, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
       const text = day.toLocaleDateString(locale, { year: day.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', month: 'numeric', day: 'numeric' });
       return data.bucketMs > 86400000 ? `${text} 起的一周` : text;
     };
-    // 横轴：开头、中间、结尾几个日期
-    const ticks = 5;
+    const stampRange = at => {
+      if (data.bucketMs >= 86400000) return stamp(at);
+      const fromText = stamp(at);
+      const endDay = new Date(at + data.bucketMs);
+      const toClock = endDay.toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit', hour12: false });
+      return `${fromText} – ${toClock}`;
+    };
+
+    // 横轴刻度：按真实时间线性映射
+    const ticks = w >= 640 ? 6 : 4;
     for (let i = 0; i < ticks; i++) {
-      const at = data.from + (end - data.from) * i / (ticks - 1) - data.bucketMs / 2;
-      const t = svg('text', { class: 'axis', x: xOf(at), y: h - 8, 'text-anchor': i === 0 ? 'start' : i === ticks - 1 ? 'end' : 'middle' });
-      t.textContent = i === ticks - 1 ? '现在' : stamp(Math.max(data.from, at));
+      const ratio = i / (ticks - 1);
+      const xx = left + ratio * (w - left - right);
+      const at = data.from + ratio * spanMs;
+      node.append(svg('line', { class: 'speed-tick', x1: xx, x2: xx, y1: h - bottom, y2: h - bottom + 4 }));
+      const t = svg('text', { class: 'axis', x: xx, y: h - 9, 'text-anchor': i === 0 ? 'start' : i === ticks - 1 ? 'end' : 'middle' });
+      t.textContent = i === ticks - 1 ? '现在' : stamp(at);
       node.append(t);
     }
+
+    // 空闲断档自动断线：细桶超过 3 个桶距（如 24h 里停用 > 45 分钟）、粗桶超过 2 个桶距自动断开，不再跨空白期乱拉大斜线
+    const gapLimit = data.bucketMs < 3600000 ? data.bucketMs * 3 : data.bucketMs * 2;
+    const seriesMap = new Map();
+    const seriesLayer = svg('g', { class: 'speed-series-layer' });
     for (const line of visible) {
-      const color = colorOfLine.get(lineKey(line));
-      const points = line.buckets.map(bucket => [bucket, valueOf(bucket)]).filter(([, v]) => v != null).map(([bucket, v]) => [xOf(bucket.at), yOf(v)]);
-      if (points.length > 1) node.append(paint(svg('polyline', { class: 'speed-lines-line', points: points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ') }), { stroke: color }));
-      if (points.length <= 60) for (const [x, y] of points) node.append(paint(svg('circle', { class: 'speed-lines-dot', cx: x.toFixed(1), cy: y.toFixed(1), r: 3 }), { fill: color }));
-      else node.append(paint(svg('circle', { class: 'speed-lines-dot', cx: points.at(-1)[0].toFixed(1), cy: points.at(-1)[1].toFixed(1), r: 3 }), { fill: color }));
+      const key = lineKey(line, splitOn);
+      const color = colorOfLine.get(key);
+      const group = svg('g', { class: 'speed-series', 'data-line': key });
+      const valid = line.buckets
+        .map(bucket => ({ bucket, v: valueOf(bucket), lo: lowOf(bucket), hi: highOf(bucket) }))
+        .filter(item => item.v != null);
+      const segments = [];
+      for (const item of valid) {
+        const cur = segments.at(-1);
+        if (!cur || item.bucket.at - cur.at(-1).bucket.at > gapLimit) segments.push([item]);
+        else cur.push(item);
+      }
+      // 波动阴影带（P25–P90）：可见线 <= 2 条时默认轻柔衬底，悬停任意图例或折线时单独高亮展开
+      for (const segItems of segments) {
+        if (segItems.length >= 2) {
+          const upper = segItems.map(it => [xOf(it.bucket.at), yOf(Math.max(it.v, it.hi ?? it.v))]);
+          const lower = segItems.map(it => [xOf(it.bucket.at), yOf(Math.min(it.v, it.lo ?? it.v))]);
+          const area = bandAreaPath(upper, lower);
+          if (area) group.append(paint(svg('path', { class: 'speed-lines-band' + (visible.length <= 2 ? ' ambient' : ''), d: area }), { fill: color }));
+        }
+      }
+      // 平滑折线（按连续段绘制；日志估算线用虚线）
+      for (const segItems of segments) {
+        if (segItems.length >= 2) {
+          const pts = segItems.map(it => [xOf(it.bucket.at), yOf(it.v)]);
+          group.append(paint(svg('path', { class: 'speed-lines-line' + (line.estimated ? ' estimated' : ''), d: monotonePath(pts) }), { stroke: color }));
+        }
+      }
+      // 数据点：孤立单点加柔光光晕环与波动竖线；稀疏曲线画全点，密集曲线画段首尾与最新点
+      const sparse = valid.length <= 32;
+      for (const segItems of segments) {
+        if (segItems.length === 1) {
+          const it = segItems[0], cx = xOf(it.bucket.at), cy = yOf(it.v);
+          if (it.hi != null && it.lo != null && it.hi > it.lo) {
+            group.append(paint(svg('line', { class: 'speed-lines-whisker', x1: cx.toFixed(1), x2: cx.toFixed(1), y1: yOf(it.hi).toFixed(1), y2: yOf(it.lo).toFixed(1) }), { stroke: color }));
+          }
+          group.append(paint(svg('circle', { class: 'speed-lines-halo', cx: cx.toFixed(1), cy: cy.toFixed(1), r: 7 }), { fill: color }));
+          group.append(paint(svg('circle', { class: 'speed-lines-dot single', cx: cx.toFixed(1), cy: cy.toFixed(1), r: 4 }), { fill: color }));
+        } else {
+          segItems.forEach((it, idx) => {
+            const isEnd = idx === 0 || idx === segItems.length - 1 || it === valid.at(-1);
+            if (!sparse && !isEnd) return;
+            const cx = xOf(it.bucket.at), cy = yOf(it.v);
+            group.append(paint(svg('circle', { class: 'speed-lines-dot', cx: cx.toFixed(1), cy: cy.toFixed(1), r: it === valid.at(-1) ? 3.5 : 2.7 }), { fill: color }));
+          });
+        }
+      }
+      seriesMap.set(key, group);
+      seriesLayer.append(group);
     }
-    // 悬停：最近的那个时间点，列出每条线在那时的数字
+    node.append(seriesLayer);
+
+    const setFocusLine = focusKey => {
+      seriesLayer.classList.toggle('has-focus', Boolean(focusKey));
+      for (const [k, g] of seriesMap) g.classList.toggle('is-focus', k === focusKey);
+    };
+
+    // 悬停交互：十字准星 + 各曲线同步高亮圆点 + 结构化浮层卡片
     const cursor = svg('line', { class: 'speed-lines-cursor', x1: 0, x2: 0, y1: top, y2: h - bottom, visibility: 'hidden' });
+    const activeDots = svg('g', { class: 'speed-lines-active-dots' });
     const hit = svg('rect', { class: 'insight-hit', x: left, y: top, width: w - left - right, height: h - top - bottom });
+    const floatTip = el('div', { class: 'tooltip speed-lines-tip', hidden: '' });
     const times = [...new Set(visible.flatMap(line => line.buckets.filter(bucket => valueOf(bucket) != null).map(bucket => bucket.at)))].sort((a, b) => a - b);
     hit.addEventListener('pointermove', event => {
       if (!times.length) return;
       const box = node.getBoundingClientRect(), x = (event.clientX - box.left) / box.width * w;
       let at = times[0];
       for (const t of times) if (Math.abs(xOf(t) - x) < Math.abs(xOf(at) - x)) at = t;
-      cursor.setAttribute('x1', xOf(at)); cursor.setAttribute('x2', xOf(at)); cursor.setAttribute('visibility', 'visible');
+      const cx = xOf(at);
+      cursor.setAttribute('x1', cx.toFixed(1)); cursor.setAttribute('x2', cx.toFixed(1)); cursor.setAttribute('visibility', 'visible');
       const rows = visible.map(line => [line, line.buckets.find(bucket => bucket.at === at)]).filter(([, bucket]) => bucket && valueOf(bucket) != null)
         .sort((a, b) => valueOf(b[1]) - valueOf(a[1]));
-      tipAt([stamp(at), ...rows.map(([line, bucket]) => `${lineName(line)} · ${lineVia(line)}：${unitOf(line, unitText(valueOf(bucket)))} · ${number(sampleCount(bucket))} 次`)].join('\n'), event.clientX, event.clientY);
+      activeDots.replaceChildren(...rows.map(([line, bucket]) => {
+        const c = colorOfLine.get(lineKey(line, splitOn));
+        return paint(svg('circle', { class: 'speed-lines-hover-dot', cx: cx.toFixed(1), cy: yOf(valueOf(bucket)).toFixed(1), r: 4.8 }), { fill: c });
+      }));
+      floatTip.replaceChildren(
+        el('div', { class: 'speed-tip-head', text: stampRange(at) }),
+        ...rows.map(([line, bucket]) => {
+          const key = lineKey(line, splitOn);
+          const mainVal = valueOf(bucket);
+          const subParts = [];
+          if (!first) {
+            if (!peakOn && bucket.peak != null && bucket.peak > mainVal) subParts.push(`峰值 ${bucket.peak}`);
+            else if (peakOn && bucket.tokensPerSec != null && bucket.tokensPerSec !== mainVal) subParts.push(`中位 ${bucket.tokensPerSec}`);
+          } else if (!peakOn && bucket.firstPeak != null && bucket.firstPeak > bucket.firstTokenMs) {
+            subParts.push(`P90 ${secondsText(bucket.firstPeak)}`);
+          }
+          subParts.push(`${number(sampleCount(bucket))} 次`);
+          return el('div', { class: 'speed-tip-row' }, [
+            paint(el('i', { class: 'speed-tip-dot' }), { background: colorOfLine.get(key) }),
+            el('span', { class: 'speed-tip-name', translate: 'no', text: lineName(line, splitOn) }),
+            el('strong', { class: 'speed-tip-val', translate: 'no', text: unitOf(line, unitText(mainVal)) }),
+            el('small', { class: 'speed-tip-sub', text: subParts.join(' · ') }),
+          ]);
+        }),
+      );
+      floatTip.hidden = false;
+      const hostRect = chartHost.getBoundingClientRect();
+      const relX = event.clientX - hostRect.left, relY = event.clientY - hostRect.top;
+      const tipW = floatTip.offsetWidth || 260, tipH = floatTip.offsetHeight || 90;
+      const leftPx = relX + 16 + tipW > hostRect.width - 8 ? Math.max(8, relX - tipW - 16) : Math.max(8, relX + 16);
+      const topPx = Math.min(Math.max(8, relY - tipH / 2), Math.max(8, hostRect.height - tipH - 8));
+      paint(floatTip, { left: `${Math.round(leftPx)}px`, top: `${Math.round(topPx)}px` });
     });
-    hit.addEventListener('pointerleave', () => { $('tip').hidden = true; cursor.setAttribute('visibility', 'hidden'); });
-    node.append(cursor, hit);
-    chartHost.append(node);
+    hit.addEventListener('pointerleave', () => {
+      floatTip.hidden = true;
+      cursor.setAttribute('visibility', 'hidden');
+      activeDots.replaceChildren();
+    });
+    node.append(cursor, activeDots, hit);
+    chartHost.append(node, floatTip);
 
-    // 图例：每条线一个开关，带整段时间的中位数
-    const legendNode = el('div', { class: 'speed-lines-legend', role: 'group', 'aria-label': '显示哪些线' }, all.map(line => {
-      const key = lineKey(line), on = visible.includes(line);
-      const chip = el('button', { type: 'button', class: 'speed-lines-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), 'data-line': key, title: `${lineVia(line)} · ${number(sampleCount(line))} 次${line.estimated ? ' · 按会话日志的时间戳估算：从发出请求到回复写进日志的用时，包含首字之前的等待，比真实出字速度偏慢。打开透明转发或走本地路由能量到准确的。' : ''}` }, [
+    // 构建图例卡片：支持悬停联动高亮；模型多时将未显示的模型折叠收起
+    const makeChip = line => {
+      const key = lineKey(line, splitOn), on = visibleSet.has(key);
+      const val = linePrimaryVal(line);
+      const extraTip = !first && line.peak != null && line.tokensPerSec != null
+        ? ` · 中位 ${line.tokensPerSec} / 峰值(P90) ${line.peak} Token/秒`
+        : '';
+      const chip = el('button', {
+        type: 'button',
+        class: 'speed-lines-chip' + (on ? ' on' : '') + (line.estimated ? ' is-est' : ''),
+        'aria-pressed': String(on),
+        'data-line': key,
+        title: `${lineMetaText(line, splitOn)} · ${number(sampleCount(line))} 次${extraTip}${line.estimated ? ' · 按会话日志时间戳估算：含首字前等待，比真实出字速度偏慢。' : ''}`,
+      }, [
         paint(el('i', { class: 'speed-lines-swatch' }), { background: colorOfLine.get(key) }),
         miniLogo(APP_SOURCE[line.app] || line.app),
-        el('span', { class: 'speed-lines-name', translate: 'no', text: lineName(line) }),
-        el('small', { translate: line.via ? 'no' : null, text: lineVia(line) }),
-        el('b', { translate: 'no', text: first ? (line.firstTokenMs == null ? '—' : secondsText(line.firstTokenMs)) : String(line.tokensPerSec) }),
+        el('span', { class: 'speed-lines-name', translate: 'no', text: lineName(line, splitOn) }),
+        el('small', { translate: line.via ? 'no' : null, text: lineMetaText(line, splitOn) }),
+        el('b', { translate: 'no', text: first ? (val == null ? '—' : secondsText(val)) : String(val) }),
       ]);
+      chip.addEventListener('pointerenter', () => { if (on) setFocusLine(key); });
+      chip.addEventListener('pointerleave', () => setFocusLine(null));
       chip.addEventListener('click', () => {
         if (on) { speedView.hidden.add(key); speedView.picked.delete(key); } else { speedView.hidden.delete(key); speedView.picked.add(key); }
         fillSpeed();
       });
       return chip;
-    }));
+    };
+
+    const shouldCollapseInactive = all.length > DEFAULT_LINES;
+    const primaryLines = shouldCollapseInactive ? visible : all;
+    const inactiveLines = shouldCollapseInactive ? all.filter(line => !visibleSet.has(lineKey(line, splitOn))) : [];
+    const legendNode = el('div', { class: 'speed-lines-legend', role: 'group', 'aria-label': '显示哪些线' }, primaryLines.map(makeChip));
+
+    let moreNode = null;
+    if (inactiveLines.length > 0) {
+      const inactiveChips = inactiveLines.map(line => {
+        const chip = makeChip(line);
+        const hay = `${lineName(line, splitOn)} ${lineMetaText(line, splitOn)} ${APP_SOURCE[line.app] || line.app}`.toLowerCase();
+        chip.dataset.searchText = hay;
+        if (speedView.filterText && !hay.includes(speedView.filterText.trim().toLowerCase())) chip.hidden = true;
+        return chip;
+      });
+      const inactiveGrid = el('div', { class: 'speed-lines-legend speed-lines-inactive-grid', role: 'group', 'aria-label': '未显示的模型' }, inactiveChips);
+      const summaryLabel = el('span', { class: 'speed-more-title' });
+      const syncSummaryText = isOpen => {
+        summaryLabel.textContent = isOpen ? `收起未显示的模型（${number(inactiveLines.length)} 个）` : `展开其余 ${number(inactiveLines.length)} 个未显示的模型`;
+      };
+      syncSummaryText(speedView.moreOpen);
+      const detailsBody = el('div', { class: 'speed-lines-more-body' });
+      if (inactiveLines.length >= 6) {
+        const filterInput = el('input', {
+          type: 'search',
+          class: 'speed-lines-filter',
+          placeholder: '搜索未显示的模型名称或工具…',
+          value: speedView.filterText,
+          'aria-label': '搜索未显示的模型',
+        });
+        filterInput.addEventListener('input', () => {
+          speedView.filterText = filterInput.value;
+          const q = speedView.filterText.trim().toLowerCase();
+          for (const chip of inactiveChips) chip.hidden = Boolean(q && !chip.dataset.searchText.includes(q));
+        });
+        detailsBody.append(filterInput);
+      }
+      detailsBody.append(inactiveGrid);
+      moreNode = el('details', { class: 'speed-lines-more', ...(speedView.moreOpen ? { open: '' } : {}) }, [
+        el('summary', { class: 'speed-lines-more-summary' }, [
+          el('span', { class: 'speed-more-arrow', 'aria-hidden': 'true', text: '▸' }),
+          summaryLabel,
+          el('small', { class: 'muted', text: '点选后自动加入上方图表' }),
+        ]),
+        detailsBody,
+      ]);
+      moreNode.addEventListener('toggle', () => {
+        speedView.moreOpen = moreNode.open;
+        syncSummaryText(moreNode.open);
+      });
+    }
+
     const appSelect = el('select', { class: 'speed-lines-app', 'aria-label': '只看哪个工具' }, [
       el('option', { value: 'all', text: '全部工具', selected: speedView.app === 'all' ? '' : null }),
       ...apps.map(app => el('option', { value: app, text: APP_SOURCE[app] || app, selected: speedView.app === app ? '' : null })),
     ]);
     appSelect.addEventListener('change', () => { speedView.app = appSelect.value; fillSpeed(); });
+
+    const effortSwitch = makeSpeedSwitch(
+      '拆分思考等级',
+      splitOn,
+      'speed-split-effort',
+      '开启后按 low / medium / high / xhigh 等思考等级分开画线；关闭时把同一模型的不同思考等级合并成一条线',
+      () => { speedView.splitEffort = !isSplitEffort(); fillSpeed(); },
+    );
+    const peakSwitch = makeSpeedSwitch(
+      '看峰值 (P90)',
+      peakOn,
+      'speed-peak-mode',
+      '开启后按每个时间段最快的 P90 水平画线，更容易观察短时提速峰值',
+      () => { speedView.peakMode = !speedView.peakMode; fillSpeed(); },
+    );
+
     const showAll = el('button', { type: 'button', class: 'text-btn', 'data-action': 'speed-lines-all', text: visible.length < all.length ? `全部显示（${all.length} 条）` : `只看前 ${Math.min(DEFAULT_LINES, all.length)} 条` });
     showAll.addEventListener('click', () => {
-      speedView.hidden.clear(); speedView.picked.clear();
-      if (visible.length < all.length) for (const line of all) speedView.picked.add(lineKey(line));
+      for (const line of all) {
+        const k = lineKey(line, splitOn);
+        speedView.hidden.delete(k);
+        speedView.picked.delete(k);
+      }
+      if (visible.length < all.length) for (const line of all) speedView.picked.add(lineKey(line, splitOn));
       fillSpeed();
     });
-    body.replaceChildren(chartHost,
-      el('div', { class: 'speed-lines-bar' }, [appSelect, el('span', { class: 'muted', text: `${number(visible.length)} / ${number(all.length)} 条线 · 图例里的数字是整段时间的中位数` }), showAll]),
+
+    const unitLabel = bucketUnitLabel(data.bucketMs);
+    const statLabel = peakOn ? 'P90 峰值' : '中位数';
+    body.replaceChildren(
+      chartHost,
+      el('div', { class: 'speed-lines-bar' }, [
+        appSelect,
+        effortSwitch,
+        peakSwitch,
+        el('span', { class: 'muted speed-lines-summary', text: `${number(visible.length)} / ${number(all.length)} 条线 · 图例里的数字是整段时间的${statLabel}` }),
+        showAll,
+      ]),
       legendNode,
-      el('p', { class: 'sample-caption', text: `${first ? '首字 = 从请求发出到回复里第一段内容（文字、思考或工具调用）出现。' : '速度 = 输出 Token ÷ 出字用的时间（含思考）。'}每个点是那段时间（${data.bucketMs <= 3600000 ? '一小时' : data.bucketMs > 86400000 ? '一周' : '一天'}）的中位数。思考等级高的，每秒 Token 数差不多，首字会慢很多。` }));
+      ...(moreNode ? [moreNode] : []),
+      el('p', { class: 'sample-caption', text: `${first ? '首字 = 从请求发出到回复里第一段内容出现。' : '速度 = 流式输出 Token ÷ 纯出字耗时（扣掉首包排队等待；虚线「≈」为日志时间戳估算）。'}每个点是那段时间（${unitLabel}）的${statLabel}，悬停图例可查看 P25–P90 波动区间带。` }),
+    );
   }
   /** 纵轴上限取个整：37 → 40，140 → 150。 */
   function niceCeil(value) {

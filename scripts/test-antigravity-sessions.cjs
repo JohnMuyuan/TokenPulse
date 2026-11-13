@@ -121,7 +121,7 @@ const summary = (id, title, nesting = 0, parentId = '') => summaries.prepare('in
     assert.strictEqual(replyMsg.firstTokenMs, 450, 'Antigravity TTFT parsed from gen_metadata field 11');
     assert.strictEqual(replyMsg.latencyEstimated, false, 'Direct measured flag is false');
     assert.strictEqual(replyMsg.model, 'gemini-4-argon');
-    assert.strictEqual(replyMsg.tokensPerSec, 300, 'Generation speed tokensPerSec is calculated (600 output tokens in 2s = 300 T/s)');
+    assert.strictEqual(replyMsg.tokensPerSec, 354.8, 'Generation speed tokensPerSec uses pure streaming phase (550 visible tokens in 1.55s = 354.8 T/s)');
     assert.equal(sessions.getSession('antigravity', SUB), null);
     pass('antigravity sessions: the detail shows user messages, replies and tool calls with their output (thinking hidden, failed tools marked)');
 

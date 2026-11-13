@@ -123,7 +123,7 @@ export type SpeedSeries = { from: number; to: number; bucketMs: number; models: 
 
 /** 透明转发记录里的工具名 → 官方账号是哪一家。 */
 const KIND_OF_APP: Record<string, OfficialAccountKind> = { claude: "claude", codex: "chatgpt", grok: "grok" };
-const HOUR = 3_600_000, DAY = 86_400_000;
+const MINUTE = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 /** 转发记录里的 tier 是不是快速模式。 */
 export const isFastTier = (tier: unknown) => tier === "priority" || tier === "fast";
 
@@ -135,15 +135,36 @@ function quantile(sorted: number[], q: number) {
 const round1 = (value: number) => Math.round(value * 10) / 10;
 function summary(speeds: number[], firsts: number[]) {
   const sorted = speeds.slice().sort((a, b) => a - b), delays = firsts.slice().sort((a, b) => a - b);
-  return { median: round1(quantile(sorted, 0.5)), low: round1(quantile(sorted, 0.25)), high: round1(quantile(sorted, 0.75)), count: sorted.length, firstCount: delays.length, firstTokenMs: delays.length ? Math.round(quantile(delays, 0.5)) : null };
+  return {
+    median: round1(quantile(sorted, 0.5)),
+    low: round1(quantile(sorted, 0.25)),
+    high: round1(quantile(sorted, 0.75)),
+    peak: round1(quantile(sorted, 0.9)),
+    count: sorted.length,
+    firstCount: delays.length,
+    firstTokenMs: delays.length ? Math.round(quantile(delays, 0.5)) : null,
+    firstLow: delays.length ? Math.round(quantile(delays, 0.25)) : null,
+    firstHigh: delays.length ? Math.round(quantile(delays, 0.75)) : null,
+    firstPeak: delays.length ? Math.round(quantile(delays, 0.9)) : null,
+  };
 }
 const earliest = (rows: { at: number }[]) => rows.reduce((at, row) => Math.min(at, row.at), Infinity);
 const latest = (rows: { at: number }[]) => rows.reduce((at, row) => Math.max(at, row.at), 0);
 const positive = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-/** 桶的起点：小时和天按本地时间对齐，周从周一开始。 */
+/** 桶的起点：分钟、小时和天按本地时间整刻对齐，周从周一开始。 */
 function bucketStart(at: number, bucketMs: number) {
   const day = new Date(at);
+  if (bucketMs < HOUR) {
+    const step = Math.max(1, Math.round(bucketMs / MINUTE));
+    day.setMinutes(Math.floor(day.getMinutes() / step) * step, 0, 0);
+    return day.getTime();
+  }
   if (bucketMs === HOUR) { day.setMinutes(0, 0, 0); return day.getTime(); }
+  if (bucketMs < DAY) {
+    const step = Math.max(1, Math.round(bucketMs / HOUR));
+    day.setHours(Math.floor(day.getHours() / step) * step, 0, 0, 0);
+    return day.getTime();
+  }
   day.setHours(0, 0, 0, 0);
   if (bucketMs > DAY) day.setDate(day.getDate() - ((day.getDay() + 6) % 7));
   return day.getTime();
@@ -212,17 +233,53 @@ export function speedSeriesOf(rows: { at: number; model: string; fast: boolean; 
 }
 
 /*
- * 全部模型的速度走势（0.3.39，用量明细里的折线图）：不分账号，透明转发和本地路由量到的都算。
- * 一条线 = 工具 + 型号 + 快速模式 + 思考等级 + 经由（官方登录 / 供应商 / 号池；号池里的几个账号合成一条，0.3.50）：
- * 同一个型号不同等级每秒 Token 数差不多，但首字差很多；不同中转站的速度也不一样，所以分开。
- * 按时间分桶（同 accountSpeed：两天以内按小时，三个月以内按天，再长按周），每个桶取速度和首字的中位数。
+ * 全部模型的速度走势（0.3.39 起，0.3.91 加密分桶 + P25/P75/P90 + 默认合并思考等级视图）：
+ * 不分账号，透明转发、本地路由及本机实测（Antigravity / DeepSeek Harness）量到的都算。
+ * - lines：按「工具 + 型号 + 快速模式 + 思考等级 + 经由」拆分（首字延迟视图或打开「拆分思考等级」开关时用）；
+ * - mergedLines：把同一型号不同思考等级合并成一条线（速度视图默认用，带 efforts 列出合并了哪些等级）。
+ * 分桶粒度：6 小时按 10 分钟、24 小时按 15 分钟、7 天按 3 小时、30 天按天、更长按周，保留短时提速波峰。
  */
-export type SpeedLine = { app: string; model: string; fast: boolean; effort: string; via: string; /** 按日志时间戳估算的（0.3.53）：标「≈」，没有首字。 */ estimated?: boolean; count: number; speedCount: number; firstCount: number; tokensPerSec: number | null; firstTokenMs: number | null; lastAt: number;
-  buckets: { at: number; tokensPerSec: number | null; firstTokenMs: number | null; count: number; speedCount: number; firstCount: number }[] };
-export type SpeedLines = { from: number; to: number; bucketMs: number; lines: SpeedLine[]; total: number };
+export type SpeedLineBucket = {
+  at: number;
+  tokensPerSec: number | null;
+  low: number | null;
+  high: number | null;
+  peak: number | null;
+  firstTokenMs: number | null;
+  firstLow: number | null;
+  firstHigh: number | null;
+  firstPeak: number | null;
+  count: number;
+  speedCount: number;
+  firstCount: number;
+};
+export type SpeedLine = {
+  app: string;
+  model: string;
+  fast: boolean;
+  effort: string;
+  efforts?: string[];
+  via: string;
+  /** 按日志时间戳估算的（0.3.53）：标「≈」，没有首字。 */
+  estimated?: boolean;
+  count: number;
+  speedCount: number;
+  firstCount: number;
+  tokensPerSec: number | null;
+  low: number | null;
+  high: number | null;
+  peak: number | null;
+  firstTokenMs: number | null;
+  firstLow?: number | null;
+  firstHigh?: number | null;
+  firstPeak?: number | null;
+  lastAt: number;
+  buckets: SpeedLineBucket[];
+};
+export type SpeedLines = { from: number; to: number; bucketMs: number; lines: SpeedLine[]; mergedLines: SpeedLine[]; total: number };
 export function speedSeries(days: number, now = Date.now(), withEstimates = true): SpeedLines {
   const since = days > 0 ? now - days * DAY : 0;
-  type Row = { at: number; key: string; app: string; model: string; fast: boolean; effort: string; via: string; speed: number; first: number; estimated?: boolean };
+  type Row = { at: number; key: string; mergeKey: string; app: string; model: string; fast: boolean; effort: string; via: string; speed: number; first: number; estimated?: boolean };
   const rows: Row[] = [];
   let files: string[] = [];
   try { files = fs.readdirSync(routeLogDir()).filter((name) => /^\d{4}-\d{2}\.jsonl$/.test(name)).sort(); } catch { /* 还没有转发记录 */ }
@@ -241,13 +298,19 @@ export function speedSeries(days: number, now = Date.now(), withEstimates = true
       if (!model) continue;
       const fast = isFastTier(row.tier), effort = typeof row.effort === "string" ? row.effort.slice(0, 20) : "";
       const via = speedVia(row);
-      rows.push({ at, key: [app, model, fast ? "fast" : "", effort, via].join("|"), app, model, fast, effort, via, speed, first });
+      rows.push({
+        at,
+        key: [app, model, fast ? "fast" : "", effort, via].join("|"),
+        mergeKey: [app, model, fast ? "fast" : "", "", via].join("|"),
+        app, model, fast, effort, via, speed, first,
+      });
     }
   }
   for (const row of measuredRequestRows(since, now)) {
     rows.push({
       at: row.at,
       key: [row.app, row.model, "", row.effort, ""].join("|"),
+      mergeKey: [row.app, row.model, "", "", ""].join("|"),
       app: row.app,
       model: row.model,
       fast: false,
@@ -257,23 +320,70 @@ export function speedSeries(days: number, now = Date.now(), withEstimates = true
       first: row.first ?? 0,
     });
   }
-  if (withEstimates) for (const row of estimatedRows(since, now)) rows.push({ at: row.at, key: [row.app, row.model, "", row.effort, "", "estimated"].join("|"), app: row.app, model: row.model, fast: false, effort: row.effort, via: "", speed: row.speed, first: 0, estimated: true });
-  if (!rows.length) return { from: since || now - 7 * DAY, to: now, bucketMs: DAY, lines: [], total: 0 };
+  if (withEstimates) for (const row of estimatedRows(since, now)) rows.push({
+    at: row.at,
+    key: [row.app, row.model, "", row.effort, "", "estimated"].join("|"),
+    mergeKey: [row.app, row.model, "", "", "", "estimated"].join("|"),
+    app: row.app, model: row.model, fast: false, effort: row.effort, via: "", speed: row.speed, first: 0, estimated: true,
+  });
+  if (!rows.length) return { from: since || now - DAY, to: now, bucketMs: 15 * MINUTE, lines: [], mergedLines: [], total: 0 };
   const from = since || earliest(rows);
   const span = now - from;
-  const bucketMs = span <= 2 * DAY ? HOUR : span <= 92 * DAY ? DAY : 7 * DAY;
-  const groups = new Map<string, Row[]>();
-  for (const row of rows) { const list = groups.get(row.key) ?? []; list.push(row); groups.set(row.key, list); }
-  const lines = [...groups.values()].map((list): SpeedLine => {
-    const { app, model, fast, effort, via, estimated } = list[0];
-    const byBucket = new Map<number, Row[]>();
-    for (const row of list) { const start = bucketStart(row.at, bucketMs); const bucket = byBucket.get(start) ?? []; bucket.push(row); byBucket.set(start, bucket); }
-    const buckets = [...byBucket.entries()].sort((a, b) => a[0] - b[0]).map(([at, bucket]) => {
-      const s = summary(bucket.map((row) => row.speed).filter(value => value > 0), bucket.map((row) => row.first).filter((value) => value > 0));
-      return { at, tokensPerSec: s.count ? s.median : null, firstTokenMs: s.firstTokenMs, count: bucket.length, speedCount: s.count, firstCount: s.firstCount };
-    });
-    const all = summary(list.map((row) => row.speed).filter(value => value > 0), list.map((row) => row.first).filter((value) => value > 0));
-    return { app, model, fast, effort, via, ...(estimated ? { estimated: true } : {}), count: list.length, speedCount: all.count, firstCount: all.firstCount, tokensPerSec: all.count ? all.median : null, firstTokenMs: all.firstTokenMs, lastAt: latest(list), buckets };
-  }).sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
-  return { from: bucketStart(from, bucketMs), to: now, bucketMs, lines, total: rows.length };
+  const bucketMs = span <= 6.5 * HOUR ? 10 * MINUTE : span <= 2 * DAY ? 15 * MINUTE : span <= 8 * DAY ? 3 * HOUR : span <= 92 * DAY ? DAY : 7 * DAY;
+  const build = (splitEffort: boolean): SpeedLine[] => {
+    const groups = new Map<string, Row[]>();
+    for (const row of rows) {
+      const k = splitEffort ? row.key : row.mergeKey;
+      const list = groups.get(k);
+      if (list) list.push(row); else groups.set(k, [row]);
+    }
+    return [...groups.values()].map((list): SpeedLine => {
+      const { app, model, fast, via, estimated } = list[0];
+      const effort = splitEffort ? list[0].effort : "";
+      const efforts = splitEffort ? undefined : [...new Set(list.map((r) => r.effort).filter(Boolean))];
+      const byBucket = new Map<number, Row[]>();
+      for (const row of list) {
+        const start = bucketStart(row.at, bucketMs);
+        const bucket = byBucket.get(start);
+        if (bucket) bucket.push(row); else byBucket.set(start, [row]);
+      }
+      const buckets = [...byBucket.entries()].sort((a, b) => a[0] - b[0]).map(([at, bucket]): SpeedLineBucket => {
+        const s = summary(bucket.map((row) => row.speed).filter((value) => value > 0), bucket.map((row) => row.first).filter((value) => value > 0));
+        return {
+          at,
+          tokensPerSec: s.count ? s.median : null,
+          low: s.count ? s.low : null,
+          high: s.count ? s.high : null,
+          peak: s.count ? s.peak : null,
+          firstTokenMs: s.firstTokenMs,
+          firstLow: s.firstLow,
+          firstHigh: s.firstHigh,
+          firstPeak: s.firstPeak,
+          count: bucket.length,
+          speedCount: s.count,
+          firstCount: s.firstCount,
+        };
+      });
+      const all = summary(list.map((row) => row.speed).filter((value) => value > 0), list.map((row) => row.first).filter((value) => value > 0));
+      return {
+        app, model, fast, effort, via,
+        ...(efforts && efforts.length ? { efforts } : {}),
+        ...(estimated ? { estimated: true } : {}),
+        count: list.length,
+        speedCount: all.count,
+        firstCount: all.firstCount,
+        tokensPerSec: all.count ? all.median : null,
+        low: all.count ? all.low : null,
+        high: all.count ? all.high : null,
+        peak: all.count ? all.peak : null,
+        firstTokenMs: all.firstTokenMs,
+        firstLow: all.firstLow,
+        firstHigh: all.firstHigh,
+        firstPeak: all.firstPeak,
+        lastAt: latest(list),
+        buckets,
+      };
+    }).sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
+  };
+  return { from: bucketStart(from, bucketMs), to: now, bucketMs, lines: build(true), mergedLines: build(false), total: rows.length };
 }

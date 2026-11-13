@@ -43,7 +43,7 @@ const check = async (name, fn) => { try { await fn(); console.log('PASS ' + name
         vm.runInContext(source, context);
         const { speedView, loadSpeedLines } = context.window.audit;
         loadSpeedLines(); speedView.range = '7'; loadSpeedLines(true);
-        assert.deepEqual(requests.map(x => x.days), [0, 7]);
+        assert.deepEqual(requests.map(x => x.days), [1, 7]);
         requests[1].resolve({ tag: 'SEVEN', lines: [] }); await new Promise(r => setImmediate(r));
         if (rejectOld) requests[0].reject(new Error('old range failed')); else requests[0].resolve({ tag: 'ALL', lines: [] });
         await new Promise(r => setImmediate(r));

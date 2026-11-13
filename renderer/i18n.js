@@ -2895,6 +2895,23 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.91 更新说明与模型速度走势新增文案
+    '重做「模型速度走势」：默认 24 小时细粒度曲线、波峰校准与折叠图例': 'Redesigned “Model speed over time”: default 24h fine-grained curves, calibrated peaks, and collapsible legend',
+    '速度走势与各账号模型速度默认改为「24 小时」，新增 6 小时档位，并将 24 小时加密为 15 分钟分桶、7 天加密为 3 小时分桶；校准 Antigravity 流式出字速度（扣掉首包排队与短工具包噪声），短时提速波峰清晰可见。折线改为空闲断档 + 平滑曲线 + P25–P90 波动区间带；看速度默认合并同一模型的不同思考等级（带「拆分思考等级」和「看峰值 (P90)」开关），未显示的模型自动折叠收起。': 'Speed trends and per-account model speed now default to 24 hours, add a 6-hour range, and use finer 15-minute buckets for 24h and 3-hour buckets for 7d. Antigravity streaming speed is calibrated to exclude initial queue wait and short buffered tool noise so speed bursts stand out clearly. Charts now break across idle gaps with smooth curves and P25–P90 bands; speed view merges reasoning efforts by default (with toggles for splitting efforts and viewing P90 peaks) and collapses hidden models.',
+    '6 小时': '6 hours',
+    '拆分思考等级': 'Split effort levels',
+    '看峰值 (P90)': 'Peak (P90)',
+    '点选后自动加入上方图表': 'Click any model to add it to the chart above',
+    '未显示的模型': 'Hidden models',
+    '搜索未显示的模型': 'Search hidden models',
+    '搜索未显示的模型名称或工具…': 'Search hidden model names or tools…',
+    '看最近 24 小时': 'View last 24 hours',
+    '看最近 7 天': 'View last 7 days',
+    '看全部记录': 'View all records',
+    '经过 TokenPulse 转发与本机实测（Antigravity、DeepSeek Harness）量到的真实流式速度。看速度时默认把同一型号的不同思考等级合成一条线，切到「首字」自动拆开，也可随时点下方开关切换；未经过转发的请求按会话日志估算并标「≈」。': 'True streaming speed measured via TokenPulse routing and local logs (Antigravity, DeepSeek Harness). Speed view merges reasoning efforts of the same model by default, splits them automatically on First token, or lets you toggle anytime below; unforwarded requests are estimated from session logs and marked “≈”.',
+    '这段时间还没有量到速度。可以切到更长的时间段查看，或在供应商页打开「透明转发」、使用本地路由后再看走势。': 'No speed measured in this period yet. Switch to a longer range, or turn on pass-through / local routing on the Providers page.',
+    '首字 = 从请求发出到回复里第一段内容出现。': 'First token = time from sending the request until the first reply content appears.',
+    '速度 = 流式输出 Token ÷ 纯出字耗时（扣掉首包排队等待；虚线「≈」为日志时间戳估算）。': 'Speed = streamed output tokens ÷ pure generation time (excluding initial queue wait; dashed “≈” lines are log-timestamp estimates).',
     // 0.3.90 更新说明
     '适配 Antigravity 的 Orchestrator 模式，不再误报「型号不一致」': 'Adapt to Antigravity Orchestrator mode without false “Model mismatch” alerts',
     '在 Antigravity 里用 Orchestrator（Carbon / Argon）时，规划器返回 gemini-pro-orchestrator、执行子代理返回 gemini-flash-worker-agy，以前会被当成换了型号并反复提醒。现在识别为官方内部型号名，补齐费用估算与 Gemini 额度池归组；之前的记录也会自动改判和重算。': 'When using Orchestrator (Carbon / Argon) in Antigravity, the planner returns gemini-pro-orchestrator and worker subagents return gemini-flash-worker-agy, which used to trigger repeated model-mismatch alerts. These are now recognized as official internal model names, with pricing estimates and Gemini quota pool grouping filled in; earlier records are re-judged and rescanned automatically.',
@@ -3490,12 +3507,20 @@
     P('(第一发请求|第二发请求)返回了 200，但(.+?)（官方过载或额度用尽时会这样），这次无法判断(?:：(.+))?', m => `The ${m[1] === '第一发请求' ? 'first' : 'second'} request returned 200 but the reply did not finish normally (this happens when the service is overloaded or quota is exhausted), so this check is inconclusive${m[3] ? ': ' + m[3] : ''}`),
     P('请求超时（(\\d+) 秒内没有完成）', m => `The request timed out (not finished within ${m[1]} s)`),
     P('请求没有发成功（网络或代理异常）(?:：(.+))?', m => `The request could not be sent (network or proxy problem)${m[1] ? ': ' + m[1] : ''}`),
-    // 模型速度走势（0.3.39）
+    // 模型速度走势（0.3.39 / 0.3.91）
+    P('每个点是那段时间（(一小时|一天|一周|\\d+ 分钟|\\d+ 小时)）的(中位数|P90 峰值)，悬停图例可查看 P25–P90 波动区间带。', m => {
+      const unitMap = { '一小时': 'hour', '一天': 'day', '一周': 'week' };
+      const u = unitMap[m[1]] || m[1].replace(' 分钟', '-min').replace(' 小时', '-hour');
+      return `Each point is the ${m[2] === 'P90 峰值' ? 'P90 peak' : 'median'} of that ${u} window; hover a legend item to reveal the P25–P90 band.`;
+    }),
     P('每个点是那段时间（(一小时|一天|一周)）的中位数。', m => `Each point is the median of that ${({ 一小时: 'hour', 一天: 'day', 一周: 'week' })[m[1]]}.`),
     P('(\\d+) / (\\d+) 条线', m => `${m[1]} / ${m[2]} lines`),
     P('全部显示（(\\d+) 条）', m => `Show all (${m[1]})`),
     P('只看前 (\\d+) 条', m => `Top ${m[1]} only`),
-    P('图例里的数字是整段时间的中位数', () => 'legend numbers are medians over the whole period'),    // 全年活跃度（0.3.38）
+    P('图例里的数字是整段时间的(中位数|P90 峰值)', m => `legend numbers are ${m[1] === 'P90 峰值' ? 'P90 peaks' : 'medians'} over the whole period`),
+    P('展开其余 (' + N + ') 个未显示的模型', m => `Show ${m[1]} more hidden models`),
+    P('收起未显示的模型（(' + N + ') 个）', m => `Hide unused models (${m[1]})`),
+    P('(.+) · 含 (.+)', m => `${v(m[1])} · incl. ${m[2]}`),    // 全年活跃度（0.3.38）
     P(N + ' 天有用量', m => `${m[1]} active days`),
     P('(\\d{4}) 年', m => m[1]),
     P('(最近一年|\\d{4} 年)每天的用量：' + N + ' 天有用量', m => `Daily usage, ${m[1] === '最近一年' ? 'recent year' : m[1].slice(0, 4)}: ${m[2]} active days`),
