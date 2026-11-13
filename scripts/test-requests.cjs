@@ -72,6 +72,19 @@ try {
   check("别家型号不去等级后缀", normalizeModel("gpt-5.4-high") === "gpt-5.4-high");
   const agWrong = verifyRequest({ kind: "antigravity", requested: "claude-opus-5-5", returned: "claude-sonnet-5-medium" });
   check("Antigravity：请求 opus、返回 sonnet（带等级）仍判不一致", agWrong.status === "mismatch");
+  const agOrchCarbon = verifyRequest({ kind: "antigravity", requested: "orchestrator-carbon", returned: "gemini-pro-orchestrator" });
+  const agOrchArgon = verifyRequest({ kind: "antigravity", requested: "orchestrator-argon", returned: "gemini-pro-orchestrator" });
+  const agOrchLegacy = verifyRequest({ kind: "antigravity", requested: "orchestrator", returned: "gemini-pro-orchestrator" });
+  check("Antigravity：Orchestrator (Carbon / Argon / 旧 orchestrator) → gemini-pro-orchestrator 算一致并注明内部型号名",
+    agOrchCarbon.status === "match" && agOrchArgon.status === "match" && agOrchLegacy.status === "match" &&
+    agOrchCarbon.reasons.some((r) => /内部型号名/.test(r) && /gemini-pro-orchestrator/.test(r)),
+    JSON.stringify(agOrchCarbon));
+  const agWorker = verifyRequest({ kind: "antigravity", requested: "gemini-flash", returned: "gemini-flash-worker-agy" });
+  check("Antigravity：gemini-flash → gemini-flash-worker-agy 算一致并注明内部型号名",
+    agWorker.status === "match" && agWorker.reasons.some((r) => /内部型号名/.test(r) && /gemini-flash-worker-agy/.test(r)),
+    JSON.stringify(agWorker));
+  const agOrchMismatch = verifyRequest({ kind: "antigravity", requested: "orchestrator-carbon", returned: "gemini-flash-worker-agy" });
+  check("Antigravity：请求 orchestrator-carbon、返回 gemini-flash-worker-agy 仍判不一致", agOrchMismatch.status === "mismatch");
   const swapped = verifyRequest({ kind: "claude-code", requested: "claude-opus-5[1m]", returned: "claude-sonnet-5", responseId: official(1), requestId: req(1), official: false });
   check("请求 opus、返回 sonnet → 型号不一致", swapped.status === "mismatch" && /claude-opus-5\[1m\].*claude-sonnet-5/.test(swapped.reasons[0]), swapped.reasons[0]);
   const disguised = verifyRequest({ kind: "claude-code", requested: "claude-opus-5", returned: "claude-opus-5", responseId: "resp_" + "0".repeat(50), official: false });

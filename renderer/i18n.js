@@ -2895,6 +2895,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.90 更新说明
+    '适配 Antigravity 的 Orchestrator 模式，不再误报「型号不一致」': 'Adapt to Antigravity Orchestrator mode without false “Model mismatch” alerts',
+    '在 Antigravity 里用 Orchestrator（Carbon / Argon）时，规划器返回 gemini-pro-orchestrator、执行子代理返回 gemini-flash-worker-agy，以前会被当成换了型号并反复提醒。现在识别为官方内部型号名，补齐费用估算与 Gemini 额度池归组；之前的记录也会自动改判和重算。': 'When using Orchestrator (Carbon / Argon) in Antigravity, the planner returns gemini-pro-orchestrator and worker subagents return gemini-flash-worker-agy, which used to trigger repeated model-mismatch alerts. These are now recognized as official internal model names, with pricing estimates and Gemini quota pool grouping filled in; earlier records are re-judged and rescanned automatically.',
     // 0.3.89 更新说明
     'Antigravity 换上自己的图标，更多工具和供应商有了图标': 'Antigravity gets its own icon, and more tools and providers have icons',
     'Antigravity 不再借用 Gemini 的四角星；从 CC Switch 导入的 Gemini CLI、OpenCode、Hermes、Copilot CLI 不再只显示首字母。供应商头像新增 OpenRouter、硅基流动、MiniMax、Mistral、Groq、阶跃星辰、小米 MiMo，新建时按名称和地址自动认出。': 'Antigravity no longer borrows Gemini’s sparkle; Gemini CLI, OpenCode, Hermes and Copilot CLI imported from CC Switch no longer show just a letter. Provider avatars add OpenRouter, SiliconFlow, MiniMax, Mistral, Groq, StepFun and Xiaomi MiMo, recognized automatically by name and address.',

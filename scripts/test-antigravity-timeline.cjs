@@ -92,6 +92,46 @@ try {
   assert.deepEqual(t3.windows.map(w => w.id), ['five', 'week']);
   pass('without quota groups it falls back to the plain 5-hour + weekly cards');
 
+  // Orchestrator 归组、缓存旧记录自动修正（orchestrator + effort=carbon -> orchestrator-carbon 无 effort）、modelCapacities 不重复出空幻影项
+  const GO = 'Gemini 3.8 Flash|Gemini 4 Argon|Orchestrator';
+  fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+    last: {
+      at: now - 60_000, ok: true, plan: 'Pro',
+      groups: [
+        { key: GO, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash', 'Orchestrator'], used: 15, resetAt: iso(gFive), week: { used: 20, resetAt: iso(gWeek) } },
+        { key: C, title: 'Claude and GPT models', models: ['Claude Opus 5.5', 'Claude Sonnet 5.5', 'GPT-OSS 120B'], used: 55, resetAt: iso(cFive), week: { used: 40, resetAt: iso(cWeek) } },
+      ],
+      models: [
+        { label: 'Gemini 4 Argon (High)', family: 'Gemini 4 Argon', model: 'gemini-4-argon', effort: 'high', used: 15, resetAt: iso(gFive) },
+        { label: 'Orchestrator (Carbon)', family: 'Orchestrator', model: 'orchestrator', effort: 'carbon', used: 15, resetAt: iso(gFive) },
+        { label: 'Orchestrator (Argon)', family: 'Orchestrator', model: 'orchestrator', effort: 'argon', used: 15, resetAt: iso(gFive) },
+      ],
+    },
+    history: [
+      { at: now - HOUR, groups: [{ key: GO, used: 10, resetAt: iso(gFive), weekUsed: 19, weekResetAt: iso(gWeek) }, { key: C, used: 50, resetAt: iso(cFive), weekUsed: 39, weekResetAt: iso(cWeek) }] },
+      { at: now - 10 * 60_000, groups: [{ key: GO, used: 15, resetAt: iso(gFive), weekUsed: 20, weekResetAt: iso(gWeek) }, { key: C, used: 55, resetAt: iso(cFive), weekUsed: 40, weekResetAt: iso(cWeek) }] },
+    ],
+    notified: {},
+  }));
+  const qOrch = new AntigravityQuota({ now: () => now, fetcher: async () => null });
+  qOrch.recentRows = () => [
+    ...rows,
+    { at: now - 25 * 60_000, model: 'orchestrator-carbon', effort: '', tokens: 1200, calls: 1, costUsd: 0.01, input: 1200, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, source: 'Antigravity', kind: 'antigravity' },
+  ];
+  const insOrch = qOrch.buildInsight(now);
+  const g0Items = insOrch.groups[0].items.filter(m => m.model.startsWith('orchestrator'));
+  assert.deepEqual(g0Items.map(m => [m.family, m.model, m.effort]), [
+    ['Orchestrator (Carbon)', 'orchestrator-carbon', undefined],
+    ['Orchestrator (Argon)', 'orchestrator-argon', undefined],
+  ], 'buildInsight automatically upgrades cached Orchestrator items and removes fake effort');
+  assert.ok(!insOrch.modelCapacities.some(c => c.model === 'orchestrator'), 'no phantom bare orchestrator row in modelCapacities');
+  const capCarbon = insOrch.modelCapacities.find(c => c.model === 'orchestrator-carbon');
+  assert.ok(capCarbon && capCarbon.effort === '' && capCarbon.usdPerMTokens != null, 'orchestrator-carbon has empty effort and valid pricing in modelCapacities');
+  const tOrch = qOrch.timeline({});
+  assert.ok([...new Set(tOrch['g0-five'].timeline.map(b => b.model))].includes('orchestrator-carbon'), 'orchestrator-carbon rows appear in Gemini pool timeline');
+  assert.ok(![...new Set(tOrch['g1-five'].timeline.map(b => b.model))].includes('orchestrator-carbon'), 'orchestrator-carbon does not leak into Claude/GPT pool');
+  pass('orchestrator rows stay in Gemini pool and cached quota models upgrade cleanly');
+
   console.log(`\n${checks}/${checks} antigravity timeline checks passed`);
 } catch (error) {
   console.error(error);

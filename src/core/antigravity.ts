@@ -198,17 +198,37 @@ export function rememberModelLabels(labels: Record<string, string>) {
   const merged = { ...before, ...labels };
   if (JSON.stringify(merged) !== JSON.stringify(before)) writeJson(labelFile(), { labels: merged });
 }
+const LABEL_EFFORTS = new Set([
+  "thinking", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+  "none", "auto", "adaptive", "enabled", "disabled",
+]);
 const splitLabelMemo = new Map<string, { model: string; family: string; effort?: string }>();
 export function splitModelLabel(label: string): { model: string; family: string; effort?: string } {
   const cached = splitLabelMemo.get(label);
   if (cached) return cached;
-  const match = label.trim().match(/^(.*?)\s*\(([^)]+)\)\s*$/);
-  const family = (match ? match[1] : label).trim();
-  let id = family.toLowerCase().replace(/\s+/g, "-");
+  const trimmed = label.trim();
+  const match = trimmed.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+  const rawParen = match?.[2].trim().toLowerCase();
+  const isEffort = Boolean(rawParen && LABEL_EFFORTS.has(rawParen));
+  let family: string;
+  let id: string;
+  let effort: string | undefined;
+  if (match && isEffort) {
+    family = match[1].trim();
+    id = family.toLowerCase().replace(/\s+/g, "-");
+    effort = rawParen === "thinking" ? "high" : rawParen;
+  } else if (match) {
+    // 括号里不是思考档位（如 Orchestrator (Carbon) / Orchestrator (Argon)）：属于子型号变体，不记思考等级
+    family = trimmed;
+    const baseId = match[1].trim().toLowerCase().replace(/\s+/g, "-");
+    const subId = rawParen!.replace(/\s+/g, "-");
+    id = `${baseId}-${subId}`;
+  } else {
+    family = trimmed;
+    id = family.toLowerCase().replace(/\s+/g, "-");
+  }
   // Anthropic 的型号 ID 用短横线分版本（claude-opus-5-5），和 Claude Code 记的对上
   if (id.startsWith("claude-")) id = id.replace(/\./g, "-");
-  const rawEffort = match?.[2].trim().toLowerCase();
-  const effort = rawEffort === "thinking" ? "high" : rawEffort;
   const out = { model: id, family, ...(effort ? { effort } : {}) };
   if (splitLabelMemo.size > 256) splitLabelMemo.clear();
   splitLabelMemo.set(label, out);
@@ -1204,7 +1224,7 @@ type ParsedSummaryGroup = {
 };
 
 function poolCategory(family: string): string {
-  if (/gemini/i.test(family)) return "gemini";
+  if (/gemini|orchestrator/i.test(family)) return "gemini";
   if (/claude|gpt|anthropic|openai/i.test(family)) return "3p";
   return family.toLowerCase();
 }
@@ -1268,7 +1288,7 @@ function sameResetTime(a?: string, b?: string, maxDiffMs = 10_000): boolean {
 
 function matchSummaryGroup(family: string, used: number, resetAt: string | undefined, summaryGroups: ParsedSummaryGroup[]): ParsedSummaryGroup | undefined {
   if (!summaryGroups.length) return undefined;
-  if (/gemini/i.test(family)) {
+  if (/gemini|orchestrator/i.test(family)) {
     const byFamily = summaryGroups.find(
       (sg) => /gemini/i.test(sg.title) || /gemini/i.test(sg.description) || sg.bucketIds.some((id) => /gemini/i.test(id)),
     );
@@ -1322,8 +1342,9 @@ export function parseAntigravityStatus(json: unknown, summaryJson?: unknown): Ag
     const used = Math.round((1 - remaining) * 1000) / 10;
     const resetAt = typeof quota.resetTime === "string" && quota.resetTime ? quota.resetTime : undefined;
     const { model, family, effort } = splitModelLabel(label);
-    const matched = matchSummaryGroup(family, used, resetAt, summaryGroups);
-    const key = matched ? `sg:${matched.idx}` : `${poolCategory(family)}|${remaining}|${resetAt ?? ""}`;
+    const groupFamily = modelFamily(label);
+    const matched = matchSummaryGroup(groupFamily, used, resetAt, summaryGroups);
+    const key = matched ? `sg:${matched.idx}` : `${poolCategory(groupFamily)}|${remaining}|${resetAt ?? ""}`;
     const groupUsed = matched?.five ? matched.five.used : used;
     const groupResetAt = matched?.five?.resetAt ?? resetAt;
     const group = groups.get(key) ?? {
@@ -1333,7 +1354,7 @@ export function parseAntigravityStatus(json: unknown, summaryJson?: unknown): Ag
       ...(groupResetAt ? { resetAt: groupResetAt } : {}),
       ...(matched?.week ? { week: matched.week } : {}),
     };
-    if (!group.models.includes(family)) group.models.push(family);
+    if (!group.models.includes(groupFamily)) group.models.push(groupFamily);
     groups.set(key, group);
     models.push({
       label,

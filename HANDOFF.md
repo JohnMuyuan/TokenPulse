@@ -1,4 +1,36 @@
-# 当前接手入口 · TokenPulse v0.3.89 正式发布（补齐品牌图标，2026-11-10）
+# 当前接手入口 · TokenPulse v0.3.90 正式发布（Google Antigravity Orchestrator 模式适配，2026-11-12）
+
+## 发布状态 · v0.3.90
+
+- **版本**：`0.3.90`（用户 2026-11-12 要求「做一下谷歌 Orchestrator 适配并直接发布新版本到 GitHub」）。发布前 `git merge --ff-only origin/main` 合入了 bot 的知识库自动更新 `88862ab` / `56d4f22`（`knowledge/models.json` 至 `2026.11.12`）。`renderer/intro.js` 加 `0.3.90` 更新说明 1 条（`check` 图标），`renderer/i18n.js` 补英文。
+- **问题根因**：
+  - Antigravity 开启 `Orchestrator (Carbon)` / `Orchestrator (Argon)`（规划器内部型号 `gemini-pro-orchestrator`）与执行子代理（`label: "Gemini Flash"`，内部型号 `gemini-flash-worker-agy`）时：
+    1. `normalizeModel` 未抹平 `gemini-pro-orchestrator` 与 `orchestrator-*`，以及 `gemini-flash-worker-agy` 与 `gemini-flash`，导致每次规划器/子代理调用都误报「型号不一致」并频繁触发异常提醒；
+    2. `splitModelLabel` 把括号里的子型号名 `(Carbon)` / `(Argon)` 当成思考等级（`effort: "carbon"` / `"argon"`），且把两个 Orchestrator 变体都塌缩成裸 `orchestrator`；
+    3. `knowledge/manual.json` 兜底表仅匹配 `gemini`，导致 `orchestrator*` 显示「未定价」。
+- **主要改动**：
+  - `src/core/request-verify.ts`：`normalizeModel()` 将 `gemini-*-worker(?:-agy)?` 归一为基名（如 `gemini-flash`），将 `gemini-*-orchestrator` / `orchestrator-(carbon|argon|hydrogen|pro)` 归一为 `orchestrator`，跨型号（如 `orchestrator-carbon` 返回 `gemini-flash-worker-agy`）仍判不一致；`verifyRequest` 自动复用内部型号名说明及 `i18n.js` 英文正则翻译。
+  - `src/core/antigravity.ts`：`splitModelLabel()` 仅对已知思考等级词（`LABEL_EFFORTS`）提取 `effort`；非思考等级括号后缀（如 `Orchestrator (Carbon)` / `(Argon)`）保留完整 `family` 并生成 `orchestrator-carbon` / `orchestrator-argon` 且不设 `effort`。`parseAntigravityStatus()`、`poolCategory()`、`matchSummaryGroup()` 将 Orchestrator 归入 Gemini 池，并保留 `group.models` 里的 `modelFamily(label)`（`"Orchestrator"`）以保持历史 `group.key` 不变。
+  - `src/core/usage-scan.ts` / `src/core/sessions.ts`：`ANTIGRAVITY_STATE_VERSION` 升至 `5`、`INDEX_VERSION` 升至 `7`，自动重扫本地已有 Orchestrator 对话记录与会话索引。
+  - `src/main/antigravity-quota.ts` / `renderer/antigravity-quota.js`：`groupMatchesModel`、`quotaShare`、`isMixedPoolModels` 支持 `orchestrator` 归入 Gemini 池；`buildInsight` 对缓存的 `stored.last.models` 自动升级剥离旧的假 `effort`；`buildModelCapacities` 跳过幻影裸 `orchestrator` 行，渲染页无 `effort` 时不显示思考等级徽章。
+  - `src/core/model-pricing.ts` / `knowledge/manual.json` / `knowledge/models.json`：为 `orchestrator` 补齐 Gemini Pro 价位兜底与 aliases 规则（`models.json` 同步到 `2026.11.12.1`）。
+- **发版前验证**：
+  - `npm run build` PASS；
+  - Node：`test-requests` 73/73、`test-antigravity-usage` 11/11、`test-antigravity-sessions` 5/5、`test-antigravity-timeline` 7/7、`test-antigravity-capacity` 2/2、`test-knowledge-update` PASS、`test-final-model` 3/3、`test-features` 46/46；
+  - Electron：`test-antigravity-ui` 7/7、`test-intro-ui` 3/3，全 PASS。
+- **打包与句柄检查**：
+  - `npm run dist` PASS；`@electron/asar` 校验 `app.asar` 含 `'0.3.90'`、`'2026.11.12.1'`、`orchestrator`、`worker(?:-agy)?`、`LABEL_EFFORTS`。
+  - `dist/TokenPulse-0.3.90-Setup.exe`（112828506 B，SHA256 `081B07F04AE552DED5785894F470F553FC2DF150EE01F13FF3B83BBFD25E412D`）
+  - `dist/TokenPulse-0.3.90-Portable.exe`（112571288 B，SHA256 `87AF1DC5D1EF184A24C07E2B584A9217A43A7B807A233003EC789783FD3D8183`）
+  - `dist/TokenPulse-0.3.90-Setup.exe.blockmap`（120002 B，SHA256 `7D07AD2289204891C2B9BF438208DEAE17BB459F6C0A092E4D6EA91D5F365DFA`）
+  - `dist/latest.yml`（352 B，version `0.3.90`，SHA256 `991230D2987F92A531AF1CEB94A8E1184A1DE16A8E45F7156313B58C0A15135A`）
+  - 上述 4 项及 `dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar`、`build/main/index.js` 独占打开关闭句柄检查均为 `UNLOCKED`；无残留测试或打包子进程（用户本机已安装运行的 `TokenPulse.exe` 未动）。
+  - 未纳入提交：`clawd-pet-extracted/`（工作区已有未跟踪目录，未动）。
+- **Git / GitHub 状态**：待提交、打标并发布 Release `v0.3.90`。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.89 正式发布（补齐品牌图标，2026-11-10）
 
 ## 发布状态 · v0.3.89
 

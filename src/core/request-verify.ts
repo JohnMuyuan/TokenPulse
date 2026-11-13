@@ -51,7 +51,8 @@ export type VerifyResult = {
  * - `[1m]` / `[1M]`：Claude Code 标记 1M 上下文，请求里有、响应里没有；
  * - 日期后缀：`claude-opus-4-8-20260315`、`gpt-5.4-2026-03-05`；
  * - 云厂商前缀 / 后缀：`us.anthropic.claude-…-v1:0`（Bedrock）、`claude-…@20260315`（Vertex）；
- * - Grok Build 的 `-build`：请求 `grok-4.6`、响应 `grok-4.6-build`，是 xAI 给 Grok Build 用的同一型号（本机 45 轮全是这样）。
+ * - Grok Build 的 `-build`：请求 `grok-4.6`、响应 `grok-4.6-build`，是 xAI 给 Grok Build 用的同一型号（本机 45 轮全是这样）；
+ * - Antigravity 的内部型号名 / 后缀：`gemini-*-b/-n/-tiered`、`gemini-flash-worker-agy`（对应 `gemini-flash`）、`gemini-pro-orchestrator`（对应 `orchestrator-carbon` 等）。
  */
 export function normalizeModel(model: string) {
   let out = model.trim().toLowerCase();
@@ -61,7 +62,8 @@ export function normalizeModel(model: string) {
   out = out.replace(/\s*·\s*tokenpulse$/i, "").replace(/\s+/g, "-");
   return out
     .replace(/^(grok-[\d.]+)-build$/, "$1")
-    .replace(/^(gemini-[\w.-]+?)-(?:b|n)$/, "$1")
+    .replace(/^(gemini-[\w.-]+?)-(?:b|n|tiered|worker(?:-agy)?)$/, "$1")
+    .replace(/^(?:gemini-(?:[\w.-]+-)?)?orchestrator(?:-\(?(?:carbon|argon|hydrogen|pro)\)?)?$/, "orchestrator")
     .replace(CLAUDE_EFFORT_SUFFIX, "$1");
 }
 

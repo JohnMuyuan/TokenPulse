@@ -1197,7 +1197,7 @@ function scanFile(
  * 费用交给统计时按型号估；不归任何官方账号（Antigravity 的额度按模型分组单独看，见 quota.ts）。
  * 型号就是请求的型号，没有上游返回的型号，核验显示无法核对。
  */
-const ANTIGRAVITY_STATE_VERSION = 4;
+const ANTIGRAVITY_STATE_VERSION = 5;
 
 /** 之前没对上显示名的型号，现在有标签了：这个对话要整份重算一遍，型号和档位才对。 */
 export function antigravityNeedsRelabel(state: FileState, labels: Record<string, string>) {

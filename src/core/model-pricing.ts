@@ -28,7 +28,11 @@ export type ModelPrice = {
 export function priceOf(modelId: string): ModelPrice | null {
   const id = (modelId || "").trim();
   if (!id) return null;
-  for (const row of priceRules()) if (row.test.test(id)) return row.price;
+  const rules = priceRules();
+  for (const row of rules) if (row.test.test(id)) return row.price;
+  if (/orchestrator/i.test(id)) {
+    for (const row of rules) if (row.test.test("gemini-pro")) return row.price;
+  }
   return null;
 }
 

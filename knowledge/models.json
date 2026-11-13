@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.11.12",
-  "updatedAt": "2026-11-12T08:26:43.611Z",
+  "version": "2026.11.12.1",
+  "updatedAt": "2026-11-12T19:25:00.000Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。 labels：给型号打标签（promo 优惠价、until 到期日 YYYY-MM-DD、note 说明），到期自动去掉；pinned 规则也可以带 until。",
   "prices": [
     {
@@ -1786,12 +1786,12 @@
       "note": "Gemini Flash"
     },
     {
-      "match": "gemini",
+      "match": "gemini|orchestrator",
       "input": 1.25,
       "output": 10,
       "cacheRead": 0.31,
       "cacheWrite": 0,
-      "note": "Gemini Pro"
+      "note": "Gemini Pro（含 Antigravity Orchestrator）"
     },
     {
       "match": "deepseek",
@@ -1858,9 +1858,14 @@
       "note": "Grok Build 用的是同一型号的 -build 变体"
     },
     {
-      "match": "^(gemini-[\\w.-]+?)-(?:b|n|tiered)$",
+      "match": "^(gemini-[\\w.-]+?)-(?:b|n|tiered|worker(?:-agy)?)$",
       "replace": "$1",
-      "note": "Antigravity 内部 Gemini 型号后缀（如 gemini-4-argon-b、gemini-3.8-flash-n、gemini-3.8-flash-tiered）"
+      "note": "Antigravity 内部 Gemini 型号后缀（如 gemini-4-argon-b、gemini-3.8-flash-n、gemini-3.8-flash-tiered、gemini-flash-worker-agy）"
+    },
+    {
+      "match": "^(?:gemini-(?:[\\w.-]+-)?)?orchestrator(?:-\\(?(?:carbon|argon|hydrogen|pro)\\)?)?$",
+      "replace": "orchestrator",
+      "note": "Antigravity Orchestrator 规划器与选项名（如 Orchestrator (Carbon) → gemini-pro-orchestrator）"
     }
   ],
   "capabilities": {

@@ -154,7 +154,7 @@
     if (!row || row.source !== 'Antigravity' || !(row.tokens > 0)) return null;
     const gList = insight()?.groups || [];
     const model = String(row.model || row.requested || '').toLowerCase();
-    const g = gList.find(item => item.items?.some(m => m.model === model) || ( /gemini/i.test(model) && item.models.some(m => /gemini/i.test(m)) ) || ( /claude|gpt/i.test(model) && item.models.some(m => /claude|gpt/i.test(m)) ));
+    const g = gList.find(item => item.items?.some(m => m.model === model || model.startsWith(m.model + '-')) || (/gemini|orchestrator/i.test(model) && item.models.some(m => /gemini|orchestrator/i.test(m))) || (/claude|gpt/i.test(model) && item.models.some(m => /claude|gpt/i.test(m))));
     if (!g) return null;
     const fiveCap = g.five?.capacity?.fullTokens;
     const weekCap = g.week?.capacity?.fullTokens;
@@ -607,7 +607,7 @@
             el('div', { class: 'ms-name-text' }, [
               el('div', { class: 'ms-name-top' }, [
                 el('b', { text: row.family, title: row.model, translate: 'no' }),
-                el('span', { class: 'ms-level' + (row.effort === 'medium' ? ' plain' : ''), text: EFFORT_LABEL[row.effort] || row.effort }),
+                row.effort ? el('span', { class: 'ms-level' + (row.effort === 'medium' ? ' plain' : ''), text: EFFORT_LABEL[row.effort] || row.effort }) : null,
                 row.mixBasis === 'model' ? el('span', { class: 'ms-basis measured', text: '按你用它的结构' }) : null,
               ]),
               el('small', {}, [

@@ -187,7 +187,7 @@ const MAX_TEXT = 40_000;
 const MAX_TOOL_TEXT = 6_000;
 /** 详情最多带回这么多条（超长会话只给最后这些，前面标出省略了多少）。 */
 const MAX_MESSAGES = 4_000;
-const INDEX_VERSION = 6;
+const INDEX_VERSION = 7;
 
 type Parsed = Omit<SessionDetail, "truncated"> & { file: string };
 type IndexEntry = { size: number; mtimeMs: number; summary: SessionSummary | null };

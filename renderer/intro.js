@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.90': [
+      ['check', '适配 Antigravity 的 Orchestrator 模式，不再误报「型号不一致」', '在 Antigravity 里用 Orchestrator（Carbon / Argon）时，规划器返回 gemini-pro-orchestrator、执行子代理返回 gemini-flash-worker-agy，以前会被当成换了型号并反复提醒。现在识别为官方内部型号名，补齐费用估算与 Gemini 额度池归组；之前的记录也会自动改判和重算。'],
+    ],
     '0.3.89': [
       ['overview', 'Antigravity 换上自己的图标，更多工具和供应商有了图标', 'Antigravity 不再借用 Gemini 的四角星；从 CC Switch 导入的 Gemini CLI、OpenCode、Hermes、Copilot CLI 不再只显示首字母。供应商头像新增 OpenRouter、硅基流动、MiniMax、Mistral、Groq、阶跃星辰、小米 MiMo，新建时按名称和地址自动认出。'],
     ],

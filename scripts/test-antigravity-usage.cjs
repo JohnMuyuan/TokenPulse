@@ -303,6 +303,46 @@ function addSteps(file, steps) {
     assert.deepEqual([parsedSnake.groups[0].title, parsedSnake.groups[0].week?.used], ['Gemini Models', 30]);
     pass('antigravity CLI usage: scans antigravity-cli conversations with workspace cwd and parses snake_case quota summary');
 
+    // Orchestrator 模式（Orchestrator (Carbon) / (Argon) + gemini-pro-orchestrator + gemini-flash-worker-agy）
+    assert.deepEqual(a.splitModelLabel('Orchestrator (Carbon)'), { model: 'orchestrator-carbon', family: 'Orchestrator (Carbon)' });
+    assert.deepEqual(a.splitModelLabel('Orchestrator (Argon)'), { model: 'orchestrator-argon', family: 'Orchestrator (Argon)' });
+    assert.equal(a.modelFamily('Orchestrator (Carbon)'), 'Orchestrator');
+    const orchStatus = {
+      userStatus: {
+        planStatus: { planInfo: { planName: 'Pro' } },
+        cascadeModelConfigData: {
+          clientModelConfigs: [
+            { label: 'Gemini 4 Argon (High)', modelOrAlias: { model: 'M417' }, quotaInfo: { remainingFraction: 0.9, resetTime: '2026-11-06T09:00:00Z' } },
+            { label: 'Orchestrator (Carbon)', modelOrAlias: { model: 'M667' }, quotaInfo: { remainingFraction: 0.9, resetTime: '2026-11-06T09:00:00Z' } },
+            { label: 'Orchestrator (Argon)', modelOrAlias: { model: 'M681' }, quotaInfo: { remainingFraction: 0.9, resetTime: '2026-11-06T09:00:00Z' } },
+          ],
+        },
+      },
+    };
+    const parsedOrch = a.parseAntigravityStatus(orchStatus, summary);
+    assert.deepEqual(parsedOrch.groups[0].models, ['Gemini 4 Argon', 'Orchestrator'], '分组 models 保留 Orchestrator，不破坏历史 group.key');
+    const orchItems = parsedOrch.models.filter(m => m.model.startsWith('orchestrator-'));
+    assert.deepEqual(orchItems.map(m => [m.family, m.model, m.effort]), [
+      ['Orchestrator (Carbon)', 'orchestrator-carbon', undefined],
+      ['Orchestrator (Argon)', 'orchestrator-argon', undefined],
+    ]);
+    const convOrch = 'eeeeeeee-1111-4000-8000-000000000007';
+    makeConversation(convOrch, [
+      { idx: 0, type: 15, status: 3, meta: stepMeta({ start: now - 4000, end: now - 2000, modelId: 1667, gen: 0, input: 1000, output: 200 }) },
+      { idx: 1, type: 15, status: 3, meta: stepMeta({ start: now - 2000, end: now - 1000, modelId: 1669, gen: 1, input: 500, output: 100 }) },
+    ], [
+      [0, Buffer.concat([msg(1, str(19, 'gemini-pro-orchestrator'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M667')), str(21, 'Orchestrator (Carbon)'))])],
+      [1, Buffer.concat([msg(1, str(19, 'gemini-flash-worker-agy'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M669')), str(21, 'Gemini Flash'))])],
+    ]);
+    const rOrch = scan.scanLocalUsage();
+    assert.deepEqual(rOrch.records.map(x => [x.model, x.requested, x.returned, x.effort]), [
+      ['orchestrator-carbon', 'orchestrator-carbon', 'gemini-pro-orchestrator', undefined],
+      ['gemini-flash', 'gemini-flash', 'gemini-flash-worker-agy', undefined],
+    ]);
+    const pricing = require('../build/core/model-pricing');
+    assert.ok(pricing.priceOf('orchestrator-carbon')?.input > 0 && pricing.priceOf('orchestrator')?.input > 0, 'orchestrator 有单价兜底');
+    pass('antigravity orchestrator: Carbon/Argon split without fake effort, group.key preserved as Orchestrator, planner/worker scanned cleanly and priced');
+
     console.log(`${checks}/${checks} antigravity checks passed`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

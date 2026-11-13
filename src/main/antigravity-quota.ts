@@ -6,6 +6,7 @@ import {
   antigravityDirs,
   antigravityHub,
   fetchAntigravityStatus,
+  modelFamily,
   splitModelLabel,
   type AgyCredits,
   type AgyModelQuotaItem,
@@ -254,7 +255,7 @@ export const groupKey = (models: string[]) => [...models].sort().join("|");
 
 function isMixedPoolModels(modelsOrKey: string[] | string): boolean {
   const text = Array.isArray(modelsOrKey) ? modelsOrKey.join("|") : String(modelsOrKey || "");
-  return /gemini/i.test(text) && /claude|gpt/i.test(text);
+  return /gemini|orchestrator/i.test(text) && /claude|gpt/i.test(text);
 }
 
 function sanitizeStored(raw: Partial<Stored> | null): Stored {
@@ -332,8 +333,8 @@ function groupMatchesModel(group: { models: string[]; title?: string }, model: s
     const id = splitModelLabel(family).model;
     if (norm === id || norm.startsWith(id + "-")) return true;
   }
-  const isGeminiGroup = group.models.some((m) => /gemini/i.test(m)) || /gemini/i.test(group.title || "");
-  if (isGeminiGroup && /gemini/i.test(norm)) return true;
+  const isGeminiGroup = group.models.some((m) => /gemini|orchestrator/i.test(m)) || /gemini/i.test(group.title || "");
+  if (isGeminiGroup && /gemini|orchestrator/i.test(norm)) return true;
   const is3pGroup = group.models.some((m) => /claude|gpt/i.test(m)) || /claude|gpt|3p/i.test(group.title || "");
   if (is3pGroup && /claude|gpt|o[134]/i.test(norm)) return true;
   return false;
@@ -672,14 +673,15 @@ function buildModelCapacities(
   const candidates = new Map<string, Candidate>();
 
   const defaultGroup = groupInsights[0];
+  const isEffortless = (model: string) => /orchestrator|^gemini-flash$/i.test(model);
   const findGroup = (family: string, model: string): AgyGroupInsight | undefined =>
     groupInsights.find((g) => groupMatchesModel(g, model) || groupMatchesModel(g, family)) ?? defaultGroup;
 
   for (const item of lastModels ?? []) {
-    const effort = item.effort || "medium";
+    const effort = item.effort || (isEffortless(item.model) ? "" : "medium");
     const g = findGroup(item.family, item.model);
     if (!g) continue;
-    const key = comboKey(item.model, effort);
+    const key = comboKey(item.model, effort || "default");
     if (!candidates.has(key)) {
       candidates.set(key, { model: item.model, family: item.family, effort, group: g });
     }
@@ -688,17 +690,19 @@ function buildModelCapacities(
   for (const g of groupInsights) {
     for (const family of g.models) {
       const { model } = splitModelLabel(family);
-      const hasAny = [...candidates.values()].some((c) => c.model === model);
+      const hasAny = [...candidates.values()].some((c) => c.model === model || c.model.startsWith(model + "-"));
       if (!hasAny) {
         const defaultEfforts = /gemini-4-argon/i.test(model)
           ? ["high", "low"]
-          : /gemini.*flash/i.test(model)
-            ? ["high", "medium"]
-            : /claude/i.test(model)
-              ? ["high", "low"]
-              : ["medium"];
+          : isEffortless(model)
+            ? [""]
+            : /gemini.*flash/i.test(model)
+              ? ["high", "medium"]
+              : /claude/i.test(model)
+                ? ["high", "low"]
+                : ["medium"];
         for (const effort of defaultEfforts) {
-          const key = comboKey(model, effort);
+          const key = comboKey(model, effort || "default");
           if (!candidates.has(key)) candidates.set(key, { model, family, effort, group: g });
         }
       }
@@ -706,8 +710,8 @@ function buildModelCapacities(
   }
 
   for (const row of rows30) {
-    const effort = row.effort && row.effort !== "unknown" ? row.effort : "medium";
-    const key = comboKey(row.model, effort);
+    const effort = row.effort && row.effort !== "unknown" ? row.effort : isEffortless(row.model) ? "" : "medium";
+    const key = comboKey(row.model, effort || "default");
     if (!candidates.has(key)) {
       const g = findGroup(row.model, row.model);
       if (g) candidates.set(key, { model: row.model, family: row.model, effort, group: g });
@@ -717,7 +721,9 @@ function buildModelCapacities(
   const out: AgyModelCapacityRow[] = [];
   for (const [key, cand] of candidates) {
     const modelRows = rows30.filter((r) => r.model === cand.model);
-    const comboRows = modelRows.filter((r) => (r.effort || "medium") === cand.effort);
+    const comboRows = cand.effort
+      ? modelRows.filter((r) => (r.effort || "medium") === cand.effort)
+      : modelRows.filter((r) => !r.effort || r.effort === "unknown");
     const groupRows = rows30.filter((r) => groupMatchesModel(cand.group, r.model));
 
     const rule = priceOf(cand.model) as PriceRule | null;
@@ -1124,7 +1130,17 @@ export class AntigravityQuota {
 
     // 各组双窗口分析
     const lastGroups = this.stored.last?.groups ?? [];
-    const lastModels = this.stored.last?.models ?? [];
+    const lastModels = (this.stored.last?.models ?? []).map((m) => {
+      if (!m.label) return m;
+      const split = splitModelLabel(m.label);
+      const { effort: _oldEffort, ...rest } = m;
+      return {
+        ...rest,
+        family: split.family,
+        model: split.model,
+        ...(split.effort ? { effort: split.effort } : {}),
+      };
+    });
     const groups: AgyGroupInsight[] = lastGroups.map((group) => {
       const gRows = rows30.filter((r) => groupMatchesModel(group, r.model));
       const fiveRes = buildWindowInsight("five", { used: group.used, resetAt: group.resetAt }, group.key, this.stored.history, gRows, now);
@@ -1135,7 +1151,7 @@ export class AntigravityQuota {
       })();
       const weekRes = weekQuota ? buildWindowInsight("week", weekQuota, group.key, this.stored.history, gRows, now) : null;
 
-      const rawItems = lastModels.filter((m) => group.models.includes(m.family));
+      const rawItems = lastModels.filter((m) => group.models.includes(m.family) || group.models.includes(modelFamily(m.label || m.family)));
       const itemSource: AgyModelQuotaItem[] = rawItems.length
         ? rawItems
         : group.models.map((family) => {
@@ -1172,7 +1188,7 @@ export class AntigravityQuota {
         };
       });
 
-      const defaultTitle = group.models.some((m) => /gemini/i.test(m)) ? "Gemini Models" : "Claude and GPT models";
+      const defaultTitle = group.models.some((m) => /gemini|orchestrator/i.test(m)) ? "Gemini Models" : "Claude and GPT models";
       return {
         key: group.key,
         title: group.title || defaultTitle,
