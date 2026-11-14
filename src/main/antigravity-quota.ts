@@ -186,7 +186,6 @@ export type AgyRecentRequest = {
   cwd?: string;
   verify: { status: string; label: string; channel: string; reasons: string[] };
   timing?: { ms?: number; firstTokenMs?: number; tokensPerSec?: number; stream?: boolean; provider?: string };
-  estimate?: { ms: number; tokensPerSec: number };
 };
 
 export type AgyInsight = {
@@ -1079,7 +1078,7 @@ export class AntigravityQuota {
     const models = [...byModelMap.entries()]
       .map(([model, list]) => {
         const sum = summarizeRows(list);
-        const speeds = list.map((r) => r.timing?.tokensPerSec || r.estimate?.tokensPerSec || 0).filter((v) => v > 0);
+        const speeds = list.map((r) => r.timing?.tokensPerSec || 0).filter((v) => v > 0);
         const firsts = list.map((r) => r.timing?.firstTokenMs || 0).filter((v) => v > 0);
         const avgSpeed = speeds.length ? Math.round((speeds.reduce((a, b) => a + b, 0) / speeds.length) * 10) / 10 : null;
         const avgFirstMs = firsts.length ? Math.round(firsts.reduce((a, b) => a + b, 0) / firsts.length) : null;
@@ -1125,7 +1124,6 @@ export class AntigravityQuota {
         ...(r.cwd ? { cwd: r.cwd } : {}),
         verify: { status: r.status, label: r.statusLabel, reasons: r.reasons, channel: r.channel },
         ...(r.timing ? { timing: r.timing } : {}),
-        ...(r.estimate ? { estimate: r.estimate } : {}),
       }));
 
     // 各组双窗口分析
@@ -1307,19 +1305,15 @@ export class AntigravityQuota {
       } catch { return this.recentRows(now); }
     })();
     const measured = rows
-      .filter((row) => row.at >= since && row.at <= now && ((row.timing && (row.timing.tokensPerSec || row.timing.firstTokenMs)) || row.estimate?.tokensPerSec))
-      .map((row) => {
-        const hasTiming = Boolean(row.timing && (row.timing.tokensPerSec || row.timing.firstTokenMs));
-        return {
-          at: row.at,
-          model: row.model,
-          fast: false,
-          speed: (hasTiming ? row.timing!.tokensPerSec : row.estimate?.tokensPerSec) || 0,
-          first: (hasTiming ? row.timing!.firstTokenMs : 0) || 0,
-          output: row.output,
-          ...(hasTiming ? {} : { estimated: true }),
-        };
-      });
+      .filter((row) => row.at >= since && row.at <= now && row.timing && (row.timing.tokensPerSec || row.timing.firstTokenMs))
+      .map((row) => ({
+        at: row.at,
+        model: row.model,
+        fast: false,
+        speed: row.timing!.tokensPerSec || 0,
+        first: row.timing!.firstTokenMs || 0,
+        output: row.output,
+      }));
     return speedSeriesOf(measured, since, now);
   }
 

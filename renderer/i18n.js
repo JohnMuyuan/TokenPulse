@@ -2895,6 +2895,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.92 修复：去掉原生测速记录的「≈ 日志估算」回退
+    '修复：去掉 Antigravity 等原生测速记录多余的「≈ 日志估算」回退': 'Fix: drop redundant “≈ log estimate” fallback on native-timing records',
+    '已自带本机实测计时（Antigravity、DeepSeek Harness）以及已记录 timing 的短工具调用，不再在「模型速度走势」、Antigravity 额度详情、模型均速和最近请求里回退成偏低的「≈ 日志估算」虚线或估值，避免刷出多余估算曲线并拉低均速统计；未经过转发且无原生测速的请求仍保留日志估算。': 'Native-timing sources (Antigravity, DeepSeek Harness) and short buffered tool calls that already record timing no longer fall back to artificially low “≈ log estimate” dashed lines or estimates in Model speed trends, Antigravity quota details, model average speeds, or recent requests. Requests without forwarding or native timing still keep log estimates.',
     // 0.3.91 更新说明与模型速度走势新增文案
     '重做「模型速度走势」：默认 24 小时细粒度曲线、波峰校准与折叠图例': 'Redesigned “Model speed over time”: default 24h fine-grained curves, calibrated peaks, and collapsible legend',
     '速度走势与各账号模型速度默认改为「24 小时」，新增 6 小时档位，并将 24 小时加密为 15 分钟分桶、7 天加密为 3 小时分桶；校准 Antigravity 流式出字速度（扣掉首包排队与短工具包噪声），短时提速波峰清晰可见。折线改为空闲断档 + 平滑曲线 + P25–P90 波动区间带；看速度默认合并同一模型的不同思考等级（带「拆分思考等级」和「看峰值 (P90)」开关），未显示的模型自动折叠收起。': 'Speed trends and per-account model speed now default to 24 hours, add a 6-hour range, and use finer 15-minute buckets for 24h and 3-hour buckets for 7d. Antigravity streaming speed is calibrated to exclude initial queue wait and short buffered tool noise so speed bursts stand out clearly. Charts now break across idle gaps with smooth curves and P25–P90 bands; speed view merges reasoning efforts by default (with toggles for splitting efforts and viewing P90 peaks) and collapses hidden models.',
@@ -3303,8 +3306,8 @@
     P('当前已用 ([\\d.]+%)', m => `${m[1]} used now`),
     P('· 30 天用了 (\\S+)（' + N + ' 次）', m => `· ${m[1]} in 30 days (${m[2]} calls)`),
     P('30 天用了 (\\S+)（' + N + ' 次）', m => `${m[1]} in 30 days (${m[2]} calls)`),
-    P('首字 (\\S+) · ([\\d.]+) Token/秒', m => `first ${m[1]} · ${m[2]} tokens/s`),
-    P('首字 (\\S+)', m => `first ${m[1]}`),
+    P('首字 (\\S+(?: \\d+s)?) · ([\\d.]+) Token/秒', m => `first ${m[1]} · ${m[2]} tokens/s`),
+    P('首字 (\\S+(?: \\d+s)?)', m => `first ${m[1]}`),
     P('≈ ([\\d.]+) Token/秒', m => `≈ ${m[1]} tokens/s`),
     P('(\\S+) 是 (\\S+) 在 Antigravity 里的内部型号名', m => `${m[1]} is Antigravity's internal model name for ${m[2]}`),
     P('(\\S+) 就是 (\\S+)，后缀 (\\S+) 是 Antigravity 附上的思考等级', m => `${m[1]} is ${m[2]}; the ${m[3]} suffix is the thinking effort Antigravity appends`),

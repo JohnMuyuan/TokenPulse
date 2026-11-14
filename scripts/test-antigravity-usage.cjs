@@ -83,7 +83,7 @@ function addSteps(file, steps) {
     assert.deepEqual([first.input, first.output, first.cacheRead, first.cacheWrite, first.reasoning, first.calls, first.responseId], [10000, 600, 9000, 0, 100, 1, 'r1'], '输入含缓存，输出含思考');
     assert.deepEqual([second.input, second.cacheRead, second.cacheWrite], [10700, 10000, 200], '缓存写入也算进输入');
     assert.equal(first.cwd, path.join(root, 'proj'), '项目目录取对话的工作区');
-    assert.deepEqual(first.estimate, { ms: 4000, tokensPerSec: 150 }, '用时 = 完成 − 开始');
+    assert.deepEqual(first.estimate, { ms: 4000, tokensPerSec: 150 }, '未带 gen_metadata 流式计时时：用时 = 完成 − 开始');
     assert.equal(second.estimate, undefined, '输出太少不估速度');
     pass('antigravity usage: finished model replies become requests (input incl. cache, output incl. thinking), the one still generating waits, workspace and speed');
 
@@ -172,6 +172,7 @@ function addSteps(file, steps) {
     assert.deepEqual(r.records[0].timing, { stream: true, ms: 4000, firstTokenMs: 1500, tokensPerSec: 80, provider: 'Antigravity' }, '流式回复按纯出字阶段（200 Token ÷ 2.5s = 80）计速，不把 1.5s 首包等待算进分母');
     assert.deepEqual(r.records[1].timing, { stream: false, ms: 129048, tokensPerSec: 125.2, provider: 'Antigravity' }, '服务端整包缓冲的大工具调用不把 129 秒总生成时间误记成首字延迟');
     assert.deepEqual(r.records[2].timing, { stream: false, ms: 32045, provider: 'Antigravity' }, '整包缓冲的短工具调用既不误记 32s 首字延迟，也不把排队等待算成 4 Token/秒');
+    assert.equal(r.records[2].estimate, undefined, '跳过计速的短工具调用不回退写入 estimate');
     pass('antigravity usage: gen_metadata streaming timing (TTFT + duration), buffered tool-call TTFT guard, and fallback model_display_name are extracted');
 
     // 额度：GetUserStatus 按剩余比例 + 重置时间分组；用完的那组没有 remainingFraction
@@ -352,6 +353,29 @@ function addSteps(file, steps) {
     const pricing = require('../build/core/model-pricing');
     assert.ok(pricing.priceOf('orchestrator-carbon')?.input > 0 && pricing.priceOf('orchestrator')?.input > 0, 'orchestrator 有单价兜底');
     pass('antigravity orchestrator: Carbon/Argon split without fake effort, group.key preserved as Orchestrator, planner/worker scanned cleanly and priced');
+
+    // Antigravity 额度详情（avgSpeed / speed / recentRequests）也不回退读取历史遗留或跳过计速的 estimate
+    const reqDir = path.join(process.env.TOKENPULSE_DATA_DIR, 'requests');
+    const nowFile = path.join(reqDir, fs.readdirSync(reqDir).sort().at(-1));
+    fs.appendFileSync(nowFile, [
+      { id: conv4 + ':2', at: now - 7955, kind: 'antigravity', file: nowFile, model: 'gemini-4-argon', effort: 'high', timing: { stream: false, ms: 32045, provider: 'Antigravity' }, estimate: { ms: 32045, tokensPerSec: 4.1 }, input: 5000, output: 130, cacheRead: 0, cacheWrite: 0, reasoning: 20, costUsd: 0, calls: 1 },
+      { id: 'legacy:est', at: now - 5000, kind: 'antigravity', file: nowFile, model: 'gemini-4-argon', effort: 'high', estimate: { ms: 5000, tokensPerSec: 12 }, input: 500, output: 60, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, calls: 1 },
+    ].map(r => JSON.stringify(r)).join('\n') + '\n');
+    const agyQuota = new aqMod.AntigravityQuota({ now: () => now });
+    try {
+      const agySpeed = agyQuota.speed(7);
+      assert.equal(agySpeed.models.some(m => m.estimated), false, 'Antigravity 额度速度走势不再出现 ≈ 估算线');
+      const argonSpeedModel = agySpeed.models.find(m => m.model === 'gemini-4-argon');
+      assert.deepEqual([argonSpeedModel.tokensPerSec, argonSpeedModel.count], [102.6, 2], '仅平均两条带 timing.tokensPerSec 的记录（80 与 125.2），不混入 4.1 / 12 估算值');
+      const agyInsight = agyQuota.state().insight;
+      const argonSummary = agyInsight.localUsage.models.find(m => m.model === 'gemini-4-argon');
+      assert.equal(argonSummary.avgSpeed, 102.6, 'Antigravity 模型均速不被短工具调用的 estimate 拉低');
+      assert.equal(agyInsight.localUsage.recentRequests.length > 0, true);
+      assert.equal(agyInsight.localUsage.recentRequests.every(req => req.estimate === undefined), true, 'Antigravity 最近请求不附带 estimate');
+    } finally {
+      agyQuota.stop();
+    }
+    pass('antigravity quota speed: avgSpeed and speed() ignore estimate fallbacks on skipped or legacy records');
 
     console.log(`${checks}/${checks} antigravity checks passed`);
   } finally {

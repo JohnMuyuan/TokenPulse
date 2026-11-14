@@ -518,7 +518,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     channel: verdict.channel,
     ...(record.compaction ? { compaction: true } : {}),
     ...(record.timing ? { timing: record.timing } : {}),
-    ...(record.estimate ? { estimate: record.estimate } : {}),
+    ...(record.estimate && !record.timing && record.kind !== "antigravity" && record.kind !== "deepseek-harness" ? { estimate: record.estimate } : {}),
   };
 }
 

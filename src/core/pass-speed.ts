@@ -65,30 +65,41 @@ function requestSpeedRows(since: number, now = Date.now()): EstimateRow[] {
           ...(typeof row.accountEmail === "string" ? { email: row.accountEmail } : {}),
           ...(typeof row.accountAt === "number" ? { accountAt: row.accountAt } : {}),
         };
-        if (LOCAL_TIMING_KINDS.has(kind) && row.timing && typeof row.timing === "object") {
-          const timing = row.timing as { tokensPerSec?: unknown; firstTokenMs?: unknown; firstByteMs?: unknown };
-          const speed = positive(timing.tokensPerSec);
-          const first = positive(timing.firstTokenMs ?? timing.firstByteMs);
-          if (speed || first) {
-            byId.set(kind + "\u0000" + String(row.id), {
-              at: Number(row.at),
-              app,
-              kind,
-              model,
-              effort,
-              speed,
-              ...(first ? { first } : {}),
-              estimated: false,
-              output: Number(row.output) || 0,
-              ...accountFields,
-            });
-            continue;
+        const idKey = kind + "\u0000" + String(row.id);
+        // 自带本机测速的来源（Antigravity、DeepSeek Harness）或已带 timing 的记录：
+        // 若 tokensPerSec/firstTokenMs 被故意留空（如短输出或整包缓冲工具调用），绝不回退到粗糙的 estimate，避免刷出无意义的「≈ 日志估算」虚线。
+        if (LOCAL_TIMING_KINDS.has(kind)) {
+          if (row.timing && typeof row.timing === "object") {
+            const timing = row.timing as { tokensPerSec?: unknown; firstTokenMs?: unknown; firstByteMs?: unknown };
+            const speed = positive(timing.tokensPerSec);
+            const first = positive(timing.firstTokenMs ?? timing.firstByteMs);
+            if (speed || first) {
+              byId.set(idKey, {
+                at: Number(row.at),
+                app,
+                kind,
+                model,
+                effort,
+                speed,
+                ...(first ? { first } : {}),
+                estimated: false,
+                output: Number(row.output) || 0,
+                ...accountFields,
+              });
+              continue;
+            }
           }
+          byId.delete(idKey);
+          continue;
+        }
+        if (row.timing && typeof row.timing === "object") {
+          byId.delete(idKey);
+          continue;
         }
         const estimate = row.estimate as { tokensPerSec?: unknown } | undefined;
         const speed = positive(estimate?.tokensPerSec);
         if (!speed) continue;
-        byId.set(kind + "\u0000" + String(row.id), {
+        byId.set(idKey, {
           at: Number(row.at),
           app,
           kind,

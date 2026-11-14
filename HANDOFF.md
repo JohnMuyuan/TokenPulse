@@ -1,4 +1,37 @@
-# 当前接手入口 · TokenPulse v0.3.91 正式发布（重做「模型速度走势」：默认 24 小时细粒度曲线、波峰校准与折叠图例，2026-11-13）
+# 当前接手入口 · TokenPulse v0.3.92 正式发布（去掉 Antigravity 等原生测速记录的「≈ 日志估算」回退，2026-11-13）
+
+## 发布状态 · v0.3.92
+
+- **版本**：`0.3.92`（用户 2026-11-13 核对 Carbon 真实流式速度 `~105 Token/秒` 后要求「把没有意义的 `≈ 日志估算` 回退去掉并直接发布到 GitHub」）。发布前 `git fetch origin` 确认与 `origin/main` 同步（`0 0`）。`renderer/intro.js` 加 `0.3.92` 更新说明 1 条（`trend` 图标），`renderer/i18n.js` 补齐中英文文案并放宽 `首字 (\S+(?: \d+s)?)` 正则以兼容 `>= 60s` 的 `1m 20s` 格式。
+- **问题根因**：
+  - `v0.3.91` 为了过滤 `< 300 Token` 服务端整包缓冲短工具调用对流式测速的污染，`antigravityStreamMetrics()` 刻意把这类步骤的 `timing.tokensPerSec` 与 `firstTokenMs` 留空，但多个下游消费端看到 `tokensPerSec` 为空后继续往下回退读取 `row.estimate`（含首包排队等待的粗糙时间戳估算），同时 `usage-scan.ts` 的 `scanAntigravity` 仍对已有 `gen_metadata` 流式计时的步骤写入 `record.estimate`：
+    1. **`src/core/pass-speed.ts` (`requestSpeedRows`)**：在 `Antigravity`（`11,379` 条带 `timing` 但刻意跳过计速的短工具调用 + `10` 条老版本 `noTimingHasEst`）和 `DeepSeek Harness` 上回退到 `row.estimate`，导致「模型速度走势」里所有 Antigravity 型号几乎都额外多出一条低速虚线 **`≈ <模型>（日志估算）`**（如 24 小时里 `≈ gemini-4-carbon 9.6 T/s`、7 天里 `≈ gemini-3.8-flash-tiered 27.6 T/s` 高达 `8,637` 条）。
+    2. **`src/main/antigravity-quota.ts`**：`avgSpeed`（第 1082 行）和 `speed(days)`（第 1309–1322 行）同样回退读 `estimate`，把本机 7 天 `gemini-3.8-flash-tiered` 均速从 `113.7` 拉低到 `56.8 Token/秒`、`gemini-4-argon` 从 `109.9` 拉低到 `74.6`、`gemini-4-carbon` 从 `119.3` 拉低到 `89.5`，并在 Antigravity 额度详情速度图上生成 `≈` 估算线。
+    3. **`renderer/antigravity-quota.js` 与 `renderer/app.js`**：额度详情最近请求表的 `.agy-req-speed` 与请求明细 CSV 导出（`row.timing?.tokensPerSec ?? ...`）在 `timing` 存在但 `tokensPerSec` 留空时回退显示 `≈` 估算值。
+- **主要改动**：
+  - `src/core/pass-speed.ts`：`requestSpeedRows()` 对 `LOCAL_TIMING_KINDS`（`antigravity`、`deepseek-harness`）以及任意已带 `row.timing` 的记录不再回退到 `row.estimate`，若没有有效的实测 `speed` 或 `first` 则 `byId.delete(idKey)` 并跳过；未带原生 `timing` 的 `claude-code`、`codex`、`pi` 仍保留 `≈` 日志估算（不破坏 `test-speed-estimate` / `test-pi-usage`）。
+  - `src/main/antigravity-quota.ts`：从 `AgyRecentRequest` 及 `recentRequests` 移除 `estimate`；`avgSpeed` 仅使用 `r.timing?.tokensPerSec`；`speed(days)` 仅保留具备 `row.timing.tokensPerSec || row.timing.firstTokenMs` 的实测记录，不再产生 `estimated: true` 曲线。
+  - `src/core/usage-scan.ts` & `src/core/request-log.ts`：`scanAntigravity()` 仅在缺少 `gen_metadata` 流式计时（`!hasStreamTiming`）时才保留兼容 `estimate`（不递增 `ANTIGRAVITY_STATE_VERSION` 避免重扫近两万条历史）；`request-log.ts` 的 `toRow()` 对 `antigravity`、`deepseek-harness` 及已带 `record.timing` 的历史记录一律不输出 `estimate`，即刻清洗全部旧流水。
+  - `renderer/antigravity-quota.js` & `renderer/app.js`：额度详情最近请求表在有 `timing` 无 `tokensPerSec` 时改为展示 `首字 ...` / `耗时 ...` / `—`，不再回退 `≈`；`latencyCell`、`requestDetail` 与 CSV 导出对 `Antigravity` / `DeepSeek Harness` 及已带 `timing` 的请求严格禁止回退 `estimate`。
+  - 测试更新与回归覆盖：`scripts/test-pass-speed.cjs`、`scripts/test-antigravity-usage.cjs`（12 项，新增 `AntigravityQuota.speed()` / `avgSpeed` / `recentRequests` 不回退 `estimate` 断言）。
+- **发版前验证**：
+  - `npm run build` PASS；
+  - 真实本机日志只读回归：`speedSeries(1 / 7 / 30)` 中 `antigravity` / `deepseek` 的 `estimated` 线均为 **`0`**，`AntigravityQuota.speed(7)` 的 `estimated` 为 **`0`**，`queryRequests(Antigravity)` 2,200 条中带 `estimate` 为 **`0`**，未转发 `claude` / `codex` / `pi` 的 `≈` 日志估算仍正常保留；
+  - Node：`test-pass-speed` PASS、`test-speed-estimate` 2/2、`test-speed-regressions` PASS、`test-antigravity-usage` 12/12、`test-antigravity-sessions` 5/5、`test-antigravity-timeline` 7/7、`test-deepseek-insight` 5/5、`test-requests` PASS、`test-features` PASS、`test-pi-usage` PASS、`test-quota-monitor` 79/79，全 PASS；
+  - Electron：`test-antigravity-ui` 7/7、`test-intro-ui` 3/3、`test-ui` PASS、`test-deepseek-balance-ui` PASS，全 PASS。（其余未改动模块未全量重跑，范围见上。）
+- **打包与句柄检查**：
+  - `npm run dist` PASS；`@electron/asar` 校验 `app.asar` 含 `'0.3.92'`、`byId.delete(idKey)`、`'0.3.92'` intro 文案且不含旧回退（校验后立即 `asar.uncacheAll()`）。
+  - `dist/TokenPulse-0.3.92-Setup.exe`（112836414 B，SHA256 `C135E90901E0AFDDE22DAAEA8436161FE8D8EEC6E0D5EFE794C676CB756DC211`）
+  - `dist/TokenPulse-0.3.92-Portable.exe`（112579267 B，SHA256 `CDFDDD5E872EC81BCC01506356984A69D676A9822D79B100F39B469BCD40CB8E`）
+  - `dist/TokenPulse-0.3.92-Setup.exe.blockmap`（120078 B，SHA256 `00736010039489AC0CFC4C2F87A5CFBC5E423F948788F02C95BB9F20BE1E8C73`）
+  - `dist/latest.yml`（352 B，version `0.3.92`，SHA256 `DC662A79D58588248D47A1609E4D372324F9B056988394BE5B9C57ADE73D197D`）
+  - 上述 4 项及 `dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar`、`build/main/index.js` 独占打开关闭句柄检查均为 `UNLOCKED`；无残留子进程（用户本机正式 `TokenPulse.exe` 未动）。
+  - 未纳入提交：`clawd-pet-extracted/`（工作区已有未跟踪目录，未动）。
+- **Git / GitHub（准备提交并发布）**：待提交、打 `v0.3.92` 标签、推送并正式发布 GitHub Release 后更新下方状态。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.91 正式发布（重做「模型速度走势」：默认 24 小时细粒度曲线、波峰校准与折叠图例，2026-11-13）
 
 ## 发布状态 · v0.3.91
 

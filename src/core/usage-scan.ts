@@ -1258,9 +1258,11 @@ function scanAntigravity(file: string, state: FileState, out: ScanOutput, worksp
       } : {}),
       input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, reasoning: usage.reasoning, costUsd: 0, calls: 1,
     };
-    // 这一步从发出请求到生成完的用时，包含排队和思考，和其他来源一样标「≈」
-    const estimate = row.startAt ? estimateOf(row.startAt, row.at, row.output) : undefined;
-    if (estimate) record.estimate = estimate;
+    // 只有缺少 gen_metadata 流式计时（老版本对话）时才保留基础耗时估算；已带 native timing（含故意留空 tokensPerSec 的短工具包）绝不写 estimate
+    if (!hasStreamTiming && row.startAt) {
+      const estimate = estimateOf(row.startAt, row.at, row.output);
+      if (estimate) record.estimate = estimate;
+    }
     out.records.push(record);
   }
   state.offset = read.next;

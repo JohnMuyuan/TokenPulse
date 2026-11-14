@@ -702,9 +702,11 @@
             const proj = row.cwd ? row.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || row.cwd : '—';
             const speedText = row.timing?.tokensPerSec != null
               ? `${row.timing.firstTokenMs != null ? `首字 ${fmtSec(row.timing.firstTokenMs)} · ` : ''}${row.timing.tokensPerSec} Token/秒`
-              : row.estimate?.tokensPerSec != null
-                ? `≈ ${row.estimate.tokensPerSec} Token/秒`
-                : '—';
+              : row.timing?.firstTokenMs != null
+                ? `首字 ${fmtSec(row.timing.firstTokenMs)}`
+                : row.timing?.ms != null
+                  ? `耗时 ${fmtSec(row.timing.ms)}`
+                  : '—';
             const mainModel = row.returned || row.requested || row.model;
             const diffSub = row.requested && row.returned && row.requested !== row.returned ? `请求 ${row.requested}` : null;
             return el('tr', { class: `request-row ${row.verify.status}` }, [
