@@ -28,7 +28,7 @@
   - `dist/latest.yml`（352 B，version `0.3.94`，SHA256 `A50D4D27FB304011910BB00EA2713B7C6F436499F91A428CA0216097EFDC5D3B`）
   - 上述 4 项及 `dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar`、`build/main/index.js` 独占打开关闭句柄检查均为 `UNLOCKED`；无残留子进程（用户本机正式 `TokenPulse.exe` 未动）。
   - 未纳入提交：`clawd-pet-extracted/`（工作区已有未跟踪目录，未动）。
-- **Git / GitHub（发布进行中）**：准备提交 `v0.3.94` 并推送标签与 GitHub Release（说明文件 `dist/release-0.3.94.md`）。
+- **Git / GitHub（已完成）**：发布提交 `8b8ddde` 已推送到 `origin/main`，标签 `v0.3.94` 已推送；GitHub Release `v0.3.94` 已正式发布（非草稿、非预发布）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.94 ，4 个附件（`Setup.exe`、`Portable.exe`、`Setup.exe.blockmap`、`latest.yml`）大小与 SHA256 与本地完全一致。说明文件 `dist/release-0.3.94.md`。（未安装覆盖本机运行中的 TokenPulse 正式版，由软件自动更新或用户按需下载安装。）
 
 ---
 
