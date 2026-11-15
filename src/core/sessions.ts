@@ -1157,6 +1157,8 @@ function parseAntigravity(
   let turnActiveMs = 0;
   let turnFirstTokenMs: number | undefined;
   let turnOutputTokens = 0;
+  let turnStreamWeightedRate = 0;
+  let turnStreamTokens = 0;
   let turnHasMeasured = false;
   const subFileSet = new Set<string>(
     preloadedSubFiles ?? (allSummaries ? antigravitySubagentFilesByRoot(allSummaries).get(id) ?? [] : []),
@@ -1169,6 +1171,8 @@ function parseAntigravity(
       turnActiveMs = 0;
       turnFirstTokenMs = undefined;
       turnOutputTokens = 0;
+      turnStreamWeightedRate = 0;
+      turnStreamTokens = 0;
       turnHasMeasured = false;
     } else if (step.kind === "reply") {
       const model = resolveModel(read.models[step.modelId], labels);
@@ -1182,12 +1186,23 @@ function parseAntigravity(
       }
       if (step.firstTokenMs != null && turnFirstTokenMs == null) turnFirstTokenMs = step.firstTokenMs;
       if (step.usage?.output) turnOutputTokens += step.usage.output;
+      if (step.tokensPerSec != null && step.tokensPerSec > 0) {
+        const w = Math.max(1, step.usage?.output ?? 1);
+        turnStreamWeightedRate += step.tokensPerSec * w;
+        turnStreamTokens += w;
+      }
 
       if (step.text.trim()) {
         const measured = step.isMeasured || turnHasMeasured;
         const durationMs = step.durationMs || (turnActiveMs > 0 ? turnActiveMs : undefined);
         const firstTokenMs = step.firstTokenMs ?? turnFirstTokenMs;
-        const tokensPerSec = step.tokensPerSec ?? (durationMs && durationMs >= 200 && turnOutputTokens > 0 ? Math.round((turnOutputTokens / (durationMs / 1000)) * 10) / 10 : undefined);
+        const turnStreamTps = turnStreamTokens > 0 ? Math.round((turnStreamWeightedRate / turnStreamTokens) * 10) / 10 : undefined;
+        const tokensPerSec =
+          step.tokensPerSec ??
+          turnStreamTps ??
+          (!measured && durationMs && durationMs >= 200 && turnOutputTokens > 0
+            ? Math.round((turnOutputTokens / (durationMs / 1000)) * 10) / 10
+            : undefined);
 
         b.text("assistant", step.text, step.at, undefined, {
           model: modelName || undefined,

@@ -32,6 +32,34 @@
   const insight = () => quota?.insight || null;
   const groups = () => last()?.groups || [];
   const stale = () => !last()?.ok || Date.now() - (last()?.at || 0) > STALE_MS;
+  /** 页面启用了 CSP style-src 'self'，行内颜色与尺寸统一经 CSSOM 设置，不走 setAttribute('style')。 */
+  const paint = (node, props) => {
+    for (const [k, v] of Object.entries(props || {})) {
+      if (v == null || v === '') continue;
+      if (k.startsWith('--') || k.includes('-')) node.style.setProperty(k, String(v));
+      else node.style[k] = String(v);
+    }
+    return node;
+  };
+  /** 识别同一官方额度池：组内模型上下线（如新增 Carbon/Hydrogen/Orchestrator 或移除 GPT-OSS）时保持 7 天走势与预测连续。 */
+  function poolIdOf(modelsOrKey, title) {
+    const text = Array.isArray(modelsOrKey) ? modelsOrKey.join('|') : String(modelsOrKey || '');
+    const hasGemini = /gemini|orchestrator/i.test(text) || /gemini/i.test(title || '');
+    const has3p = /claude|gpt|openai|anthropic/i.test(text) || /claude|gpt|3p/i.test(title || '');
+    if (hasGemini && !has3p) return 'pool:gemini';
+    if (has3p && !hasGemini) return 'pool:3p';
+    return Array.isArray(modelsOrKey) ? [...modelsOrKey].sort().join('|') : text;
+  }
+  function pickPoolItem(sampleGroups, group) {
+    if (!Array.isArray(sampleGroups) || !sampleGroups.length || !group) return null;
+    const exact = sampleGroups.find(item => item.key === group.key);
+    if (exact) return exact;
+    const pool = poolIdOf(group.models || group.key, group.title);
+    const matches = sampleGroups.filter(item => poolIdOf(item.key) === pool);
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    return [...matches].sort((a, b) => Number(b.weekUsed != null) - Number(a.weekUsed != null) || b.key.length - a.key.length)[0];
+  }
   /** 组名：组里的型号（不翻译）。 */
   const groupName = group => el('span', { class: 'agy-group-name', translate: 'no', text: group.models.join(' · ') });
   /** 重置时间已经过了、还没查到新的：不显示旧的百分比。 */
@@ -86,12 +114,13 @@
       };
     }
     const reset = Date.parse(target.resetAt);
-    const points = (quota?.history || []).flatMap(sample => sample.groups.filter(item => {
-      if (item.key !== group.key) return false;
+    const points = (quota?.history || []).flatMap(sample => {
+      const item = pickPoolItem(sample.groups, group);
+      if (!item) return [];
       const r = windowKind === 'week' ? item.weekResetAt : item.resetAt;
       const u = windowKind === 'week' ? item.weekUsed : item.used;
-      return u != null && r && Math.abs(Date.parse(r) - reset) < 15 * 60000;
-    }).map(item => ({ at: sample.at, used: windowKind === 'week' ? item.weekUsed : item.used })));
+      return u != null && r && Math.abs(Date.parse(r) - reset) < 15 * 60000 ? [{ at: sample.at, used: u }] : [];
+    });
     if (points.length < 2) return null;
     const first = points[0], end = points[points.length - 1];
     const hours = (end.at - first.at) / 3600000;
@@ -180,17 +209,20 @@
   /* ---------------- 额度详情：各板块 ---------------- */
 
   function groupInsightOf(group) {
-    return (insight()?.groups || []).find(item => item.key === group.key) || null;
+    const list = insight()?.groups || [];
+    return list.find(item => item.key === group.key)
+      || list.find(item => poolIdOf(item.models || item.key, item.title) === poolIdOf(group.models || group.key, group.title))
+      || null;
   }
 
   function groupPanel(group, index) {
     const gInsight = groupInsightOf(group);
-    const panel = el('article', { class: 'panel window-panel agy-group', 'data-group': group.key, style: `--agy-color: ${COLORS[index % COLORS.length]}` }, [
+    const panel = paint(el('article', { class: 'panel window-panel agy-group', 'data-group': group.key }, [
       el('div', { class: 'panel-heading' }, [
         el('h2', {}, [el('i', { class: 'agy-dot', 'aria-hidden': 'true' }), groupName(group)]),
         el('span', { class: 'section-tag', text: '共用一份额度' }),
       ]),
-    ]);
+    ]), { '--agy-color': COLORS[index % COLORS.length] });
     const done = ended(group);
     panel.append(el('div', { class: 'window-number' }, [
       el('strong', { text: done ? '—' : percent(Math.max(0, 100 - group.used)) }),
@@ -328,7 +360,7 @@
     return panel;
   }
 
-  /** 额度容量趋势：对比各组在 5 小时窗口 / 周额度窗口下折算出的整窗容量。 */
+  /** 额度容量趋势：按额度池分别绘制 5 小时窗口 / 周额度窗口的历史折算容量曲线与校准中位线。 */
   function agyCapacityPanel() {
     const gList = insight()?.groups || [];
     const body = el('div', { class: 'agy-cap-body' });
@@ -341,45 +373,155 @@
       el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }),
       ...[['tokens', 'Tokens'], ['costUsd', '费用']].map(([id, label]) => el('button', { type: 'button', 'data-agy-cap-metric': id, class: capMetric === id ? 'on' : null, text: label })),
     ]);
+    const hideTip = () => { const t = document.getElementById('tip'); if (t) t.hidden = true; };
+
+    function renderPoolCapChart(pts, fullVal, w, color, fmt) {
+      const W = 430, H = 164, left = 52, right = 20, top = 24, bottom = 24;
+      const plotW = W - left - right, plotH = H - top - bottom;
+      const valOfPt = p => capMetric === 'costUsd' ? (p.fullCostUsd || 0) : (p.fullTokens || 0);
+      const rawVals = pts.map(valOfPt).filter(v => v > 0).sort((a, b) => a - b);
+      const rawMax = Math.max(fullVal || 0, ...rawVals, 1);
+      // 防止个别纯 Flash 窗口（同样 1% 多出十余倍 Token）把其余常规窗口压扁到底线
+      const p75 = rawVals.length >= 4 ? rawVals[Math.min(rawVals.length - 1, Math.floor(rawVals.length * 0.75))] : rawMax;
+      const yMax = (p75 > 0 && rawMax > p75 * 4.5 ? Math.max(p75 * 3.5, fullVal * 1.6) : rawMax * 1.16) || 1;
+      const from = pts[0].startAt, span = Math.max(1, pts[pts.length - 1].startAt - from);
+      const x = (p, i) => pts.length === 1
+        ? left + plotW / 2
+        : span > 60000
+          ? left + 12 + ((p.startAt - from) / span) * (plotW - 24)
+          : left + 12 + (i / (pts.length - 1)) * (plotW - 24);
+      const y = v => top + (1 - Math.min(yMax, Math.max(0, v)) / yMax) * plotH;
+
+      const node = paint(svg('svg', {
+        class: 'agy-cap-svg',
+        viewBox: `0 0 ${W} ${H}`,
+        role: 'img',
+        'aria-label': capWindow === 'week' ? '历史周额度容量折线' : '历史 5 小时额度容量折线',
+      }), { '--agy-color': color });
+
+      for (const f of [0, 0.5, 1]) {
+        const yy = y(yMax * f);
+        node.append(svg('line', { class: 'agy-grid', x1: left, x2: W - right, y1: yy, y2: yy }));
+        const lbl = svg('text', { class: 'agy-axis', x: left - 7, y: yy + 3.5, 'text-anchor': 'end' });
+        lbl.textContent = f ? fmt(yMax * f) : '0';
+        node.append(lbl);
+      }
+
+      if (fullVal > 0) {
+        const my = y(fullVal);
+        node.append(svg('line', { class: 'agy-cap-median', x1: left, x2: W - right, y1: my, y2: my }));
+      }
+
+      const coords = pts.map((p, i) => [x(p, i), y(valOfPt(p))]);
+      if (coords.length >= 2) {
+        const dLine = coords.map(([cx, cy], i) => `${i ? 'L' : 'M'}${cx.toFixed(1)},${cy.toFixed(1)}`).join(' ');
+        const baseY = y(0).toFixed(1);
+        const dArea = `${dLine} L${coords[coords.length - 1][0].toFixed(1)},${baseY} L${coords[0][0].toFixed(1)},${baseY} Z`;
+        node.append(paint(svg('path', { class: 'agy-cap-area', d: dArea }), { fill: color }));
+        node.append(paint(svg('path', { class: 'agy-cap-line', d: dLine }), { stroke: color }));
+      }
+
+      const activeResetMs = w && !w.ended && w.resetAt ? Date.parse(w.resetAt) || 0 : 0;
+      const dayLabel = at => span < 36 * 3600000 && pts.length > 1
+        ? new Date(at).toLocaleString(dateLocale(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+        : new Date(at).toLocaleDateString(dateLocale(), { month: 'numeric', day: 'numeric' });
+      pts.forEach((p, i) => {
+        const [cx, cy] = coords[i];
+        const rawV = valOfPt(p);
+        const isCurrent = Boolean(p.current || (i === pts.length - 1 && activeResetMs > 0 && !p.endedByReset && Math.abs((p.resetAt || 0) - activeResetMs) < 15 * 60000));
+        const isLow = (p.usedPct || 0) < 5;
+        const clamped = rawV > yMax;
+        const tipLines = [
+          `${date(p.startAt)} → ${date(p.endAt || p.resetAt)}${isCurrent ? '（进行中）' : ''}`,
+          ...(p.startedByReset ? [RESET_NOTE[p.startedByReset] || RESET_NOTE.moved] : []),
+          `区间额度变化 +${Number(p.usedPct || 0).toFixed(1)}%`,
+          `同期本机 ${tokens(p.tokens || 0)} Tokens · ${money(p.costUsd || 0)}`,
+          `折算整窗约 ${tokens(p.fullTokens || 0)} Tokens · ${money(p.fullCostUsd || 0)}`,
+        ];
+        const tipText = tipLines.join('\n');
+        const dot = paint(svg('circle', {
+          class: `agy-cap-dot ${isLow ? 'low' : 'solid'}${isCurrent ? ' current' : ''}${clamped ? ' clamped' : ''}`,
+          cx: cx.toFixed(1),
+          cy: cy.toFixed(1),
+          r: isCurrent ? 5.2 : 4,
+          tabindex: '0',
+          'aria-label': tipText,
+        }), { stroke: color, ...(isLow || isCurrent ? {} : { fill: color }) });
+        dot.addEventListener('pointermove', ev => { if (typeof tipAt === 'function') tipAt(tipText, ev.clientX, ev.clientY); });
+        dot.addEventListener('pointerleave', hideTip);
+        dot.addEventListener('focus', () => { if (typeof tipAt === 'function') { const box = dot.getBoundingClientRect(); tipAt(tipText, box.x, box.y); } });
+        dot.addEventListener('blur', hideTip);
+        node.append(dot);
+
+        if (isCurrent) {
+          const tag = svg('text', { class: 'agy-axis agy-cap-current-label', x: cx.toFixed(1), y: Math.max(11, cy - 9).toFixed(1), 'text-anchor': 'middle' });
+          tag.textContent = '进行中';
+          node.append(tag);
+        }
+        if (i === 0 || i === pts.length - 1 || (pts.length >= 5 && i === Math.floor(pts.length / 2))) {
+          const anchor = pts.length === 1 ? 'middle' : i === 0 ? 'start' : i === pts.length - 1 ? 'end' : 'middle';
+          const tick = svg('text', { class: 'agy-axis', x: cx.toFixed(1), y: H - 6, 'text-anchor': anchor });
+          tick.textContent = dayLabel(p.startAt);
+          node.append(tick);
+        }
+      });
+
+      return el('div', { class: 'agy-cap-chart' }, [node]);
+    }
 
     const draw = () => {
       const pointsByGroup = gList.map((g, idx) => {
         const w = capWindow === 'week' ? g.week : g.five;
         const cap = w?.capacity;
-        const hist = g.capacityHistory?.[capWindow] || [];
-        return { g, idx, w, cap, hist };
+        const rawHist = g.capacityHistory?.[capWindow] || [];
+        const fullVal = capMetric === 'costUsd' ? (cap?.fullCostUsd || 0) : (cap?.fullTokens || 0);
+        const pts = rawHist.length
+          ? rawHist
+          : fullVal > 0 && w
+            ? [{ startAt: w.startAt, endAt: w.endAt, resetAt: w.endAt, usedPct: w.used || 0, tokens: w.local?.tokens || 0, costUsd: w.local?.costUsd || 0, fullTokens: cap?.fullTokens || 0, fullCostUsd: cap?.fullCostUsd || 0, current: !w.ended }]
+            : [];
+        return { g, idx, w, cap, pts, fullVal };
       });
-      const anyCap = pointsByGroup.some(item => (capMetric === 'costUsd' ? item.cap?.fullCostUsd : item.cap?.fullTokens) > 0 || item.hist.length > 0);
+      const anyCap = pointsByGroup.some(item => item.fullVal > 0 || item.pts.length > 0);
       if (!anyCap) {
         body.replaceChildren(empty('还没有足够折算整窗容量的样本：需要窗口内额度已用百分比上涨，并且同期本机有 Antigravity 对话记录。'));
         note.textContent = '整窗容量按「本机窗口内用量 ÷ 官方已用百分比变化」倒推，用来观察每组 100% 额度大约相当于多少 Tokens 或参考 API 费用。';
         return;
       }
       const fmt = capMetric === 'costUsd' ? money : tokens;
-      const valOf = c => capMetric === 'costUsd' ? (c?.fullCostUsd || 0) : (c?.fullTokens || 0);
-      const maxVal = Math.max(1, ...pointsByGroup.map(item => Math.max(valOf(item.cap), ...item.hist.map(p => capMetric === 'costUsd' ? p.fullCostUsd : p.fullTokens))));
-      const cards = pointsByGroup.map(({ g, idx, w, cap, hist }) => {
-        const fullVal = valOf(cap);
+      const cards = pointsByGroup.map(({ g, idx, w, cap, pts, fullVal }) => {
+        const color = COLORS[idx % COLORS.length];
         const remVal = capMetric === 'costUsd' ? cap?.remainingCostUsd : cap?.remainingTokens;
-        const pct = Math.min(100, Math.max(fullVal > 0 ? 4 : 0, (fullVal / maxVal) * 100));
-        const fill = el('i', { class: 'agy-cap-fill', style: `width: ${pct.toFixed(1)}%; background: ${COLORS[idx % COLORS.length]}` });
-        return el('div', { class: 'agy-cap-row', style: `--agy-color: ${COLORS[idx % COLORS.length]}` }, [
+        const conf = cap?.confidence || 'insufficient';
+        const badgeTone = conf === 'medium' ? 'good' : fullVal > 0 ? 'warn' : '';
+        const badgeText = CONFIDENCE_TEXT[conf] || '样本不足';
+        const chartArea = pts.length
+          ? renderPoolCapChart(pts, fullVal, w, color, fmt)
+          : el('div', { class: 'agy-cap-empty' }, [
+              el('strong', { text: '等待额度变化以校准容量' }),
+              el('span', { text: '需要这一组额度已用百分比上涨，且同期本机有对话记录' }),
+            ]);
+        const obsPct = cap?.points || Math.round(pts.reduce((s, p) => s + (p.usedPct || 0), 0) * 10) / 10;
+        return paint(el('div', { class: 'agy-cap-row agy-cap-card', 'data-group': g.key }, [
           el('div', { class: 'agy-cap-head' }, [
-            el('span', { class: 'agy-cap-title' }, [el('i', { class: 'agy-dot', 'aria-hidden': 'true' }), groupName(g)]),
+            el('div', { class: 'agy-cap-title-wrap' }, [
+              el('span', { class: 'agy-cap-title' }, [el('i', { class: 'agy-dot', 'aria-hidden': 'true' }), groupName(g)]),
+              el('span', { class: 'ms-badge' + (badgeTone ? ' ' + badgeTone : ''), text: badgeText }),
+            ]),
             el('span', { class: 'num agy-cap-val' }, [
               el('strong', { text: fullVal > 0 ? fmt(fullVal) : '—' }),
-              el('small', { text: fullVal > 0 ? (capWindow === 'week' ? ' / 整周' : ' / 5 小时') : '样本不足' }),
+              fullVal > 0 ? el('small', { text: capWindow === 'week' ? ' / 整周' : ' / 5 小时' }) : null,
             ]),
           ]),
-          el('div', { class: 'agy-cap-bar' }, [fill]),
+          chartArea,
           el('div', { class: 'agy-cap-sub' }, [
             el('span', { text: remVal != null && fullVal > 0 ? `当前窗口约剩 ${fmt(remVal)}` : '等待额度变化以校准容量' }),
-            el('span', { text: hist.length ? `已累计 ${number(hist.length)} 个周期样本 · 观测 ${cap?.points || 0}% 额度变化` : w ? `当前已用 ${percent(w.used)}` : '' }),
+            el('span', { text: pts.length ? `已累计 ${number(pts.length)} 个周期样本 · 观测 ${obsPct}% 额度变化` : w ? `当前已用 ${percent(w.used)}` : '' }),
           ]),
-        ]);
+        ]), { '--agy-color': color });
       });
       body.replaceChildren(el('div', { class: 'agy-cap-list' }, cards));
-      note.textContent = '整窗容量按「本机窗口内用量 ÷ 官方已用百分比变化」倒推，只统计这台电脑上的 Antigravity 对话。';
+      note.textContent = '实心点可信，空心点已用不到 5%、偏差较大；虚线为近期窗口加权中位数。按本机用量倒推，只统计这台电脑上的 Antigravity 对话。';
     };
 
     const panel = el('article', { class: 'panel capacity-panel agy-capacity' }, [
@@ -407,7 +549,7 @@
     return panel;
   }
 
-  /** 最近 7 天每组的已用百分比（含 5 小时实线与周额度虚线）。 */
+  /** 最近 7 天每组的已用百分比（含 5 小时实线与周额度虚线，自动串联模型增减前后的同池采样）。 */
   function historyPanel() {
     const panel = el('article', { class: 'panel agy-history' }, [
       el('div', { class: 'panel-heading' }, [
@@ -421,9 +563,33 @@
       panel.append(empty('采样还不够。Antigravity 开着的时候每次查询都会记一条，过一阵就能看到走势。'));
       return panel;
     }
-    const now = Date.now(), from = now - 7 * 86400000;
-    const W = 700, H = 180, pad = { l: 34, r: 8, t: 8, b: 22 };
-    const x = at => pad.l + (at - from) / (now - from) * (W - pad.l - pad.r);
+    const now = Math.max(Date.now(), last()?.at || 0, samples[samples.length - 1]?.at || 0);
+    const minFrom = now - 7 * 86400000;
+    const GAP_MS = 6 * 3600000;
+    const plotSamples = samples.filter(s => Number.isFinite(s?.at) && s.at >= minFrom - 60000 && s.at <= now + 60000).slice().sort((a, b) => a.at - b.at);
+    if (last()?.ok && last()?.at >= minFrom && (!plotSamples.length || last().at > plotSamples[plotSamples.length - 1].at + 1000)) {
+      plotSamples.push({
+        at: last().at,
+        groups: list.map(g => ({
+          key: g.key,
+          used: g.used,
+          resetAt: g.resetAt,
+          ...(g.week ? { weekUsed: g.week.used, weekResetAt: g.week.resetAt } : {}),
+        })),
+      });
+    }
+    if (plotSamples.length < 2) {
+      panel.append(empty('采样还不够。Antigravity 开着的时候每次查询都会记一条，过一阵就能看到走势。'));
+      return panel;
+    }
+    const rawSpan = Math.max(3600000, now - plotSamples[0].at);
+    const from = rawSpan >= 6.5 * 86400000
+      ? minFrom
+      : Math.max(minFrom, plotSamples[0].at - Math.min(1800000, rawSpan * 0.04));
+    const spanMs = Math.max(3600000, now - from);
+
+    const W = 460, H = 196, pad = { l: 36, r: 12, t: 10, b: 24 };
+    const x = at => pad.l + Math.max(0, Math.min(1, (at - from) / spanMs)) * (W - pad.l - pad.r);
     const y = used => pad.t + (1 - Math.min(100, Math.max(0, used)) / 100) * (H - pad.t - pad.b);
     const chartSvg = svg('svg', { class: 'agy-chart', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': '最近 7 天各组额度的已用百分比' });
     for (const v of [0, 50, 100]) {
@@ -432,31 +598,109 @@
       label.textContent = v + '%';
       chartSvg.append(label);
     }
-    for (let d = 0; d <= 7; d += 1) {
-      const at = from + d * 86400000;
-      const label = svg('text', { class: 'agy-axis', x: x(at), y: H - 6, 'text-anchor': d === 0 ? 'start' : d === 7 ? 'end' : 'middle' });
-      label.textContent = new Date(at).toLocaleDateString(dateLocale(), { month: 'numeric', day: 'numeric' });
+    const tickCount = spanMs >= 2 * 86400000 ? Math.min(7, Math.max(3, Math.round(spanMs / 86400000))) : 4;
+    for (let d = 0; d <= tickCount; d += 1) {
+      const at = from + (d / tickCount) * spanMs;
+      const label = svg('text', { class: 'agy-axis', x: x(at), y: H - 6, 'text-anchor': d === 0 ? 'start' : d === tickCount ? 'end' : 'middle' });
+      label.textContent = spanMs >= 2 * 86400000
+        ? new Date(at).toLocaleDateString(dateLocale(), { month: 'numeric', day: 'numeric' })
+        : new Date(at).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit', hour12: false });
       chartSvg.append(label);
     }
+
+    const buildSegmentedPath = pts => {
+      const cmds = [];
+      const isolated = [];
+      let segLen = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const cur = pts[i], prev = pts[i - 1];
+        const startNew = i === 0 || cur.at - prev.at > GAP_MS;
+        if (startNew) {
+          if (i > 0 && segLen === 1) isolated.push(pts[i - 1]);
+          cmds.push(`M${cur.cx.toFixed(1)},${cur.cy.toFixed(1)}`);
+          segLen = 1;
+        } else {
+          cmds.push(`L${cur.cx.toFixed(1)},${cur.cy.toFixed(1)}`);
+          segLen += 1;
+        }
+      }
+      if (pts.length > 0 && segLen === 1) isolated.push(pts[pts.length - 1]);
+      return { d: cmds.join(' '), isolated };
+    };
+
     let hasWeekLine = false;
     list.forEach((group, index) => {
       const color = COLORS[index % COLORS.length];
-      const points = samples.flatMap(sample => sample.groups.filter(item => item.key === group.key).map(item => [x(sample.at), y(item.used)]));
-      if (points.length) {
-        chartSvg.append(svg('polyline', { class: 'agy-line', points: points.map(p => p.join(',')).join(' '), style: `stroke: ${color}` }));
+      const series = paint(svg('g', { class: 'agy-series' }), { '--agy-color': color });
+      const fivePts = [];
+      const weekPts = [];
+      for (const sample of plotSamples) {
+        const item = pickPoolItem(sample.groups, group);
+        if (!item) continue;
+        if (Number.isFinite(item.used)) fivePts.push({ at: sample.at, used: item.used, cx: x(sample.at), cy: y(item.used) });
+        if (item.weekUsed != null && Number.isFinite(item.weekUsed)) weekPts.push({ at: sample.at, used: item.weekUsed, cx: x(sample.at), cy: y(item.weekUsed) });
       }
-      const weekPoints = samples.flatMap(sample => sample.groups.filter(item => item.key === group.key && item.weekUsed != null).map(item => [x(sample.at), y(item.weekUsed)]));
-      if (weekPoints.length >= 2) {
+      if (fivePts.length) {
+        const { d, isolated } = buildSegmentedPath(fivePts);
+        series.append(paint(svg('path', { class: 'agy-line', d }), { stroke: color }));
+        const latest = fivePts[fivePts.length - 1];
+        const dotPts = isolated.includes(latest) ? isolated : [...isolated, latest];
+        for (const dp of dotPts) {
+          series.append(paint(svg('circle', {
+            class: 'agy-chart-dot' + (dp === latest ? ' is-latest' : ''),
+            cx: dp.cx.toFixed(1),
+            cy: dp.cy.toFixed(1),
+            r: dp === latest ? 3.4 : 2.5,
+          }), { fill: color }));
+        }
+      }
+      if (weekPts.length >= 2) {
         hasWeekLine = true;
-        chartSvg.append(svg('polyline', { class: 'agy-line-week', points: weekPoints.map(p => p.join(',')).join(' '), style: `stroke: ${color}` }));
+        const { d } = buildSegmentedPath(weekPts);
+        series.append(paint(svg('path', { class: 'agy-line-week', d }), { stroke: color }));
       }
+      chartSvg.append(series);
     });
+
+    const hoverLine = svg('line', { class: 'agy-hover-line', x1: pad.l, x2: pad.l, y1: pad.t, y2: H - pad.b, hidden: 'hidden' });
+    chartSvg.append(hoverLine);
+    const hideTip = () => {
+      hoverLine.setAttribute('hidden', 'hidden');
+      const t = document.getElementById('tip');
+      if (t) t.hidden = true;
+    };
+    chartSvg.addEventListener('pointermove', ev => {
+      const box = chartSvg.getBoundingClientRect();
+      if (!box.width) return;
+      const svgX = ((ev.clientX - box.left) / box.width) * W;
+      const targetAt = from + Math.max(0, Math.min(1, (svgX - pad.l) / (W - pad.l - pad.r))) * spanMs;
+      let nearest = null, bestDiff = Infinity;
+      for (const s of plotSamples) {
+        const diff = Math.abs(s.at - targetAt);
+        if (diff < bestDiff) { bestDiff = diff; nearest = s; }
+      }
+      if (!nearest) return;
+      const hx = x(nearest.at).toFixed(1);
+      hoverLine.setAttribute('x1', hx);
+      hoverLine.setAttribute('x2', hx);
+      hoverLine.removeAttribute('hidden');
+      const lines = [date(nearest.at)];
+      for (const group of list) {
+        const item = pickPoolItem(nearest.groups, group);
+        if (!item) continue;
+        const shortName = group.title || group.models.slice(0, 2).join(' · ');
+        lines.push(`${shortName}：5 小时已用 ${percent(item.used)}${item.weekUsed != null ? ` · 周已用 ${percent(item.weekUsed)}` : ''}`);
+      }
+      if (typeof tipAt === 'function') tipAt(lines.join('\n'), ev.clientX, ev.clientY);
+    });
+    chartSvg.addEventListener('pointerleave', hideTip);
+
     panel.append(chartSvg);
     panel.append(el('div', { class: 'agy-legend' }, [
-      ...list.map((group, index) => el('span', { class: 'agy-legend-item', style: `--agy-color: ${COLORS[index % COLORS.length]}` }, [
+      ...list.map((group, index) => paint(el('span', { class: 'agy-legend-item' }, [
         el('i', { class: 'agy-dot', 'aria-hidden': 'true' }),
         groupName(group),
-      ])),
+      ]), { '--agy-color': COLORS[index % COLORS.length] })),
       hasWeekLine ? el('span', { class: 'agy-legend-note', text: '实线：5 小时已用 · 虚线：周额度已用' }) : null,
     ]));
     return panel;
@@ -542,7 +786,7 @@
         const cap = w?.capacity;
         const badgeTone = cap?.confidence === 'medium' ? 'good' : cap?.fullTokens ? 'warn' : 'warn';
         const badgeText = CONFIDENCE_TEXT[cap?.confidence || 'insufficient'] || '样本不足';
-        return el('div', { class: 'ms-budget', style: `--agy-color: ${COLORS[idx % COLORS.length]}` }, [
+        return paint(el('div', { class: 'ms-budget' }, [
           el('div', { class: 'ms-budget-top' }, [
             el('i', { class: 'agy-dot', 'aria-hidden': 'true' }),
             groupName(g),
@@ -560,7 +804,7 @@
                 cap.remainingTokens != null ? el('span', { class: 'num', text: ` ${tokens(cap.remainingTokens)} Tokens` }) : null,
               ]
             : [el('span', { text: '当前还没有足够的额度变化与本机请求对照，先显示各模型按标价的相对比例。' })]),
-        ]);
+        ]), { '--agy-color': COLORS[idx % COLORS.length] });
       }));
 
       const tokenField = isWeek ? 'weekTokens' : 'fiveTokens';
@@ -841,7 +1085,7 @@
           el('div', { class: 'mini-reset agy-mini-week-reset' }, [icon('clock'), el('span', { text: resetText(group.week) })]),
         ]));
       }
-      body.push(el('div', { class: 'quota-mini agy-mini', 'data-group': group.key, style: `--agy-color: ${COLORS[index % COLORS.length]}` }, rows));
+      body.push(paint(el('div', { class: 'quota-mini agy-mini', 'data-group': group.key }, rows), { '--agy-color': COLORS[index % COLORS.length] }));
     });
     if (!list.length) body.push(el('div', { class: 'quota-missing' }, [el('p', { text: [].concat(notes()[0] || '打开 Antigravity 后会自动查询。')[0] })]));
     const link = el('button', { type: 'button', class: 'text-btn', 'data-go': 'quota', 'aria-label': 'Antigravity 额度详情' }, ['详情', icon('arrow')]);

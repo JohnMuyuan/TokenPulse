@@ -125,6 +125,30 @@ const summary = (id, title, nesting = 0, parentId = '') => summaries.prepare('in
     assert.equal(sessions.getSession('antigravity', SUB), null);
     pass('antigravity sessions: the detail shows user messages, replies and tool calls with their output (thinking hidden, failed tools marked)');
 
+    // 多步带长排队耗时的轮次以极短文本收尾时，沿用本轮实测流式速度而非除以含排队总时长
+    const SHORT_END = '11111111-2222-4000-8000-000000000009';
+    {
+      const db = new DatabaseSync(path.join(agy, 'conversations', SHORT_END + '.db'));
+      db.exec('create table steps (idx integer primary key, step_type integer, status integer, metadata blob, step_payload blob); create table gen_metadata (idx integer primary key, data blob, size integer);');
+      const duration = (no, ms) => msg(no, num(1, Math.floor(ms / 1000)), num(2, Math.floor((ms % 1000) * 1e6)));
+      db.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(0, 14, 3, userStep(T0 + 20000, '跑一下简短确认'));
+      db.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(1, 15, 3, replyStep(T0 + 21000, { gen: 0, tools: [{ id: 'c1', name: 'run_command', args: '{}' }], usage: { input: 1000, output: 400 } }));
+      db.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(2, 132, 3, toolStep(T0 + 48000, 'c1', 'run_command', '{}', 'ok'));
+      db.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(3, 15, 3, replyStep(T0 + 49000, { gen: 1, text: '好，已完成。', usage: { input: 1000, output: 10 } }));
+      const g0 = msg(1, str(19, 'gemini-4-argon-b'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M417')), duration(11, 25000), duration(12, 2000));
+      const g1 = msg(1, str(19, 'gemini-4-argon-b'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M417')), duration(11, 12000), duration(12, 100));
+      db.prepare('insert into gen_metadata values (?, ?, ?)').run(0, g0, g0.length);
+      db.prepare('insert into gen_metadata values (?, ?, ?)').run(1, g1, g1.length);
+      db.close();
+      summary(SHORT_END, '短回复测试');
+      const shortDetail = sessions.getSession('antigravity', SHORT_END);
+      const finalMsg = shortDetail.messages.find(m => m.role === 'assistant');
+      assert.strictEqual(finalMsg.tokensPerSec, 200, '短尾步回退到本轮工具步实测流式速度 200 T/s，不被 37s 排队耗时拉低');
+      summaries.prepare('delete from conversation_summaries where conversation_id = ?').run(SHORT_END);
+      fs.rmSync(path.join(agy, 'conversations', SHORT_END + '.db'), { force: true });
+    }
+    pass('antigravity sessions: short final reply in multi-step turn inherits measured streaming speed without queue-wait dilution');
+
     // 子代（含多层嵌套子代理）消耗的 Token 归入主对话统计，但子代理自己不单独出现在列表里
     const SUB1 = 'eeeeeeee-2222-4000-8000-000000000005';
     const SUB2 = 'ffffffff-2222-4000-8000-000000000006';

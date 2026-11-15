@@ -64,6 +64,12 @@ try {
   const agEffort = verifyRequest({ kind: "antigravity", requested: "claude-opus-5-5", returned: "claude-opus-5-5-medium" });
   check("Antigravity：claude-opus-5-5 → claude-opus-5-5-medium 只是带了思考等级，算一致",
     agEffort.status === "match" && agEffort.reasons.some((r) => /思考等级/.test(r) && /medium/.test(r)), JSON.stringify(agEffort));
+  const agGeminiEffort = verifyRequest({ kind: "antigravity", requested: "gemini-4-hydrogen", returned: "gemini-4-hydrogen-xhigh" });
+  const agGptOssEffort = verifyRequest({ kind: "antigravity", requested: "gpt-oss-120b", returned: "gpt-oss-120b-medium" });
+  check("Antigravity：gemini-4-hydrogen-xhigh 与 gpt-oss-120b-medium 等级后缀同样识别为一致",
+    agGeminiEffort.status === "match" && agGptOssEffort.status === "match" &&
+    agGeminiEffort.reasons.some((r) => /思考等级/.test(r) && /xhigh/.test(r)),
+    JSON.stringify([agGeminiEffort, agGptOssEffort]));
   check("Claude 思考等级后缀（含 thinking、叠加）都去掉，但不会把 opus 和 sonnet 混为一谈",
     normalizeModel("claude-sonnet-5-thinking") === "claude-sonnet-5" &&
     normalizeModel("claude-opus-5-5-thinking-high") === "claude-opus-5-5" &&

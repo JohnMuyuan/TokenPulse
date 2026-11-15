@@ -112,12 +112,31 @@ window.addEventListener('pagehide', stopSidebarMotion);
 
 /* ---------------- DOM 小工具 ---------------- */
 
+function applyInlineStyle(node, value) {
+  if (value == null) return;
+  if (typeof value === 'object') {
+    for (const [prop, val] of Object.entries(value)) {
+      if (val == null || val === '') continue;
+      if (prop.startsWith('--') || prop.includes('-')) node.style.setProperty(prop, String(val));
+      else node.style[prop] = String(val);
+    }
+    return;
+  }
+  for (const part of String(value).split(';')) {
+    const colon = part.indexOf(':');
+    if (colon <= 0) continue;
+    const prop = part.slice(0, colon).trim();
+    const val = part.slice(colon + 1).trim();
+    if (prop && val) node.style.setProperty(prop, val);
+  }
+}
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(attrs)) {
     if (value == null) continue;
     if (key === 'text') node.textContent = value;
     else if (key === 'class') node.className = value;
+    else if (key === 'style') applyInlineStyle(node, value);
     else node.setAttribute(key, String(value));
   }
   for (const child of [].concat(children)) if (child != null) node.append(child);
@@ -125,7 +144,11 @@ function el(tag, attrs = {}, children = []) {
 }
 function svg(tag, attrs = {}) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value == null) continue;
+    if (key === 'style') applyInlineStyle(node, value);
+    else node.setAttribute(key, String(value));
+  }
   return node;
 }
 function icon(name, cls = 'icon') {

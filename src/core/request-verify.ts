@@ -64,18 +64,18 @@ export function normalizeModel(model: string) {
     .replace(/^(grok-[\d.]+)-build$/, "$1")
     .replace(/^(gemini-[\w.-]+?)-(?:b|n|tiered|worker(?:-agy)?)$/, "$1")
     .replace(/^(?:gemini-(?:[\w.-]+-)?)?orchestrator(?:-\(?(?:carbon|argon|hydrogen|pro)\)?)?$/, "orchestrator")
-    .replace(CLAUDE_EFFORT_SUFFIX, "$1");
+    .replace(MODEL_EFFORT_SUFFIX, "$1");
 }
 
 /**
- * Antigravity 接 Claude 时，返回型号会带上思考等级：请求 `claude-opus-5-5`、返回 `claude-opus-5-5-medium`。
- * Anthropic 自己的型号名不会以这些词结尾，所以只对 claude- 开头的去掉，不影响别家型号。
+ * Antigravity 给模型 ID 附带思考等级后缀：如 `claude-opus-5-5-medium`、`gemini-4-hydrogen-xhigh`、`gpt-oss-120b-medium`。
+ * 各家基础型号名不会以这些词结尾，按已知前缀剥除，不影响其他渠道型号。
  */
-const CLAUDE_EFFORT_SUFFIX = /^(claude-[\w.-]+?)(?:-(?:thinking|low|medium|high|xhigh|max))+$/;
+const MODEL_EFFORT_SUFFIX = /^(claude-[\w.-]+?|gemini-[\w.-]+?|gpt-oss-[\w.-]+?)(?:-(?:thinking|minimal|low|medium|high|xhigh|max|ultra))+$/;
 
-/** 返回型号里带的思考等级（只认 Claude 的），没有就是 undefined。 */
-function claudeEffortOf(model: string) {
-  const m = model.trim().toLowerCase().match(CLAUDE_EFFORT_SUFFIX);
+/** 返回型号里带的思考等级后缀，没有就是 undefined。 */
+function modelEffortOf(model: string) {
+  const m = model.trim().toLowerCase().match(MODEL_EFFORT_SUFFIX);
   return m ? model.trim().slice(m[1].length + 1) : undefined;
 }
 
@@ -175,7 +175,7 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
   } else if (kind === "antigravity") {
     if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");
     else if (!requested) notes.push("会话记录里没记下请求的型号");
-    else if (!mismatch && claudeEffortOf(returned)) notes.push(`${returned} 就是 ${requested}，后缀 ${claudeEffortOf(returned)} 是 Antigravity 附上的思考等级`);
+    else if (!mismatch && modelEffortOf(returned)) notes.push(`${returned} 就是 ${requested}，后缀 ${modelEffortOf(returned)} 是 Antigravity 附上的思考等级`);
     else if (!mismatch && normalizeModel(returned) !== returned.toLowerCase().trim()) notes.push(`${returned} 是 ${requested} 在 Antigravity 里的内部型号名`);
   } else if (kind === "deepseek-harness" || kind === "pi") {
     if (!returned) notes.push("会话记录里没有上游返回的型号，无法核对");

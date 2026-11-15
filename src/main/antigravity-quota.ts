@@ -252,6 +252,38 @@ const EFFORT_SCALE: Record<string, number> = { minimal: 0.45, low: 0.62, medium:
 
 export const groupKey = (models: string[]) => [...models].sort().join("|");
 
+/**
+ * 识别某个分组所属的额度池标识：
+ * Antigravity 的官方配额池固定按「Gemini / Orchestrator 池」与「Claude / GPT 第三方池」划分，
+ * 但组内型号列表会随 Google 上下线模型而变化（例如新增 Gemini 4 Carbon / Hydrogen / Orchestrator，或下线 GPT-OSS 120B），
+ * 导致排序拼接出的 `group.key` 改变。用稳定的池标识串联同一额度池的历史采样、周窗口回退、时间线与容量折算。
+ */
+export function quotaPoolId(modelsOrKey: string[] | string, title?: string): string {
+  const text = Array.isArray(modelsOrKey) ? modelsOrKey.join("|") : String(modelsOrKey || "");
+  const hasGemini = /gemini|orchestrator/i.test(text) || /gemini/i.test(title || "");
+  const has3p = /claude|gpt|openai|anthropic/i.test(text) || /claude|gpt|3p/i.test(title || "");
+  if (hasGemini && !has3p) return "pool:gemini";
+  if (has3p && !hasGemini) return "pool:3p";
+  return Array.isArray(modelsOrKey) ? groupKey(modelsOrKey) : text;
+}
+
+export function pickPoolSampleGroup(
+  groups: AgySampleGroup[],
+  targetKey: string,
+  targetTitle?: string,
+): AgySampleGroup | null {
+  if (!Array.isArray(groups) || !groups.length) return null;
+  const exact = groups.find((g) => g.key === targetKey);
+  if (exact) return exact;
+  const pool = quotaPoolId(targetKey, targetTitle);
+  const matches = groups.filter((g) => quotaPoolId(g.key) === pool);
+  if (!matches.length) return null;
+  if (matches.length === 1) return matches[0];
+  return [...matches].sort(
+    (a, b) => Number(b.weekUsed != null) - Number(a.weekUsed != null) || b.key.length - a.key.length,
+  )[0];
+}
+
 function isMixedPoolModels(modelsOrKey: string[] | string): boolean {
   const text = Array.isArray(modelsOrKey) ? modelsOrKey.join("|") : String(modelsOrKey || "");
   return /gemini|orchestrator/i.test(text) && /claude|gpt/i.test(text);
@@ -376,6 +408,7 @@ export function agyWindowSegments(
   history: AgySample[],
   currentQuota: AgyWindowQuota,
   now: number,
+  groupTitle?: string,
 ): AgyWindowSegment[] {
   const periodMs = windowKind === "five" ? FIVE_MS : WEEK_MS;
   const pickSample = (item: AgySampleGroup) =>
@@ -388,18 +421,17 @@ export function agyWindowSegments(
   const rawPoints: { at: number; used: number; resetAt: number }[] = [];
   for (const sample of history) {
     if (!Number.isFinite(sample.at) || sample.at > now) continue;
-    for (const item of sample.groups) {
-      if (item.key !== groupKeyStr) continue;
-      const picked = pickSample(item);
-      if (!picked || !Number.isFinite(picked.used)) continue;
-      const rMs = picked.resetAt ? Date.parse(picked.resetAt) || 0 : 0;
-      if (rMs > 0 && sample.at > rMs) continue;
-      rawPoints.push({
-        at: sample.at,
-        used: Math.min(100, Math.max(0, Number(picked.used) || 0)),
-        resetAt: rMs > 0 ? rMs : Math.floor(sample.at / periodMs) * periodMs + periodMs,
-      });
-    }
+    const item = pickPoolSampleGroup(sample.groups, groupKeyStr, groupTitle);
+    if (!item) continue;
+    const picked = pickSample(item);
+    if (!picked || !Number.isFinite(picked.used)) continue;
+    const rMs = picked.resetAt ? Date.parse(picked.resetAt) || 0 : 0;
+    if (rMs > 0 && sample.at > rMs) continue;
+    rawPoints.push({
+      at: sample.at,
+      used: Math.min(100, Math.max(0, Number(picked.used) || 0)),
+      resetAt: rMs > 0 ? rMs : Math.floor(sample.at / periodMs) * periodMs + periodMs,
+    });
   }
 
   const currentResetMs = currentQuota.resetAt ? Date.parse(currentQuota.resetAt) || 0 : 0;
@@ -506,6 +538,7 @@ function buildWindowInsight(
   history: AgySample[],
   groupRows: RequestRow[],
   now: number,
+  groupTitle?: string,
 ): { insight: AgyWindowInsight; capacityHistory: AgyCapacityPoint[] } {
   const periodMs = windowKind === "five" ? FIVE_MS : WEEK_MS;
   const resetMs = quota.resetAt ? Date.parse(quota.resetAt) || 0 : 0;
@@ -514,7 +547,7 @@ function buildWindowInsight(
   const used = ended ? 0 : Math.min(100, Math.max(0, Number(quota.used) || 0));
   const remaining = ended ? 100 : Math.max(0, Math.round((100 - used) * 10) / 10);
 
-  const segments = agyWindowSegments(windowKind, groupKeyStr, history, quota, now);
+  const segments = agyWindowSegments(windowKind, groupKeyStr, history, quota, now, groupTitle);
   const curSeg =
     !ended && resetMs > 0
       ? [...segments].reverse().find((s) => Math.abs(s.resetAt - resetMs) < SAME_WINDOW_MS && !s.endedByReset)
@@ -709,7 +742,9 @@ function buildModelCapacities(
   }
 
   for (const row of rows30) {
-    const effort = row.effort && row.effort !== "unknown" ? row.effort : isEffortless(row.model) ? "" : "medium";
+    const hasKnownEffort = Boolean(row.effort && row.effort !== "unknown");
+    if (!hasKnownEffort && [...candidates.values()].some((c) => c.model === row.model)) continue;
+    const effort = hasKnownEffort ? row.effort! : "";
     const key = comboKey(row.model, effort || "default");
     if (!candidates.has(key)) {
       const g = findGroup(row.model, row.model);
@@ -842,7 +877,7 @@ function buildTimelineWindow(
       ? { used: primaryGroup.used, resetAt: primaryGroup.resetAt }
       : primaryGroup.week ?? { used: primaryGroup.used, resetAt: primaryGroup.resetAt }
     : { used: 0 };
-  const segments = primaryGroup ? agyWindowSegments(windowKind, primaryGroup.key, history, primaryQuota, now) : [];
+  const segments = primaryGroup ? agyWindowSegments(windowKind, primaryGroup.key, history, primaryQuota, now, primaryGroup.title) : [];
 
   for (let idx = segments.length - 1; idx >= 0; idx--) {
     const seg = segments[idx];
@@ -922,8 +957,13 @@ function buildTimelineWindow(
   }
 
   const pickPct = (s: AgySample) => {
+    if (group) {
+      const matched = pickPoolSampleGroup(s.groups, group.key, group.title);
+      if (!matched) return null;
+      const v = windowKind === "five" ? matched.used : (matched.weekUsed ?? matched.used);
+      return typeof v === "number" && Number.isFinite(v) ? v : null;
+    }
     const vals = s.groups
-      .filter((g) => !group || g.key === group.key)
       .map((g) => (windowKind === "five" ? g.used : (g.weekUsed ?? g.used)))
       .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     return vals.length ? Math.max(...vals) : null;
@@ -1141,13 +1181,18 @@ export class AntigravityQuota {
     });
     const groups: AgyGroupInsight[] = lastGroups.map((group) => {
       const gRows = rows30.filter((r) => groupMatchesModel(group, r.model));
-      const fiveRes = buildWindowInsight("five", { used: group.used, resetAt: group.resetAt }, group.key, this.stored.history, gRows, now);
+      const fiveRes = buildWindowInsight("five", { used: group.used, resetAt: group.resetAt }, group.key, this.stored.history, gRows, now, group.title);
       const weekQuota = group.week ?? (() => {
-        // 如果历史采样里记过周额度，也兜底读出来
-        const latestWeek = [...this.stored.history].reverse().flatMap((s) => s.groups).find((g) => g.key === group.key && g.weekUsed != null);
-        return latestWeek ? { used: latestWeek.weekUsed!, resetAt: latestWeek.weekResetAt } : undefined;
+        // 如果历史采样里记过周额度，也兜底读出来（兼容组内模型上下线导致的 key 变化）
+        for (let i = this.stored.history.length - 1; i >= 0; i--) {
+          const matched = pickPoolSampleGroup(this.stored.history[i].groups, group.key, group.title);
+          if (matched && matched.weekUsed != null) {
+            return { used: matched.weekUsed, resetAt: matched.weekResetAt };
+          }
+        }
+        return undefined;
       })();
-      const weekRes = weekQuota ? buildWindowInsight("week", weekQuota, group.key, this.stored.history, gRows, now) : null;
+      const weekRes = weekQuota ? buildWindowInsight("week", weekQuota, group.key, this.stored.history, gRows, now, group.title) : null;
 
       const rawItems = lastModels.filter((m) => group.models.includes(m.family) || group.models.includes(modelFamily(m.label || m.family)));
       const itemSource: AgyModelQuotaItem[] = rawItems.length
@@ -1398,24 +1443,28 @@ export class AntigravityQuota {
     this.stored.history = this.stored.history.filter((item) => item.at >= since).slice(-5000);
   }
 
-  /** 一组过了提醒线：每个窗口提醒一次（含 5 小时窗口和周窗口）。 */
+  /** 一组过了提醒线：每个窗口提醒一次（含 5 小时窗口和周窗口，按额度池去重以防增减型号时重复提醒）。 */
   private check(groups: AgyGroupState[]) {
     const limit = this.options.notifyAt?.() ?? 0;
     if (!limit) return;
     for (const group of groups) {
+      const poolKey = quotaPoolId(group.models, group.title);
       if (group.used >= limit) {
         const resetAt = group.resetAt ? Date.parse(group.resetAt) || 0 : 0;
-        const previous = this.stored.notified[group.key];
+        const previous = this.stored.notified[poolKey] ?? this.stored.notified[group.key];
         if (previous == null || Math.abs(resetAt - previous) >= SAME_WINDOW_MS) {
+          this.stored.notified[poolKey] = resetAt;
           this.stored.notified[group.key] = resetAt;
           this.options.notify?.(group.models, group.used, group.resetAt);
         }
       }
       if (group.week && group.week.used >= limit) {
+        const weekPoolKey = `${poolKey}:week`;
         const weekKey = `${group.key}:week`;
         const resetAt = group.week.resetAt ? Date.parse(group.week.resetAt) || 0 : 0;
-        const previous = this.stored.notified[weekKey];
+        const previous = this.stored.notified[weekPoolKey] ?? this.stored.notified[weekKey];
         if (previous == null || Math.abs(resetAt - previous) >= SAME_WINDOW_MS) {
+          this.stored.notified[weekPoolKey] = resetAt;
           this.stored.notified[weekKey] = resetAt;
           this.options.notify?.(group.models, group.week.used, group.week.resetAt);
         }

@@ -1,4 +1,39 @@
-# 当前接手入口 · TokenPulse v0.3.92 正式发布（去掉 Antigravity 等原生测速记录的「≈ 日志估算」回退，2026-11-13）
+# 当前接手入口 · TokenPulse v0.3.93 正式发布（修复并重做 Antigravity 容量趋势、7 天额度曲线与全链路适配，2026-11-15）
+
+## 发布状态 · v0.3.93
+
+- **版本**：`0.3.93`（用户 2026-11-15 排查修复 Gemini（Antigravity）额度容量趋势灰线与最近 7 天额度空白问题后，要求直接发布新版本到 GitHub）。发布前 `git fetch origin` 确认与 `origin/main` 同步（`0 0`）。`renderer/intro.js` 加 `0.3.93` 更新说明 2 条（`quota` + `check` 图标），`renderer/i18n.js` 补齐中英文词条与正则翻译。
+- **排查确认的全部根因**：
+  1. **CSP `style-src 'self'` 静默拦截 `setAttribute('style', ...)`（直接导致「一条灰线」与「最近 7 天的额度空白」）**：`renderer/index.html` 启用了 `style-src 'self'`，`el()` 与 `svg()` 此前把 `style` 属性走 `setAttribute('style', ...)` 写入，被 Chromium 全部丢弃；全仓库唯独 `renderer/antigravity-quota.js` 有 8 处传入 `style:`，导致：① `.agy-cap-fill` 丢失 `width` 和 `background`，只剩 `7px` 空灰底槽 `.agy-cap-bar`；② `.agy-line` 与 `.agy-line-week` 在 CSS 中仅有 `fill: none` 无默认 `stroke`，行内 `stroke` 被拦后变成完全透明隐形；③ 第二组（Claude / GPT 池）的 `--agy-color` 变量被拦，全部退回蓝色。
+  2. **「额度容量趋势」面板未绘制历史容量折线**：后端 `src/main/antigravity-quota.ts` 已算出每组 `capacityHistory.five` / `capacityHistory.week`，但前端 `agyCapacityPanel()` 只画了单行静态进度条且两组共用 `maxVal`（Gemini 数亿至数十亿 Token 把 Claude/GPT 组压到 4%），未绘制历史容量走势折线、中位数参考线与采样点浮层。
+  3. **组内模型上下线导致 `group.key` 改变，切断 7 天走势与容量历史**：Google 近期多次增补 Gemini 池模型（`Argon` → `+ Carbon` → `+ Hydrogen` → `+ Orchestrator`），且官方 `GetUserStatus` 已预告 `2026-11-18` 移除 `GPT-OSS 120B`；前后端多处用精确 `item.key === group.key` 匹配历史采样，导致本机最近 7 天 775 条采样中有 494 条在模型更新点断掉。
+  4. **7 天走势图短跨度挤压与休眠断档**：采样不足 7 天时固定按 168 小时铺轴会把数小时曲线挤在最右侧几像素；关机休眠超过数小时未抬笔断线，也缺少悬停十字准星浮层。
+  5. **其他全链路细节问题**：① 本机大量无标签内部型号 `gemini-3.8-flash-tiered`（`MODEL_PLACEHOLDER_M322`）在 `buildModelCapacities()` 中被兜底赋成假 `effort: "medium"`（多出「中」等级徽章）；② `request-verify.ts` 此前仅剥除 `claude-*` 的思考等级后缀，未覆盖新增的 `gemini-4-hydrogen-xhigh`、`gpt-oss-120b-medium` 等后缀形式；③ `sessions.ts` 的 `parseAntigravity` 在含长排队耗时的多步工具轮以 `< 20 Token` 短文本收尾时，会回退到 `turnOutputTokens / turnActiveMs` 把排队等待算进流式速度。
+- **已完成改动与关键文件**：
+  - `src/main/antigravity-quota.ts`：新增并导出 `quotaPoolId()` 与 `pickPoolSampleGroup()`，在 `agyWindowSegments()`、`buildWindowInsight()`、`buildTimelineWindow()`、`buildInsight()` 周额度兜底及 `check()` 阈值通知去重中串联同一额度池模型增减前后的采样（本机实测 7 天采样匹配从 `281/775` 恢复到 `775/775`，Gemini 5 小时容量点从 `9` 恢复到完整 `28` 个窗口）；修正 `buildModelCapacities()` 使无标签未知等级内部型号保持 `effort: ""` 不伪造 `"medium"`。
+  - `src/core/request-verify.ts`：将思考等级后缀剥除扩展为 `MODEL_EFFORT_SUFFIX`，兼容 `claude-*`、`gemini-*`、`gpt-oss-*` 的等级后缀核验与说明。
+  - `src/core/sessions.ts`：`parseAntigravity()` 记录同轮实测流式加权速度 `turnStreamTps`，短文本尾步优先回退本轮实测流式速度，已实测轮次不再除以含首包排队的 `turnActiveMs`。
+  - `renderer/app.js`：`el()` 与 `svg()` 对 `style` 属性改为走 CSSOM（`applyInlineStyle`）兜底防呆，彻底杜绝 CSP `style-src 'self'` 静默丢样式。
+  - `renderer/antigravity-quota.js` & `renderer/antigravity.css` & `renderer/i18n.js` & `renderer/intro.js`：全部 8 处动态颜色/描边统一改用 CSSOM `paint()` 并补齐 CSS `var(--agy-color, var(--antigravity))` 兜底；重做 `agyCapacityPanel()` 为双池双列独立坐标轴 SVG 容量趋势卡片（含折线+面积衬底、近期加权中位虚线、可信度实心/空心点、`进行中` 标记、极端纯 Flash 窗口防压扁保护、无样本池独立等待提示与键盘 `:focus-visible` / 悬停浮层）；升级 `historyPanel()` 为 `<path>` 分段折线（`> 6h` 离线断档自动抬笔、跨 key 同池串联、不足 7 天自适应时间跨度、最新点圆点与悬停十字准星浮层）；补齐 `0.3.93` 更新说明及全部新增中英文翻译词条与正则。
+  - 测试增强：`scripts/test-antigravity-capacity.cjs`（3/3）、`scripts/test-requests.cjs`（74/74）、`scripts/test-antigravity-sessions.cjs`（6/6）、`scripts/test-antigravity-ui.cjs`（7/7，新增 `.agy-line` / `.agy-line-week` / `.agy-cap-line` 计算描边色、跨度宽度、双池圆点色差、跨旧 key 串联及全程 `0` 条 CSP 报错断言）。
+- **发版前验证**：
+  - `npm run build`：PASS；
+  - 本机只读元数据核验（未改写、未截图真实数据）：Gemini 与 Claude/GPT 两组 7 天采样均匹配 `775/775`，`gemini-3.8-flash-tiered` 的 `effort` 为 `""`；
+  - Node 测试：`test-antigravity-capacity`（3/3）、`test-antigravity-timeline`（7/7）、`test-antigravity-usage`（12/12）、`test-antigravity-sessions`（6/6）、`test-requests`（74/74）、`test-pass-speed`（PASS）、`test-features`（46/46），全部 PASS；
+  - Electron UI 测试：`test-intro-ui`（3/3）、`test-antigravity-ui`（7/7，含合成测试数据日间/夜间截图视觉自查、900px 防溢出、英文零中文字符校验）、`test-layout-ui`（9/9）、`test-ui`（22/22），全部 PASS。（其余与 Antigravity 无关的独立供应商 UI 脚本未重跑，范围见上。）
+- **打包与句柄检查**：
+  - `npm run dist` PASS；`@electron/asar` 校验 `app.asar` 含 `'0.3.93'`、`quotaPoolId`、`pickPoolSampleGroup`、`renderPoolCapChart`、`applyInlineStyle`、`MODEL_EFFORT_SUFFIX`、`turnStreamTokens` 且不含行内 `style:` 属性字面量（校验后立即 `asar.uncacheAll()`）。
+  - `dist/TokenPulse-0.3.93-Setup.exe`（112842253 B，SHA256 `9207FAB264BEA0089B4F25CDFD07E7B7E32F69B1C3C8345E1B2E3FE49DE01101`）
+  - `dist/TokenPulse-0.3.93-Portable.exe`（112585036 B，SHA256 `47182EBA4ACFA650343B6604FC52A1FF17FD40A8CB446C1EECBAFA9099347846`）
+  - `dist/TokenPulse-0.3.93-Setup.exe.blockmap`（119878 B，SHA256 `1DD2185750901F0EB61E519D6BBDF9B996CC33A599D0B57F050F65290DB2C660`）
+  - `dist/latest.yml`（352 B，version `0.3.93`，SHA256 `D75B9F645A2EC91BB2A1F48370D4CCA9594B6598231302A5799F251B49AF6DF9`）
+  - 上述 4 项及 `dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar`、`build/main/index.js` 独占打开关闭句柄检查均为 `UNLOCKED`；无残留子进程（用户本机正式 `TokenPulse.exe` 未动）。
+  - 未纳入提交：`clawd-pet-extracted/`（工作区已有未跟踪目录，未动）。
+- **Git / GitHub（发布进行中）**：准备提交 `v0.3.93` 并推送标签与 GitHub Release（说明文件 `dist/release-0.3.93.md`）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.92 正式发布（去掉 Antigravity 等原生测速记录的「≈ 日志估算」回退，2026-11-13）
 
 ## 发布状态 · v0.3.92
 

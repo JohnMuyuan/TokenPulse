@@ -15,14 +15,14 @@ fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLau
 const NOW = Date.now(), H = 3600000, iso = at => new Date(at).toISOString();
 const RESET_A = Math.floor((NOW + 3 * H) / 1000) * 1000, RESET_B = Math.floor((NOW + 4.5 * H) / 1000) * 1000;
 const RESET_A_WEEK = Math.floor((NOW + 120 * H) / 1000) * 1000, RESET_B_WEEK = Math.floor((NOW + 144 * H) / 1000) * 1000;
-// 包含上一周期（触发周窗口提前重置顺延说明与时间线历史周期切换）和当前窗口的三次采样：Gemini 一组从 10% 涨到 30%（每小时 10 个点），Claude 一组没动
-const KEY_A = 'Gemini 3.8 Flash|Gemini 4 Argon', KEY_B = 'Claude Opus 5.5|GPT-OSS 120B';
+// 包含上一周期（模拟组内模型新增前后的同池旧 key，触发周窗口提前重置顺延说明、容量趋势双点折线与 7 天跨 key 串联）和当前窗口的三次采样
+const KEY_A_OLD = 'Gemini 3.8 Flash', KEY_A = 'Gemini 3.8 Flash|Gemini 4 Argon', KEY_B = 'Claude Opus 5.5|GPT-OSS 120B';
 fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
   history: [
     {
       at: NOW - 6 * H,
       groups: [
-        { key: KEY_A, used: 25, resetAt: iso(RESET_A - 5 * H), weekUsed: 15, weekResetAt: iso(RESET_A_WEEK - 24 * H) },
+        { key: KEY_A_OLD, used: 25, resetAt: iso(RESET_A - 5 * H), weekUsed: 15, weekResetAt: iso(RESET_A_WEEK - 24 * H) },
         { key: KEY_B, used: 5, resetAt: iso(RESET_B - 5 * H), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) },
       ],
     },
@@ -37,7 +37,7 @@ fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringi
   notified: {},
 }));
 
-/* ---------- 对话库：今天两次生成 ---------- */
+/* ---------- 对话库：上一周期一次生成 + 当前窗口两次生成 ---------- */
 const { DatabaseSync } = require('node:sqlite');
 const varint = n => { const out = []; let x = BigInt(n); do { let b = Number(x & 0x7fn); x >>= 7n; if (x) b |= 0x80; out.push(b); } while (x); return Buffer.from(out); };
 const num = (no, n) => Buffer.concat([varint(no * 8), varint(n)]);
@@ -52,12 +52,14 @@ const step = (start, input, output, gen) => Buffer.concat([time(1, start), time(
   // 会话页用的内容：用户的话（14：19.2）、回复（15：20.1 正文、20.7 工具调用）、工具执行（132：5.4 调用、140.2.1 输出）
   const payload = (type, at, ...rest) => Buffer.concat([num(1, type), num(4, 3), msg(5, time(1, at), num(11, 1417), msg(20, num(3, 0))), ...rest]);
   const put = db.prepare('insert into steps values (?, ?, ?, ?, ?)');
-  put.run(0, 14, 3, null, payload(14, NOW - 2 * H - 5000, msg(19, str(2, '把首页的额度卡片改成分组显示'))));
-  put.run(1, 15, 3, step(NOW - 2 * H, 1000, 400, 0), payload(15, NOW - 2 * H, msg(20, msg(7, str(1, 'call_1'), str(2, 'view_file'), str(3, JSON.stringify({ AbsolutePath: 'D:\\demo\\card.js' }))))));
-  put.run(2, 132, 3, null, Buffer.concat([num(1, 132), num(4, 3), msg(5, time(1, NOW - 2 * H + 1000), msg(4, str(1, 'call_1'), str(2, 'view_file'), str(3, '{}'))), msg(140, msg(2, str(1, 'function card() {}')))]));
-  put.run(3, 15, 3, step(NOW - H, 2000, 600, 1), payload(15, NOW - H, msg(20, str(1, '改好了：两组额度各占一行。'))));
+  put.run(0, 14, 3, null, payload(14, NOW - 6.5 * H, msg(19, str(2, '先检查一下之前的额度数据'))));
+  put.run(1, 15, 3, step(NOW - 6.2 * H, 1500, 500, 0), payload(15, NOW - 6.2 * H, msg(20, str(1, '上一周期记录正常。'))));
+  put.run(2, 14, 3, null, payload(14, NOW - 2 * H - 5000, msg(19, str(2, '把首页的额度卡片改成分组显示'))));
+  put.run(3, 15, 3, step(NOW - 2 * H, 1000, 400, 1), payload(15, NOW - 2 * H, msg(20, msg(7, str(1, 'call_1'), str(2, 'view_file'), str(3, JSON.stringify({ AbsolutePath: 'D:\\demo\\card.js' }))))));
+  put.run(4, 132, 3, null, Buffer.concat([num(1, 132), num(4, 3), msg(5, time(1, NOW - 2 * H + 1000), msg(4, str(1, 'call_1'), str(2, 'view_file'), str(3, '{}'))), msg(140, msg(2, str(1, 'function card() {}')))]));
+  put.run(5, 15, 3, step(NOW - H, 2000, 600, 2), payload(15, NOW - H, msg(20, str(1, '改好了：两组额度各占一行。'))));
   const gen = Buffer.concat([msg(1, str(19, 'gemini-4-argon-b'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M417')))]);
-  db.prepare('insert into gen_metadata values (?, ?, ?)').run(0, gen, gen.length);
+  for (const gIdx of [0, 1, 2]) db.prepare('insert into gen_metadata values (?, ?, ?)').run(gIdx, gen, gen.length);
   db.close();
   const sum = new DatabaseSync(path.join(agy, 'conversation_summaries.db'));
   sum.exec('create table conversation_summaries (conversation_id text primary key, title text, workspace_uris text, status text, nesting_depth integer, killed numeric, last_modified_time datetime, last_user_input_time datetime)');
@@ -90,7 +92,13 @@ require('../build/core/quota.js').fetchOfficialQuota = async () => ({});
 const watchdog = setTimeout(() => { console.error('FAIL antigravity UI timed out'); app.exit(1); }, 90000);
 let checks = 0;
 const pass = name => { checks++; console.log('PASS ' + name); };
-app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async () => {
+const cspErrors = [];
+app.on('web-contents-created', (_event, wc) => {
+  wc.on('console-message', (ev) => {
+    const message = typeof ev?.message === 'string' ? ev.message : '';
+    if (/Content Security Policy|style-src/i.test(message)) cspErrors.push(message);
+  });
+  wc.once('did-finish-load', async () => {
   const e = code => wc.executeJavaScript(code).catch(error => { throw new Error(error.message + ' ← ' + String(code).slice(0, 160)); });
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const until = async (code, ms = 15000) => { const end = Date.now() + ms; while (!await e(`Promise.resolve(${code}).then(v => !!v)`)) { assert.ok(Date.now() < end, 'Timed out: ' + code); await pause(60); } };
@@ -134,6 +142,41 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line').length"), 2, '走势图每组一条线');
     assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line-week').length"), 2, '周额度走势虚线每组一条');
     assert.ok(await e("!!document.querySelector('#quota-detail .agy-capacity') && !!document.querySelector('#quota-detail .agy-model-study') && !!document.querySelector('#quota-detail .agy-requests')"), '容量趋势、模型换算与账号请求面板齐全');
+    // 严格核验 CSP 与实际计算样式：7 天折线与容量趋势折线绝不能因 style-src 'self' 变成无描边隐形线或空灰条，两组颜色区分鲜明
+    await until("document.querySelectorAll('#quota-detail .agy-capacity .agy-cap-dot').length >= 2", 20000);
+    const chartFacts = await e(`(() => {
+      const lines5 = [...document.querySelectorAll('#quota-detail .agy-chart .agy-line')];
+      const linesW = [...document.querySelectorAll('#quota-detail .agy-chart .agy-line-week')];
+      const groupDots = [...document.querySelectorAll('#quota-detail .agy-group .agy-dot')].map(d => getComputedStyle(d).backgroundColor);
+      const capLine = document.querySelector('#quota-detail .agy-capacity .agy-cap-line');
+      const capDots = [...document.querySelectorAll('#quota-detail .agy-capacity .agy-cap-dot')];
+      const capCards = [...document.querySelectorAll('#quota-detail .agy-capacity .agy-cap-card')];
+      return {
+        strokes5: lines5.map(l => getComputedStyle(l).stroke),
+        widths5: lines5.map(l => Math.round(l.getBoundingClientRect().width)),
+        d5: lines5.map(l => l.getAttribute('d') || ''),
+        strokesW: linesW.map(l => getComputedStyle(l).stroke),
+        groupDots,
+        capStroke: capLine ? getComputedStyle(capLine).stroke : 'none',
+        capWidth: capLine ? Math.round(capLine.getBoundingClientRect().width) : 0,
+        capDotCount: capDots.length,
+        capCardDots: capCards.map(c => getComputedStyle(c.querySelector('.agy-dot')).backgroundColor),
+      };
+    })()`);
+    assert.ok(chartFacts.strokes5.every(s => s && s !== 'none' && s !== 'rgba(0, 0, 0, 0)'), '7 天 5 小时走势折线有可见描边: ' + JSON.stringify(chartFacts.strokes5));
+    assert.notEqual(chartFacts.strokes5[0], chartFacts.strokes5[1], 'Gemini 组与 Claude/GPT 组折线颜色区分');
+    assert.ok(chartFacts.widths5.every(w => w > 30), '7 天折线串联跨 key 采样且有实际水平跨度: ' + JSON.stringify(chartFacts.widths5));
+    assert.ok((chartFacts.d5[0].match(/L/g) || []).length >= 3, 'Gemini 组串联了旧 key 与当前 key 共 4 个采样点: ' + chartFacts.d5[0]);
+    assert.ok(chartFacts.strokesW.every(s => s && s !== 'none'), '7 天周额度虚线有可见描边');
+    assert.notEqual(chartFacts.groupDots[0], chartFacts.groupDots[1], '详情分组卡片圆点颜色经 CSSOM 生效区分');
+    assert.ok(chartFacts.capStroke !== 'none' && chartFacts.capWidth > 40 && chartFacts.capDotCount >= 2, '额度容量趋势绘制出真实 SVG 历史容量折线与采样点: ' + JSON.stringify(chartFacts));
+    assert.notEqual(chartFacts.capCardDots[0], chartFacts.capCardDots[1], '容量趋势双池卡片各自保持池主题色');
+    assert.deepEqual(cspErrors, [], '页面全程无 CSP 违规报错');
+    await e("document.querySelector('#quota-detail .agy-capacity').scrollIntoView({ block: 'start' })");
+    await shot('agy-capacity-and-history-light');
+    await e("setThemeMode('dark')"); await pause(250);
+    await shot('agy-capacity-and-history-dark');
+    await e("setThemeMode('light')"); await pause(150);
     // 周额度二级窗口：进度条底槽与背景区分，且提前重置说明与上方预测条之间留有合理间距（不重叠或贴边）
     const weekBoxLayout = await e(`(() => {
       const box = document.querySelector('#quota-detail .agy-group[data-group="${KEY_A}"] .agy-week-box');
@@ -181,7 +224,7 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
 
     // 本机用量：扫到的 Antigravity 对话；型号按额度接口的标签显示
     await until("/Gemini|gemini/.test(document.querySelector('#quota-detail .agy-local')?.textContent || '') && document.querySelector('#quota-detail .agy-model')?.textContent === 'gemini-4-argon'", 30000);
-    assert.match(await text('#quota-detail .agy-local'), /今天[\s\S]*Tokens[\s\S]*2 次请求/);
+    assert.match(await text('#quota-detail .agy-local'), /今天[\s\S]*Tokens[\s\S]*[23] 次请求/);
     await e("document.querySelector('#quota-detail [data-action=agy-usage]').click()");
     await until("document.body.dataset.page === 'usage'");
     assert.equal(await e("document.getElementById('source-filter').value"), 'Antigravity', '用量明细的工具筛选跟着切到 Antigravity');
@@ -268,7 +311,8 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     console.log(`${checks}/${checks} antigravity UI checks passed`);
     clearTimeout(watchdog); app.exit(0);
   } catch (error) { console.error('FAIL antigravity UI', error); clearTimeout(watchdog); app.exit(1); }
-}));
+  });
+});
 app.on('quit', () => { try { server.close(); } catch { /* 已经关了 */ } try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 句柄没放完就留给系统清理 */ } });
 server.listen(0, '127.0.0.1', () => {
   fs.writeFileSync(path.join(agy, 'daemon', 'hub_1.json'), JSON.stringify({ pid: process.pid, httpsPort: 1, httpPort: server.address().port, lsVersion: '2.29.0', csrfToken: CSRF }));
