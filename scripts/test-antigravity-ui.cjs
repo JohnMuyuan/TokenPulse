@@ -145,6 +145,11 @@ app.on('web-contents-created', (_event, wc) => {
     // 严格核验 CSP 与实际计算样式：7 天折线与容量趋势折线绝不能因 style-src 'self' 变成无描边隐形线或空灰条，两组颜色区分鲜明
     await until("document.querySelectorAll('#quota-detail .agy-capacity .agy-cap-dot').length >= 2", 20000);
     const chartFacts = await e(`(() => {
+      const detail = document.getElementById('quota-detail').getBoundingClientRect();
+      const histPanel = document.querySelector('#quota-detail > .agy-history')?.getBoundingClientRect();
+      const localPanel = document.querySelector('#quota-detail > .agy-local')?.getBoundingClientRect();
+      const chartBox = document.querySelector('#quota-detail .agy-history .agy-chart')?.getBoundingClientRect();
+      const legendBox = document.querySelector('#quota-detail .agy-history .agy-legend')?.getBoundingClientRect();
       const lines5 = [...document.querySelectorAll('#quota-detail .agy-chart .agy-line')];
       const linesW = [...document.querySelectorAll('#quota-detail .agy-chart .agy-line-week')];
       const groupDots = [...document.querySelectorAll('#quota-detail .agy-group .agy-dot')].map(d => getComputedStyle(d).backgroundColor);
@@ -152,6 +157,12 @@ app.on('web-contents-created', (_event, wc) => {
       const capDots = [...document.querySelectorAll('#quota-detail .agy-capacity .agy-cap-dot')];
       const capCards = [...document.querySelectorAll('#quota-detail .agy-capacity .agy-cap-card')];
       return {
+        detailWidth: Math.round(detail.width),
+        histWidth: histPanel ? Math.round(histPanel.width) : 0,
+        histHeight: histPanel ? Math.round(histPanel.height) : 0,
+        histBottomSlack: histPanel && legendBox ? Math.round(histPanel.bottom - legendBox.bottom) : 999,
+        chartWidth: chartBox ? Math.round(chartBox.width) : 0,
+        localWidth: localPanel ? Math.round(localPanel.width) : 0,
         strokes5: lines5.map(l => getComputedStyle(l).stroke),
         widths5: lines5.map(l => Math.round(l.getBoundingClientRect().width)),
         d5: lines5.map(l => l.getAttribute('d') || ''),
@@ -163,9 +174,14 @@ app.on('web-contents-created', (_event, wc) => {
         capCardDots: capCards.map(c => getComputedStyle(c.querySelector('.agy-dot')).backgroundColor),
       };
     })()`);
+    assert.ok(Math.abs(chartFacts.histWidth - chartFacts.detailWidth) <= 4 && Math.abs(chartFacts.localWidth - chartFacts.detailWidth) <= 4, '最近 7 天额度与 24 小时本机用量均占满整行宽度，不被挤压成窄列: ' + JSON.stringify(chartFacts));
+    const sectionOrder = await e("[...document.querySelectorAll('#quota-detail > [data-layout]')].map(n => n.dataset.layout)");
+    assert.deepEqual(sectionOrder, ['quota:agy-groups', 'quota:agy-capacity', 'quota:agy-history', 'quota:agy-local', 'quota:timeline', 'quota:speed', 'quota:agy-models', 'quota:agy-requests'], '额度详情各卡片按自然顺序排列，时间线不因残留 layoutNatural 插队: ' + JSON.stringify(sectionOrder));
+    assert.ok(chartFacts.histHeight <= 360 && chartFacts.histBottomSlack <= 36, '最近 7 天额度卡片高度紧凑，图例下方无多余空白拉伸: ' + JSON.stringify(chartFacts));
+    assert.ok(chartFacts.chartWidth > chartFacts.histWidth * 0.88, '7 天 SVG 画布铺满卡片内宽无黑边缩放: ' + JSON.stringify(chartFacts));
     assert.ok(chartFacts.strokes5.every(s => s && s !== 'none' && s !== 'rgba(0, 0, 0, 0)'), '7 天 5 小时走势折线有可见描边: ' + JSON.stringify(chartFacts.strokes5));
     assert.notEqual(chartFacts.strokes5[0], chartFacts.strokes5[1], 'Gemini 组与 Claude/GPT 组折线颜色区分');
-    assert.ok(chartFacts.widths5.every(w => w > 30), '7 天折线串联跨 key 采样且有实际水平跨度: ' + JSON.stringify(chartFacts.widths5));
+    assert.ok(chartFacts.widths5.every(w => w > chartFacts.chartWidth * 0.75), '7 天折线串联跨 key 采样且铺满水平坐标轴: ' + JSON.stringify(chartFacts));
     assert.ok((chartFacts.d5[0].match(/L/g) || []).length >= 3, 'Gemini 组串联了旧 key 与当前 key 共 4 个采样点: ' + chartFacts.d5[0]);
     assert.ok(chartFacts.strokesW.every(s => s && s !== 'none'), '7 天周额度虚线有可见描边');
     assert.notEqual(chartFacts.groupDots[0], chartFacts.groupDots[1], '详情分组卡片圆点颜色经 CSSOM 生效区分');
@@ -222,9 +238,17 @@ app.on('web-contents-created', (_event, wc) => {
     }
     pass('antigravity UI: the quota page shows each group with remaining, reset, pace forecast and a 7-day chart, without the official-account sections');
 
-    // 本机用量：扫到的 Antigravity 对话；型号按额度接口的标签显示
+    // 本机用量：扫到的 Antigravity 对话；型号按额度接口的标签显示，且 24 小时柱状图按实测宽度铺满整卡
     await until("/Gemini|gemini/.test(document.querySelector('#quota-detail .agy-local')?.textContent || '') && document.querySelector('#quota-detail .agy-model')?.textContent === 'gemini-4-argon'", 30000);
     assert.match(await text('#quota-detail .agy-local'), /今天[\s\S]*Tokens[\s\S]*[23] 次请求/);
+    const localChartGeo = await e(`(() => {
+      const localBox = document.querySelector('#quota-detail > .agy-local')?.getBoundingClientRect();
+      const gridBox = document.querySelector('#quota-detail .agy-local .agy-hourly-chart svg .grid')?.getBoundingClientRect();
+      return { localW: localBox ? Math.round(localBox.width) : 0, gridW: gridBox ? Math.round(gridBox.width) : 0 };
+    })()`);
+    assert.ok(localChartGeo.gridW > localChartGeo.localW * 0.8, '24 小时本机用量柱状图铺满整行卡片宽度，不退回 280px 窄图: ' + JSON.stringify(localChartGeo));
+    await e("document.querySelector('#quota-detail .agy-history').scrollIntoView({ block: 'start' })");
+    await shot('agy-history-and-local-light');
     await e("document.querySelector('#quota-detail [data-action=agy-usage]').click()");
     await until("document.body.dataset.page === 'usage'");
     assert.equal(await e("document.getElementById('source-filter').value"), 'Antigravity', '用量明细的工具筛选跟着切到 Antigravity');

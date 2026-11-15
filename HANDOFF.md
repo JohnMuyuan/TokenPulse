@@ -1,4 +1,38 @@
-# 当前接手入口 · TokenPulse v0.3.93 正式发布（修复并重做 Antigravity 容量趋势、7 天额度曲线与全链路适配，2026-11-15）
+# 当前接手入口 · TokenPulse v0.3.94 正式发布（修复 Antigravity「最近 7 天的额度」窄长拉伸与 24h 柱状图窄缩，2026-11-15）
+
+## 发布状态 · v0.3.94
+
+- **版本**：`0.3.94`（用户升级 `v0.3.93` 后反馈「最近 7 天的额度宽度好小、长度很长、图表只有顶上一点点」，排查修复确认后要求立即发布）。发布前 `git fetch origin` 确认与 `origin/main` 同步（`0 0`）。`renderer/intro.js` 加 `0.3.94` 更新说明 1 条（`quota` 图标），`renderer/i18n.js` 补齐英文翻译。
+- **根因定位（共 4 处前端布局缺陷，已一并根治）**：
+  1. **双栏 `align-items: stretch` 非对称高度拉伸 + `1fr` 窄列挤压**：`renderer/antigravity-quota.js` 此前把 `usagePanel()`（`最近 24 小时 · 本机用量`）与 `historyPanel()`（`最近 7 天的额度`）并排塞进 `.quota-history-grid`（`grid-template-columns: 1.4fr 1fr`）。官方账号左右两卡都只有一张小图，而 Antigravity 左侧 `usagePanel()` 同时包含 3 张汇总指标卡 + 24 小时柱状图 + 最近 7 天所有用过的型号列表（用户本机有 `8` 行型号）+ 底部跳转按钮，总高度达 `~750px–900px`；导致右侧 `historyPanel()` 既被挤在 `~41.6%` 宽的窄列里，又被 Grid 默认 `stretch` 纵向拉长到 `~750px–900px`，而顶部的 SVG 画布只有 `~150px` 高，图例下方留下 `500px+` 的大块空白。
+  2. **固定窄 `viewBox` + `max-height` 宽屏缩放留白**：`historyPanel()` 与 `agyCapacityPanel()` 此前使用固定小 `viewBox` 配合 `height: auto; max-height: ...`，在宽屏容器中会触发 `preserveAspectRatio` 左右内缩留白。
+  3. **`usagePanel()` 在节点未挂载前调用 `chart(hourlyHost, ...)`**：`panel` 尚未插入 `#quota-detail` 时 `hourlyHost.clientWidth === 0`，导致 `app.js` 的 `chart()` 回退到 `w = 280` 最小宽度，24 小时柱状图缩成 280px 浮在卡片正中间。
+  4. **复用 `#quota-model-timeline` 残留初始 `data-layout-natural`**：启动阶段 `#quota-model-timeline` 在 `#page-quota` 下被 `sortZone()` 记下了初始 `layoutNatural = "1"`，切到额度详情移入 `#quota-detail` 后未清除旧序号，会把时间线插队排到新增整行卡片上方。
+- **已完成改动与关键文件**：
+  - `renderer/antigravity-quota.js` & `renderer/antigravity.css`：将 `historyPanel()`（`最近 7 天的额度`）与 `usagePanel()`（`最近 24 小时 · 本机用量`）拆出 `.quota-history-grid`，改为各自独立占满整行的卡片（顺序：`额度分组` → `额度容量趋势` → `最近 7 天的额度` → `最近 24 小时 · 本机用量` → `时间线` → `模型速度` → `模型换算` → `最近请求`）；`agyCapacityPanel`、`historyPanel`、`usagePanel` 均改为挂载进 `#quota-detail` 后按容器实测像素宽高绘制 SVG（补齐 `25% / 75%` 辅助网格线，并通过自动解绑的 `ResizeObserver` 跟随窗口/侧栏伸缩重绘）；`.agy-models` 在桌面端改为双列响应式网格（`repeat(2, minmax(0, 1fr))`，`<= 960px` 自动回单列），大幅压缩多模型列表纵向高度；补充 `#quota-detail > *` 的 `scroll-margin-block-start: 80px`。
+  - `renderer/app.js`：`renderQuota()` 重建 `#quota-detail` 前清除复用的 `quotaTimelineNode.dataset.layoutNatural`（不影响用户手动拖拽保存的 `layoutRanks`），并同步 `LAYOUT` 中 `quota:agy-history` 与 `quota:agy-local` 的默认顺序。
+  - `renderer/intro.js` & `renderer/i18n.js`：补充 `0.3.94` 版本更新说明及完整英文词条。
+  - `scripts/test-antigravity-ui.cjs`：新增整行宽度铺满、卡片紧凑高度与图例底部无空白拉伸（`histHeight <= 360` 且 `histBottomSlack <= 36`）、7 天 SVG 与 24 小时柱状图铺满卡片内宽、以及 `#quota-detail > [data-layout]` 8 张卡片顺序断言。
+- **发版前验证**：
+  - `npm run build`：PASS；
+  - `node scripts/test-features.cjs`：46/46 PASS；
+  - `npx.cmd electron --lang=zh-CN scripts/test-intro-ui.cjs`：3/3 PASS；
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`（含合成数据截图视觉自查）：7/7 PASS；
+  - `npx.cmd electron --lang=zh-CN scripts/test-layout-ui.cjs`：9/9 PASS；
+  - `npx.cmd electron --lang=zh-CN scripts/test-ui.cjs`：22/22 PASS。（其余无关模块 UI 脚本未重跑，范围见上。）
+- **打包与句柄检查**：
+  - `npm run dist` PASS；`@electron/asar` 校验 `app.asar` 含 `'0.3.94'`、`agy-chart-host`、`detailResizeObs`、`delete quotaTimelineNode.dataset.layoutNatural` 且已移除旧 `agy-history-grid`（校验后立即 `asar.uncacheAll()`）。
+  - `dist/TokenPulse-0.3.94-Setup.exe`（112843244 B，SHA256 `B9483D68F7423BB335D25F56EFC857DFD6F0DEFF0D0E3B646A8E6665841A25E4`）
+  - `dist/TokenPulse-0.3.94-Portable.exe`（112586018 B，SHA256 `1ABCEB98A8E38D2D313913688D756A40279F3F30EC912C25D3CBE9E0664A74E1`）
+  - `dist/TokenPulse-0.3.94-Setup.exe.blockmap`（119866 B，SHA256 `A612180733D9178C9E9CB0F6385EB6D4ED71E1E98ECC8D05682FF6D78A7E276B`）
+  - `dist/latest.yml`（352 B，version `0.3.94`，SHA256 `A50D4D27FB304011910BB00EA2713B7C6F436499F91A428CA0216097EFDC5D3B`）
+  - 上述 4 项及 `dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar`、`build/main/index.js` 独占打开关闭句柄检查均为 `UNLOCKED`；无残留子进程（用户本机正式 `TokenPulse.exe` 未动）。
+  - 未纳入提交：`clawd-pet-extracted/`（工作区已有未跟踪目录，未动）。
+- **Git / GitHub（发布进行中）**：准备提交 `v0.3.94` 并推送标签与 GitHub Release（说明文件 `dist/release-0.3.94.md`）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.93 正式发布（修复并重做 Antigravity 容量趋势、7 天额度曲线与全链路适配，2026-11-15）
 
 ## 发布状态 · v0.3.93
 

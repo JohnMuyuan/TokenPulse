@@ -25,6 +25,7 @@
   let studyWindow = 'five';
   let capWindow = 'five';
   let capMetric = 'tokens';
+  let detailResizeObs = null;
 
   const demo = () => Boolean(window.tokenpulse?.isDemo?.());
   const visible = () => Boolean(quota?.installed) && !demo();
@@ -375,8 +376,10 @@
     ]);
     const hideTip = () => { const t = document.getElementById('tip'); if (t) t.hidden = true; };
 
-    function renderPoolCapChart(pts, fullVal, w, color, fmt) {
-      const W = 430, H = 164, left = 52, right = 20, top = 24, bottom = 24;
+    function renderPoolCapChart(chartHost, pts, fullVal, w, color, fmt) {
+      const W = Math.max(320, Math.round(chartHost.clientWidth || 430));
+      const H = Math.max(150, Math.round(chartHost.clientHeight || 168));
+      const left = 52, right = 20, top = 24, bottom = 24;
       const plotW = W - left - right, plotH = H - top - bottom;
       const valOfPt = p => capMetric === 'costUsd' ? (p.fullCostUsd || 0) : (p.fullTokens || 0);
       const rawVals = pts.map(valOfPt).filter(v => v > 0).sort((a, b) => a - b);
@@ -466,10 +469,12 @@
         }
       });
 
-      return el('div', { class: 'agy-cap-chart' }, [node]);
+      chartHost.replaceChildren(node);
     }
 
+    let capChartSlots = [];
     const draw = () => {
+      capChartSlots = [];
       const pointsByGroup = gList.map((g, idx) => {
         const w = capWindow === 'week' ? g.week : g.five;
         const cap = w?.capacity;
@@ -495,12 +500,16 @@
         const conf = cap?.confidence || 'insufficient';
         const badgeTone = conf === 'medium' ? 'good' : fullVal > 0 ? 'warn' : '';
         const badgeText = CONFIDENCE_TEXT[conf] || '样本不足';
-        const chartArea = pts.length
-          ? renderPoolCapChart(pts, fullVal, w, color, fmt)
-          : el('div', { class: 'agy-cap-empty' }, [
-              el('strong', { text: '等待额度变化以校准容量' }),
-              el('span', { text: '需要这一组额度已用百分比上涨，且同期本机有对话记录' }),
-            ]);
+        let chartArea;
+        if (pts.length) {
+          chartArea = el('div', { class: 'agy-cap-chart' });
+          capChartSlots.push({ chartHost: chartArea, pts, fullVal, w, color, fmt });
+        } else {
+          chartArea = el('div', { class: 'agy-cap-empty' }, [
+            el('strong', { text: '等待额度变化以校准容量' }),
+            el('span', { text: '需要这一组额度已用百分比上涨，且同期本机有对话记录' }),
+          ]);
+        }
         const obsPct = cap?.points || Math.round(pts.reduce((s, p) => s + (p.usedPct || 0), 0) * 10) / 10;
         return paint(el('div', { class: 'agy-cap-row agy-cap-card', 'data-group': g.key }, [
           el('div', { class: 'agy-cap-head' }, [
@@ -521,6 +530,7 @@
         ]), { '--agy-color': color });
       });
       body.replaceChildren(el('div', { class: 'agy-cap-list' }, cards));
+      for (const slot of capChartSlots) renderPoolCapChart(slot.chartHost, slot.pts, slot.fullVal, slot.w, slot.color, slot.fmt);
       note.textContent = '实心点可信，空心点已用不到 5%、偏差较大；虚线为近期窗口加权中位数。按本机用量倒推，只统计这台电脑上的 Antigravity 对话。';
     };
 
@@ -535,6 +545,9 @@
       body,
       note,
     ]);
+    panel.drawChart = () => {
+      for (const slot of capChartSlots) renderPoolCapChart(slot.chartHost, slot.pts, slot.fullVal, slot.w, slot.color, slot.fmt);
+    };
     panel.addEventListener('click', event => {
       const btn = event.target.closest('[data-agy-cap-win], [data-agy-cap-metric]');
       if (!btn) return;
@@ -549,7 +562,7 @@
     return panel;
   }
 
-  /** 最近 7 天每组的已用百分比（含 5 小时实线与周额度虚线，自动串联模型增减前后的同池采样）。 */
+  /** 最近 7 天每组的已用百分比（独立整行卡片，含 5 小时实线与周额度虚线，自动串联模型增减前后的同池采样）。 */
   function historyPanel() {
     const panel = el('article', { class: 'panel agy-history' }, [
       el('div', { class: 'panel-heading' }, [
@@ -588,26 +601,6 @@
       : Math.max(minFrom, plotSamples[0].at - Math.min(1800000, rawSpan * 0.04));
     const spanMs = Math.max(3600000, now - from);
 
-    const W = 460, H = 196, pad = { l: 36, r: 12, t: 10, b: 24 };
-    const x = at => pad.l + Math.max(0, Math.min(1, (at - from) / spanMs)) * (W - pad.l - pad.r);
-    const y = used => pad.t + (1 - Math.min(100, Math.max(0, used)) / 100) * (H - pad.t - pad.b);
-    const chartSvg = svg('svg', { class: 'agy-chart', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': '最近 7 天各组额度的已用百分比' });
-    for (const v of [0, 50, 100]) {
-      chartSvg.append(svg('line', { class: 'agy-grid', x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v) }));
-      const label = svg('text', { class: 'agy-axis', x: pad.l - 6, y: y(v) + 4, 'text-anchor': 'end' });
-      label.textContent = v + '%';
-      chartSvg.append(label);
-    }
-    const tickCount = spanMs >= 2 * 86400000 ? Math.min(7, Math.max(3, Math.round(spanMs / 86400000))) : 4;
-    for (let d = 0; d <= tickCount; d += 1) {
-      const at = from + (d / tickCount) * spanMs;
-      const label = svg('text', { class: 'agy-axis', x: x(at), y: H - 6, 'text-anchor': d === 0 ? 'start' : d === tickCount ? 'end' : 'middle' });
-      label.textContent = spanMs >= 2 * 86400000
-        ? new Date(at).toLocaleDateString(dateLocale(), { month: 'numeric', day: 'numeric' })
-        : new Date(at).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit', hour12: false });
-      chartSvg.append(label);
-    }
-
     const buildSegmentedPath = pts => {
       const cmds = [];
       const isolated = [];
@@ -628,74 +621,17 @@
       return { d: cmds.join(' '), isolated };
     };
 
-    let hasWeekLine = false;
-    list.forEach((group, index) => {
-      const color = COLORS[index % COLORS.length];
-      const series = paint(svg('g', { class: 'agy-series' }), { '--agy-color': color });
-      const fivePts = [];
-      const weekPts = [];
+    const hasWeekLine = list.some(group => {
+      let n = 0;
       for (const sample of plotSamples) {
         const item = pickPoolItem(sample.groups, group);
-        if (!item) continue;
-        if (Number.isFinite(item.used)) fivePts.push({ at: sample.at, used: item.used, cx: x(sample.at), cy: y(item.used) });
-        if (item.weekUsed != null && Number.isFinite(item.weekUsed)) weekPts.push({ at: sample.at, used: item.weekUsed, cx: x(sample.at), cy: y(item.weekUsed) });
+        if (item?.weekUsed != null && Number.isFinite(item.weekUsed) && ++n >= 2) return true;
       }
-      if (fivePts.length) {
-        const { d, isolated } = buildSegmentedPath(fivePts);
-        series.append(paint(svg('path', { class: 'agy-line', d }), { stroke: color }));
-        const latest = fivePts[fivePts.length - 1];
-        const dotPts = isolated.includes(latest) ? isolated : [...isolated, latest];
-        for (const dp of dotPts) {
-          series.append(paint(svg('circle', {
-            class: 'agy-chart-dot' + (dp === latest ? ' is-latest' : ''),
-            cx: dp.cx.toFixed(1),
-            cy: dp.cy.toFixed(1),
-            r: dp === latest ? 3.4 : 2.5,
-          }), { fill: color }));
-        }
-      }
-      if (weekPts.length >= 2) {
-        hasWeekLine = true;
-        const { d } = buildSegmentedPath(weekPts);
-        series.append(paint(svg('path', { class: 'agy-line-week', d }), { stroke: color }));
-      }
-      chartSvg.append(series);
+      return false;
     });
 
-    const hoverLine = svg('line', { class: 'agy-hover-line', x1: pad.l, x2: pad.l, y1: pad.t, y2: H - pad.b, hidden: 'hidden' });
-    chartSvg.append(hoverLine);
-    const hideTip = () => {
-      hoverLine.setAttribute('hidden', 'hidden');
-      const t = document.getElementById('tip');
-      if (t) t.hidden = true;
-    };
-    chartSvg.addEventListener('pointermove', ev => {
-      const box = chartSvg.getBoundingClientRect();
-      if (!box.width) return;
-      const svgX = ((ev.clientX - box.left) / box.width) * W;
-      const targetAt = from + Math.max(0, Math.min(1, (svgX - pad.l) / (W - pad.l - pad.r))) * spanMs;
-      let nearest = null, bestDiff = Infinity;
-      for (const s of plotSamples) {
-        const diff = Math.abs(s.at - targetAt);
-        if (diff < bestDiff) { bestDiff = diff; nearest = s; }
-      }
-      if (!nearest) return;
-      const hx = x(nearest.at).toFixed(1);
-      hoverLine.setAttribute('x1', hx);
-      hoverLine.setAttribute('x2', hx);
-      hoverLine.removeAttribute('hidden');
-      const lines = [date(nearest.at)];
-      for (const group of list) {
-        const item = pickPoolItem(nearest.groups, group);
-        if (!item) continue;
-        const shortName = group.title || group.models.slice(0, 2).join(' · ');
-        lines.push(`${shortName}：5 小时已用 ${percent(item.used)}${item.weekUsed != null ? ` · 周已用 ${percent(item.weekUsed)}` : ''}`);
-      }
-      if (typeof tipAt === 'function') tipAt(lines.join('\n'), ev.clientX, ev.clientY);
-    });
-    chartSvg.addEventListener('pointerleave', hideTip);
-
-    panel.append(chartSvg);
+    const chartHost = el('div', { class: 'agy-chart-host' });
+    panel.append(chartHost);
     panel.append(el('div', { class: 'agy-legend' }, [
       ...list.map((group, index) => paint(el('span', { class: 'agy-legend-item' }, [
         el('i', { class: 'agy-dot', 'aria-hidden': 'true' }),
@@ -703,6 +639,101 @@
       ]), { '--agy-color': COLORS[index % COLORS.length] })),
       hasWeekLine ? el('span', { class: 'agy-legend-note', text: '实线：5 小时已用 · 虚线：周额度已用' }) : null,
     ]));
+
+    panel.drawChart = () => {
+      const W = Math.max(460, Math.round(chartHost.clientWidth || 860));
+      const H = Math.max(180, Math.round(chartHost.clientHeight || 224));
+      const pad = { l: 42, r: 16, t: 12, b: 26 };
+      const x = at => pad.l + Math.max(0, Math.min(1, (at - from) / spanMs)) * (W - pad.l - pad.r);
+      const y = used => pad.t + (1 - Math.min(100, Math.max(0, used)) / 100) * (H - pad.t - pad.b);
+      const chartSvg = svg('svg', { class: 'agy-chart', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': '最近 7 天各组额度的已用百分比' });
+      for (const v of [0, 25, 50, 75, 100]) {
+        const major = v === 0 || v === 50 || v === 100;
+        chartSvg.append(svg('line', { class: major ? 'agy-grid' : 'agy-grid faint', x1: pad.l, x2: W - pad.r, y1: y(v), y2: y(v) }));
+        if (major) {
+          const label = svg('text', { class: 'agy-axis', x: pad.l - 7, y: y(v) + 4, 'text-anchor': 'end' });
+          label.textContent = v + '%';
+          chartSvg.append(label);
+        }
+      }
+      const tickCount = spanMs >= 2 * 86400000 ? Math.min(7, Math.max(3, Math.round(spanMs / 86400000))) : W >= 720 ? 6 : 4;
+      for (let d = 0; d <= tickCount; d += 1) {
+        const at = from + (d / tickCount) * spanMs;
+        const label = svg('text', { class: 'agy-axis', x: x(at), y: H - 6, 'text-anchor': d === 0 ? 'start' : d === tickCount ? 'end' : 'middle' });
+        label.textContent = spanMs >= 2 * 86400000
+          ? new Date(at).toLocaleDateString(dateLocale(), { month: 'numeric', day: 'numeric' })
+          : new Date(at).toLocaleTimeString(dateLocale(), { hour: '2-digit', minute: '2-digit', hour12: false });
+        chartSvg.append(label);
+      }
+
+      list.forEach((group, index) => {
+        const color = COLORS[index % COLORS.length];
+        const series = paint(svg('g', { class: 'agy-series' }), { '--agy-color': color });
+        const fivePts = [];
+        const weekPts = [];
+        for (const sample of plotSamples) {
+          const item = pickPoolItem(sample.groups, group);
+          if (!item) continue;
+          if (Number.isFinite(item.used)) fivePts.push({ at: sample.at, used: item.used, cx: x(sample.at), cy: y(item.used) });
+          if (item.weekUsed != null && Number.isFinite(item.weekUsed)) weekPts.push({ at: sample.at, used: item.weekUsed, cx: x(sample.at), cy: y(item.weekUsed) });
+        }
+        if (fivePts.length) {
+          const { d, isolated } = buildSegmentedPath(fivePts);
+          series.append(paint(svg('path', { class: 'agy-line', d }), { stroke: color }));
+          const latest = fivePts[fivePts.length - 1];
+          const dotPts = isolated.includes(latest) ? isolated : [...isolated, latest];
+          for (const dp of dotPts) {
+            series.append(paint(svg('circle', {
+              class: 'agy-chart-dot' + (dp === latest ? ' is-latest' : ''),
+              cx: dp.cx.toFixed(1),
+              cy: dp.cy.toFixed(1),
+              r: dp === latest ? 3.4 : 2.5,
+            }), { fill: color }));
+          }
+        }
+        if (weekPts.length >= 2) {
+          const { d } = buildSegmentedPath(weekPts);
+          series.append(paint(svg('path', { class: 'agy-line-week', d }), { stroke: color }));
+        }
+        chartSvg.append(series);
+      });
+
+      const hoverLine = svg('line', { class: 'agy-hover-line', x1: pad.l, x2: pad.l, y1: pad.t, y2: H - pad.b, hidden: 'hidden' });
+      chartSvg.append(hoverLine);
+      const hideTip = () => {
+        hoverLine.setAttribute('hidden', 'hidden');
+        const t = document.getElementById('tip');
+        if (t) t.hidden = true;
+      };
+      chartSvg.addEventListener('pointermove', ev => {
+        const box = chartSvg.getBoundingClientRect();
+        if (!box.width) return;
+        const svgX = ((ev.clientX - box.left) / box.width) * W;
+        const targetAt = from + Math.max(0, Math.min(1, (svgX - pad.l) / (W - pad.l - pad.r))) * spanMs;
+        let nearest = null, bestDiff = Infinity;
+        for (const s of plotSamples) {
+          const diff = Math.abs(s.at - targetAt);
+          if (diff < bestDiff) { bestDiff = diff; nearest = s; }
+        }
+        if (!nearest) return;
+        const hx = x(nearest.at).toFixed(1);
+        hoverLine.setAttribute('x1', hx);
+        hoverLine.setAttribute('x2', hx);
+        hoverLine.removeAttribute('hidden');
+        const lines = [date(nearest.at)];
+        for (const group of list) {
+          const item = pickPoolItem(nearest.groups, group);
+          if (!item) continue;
+          const shortName = group.title || group.models.slice(0, 2).join(' · ');
+          lines.push(`${shortName}：5 小时已用 ${percent(item.used)}${item.weekUsed != null ? ` · 周已用 ${percent(item.weekUsed)}` : ''}`);
+        }
+        if (typeof tipAt === 'function') tipAt(lines.join('\n'), ev.clientX, ev.clientY);
+      });
+      chartSvg.addEventListener('pointerleave', hideTip);
+      chartHost.replaceChildren(chartSvg);
+    };
+
+    panel.drawChart();
     return panel;
   }
 
@@ -723,11 +754,16 @@
       metric('最近 7 天', tokens(local.week.tokens), { unit: 'Tokens', sub: `${number(local.week.requests)} 次请求 · ${money(local.week.costUsd || 0)}` }),
       metric('最近 30 天', tokens((local.d30 || local.week).tokens), { unit: 'Tokens', sub: `${number((local.d30 || local.week).requests)} 次请求 · ${money((local.d30 || local.week).costUsd || 0)}` }),
     ]));
+    let hourlyHost = null;
     if (local.hourly?.length && typeof chart === 'function') {
-      const hourlyHost = el('div', { class: 'chart agy-hourly-chart' });
+      hourlyHost = el('div', { class: 'chart agy-hourly-chart' });
       panel.append(hourlyHost);
-      chart(hourlyHost, local.hourly, 'tokens', true, typeof entering === 'function' ? entering() : false);
     }
+    panel.drawChart = (animate = false) => {
+      if (hourlyHost && local.hourly?.length && typeof chart === 'function') {
+        chart(hourlyHost, local.hourly, 'tokens', true, animate);
+      }
+    };
     if (local.models.length) {
       panel.append(el('div', { class: 'agy-models' }, local.models.map(row => el('div', { class: 'agy-model-row' }, [
         el('div', { class: 'agy-model-main' }, [
@@ -977,6 +1013,7 @@
   }
 
   function renderQuota(host, timelineNode) {
+    if (detailResizeObs) { detailResizeObs.disconnect(); detailResizeObs = null; }
     const ins = insight();
     const credits = last()?.credits;
     const creditParts = [];
@@ -1001,6 +1038,8 @@
     // 一条说明可以是几句：分开放，翻译按句对得上
     for (const note of notes()) host.append(el('p', { class: 'stale-note agy-note' }, [icon('alert'), ...[].concat(note).map(text => el('span', { text: text + ' ' }))]));
     const list = groups();
+    let capPanel = null;
+    let histPanel = null;
     if (!list.length) {
       host.append(el('article', { class: 'panel empty large' }, [
         el('h3', { text: quota?.loading ? '正在查询额度…' : '还没有查到额度' }),
@@ -1008,13 +1047,15 @@
       ]));
     } else {
       host.append(markLayout(el('div', { class: 'quota-window-grid agy-groups' }, list.map((group, index) => groupPanel(group, index))), 'quota:agy-groups'));
-      host.append(markLayout(agyCapacityPanel(), 'quota:agy-capacity'));
+      capPanel = agyCapacityPanel();
+      host.append(markLayout(capPanel, 'quota:agy-capacity'));
+      histPanel = historyPanel();
+      host.append(markLayout(histPanel, 'quota:agy-history'));
     }
-    host.append(el('div', { class: 'quota-history-grid agy-history-grid' }, [
-      markLayout(usagePanel(), 'quota:agy-local'),
-      ...(list.length ? [markLayout(historyPanel(), 'quota:agy-history')] : []),
-    ]));
+    const locPanel = usagePanel();
+    host.append(markLayout(locPanel, 'quota:agy-local'));
     if (timelineNode) {
+      delete timelineNode.dataset.layoutNatural;
       host.append(timelineNode);
       window.PulseModelStudy?.timeline(typeof current !== 'undefined' ? current : null, KEY, { kind: KEY, accountId: KEY, lastCheckedAt: last()?.at || 0 });
     }
@@ -1033,6 +1074,28 @@
     if (study) host.append(markLayout(study, 'quota:agy-models'));
     const reqs = requestsPanel();
     if (reqs) host.append(markLayout(reqs, 'quota:agy-requests'));
+
+    const animate = typeof entering === 'function' ? entering() : false;
+    capPanel?.drawChart?.();
+    histPanel?.drawChart?.();
+    locPanel?.drawChart?.(animate);
+    let lastHostWidth = Math.round(host.clientWidth || 0);
+    if (typeof ResizeObserver === 'function') {
+      detailResizeObs = new ResizeObserver(() => {
+        if (!host.isConnected || !host.querySelector(':scope > .agy-context')) {
+          detailResizeObs?.disconnect();
+          detailResizeObs = null;
+          return;
+        }
+        const nextWidth = Math.round(host.clientWidth || 0);
+        if (!nextWidth || Math.abs(nextWidth - lastHostWidth) < 4) return;
+        lastHostWidth = nextWidth;
+        capPanel?.drawChart?.();
+        histPanel?.drawChart?.();
+        locPanel?.drawChart?.(false);
+      });
+      detailResizeObs.observe(host);
+    }
     return KEY;
   }
 

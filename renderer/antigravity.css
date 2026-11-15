@@ -8,6 +8,7 @@
 
 /* 额度详情：官方单池的模型容量排行隐藏，改由 #quota-detail 内的分组双窗口 .agy-model-study 渲染 */
 #page-quota.agy-mode #quota-model-study { display: none; }
+#page-quota.agy-mode #quota-detail > * { scroll-margin-block-start: 80px; }
 #quota-detail button, #quota-cards [data-antigravity] button { color: inherit; }
 
 .agy-dot { display: inline-block; flex: none; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--agy-color, var(--antigravity)); vertical-align: middle; }
@@ -55,7 +56,7 @@
 .agy-note { margin: 0 0 14px; }
 
 /* 额度容量趋势 */
-.agy-capacity { margin-top: 18px; min-width: 0; }
+.agy-capacity { margin-block-start: 18px; margin-block-end: 0; min-inline-size: 0; }
 .agy-cap-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 12px 0 6px; }
 .agy-cap-row { display: flex; flex-direction: column; justify-content: space-between; padding: 14px 16px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); min-width: 0; }
 .agy-cap-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
@@ -64,8 +65,8 @@
 .agy-cap-val { flex: none; white-space: nowrap; }
 .agy-cap-val strong { font-size: 18px; font-weight: 700; color: var(--text); }
 .agy-cap-val small { color: var(--muted); font-size: 12px; }
-.agy-cap-chart { width: 100%; min-width: 0; }
-.agy-cap-svg { display: block; width: 100%; height: auto; max-height: 180px; overflow: visible; }
+.agy-cap-chart { inline-size: 100%; block-size: 168px; min-inline-size: 0; }
+.agy-cap-svg { display: block; inline-size: 100%; block-size: 100%; overflow: visible; }
 .agy-cap-area { fill: var(--agy-color, var(--antigravity)); fill-opacity: 0.1; pointer-events: none; }
 .agy-cap-line { fill: none; stroke: var(--agy-color, var(--antigravity)); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 .agy-cap-median { stroke: var(--faint); stroke-width: 1.2; stroke-dasharray: 5 4; }
@@ -76,28 +77,29 @@
 .agy-cap-dot:hover { stroke-width: 3.2; }
 .agy-cap-dot:focus-visible { outline: 2px solid var(--agy-color, var(--antigravity)); outline-offset: 2px; stroke-width: 3.2; }
 .agy-cap-current-label { fill: var(--muted); font-size: 10.5px; font-weight: 600; }
-.agy-cap-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: 148px; padding: 16px; border-radius: 10px; border: 1px dashed var(--line); background: color-mix(in srgb, var(--surface) 55%, transparent); text-align: center; }
+.agy-cap-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: 168px; padding: 16px; border-radius: 10px; border: 1px dashed var(--line); background: color-mix(in srgb, var(--surface) 55%, transparent); text-align: center; }
 .agy-cap-empty strong { font-size: 13px; font-weight: 600; color: var(--text-2); }
 .agy-cap-empty span { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .agy-cap-sub { display: flex; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 
-/* 24 小时本机用量与 7 天走势 */
-.agy-history-grid { margin-top: 18px; }
-.agy-history, .agy-local { min-width: 0; }
-.agy-chart { display: block; width: 100%; height: auto; max-height: 230px; cursor: crosshair; }
+/* 最近 7 天额度走势与 24 小时本机用量（各自独立占满整行，避免左侧多模型列表把右侧 7 天走势拉成窄长空白卡） */
+.agy-history, .agy-local { margin-block-start: 18px; min-inline-size: 0; }
+.agy-chart-host { inline-size: 100%; block-size: 224px; min-inline-size: 0; }
+.agy-chart { display: block; inline-size: 100%; block-size: 100%; overflow: visible; cursor: crosshair; }
 .agy-grid { stroke: var(--line); stroke-width: 1; }
+.agy-grid.faint { stroke-dasharray: 3 4; opacity: 0.7; }
 .agy-axis { fill: var(--faint); font-size: 11px; }
 .agy-line { fill: none; stroke: var(--agy-color, var(--antigravity)); stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
 .agy-line-week { fill: none; stroke: var(--agy-color, var(--antigravity)); stroke-width: 1.8; stroke-dasharray: 5 4; opacity: 0.85; stroke-linejoin: round; stroke-linecap: round; }
 .agy-chart-dot { fill: var(--agy-color, var(--antigravity)); stroke: var(--surface); stroke-width: 1.6; pointer-events: none; }
 .agy-hover-line { stroke: var(--line-strong); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
-.agy-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+.agy-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; color: var(--muted); font-size: 12.5px; }
 .agy-legend-item { display: inline-flex; align-items: center; min-width: 0; }
-.agy-legend-note { margin-left: auto; color: var(--faint); font-size: 12px; }
+.agy-legend-note { margin-inline-start: auto; color: var(--faint); font-size: 12px; }
 
 .agy-local-figures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .agy-hourly-chart { margin-top: 12px; min-height: 150px; }
-.agy-models { display: grid; gap: 6px; margin-top: 14px; }
+.agy-models { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin-block-start: 14px; }
 .agy-model-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; min-width: 0; }
 .agy-model-main { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
 .agy-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -121,6 +123,7 @@
 @media (max-width: 960px) {
   .agy-cap-list { grid-template-columns: 1fr; }
   .agy-local-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .agy-models { grid-template-columns: minmax(0, 1fr); }
   .agy-model-study .ds-row { grid-template-columns: 28px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, .85fr); gap: 8px; }
 }
 @media (max-width: 720px) {

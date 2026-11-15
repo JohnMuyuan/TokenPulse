@@ -1609,6 +1609,7 @@ async function saveQuotaTabOrder(kind, visibleIds) {
 let quotaTimelineNode = null;
 function renderQuota() {
   quotaTimelineNode ??= $('quota-model-timeline');
+  if (quotaTimelineNode) delete quotaTimelineNode.dataset.layoutNatural;
   const host = $('quota-detail'); host.replaceChildren();
   const slots = quotaSlots();
   if (!layoutEdit) {
@@ -2462,7 +2463,7 @@ const LAYOUT = [
   ['quota:timeline', '模型与思考等级时间线', '各页通用'], ['quota:speed', '模型速度', '各页通用'], ['quota:account', '这个账号的请求', '官方账号'],
   ['quota:balance', '余额', 'DeepSeek 和第三方 Key'], ['quota:local', '本机用量', 'DeepSeek 和第三方 Key'], ['quota:spend', '消耗趋势', 'DeepSeek 和第三方 Key'],
   ['quota:history', '余额走势', 'DeepSeek 和第三方 Key'], ['quota:models', '模型换算', 'DeepSeek 和第三方 Key'], ['quota:site', '站点上的 Key', 'DeepSeek 和第三方 Key'], ['quota:about', '账号说明', 'DeepSeek 和第三方 Key'],
-  ['quota:agy-groups', '额度分组', 'Antigravity'], ['quota:agy-capacity', '额度容量趋势', 'Antigravity'], ['quota:agy-local', '本机用量', 'Antigravity'], ['quota:agy-history', '最近 7 天的额度', 'Antigravity'], ['quota:agy-models', '模型换算', 'Antigravity'], ['quota:agy-requests', '这个账号的请求', 'Antigravity'],
+  ['quota:agy-groups', '额度分组', 'Antigravity'], ['quota:agy-capacity', '额度容量趋势', 'Antigravity'], ['quota:agy-history', '最近 7 天的额度', 'Antigravity'], ['quota:agy-local', '本机用量', 'Antigravity'], ['quota:agy-models', '模型换算', 'Antigravity'], ['quota:agy-requests', '这个账号的请求', 'Antigravity'],
   ['quota:pool-quota', '号池总额度', '号池'], ['quota:pool-plan', '预排', '号池'], ['quota:pool-usage', '号池用量', '号池'], ['quota:pool-survival', '生存分析', '号池'], ['quota:pool-members', '成员分摊', '号池'], ['quota:pool-hourly', '号池最近 24 小时', '号池'],
   ['quota:pool-daily', '号池最近 30 天', '号池'], ['quota:pool-models', '号池用过的模型', '号池'], ['quota:pool-requests', '这个号池的请求', '号池'],
   ['usage:breakdown', 'Token 构成', '卡片'], ['usage:year', '全年活跃度', '卡片'], ['usage:trend', '用量趋势 · 按工具', '卡片'], ['usage:tools', '工具排行', '卡片'], ['usage:hours', '使用时段分布', '卡片'],

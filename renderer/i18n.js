@@ -2901,6 +2901,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.94 修复 Antigravity 7 天额度卡片窄长变形与 24 小时柱状图窄缩
+    '修复：Antigravity「最近 7 天的额度」卡片窄长变形与 24 小时柱状图窄缩': 'Fix: Antigravity “Last 7 days of quota” narrow-tall stretching and shrunken 24h bar chart',
+    '将「最近 7 天的额度」与「最近 24 小时 · 本机用量」拆分为各自独立占满整行的卡片，不再因本机型号列表较长而把 7 天额度图挤压在右侧窄栏并拉出大片底部留白；全部图表改为按容器实测宽度自适应重绘，本机用量型号列表在桌面端改为紧凑双列网格。': 'Split “Last 7 days of quota” and “Last 24 hours · Local usage” into independent full-width panels so long model lists no longer squeeze the 7-day chart into a narrow side column or stretch empty whitespace below it; charts now redraw to live container widths and local model rows use a compact two-column grid on desktop.',
     // 0.3.93 修复并重做 Antigravity 容量趋势、7 天额度曲线与全链路适配
     '修复并重做 Antigravity「额度容量趋势」与「最近 7 天的额度」': 'Fix & redesign Antigravity “Quota capacity trend” and “Last 7 days of quota”',
     '修复安全策略拦截行内样式导致容量条变成空灰槽、7 天额度曲线隐形不显色的问题，并兼容官方模型列表增减前后同一额度池的历史采样，不再在模型上下线处断线。「额度容量趋势」重做为双池独立坐标轴的历史容量折线图（带近期加权中位数参考线、实心/空心可信度圆点与悬停详情）；「最近 7 天的额度」补齐长休眠自动断档、短跨度自适应铺满与悬停十字准星。': 'Fixed CSP inline-style blocking that turned capacity bars into empty grey tracks and left 7-day quota lines invisible, and bridged historical samples across official model list updates within the same quota pool so curves no longer break when models are added or retired. “Quota capacity trend” is redesigned as dual-pool independent-scale historical capacity charts (with recent weighted-median reference lines, solid/hollow confidence dots, and hover details); “Last 7 days of quota” adds offline gap breaks, adaptive short-span scaling, and crosshair tooltips.',
