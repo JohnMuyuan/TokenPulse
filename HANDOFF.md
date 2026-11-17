@@ -1,9 +1,11 @@
-# 当前接手入口 · TokenPulse v0.3.96 发布（修复 Antigravity OAuth 登录新账号报 `403 restricted_client`，2026-11-17）
+# 当前接手入口 · TokenPulse v0.3.96 正式发布（修复 Antigravity OAuth 登录新账号报 `403 restricted_client`，2026-11-17）
 
-## 发布状态 · `v0.3.96`（打包与自动化校验已完成，正在推送并发布 GitHub Release）
+## 发布状态 · `v0.3.96`（已正式发布）
 
-- **版本与打包产物概览**：
+- **版本与发布概览**：
   - 版本：**`0.3.96`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译均已补齐；仓库内继续保持零硬编码密钥 `SECRET_HITS=0`）。
+  - **Git / GitHub（已完成）**：发布提交 **`4b4b364`**（`chore: release v0.3.96 (fix Antigravity OAuth 403 restricted_client)`）已推送到 `origin/main`，标签 **`v0.3.96`** 已推送到远端；GitHub Release **`v0.3.96`** 已正式发布（非草稿、非预发布、`latest`）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.96 ，4 个远端附件大小与 SHA256 与本地逐字节一致。未纳入提交：`clawd-pet-extracted/`（原样保留未动；未安装覆盖本机运行中的正式版 TokenPulse）。
+- **打包产物与远端校验（全部一致且本地句柄 `UNLOCKED`）**：
   - `npm run dist` PASS；校验 `dist/win-unpacked/resources/app.asar` 含 `"version": "0.3.96"`、`extractPersonalClientIdFromFile`、`postTokenFormWithClient`、`bf00c418`、`1d2f0410`。
   - `dist/TokenPulse-0.3.96-Setup.exe`（`112,869,973` B，SHA256 `CD2B93867F01812B2894B83AB8059D57536DCD11EC38F1BECB9F1EB83C7A4306`）
   - `dist/TokenPulse-0.3.96-Portable.exe`（`112,612,738` B，SHA256 `048A9D3729A502480DDA094FB1B746ADF90E0F5B0C7737DF46823B7176128ECF`）
@@ -36,6 +38,11 @@
     - `resolveAntigravityOAuthClient()` 解析结果摘要为 `{ id: 'bf00c418', secret: '1d2f0410', candidates: 3 }`；
     - 请求 `https://accounts.google.com/o/oauth2/v2/auth`（含 `auth/aicode` 完整作用域）返回 **`HTTP 302` → `https://accounts.google.com/v3/signin/identifier`**（正常进入 Google 登录页，不再出现 `403 restricted_client`）；
     - 请求 `https://oauth2.googleapis.com/token`（探测无效授权码）返回 **`HTTP 400 invalid_grant`**（证明 Google 已通过 `client_id` + `client_secret` 客户端身份校验，不再报 `401 invalid_client`）。
+  - **未执行的验证**：未重跑与 Antigravity 无关的其他供应商独立 UI 测试脚本。
+- **收尾进程与文件句柄检查**：
+  - 检查本工作区相关 `node.exe` / `electron.exe` / `gh.exe` 进程：`0` 个残留进程；后台任务列表为空。
+  - 非破坏性独占读写句柄检测（检测后立即 `Dispose`）：`dist/TokenPulse-0.3.96-Setup.exe`、`dist/TokenPulse-0.3.96-Portable.exe`、`dist/TokenPulse-0.3.96-Setup.exe.blockmap`、`dist/latest.yml`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar`、`build/main/index.js`、`build/core/antigravity-accounts.js` 均处于 `UNLOCKED` 未占用状态。
+- **已知限制**：同 `v0.3.95`（本机必须安装有 Antigravity IDE 或 `agy` CLI 以供运行期提取官方 OAuth 客户端参数；TokenPulse 不改写系统钥匙串中正在运行的 IDE 登录态）。
 
 ---
 
