@@ -2901,6 +2901,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.96 修复 Antigravity OAuth 登录新账号报 403 restricted_client
+    '修复：Antigravity 登录新账号时报 403 restricted_client': 'Fix: 403 restricted_client when signing in to a new Antigravity account',
+    '修正从本机 Antigravity 客户端提取 Google OAuth 配置时的客户端筛选逻辑，精准匹配支持个人版 auth/aicode 权限的客户端 ID 与对应密钥（并支持候选密钥自动回退），不再误用企业版客户端 ID 导致浏览器授权页拦截。': 'Fixed Google OAuth client selection when reading local Antigravity installations so it accurately picks the personal client ID registered for the auth/aicode scope and its matching secret (with automatic candidate secret fallback), preventing browser sign-in blocks caused by picking the enterprise client ID.',
     // 0.3.95 Antigravity 多账号与家庭组共享防偏移更新说明
     'Google Antigravity 支持多账号登录与后台查看额度': 'Google Antigravity multi-account sign-in & background quota monitoring',
     '「设置 → 官方账号」新增 Antigravity 多账号管理：可在浏览器中授权登录多个 Google 账号（自动续期并直连 Cloud Code 接口，关掉 Antigravity 客户端也能同时查看各账号的 5 小时与周额度），也可一键登记本机正在运行的 Antigravity 账号；总览卡片队列与额度详情顶部标签同步支持多账号切换、改名与拖拽排序。': 'Settings → Official accounts now manages multiple Antigravity accounts: sign in to multiple Google accounts in your browser (auto-renewed and queried directly via Cloud Code even when Antigravity is closed) or register the active local Antigravity sign-in in one click; Overview queues and Quota tabs support switching, renaming, and drag-to-reorder.',

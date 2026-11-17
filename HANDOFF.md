@@ -1,6 +1,45 @@
-# 当前接手入口 · TokenPulse v0.3.95 正式发布（Antigravity 多账号登录看额度 + Google One 家庭组共享防偏移，2026-11-17）
+# 当前接手入口 · TokenPulse v0.3.96 发布（修复 Antigravity OAuth 登录新账号报 `403 restricted_client`，2026-11-17）
 
-## 发布状态 · `v0.3.95`（已正式发布）
+## 发布状态 · `v0.3.96`（打包与自动化校验已完成，正在推送并发布 GitHub Release）
+
+- **版本与打包产物概览**：
+  - 版本：**`0.3.96`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译均已补齐；仓库内继续保持零硬编码密钥 `SECRET_HITS=0`）。
+  - `npm run dist` PASS；校验 `dist/win-unpacked/resources/app.asar` 含 `"version": "0.3.96"`、`extractPersonalClientIdFromFile`、`postTokenFormWithClient`、`bf00c418`、`1d2f0410`。
+  - `dist/TokenPulse-0.3.96-Setup.exe`（`112,869,973` B，SHA256 `CD2B93867F01812B2894B83AB8059D57536DCD11EC38F1BECB9F1EB83C7A4306`）
+  - `dist/TokenPulse-0.3.96-Portable.exe`（`112,612,738` B，SHA256 `048A9D3729A502480DDA094FB1B746ADF90E0F5B0C7737DF46823B7176128ECF`）
+  - `dist/TokenPulse-0.3.96-Setup.exe.blockmap`（`119,850` B，SHA256 `AD283F7DC586AF36858333E295D773427ECED5A1CA7A515E242FA57D21C1ED61`）
+  - `dist/latest.yml`（`352` B，version `0.3.96`，SHA256 `9C2B4DC8011317D7FB10162BA8EE75554C88C72793963193ADD291A77A8C9273`）
+  - 发布说明文件：`dist/release-0.3.96.md`。
+- **问题现象（用户反馈）**：在 `v0.3.95` 点击「添加账号 → 登录一个新账号」跳转浏览器授权时，Google 拦截报错：`Access blocked: Authorization Error — Unregistered scope(s) in the request: https://www.googleapis.com/auth/aicode (Error 403: restricted_client)`。
+- **根因定位**：
+  - Antigravity 的 `app.asar`（`SIGN_IN_CLIENTS`）与 Go 二进制（`language_server.exe` / `agy.exe`）中同时内置了 **3 套** Google OAuth 客户端配置：
+    1. Google Cloud 企业版客户端（未注册 `https://www.googleapis.com/auth/aicode` 作用域）；
+    2. Google Antigravity 个人版客户端（注册有 `https://www.googleapis.com/auth/aicode`，SHA-256 前 8 位摘要 `bf00c418` + 对应密钥摘要 `1d2f0410`）；
+    3. Google Drive 集成客户端。
+  - Go 编译器字符串表（`.rodata`）按字符串长度/字典序排列，把**企业版** `client_id` 排在了第 `0` 位、个人版排在了第 `1` 位；`v0.3.95` 的 `extractAgyOAuthClientFromFile` 扫到首个匹配即返回，导致误拿企业版 `client_id` 去请求含 `auth/aicode` 的作用域，触发 Google `403 restricted_client`。
+- **已完成修复与关键改动文件**：
+  - `src/core/antigravity-accounts.ts`：
+    - 新增 `extractPersonalClientIdFromFile()` / `findAicodeClientIdInText()`：优先从本机 `app.asar` 中提取与 `auth/aicode` 同对象声明的个人版 `clientId`（兼容属性先后顺序，排除相邻兄弟对象干扰）。
+    - 重构 `extractAgyOAuthClientFromFile()` 与 `resolveAntigravityOAuthClient()`：全文件扫描收集全部候选 `clientId` 与 `clientSecret`，优先匹配 `app.asar` 中声明 `auth/aicode` 的 `clientId` 及单向 SHA-256 摘要 `bf00c418`（排除已知企业/Drive 摘要 `69dee430` / `1705e6c6`），密钥优先匹配个人版摘要 `1d2f0410` 及文件同下标密钥，仓库内继续保持**零硬编码明文密钥**（`SECRET_HITS=0`）。
+    - 新增 `postTokenFormWithClient()` 接入 `runAntigravityLogin()` 与 `refreshAgyCredential()`：若未来客户端更新导致首选候选密钥返回 `401 invalid_client` / `unauthorized_client`，自动顺序尝试其余 `candidateSecrets` 并原位缓存生效密钥。
+  - `scripts/test-antigravity-accounts.cjs`：新增多客户端模拟目录（`app.asar` 企业版在前 + 个人版带 `auth/aicode` 在后，配合 Go 无引号多密钥二进制）精准选型断言，以及 `401 invalid_client` 候选密钥自动回退续期测试。
+  - `package.json`、`package-lock.json`、`renderer/intro.js`、`renderer/i18n.js`：升级至 `0.3.96` 并补齐中英版本更新说明。
+- **验证命令与实际结果**：
+  - `npm run build`（`tsc -p tsconfig.json`）：PASS（0 错误）
+  - `node scripts/test-antigravity-accounts.cjs`：6/6 PASS
+  - `node scripts/test-antigravity-capacity.cjs`：6/6 PASS
+  - `node scripts/test-features.cjs`：46/46 PASS（含英文词典零漏翻校验）
+  - `npx.cmd electron --lang=zh-CN scripts/test-intro-ui.cjs`：3/3 PASS
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：8/8 PASS
+  - `npm run dist`：PASS
+  - **本机实测 Google OAuth 端点校验**（经本机代理 `http://127.0.0.1:7890`）：
+    - `resolveAntigravityOAuthClient()` 解析结果摘要为 `{ id: 'bf00c418', secret: '1d2f0410', candidates: 3 }`；
+    - 请求 `https://accounts.google.com/o/oauth2/v2/auth`（含 `auth/aicode` 完整作用域）返回 **`HTTP 302` → `https://accounts.google.com/v3/signin/identifier`**（正常进入 Google 登录页，不再出现 `403 restricted_client`）；
+    - 请求 `https://oauth2.googleapis.com/token`（探测无效授权码）返回 **`HTTP 400 invalid_grant`**（证明 Google 已通过 `client_id` + `client_secret` 客户端身份校验，不再报 `401 invalid_client`）。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.95 正式发布（Antigravity 多账号登录看额度 + Google One 家庭组共享防偏移，2026-11-17）
 
 - **版本与发布概览**：
   - 版本：**`0.3.95`**（`package.json`、`package-lock.json`、`renderer/intro.js` 两条更新说明、`renderer/i18n.js` 英文翻译均已补齐；客户端 OAuth 参数在运行期从本机安装的 Antigravity 客户端 `language_server` / `agy` / `app.asar` 只读提取，仓库内零硬编码密钥）。

@@ -49,9 +49,30 @@ export const AGY_CLOUDCODE_ENDPOINTS = [
 export type AgyOAuthClient = {
   clientId: string;
   clientSecret: string;
+  candidateSecrets?: string[];
 };
 
+/**
+ * Antigravity 客户端二进制内同时包含 3 套 Google OAuth 客户端配置：
+ * - Google Cloud 企业账号客户端（未注册 `auth/aicode`，用于个人授权会报 `403 restricted_client`）
+ * - Google Antigravity 个人账号客户端（注册有 `https://www.googleapis.com/auth/aicode`）
+ * - Google Drive 集成客户端
+ * 以下仅保留单向 SHA-256 前 8 位摘要以区分三套客户端，仓库内不含任何明文 client_id / client_secret。
+ */
+const PERSONAL_CLIENT_ID_SHA8 = "bf00c418";
+const PERSONAL_CLIENT_SECRET_SHA8 = "1d2f0410";
+const NON_PERSONAL_CLIENT_ID_SHA8 = new Set(["69dee430", "1705e6c6"]);
+const NON_PERSONAL_CLIENT_SECRET_SHA8 = new Set(["a2ddedc8", "9a015b93"]);
+
+function sha8(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 8);
+}
+
 let cachedOAuthClient: AgyOAuthClient | null = null;
+
+export function clearCachedAgyOAuthClient(): void {
+  cachedOAuthClient = null;
+}
 
 function antigravityOAuthBinaryCandidates(): string[] {
   const home = os.homedir();
@@ -109,7 +130,71 @@ function antigravityOAuthBinaryCandidates(): string[] {
   return [...new Set(out)];
 }
 
-export function extractAgyOAuthClientFromFile(filePath: string): AgyOAuthClient | null {
+function findAicodeClientIdInText(text: string, hostSuffix: string): string {
+  const propIdRe = new RegExp(`clientId\\s*:\\s*["'](\\d{10,}-[A-Za-z0-9_]{20,}\\.${hostSuffix})["']`, "g");
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const idx = text.indexOf("auth/aicode", searchFrom);
+    if (idx < 0) break;
+    searchFrom = idx + 11;
+    const before = text.slice(Math.max(0, idx - 360), idx);
+    const beforeMatches = [...before.matchAll(propIdRe)];
+    const lastBefore = beforeMatches.at(-1);
+    if (lastBefore && lastBefore.index !== undefined) {
+      const between = before.slice(lastBefore.index + lastBefore[0].length);
+      if (!between.includes("{") && !between.includes("}")) {
+        return lastBefore[1];
+      }
+    }
+    const after = text.slice(idx, Math.min(text.length, idx + 260));
+    propIdRe.lastIndex = 0;
+    const firstAfter = propIdRe.exec(after);
+    if (firstAfter && firstAfter.index !== undefined) {
+      const between = after.slice(0, firstAfter.index);
+      if (!between.includes("{") && !between.includes("}")) {
+        return firstAfter[1];
+      }
+    }
+  }
+  return "";
+}
+
+export function extractPersonalClientIdFromFile(filePath: string): string {
+  let fd: number | null = null;
+  try {
+    if (!fs.existsSync(filePath)) return "";
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 400 * 1024 * 1024) return "";
+    fd = fs.openSync(filePath, "r");
+    const CHUNK = 4 * 1024 * 1024;
+    const OVERLAP = 16 * 1024;
+    const buf = Buffer.allocUnsafe(Math.min(CHUNK, stat.size));
+    const hostSuffix = ["apps", "googleusercontent", "com"].join("\\.");
+    let pos = 0;
+    let tail = "";
+    while (pos < stat.size) {
+      const toRead = Math.min(buf.length, stat.size - pos);
+      const bytesRead = fs.readSync(fd, buf, 0, toRead, pos);
+      if (bytesRead <= 0) break;
+      const text = tail + buf.subarray(0, bytesRead).toString("latin1");
+      const found = findAicodeClientIdInText(text, hostSuffix);
+      if (found) return found;
+      tail = text.slice(Math.max(0, text.length - OVERLAP));
+      pos += bytesRead;
+    }
+    return "";
+  } catch {
+    return "";
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch { /* ignore */ }
+    }
+  }
+}
+
+export function extractAgyOAuthClientFromFile(filePath: string, preferredClientId = ""): AgyOAuthClient | null {
   let fd: number | null = null;
   try {
     if (!fs.existsSync(filePath)) return null;
@@ -121,14 +206,33 @@ export function extractAgyOAuthClientFromFile(filePath: string): AgyOAuthClient 
     const buf = Buffer.allocUnsafe(Math.min(CHUNK, stat.size));
     const hostSuffix = ["apps", "googleusercontent", "com"].join("\\.");
     const secretPrefix = "GOC" + "SPX-";
-    const quotedIdRe = new RegExp(`["'](\\d{10,}-[a-z0-9_]{20,}\\.${hostSuffix})["']`);
-    const quotedSecretRe = new RegExp(`["'](${secretPrefix}[A-Za-z0-9_-]{20,48})["']`);
-    const rawIdRe = new RegExp(`(\\d{10,}-[a-z0-9_]{20,}\\.${hostSuffix})`);
+    const quotedIdRe = new RegExp(`["'](\\d{10,}-[A-Za-z0-9_]{20,}\\.${hostSuffix})["']`, "g");
+    const quotedSecretRe = new RegExp(`["'](${secretPrefix}[A-Za-z0-9_-]{20,48})["']`, "g");
+    const rawIdRe = new RegExp(`(\\d{10,}-[A-Za-z0-9_]{20,}\\.${hostSuffix})`, "g");
     // Go 二进制字符串表无引号与 \0 分隔，GOCSPX 桌面客户端密钥固定为前缀 7 字符 + 28 位 base64url（共 35 字符）
-    const rawSecretRe = new RegExp(`(${secretPrefix}[A-Za-z0-9_-]{28})`);
+    const rawSecretRe = new RegExp(`(?<!["'])(${secretPrefix}[A-Za-z0-9_-]{28})`, "g");
 
-    let firstId = "";
-    let firstSecret = "";
+    const ids: string[] = [];
+    const seenIds = new Set<string>();
+    const addId = (id: string) => {
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        ids.push(id);
+      }
+    };
+
+    const secrets: string[] = [];
+    const seenSecrets = new Set<string>();
+    const addSecret = (sec: string) => {
+      if (sec && !seenSecrets.has(sec)) {
+        seenSecrets.add(sec);
+        secrets.push(sec);
+      }
+    };
+
+    let inlinePreferredId = "";
+    const directPairSecret = new Map<string, string>();
+
     let pos = 0;
     let tail = "";
     while (pos < stat.size) {
@@ -136,29 +240,86 @@ export function extractAgyOAuthClientFromFile(filePath: string): AgyOAuthClient 
       const bytesRead = fs.readSync(fd, buf, 0, toRead, pos);
       if (bytesRead <= 0) break;
       const text = tail + buf.subarray(0, bytesRead).toString("latin1");
-      const qSec = text.match(quotedSecretRe);
-      if (qSec && qSec.index !== undefined) {
-        const win = text.slice(Math.max(0, qSec.index - 4096), Math.min(text.length, qSec.index + 4096));
-        const qId = win.match(quotedIdRe);
-        if (qId) {
-          return { clientId: qId[1], clientSecret: qSec[1] };
+
+      if (!inlinePreferredId) {
+        inlinePreferredId = findAicodeClientIdInText(text, hostSuffix);
+      }
+
+      for (const m of text.matchAll(quotedSecretRe)) {
+        const sec = m[1];
+        addSecret(sec);
+        if (m.index !== undefined) {
+          const win = text.slice(Math.max(0, m.index - 512), Math.min(text.length, m.index + 512));
+          quotedIdRe.lastIndex = 0;
+          const nearIds = [...win.matchAll(quotedIdRe)];
+          if (nearIds.length === 1) {
+            directPairSecret.set(nearIds[0][1], sec);
+          }
         }
       }
-      if (!firstSecret) {
-        const secMatch = text.match(quotedSecretRe) ?? text.match(rawSecretRe);
-        if (secMatch) firstSecret = secMatch[1];
+      for (const m of text.matchAll(rawSecretRe)) {
+        addSecret(m[1]);
       }
-      if (!firstId) {
-        const idMatch = text.match(quotedIdRe) ?? text.match(rawIdRe);
-        if (idMatch) firstId = idMatch[1];
+      for (const m of text.matchAll(quotedIdRe)) {
+        addId(m[1]);
       }
-      if (firstId && firstSecret) {
-        return { clientId: firstId, clientSecret: firstSecret };
+      const activePreferred = preferredClientId || inlinePreferredId;
+      for (const m of text.matchAll(rawIdRe)) {
+        const raw = m[1];
+        // 防御 Go 字符串表紧邻前一项末尾恰好为数字时把前缀数字拼进项目编号，同时保持文件内原始下标顺序
+        let normalized = raw;
+        if (activePreferred && raw !== activePreferred && raw.endsWith(activePreferred)) {
+          normalized = activePreferred;
+        } else {
+          for (let trim = 1; trim <= 8 && raw.length - trim > 35; trim += 1) {
+            const sub = raw.slice(trim);
+            if (!/^\d{10,}-/.test(sub)) break;
+            if (sha8(sub) === PERSONAL_CLIENT_ID_SHA8) {
+              normalized = sub;
+              break;
+            }
+          }
+        }
+        addId(normalized);
       }
+
       tail = text.slice(Math.max(0, text.length - OVERLAP));
       pos += bytesRead;
     }
-    return firstId && firstSecret ? { clientId: firstId, clientSecret: firstSecret } : null;
+
+    if (ids.length === 0 || secrets.length === 0) return null;
+
+    const targetPreferred = preferredClientId || inlinePreferredId;
+    const clientId =
+      (targetPreferred && ids.includes(targetPreferred) ? targetPreferred : "") ||
+      ids.find((id) => sha8(id) === PERSONAL_CLIENT_ID_SHA8) ||
+      ids.find((id) => !NON_PERSONAL_CLIENT_ID_SHA8.has(sha8(id))) ||
+      ids[0];
+
+    const orderedSecrets: string[] = [];
+    const pushSecret = (sec: string | undefined) => {
+      if (sec && !orderedSecrets.includes(sec)) orderedSecrets.push(sec);
+    };
+
+    pushSecret(directPairSecret.get(clientId));
+    pushSecret(secrets.find((sec) => sha8(sec) === PERSONAL_CLIENT_SECRET_SHA8));
+    const idIdx = ids.indexOf(clientId);
+    if (idIdx >= 0 && idIdx < secrets.length && !NON_PERSONAL_CLIENT_SECRET_SHA8.has(sha8(secrets[idIdx]))) {
+      pushSecret(secrets[idIdx]);
+    }
+    for (const sec of secrets) {
+      if (!NON_PERSONAL_CLIENT_SECRET_SHA8.has(sha8(sec))) pushSecret(sec);
+    }
+    for (const sec of secrets) {
+      pushSecret(sec);
+    }
+
+    if (orderedSecrets.length === 0) return null;
+    return {
+      clientId,
+      clientSecret: orderedSecrets[0],
+      ...(orderedSecrets.length > 1 ? { candidateSecrets: orderedSecrets } : {}),
+    };
   } catch {
     return null;
   } finally {
@@ -176,8 +337,28 @@ export function resolveAntigravityOAuthClient(deps: AgyNetDeps = {}): AgyOAuthCl
   const envSecret = str(process.env.TOKENPULSE_AGY_CLIENT_SECRET);
   if (envId && envSecret) return { clientId: envId, clientSecret: envSecret };
   if (cachedOAuthClient) return cachedOAuthClient;
-  for (const candidate of antigravityOAuthBinaryCandidates()) {
-    const found = extractAgyOAuthClientFromFile(candidate);
+
+  const candidates = antigravityOAuthBinaryCandidates();
+  const asarCandidates: string[] = [];
+  for (const candidate of candidates) {
+    if (/\.asar$/i.test(candidate)) {
+      asarCandidates.push(candidate);
+    } else {
+      asarCandidates.push(
+        path.resolve(path.dirname(candidate), "..", "app.asar"),
+        path.resolve(path.dirname(candidate), "app.asar"),
+      );
+    }
+  }
+
+  let preferredClientId = "";
+  for (const asarPath of [...new Set(asarCandidates)]) {
+    preferredClientId = extractPersonalClientIdFromFile(asarPath);
+    if (preferredClientId) break;
+  }
+
+  for (const candidate of candidates) {
+    const found = extractAgyOAuthClientFromFile(candidate, preferredClientId);
     if (found) {
       cachedOAuthClient = found;
       return found;
@@ -561,6 +742,43 @@ export type AgyNetDeps = {
   openExternal?: (url: string) => Promise<void> | void;
 };
 
+function secretListOf(oauthClient: AgyOAuthClient): string[] {
+  const list = [oauthClient.clientSecret, ...(oauthClient.candidateSecrets ?? [])].filter(Boolean);
+  return [...new Set(list)];
+}
+
+async function postTokenFormWithClient(
+  oauthClient: AgyOAuthClient,
+  params: Record<string, string>,
+  post: (url: string, body: string, headers: string[]) => Promise<{ status: number; json: any }>,
+): Promise<{ status: number; json: any }> {
+  const secrets = secretListOf(oauthClient);
+  let last: { status: number; json: any } = { status: 0, json: null };
+  for (const secret of secrets) {
+    const form = new URLSearchParams({
+      ...params,
+      client_id: oauthClient.clientId,
+      client_secret: secret,
+    }).toString();
+    last = await post(AGY_OAUTH_TOKEN_URL, form, [
+      "Content-Type: application/x-www-form-urlencoded",
+      "Accept: application/json",
+    ]);
+    const code = errorCodeOf(last.json);
+    const invalidClient = last.status === 401 || code === "invalid_client" || code === "unauthorized_client";
+    if (!invalidClient) {
+      if (secret !== oauthClient.clientSecret) {
+        oauthClient.clientSecret = secret;
+        if (cachedOAuthClient && cachedOAuthClient.clientId === oauthClient.clientId) {
+          cachedOAuthClient = { clientId: oauthClient.clientId, clientSecret: secret };
+        }
+      }
+      return last;
+    }
+  }
+  return last;
+}
+
 export async function refreshAgyCredential(
   credential: AgyCredential,
   now = Date.now(),
@@ -571,16 +789,14 @@ export async function refreshAgyCredential(
   if (!oauthClient) return { ok: false, permanent: false, error: "未找到本机 Antigravity 客户端配置" };
   const post = deps.postForm ?? ((url, body, headers) => curlPost(url, body, headers));
   try {
-    const form = new URLSearchParams({
-      client_id: oauthClient.clientId,
-      client_secret: oauthClient.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: credential.refreshToken,
-    }).toString();
-    const { status, json } = await post(AGY_OAUTH_TOKEN_URL, form, [
-      "Content-Type: application/x-www-form-urlencoded",
-      "Accept: application/json",
-    ]);
+    const { status, json } = await postTokenFormWithClient(
+      oauthClient,
+      {
+        grant_type: "refresh_token",
+        refresh_token: credential.refreshToken,
+      },
+      post,
+    );
     if (status >= 200 && status < 300) {
       const token = str(json?.access_token);
       if (!token) return { ok: false, permanent: false, error: "续期响应里没有 access_token" };
@@ -846,18 +1062,16 @@ async function runAntigravityLogin(
     }
 
     const post = deps.postForm ?? ((url, body, headers) => curlPost(url, body, headers));
-    const tokenForm = new URLSearchParams({
-      client_id: oauthClient.clientId,
-      client_secret: oauthClient.clientSecret,
-      code: callback.code,
-      code_verifier: verifier,
-      grant_type: "authorization_code",
-      redirect_uri: redirectUri,
-    }).toString();
-    const { status: tokenHttp, json: tokenJson } = await post(AGY_OAUTH_TOKEN_URL, tokenForm, [
-      "Content-Type: application/x-www-form-urlencoded",
-      "Accept: application/json",
-    ]);
+    const { status: tokenHttp, json: tokenJson } = await postTokenFormWithClient(
+      oauthClient,
+      {
+        code: callback.code,
+        code_verifier: verifier,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+      },
+      post,
+    );
     if (tokenHttp < 200 || tokenHttp >= 300 || !str(tokenJson?.access_token)) {
       const code = errorCodeOf(tokenJson);
       const why = `换取 OAuth 令牌失败（HTTP ${tokenHttp}${code ? ` ${code}` : ""}）`;

@@ -110,13 +110,74 @@ function httpGet(url) {
     assert.equal(mod.resolveAgyLocalOwner(t0 + 5400_000, timeline), bobId, '切换后的本机请求归属给 Bob');
     pass('local Antigravity session adoption and login timeline request ownership');
 
-    // 3. 运行期提取本机客户端 OAuth 配置 + Google OAuth 2.0 PKCE 环回授权登录（含错误 state 拦截、原位升级、登录日志脱敏）
-    const fakeClientId = ['123456789012-synthetictestclient00000000', 'apps', 'googleusercontent', 'com'].join('.');
-    const fakeClientSecret = 'GOC' + 'SPX-' + 'synthetic_unit_test_only_0000';
+    // 3. 运行期提取本机客户端 OAuth 配置（含多客户端企业版干扰项过滤、aicode 作用域匹配、401 密钥自动回退）+ Google OAuth 2.0 PKCE 环回授权登录
+    const hostTail = ['apps', 'googleusercontent', 'com'].join('.');
+    const secHead = 'GOC' + 'SPX-';
+    const fakeClientId = ['123456789012-synthetictestclient00000000', hostTail].join('.');
+    const fakeClientSecret = secHead + 'synthetic_unit_test_only_0000';
     const fakeAsarPath = path.join(root, 'fake-app.asar');
     fs.writeFileSync(fakeAsarPath, `/* mock bundle */ const cfg={clientId:"${fakeClientId}",clientSecret:"${fakeClientSecret}"};`);
     const extracted = mod.extractAgyOAuthClientFromFile(fakeAsarPath);
     assert.deepEqual(extracted, { clientId: fakeClientId, clientSecret: fakeClientSecret });
+
+    // 模拟真实 Antigravity 安装目录：app.asar 先声明无 aicode 的企业版 clientId、再声明带 auth/aicode 的个人版 clientId；
+    // language_server 二进制字符串表无引号拼接 3 套 clientId 与 3 套 35 字符密钥，验证不会误取第 0 个企业版 clientId（避免 403 restricted_client）
+    const fakeIdeResources = path.join(root, 'fake-ide', 'resources');
+    fs.mkdirSync(path.join(fakeIdeResources, 'bin'), { recursive: true });
+    const bizId = ['888888888888-bizdecoywithoutaicode00000', hostTail].join('.');
+    const personalId = ['111111111111-personalwithaicodescope000', hostTail].join('.');
+    const driveId = ['999999999999-drivedecoyclient0000000000', hostTail].join('.');
+    const bizSec = secHead + 'biz_decoy_secret_'.padEnd(28, '1');
+    const personalSec = secHead + 'personal_valid_sec_'.padEnd(28, '2');
+    const driveSec = secHead + 'drive_decoy_secret_'.padEnd(28, '3');
+
+    fs.writeFileSync(
+      path.join(fakeIdeResources, 'app.asar'),
+      `const SIGN_IN_CLIENTS={business:{clientId:'${bizId}',scopes:['openid']},personal:{clientId:'${personalId}',scopes:['openid','https://www.googleapis.com/auth/aicode']}};`,
+    );
+    const mockGoBinary = path.join(fakeIdeResources, 'bin', 'language_server.exe');
+    fs.writeFileSync(
+      mockGoBinary,
+      `rodata_head_${bizSec}middle${personalSec}tail${driveSec}end_ids:${bizId}sep${personalId}sep${driveId}_eof`,
+    );
+    process.env.TOKENPULSE_AGY_OAUTH_BINARY = mockGoBinary;
+    mod.clearCachedAgyOAuthClient();
+    try {
+      const resolvedMulti = mod.resolveAntigravityOAuthClient();
+      assert.ok(resolvedMulti, '应从多客户端二进制中成功解析 OAuth 客户端');
+      assert.equal(resolvedMulti.clientId, personalId, '必须精准选中声明了 auth/aicode 的个人版 clientId 而非首个企业版');
+      assert.equal(resolvedMulti.clientSecret, personalSec, '应优先匹配同下标个人版密钥');
+      assert.equal(resolvedMulti.candidateSecrets.length, 3, '应保留全部候选密钥供自动回退');
+    } finally {
+      delete process.env.TOKENPULSE_AGY_OAUTH_BINARY;
+      mod.clearCachedAgyOAuthClient();
+    }
+
+    // 验证候选密钥在未来版本顺序变化触发 401 invalid_client 时可自动回退并缓存正确密钥
+    const fallbackClient = {
+      clientId: personalId,
+      clientSecret: bizSec,
+      candidateSecrets: [bizSec, personalSec],
+    };
+    const triedSecrets = [];
+    const fallbackRefresh = await mod.refreshAgyCredential(
+      { token: 'old', refreshToken: 'rt_test', expiresAt: 0 },
+      t0,
+      {
+        oauthClient: fallbackClient,
+        postForm: async (_url, body) => {
+          const sec = new URLSearchParams(body).get('client_secret');
+          triedSecrets.push(sec);
+          if (sec !== personalSec) {
+            return { status: 401, json: { error: 'invalid_client' } };
+          }
+          return { status: 200, json: { access_token: 'tp_fallback_ok', expires_in: 3600 } };
+        },
+      },
+    );
+    assert.equal(fallbackRefresh.ok, true, '首个候选密钥返回 401 invalid_client 时应自动切换下一候选密钥成功续期');
+    assert.deepEqual(triedSecrets, [bizSec, personalSec]);
+    assert.equal(fallbackClient.clientSecret, personalSec, '回退成功后应原位修正生效密钥');
 
     let capturedVerifier = '';
     let capturedChallenge = '';
