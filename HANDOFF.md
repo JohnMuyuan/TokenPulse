@@ -1,8 +1,17 @@
-# 当前接手入口 · TokenPulse v0.3.95 打包与 GitHub 发布（进行中，2026-11-17）
+# 当前接手入口 · TokenPulse v0.3.95 正式发布（Antigravity 多账号登录看额度 + Google One 家庭组共享防偏移，2026-11-17）
 
-## 当前进度 · 正在打包与发布 `v0.3.95`
+## 发布状态 · `v0.3.95`（已正式发布）
 
-- **版本**：`0.3.95`（已完成 `package.json` / `package-lock.json` 版本号升级、`renderer/intro.js` 版本更新说明与 `renderer/i18n.js` 英文词条补齐，正在执行发版验证、`npm run dist` 打包、产物 SHA256 与句柄检查及 GitHub Release 发布）。
+- **版本与发布概览**：
+  - 版本：**`0.3.95`**（`package.json`、`package-lock.json`、`renderer/intro.js` 两条更新说明、`renderer/i18n.js` 英文翻译均已补齐；客户端 OAuth 参数在运行期从本机安装的 Antigravity 客户端 `language_server` / `agy` / `app.asar` 只读提取，仓库内零硬编码密钥）。
+  - **Git / GitHub（已完成）**：发布提交 **`a344274`**（`chore: release v0.3.95 (Antigravity multi-account quota & family group anti-drift)`）已推送到 `origin/main`，标签 **`v0.3.95`** 已推送到远端；用户将本机代理 `127.0.0.1:7890` 切换为 TCP 后，`Setup.exe` 与 `Portable.exe` 一次上传成功，GitHub Release **`v0.3.95`** 已正式发布（非草稿、非预发布、`latest`）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.95 ，4 个远端附件大小与 SHA256 与本地逐字节一致。未纳入提交：`clawd-pet-extracted/`（原样保留未动；未安装覆盖本机运行中的正式版 TokenPulse）。
+  - **打包产物与远端校验（全部一致且本地句柄 `UNLOCKED`）**：
+    - `npm run dist` PASS；校验 `dist/win-unpacked/resources/app.asar` 含 `"version": "0.3.95"`、`resolveAntigravityOAuthClient`、`detectFamilyLinks`、`sharedAttributionBox`。
+    - `dist/TokenPulse-0.3.95-Setup.exe`（`112,867,264` B，SHA256 `12A0C2267053B9556414643590DC8028784FD1BF216E8BA1327144889F33F3A2`）
+    - `dist/TokenPulse-0.3.95-Portable.exe`（`112,610,042` B，SHA256 `C39B17AE5554E4E97A84F0A3A034009952254FABB8B42303F79A76AB88A66984`）
+    - `dist/TokenPulse-0.3.95-Setup.exe.blockmap`（`119,891` B，SHA256 `3425464B9DFC568AF164E66B180CC73BE8F2D66452D2A25AD2CB9B27446C8FF1`）
+    - `dist/latest.yml`（`352` B，version `0.3.95`，SHA256 `E478444FE94EE9936FE105C1277382BCCE4949B57C01BAD475C27E3E59B97293`）
+    - 发布说明文件：`dist/release-0.3.95.md`。
 
 - **本轮目标与完成结论**：
   1. **Antigravity 多账号登录与独立额度监控**：
@@ -34,19 +43,16 @@
   - `node scripts/test-oauth-login.cjs`：15/15 PASS
   - `node scripts/test-shared-quota.cjs`：5/5 PASS
   - `node scripts/test-features.cjs`：46/46 PASS（含英文词典覆盖与正则模板编译校验）
+  - `npx.cmd electron --lang=zh-CN scripts/test-intro-ui.cjs`：3/3 PASS
   - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：8/8 PASS（含多账号队列/标签/设置页、家庭组归因条与时间线轨道、深色模式、900px 不溢出、英文模式零残留中文、0 CSP 报错、无凭据泄漏）
   - `npx.cmd electron --lang=zh-CN scripts/test-ui.cjs`：26/26 PASS
-- **未执行的验证与产物/发布状态**：
-  - 未执行 `electron-builder` 安装包打包（`dist/` 未重新生成新安装包），`package.json` 版本保持 `0.3.94`。
-  - 未执行 `git commit`、`git tag`、`git push` 及 GitHub Release（用户明确指示「先不用发布到 github 上」）。
-  - 工作区未追踪目录 `clawd-pet-extracted/` 为既有用户目录，按约定原样保留未改动。
+  - `npm run dist`：PASS（其余无关独立供应商 UI 脚本本轮未全量重跑）
 - **收尾进程与文件句柄检查**：
-  - 检查本工作区相关 `node.exe` / `electron.exe` 测试与构建进程：`0` 个残留进程；后台任务列表为空。
-  - 非破坏性独占读写句柄检测（检测后立即 `Dispose`）：`build\main\index.js`、`build\core\antigravity-accounts.js` 及 `dist/` 下既有产物文件均处于 `UNLOCKED` 未占用状态。
-- **已知限制与后续发版提示**：
+  - 检查本工作区相关 `node.exe` / `electron.exe` / `gh.exe` 进程：`0` 个残留进程；后台任务列表为空。
+  - 非破坏性独占读写句柄检测（检测后立即 `Dispose`）：`dist/TokenPulse-0.3.95-Setup.exe`、`dist/TokenPulse-0.3.95-Portable.exe`、`dist/TokenPulse-0.3.95-Setup.exe.blockmap`、`dist/latest.yml`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 及 `build/main/index.js` 均处于 `UNLOCKED` 未占用状态。
+- **已知限制**：
   - Antigravity 桌面端与 `agy.exe` CLI 将单机当前登录存放在系统钥匙串（`gemini:antigravity`），因此 TokenPulse 暂不提供像 Claude/Codex 配置文件那样的「一键改写客户端钥匙串切换登录」按钮，避免意外覆盖正在运行的 IDE 会话；多账号额度监控通过 TokenPulse 自身的独立 OAuth 凭据全后台直连完成。
-  - 若同一个 Google 账号从未有过独享使用区间（即每次本机发请求的同时家庭成员都在高强度并发使用，尚无任何历史独享采样基准），并发滤波会退回区间观测值，待积累到至少几个独享采样点后即可自动建立精准基准；用户也可随时手动切为「家庭组共享」或「仅本机独享」。
-  - 后续若确认准备正式发版：按目标版本号更新 `package.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 对应词条，构建安装包并推送发布即可。
+  - 若同一个 Google 账号从未有过独享使用区间（尚无任何历史独享采样基准），并发滤波会退回区间观测值，积累到几个独享采样点后自动建立精准基准；用户也可随时手动切为「家庭组共享」或「仅本机独享」。
 
 ---
 
