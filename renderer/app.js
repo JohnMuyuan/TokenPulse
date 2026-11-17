@@ -13,7 +13,8 @@ const META = {
 const OAUTH_META = {
   chatgpt: { name: 'ChatGPT', brand: 'openai' },
   claude: { name: 'Claude', brand: 'claude' },
-  grok: { name: 'Grok', brand: 'grok' }
+  grok: { name: 'Grok', brand: 'grok' },
+  antigravity: { name: 'Antigravity', brand: 'antigravity' }
 };
 const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi', Antigravity: 'antigravity',
   // CC Switch 导入的工具（core/cc-switch.ts 的 CC_SOURCES），图标来自 lobe-icons；认不出的还是首字母
@@ -304,6 +305,120 @@ function renderOfficialAccounts(statuses = []) {
   }));
 }
 
+/** Google Antigravity 的多账号管理卡片（独立挂载在 #antigravity-accounts，保持 #official-accounts 仅放三家 CLI）。 */
+function renderAgyAccounts(agyStatus) {
+  const host = $('antigravity-accounts');
+  if (!host) return;
+  if (!agyStatus || typeof agyStatus !== 'object') { host.replaceChildren(); return; }
+  const liveState = window.AntigravityQuota?.state?.() || null;
+  const liveById = new Map((liveState?.accounts || []).map(item => [item.id, item]));
+  const visible = (agyStatus.accounts || []).filter(account => !account.hidden);
+  const visibleCount = visible.length;
+  const poolIds = new Set(visible.map(a => liveById.get(a.id)?.familyGroupId || a.id));
+  const hasFamily = poolIds.size < visibleCount || visible.some(a => liveById.get(a.id)?.familyShared);
+  const poolSummary = visibleCount > 1
+    ? el('span', {
+        class: 'oauth-pool-summary',
+        text: hasFamily ? `${visibleCount} 个账号 · ${poolIds.size} 份额度池（家庭组自动防偏移）` : `${visibleCount} 个账号 · 独立直连查询`,
+      })
+    : null;
+  const add = el('button', {
+    type: 'button',
+    class: 'btn btn-accent',
+    'data-account-action': 'add',
+    'data-account-kind': 'antigravity',
+    'aria-haspopup': 'menu',
+    'aria-expanded': 'false',
+    'aria-label': '添加账号：Antigravity',
+  }, [icon('plus'), '添加账号']);
+  const sortable = (agyStatus.accounts || []).length > 1;
+  const rows = (agyStatus.accounts || []).map(account => {
+    const email = account.email || account.label;
+    const name = account.alias || email;
+    const live = liveById.get(account.id);
+    const liveGroups = (live?.last?.groups || []).filter(g => !(g?.resetAt && Date.parse(g.resetAt) <= Date.now()) || (g?.week && !(g.week.resetAt && Date.parse(g.week.resetAt) <= Date.now())));
+    let quotaText = '';
+    let exhausted = false;
+    if (!account.hidden && live?.last?.ok && liveGroups.length) {
+      const minLeft = Math.min(...liveGroups.map(g => {
+        const u5 = g.resetAt && Date.parse(g.resetAt) <= Date.now() ? 0 : (g.used || 0);
+        const uw = g.week && !(g.week.resetAt && Date.parse(g.week.resetAt) <= Date.now()) ? (g.week.used || 0) : 0;
+        return Math.max(0, 100 - Math.max(u5, uw));
+      }));
+      exhausted = minLeft <= 0;
+      quotaText = exhausted ? '额度已用完' : `剩余 ${minLeft.toFixed(1)}%`;
+      if (live.familyShared) quotaText += ' · 家庭组共享';
+    } else if (!account.hidden) {
+      quotaText = '暂无额度数据';
+    }
+    const stateText = account.hidden ? '已隐藏'
+      : account.needsLogin ? '需重新登录'
+      : account.waitLocal ? '等本机登录'
+      : !account.usable ? (account.autoRenew ? '等待自动续期' : '凭据已过期')
+      : account.inLocal && account.cloudAuth ? '本机当前 + 已保存'
+      : account.inLocal ? '本机当前登录' : '本软件已保存';
+    const stateTitle = account.hidden ? ''
+      : account.needsLogin ? 'Google 拒绝了续期，请点「重新授权」' + (account.renewError ? `（${account.renewError}）` : '')
+      : account.waitLocal ? '只登记了本机 Antigravity 的登录，未保存独立凭据；点「重新授权」后关着 Antigravity 也能直连查询额度。'
+      : account.renewError ? `上次续期没成功，会继续重试（${account.renewError}）`
+      : '';
+    const tool = (action, iconName, label, extra = {}) => el('button', {
+      type: 'button',
+      class: 'btn icon-only oauth-tool' + (action === 'remove' || action === 'purge' ? ' danger' : ''),
+      'data-account-action': action,
+      'data-account-kind': 'antigravity',
+      'data-account-id': account.id,
+      title: label,
+      'aria-label': `${label}：${name}`,
+      ...extra,
+    }, [icon(iconName)]);
+    const actions = account.hidden
+      ? [
+          el('button', { type: 'button', class: 'btn oauth-restore', 'data-account-action': 'restore', 'data-account-kind': 'antigravity', 'data-account-id': account.id, title: '重新查询并显示这个账号的额度' }, [icon('restore'), '恢复']),
+          tool('reauthorize', 'refresh', '重新授权'),
+          tool('purge', 'trash', '完全删除 TokenPulse 记录'),
+        ]
+      : [
+          tool('rename', 'edit', '重命名'),
+          tool('reauthorize', 'refresh', '重新授权'),
+          tool('remove', 'trash', account.inLocal ? '隐藏（本机 Antigravity 还登录着这个账号）' : '删除并保留额度历史', { 'data-in-cli': account.inLocal ? '1' : '' }),
+          tool('purge', 'trash', '完全删除 TokenPulse 记录'),
+        ];
+    const shareSelect = account.hidden ? null : el('select', {
+      class: 'oauth-auto-at agy-share-select',
+      'data-agy-share-mode': account.id,
+      'aria-label': `额度共享校准：${name}`,
+      title: '选择如何处理家庭组共享或其他设备的额度消耗',
+    }, [
+      ['auto', '自动防偏移'],
+      ['family', '家庭组共享'],
+      ['solo', '仅本机独享'],
+    ].map(([val, text]) => el('option', { value: val, text, ...(val === (account.shareMode || 'auto') ? { selected: '' } : {}) })));
+    const grip = sortable
+      ? el('button', { type: 'button', class: 'oauth-grip', 'data-grip': account.id, title: '拖动调整顺序', 'aria-label': `调整顺序：${name}（按住拖动，或用上下方向键）` }, [icon('grip')])
+      : el('span', { class: 'oauth-grip placeholder', 'aria-hidden': 'true' });
+    return el('div', { class: 'oauth-account' + (account.usable ? '' : ' expired') + (account.hidden ? ' hidden-account' : '') + (sortable ? ' sortable' : ''), 'data-account-row': account.id }, [
+      grip,
+      el('span', { class: 'oauth-account-who' }, [
+        el('span', { class: 'oauth-account-name', text: name, title: name, translate: 'no', 'data-alias': account.alias || '', 'data-email': email }),
+        account.alias && email ? el('small', { class: 'oauth-account-email', text: email, title: email, translate: 'no' }) : null,
+        quotaText ? el('small', { class: 'oauth-account-quota' + (exhausted ? ' exhausted' : ''), text: quotaText }) : null,
+      ]),
+      account.autoRenew && !account.hidden ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，关着 Antigravity 也能直连查询额度' }) : null,
+      shareSelect,
+      el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: stateText, ...(stateTitle ? { title: stateTitle } : {}) }),
+      el('span', { class: 'oauth-actions' }, actions),
+    ]);
+  });
+  const emptyText = agyStatus.running
+    ? '当前按零配置读取本机开着的 Antigravity；点「添加账号」可登录多个 Google 账号，关着客户端也能同时查看额度，并自动识别家庭组共享池。'
+    : '点「添加账号」在浏览器里登录 Google 账号后，即使不打开 Antigravity 也能自动续期并查看多个账号的额度。';
+  host.replaceChildren(el('div', { class: 'oauth-card', 'data-agy-oauth-card': '' }, [
+    el('div', { class: 'oauth-card-head' }, [avatar('antigravity'), el('span', { class: 'oauth-card-title', text: 'Antigravity' }), poolSummary, add]),
+    rows.length ? el('div', { class: 'oauth-account-list', 'data-kind': 'antigravity' }, rows) : el('p', { class: 'oauth-empty', text: emptyText }),
+  ]));
+}
+
 /* ---- 拖拽排序 ----
  * 按住把手上下拖：被拖的那行跟着鼠标走，其余的行让出位置（transform 动画，不改 DOM）；松手时才真的改 DOM 顺序并保存。
  * 用 pointer 事件自己做而不用 HTML5 拖放：原生拖放拖的是一张半透明截图，别的行也不会让位，手感差。
@@ -312,8 +427,14 @@ let accountDrag = null;
 function rowsOf(list) { return [...list.querySelectorAll(':scope > .oauth-account')]; }
 async function saveAccountOrder(list, message = '已调整顺序') {
   const ids = rowsOf(list).map(row => row.dataset.accountRow);
+  const kind = list.dataset.kind;
   try {
-    renderOfficialAccounts(await api.reorderOfficialAccounts(list.dataset.kind, ids));
+    if (kind === 'antigravity') {
+      renderAgyAccounts(await api.antigravityQuota.reorder(ids));
+      api.antigravityQuota.state().then(s => window.AntigravityQuota?.apply?.(s)).catch(() => {});
+    } else {
+      renderOfficialAccounts(await api.reorderOfficialAccounts(kind, ids));
+    }
     settingsDone(message);
   } catch (error) {
     $('prefs-status').textContent = cleanRemoteError(error, '顺序没保存上，请重试');
@@ -323,43 +444,60 @@ async function saveAccountOrder(list, message = '已调整顺序') {
 function cleanRemoteError(error, fallback) {
   return String(error?.message || fallback).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') || fallback;
 }
-$('official-accounts').addEventListener('pointerdown', event => {
-  const grip = event.target.closest('[data-grip]');
-  if (!grip || event.button !== 0 || accountDrag) return;
-  const row = grip.closest('.oauth-account'), list = row.parentElement, rows = rowsOf(list);
-  event.preventDefault();
-  grip.setPointerCapture(event.pointerId);
-  grip.focus({ preventScroll: true });
-  const rects = rows.map(item => item.getBoundingClientRect());
-  const from = rows.indexOf(row);
-  accountDrag = { grip, row, list, rows, rects, from, to: from, startY: event.clientY, moved: false };
-  list.classList.add('sorting');
-});
-$('official-accounts').addEventListener('pointermove', event => {
-  const d = accountDrag; if (!d) return;
-  const origin = d.rects[d.from];
-  const minTop = d.rects[0].top;
-  const maxTop = d.rects.at(-1).top + d.rects.at(-1).height - origin.height;
-  // 只能在这一家的列表里上下拖，拖出头就停在两端。行高不统一（起了名字的行更高），不能按固定步长算落点。
-  const dy = Math.max(minTop - origin.top, Math.min(maxTop - origin.top, event.clientY - d.startY));
-  if (!d.moved && Math.abs(event.clientY - d.startY) < 3) return;
-  if (!d.moved) { d.moved = true; d.row.classList.add('dragging'); }
-  d.row.style.transform = `translateY(${dy}px)`;
-  const center = origin.top + origin.height / 2 + dy;
-  let to = 0;
-  for (let i = 0; i < d.rects.length; i++) {
-    if (i === d.from) continue;
-    if (center > d.rects[i].top + d.rects[i].height / 2) to += 1;
-  }
-  d.to = to;
-  const gap = d.rects.length > 1 ? d.rects[1].top - d.rects[0].bottom : 0;
-  const slot = origin.height + gap;
-  d.rows.forEach((item, i) => {
-    if (item === d.row) return;
-    const shift = d.from < d.to && i > d.from && i <= d.to ? -slot : d.from > d.to && i < d.from && i >= d.to ? slot : 0;
-    item.style.transform = shift ? `translateY(${shift}px)` : '';
+function bindAccountDragList(container) {
+  if (!container) return;
+  container.addEventListener('pointerdown', event => {
+    const grip = event.target.closest('[data-grip]');
+    if (!grip || event.button !== 0 || accountDrag) return;
+    const row = grip.closest('.oauth-account'), list = row.parentElement, rows = rowsOf(list);
+    event.preventDefault();
+    grip.setPointerCapture(event.pointerId);
+    grip.focus({ preventScroll: true });
+    const rects = rows.map(item => item.getBoundingClientRect());
+    const from = rows.indexOf(row);
+    accountDrag = { container, grip, row, list, rows, rects, from, to: from, startY: event.clientY, moved: false };
+    list.classList.add('sorting');
   });
-});
+  container.addEventListener('pointermove', event => {
+    const d = accountDrag; if (!d || d.container !== container) return;
+    const origin = d.rects[d.from];
+    const minTop = d.rects[0].top;
+    const maxTop = d.rects.at(-1).top + d.rects.at(-1).height - origin.height;
+    const dy = Math.max(minTop - origin.top, Math.min(maxTop - origin.top, event.clientY - d.startY));
+    if (!d.moved && Math.abs(event.clientY - d.startY) < 3) return;
+    if (!d.moved) { d.moved = true; d.row.classList.add('dragging'); }
+    d.row.style.transform = `translateY(${dy}px)`;
+    const center = origin.top + origin.height / 2 + dy;
+    let to = 0;
+    for (let i = 0; i < d.rects.length; i++) {
+      if (i === d.from) continue;
+      if (center > d.rects[i].top + d.rects[i].height / 2) to += 1;
+    }
+    d.to = to;
+    const gap = d.rects.length > 1 ? d.rects[1].top - d.rects[0].bottom : 0;
+    const slot = origin.height + gap;
+    d.rows.forEach((item, i) => {
+      if (item === d.row) return;
+      const shift = d.from < d.to && i > d.from && i <= d.to ? -slot : d.from > d.to && i < d.from && i >= d.to ? slot : 0;
+      item.style.transform = shift ? `translateY(${shift}px)` : '';
+    });
+  });
+  container.addEventListener('pointerup', () => endAccountDrag(true));
+  container.addEventListener('pointercancel', () => endAccountDrag(false));
+  container.addEventListener('lostpointercapture', () => endAccountDrag(true));
+  container.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && accountDrag) { event.preventDefault(); event.stopPropagation(); endAccountDrag(false); return; }
+    const grip = event.target.closest('[data-grip]');
+    if (!grip || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    const row = grip.closest('.oauth-account'), list = row.parentElement, rows = rowsOf(list);
+    const at = rows.indexOf(row), to = at + (event.key === 'ArrowUp' ? -1 : 1);
+    if (to < 0 || to >= rows.length) return;
+    if (to < at) rows[to].before(row); else rows[to].after(row);
+    grip.focus();
+    saveAccountOrder(list).then(() => container.querySelector(`[data-grip="${CSS.escape(row.dataset.accountRow)}"]`)?.focus());
+  });
+}
 function endAccountDrag(commit) {
   const d = accountDrag; if (!d) return;
   accountDrag = null;
@@ -375,30 +513,17 @@ function endAccountDrag(commit) {
     d.list.append(...others);
   }
   requestAnimationFrame(() => d.list.classList.remove('settling'));
-  if (changed) saveAccountOrder(d.list).then(() => $('official-accounts').querySelector(`[data-grip="${CSS.escape(d.row.dataset.accountRow)}"]`)?.focus({ preventScroll: true }));
+  if (changed) saveAccountOrder(d.list).then(() => d.container.querySelector(`[data-grip="${CSS.escape(d.row.dataset.accountRow)}"]`)?.focus({ preventScroll: true }));
 }
-$('official-accounts').addEventListener('pointerup', () => endAccountDrag(true));
-$('official-accounts').addEventListener('pointercancel', () => endAccountDrag(false));
-$('official-accounts').addEventListener('lostpointercapture', () => endAccountDrag(true));
-// 键盘：把手聚焦时上下方向键挪一位，Esc 取消正在进行的拖动
-$('official-accounts').addEventListener('keydown', event => {
-  if (event.key === 'Escape' && accountDrag) { event.preventDefault(); event.stopPropagation(); endAccountDrag(false); return; }
-  const grip = event.target.closest('[data-grip]');
-  if (!grip || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
-  event.preventDefault();
-  const row = grip.closest('.oauth-account'), list = row.parentElement, rows = rowsOf(list);
-  const at = rows.indexOf(row), to = at + (event.key === 'ArrowUp' ? -1 : 1);
-  if (to < 0 || to >= rows.length) return;
-  if (to < at) rows[to].before(row); else rows[to].after(row);
-  grip.focus();
-  saveAccountOrder(list).then(() => $('official-accounts').querySelector(`[data-grip="${CSS.escape(row.dataset.accountRow)}"]`)?.focus());
-});
+bindAccountDragList($('official-accounts'));
+bindAccountDragList($('antigravity-accounts'));
 
 /* ---- 重命名：名字原地变成输入框，回车 / 点别处保存，Esc 取消 ---- */
 function startRename(button) {
   const row = button.closest('.oauth-account'), label = row.querySelector('.oauth-account-name');
   if (row.querySelector('.oauth-rename')) return;
-  const id = button.dataset.accountId, email = label.dataset.email;
+  const id = button.dataset.accountId, kind = button.dataset.accountKind, email = label.dataset.email;
+  const container = kind === 'antigravity' ? $('antigravity-accounts') : $('official-accounts');
   const input = el('input', { class: 'oauth-rename', type: 'text', maxlength: '40', value: label.dataset.alias || '', placeholder: email || '给这个账号起个名字', 'aria-label': '账号名字（留空就显示邮箱）', translate: 'no' });
   label.replaceWith(input);
   input.focus(); input.select();
@@ -410,9 +535,14 @@ function startRename(button) {
     if (!save || value === (label.dataset.alias || '')) { input.replaceWith(label); $('prefs-status').textContent = ''; return; }
     input.disabled = true;
     try {
-      renderOfficialAccounts(await api.manageOfficialAccount('rename', id, value));
+      if (kind === 'antigravity' || String(id).startsWith('antigravity:')) {
+        renderAgyAccounts(await api.antigravityQuota.manage('rename', id, value));
+        api.antigravityQuota.state().then(s => window.AntigravityQuota?.apply?.(s)).catch(() => {});
+      } else {
+        renderOfficialAccounts(await api.manageOfficialAccount('rename', id, value));
+      }
       settingsDone(value ? '已改名' : '已去掉名字，显示邮箱');
-      $('official-accounts').querySelector(`[data-account-row="${CSS.escape(id)}"] [data-account-action="rename"]`)?.focus();
+      container?.querySelector(`[data-account-row="${CSS.escape(id)}"] [data-account-action="rename"]`)?.focus();
     } catch (error) {
       input.replaceWith(label);
       $('prefs-status').textContent = cleanRemoteError(error, '改名失败，请重试');
@@ -486,8 +616,11 @@ async function toggleLocalOnly(button) {
 async function loadOfficialAccounts() {
   $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '正在读取账号状态…' }));
   try { const prefs = await api.readPrefs(); localOnly = new Set(prefs.localOnlyAccounts || []); autoSwitchRules = prefs.cliAutoSwitch || {}; } catch { /* 读不到就按都没打开显示 */ }
+  const agyPromise = api.antigravityQuota?.accounts?.().catch(() => null);
   try { renderOfficialAccounts(await api.officialAccounts()); }
   catch { $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' })); }
+  const agyStatus = await agyPromise;
+  renderAgyAccounts(agyStatus);
 }
 
 
@@ -1432,7 +1565,7 @@ function drawAccountTabs(slots) {
   const extra = [...(window.AntigravityQuota?.tabs() || []), ...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])];
   const all = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind, who: accountWho(slot.account), slot })), ...extra.map(tab => ({ key: tab.key, kind: tab.kind, who: tab.who, tab }))]);
   tabLabels.clear();
-  for (const item of all) tabLabels.set(item.key, [META[item.kind]?.name || (item.kind === 'pool' ? '号池' : item.kind === 'deepseek' ? 'DeepSeek' : item.kind === 'relay' ? '第三方 Key' : ''), item.who].filter(Boolean).join(' · ') || item.key);
+  for (const item of all) tabLabels.set(item.key, [META[item.kind]?.name || (item.kind === 'antigravity' ? 'Antigravity' : item.kind === 'pool' ? '号池' : item.kind === 'deepseek' ? 'DeepSeek' : item.kind === 'relay' ? '第三方 Key' : ''), item.who].filter(Boolean).join(' · ') || item.key);
   // 0.3.49：编辑布局里藏起来的标签平时不画，编辑时画成占位
   const items = layoutEdit ? all : all.filter(item => !tabHidden(item.key));
   const signature = items.map(item => `${item.key}:${item.who}:${tabHidden(item.key) ? 'h' : ''}`).join('|') + (layoutEdit ? '|edit' : '');
@@ -1591,6 +1724,25 @@ async function saveQuotaTabOrder(kind, visibleIds) {
     catch (error) { showStatus(cleanRemoteError(error, '顺序没保存上，请重试'), true); if (current) renderQuota(); }
     return;
   }
+  if (kind === 'antigravity') {
+    try {
+      const agyStatus = await api.antigravityQuota.accounts();
+      const all = (agyStatus?.accounts || []).map(item => item.id);
+      const visible = new Set(visibleIds);
+      const queue = visibleIds.filter(id => all.includes(id));
+      const merged = all.map(id => (visible.has(id) ? queue.shift() : id));
+      if (!queue.length && !merged.some(id => !id) && merged.join('|') !== all.join('|')) {
+        await api.antigravityQuota.reorder(merged);
+      }
+      const fresh = await api.antigravityQuota.state();
+      window.AntigravityQuota?.apply?.(fresh);
+      showStatus('已调整顺序');
+    } catch (error) {
+      showStatus(cleanRemoteError(error, '顺序没保存上，请重试'), true);
+      if (current) renderQuota();
+    }
+    return;
+  }
   try {
     const statuses = await api.officialAccounts();
     const all = (statuses.find(item => item.kind === kind)?.accounts || []).map(item => item.id);
@@ -1613,8 +1765,9 @@ function renderQuota() {
   const host = $('quota-detail'); host.replaceChildren();
   const slots = quotaSlots();
   if (!layoutEdit) {
-    const keys = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind })), ...[...(window.AntigravityQuota?.tabs() || []), ...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])].map(tab => ({ key: tab.key, kind: tab.kind }))]).map(item => item.key);
-    const selected = keys.includes(state.account) ? state.account : slots.find(item => item.kind === state.account)?.key;
+    const agyTabs = window.AntigravityQuota?.tabs() || [];
+    const keys = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind })), ...[...agyTabs, ...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])].map(tab => ({ key: tab.key, kind: tab.kind }))]).map(item => item.key);
+    const selected = keys.includes(state.account) ? state.account : slots.find(item => item.kind === state.account)?.key || (state.account === 'antigravity' ? agyTabs[0]?.key : undefined);
     const open = keys.filter(key => !tabHidden(key));
     if (selected && tabHidden(selected) && open.length) state.account = open[0];
   }
@@ -1625,7 +1778,7 @@ function renderQuota() {
   $('page-quota').classList.toggle('agy-mode', agyPage);
   if (agyPage) {
     $('page-quota').classList.remove('ds-mode', 'pool-mode', 'ds-no-timeline');
-    state.account = window.AntigravityQuota.renderQuota(host, quotaTimelineNode);
+    state.account = window.AntigravityQuota.renderQuota(host, state.account, quotaTimelineNode);
     drawAccountTabs(slots);
     syncSegs();
     return;
@@ -3859,17 +4012,78 @@ $('official-accounts').addEventListener('click', async event => {
   }
   return runAccountAction(button.dataset.accountAction, kind, id, button);
 });
+$('antigravity-accounts')?.addEventListener('change', async event => {
+  const select = event.target.closest('[data-agy-share-mode]');
+  if (!select) return;
+  const id = select.dataset.agyShareMode;
+  const mode = select.value;
+  const modeNames = { auto: '自动防偏移', family: '家庭组共享', solo: '仅本机独享' };
+  select.disabled = true;
+  try {
+    renderAgyAccounts(await api.antigravityQuota.manage('share-mode', id, mode));
+    const fresh = await api.antigravityQuota.state();
+    window.AntigravityQuota?.apply?.(fresh);
+    settingsDone(`已设为「${modeNames[mode] || mode}」`);
+  } catch (error) {
+    $('prefs-status').textContent = cleanRemoteError(error, '设置没保存上，请重试');
+    select.disabled = false;
+  }
+});
+$('antigravity-accounts')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-account-action]');
+  if (!button || button.disabled) return;
+  const { accountKind: kind, accountId: id } = button.dataset;
+  if (button.dataset.accountAction === 'add') {
+    disarmRemove();
+    openOptionMenu(button, '添加 Antigravity 账号', [
+      { value: 'add-cli', label: '用本机 Antigravity 已登录的账号', hint: '不在 TokenPulse 里保存凭据：直接登记当前打开的 Antigravity 登录账号' },
+      { value: 'login', label: '登录一个新账号', hint: '在浏览器里完成 Google 授权，由 TokenPulse 保存凭据并自动续期；关着 Antigravity 也能查额度，可添加多个' },
+    ], null, value => runAccountAction(value, kind, id, button));
+    return;
+  }
+  return runAccountAction(button.dataset.accountAction, kind, id, button);
+});
 async function runAccountAction(action, kind, id, button) {
   if (action === 'rename') { disarmRemove(); startRename(button); return; }
   if ((action === 'remove' || action === 'purge') && removeArmed?.button !== button) { armRemove(button); return; }
   const hiding = action === 'remove' && button.dataset.inCli === '1';
   disarmRemove();
-  const buttons = [...$('official-accounts').querySelectorAll('button')];
+  const isAgy = kind === 'antigravity' || String(id || '').startsWith('antigravity:');
+  const buttons = [
+    ...$('official-accounts').querySelectorAll('button'),
+    ...($('antigravity-accounts')?.querySelectorAll('button') || []),
+  ];
   const disabledBefore = new Set(buttons.filter(item => item.disabled));
   buttons.forEach(item => { item.disabled = true; });
-  $('prefs-status').textContent = action === 'switch-cli' ? '正在切换 CLI 的登录…' : action === 'login' ? '已在浏览器打开授权页面，完成后会自动返回…' : action === 'add-cli' ? '正在读取 CLI 的登录…' : '正在保存…';
+  $('prefs-status').textContent = action === 'switch-cli'
+    ? '正在切换 CLI 的登录…'
+    : action === 'login' || action === 'reauthorize'
+      ? '已在浏览器打开授权页面，完成后会自动返回…'
+      : action === 'add-cli'
+        ? (isAgy ? '正在读取本机 Antigravity 的登录…' : '正在读取 CLI 的登录…')
+        : '正在保存…';
   try {
-    if (action === 'switch-cli') {
+    if (isAgy) {
+      if (action === 'add-cli') {
+        const result = await api.antigravityQuota.addLocal();
+        renderAgyAccounts(result.status);
+        settingsDone(result.added ? '已添加本机 Antigravity 登录的账号（不保存凭据），正在刷新额度' : '本机 Antigravity 登录的账号已经在列表里了');
+        api.antigravityQuota.refresh().then(s => window.AntigravityQuota?.apply?.(s)).catch(() => {});
+      } else if (action === 'login' || action === 'reauthorize') {
+        const result = await api.antigravityQuota.login(action === 'reauthorize' ? id : undefined);
+        if (!result?.ok) throw new Error(result?.error || 'Google OAuth 登录失败');
+        renderAgyAccounts(result.status);
+        const fresh = await api.antigravityQuota.refresh();
+        window.AntigravityQuota?.apply?.(fresh);
+        renderAgyAccounts(await api.antigravityQuota.accounts());
+        settingsDone(action === 'reauthorize' ? '重新授权成功，Antigravity 凭据已更新并刷新额度' : '登录成功，已添加 Antigravity 账号并刷新额度');
+      } else {
+        renderAgyAccounts(await api.antigravityQuota.manage(action, id));
+        const fresh = await api.antigravityQuota.state();
+        window.AntigravityQuota?.apply?.(fresh);
+        settingsDone(ACCOUNT_DONE[hiding ? 'hide' : action]);
+      }
+    } else if (action === 'switch-cli') {
       const result = await api.switchCliAccount(id);
       renderOfficialAccounts(result.statuses);
       settingsDone(result.message);

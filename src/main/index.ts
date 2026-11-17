@@ -58,6 +58,7 @@ import { readFileSync } from "fs";
 import { TokensUploader } from "./tokens-ci";
 import { DeepSeekBalance } from "./deepseek-balance";
 import { AntigravityQuota } from "./antigravity-quota";
+import { addLocalAgyAccount, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts } from "../core/antigravity-accounts";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 
@@ -100,13 +101,14 @@ const deepseekBalance = new DeepSeekBalance({
     note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
   },
 });
-/** Google Antigravity 的额度：只能问本机开着的 Antigravity，见 antigravity-quota.ts。提醒线和官方订阅共用。 */
+/** Google Antigravity 的多账号与本机额度监控，见 antigravity-quota.ts。提醒线和官方订阅共用。 */
 const antigravityQuota = new AntigravityQuota({
   publish: state => { if (win && !win.isDestroyed()) win.webContents.send("antigravity-quota-state", state); },
   notifyAt: () => readPrefs().notifyAt,
-  notify: (models, used, resetAt) => {
+  notify: (models, used, resetAt, accountLabel) => {
     if (!Notification.isSupported()) return;
-    const note = new Notification({ title: `Antigravity · ${models.join("、")} ${tr("额度已用")} ${Math.round(used)}%`, body: resetAt ? `${new Date(resetAt).toLocaleString()} ${tr("重置")}` : tr("注意节奏"), icon: windowIcon() });
+    const prefix = accountLabel ? `Antigravity (${accountLabel})` : "Antigravity";
+    const note = new Notification({ title: `${prefix} · ${models.join("、")} ${tr("额度已用")} ${Math.round(used)}%`, body: resetAt ? `${new Date(resetAt).toLocaleString()} ${tr("重置")}` : tr("注意节奏"), icon: windowIcon() });
     note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
   },
 });
@@ -810,6 +812,7 @@ async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snap
   let snapshot = publishSnapshot(await loadSnapshot(true));
   notifyRequests(snapshot);
   if (withQuota) {
+    if (notifyQuota) void antigravityQuota.refresh(false).catch(() => {});
     const tell = notifyQuota || quotaNoticePending;
     quotaNoticePending = false;
     const before = quotaGlances(lastSnapshot);
@@ -1201,9 +1204,51 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("deepseek-balance:speed", (_event, days: unknown) => loadDeepSeek({ op: "speed", days: Math.max(0, Math.min(3650, Number(days) || 0)) }));
     deepseekBalance.start();
     ipcMain.handle("antigravity-quota:state", () => antigravityQuota.state());
-    ipcMain.handle("antigravity-quota:refresh", () => antigravityQuota.refresh(true));
+    ipcMain.handle("antigravity-quota:refresh", (_event, accountId?: unknown) =>
+      antigravityQuota.refresh(true, typeof accountId === "string" && accountId.startsWith("antigravity:") ? accountId : undefined),
+    );
     ipcMain.handle("antigravity-quota:timeline", (_event, query: unknown) => antigravityQuota.timeline(query));
-    ipcMain.handle("antigravity-quota:speed", (_event, days: unknown) => antigravityQuota.speed(Math.max(0, Math.min(3650, Number(days) || 0))));
+    ipcMain.handle("antigravity-quota:speed", (_event, days: unknown, accountId?: unknown) =>
+      antigravityQuota.speed(
+        Math.max(0, Math.min(3650, Number(days) || 0)),
+        typeof accountId === "string" ? accountId : undefined,
+      ),
+    );
+    ipcMain.handle("antigravity-accounts:list", () => listAgyAccountStatus());
+    ipcMain.handle("antigravity-accounts:login", async (_event, replaceId?: unknown) => {
+      if (replaceId !== undefined && (typeof replaceId !== "string" || replaceId.length > 400)) throw new Error("账号参数无效");
+      const result = await loginAntigravityOAuth(typeof replaceId === "string" ? replaceId : undefined);
+      if (result.ok) void antigravityQuota.refresh(true).catch(() => {});
+      return result;
+    });
+    ipcMain.handle("antigravity-accounts:add-local", async () => {
+      const result = await addLocalAgyAccount();
+      void antigravityQuota.refresh(true).catch(() => {});
+      return result;
+    });
+    ipcMain.handle("antigravity-accounts:manage", async (_event, action: unknown, id: unknown, value?: unknown) => {
+      if (!["remove", "purge", "restore", "rename", "share-mode"].includes(String(action)) || typeof id !== "string" || !id.startsWith("antigravity:") || id.length > 400) {
+        throw new Error("Antigravity 账号参数无效");
+      }
+      if (action === "rename" && typeof value === "string" && value.length > 200) throw new Error("名字无效");
+      const status = await manageAgyAccount(
+        action as "remove" | "purge" | "restore" | "rename" | "share-mode",
+        id,
+        typeof value === "string" ? value : "",
+      );
+      if (action === "purge") antigravityQuota.forgetAccount(id);
+      else if (action === "restore") void antigravityQuota.refresh(true, id).catch(() => {});
+      else antigravityQuota.publish();
+      return status;
+    });
+    ipcMain.handle("antigravity-accounts:reorder", async (_event, ids: unknown) => {
+      if (!Array.isArray(ids) || ids.length > 50 || !ids.every((id) => typeof id === "string" && id.startsWith("antigravity:") && id.length <= 400)) {
+        throw new Error("Antigravity 账号排序参数无效");
+      }
+      reorderAgyAccounts(ids as string[]);
+      antigravityQuota.publish();
+      return listAgyAccountStatus();
+    });
     antigravityQuota.start();
     // 额度详情的号池页（0.3.44）：号池定义从供应商数据里取（不带凭据），汇总在 worker 里读转发记录和额度采样
     const poolOf = (id: unknown) => {

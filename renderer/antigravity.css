@@ -51,9 +51,53 @@
 .agy-tier-usage { flex: none; color: var(--muted); font-size: 12px; }
 
 .agy-card-actions { display: inline-flex; align-items: center; gap: 10px; }
+.agy-context-body { min-width: 0; }
 .agy-context-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .agy-context-sub { margin-top: 2px; font-size: 12px; }
 .agy-note { margin: 0 0 14px; }
+
+/* 多账号校准栏与账号概览条 */
+.agy-share-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; margin-top: 8px; }
+.agy-share-bar.is-lite { margin-top: 6px; }
+.agy-share-label { font-size: 12px; }
+.agy-family-pill { display: inline-flex; align-items: center; gap: 2px; padding: 3px 9px; border-radius: 999px; background: color-mix(in srgb, var(--antigravity) 13%, var(--surface-2)); border: 1px solid color-mix(in srgb, var(--antigravity) 32%, var(--line)); color: var(--text); font-size: 12px; font-weight: 600; }
+.agy-family-pill small { font-weight: 500; color: var(--muted); font-size: 11.5px; }
+.agy-manage-btn { font-size: 12.5px; }
+
+.agy-account-strip { margin: 0 0 16px; padding: 14px 16px; }
+.agy-strip-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.agy-strip-title { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
+.agy-strip-hint { margin: 0 0 10px; font-size: 12px; line-height: 1.45; }
+.agy-strip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.agy-strip-item { display: flex; flex-direction: column; gap: 5px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); text-align: left; cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s; min-width: 0; }
+.agy-strip-item:hover { border-color: color-mix(in srgb, var(--antigravity) 45%, var(--line)); }
+.agy-strip-item.on { border-color: var(--antigravity); background: color-mix(in srgb, var(--antigravity) 9%, var(--surface)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--antigravity) 35%, transparent); }
+.agy-strip-item:focus-visible { outline: 2px solid var(--antigravity); outline-offset: 2px; }
+.agy-strip-item.exhausted .agy-strip-left { color: var(--danger); }
+.agy-strip-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.agy-strip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+.agy-strip-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.agy-strip-left { font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.agy-mini-tag { flex: none; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--surface); border: 1px solid var(--line); color: var(--muted); }
+.agy-mini-tag.local { color: var(--antigravity); border-color: color-mix(in srgb, var(--antigravity) 35%, var(--line)); }
+.agy-mini-tag.family { color: var(--claude); border-color: color-mix(in srgb, var(--claude) 35%, var(--line)); }
+
+/* 家庭组 / 多端共享额度归因框 */
+.agy-shared-box { margin: 12px 0 4px; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--agy-color, var(--antigravity)) 26%, var(--line)); background: color-mix(in srgb, var(--surface-2) 82%, transparent); }
+.agy-shared-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 7px; font-size: 12.5px; }
+.agy-shared-title { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.agy-shared-nums { font-size: 12px; color: var(--text-2); }
+.agy-shared-track { display: flex; overflow: hidden; height: 6px; border-radius: 999px; background: var(--line); }
+.agy-shared-fill { display: block; height: 100%; transition: width .25s ease; }
+.agy-shared-fill.local { background: var(--agy-color, var(--antigravity)); }
+.agy-shared-fill.external { background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--claude) 85%, #d97706), color-mix(in srgb, var(--claude) 85%, #d97706) 4px, color-mix(in srgb, var(--claude) 52%, transparent) 4px, color-mix(in srgb, var(--claude) 52%, transparent) 8px); }
+.agy-shared-sub { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.agy-week-shared { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+
+/* 总览多账号队列与设置页选择框 */
+.agy-queue-tag { justify-self: start; padding: 1px 6px; border-radius: 999px; font-size: 11px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; }
+.agy-official-list { margin-top: 8px; }
+.agy-share-select { max-width: 138px; }
 
 /* 额度容量趋势 */
 .agy-capacity { margin-block-start: 18px; margin-block-end: 0; min-inline-size: 0; }

@@ -1,4 +1,56 @@
-# 当前接手入口 · TokenPulse v0.3.94 正式发布（修复 Antigravity「最近 7 天的额度」窄长拉伸与 24h 柱状图窄缩，2026-11-15）
+# 当前接手入口 · TokenPulse v0.3.95 打包与 GitHub 发布（进行中，2026-11-17）
+
+## 当前进度 · 正在打包与发布 `v0.3.95`
+
+- **版本**：`0.3.95`（已完成 `package.json` / `package-lock.json` 版本号升级、`renderer/intro.js` 版本更新说明与 `renderer/i18n.js` 英文词条补齐，正在执行发版验证、`npm run dist` 打包、产物 SHA256 与句柄检查及 GitHub Release 发布）。
+
+- **本轮目标与完成结论**：
+  1. **Antigravity 多账号登录与独立额度监控**：
+     - 对齐 Codex / Claude Code 的多账号体验，支持在「设置 → 官方账号」中为 Google Antigravity 添加、登录、重命名、拖拽/方向键排序、隐藏/恢复、重新授权和完全删除多个账号。
+     - 支持两种接入方式：
+       - **登录一个新账号（独立 Google OAuth PKCE S256 授权）**：在本机环回端口（同时监听 `127.0.0.1` 与 `::1` `/auth/callback`）完成授权，凭据保存在 TokenPulse 独立的 `antigravity-accounts.json`（完全不触碰 Antigravity IDE / CLI 的系统钥匙串登录），过期前自动用 `refresh_token` 续期，并直连 Google Cloud Code 接口（`loadCodeAssist` / `fetchAvailableModels` / `retrieveUserQuotaSummary`，支持 `daily-cloudcode-pa` 故障转移）定时拉取 5 小时与周额度 —— **即使本机 Antigravity 客户端关闭也能同时查看所有账号额度**。
+       - **用本机 Antigravity 已登录的账号**：不保存 OAuth 令牌，直接读取本机运行中 Antigravity 的当前账号，并记录 `antigravity-logins.json` 登录切换时间线；后续点「重新授权」可原位升级为独立自动续期账号（确定性哈希账号 ID `antigravity:<sha256_16>` 保持不变）。
+     - 保持 0 登记账号时的原有零配置本机直连体验，且首次登记第一个账号时自动继承历史采样点不断线。
+  2. **Google One 家庭组共享额度防偏移四重机制**：
+     - **区间级静默剥离（`offPoints`）**：按采样点切分窗口区间（含静默无涨幅时段锚点推进与 5 分钟服务端计数延迟吸附），将本机无 Antigravity 请求时段的额度上涨自动归入「家庭组/他端消耗」并从容量折算分母中剔除。
+     - **同期多人并发异常坍缩滤波（`coUsedPoints`）**：当同一采样区间内本机有少量请求而家庭成员同时高强度消耗，导致该区间表观整窗成本跌破近期独享基准（P65/P70）的 `45%` 时，按独享基准反推本机真实消耗点数并将超额部分剥离为 `coUsedPoints`，防止整窗容量与模型换算表缩水数倍。
+     - **多账号同家庭组池指纹识别与去重计池（`detectFamilyLinks`）**：当登记的多个账号存在同秒级（`≤ 5s`）有效重置时间且已用百分比一致（`used ≥ 0.5%`、差值 `≤ 0.6%`）时，自动关联为同一 `familyGroupId`；总览与详情页多账号余量统计自动按独立额度池合并去重，不把同一家庭池重复算成多份余量，同时合并本机同家庭组成员的对话记录参与同一共享池校准。
+     - **双速率预测与可视化归因**：拆分「本机速率」与「家庭组/他端速率」（外部突发停止后不再按整窗斜率误报即将耗尽），在额度组卡片展示双色共享归因条、在容量趋势点悬停展示净计/剔除点数对比、在时间线展示橙色竖条与「家庭组 / 他端」轨道，并提供账号级三档校准模式切换（`自动防偏移` / `家庭组共享` / `仅本机独享`）。
+- **关键改动文件**：
+  - `src/core/antigravity.ts`：导出分组/池分类辅助函数，兼容 Cloud Code `quotaSummaryGroups` / `groups` 双格式解析，新增 `fetchAntigravityLocalSession()` 供多账号内部识别本机当前邮箱（保持 `parseAntigravityStatus()` 不含邮箱字段）。
+  - `src/core/antigravity-accounts.ts`（新增）：多账号存储、身份哈希与脱敏显示名、PKCE S256 环回 OAuth 登录、自动续期、Cloud Code 直连配额拉取、本机登录时间线与账号管理操作。
+  - `src/main/antigravity-quota.ts`：多账号额度槽位与无缝历史迁移、家庭组共享防偏移归因与并发滤波、`detectFamilyLinks` 同池识别、双速率预测、按账号/家庭组过滤的洞察与时间线输出。
+  - `src/main/index.ts` & `src/main/preload.ts`：新增 `antigravity-accounts:list|login|add-local|manage|reorder` 及按账号 `refresh` / `speed` IPC 桥接。
+  - `renderer/index.html`、`renderer/app.js`、`renderer/antigravity-quota.js`、`renderer/antigravity.css`、`renderer/model-study.js`、`renderer/i18n.js`：设置页 `#antigravity-accounts` 多账号管理卡片（保持 `#official-accounts` 原三家 CLI 卡片结构不变）、总览多账号队列与同家庭组去重计池、详情页多账号标签与切换概览条、共享归因框与校准模式切换、时间线「家庭组 / 他端」轨道及完整中英翻译。
+  - `scripts/test-antigravity-accounts.cjs`（新增）、`scripts/test-antigravity-capacity.cjs`、`scripts/test-antigravity-ui.cjs`：新增多账号 PKCE/续期/Cloud Code 单元测试、家庭组空闲与并发防偏移及同池识别单元测试、以及多账号与家庭组中英双语/深色/900px/CSP Electron UI 测试。
+- **已执行的验证命令与实际结果**：
+  - `npm run build`（`tsc -p tsconfig.json`）：PASS（0 错误，编译输出位于 `build/`）
+  - `node scripts/test-antigravity-accounts.cjs`：6/6 PASS
+  - `node scripts/test-antigravity-capacity.cjs`：6/6 PASS
+  - `node scripts/test-antigravity-timeline.cjs`：7/7 PASS
+  - `node scripts/test-antigravity-usage.cjs`：12/12 PASS
+  - `node scripts/test-antigravity-cli-import.cjs`：8/8 PASS
+  - `node scripts/test-accounts.cjs`：72/72 PASS
+  - `node scripts/test-oauth-login.cjs`：15/15 PASS
+  - `node scripts/test-shared-quota.cjs`：5/5 PASS
+  - `node scripts/test-features.cjs`：46/46 PASS（含英文词典覆盖与正则模板编译校验）
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：8/8 PASS（含多账号队列/标签/设置页、家庭组归因条与时间线轨道、深色模式、900px 不溢出、英文模式零残留中文、0 CSP 报错、无凭据泄漏）
+  - `npx.cmd electron --lang=zh-CN scripts/test-ui.cjs`：26/26 PASS
+- **未执行的验证与产物/发布状态**：
+  - 未执行 `electron-builder` 安装包打包（`dist/` 未重新生成新安装包），`package.json` 版本保持 `0.3.94`。
+  - 未执行 `git commit`、`git tag`、`git push` 及 GitHub Release（用户明确指示「先不用发布到 github 上」）。
+  - 工作区未追踪目录 `clawd-pet-extracted/` 为既有用户目录，按约定原样保留未改动。
+- **收尾进程与文件句柄检查**：
+  - 检查本工作区相关 `node.exe` / `electron.exe` 测试与构建进程：`0` 个残留进程；后台任务列表为空。
+  - 非破坏性独占读写句柄检测（检测后立即 `Dispose`）：`build\main\index.js`、`build\core\antigravity-accounts.js` 及 `dist/` 下既有产物文件均处于 `UNLOCKED` 未占用状态。
+- **已知限制与后续发版提示**：
+  - Antigravity 桌面端与 `agy.exe` CLI 将单机当前登录存放在系统钥匙串（`gemini:antigravity`），因此 TokenPulse 暂不提供像 Claude/Codex 配置文件那样的「一键改写客户端钥匙串切换登录」按钮，避免意外覆盖正在运行的 IDE 会话；多账号额度监控通过 TokenPulse 自身的独立 OAuth 凭据全后台直连完成。
+  - 若同一个 Google 账号从未有过独享使用区间（即每次本机发请求的同时家庭成员都在高强度并发使用，尚无任何历史独享采样基准），并发滤波会退回区间观测值，待积累到至少几个独享采样点后即可自动建立精准基准；用户也可随时手动切为「家庭组共享」或「仅本机独享」。
+  - 后续若确认准备正式发版：按目标版本号更新 `package.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 对应词条，构建安装包并推送发布即可。
+
+---
+
+# 历史版本记录 · TokenPulse v0.3.94 正式发布（修复 Antigravity「最近 7 天的额度」窄长拉伸与 24h 柱状图窄缩，2026-11-15）
 
 ## 发布状态 · v0.3.94
 

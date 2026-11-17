@@ -5,7 +5,7 @@
  * 跑法：npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs（先 npm run compile）
  */
 const assert = require('node:assert/strict'), fs = require('node:fs'), http = require('node:http'), os = require('node:os'), path = require('node:path');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-agy-ui-'));
 const agy = path.join(root, 'antigravity');
 Object.assign(process.env, { TOKENPULSE_DATA_DIR: path.join(root, 'data'), TOKENPULSE_ANTIGRAVITY_DIR: agy, AGENT_SWITCH_HOME: path.join(root, 'home'), HOME: path.join(root, 'home'), USERPROFILE: path.join(root, 'home'), PI_CODING_AGENT_DIR: path.join(root, 'pi'), TOKENPULSE_DSH_HOME: path.join(root, 'dsh'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CODEX_HOME: path.join(root, 'codex'), GROK_HOME: path.join(root, 'grok'), AGENT_SWITCH_CC_DB: path.join(root, 'missing.db') });
@@ -331,6 +331,117 @@ app.on('web-contents-created', (_event, wc) => {
     const enUsage = (await text('.sw-usage-bar')) + ' ' + (await text('.sw-usage-panel'));
     assert.ok(!/[一-鿿]/.test(enUsage), enUsage);
     pass('antigravity UI: dark mode has no default black text, 900px does not overflow, English is fully translated');
+
+    // 8. 多账号登录管理 + Google One 家庭组共享额度防偏移归因（中英双语 + 深色 + 900px 不溢出 + 无凭据泄漏）
+    const accMod = require('../build/core/antigravity-accounts');
+    const quotaMod = require('../build/main/antigravity-quota');
+    const idAlpha = accMod.rememberAgyAccount(
+      { email: 'fam-alpha@example.com', credential: { token: 'tp_mock_secret_alpha_tok', refreshToken: 'tp_mock_secret_alpha_ref', expiresAt: NOW + 2 * H } },
+      true,
+      NOW,
+    );
+    const idBeta = accMod.rememberAgyAccount(
+      { email: 'fam-beta@example.com', credential: { token: 'tp_mock_secret_beta_tok', refreshToken: 'tp_mock_secret_beta_ref', expiresAt: NOW + 2 * H } },
+      true,
+      NOW,
+    );
+    const idSolo = accMod.rememberAgyAccount(
+      { email: 'work-solo@example.com', credential: { token: 'tp_mock_secret_solo_tok', refreshToken: 'tp_mock_secret_solo_ref', expiresAt: NOW + 2 * H } },
+      true,
+      NOW,
+    );
+    accMod.recordAgyLocalLogin('fam-alpha@example.com', NOW - 3 * H);
+    const sharedGroups = [
+      { key: KEY_A, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 55, resetAt: iso(RESET_A), week: { used: 32, resetAt: iso(RESET_A_WEEK) } },
+      { key: KEY_B, title: 'Claude and GPT models', models: ['Claude Opus 5.5', 'GPT-OSS 120B'], used: 15, resetAt: iso(RESET_B), week: { used: 10, resetAt: iso(RESET_B_WEEK) } },
+    ];
+    const sharedHistory = [
+      // [-2h, -1h] 本机有请求，涨了 20%（0% → 20%）；[-1h, -0.5h] 静默 0%；[-0.5h, -0.1h] 本机空闲，家庭成员用掉 +35%（20% → 55%）
+      { at: NOW - 2 * H, groups: [{ key: KEY_A, used: 0, resetAt: iso(RESET_A), weekUsed: 18, weekResetAt: iso(RESET_A_WEEK) }, { key: KEY_B, used: 15, resetAt: iso(RESET_B), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) }] },
+      { at: NOW - H, groups: [{ key: KEY_A, used: 20, resetAt: iso(RESET_A), weekUsed: 20, weekResetAt: iso(RESET_A_WEEK) }, { key: KEY_B, used: 15, resetAt: iso(RESET_B), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) }] },
+      { at: NOW - 30 * 60000, groups: [{ key: KEY_A, used: 20, resetAt: iso(RESET_A), weekUsed: 20, weekResetAt: iso(RESET_A_WEEK) }, { key: KEY_B, used: 15, resetAt: iso(RESET_B), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) }] },
+      { at: NOW - 6 * 60000, groups: [{ key: KEY_A, used: 55, resetAt: iso(RESET_A), weekUsed: 32, weekResetAt: iso(RESET_A_WEEK) }, { key: KEY_B, used: 15, resetAt: iso(RESET_B), weekUsed: 10, weekResetAt: iso(RESET_B_WEEK) }] },
+    ];
+    const soloGroups = [
+      { key: KEY_A, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 12, resetAt: iso(RESET_A + 45 * 60000), week: { used: 8, resetAt: iso(RESET_A_WEEK + 24 * H) } },
+    ];
+    fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+      accounts: {
+        [idAlpha]: { last: { at: NOW - 60000, ok: true, tier: 'Google AI Pro', plan: 'Pro', groups: sharedGroups }, history: sharedHistory, notified: {} },
+        [idBeta]: { last: { at: NOW - 60000, ok: true, tier: 'Google AI Pro', plan: 'Pro', groups: sharedGroups }, history: sharedHistory, notified: {} },
+        [idSolo]: { last: { at: NOW - 60000, ok: true, tier: 'Google AI Ultra', plan: 'Ultra', groups: soloGroups }, history: [], notified: {} },
+      },
+    }));
+    const multiMgr = new quotaMod.AntigravityQuota({
+      now: () => NOW,
+      publish: (s) => { if (!wc.isDestroyed()) wc.send('antigravity-quota-state', s); },
+      fetcher: async () => null,
+    });
+    for (const ch of ['antigravity-quota:state', 'antigravity-quota:timeline', 'antigravity-accounts:list', 'antigravity-accounts:manage']) ipcMain.removeHandler(ch);
+    ipcMain.handle('antigravity-quota:state', () => multiMgr.state());
+    ipcMain.handle('antigravity-quota:timeline', (_ev, q) => multiMgr.timeline(q));
+    ipcMain.handle('antigravity-accounts:list', () => accMod.listAgyAccountStatus(NOW));
+    ipcMain.handle('antigravity-accounts:manage', async (_ev, act, id, val) => {
+      const res = await accMod.manageAgyAccount(act, id, val, NOW);
+      multiMgr.publish();
+      return res;
+    });
+
+    await e("localStorage.setItem('tokenpulse-lang', 'zh'); location.reload()");
+    await until("typeof navigate === 'function' && document.querySelector('#quota-cards [data-antigravity] .pool-queue')");
+    await pause(300);
+
+    // 总览卡片：多账号队列存在，3 个账号合并为 2 份独立额度池（家庭组不重复计池），并标出「同家庭组」
+    assert.match(await text(`${card} .pool-queue-head`), /其他账号[\s\S]*2 \/ 2 份额度池有余量/);
+    assert.match(await text(`${card} .pool-queue`), /fam-beta[\s\S]*同家庭组[\s\S]*work-solo/);
+
+    // 额度详情页：3 个 Antigravity 标签、多账号概览条、家庭组共享池徽标、共享归因框、时间线「家庭组 / 他端」轨道
+    await e(`state.account = ${JSON.stringify(idAlpha)}; navigate('quota')`);
+    await until("document.querySelectorAll('#account-tabs button[data-antigravity]').length === 3 && document.querySelector('#quota-detail .agy-shared-box')");
+    assert.match(await text('#quota-detail .agy-account-strip'), /Antigravity 多账号概览[\s\S]*3 个账号 · 2 \/ 2 份独立额度池有余量/);
+    assert.match(await text('#quota-detail .agy-family-pill'), /家庭组共享池[\s\S]*与 fam-beta 共用/);
+    assert.match(await text('#quota-detail .agy-shared-box'), /家庭组共享归因[\s\S]*已防偏移校准[\s\S]*家庭组\/他端约 35\.0%/);
+    await until("document.querySelector('#quota-model-timeline .ms-off-lane')");
+    assert.match(await text('#quota-model-timeline'), /家庭组 \/ 他端/);
+
+    // 切换到「仅本机独享」时关闭归因扣除，切回「自动防偏移」恢复
+    await e("document.querySelector('.agy-share-seg button[data-agy-share=\"solo\"]').click()");
+    await until("!document.querySelector('#quota-detail .agy-shared-box')");
+    assert.equal(await e("document.querySelector('.agy-share-seg button[data-agy-share=\"solo\"]').getAttribute('aria-pressed')"), 'true');
+    await e("document.querySelector('.agy-share-seg button[data-agy-share=\"auto\"]').click()");
+    await until("Boolean(document.querySelector('#quota-detail .agy-shared-box'))");
+
+    // 设置 → 官方账号：#official-accounts 仍保持 3 张卡片，#antigravity-accounts 展示 3 个账号且不泄漏任何真实 token
+    await e("openSettings('accounts')");
+    await until("document.querySelectorAll('#antigravity-accounts .oauth-account').length === 3");
+    assert.equal(await e("document.querySelectorAll('#official-accounts .oauth-card').length"), 3, '保持原有三家 CLI 卡片数量不变');
+    assert.match(await text('#antigravity-accounts'), /3 个账号 · 2 份额度池（家庭组自动防偏移）[\s\S]*fam-alpha@example\.com[\s\S]*家庭组共享/);
+    assert.doesNotMatch(await e("document.documentElement.outerHTML"), /secret_alpha_tok|secret_alpha_ref|secret_beta_tok|secret_solo_tok/);
+    await e("document.getElementById('settings-close').click()");
+
+    // 切到英文模式验证多账号与家庭组新增界面零残留中文、深色模式无默认黑字、900px 不溢出、零 CSP 报错
+    await e("localStorage.setItem('tokenpulse-lang', 'en'); location.reload()");
+    await until("document.documentElement.lang.startsWith('en') && document.querySelector('#quota-cards [data-antigravity] .pool-queue')");
+    await pause(400);
+    const enMultiCard = await text('#quota-cards [data-antigravity]');
+    assert.ok(!/[一-鿿]/.test(enMultiCard), enMultiCard);
+    await e(`state.account = ${JSON.stringify(idAlpha)}; navigate('quota')`);
+    await until("document.querySelector('#quota-detail .agy-shared-box') && document.querySelector('#quota-model-timeline .ms-off-lane')");
+    await pause(400);
+    const enMultiDetail = (await text('#quota-detail')) + ' | ' + (await text('#quota-model-timeline'));
+    assert.ok(!/[一-鿿]/.test(enMultiDetail), enMultiDetail.match(/.{0,40}[一-鿿].{0,40}/)?.[0]);
+    await e("openSettings('accounts')");
+    await until("document.querySelectorAll('#antigravity-accounts .oauth-account').length === 3");
+    await pause(300);
+    const enMultiSettings = await text('#antigravity-accounts');
+    assert.ok(!/[一-鿿]/.test(enMultiSettings), enMultiSettings.match(/.{0,40}[一-鿿].{0,40}/)?.[0]);
+    await e("document.getElementById('settings-close').click()");
+    await e("setThemeMode('dark')"); await pause(200);
+    assert.deepEqual(await e("[...document.querySelectorAll('#quota-detail *, #quota-cards [data-antigravity] *')].filter(n => [...n.childNodes].some(c => c.nodeType === 3 && c.nodeValue.trim()) && getComputedStyle(n).color === 'rgb(0, 0, 0)').map(n => n.className)"), []);
+    BrowserWindow.fromWebContents(wc).setSize(900, 800); await pause(250);
+    assert.equal(await e("document.getElementById('page-quota').scrollWidth <= document.getElementById('page-quota').clientWidth + 1"), true);
+    assert.deepEqual(cspErrors, [], '全程无 CSP 样式报错');
+    pass('antigravity UI: multi-account tabs/queue/settings and Family Group shared attribution work in zh/en/dark/900px with zero CSP or token leaks');
 
     console.log(`${checks}/${checks} antigravity UI checks passed`);
     clearTimeout(watchdog); app.exit(0);

@@ -111,10 +111,111 @@ try {
   qEvolved.check([{ key: 'Claude Opus 5.5', title: 'Claude models', models: ['Claude Opus 5.5'], used: 90, resetAt: iso(current.reset) }]);
   assert.equal(notifyCount, 1, '同一重置窗口内型号再变也不会重复通知');
   pass('pool identity bridges model additions/removals and unlabeled internal models keep empty effort');
+
+  // 4. 家庭组共享额度防偏移（情形 A）：本机无请求时段由家庭成员产生的 +35% 额度激增自动归入 offPoints，整窗容量保持 ~2 亿不坍缩
+  const famNow = current.start + 3 * H + 10 * 60_000;
+  const famHistory = [
+    ...history.filter((s) => s.at < current.start),
+    { at: current.start + 10 * 60_000, groups: [{ key: KEY, used: 0, resetAt: iso(current.reset), weekUsed: 5, weekResetAt: iso(now + 4 * 24 * H) }] },
+    { at: current.start + H, groups: [{ key: KEY, used: 5, resetAt: iso(current.reset), weekUsed: 7, weekResetAt: iso(now + 4 * 24 * H) }] },
+    // [H, 2H] 本机完全空闲，家庭组成员用掉 +35%（5% → 40%）
+    { at: current.start + 2 * H, groups: [{ key: KEY, used: 40, resetAt: iso(current.reset), weekUsed: 15, weekResetAt: iso(now + 4 * 24 * H) }] },
+    // [2H, 3H] 家庭成员停手，本机也空闲（40% → 40%）
+    { at: current.start + 3 * H, groups: [{ key: KEY, used: 40, resetAt: iso(current.reset), weekUsed: 15, weekResetAt: iso(now + 4 * 24 * H) }] },
+  ];
+  const famRows = [
+    ...rows.filter((r) => r.at < current.start),
+    // 当前窗口本机只在前半小时用了 5% 对应的 1000 万 Token（独享基准每 1% = 200 万，整窗 = 2 亿）
+    { at: current.start + 30 * 60_000, model: 'gemini-4-argon', effort: 'high', tokens: 10e6, costUsd: 10, calls: 1, input: 10e6, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, requests: 1, source: 'Antigravity', kind: 'antigravity' },
+  ];
+  fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+    last: {
+      at: famNow - 60_000, ok: true, plan: 'Pro',
+      groups: [{ key: KEY, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 40, resetAt: iso(current.reset), week: { used: 15, resetAt: iso(now + 4 * 24 * H) } }],
+    },
+    history: famHistory,
+    notified: {},
+  }));
+  const qFamIdle = new mod.AntigravityQuota({ now: () => famNow, fetcher: async () => null });
+  qFamIdle.recentRows = () => famRows;
+  const insFamIdle = qFamIdle.buildInsight(famNow);
+  const gFamIdle = insFamIdle.groups[0].five;
+  // 若不剔除家庭组涨幅，10M / 40% * 100 只有 25M（缩水 8 倍）；剔除后整窗容量稳在 ~200M
+  assert.equal(gFamIdle.shared.offPoints, 35, '本机空闲时段的 +35% 被准确识别为外部消耗');
+  assert.equal(gFamIdle.shared.localUsedPct, 5);
+  assert.equal(gFamIdle.shared.externalUsedPct, 35);
+  assert.ok(gFamIdle.capacity.fullTokens >= 180e6 && gFamIdle.capacity.fullTokens <= 220e6, `整窗容量零偏移（实际 ${gFamIdle.capacity.fullTokens}）`);
+  const curCapPt = insFamIdle.groups[0].capacityHistory.five.at(-1);
+  assert.ok(curCapPt.fullTokens >= 180e6 && curCapPt.fullTokens <= 220e6, `当前窗口点本身也按净本机 +5% 折算（实际 ${curCapPt.fullTokens}）`);
+  assert.equal(curCapPt.excludedPct, 35);
+  assert.equal(gFamIdle.etaAt, null, '家庭成员突发停止后不再按峰值速度误报耗尽');
+  const tlFam = qFamIdle.timeline();
+  assert.equal(tlFam['g0-five'].offMachine.points, 35, '时间线输出家庭组/他端区间供橙色条渲染');
+  pass('family group idle spike (+35%) is stripped as offPoints with zero capacity or ETA drift');
+
+  // 5. 家庭组共享额度防偏移（情形 B）：同一采样区间内本机与家庭成员同时使用，coUsedPoints 并发滤波防止单窗口容量坍缩；solo 模式可手动关闭扣除
+  const coHistory = [
+    ...history.filter((s) => s.at < current.start),
+    { at: current.start + 10 * 60_000, groups: [{ key: KEY, used: 0, resetAt: iso(current.reset), weekUsed: 5, weekResetAt: iso(now + 4 * 24 * H) }] },
+    // 同一区间本机只用了 1000 万 Token（$10，按历史独享基准约值 5%），但家庭成员同时猛刷了 +35%，合计跳到 40%
+    { at: current.start + 2 * H, groups: [{ key: KEY, used: 40, resetAt: iso(current.reset), weekUsed: 15, weekResetAt: iso(now + 4 * 24 * H) }] },
+  ];
+  const coRows = [
+    ...rows.filter((r) => r.at < current.start),
+    { at: current.start + H, model: 'gemini-4-argon', effort: 'high', tokens: 10e6, costUsd: 10, calls: 1, input: 10e6, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, requests: 1, source: 'Antigravity', kind: 'antigravity' },
+  ];
+  fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+    last: {
+      at: current.start + 2 * H, ok: true, plan: 'Pro',
+      groups: [{ key: KEY, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 40, resetAt: iso(current.reset), week: { used: 15, resetAt: iso(now + 4 * 24 * H) } }],
+    },
+    history: coHistory,
+    notified: {},
+  }));
+  const qCo = new mod.AntigravityQuota({ now: () => current.start + 2 * H + 60_000, fetcher: async () => null });
+  qCo.recentRows = () => coRows;
+  const insCo = qCo.buildInsight(current.start + 2 * H + 60_000);
+  const gCo = insCo.groups[0].five;
+  assert.ok(gCo.shared.coUsedPoints >= 30, `同期多人共用的外部涨幅被识别剥离（coUsedPoints=${gCo.shared.coUsedPoints}）`);
+  const coCurPt = insCo.groups[0].capacityHistory.five.at(-1);
+  assert.ok(coCurPt.fullTokens >= 150e6 && coCurPt.fullTokens <= 250e6, `并发区间容量点未坍缩到 25M（实际 ${coCurPt.fullTokens}）`);
+  pass('simultaneous family co-usage spike is caught by coUsedPoints outlier guard without collapsing capacity');
+
+  // 6. 多账号家庭组共享池自动指纹识别（detectFamilyLinks）：同秒级重置 + 同步消耗的两个家庭号自动关联，独立工作号互不干扰
+  const accMod = require('../build/core/antigravity-accounts');
+  const idFamA = accMod.rememberAgyAccount({ email: 'member-a@family.test', credential: { token: 't-a', refreshToken: 'r-a', expiresAt: famNow + 3600_000 } }, true, famNow);
+  const idFamB = accMod.rememberAgyAccount({ email: 'member-b@family.test', credential: { token: 't-b', refreshToken: 'r-b', expiresAt: famNow + 3600_000 } }, true, famNow);
+  const idWork = accMod.rememberAgyAccount({ email: 'engineer@work.test', credential: { token: 't-w', refreshToken: 'r-w', expiresAt: famNow + 3600_000 } }, true, famNow);
+
+  const sharedGroup = [{ key: KEY, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 42, resetAt: iso(current.reset), week: { used: 18, resetAt: iso(now + 4 * 24 * H) } }];
+  const workGroup = [{ key: KEY, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 12, resetAt: iso(current.reset + 90 * 60_000), week: { used: 4, resetAt: iso(now + 5 * 24 * H) } }];
+  fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+    accounts: {
+      [idFamA]: { last: { at: famNow, ok: true, plan: 'Pro', groups: sharedGroup }, history: [], notified: {} },
+      [idFamB]: { last: { at: famNow, ok: true, plan: 'Pro', groups: sharedGroup }, history: [], notified: {} },
+      [idWork]: { last: { at: famNow, ok: true, plan: 'Ultra', groups: workGroup }, history: [], notified: {} },
+    },
+  }));
+  const qMulti = new mod.AntigravityQuota({ now: () => famNow, fetcher: async () => null });
+  qMulti.recentRows = () => [];
+  const multiState = qMulti.state();
+  assert.equal(multiState.multiAccount, true);
+  assert.equal(multiState.accounts.length, 3);
+  const stA = multiState.accounts.find((a) => a.id === idFamA);
+  const stB = multiState.accounts.find((a) => a.id === idFamB);
+  const stW = multiState.accounts.find((a) => a.id === idWork);
+  assert.equal(stA.familyShared, true, '家庭号 A 自动识别为共享池');
+  assert.equal(stB.familyShared, true, '家庭号 B 自动识别为共享池');
+  assert.equal(stA.familyGroupId, stB.familyGroupId, '两个家庭号归入同一个 familyGroupId');
+  assert.deepEqual(stA.familyPeers, ['member-b']);
+  assert.deepEqual(stB.familyPeers, ['member-a']);
+  assert.equal(stW.familyShared, false, '独立工作号不会被误判进家庭组');
+  assert.equal(stW.familyGroupId, undefined);
+  pass('multi-account detectFamilyLinks links shared family accounts while keeping independent accounts separate');
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
 } finally {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 忽略 */ }
 }
-console.log(`\n${checks}/3 antigravity capacity checks`);
+console.log(`\n${checks}/6 antigravity capacity & family-group checks`);

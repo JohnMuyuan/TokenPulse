@@ -2,9 +2,9 @@ import fs from "fs";
 import path from "path";
 import {
   antigravityConversationFiles,
-  antigravityDir,
   antigravityDirs,
   antigravityHub,
+  fetchAntigravityLocalSession,
   fetchAntigravityStatus,
   modelFamily,
   splitModelLabel,
@@ -14,7 +14,24 @@ import {
   type AgyStatus,
   type AgyWindowQuota,
 } from "../core/antigravity";
+import {
+  agyDisplayNames,
+  fetchAntigravityCloudStatus,
+  normalizeAgyEmail,
+  normalizeShareMode,
+  readAgyAccountStore,
+  readAgyLoginTimeline,
+  recordAgyLocalLogin,
+  renewAgyCredentials,
+  resolveAgyLocalOwner,
+  updateAgyProjectId,
+  visibleAgyAccounts,
+  type AgyNetDeps,
+  type AgyShareMode,
+  type StoredAgyAccount,
+} from "../core/antigravity-accounts";
 import { errorText, log } from "../core/app-log";
+import { isExpired } from "../core/credentials";
 import { loadKnowledge, type PriceRule } from "../core/knowledge";
 import { comboKey } from "../core/model-catalog";
 import { estimateCost, priceOf } from "../core/model-pricing";
@@ -23,13 +40,22 @@ import { dataFile, readJson, writeJson } from "../core/paths";
 import { queryRequests, type RequestRow } from "../core/request-log";
 
 /**
- * Google Antigravity 的额度监控与深度分析。
+ * Google Antigravity 的多账号额度监控、家庭组共享额度归因与深度防偏移分析。
  *
- * 额度通过本机的 Antigravity language server 查询（见 core/antigravity.ts）：
- * - GetUserStatus：返回套餐（plan / tier / credits）和各型号配置（5 小时额度与 model_enum 显示名标签）；
- * - RetrieveUserQuotaSummary：返回分组的 5 小时（5h）与周额度（weekly）双窗口剩余比例和重置时间。
+ * 支持两种来源协同工作：
+ * 1. TokenPulse 独立登录的多个 Google OAuth 账号（`antigravity-accounts.json`）：
+ *    自动续期并直连 Google Cloud Code 接口（`loadCodeAssist` / `fetchAvailableModels` / `retrieveUserQuotaSummary`），
+ *    即使本机 Antigravity 客户端未打开也能定时查询各账号的 5 小时与周额度；
+ * 2. 本机运行中的 Antigravity language server（`GetUserStatus` + `RetrieveUserQuotaSummary`）：
+ *    零配置单账号兼容，或为「仅登记本机登录」的账号提供实时数据，并记录本机账号切换时间线。
  *
- * 存盘（antigravity-quota.json）：最后一次结果 + 最近 30 天的采样 + 每组提醒过的窗口。不存令牌、邮箱、名字。
+ * 针对 Google One 家庭组共享额度导致的估算偏移，内置四重防偏移机制：
+ * - 区间级干净归因（`cleanAgyWindow`）：剥离本机无请求时段由家庭成员或其他设备产生的额度上涨（`offPoints`）；
+ * - 同期多人并发防偏移滤波（`coUsedPoints`）：当同一采样区间内本机与家庭成员同时使用、导致单点表观容量异常坍缩时，
+ *   按近期独享基准剥离并发外部涨幅，防止整窗容量与模型换算被拉低数倍；
+ * - 多账号同家庭组共享池自动指纹识别（`detectFamilyLinks`）：识别同秒级重置时间与同步消耗比例的账号，
+ *   避免多账号余量重复计池，并自动合并本机同家庭组成员的对话记录参与同一共享池校准；
+ * - 双速率用尽预测：拆分「本机消耗速率」与「家庭组/他端速率」，外部突发停止后不再按峰值线性误报耗尽时间。
  */
 
 export type AgyGroupState = AgyQuotaGroup & { key: string };
@@ -85,6 +111,25 @@ export type AgyWindowCapacity = {
   intervals: number;
 };
 
+export type AgyOffInterval = {
+  from: number;
+  to: number;
+  points: number;
+  kind: "off" | "co-used";
+};
+
+export type AgySharedBreakdown = {
+  mode: AgyShareMode;
+  familyShared: boolean;
+  familyPeers: string[];
+  localUsedPct: number;
+  externalUsedPct: number;
+  offPoints: number;
+  coUsedPoints: number;
+  localRatePerHour: number | null;
+  externalRatePerHour: number | null;
+};
+
 export type AgyWindowInsight = {
   window: "five" | "week";
   used: number;
@@ -101,6 +146,7 @@ export type AgyWindowInsight = {
   etaAt: number | null;
   local: AgyUsageSummary;
   capacity: AgyWindowCapacity;
+  shared: AgySharedBreakdown;
 };
 
 export type AgyGroupModelItem = {
@@ -124,6 +170,10 @@ export type AgyCapacityPoint = {
   endAt: number;
   resetAt: number;
   usedPct: number;
+  /** 剔除前的窗口总涨幅（用于浮层对比说明）。 */
+  rawUsedPct?: number;
+  /** 该窗口内被剔除的家庭组 / 其他设备涨幅（offPoints + coUsedPoints）。 */
+  excludedPct?: number;
   tokens: number;
   costUsd: number;
   fullTokens: number;
@@ -220,21 +270,46 @@ export type AgyInsight = {
   priceSource: { version: string | number; updatedAt: string };
 };
 
-export type AgyQuotaState = {
-  /** 本机装了 Antigravity（有它的数据目录）。没装的话界面上不出现。 */
-  installed: boolean;
-  /** 上一次查的时候 Antigravity 开着。 */
-  running: boolean;
+export type AgyAccountQuotaState = {
+  id: string;
+  displayName: string;
+  accountHint: string;
+  inLocal: boolean;
+  /** 已保存独立 OAuth 凭据（关掉 Antigravity 客户端也能直连查询）。 */
+  cloudAuth: boolean;
+  usable: boolean;
+  autoRenew: boolean;
+  waitLocal: boolean;
+  needsLogin: boolean;
+  shareMode: AgyShareMode;
+  familyGroupId?: string;
+  familyShared: boolean;
+  familyPeers: string[];
   loading: boolean;
-  conversations?: number;
   last?: AgyLast;
-  /** 最近 7 天的采样，画走势用。 */
   history: AgySample[];
-  /** 窗口折算、本机用量、模型换算与最近请求。 */
   insight?: AgyInsight;
 };
 
-type Stored = { last?: AgyLast; history: AgySample[]; notified: Record<string, number> };
+export type AgyQuotaState = {
+  /** 本机装了 Antigravity 或已登录 Antigravity 账号。 */
+  installed: boolean;
+  /** 上一次查的时候本机 Antigravity 开着。 */
+  running: boolean;
+  loading: boolean;
+  conversations?: number;
+  /** 兼容单账号结构：指向当前排在首位（或唯一）的账号状态。 */
+  last?: AgyLast;
+  history: AgySample[];
+  insight?: AgyInsight;
+  /** 已登记的可见账号数量（0 表示传统零配置本机单槽模式）。 */
+  registeredCount: number;
+  multiAccount: boolean;
+  accounts: AgyAccountQuotaState[];
+};
+
+type AccountSlot = { last?: AgyLast; history: AgySample[]; notified: Record<string, number> };
+type Stored = AccountSlot & { accounts?: Record<string, AccountSlot> };
 
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -242,22 +317,17 @@ const FIVE_MS = 5 * HOUR;
 const WEEK_MS = 7 * DAY;
 const KEEP_MS = 30 * DAY;
 const SHOW_MS = 7 * DAY;
-/** 一样的结果最多隔这么久记一条采样，免得一直开着时一分钟一条。 */
 const SAMPLE_EVERY_MS = 10 * 60_000;
-/** 同一个窗口：重置时间相差不到这么多就算一个（各次返回的时间会有一点抖动）。 */
 const SAME_WINDOW_MS = 15 * 60_000;
+const LAG_MS = 5 * 60_000;
+/** 连续两次采样超过 6 小时且期间涨了点：视作长离线缺口，不冒充精确单段，但也不误标成家庭组。 */
+const MAX_INTERVAL_GAP_MS = 6 * HOUR;
 
 const DEFAULT_MIX = { input: 1_000_000, cacheRead: 850_000, cacheWrite: 0, output: 30_000 };
 const EFFORT_SCALE: Record<string, number> = { minimal: 0.45, low: 0.62, medium: 1, high: 1.55, xhigh: 2.4, max: 3.6 };
 
 export const groupKey = (models: string[]) => [...models].sort().join("|");
 
-/**
- * 识别某个分组所属的额度池标识：
- * Antigravity 的官方配额池固定按「Gemini / Orchestrator 池」与「Claude / GPT 第三方池」划分，
- * 但组内型号列表会随 Google 上下线模型而变化（例如新增 Gemini 4 Carbon / Hydrogen / Orchestrator，或下线 GPT-OSS 120B），
- * 导致排序拼接出的 `group.key` 改变。用稳定的池标识串联同一额度池的历史采样、周窗口回退、时间线与容量折算。
- */
 export function quotaPoolId(modelsOrKey: string[] | string, title?: string): string {
   const text = Array.isArray(modelsOrKey) ? modelsOrKey.join("|") : String(modelsOrKey || "");
   const hasGemini = /gemini|orchestrator/i.test(text) || /gemini/i.test(title || "");
@@ -289,8 +359,8 @@ function isMixedPoolModels(modelsOrKey: string[] | string): boolean {
   return /gemini|orchestrator/i.test(text) && /claude|gpt/i.test(text);
 }
 
-function sanitizeStored(raw: Partial<Stored> | null): Stored {
-  const history = (Array.isArray(raw?.history) ? raw.history : [])
+function sanitizeSlot(raw: Partial<AccountSlot> | null | undefined): AccountSlot {
+  const history = (Array.isArray(raw?.history) ? raw!.history : [])
     .map((sample) => ({
       ...sample,
       groups: Array.isArray(sample.groups) ? sample.groups.filter((g) => !isMixedPoolModels(g.key)) : [],
@@ -323,7 +393,20 @@ function sanitizeStored(raw: Partial<Stored> | null): Stored {
   for (const [k, v] of Object.entries(rawNotified)) {
     if (!isMixedPoolModels(k)) notified[k] = v;
   }
-  return { last, history, notified };
+  return { ...(last ? { last } : {}), history, notified };
+}
+
+function sanitizeStored(raw: Partial<Stored> | null): Stored {
+  const base = sanitizeSlot(raw);
+  const accounts: Record<string, AccountSlot> = {};
+  if (raw?.accounts && typeof raw.accounts === "object") {
+    for (const [id, slot] of Object.entries(raw.accounts)) {
+      if (typeof id === "string" && id.startsWith("antigravity:")) {
+        accounts[id] = sanitizeSlot(slot);
+      }
+    }
+  }
+  return { ...base, ...(Object.keys(accounts).length ? { accounts } : {}) };
 }
 
 function dayStr(at: number) {
@@ -358,6 +441,16 @@ function summarizeRows(rows: RequestRow[]): AgyUsageSummary {
   return { tokens, input, output, cacheRead, cacheWrite, reasoning, costUsd: Math.round(costUsd * 10000) / 10000, requests };
 }
 
+function rowEffectiveCost(r: RequestRow): number {
+  if (r.costUsd && r.costUsd > 0) return r.costUsd;
+  return estimateCost(r.model, {
+    input: r.input || 0,
+    output: r.output || 0,
+    cacheRead: r.cacheRead || 0,
+    cacheWrite: r.cacheWrite || 0,
+  });
+}
+
 function groupMatchesModel(group: { models: string[]; title?: string }, model: string): boolean {
   const norm = model.toLowerCase().trim();
   for (const family of group.models) {
@@ -371,16 +464,10 @@ function groupMatchesModel(group: { models: string[]; title?: string }, model: s
   return false;
 }
 
-/**
- * 至少用掉这么多百分比，才拿这一段去折算「整窗 100% 能用多少」（与 quota-monitor.ts 一致）。
- * 0.2%–1% 时接口四舍五入或时间差一点点就会把整窗容量放大几十到几百倍。
- */
 const MIN_CAPACITY_PCT = 2;
-/** 整窗容量用最近几个窗口算（见 buildWindowInsight）。 */
 const RECENT_CAPACITY_FIVE = 6;
 const RECENT_CAPACITY_WEEK = 3;
 
-/** 加权中位数：[值, 权重]。按值排好，累计权重第一次过半的那个值；正好一半时取它和下一个的平均。 */
 export function weightedMedian(pairs: [number, number][]): number {
   const list = pairs.filter(([value, weight]) => Number.isFinite(value) && weight > 0).sort((a, b) => a[0] - b[0]);
   if (!list.length) return 0;
@@ -394,14 +481,102 @@ export function weightedMedian(pairs: [number, number][]): number {
   return list[list.length - 1][0];
 }
 
+/** 加权分位数（q ∈ [0,1]）：在存在家庭组并发下拉噪声时，用偏高分位锚定纯本机独享成本基准。 */
+function weightedQuantile(pairs: [number, number][], q: number): number {
+  const list = pairs.filter(([value, weight]) => Number.isFinite(value) && weight > 0).sort((a, b) => a[0] - b[0]);
+  if (!list.length) return 0;
+  const target = list.reduce((sum, [, weight]) => sum + weight, 0) * Math.min(1, Math.max(0, q));
+  let acc = 0;
+  for (let i = 0; i < list.length; i++) {
+    acc += list[i][1];
+    if (acc >= target) return list[i][0];
+  }
+  return list[list.length - 1][0];
+}
+
 /**
- * 把某一组在 5 小时窗口或周额度窗口下的历史采样切成连续的窗口段（对标 quota-monitor.ts 的 windowSegments）：
- * 1. 按官方 resetAt 分组（容忍 SAME_WINDOW_MS 抖动）；若窗口处于 0% 空闲状态导致 resetAt 随当前时间顺延，合并进同一组；
- * 2. 若上一段已有消耗，且还未到上一段的 resetAt 就开启了新的 resetAt 周期（Google 提前重置 / 重置卡顺延）：
- *    把上一段的 endAt 截断在重置发生处（标 endedByReset = "moved"），新一段标 startedByReset = "moved"，且起点不早于上一段末次采样；
- * 3. 若同一个 resetAt 周期内已用百分比大幅回落（归零或回落 >= 3 个百分点，非普通浮点抖动）：
- *    在回落前切开，前段标 endedByReset = "kept"，后段标 startedByReset = "kept"。
+ * 自动识别处于同一 Google One 家庭组共享池的多账号：
+ * 当两个账号在同一额度池上已有实际消耗（>= 0.5%），且 5 小时或周窗口的官方 resetAt 秒级一致（相差 <= 10 秒）、
+ * 已用百分比同步（相差 <= 1.2%），即可确认它们背后连接的是同一个家庭组共享配额桶。
  */
+export function detectFamilyLinks(
+  items: { id: string; shareMode: AgyShareMode; last?: AgyLast }[],
+): Map<string, { familyGroupId?: string; peers: string[]; detected: boolean }> {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let cur = x;
+    while (parent.get(cur) && parent.get(cur) !== cur) cur = parent.get(cur)!;
+    return cur;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
+  };
+  for (const item of items) parent.set(item.id, item.id);
+
+  const sameBucket = (
+    a: { used?: number; resetAt?: string } | undefined,
+    b: { used?: number; resetAt?: string } | undefined,
+  ): boolean => {
+    if (!a || !b || !a.resetAt || !b.resetAt) return false;
+    const ua = Number(a.used ?? 0), ub = Number(b.used ?? 0);
+    if (ua < 0.5 && ub < 0.5) return false;
+    const ta = Date.parse(a.resetAt), tb = Date.parse(b.resetAt);
+    if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
+    return Math.abs(ta - tb) <= 10_000 && Math.abs(ua - ub) <= 1.2;
+  };
+
+  for (let i = 0; i < items.length; i++) {
+    const a = items[i];
+    if (a.shareMode === "solo" || !a.last?.ok) continue;
+    for (let j = i + 1; j < items.length; j++) {
+      const b = items[j];
+      if (b.shareMode === "solo" || !b.last?.ok) continue;
+      if (Math.abs((a.last.at || 0) - (b.last.at || 0)) > 20 * 60_000) continue;
+      let shared = false;
+      for (const ga of a.last.groups) {
+        const pool = quotaPoolId(ga.models, ga.title);
+        const gb = b.last.groups.find((g) => quotaPoolId(g.models, g.title) === pool);
+        if (!gb) continue;
+        if (sameBucket(ga, gb) || sameBucket(ga.week, gb.week)) {
+          shared = true;
+          break;
+        }
+      }
+      if (shared) union(a.id, b.id);
+    }
+  }
+
+  const byRoot = new Map<string, string[]>();
+  for (const item of items) {
+    const r = find(item.id);
+    const list = byRoot.get(r) ?? [];
+    list.push(item.id);
+    byRoot.set(r, list);
+  }
+
+  const out = new Map<string, { familyGroupId?: string; peers: string[]; detected: boolean }>();
+  let seq = 0;
+  const rootGroupId = new Map<string, string>();
+  for (const [root, members] of byRoot) {
+    if (members.length > 1) {
+      seq += 1;
+      rootGroupId.set(root, `family:${seq}`);
+    }
+  }
+  for (const item of items) {
+    const r = find(item.id);
+    const members = byRoot.get(r) ?? [item.id];
+    const peers = members.filter((id) => id !== item.id);
+    out.set(item.id, {
+      ...(rootGroupId.has(r) ? { familyGroupId: rootGroupId.get(r) } : {}),
+      peers,
+      detected: peers.length > 0,
+    });
+  }
+  return out;
+}
+
 export function agyWindowSegments(
   windowKind: "five" | "week",
   groupKeyStr: string,
@@ -531,6 +706,180 @@ export function agyWindowSegments(
   return segments;
 }
 
+type LocalIntervalSample = {
+  from: number;
+  to: number;
+  deltaPct: number;
+  tokens: number;
+  costUsd: number;
+  effectiveCostUsd: number;
+};
+
+type SegmentAttribution = {
+  localIntervals: LocalIntervalSample[];
+  offIntervals: AgyOffInterval[];
+  uncertainIntervals: { from: number; to: number; points: number }[];
+  rawUsedPct: number;
+  offPoints: number;
+};
+
+/**
+ * 对单个窗口段按相邻采样切分出「本机活跃区间」与「家庭组/他端无本机请求区间（offIntervals）」。
+ * 支持服务端配额计数延迟吸附：若当前区间无请求但前 5 分钟内刚结束过本机请求，将滞后的点数并回上一段本机区间。
+ */
+function analyzeSegmentIntervals(
+  segment: AgyWindowSegment,
+  sortedGroupRows: RequestRow[],
+  now: number,
+): SegmentAttribution {
+  const out: SegmentAttribution = {
+    localIntervals: [],
+    offIntervals: [],
+    uncertainIntervals: [],
+    rawUsedPct: 0,
+    offPoints: 0,
+  };
+  if (!segment.points.length) return out;
+
+  const upper = (at: number) => {
+    let low = 0, high = sortedGroupRows.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (sortedGroupRows[mid].at <= at) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  };
+  const sliceRows = (fromExcl: number, toIncl: number) =>
+    toIncl > fromExcl ? sortedGroupRows.slice(upper(fromExcl), upper(toIncl)) : [];
+
+  const first = segment.points[0];
+  const preRows = first.at > segment.startAt ? sliceRows(segment.startAt - 1, first.at) : [];
+  const hasOrigin = first.at > segment.startAt && (first.used < 1.5 || preRows.length > 0);
+  const pts = hasOrigin ? [{ at: segment.startAt, used: 0 }, ...segment.points] : [...segment.points];
+
+  let anchor = pts[0];
+  let prev = pts[0];
+
+  for (let i = 1; i < pts.length; i++) {
+    const pt = pts[i];
+    if (pt.at <= anchor.at) continue;
+    const stepMs = pt.at - prev.at;
+    const delta = pt.used - anchor.used;
+    const stepDelta = pt.used - prev.used;
+    prev = pt;
+
+    if (delta < -0.2) {
+      anchor = pt;
+      continue;
+    }
+    // 超过 6 小时未采样且期间涨了点（例如电脑关机一整晚期间家人用过）：标为缺口不确定区间，不混入容量分母
+    if (stepMs > MAX_INTERVAL_GAP_MS && stepDelta >= 0.5) {
+      const gapRows = sliceRows(anchor.at, pt.at);
+      if (!gapRows.length) {
+        out.offPoints += Math.max(0, delta);
+        out.offIntervals.push({ from: anchor.at, to: pt.at, points: Math.round(delta * 10) / 10, kind: "off" });
+      } else {
+        out.uncertainIntervals.push({ from: anchor.at, to: pt.at, points: Math.round(delta * 10) / 10 });
+      }
+      anchor = pt;
+      continue;
+    }
+
+    const isLast = i === pts.length - 1;
+    if (delta <= 0.05) {
+      if (isLast) {
+        // 末尾尚未跳点但可能有刚产生的本地请求：若有上一条紧邻本机区间则吸附 Token
+        const tailRows = sliceRows(anchor.at, Math.min(segment.endAt, pt.at + 60_000, now));
+        const lastLocal = out.localIntervals.at(-1);
+        if (tailRows.length && lastLocal && anchor.at - lastLocal.to <= LAG_MS) {
+          const sum = summarizeRows(tailRows);
+          lastLocal.to = pt.at;
+          lastLocal.tokens += sum.tokens;
+          lastLocal.costUsd += sum.costUsd;
+          lastLocal.effectiveCostUsd += tailRows.reduce((s, r) => s + rowEffectiveCost(r), 0);
+        }
+      } else if (pt.at - anchor.at > LAG_MS) {
+        // 平稳无涨幅超过延迟窗口：收尾紧挨上一轮采样的尾包后，将锚点推进到当前静默采样点，防止后续家庭成员突增吞并更早的本机请求
+        const trailing = sliceRows(anchor.at, anchor.at + LAG_MS);
+        const lastLocal = out.localIntervals.at(-1);
+        if (trailing.length && lastLocal && anchor.at - lastLocal.to <= LAG_MS) {
+          const sum = summarizeRows(trailing);
+          lastLocal.to = anchor.at + LAG_MS;
+          lastLocal.tokens += sum.tokens;
+          lastLocal.costUsd += sum.costUsd;
+          lastLocal.effectiveCostUsd += trailing.reduce((s, r) => s + rowEffectiveCost(r), 0);
+        }
+        if (!sliceRows(anchor.at + LAG_MS, pt.at).length) {
+          anchor = pt;
+        }
+      }
+      continue;
+    }
+    // 微小正向抖动（0.05% < delta < 0.4%）先累积到下一次采样
+    if (delta < 0.4 && !isLast) continue;
+
+    const from = anchor.at;
+    const to = pt.at;
+    const rowFrom = anchor === pts[0] && hasOrigin ? segment.startAt - 1 : from;
+    const rowTo = isLast ? Math.min(segment.endAt, to + 60_000, now) : to;
+    const part = sliceRows(rowFrom, rowTo);
+    anchor = pt;
+    out.rawUsedPct += delta;
+
+    if (part.length > 0) {
+      const sum = summarizeRows(part);
+      const effCost = part.reduce((s, r) => s + rowEffectiveCost(r), 0);
+      out.localIntervals.push({
+        from,
+        to,
+        deltaPct: delta,
+        tokens: sum.tokens,
+        costUsd: sum.costUsd,
+        effectiveCostUsd: effCost,
+      });
+      continue;
+    }
+
+    // 当前区间 (from, to] 内没有本机请求：检查是否属于前一段本机请求的配额滞后刷新
+    const nearBefore = sliceRows(from - LAG_MS, from);
+    const lastLocal = out.localIntervals.at(-1);
+    if (nearBefore.length > 0 && lastLocal && from - lastLocal.to <= LAG_MS) {
+      lastLocal.to = to;
+      lastLocal.deltaPct += delta;
+      continue;
+    }
+
+    const nearAfter = sliceRows(to, Math.min(to + LAG_MS, now));
+    if (!nearBefore.length && !nearAfter.length) {
+      out.offPoints += delta;
+      const prevOff = out.offIntervals.at(-1);
+      if (prevOff && prevOff.kind === "off" && from - prevOff.to <= 30 * 60_000 && !sliceRows(prevOff.to, from).length) {
+        prevOff.to = to;
+        prevOff.points = Math.round((prevOff.points + delta) * 10) / 10;
+      } else {
+        out.offIntervals.push({ from, to, points: Math.round(delta * 10) / 10, kind: "off" });
+      }
+    } else {
+      out.uncertainIntervals.push({ from, to, points: Math.round(delta * 10) / 10 });
+    }
+  }
+
+  return out;
+}
+
+type ShareContext = {
+  mode: AgyShareMode;
+  familyShared: boolean;
+  familyPeers: string[];
+};
+
+const DEFAULT_SHARE_CONTEXT: ShareContext = {
+  mode: "auto",
+  familyShared: false,
+  familyPeers: [],
+};
+
 function buildWindowInsight(
   windowKind: "five" | "week",
   quota: AgyWindowQuota,
@@ -539,7 +888,12 @@ function buildWindowInsight(
   groupRows: RequestRow[],
   now: number,
   groupTitle?: string,
-): { insight: AgyWindowInsight; capacityHistory: AgyCapacityPoint[] } {
+  shareCtx: ShareContext = DEFAULT_SHARE_CONTEXT,
+): {
+  insight: AgyWindowInsight;
+  capacityHistory: AgyCapacityPoint[];
+  currentAttribution?: SegmentAttribution & { coUsedPoints: number; coUsedIntervals: AgyOffInterval[] };
+} {
   const periodMs = windowKind === "five" ? FIVE_MS : WEEK_MS;
   const resetMs = quota.resetAt ? Date.parse(quota.resetAt) || 0 : 0;
   const ended = Boolean(resetMs && resetMs <= now);
@@ -547,6 +901,7 @@ function buildWindowInsight(
   const used = ended ? 0 : Math.min(100, Math.max(0, Number(quota.used) || 0));
   const remaining = ended ? 100 : Math.max(0, Math.round((100 - used) * 10) / 10);
 
+  const sortedRows = [...groupRows].sort((a, b) => a.at - b.at);
   const segments = agyWindowSegments(windowKind, groupKeyStr, history, quota, now, groupTitle);
   const curSeg =
     !ended && resetMs > 0
@@ -559,84 +914,149 @@ function buildWindowInsight(
   const startedByReset = !ended ? curSeg?.startedByReset : undefined;
   const currentPoints = curSeg ? curSeg.points : [];
 
-  let ratePerHour: number | null = null;
-  let recentRatePerHour: number | null = null;
-  let projected: number | null = null;
-  let etaAt: number | null = null;
+  const windowRows = ended ? [] : sortedRows.filter((r) => r.at >= startAt && r.at <= Math.min(endAt, now));
+  const local = summarizeRows(windowRows);
+  const soloMode = shareCtx.mode === "solo";
 
-  if (!ended && currentPoints.length >= 2) {
-    const first = currentPoints[0];
-    const lastPt = currentPoints[currentPoints.length - 1];
-    const hours = (lastPt.at - first.at) / HOUR;
-    if (hours >= 1 / 6) {
-      ratePerHour = Math.max(0, (lastPt.used - first.used) / hours);
-      const leftHours = Math.max(0, (endAt - now) / HOUR);
-      projected = Math.min(200, used + ratePerHour * leftHours);
-      const rawEta = ratePerHour > 0 ? now + ((100 - used) / ratePerHour) * HOUR : null;
-      etaAt = rawEta && rawEta < endAt ? Math.round(rawEta) : null;
-    }
-    const recentAnchor = [...currentPoints].reverse().find((p) => lastPt.at - p.at >= 15 * 60_000 && lastPt.at - p.at <= 2 * HOUR) ?? first;
-    const recentH = (lastPt.at - recentAnchor.at) / HOUR;
-    if (recentH >= 1 / 6) {
-      recentRatePerHour = Math.max(0, (lastPt.used - recentAnchor.used) / recentH);
+  // 第 1 步：对所有窗口段提取区间级归因
+  const segAnalyses = segments.map((segment) => ({
+    segment,
+    attr: soloMode ? null : analyzeSegmentIntervals(segment, sortedRows, now),
+  }));
+
+  // 第 2 步：确定近期独享等效整窗成本基准 B_ref（用于识别「同一时段本机与家庭成员并发使用」导致的单点坍缩）
+  const recentLimit = windowKind === "five" ? RECENT_CAPACITY_FIVE : RECENT_CAPACITY_WEEK;
+  const recentAnalyses = segAnalyses.slice(-Math.max(recentLimit + 2, 4));
+  const candidateCostRates: [number, number][] = [];
+  if (!soloMode) {
+    for (const { attr } of recentAnalyses) {
+      if (!attr) continue;
+      for (const iv of attr.localIntervals) {
+        if (iv.deltaPct >= 0.5 && iv.effectiveCostUsd > 0) {
+          candidateCostRates.push([(iv.effectiveCostUsd / iv.deltaPct) * 100, iv.deltaPct]);
+        }
+      }
     }
   }
-
-  const windowRows = ended ? [] : groupRows.filter((r) => r.at >= startAt && r.at <= Math.min(endAt, now));
-  const local = summarizeRows(windowRows);
+  // 家庭组并发只会向下压低 apparentCostRate（分母多了家人的消耗），用 P65 分位数稳健锚定纯本机独享成本率
+  const soloRefFullCost =
+    candidateCostRates.length >= 2
+      ? weightedQuantile(candidateCostRates, shareCtx.familyShared || shareCtx.mode === "family" ? 0.7 : 0.6)
+      : 0;
 
   const capacityHistory: AgyCapacityPoint[] = [];
+  let curAttrResult: (SegmentAttribution & { coUsedPoints: number; coUsedIntervals: AgyOffInterval[] }) | undefined;
 
-  for (const segment of segments) {
+  for (const { segment, attr } of segAnalyses) {
     if (!segment.points.length) continue;
     const first = segment.points[0];
     const final = segment.points[segment.points.length - 1];
     const maxPt = segment.points.reduce((best, p) => (p.used >= best.used ? p : best), final);
     const targetPt = final.used >= maxPt.used - 0.5 ? final : maxPt;
-    if (targetPt.used <= 0) continue;
 
-    const endBound = Math.min(segment.endAt, targetPt.at + 60_000, now);
-    // 若窗口半途才开始采样（first.used >= 1.5），检查 first.at 之前是否有本机对话记录：
-    // - 有本机记录：说明本机日志从窗口起点就有完整覆盖，分子用 [segment.startAt, endBound] 全部用量，分母用 targetPt.used；
-    // - 无本机记录：说明采样前的消耗不在本机日志中，分子只取 [first.at, endBound] 用量，分母取采样区间增量 (targetPt.used - first.used)。
-    const preRows =
-      first.used >= 1.5 && first.at > segment.startAt
-        ? groupRows.filter((r) => r.at >= segment.startAt && r.at < first.at)
-        : [];
-    const useDeltaOnly = first.used >= 1.5 && first.at > segment.startAt && preRows.length === 0;
-    const usedPct = useDeltaOnly ? targetPt.used - first.used : targetPt.used;
-    if (usedPct < MIN_CAPACITY_PCT) continue;
+    if (soloMode || !attr) {
+      if (targetPt.used <= 0) continue;
+      const endBound = Math.min(segment.endAt, targetPt.at + 60_000, now);
+      const preRows =
+        first.used >= 1.5 && first.at > segment.startAt
+          ? sortedRows.filter((r) => r.at >= segment.startAt && r.at < first.at)
+          : [];
+      const useDeltaOnly = first.used >= 1.5 && first.at > segment.startAt && preRows.length === 0;
+      const usedPct = useDeltaOnly ? targetPt.used - first.used : targetPt.used;
+      if (usedPct < MIN_CAPACITY_PCT) continue;
+      const rowStart = useDeltaOnly ? first.at : segment.startAt;
+      const cRows = sortedRows.filter((r) => r.at >= rowStart && r.at <= endBound);
+      const cSum = summarizeRows(cRows);
+      if (cSum.tokens <= 0) continue;
+      capacityHistory.push({
+        at: targetPt.at,
+        startAt: rowStart,
+        endAt: segment.endAt,
+        resetAt: segment.resetAt,
+        usedPct: Math.round(usedPct * 10) / 10,
+        tokens: cSum.tokens,
+        costUsd: cSum.costUsd,
+        fullTokens: Math.round((cSum.tokens / usedPct) * 100),
+        fullCostUsd: Math.round(((cSum.costUsd / usedPct) * 100) * 100) / 100,
+        ...(segment.startedByReset ? { startedByReset: segment.startedByReset } : {}),
+        ...(segment.endedByReset ? { endedByReset: segment.endedByReset } : {}),
+      });
+      continue;
+    }
 
-    const rowStart = useDeltaOnly ? first.at : segment.startAt;
-    const cRows = groupRows.filter((r) => r.at >= rowStart && r.at <= endBound);
-    const cSum = summarizeRows(cRows);
-    if (cSum.tokens <= 0) continue;
+    // 共享 / 家庭组防偏移模式：逐个本机区间检验是否存在「同期家庭成员并发高消耗」
+    let cleanPct = 0;
+    let cleanTokens = 0;
+    let cleanCost = 0;
+    let coUsedPoints = 0;
+    const coUsedIntervals: AgyOffInterval[] = [];
 
-    const fullTokens = Math.round((cSum.tokens / usedPct) * 100);
-    const fullCostUsd = Math.round(((cSum.costUsd / usedPct) * 100) * 100) / 100;
+    for (const iv of attr.localIntervals) {
+      const impliedFullCost = iv.deltaPct > 0 && iv.effectiveCostUsd > 0 ? (iv.effectiveCostUsd / iv.deltaPct) * 100 : 0;
+      const isCoUsedOutlier =
+        soloRefFullCost > 0 &&
+        impliedFullCost > 0 &&
+        impliedFullCost < soloRefFullCost * 0.45 &&
+        iv.deltaPct - (iv.effectiveCostUsd / soloRefFullCost) * 100 >= 1.0;
+
+      if (isCoUsedOutlier) {
+        const expectedLocalPct = Math.max(0.1, (iv.effectiveCostUsd / soloRefFullCost) * 100);
+        const excessPct = Math.max(0, iv.deltaPct - expectedLocalPct);
+        coUsedPoints += excessPct;
+        coUsedIntervals.push({
+          from: iv.from,
+          to: iv.to,
+          points: Math.round(excessPct * 10) / 10,
+          kind: "co-used",
+        });
+        // 剥离并发外部涨幅后，若本机自身估计消耗够明显仍可按还原后的净点数温和计入，否则直接跳过污染区间
+        if (expectedLocalPct >= 1.5) {
+          cleanPct += expectedLocalPct;
+          cleanTokens += iv.tokens;
+          cleanCost += iv.costUsd;
+        }
+      } else {
+        cleanPct += iv.deltaPct;
+        cleanTokens += iv.tokens;
+        cleanCost += iv.costUsd;
+      }
+    }
+
+    if (segment === curSeg) {
+      curAttrResult = { ...attr, coUsedPoints, coUsedIntervals };
+    }
+
+    // 若只有单次采样（尚无相邻采样点差值），且窗口起始本机就有完整记录，退回整段观察值
+    if (cleanPct < MIN_CAPACITY_PCT && segment.points.length === 1 && targetPt.used >= MIN_CAPACITY_PCT) {
+      const endBound = Math.min(segment.endAt, targetPt.at + 60_000, now);
+      const cRows = sortedRows.filter((r) => r.at >= segment.startAt && r.at <= endBound);
+      const cSum = summarizeRows(cRows);
+      if (cSum.tokens > 0 && (first.used < 1.5 || sortedRows.some((r) => r.at >= segment.startAt && r.at < first.at))) {
+        cleanPct = targetPt.used;
+        cleanTokens = cSum.tokens;
+        cleanCost = cSum.costUsd;
+      }
+    }
+
+    if (cleanPct < MIN_CAPACITY_PCT || cleanTokens <= 0) continue;
+    const excludedPct = Math.round((attr.offPoints + coUsedPoints) * 10) / 10;
+    const rawUsedPct = Math.round(Math.max(cleanPct + excludedPct, targetPt.used) * 10) / 10;
     capacityHistory.push({
       at: targetPt.at,
-      startAt: rowStart,
+      startAt: segment.startAt,
       endAt: segment.endAt,
       resetAt: segment.resetAt,
-      usedPct: Math.round(usedPct * 10) / 10,
-      tokens: cSum.tokens,
-      costUsd: cSum.costUsd,
-      fullTokens,
-      fullCostUsd,
+      usedPct: Math.round(cleanPct * 10) / 10,
+      ...(excludedPct >= 0.5 ? { rawUsedPct, excludedPct } : {}),
+      tokens: cleanTokens,
+      costUsd: Math.round(cleanCost * 10000) / 10000,
+      fullTokens: Math.round((cleanTokens / cleanPct) * 100),
+      fullCostUsd: Math.round(((cleanCost / cleanPct) * 100) * 100) / 100,
       ...(segment.startedByReset ? { startedByReset: segment.startedByReset } : {}),
       ...(segment.endedByReset ? { endedByReset: segment.endedByReset } : {}),
     });
   }
 
-  /*
-   * 整窗容量只用最近几个窗口（5 小时 6 个、周 3 个）合起来算，不用 30 天里的全部窗口。
-   * 1% 额度对应多少 Token 随用的型号变化很大（2026-11 用户实测：主要用 gemini-3.8-flash-tiered 的窗口约 3100 万 Token / 1%，
-   * 只用 gemini-4-argon 的窗口约 180 万 / 1%），30 天一起平均会被早先另一种用法的窗口带偏好几倍。
-   * 只看最近几个窗口，跟着现在的用法走；换了用法，几个窗口之后就跟上。
-   * 几个窗口之间取「按已用百分比加权的中位数」，不用「总 Token ÷ 总百分比」：后者会被一个用法不同的窗口
-   * （同样 1% 多出十几倍 Token）拉高好几倍，中位数不受个别窗口影响。
-   */
   const recent = capacityHistory.slice(windowKind === "five" ? -RECENT_CAPACITY_FIVE : -RECENT_CAPACITY_WEEK);
   let sumPoints = recent.reduce((sum, point) => sum + point.usedPct, 0);
   const sumTokens = recent.reduce((sum, point) => sum + point.tokens, 0);
@@ -654,12 +1074,81 @@ function buildWindowInsight(
     basis = intervals >= 2 && sumPoints >= 5 ? "measured" : "current";
     confidence = intervals >= 3 && sumPoints >= 15 ? "medium" : sumPoints >= 5 ? "low" : "current";
   } else if (!ended && used >= MIN_CAPACITY_PCT && local.tokens > 0) {
-    fullTokens = Math.round((local.tokens / used) * 100);
-    fullCostUsd = local.costUsd > 0 ? Math.round(((local.costUsd / used) * 100) * 100) / 100 : null;
-    basis = "current";
-    confidence = "current";
-    sumPoints = used;
-    intervals = 1;
+    const extNow = !soloMode && curAttrResult ? curAttrResult.offPoints + curAttrResult.coUsedPoints : 0;
+    const netUsed = Math.max(0, used - extNow);
+    if (netUsed >= MIN_CAPACITY_PCT) {
+      fullTokens = Math.round((local.tokens / netUsed) * 100);
+      fullCostUsd = local.costUsd > 0 ? Math.round(((local.costUsd / netUsed) * 100) * 100) / 100 : null;
+      basis = "current";
+      confidence = "current";
+      sumPoints = netUsed;
+      intervals = 1;
+    }
+  }
+
+  // 第 3 步：计算当前窗口的本机 vs 家庭组/他端占比与双速率预测
+  let ratePerHour: number | null = null;
+  let recentRatePerHour: number | null = null;
+  let localRatePerHour: number | null = null;
+  let externalRatePerHour: number | null = null;
+  let projected: number | null = null;
+  let etaAt: number | null = null;
+
+  const rawOffPoints = !ended && !soloMode && curAttrResult ? curAttrResult.offPoints : 0;
+  const rawCoUsedPoints = !ended && !soloMode && curAttrResult ? curAttrResult.coUsedPoints : 0;
+  // 若窗口半途才开始采样且前序无本机记录，采样前的初始已用同样计入外部/历史已用，不扣在本机头上
+  const preInitialExt =
+    !ended && !soloMode && curSeg && curSeg.points.length > 0 && curSeg.points[0].used >= 1.5 &&
+    !windowRows.some((r) => r.at < curSeg.points[0].at)
+      ? curSeg.points[0].used
+      : 0;
+  const externalUsedPct = ended
+    ? 0
+    : Math.min(used, Math.round((preInitialExt + rawOffPoints + rawCoUsedPoints) * 10) / 10);
+  const localUsedPct = ended
+    ? 0
+    : local.tokens <= 0 && !soloMode
+      ? 0
+      : Math.max(0, Math.round((used - externalUsedPct) * 10) / 10);
+
+  if (!ended && currentPoints.length >= 2) {
+    const first = currentPoints[0];
+    const lastPt = currentPoints[currentPoints.length - 1];
+    const hours = (lastPt.at - first.at) / HOUR;
+    if (hours >= 1 / 6) {
+      ratePerHour = Math.max(0, (lastPt.used - first.used) / hours);
+      const extSpanPct = Math.min(Math.max(0, lastPt.used - first.used), rawOffPoints + rawCoUsedPoints);
+      const locSpanPct = Math.max(0, lastPt.used - first.used - extSpanPct);
+      localRatePerHour = Math.round((locSpanPct / hours) * 100) / 100;
+      externalRatePerHour = Math.round((extSpanPct / hours) * 100) / 100;
+    }
+    const recentAnchor =
+      [...currentPoints].reverse().find((p) => lastPt.at - p.at >= 15 * 60_000 && lastPt.at - p.at <= 2 * HOUR) ?? first;
+    const recentH = (lastPt.at - recentAnchor.at) / HOUR;
+    if (recentH >= 1 / 6) {
+      recentRatePerHour = Math.max(0, (lastPt.used - recentAnchor.used) / recentH);
+    }
+
+    if (ratePerHour != null) {
+      // 防预测偏移：若早些时候有家庭成员突发消耗，但最近 >= 20 分钟已回落平稳，优先按近期稳态速率预测剩余时长
+      const allExtIntervals = curAttrResult ? [...curAttrResult.offIntervals, ...curAttrResult.coUsedIntervals] : [];
+      const lastExtAt = allExtIntervals.reduce((m, iv) => Math.max(m, iv.to), 0);
+      const extBurstQuieted =
+        !soloMode &&
+        rawOffPoints + rawCoUsedPoints >= 3 &&
+        lastExtAt > 0 &&
+        now - lastExtAt >= 20 * 60_000 &&
+        recentRatePerHour != null &&
+        recentRatePerHour < ratePerHour * 0.75;
+      const forecastRate = extBurstQuieted ? recentRatePerHour! : ratePerHour;
+      const leftHours = Math.max(0, (endAt - now) / HOUR);
+      projected = Math.min(200, used + forecastRate * leftHours);
+      const rawEta = forecastRate > 0 ? now + ((100 - used) / forecastRate) * HOUR : null;
+      etaAt = rawEta && rawEta < endAt ? Math.round(rawEta) : null;
+      if (extBurstQuieted) {
+        ratePerHour = forecastRate;
+      }
+    }
   }
 
   const remainingShare = Math.max(0, 100 - used) / 100;
@@ -672,6 +1161,18 @@ function buildWindowInsight(
     confidence,
     points: Math.round(sumPoints * 10) / 10,
     intervals,
+  };
+
+  const shared: AgySharedBreakdown = {
+    mode: shareCtx.mode,
+    familyShared: shareCtx.familyShared || shareCtx.mode === "family",
+    familyPeers: shareCtx.familyPeers,
+    localUsedPct,
+    externalUsedPct,
+    offPoints: Math.round(rawOffPoints * 10) / 10,
+    coUsedPoints: Math.round(rawCoUsedPoints * 10) / 10,
+    localRatePerHour,
+    externalRatePerHour,
   };
 
   return {
@@ -691,8 +1192,10 @@ function buildWindowInsight(
       etaAt,
       local,
       capacity,
+      shared,
     },
     capacityHistory: capacityHistory.slice(-30),
+    ...(curAttrResult ? { currentAttribution: curAttrResult } : {}),
   };
 }
 
@@ -767,9 +1270,10 @@ function buildModelCapacities(
 
     const basePool = modelRows.length >= 3 ? modelRows : groupRows.length >= 3 ? groupRows : [];
     const mixBasis: AgyModelCapacityRow["mixBasis"] = modelRows.length >= 3 ? "model" : groupRows.length >= 3 ? "group" : "default";
-    const baseSummary = basePool.length ? summarizeRows(basePool) : { ...DEFAULT_MIX, tokens: DEFAULT_MIX.input + DEFAULT_MIX.output, reasoning: 0, costUsd: 0, requests: 22 };
+    const baseSummary = basePool.length
+      ? summarizeRows(basePool)
+      : { ...DEFAULT_MIX, tokens: DEFAULT_MIX.input + DEFAULT_MIX.output, reasoning: 0, costUsd: 0, requests: 22 };
 
-    // 按思考档位缩放输出部分
     const anchorEffort = modelRows[0]?.effort && EFFORT_SCALE[modelRows[0].effort] ? modelRows[0].effort : "medium";
     const ratio = (EFFORT_SCALE[cand.effort] ?? 1) / (EFFORT_SCALE[anchorEffort] ?? 1);
     const scaledMix = {
@@ -834,7 +1338,9 @@ function buildModelCapacities(
     });
   }
 
-  const ref = [...out].filter((r) => r.usdPerMTokens && r.usdPerMTokens > 0).sort((a, b) => b.recentTokens - a.recentTokens || a.usdPerMTokens! - b.usdPerMTokens!)[0];
+  const ref = [...out]
+    .filter((r) => r.usdPerMTokens && r.usdPerMTokens > 0)
+    .sort((a, b) => b.recentTokens - a.recentTokens || a.usdPerMTokens! - b.usdPerMTokens!)[0];
   if (ref?.usdPerMTokens) {
     for (const row of out) {
       if (row.usdPerMTokens && row.usdPerMTokens > 0) {
@@ -848,21 +1354,16 @@ function buildModelCapacities(
 
 type Cycle = { id: string; startAt: number; endAt: number; resetAt: number; used: number; sampleAt: number; active: boolean; resetCard: boolean };
 
-/**
- * 每个额度池（组）各自的 5 小时 / 周额度时间线。
- * Antigravity 的 Gemini 组和 Claude / GPT 组各有一个 5 小时窗口、一个周额度窗口，重置时间各不相同；
- * 以前只按「第一个有用量的组」切周期、曲线取各组最大值、请求不分组，两个池的用量混在一起。
- * 现在周期按这一组自己的采样切，曲线是这一组自己的已用百分比，请求只算这一组的型号。
- * group 为空：还没查到过额度分组，退回不分组的画法。
- */
 function buildTimelineWindow(
   windowKind: "five" | "week",
   cycleId: string | undefined,
+  accountId: string,
   last: AgyLast | undefined,
   group: AgyGroupState | undefined,
   history: AgySample[],
   rows: RequestRow[],
   now: number,
+  soloMode = false,
 ) {
   const periodMs = windowKind === "five" ? FIVE_MS : WEEK_MS;
   const cycles: Cycle[] = [];
@@ -870,7 +1371,6 @@ function buildTimelineWindow(
   const usedOf = (g: AgyGroupState) => (windowKind === "five" ? g.used : (g.week?.used ?? g.used)) || 0;
   const currentUsed = () => Math.max(0, ...groups.map(usedOf));
 
-  // 当前进行中的周期：按 agyWindowSegments 切出的实际窗口段（含提前重置分段）生成周期列表
   const primaryGroup = group ?? groups.find((g) => usedOf(g) > 0) ?? groups[0];
   const primaryQuota = primaryGroup
     ? windowKind === "five"
@@ -901,7 +1401,13 @@ function buildTimelineWindow(
 
   const activeResetIso = windowKind === "five" ? primaryGroup?.resetAt : (primaryGroup?.week?.resetAt ?? primaryGroup?.resetAt);
   const activeResetMs = activeResetIso ? Date.parse(activeResetIso) || 0 : 0;
-  const earliestStart = cycles.length ? cycles[cycles.length - 1].startAt : (activeResetMs > now ? activeResetMs : (windowKind === "five" ? Math.ceil(now / HOUR) * HOUR : shiftDay(startOfDay(now), 1)));
+  const earliestStart = cycles.length
+    ? cycles[cycles.length - 1].startAt
+    : activeResetMs > now
+      ? activeResetMs
+      : windowKind === "five"
+        ? Math.ceil(now / HOUR) * HOUR
+        : shiftDay(startOfDay(now), 1);
 
   for (let i = 0; i < 36; i++) {
     const end = Math.round(earliestStart - i * periodMs);
@@ -926,7 +1432,8 @@ function buildTimelineWindow(
   }
 
   const selected = (cycleId ? cycles.find((c) => c.id === cycleId) : null) ?? cycles[0] ?? null;
-  const observed = selected ? rows.filter((r) => r.at >= selected.startAt && r.at < selected.endAt && r.at <= now) : [];
+  const sortedRows = [...rows].sort((a, b) => a.at - b.at);
+  const observed = selected ? sortedRows.filter((r) => r.at >= selected.startAt && r.at < selected.endAt && r.at <= now) : [];
   const binMs = 60_000;
   const bins = new Map<string, { key: string; model: string; effort: string; startAt: number; endAt: number; firstAt: number; lastAt: number; count: number; calls: number; tokens: number; costUsd: number | null }>();
   for (const row of observed) {
@@ -987,11 +1494,26 @@ function buildTimelineWindow(
       }
     }
   }
-  const curveLabel = windowKind === "five" ? "5 小时额度已用" : "周额度已用";
 
+  // 把选中周期内「家庭组其他成员 / 本机以外」的上涨区间传给时间线渲染橙色带与轨道
+  const matchedSeg = selected
+    ? segments.find((s) => Math.round(s.startAt) === selected.startAt && Math.round(s.endAt) === selected.endAt)
+    : undefined;
+  const segAttr = matchedSeg && !soloMode ? analyzeSegmentIntervals(matchedSeg, sortedRows, now) : null;
+  const attributionIntervals = segAttr
+    ? [
+        ...segAttr.offIntervals.map((iv) => ({ from: iv.from, to: iv.to, points: iv.points, kind: "unmatched" as const })),
+        ...segAttr.uncertainIntervals.map((iv) => ({ from: iv.from, to: iv.to, points: iv.points, kind: "uncertain" as const })),
+      ].sort((a, b) => a.from - b.from)
+    : [];
+  const offDetected = segAttr
+    ? segAttr.offIntervals.map((iv) => ({ from: iv.from, to: iv.to, points: iv.points }))
+    : [];
+
+  const curveLabel = windowKind === "five" ? "5 小时额度已用" : "周额度已用";
   const unknown = (r: RequestRow) => !r.effort || r.effort === "unknown";
   return {
-    query: { kind: "antigravity", accountId: "antigravity", window: windowKind, cycle: cycleId },
+    query: { kind: "antigravity", accountId, window: windowKind, cycle: cycleId },
     brand: "antigravity",
     source: "Antigravity",
     now,
@@ -1003,8 +1525,13 @@ function buildTimelineWindow(
     track,
     curve: { label: group ? `${group.title || "这一组"} · ${curveLabel}` : `${curveLabel}（最高组）` },
     ...(group ? { group: { key: group.key, title: group.title || "", models: group.models } } : {}),
-    attribution: { intervals: [] as never[] },
-    offMachine: { points: 0, markedPoints: 0, detected: [] as never[], marks: [] as never[] },
+    attribution: { intervals: attributionIntervals },
+    offMachine: {
+      points: segAttr ? Math.round(segAttr.offPoints * 10) / 10 : 0,
+      markedPoints: 0,
+      detected: offDetected,
+      marks: [] as never[],
+    },
     totals: {
       tokens: observed.reduce((s, r) => s + r.tokens, 0),
       calls: observed.reduce((s, r) => s + (r.calls || 1), 0),
@@ -1017,25 +1544,33 @@ function buildTimelineWindow(
 export class AntigravityQuota {
   private stored: Stored;
   private loading = false;
+  private loadingAccounts = new Set<string>();
   private running = false;
+  private activeLocalEmail = "";
   private pending?: Promise<AgyQuotaState>;
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
   private readonly file = dataFile("antigravity-quota.json");
   private readonly fetcher: () => Promise<AgyStatus | null>;
+  private readonly cloudFetcher: (account: StoredAgyAccount) => Promise<{ status: AgyStatus; projectId?: string }>;
   private readonly now: () => number;
   private rowCache?: { rollupMtime: number; at: number; rows: RequestRow[] };
-  private insightCache?: { stamp: string; at: number; insight: AgyInsight };
+  private insightCache = new Map<string, { stamp: string; at: number; insight: AgyInsight }>();
 
-  constructor(private options: {
-    publish?: (state: AgyQuotaState) => void;
-    /** 一组额度过了提醒线（百分比）：title 用的型号名、已用、重置时间。 */
-    notify?: (models: string[], used: number, resetAt?: string) => void;
-    notifyAt?: () => number;
-    fetcher?: () => Promise<AgyStatus | null>;
-    now?: () => number;
-  } = {}) {
+  constructor(
+    private options: {
+      publish?: (state: AgyQuotaState) => void;
+      notify?: (models: string[], used: number, resetAt?: string, accountLabel?: string) => void;
+      notifyAt?: () => number;
+      fetcher?: () => Promise<AgyStatus | null>;
+      cloudFetcher?: (account: StoredAgyAccount, deps?: AgyNetDeps) => Promise<{ status: AgyStatus; projectId?: string }>;
+      now?: () => number;
+    } = {},
+  ) {
     this.fetcher = options.fetcher ?? fetchAntigravityStatus;
+    this.cloudFetcher =
+      options.cloudFetcher ??
+      ((account) => fetchAntigravityCloudStatus(account.credential!));
     this.now = options.now ?? Date.now;
     const raw = readJson<Partial<Stored> | null>(this.file, null);
     this.stored = sanitizeStored(raw);
@@ -1043,10 +1578,43 @@ export class AntigravityQuota {
   }
 
   installed() {
-    return antigravityDirs().some((dir) => fs.existsSync(dir)) || Boolean(this.stored.last);
+    return (
+      antigravityDirs().some((dir) => fs.existsSync(dir)) ||
+      Boolean(this.stored.last) ||
+      visibleAgyAccounts().length > 0
+    );
   }
 
-  private recentRows(now = this.now()): RequestRow[] {
+  /** 获取或初始化某个登记账号的存储槽；首次从零配置模式切入第一个登记账号时无缝继承历史采样。 */
+  private slotOf(accountId?: string, allowSeedFromLegacy = false): AccountSlot {
+    if (!accountId || accountId === "antigravity") return this.stored;
+    this.stored.accounts ??= {};
+    let slot = this.stored.accounts[accountId];
+    if (!slot) {
+      if (allowSeedFromLegacy && Object.keys(this.stored.accounts).length === 0 && (this.stored.history.length > 0 || this.stored.last)) {
+        slot = {
+          ...(this.stored.last ? { last: JSON.parse(JSON.stringify(this.stored.last)) } : {}),
+          history: JSON.parse(JSON.stringify(this.stored.history)),
+          notified: { ...this.stored.notified },
+        };
+      } else {
+        slot = { history: [], notified: {} };
+      }
+      this.stored.accounts[accountId] = slot;
+    }
+    return slot;
+  }
+
+  forgetAccount(accountId: string) {
+    if (this.stored.accounts?.[accountId]) {
+      delete this.stored.accounts[accountId];
+      this.insightCache.delete(accountId);
+      this.save();
+      this.publish();
+    }
+  }
+
+  recentRows(now = this.now()): RequestRow[] {
     let rollupMtime = 0;
     try {
       rollupMtime = fs.statSync(dataFile("usage-rollups.json")).mtimeMs;
@@ -1077,22 +1645,67 @@ export class AntigravityQuota {
     }
   }
 
-  private buildInsight(now = this.now()): AgyInsight {
+  /**
+   * 筛选归属于目标账号（或本机同一家庭组关联账号）的本地 Antigravity 请求记录：
+   * - 零配置单槽或仅登记了 1 个账号且无切换记录：全部本机 Antigravity 请求归它；
+   * - 多账号模式：按 `antigravity-logins.json` 时间线切分；若目标账号与其它本机账号同属一个家庭组共享池，
+   *   它们在这台电脑上的消耗共同扣减同一份配额，合并计入以保证容量折算准确。
+   */
+  private rowsForAccount(
+    allRows: RequestRow[],
+    accountId: string | undefined,
+    visibleCount: number,
+    familyMemberIds: Set<string>,
+    inLocal: boolean,
+  ): RequestRow[] {
+    if (!accountId || accountId === "antigravity") return allRows;
+    const spans = readAgyLoginTimeline();
+    if (!spans.length) {
+      if (visibleCount <= 1 || inLocal) return allRows;
+      return [];
+    }
+    const accepted = new Set<string>([accountId, ...familyMemberIds]);
+    return allRows.filter((row) => {
+      const owner = resolveAgyLocalOwner(row.at, spans);
+      return owner ? accepted.has(owner) : inLocal;
+    });
+  }
+
+  buildInsight(
+    now = this.now(),
+    accountId = "antigravity",
+    slot: AccountSlot = this.slotOf(accountId),
+    scopedRows?: RequestRow[],
+    shareCtx: ShareContext = DEFAULT_SHARE_CONTEXT,
+  ): AgyInsight {
     let rollupMtime = 0;
     try {
       rollupMtime = fs.statSync(dataFile("usage-rollups.json")).mtimeMs;
     } catch { /* 还没生成账本 */ }
-    const stamp = `${rollupMtime}|${this.stored.last?.at ?? 0}|${this.stored.history.length}|${(this.stored.last?.groups ?? []).map((g) => `${g.key}:${g.used}:${g.week?.used ?? ""}`).join(",")}`;
-    if (this.insightCache && this.insightCache.stamp === stamp && now >= this.insightCache.at && now - this.insightCache.at < 15_000) {
-      return this.insightCache.insight;
+    const rows30 = scopedRows ?? this.recentRows(now);
+    const stamp = [
+      accountId,
+      rollupMtime,
+      rows30.length,
+      rows30.at(-1)?.at ?? 0,
+      slot.last?.at ?? 0,
+      slot.history.length,
+      shareCtx.mode,
+      shareCtx.familyShared ? 1 : 0,
+      shareCtx.familyPeers.join(","),
+      (slot.last?.groups ?? []).map((g) => `${g.key}:${g.used}:${g.week?.used ?? ""}`).join(","),
+    ].join("|");
+
+    const cached = this.insightCache.get(accountId);
+    if (cached && cached.stamp === stamp && now >= cached.at && now - cached.at < 15_000) {
+      return cached.insight;
     }
-    const rows30 = this.recentRows(now);
+
     const todayStart = startOfDay(now);
     const d7Start = now - 7 * DAY;
     const rowsToday = rows30.filter((r) => r.at >= todayStart);
     const rows7 = rows30.filter((r) => r.at >= d7Start);
 
-    // 24 小时分桶
     const thisHour = Math.floor(now / HOUR) * HOUR;
     const hourly = Array.from({ length: 24 }, (_, i) => {
       const hour = thisHour - (23 - i) * HOUR;
@@ -1107,7 +1720,6 @@ export class AntigravityQuota {
       return { hour, tokens, costUsd: Math.round(costUsd * 10000) / 10000, requests: list.length, byModel };
     });
 
-    // 本机按模型汇总（最近 7 天为主，若 7 天为空则用 30 天）
     const activeRows = rows7.length ? rows7 : rows30;
     const byModelMap = new Map<string, RequestRow[]>();
     for (const r of activeRows) {
@@ -1134,7 +1746,6 @@ export class AntigravityQuota {
       })
       .sort((a, b) => b.tokens - a.tokens || b.lastAt - a.lastAt);
 
-    // 核验汇总 + 最近 25 条请求
     const verifySummary = { match: 0, mismatch: 0, suspect: 0, unverified: 0, total: rows30.length };
     for (const r of rows30) {
       const st = r.status;
@@ -1166,9 +1777,8 @@ export class AntigravityQuota {
         ...(r.timing ? { timing: r.timing } : {}),
       }));
 
-    // 各组双窗口分析
-    const lastGroups = this.stored.last?.groups ?? [];
-    const lastModels = (this.stored.last?.models ?? []).map((m) => {
+    const lastGroups = slot.last?.groups ?? [];
+    const lastModels = (slot.last?.models ?? []).map((m) => {
       if (!m.label) return m;
       const split = splitModelLabel(m.label);
       const { effort: _oldEffort, ...rest } = m;
@@ -1179,22 +1789,37 @@ export class AntigravityQuota {
         ...(split.effort ? { effort: split.effort } : {}),
       };
     });
+
     const groups: AgyGroupInsight[] = lastGroups.map((group) => {
       const gRows = rows30.filter((r) => groupMatchesModel(group, r.model));
-      const fiveRes = buildWindowInsight("five", { used: group.used, resetAt: group.resetAt }, group.key, this.stored.history, gRows, now, group.title);
-      const weekQuota = group.week ?? (() => {
-        // 如果历史采样里记过周额度，也兜底读出来（兼容组内模型上下线导致的 key 变化）
-        for (let i = this.stored.history.length - 1; i >= 0; i--) {
-          const matched = pickPoolSampleGroup(this.stored.history[i].groups, group.key, group.title);
-          if (matched && matched.weekUsed != null) {
-            return { used: matched.weekUsed, resetAt: matched.weekResetAt };
+      const fiveRes = buildWindowInsight(
+        "five",
+        { used: group.used, resetAt: group.resetAt },
+        group.key,
+        slot.history,
+        gRows,
+        now,
+        group.title,
+        shareCtx,
+      );
+      const weekQuota =
+        group.week ??
+        (() => {
+          for (let i = slot.history.length - 1; i >= 0; i--) {
+            const matched = pickPoolSampleGroup(slot.history[i].groups, group.key, group.title);
+            if (matched && matched.weekUsed != null) {
+              return { used: matched.weekUsed, resetAt: matched.weekResetAt };
+            }
           }
-        }
-        return undefined;
-      })();
-      const weekRes = weekQuota ? buildWindowInsight("week", weekQuota, group.key, this.stored.history, gRows, now, group.title) : null;
+          return undefined;
+        })();
+      const weekRes = weekQuota
+        ? buildWindowInsight("week", weekQuota, group.key, slot.history, gRows, now, group.title, shareCtx)
+        : null;
 
-      const rawItems = lastModels.filter((m) => group.models.includes(m.family) || group.models.includes(modelFamily(m.label || m.family)));
+      const rawItems = lastModels.filter(
+        (m) => group.models.includes(m.family) || group.models.includes(modelFamily(m.label || m.family)),
+      );
       const itemSource: AgyModelQuotaItem[] = rawItems.length
         ? rawItems
         : group.models.map((family) => {
@@ -1252,7 +1877,7 @@ export class AntigravityQuota {
     const insight: AgyInsight = {
       now,
       conversations: antigravityConversationFiles().length,
-      sampleCount: this.stored.history.length,
+      sampleCount: slot.history.length,
       groups,
       localUsage: {
         today: summarizeRows(rowsToday),
@@ -1267,88 +1892,214 @@ export class AntigravityQuota {
       modelCapacities,
       priceSource: { version: kb.knowledge.version, updatedAt: kb.knowledge.updatedAt },
     };
-    this.insightCache = { stamp, at: now, insight };
+    this.insightCache.set(accountId, { stamp, at: now, insight });
     return insight;
   }
 
   state(): AgyQuotaState {
     const now = this.now();
     const since = now - SHOW_MS;
-    const insight = this.buildInsight(now);
+    const allRows = this.recentRows(now);
+    const visible = visibleAgyAccounts();
+
+    if (!visible.length) {
+      const insight = this.buildInsight(now, "antigravity", this.stored, allRows, DEFAULT_SHARE_CONTEXT);
+      return {
+        installed: this.installed(),
+        running: this.running,
+        loading: this.loading,
+        conversations: insight.conversations,
+        ...(this.stored.last ? { last: this.stored.last } : {}),
+        history: this.stored.history.filter((sample) => sample.at >= since),
+        insight,
+        registeredCount: 0,
+        multiAccount: false,
+        accounts: [],
+      };
+    }
+
+    const names = agyDisplayNames(visible);
+    const linkInput = visible.map((acc) => ({
+      id: acc.id,
+      shareMode: normalizeShareMode(acc.shareMode),
+      last: this.slotOf(acc.id, true).last,
+    }));
+    const familyLinks = detectFamilyLinks(linkInput);
+    const nameById = new Map<string, string>();
+    visible.forEach((acc, i) => {
+      nameById.set(acc.id, names[i] || acc.alias || acc.email.replace(/@.*$/, "") || "账号");
+    });
+
+    const accountStates: AgyAccountQuotaState[] = visible.map((acc, index) => {
+      const slot = this.slotOf(acc.id, index === 0);
+      const inLocal = Boolean(this.activeLocalEmail && normalizeAgyEmail(acc.email) === this.activeLocalEmail);
+      const cloudAuth = Boolean(acc.credential && !isExpired(acc.credential, now) && !acc.renewFailed);
+      const usable = cloudAuth || inLocal;
+      const autoRenew = Boolean(acc.credential?.refreshToken) && !acc.renewFailed;
+      const needsLogin = Boolean(acc.renewFailed) && !inLocal;
+      const waitLocal = !acc.credential && !inLocal;
+      const shareMode = normalizeShareMode(acc.shareMode);
+      const link = familyLinks.get(acc.id);
+      const peerIds = link?.peers ?? [];
+      const peerNames = peerIds.map((id) => nameById.get(id) || id);
+      const familyShared = shareMode === "family" || Boolean(link?.detected);
+      const scopedRows = this.rowsForAccount(allRows, acc.id, visible.length, new Set(peerIds), inLocal);
+      const shareCtx: ShareContext = {
+        mode: shareMode,
+        familyShared,
+        familyPeers: peerNames,
+      };
+      const insight = this.buildInsight(now, acc.id, slot, scopedRows, shareCtx);
+      const displayName = names[index] || "";
+      const accountHint = acc.alias || (visible.length > 1 ? acc.email || acc.label : "");
+      return {
+        id: acc.id,
+        displayName,
+        accountHint,
+        inLocal,
+        cloudAuth,
+        usable,
+        autoRenew,
+        waitLocal,
+        needsLogin,
+        shareMode,
+        ...(link?.familyGroupId ? { familyGroupId: link.familyGroupId } : {}),
+        familyShared,
+        familyPeers: peerNames,
+        loading: this.loading || this.loadingAccounts.has(acc.id),
+        ...(slot.last ? { last: slot.last } : {}),
+        history: slot.history.filter((sample) => sample.at >= since),
+        insight,
+      };
+    });
+
+    const lead = accountStates[0];
     return {
       installed: this.installed(),
-      running: this.running,
-      loading: this.loading,
-      conversations: insight.conversations,
-      ...(this.stored.last ? { last: this.stored.last } : {}),
-      history: this.stored.history.filter((sample) => sample.at >= since),
-      insight,
+      running: this.running || accountStates.some((a) => a.cloudAuth || a.inLocal),
+      loading: this.loading || this.loadingAccounts.size > 0,
+      conversations: lead?.insight?.conversations ?? antigravityConversationFiles().length,
+      ...(lead?.last ? { last: lead.last } : {}),
+      history: lead?.history ?? [],
+      ...(lead?.insight ? { insight: lead.insight } : {}),
+      registeredCount: accountStates.length,
+      multiAccount: accountStates.length > 1,
+      accounts: accountStates,
     };
   }
 
   timeline(query?: unknown) {
     const now = this.now();
-    const q = (query && typeof query === "object" ? query : {}) as { cycles?: Record<string, unknown> };
+    const q = (query && typeof query === "object" ? query : {}) as {
+      accountId?: unknown;
+      cycles?: Record<string, unknown>;
+    };
     const cycles = q.cycles && typeof q.cycles === "object" ? q.cycles : {};
-    const cycle = (id: string) => { const v = cycles[id]; return typeof v === "string" && /^\d{1,16}:\d{1,16}$/.test(v) ? v : undefined; };
-    const rows = this.recentRows(now);
-    const last = this.stored.last, history = this.stored.history;
+    const cycle = (id: string) => {
+      const v = cycles[id];
+      return typeof v === "string" && /^\d{1,16}:\d{1,16}$/.test(v) ? v : undefined;
+    };
+
+    const visible = visibleAgyAccounts();
+    const rawAccountId = typeof q.accountId === "string" && q.accountId ? q.accountId : "antigravity";
+    const matchedAcc = visible.find((a) => a.id === rawAccountId);
+    const effectiveId = matchedAcc ? matchedAcc.id : visible[0]?.id ?? "antigravity";
+    const slot = matchedAcc || visible.length ? this.slotOf(effectiveId, true) : this.stored;
+    const soloMode = matchedAcc ? normalizeShareMode(matchedAcc.shareMode) === "solo" : false;
+
+    const allRows = this.recentRows(now);
+    let rows = allRows;
+    if (visible.length && effectiveId !== "antigravity") {
+      const linkInput = visible.map((acc) => ({
+        id: acc.id,
+        shareMode: normalizeShareMode(acc.shareMode),
+        last: this.slotOf(acc.id, true).last,
+      }));
+      const links = detectFamilyLinks(linkInput).get(effectiveId);
+      const targetAcc = matchedAcc ?? visible[0];
+      const inLocal = Boolean(this.activeLocalEmail && targetAcc && normalizeAgyEmail(targetAcc.email) === this.activeLocalEmail);
+      rows = this.rowsForAccount(allRows, effectiveId, visible.length, new Set(links?.peers ?? []), inLocal);
+    }
+
+    const last = slot.last;
+    const history = slot.history;
     const groups = last?.groups ?? [];
-    // 还没查到过分组：退回不分组的 5 小时 + 周额度两张卡
+    const outAccountId = rawAccountId.startsWith("antigravity:") ? rawAccountId : "antigravity";
+
     if (!groups.length) {
       return {
         kind: "antigravity",
-        accountId: "antigravity",
+        accountId: outAccountId,
         labels: { five: "5 小时", week: "周额度" },
-        windows: [{ id: "five", kind: "five", label: "5 小时" }, { id: "week", kind: "week", label: "周额度" }],
-        five: buildTimelineWindow("five", cycle("five"), last, undefined, history, rows, now),
-        week: buildTimelineWindow("week", cycle("week"), last, undefined, history, rows, now),
+        windows: [
+          { id: "five", kind: "five", label: "5 小时" },
+          { id: "week", kind: "week", label: "周额度" },
+        ],
+        five: buildTimelineWindow("five", cycle("five"), outAccountId, last, undefined, history, rows, now, soloMode),
+        week: buildTimelineWindow("week", cycle("week"), outAccountId, last, undefined, history, rows, now, soloMode),
       };
     }
-    // 每条请求只归到一个池：先按型号匹配，匹配不上的（新型号、旧日志）放进第一组，不丢
+
     const owner = new Map<RequestRow, number>();
     for (const row of rows) {
       const index = groups.findIndex((g) => groupMatchesModel(g, row.model || ""));
       owner.set(row, index < 0 ? 0 : index);
     }
-    const out: Record<string, unknown> = { kind: "antigravity", accountId: "antigravity", labels: {} };
+    const out: Record<string, unknown> = { kind: "antigravity", accountId: outAccountId, labels: {} };
     const windows: { id: string; kind: "five" | "week"; label: string; group: string }[] = [];
     groups.forEach((group, index) => {
       const groupRows = rows.filter((row) => owner.get(row) === index);
       const title = group.title || group.models.join(" / ") || `第 ${index + 1} 组`;
-      const kinds: ("five" | "week")[] = ["five", ...(group.week ? ["week" as const] : [])];
+      const kinds: ("five" | "week")[] = ["five", ...(group.week ? (["week"] as const) : [])];
       for (const kind of kinds) {
         const id = `g${index}-${kind}`;
         const label = `${title} · ${kind === "five" ? "5 小时" : "周额度"}`;
         windows.push({ id, kind, label, group: group.key });
         (out.labels as Record<string, string>)[id] = label;
-        out[id] = buildTimelineWindow(kind, cycle(id), last, group, history, groupRows, now);
+        out[id] = buildTimelineWindow(kind, cycle(id), outAccountId, last, group, history, groupRows, now, soloMode);
       }
     });
     out.windows = windows;
     return out;
   }
 
-  speed(days: number): SpeedSeries {
+  speed(days: number, accountId?: string): SpeedSeries {
     const now = this.now();
     const since = days > 0 ? now - days * DAY : 0;
-    const rows = days <= 30 ? this.recentRows(now) : (() => {
-      try {
-        return queryRequests({
-          from: dayStr(since || now - 365 * DAY),
-          to: dayStr(now),
-          since,
-          until: now + 60_000,
-          source: "Antigravity",
-          status: "all",
-          search: "",
-          sort: "time",
-          page: 0,
-          pageSize: 1,
-          all: true,
-        }).rows;
-      } catch { return this.recentRows(now); }
-    })();
+    const baseRows =
+      days <= 30
+        ? this.recentRows(now)
+        : (() => {
+            try {
+              return queryRequests({
+                from: dayStr(since || now - 365 * DAY),
+                to: dayStr(now),
+                since,
+                until: now + 60_000,
+                source: "Antigravity",
+                status: "all",
+                search: "",
+                sort: "time",
+                page: 0,
+                pageSize: 1,
+                all: true,
+              }).rows;
+            } catch {
+              return this.recentRows(now);
+            }
+          })();
+
+    const visible = visibleAgyAccounts();
+    let rows = baseRows;
+    if (accountId && accountId.startsWith("antigravity:") && visible.length > 1) {
+      const target = visible.find((a) => a.id === accountId);
+      const inLocal = Boolean(this.activeLocalEmail && target && normalizeAgyEmail(target.email) === this.activeLocalEmail);
+      const links = detectFamilyLinks(
+        visible.map((acc) => ({ id: acc.id, shareMode: normalizeShareMode(acc.shareMode), last: this.slotOf(acc.id, true).last })),
+      ).get(accountId);
+      rows = this.rowsForAccount(baseRows, accountId, visible.length, new Set(links?.peers ?? []), inLocal);
+    }
+
     const measured = rows
       .filter((row) => row.at >= since && row.at <= now && row.timing && (row.timing.tokensPerSec || row.timing.firstTokenMs))
       .map((row) => ({
@@ -1362,116 +2113,251 @@ export class AntigravityQuota {
     return speedSeriesOf(measured, since, now);
   }
 
-  start() { this.stopped = false; }
-  stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; }
+  start() {
+    this.stopped = false;
+  }
+  stop() {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
   reschedule(everyMs: number) {
     if (this.timer) clearInterval(this.timer);
     const ms = Math.max(30_000, everyMs);
-    this.timer = setInterval(() => { void this.refresh(false); }, ms);
+    this.timer = setInterval(() => {
+      void this.refresh(false);
+    }, ms);
     this.timer.unref?.();
   }
 
-  private publish() { if (!this.stopped) this.options.publish?.(this.state()); }
-  private save() { try { writeJson(this.file, this.stored); } catch { /* 存不下来：这次的结果还在内存里 */ } }
+  publish() {
+    if (!this.stopped) this.options.publish?.(this.state());
+  }
+  private save() {
+    try {
+      writeJson(this.file, this.stored);
+    } catch { /* 存不下来：这次的结果还在内存里 */ }
+  }
 
-  /** 查一次。同时只跑一个；没装 Antigravity 的不查。manual：用户点了刷新，查不到也要把原因告诉界面。 */
-  refresh(manual: boolean): Promise<AgyQuotaState> {
+  refresh(manual: boolean, targetAccountId?: string): Promise<AgyQuotaState> {
     if (this.pending) return this.pending;
-    if (!manual && !antigravityDirs().some((dir) => fs.existsSync(dir))) return Promise.resolve(this.state());
-    this.pending = this.refreshNow(manual).finally(() => { this.pending = undefined; });
+    const hasAccounts = visibleAgyAccounts().length > 0;
+    if (!manual && !hasAccounts && !antigravityDirs().some((dir) => fs.existsSync(dir))) {
+      return Promise.resolve(this.state());
+    }
+    this.pending = this.refreshNow(manual, targetAccountId).finally(() => {
+      this.pending = undefined;
+    });
     return this.pending;
   }
 
-  private async refreshNow(manual: boolean): Promise<AgyQuotaState> {
+  private applyStatusToSlot(slot: AccountSlot, status: AgyStatus, at: number, accountLabel?: string) {
+    const groups = status.groups.map((group) => ({ ...group, key: groupKey(group.models) }));
+    slot.last = {
+      at,
+      ok: true,
+      plan: status.plan || undefined,
+      tier: status.tier,
+      groups,
+      ...(status.models?.length ? { models: status.models } : {}),
+      ...(status.credits ? { credits: status.credits } : {}),
+    };
+    this.record(at, groups, slot);
+    this.check(groups, slot, accountLabel);
+  }
+
+  private async refreshNow(manual: boolean, targetAccountId?: string): Promise<AgyQuotaState> {
     this.loading = true;
     if (manual) this.publish();
     const at = this.now();
     let nextState!: AgyQuotaState;
+
     try {
-      const status = await this.fetcher();
-      this.running = Boolean(status);
-      if (!status) {
-        // Antigravity 没开：留着上一次的数，只在手动刷新时记一条「没开」
-        if (manual) this.stored.last = { ...(this.stored.last ?? { groups: [] }), at: this.stored.last?.at ?? at, ok: this.stored.last?.ok ?? false, error: "Antigravity 没有在运行，打开它之后才能查到额度" };
+      const visible = visibleAgyAccounts();
+      if (!visible.length) {
+        // 传统零配置单账号模式：完全走本机 language server
+        const status = await this.fetcher();
+        this.running = Boolean(status);
+        if (!status) {
+          if (manual) {
+            this.stored.last = {
+              ...(this.stored.last ?? { groups: [] }),
+              at: this.stored.last?.at ?? at,
+              ok: this.stored.last?.ok ?? false,
+              error: "Antigravity 没有在运行，打开它之后才能查到额度",
+            };
+          }
+        } else {
+          this.applyStatusToSlot(this.stored, status, at);
+        }
       } else {
-        const groups = status.groups.map((group) => ({ ...group, key: groupKey(group.models) }));
-        this.stored.last = {
-          at,
-          ok: true,
-          plan: status.plan || undefined,
-          tier: status.tier,
-          groups,
-          ...(status.models?.length ? { models: status.models } : {}),
-          ...(status.credits ? { credits: status.credits } : {}),
-        };
-        this.record(at, groups);
-        this.check(groups);
+        // 多账号模式：先自动续期快过期的 OAuth 账号，并顺带探一次本机运行中的 Antigravity
+        await renewAgyCredentials(at).catch(() => 0);
+        const refreshedVisible = visibleAgyAccounts();
+        const names = agyDisplayNames(refreshedVisible);
+
+        let localSession: { status: AgyStatus; email: string } | null = null;
+        if (this.options.fetcher) {
+          const st = await this.fetcher().catch(() => null);
+          this.running = Boolean(st);
+          if (st) localSession = { status: st, email: this.activeLocalEmail };
+        } else {
+          const sess = await fetchAntigravityLocalSession().catch(() => null);
+          this.running = Boolean(sess);
+          if (sess) {
+            this.activeLocalEmail = normalizeAgyEmail(sess.email);
+            if (sess.email) recordAgyLocalLogin(sess.email, at);
+            localSession = { status: sess.status, email: sess.email };
+          } else {
+            this.activeLocalEmail = "";
+          }
+        }
+
+        const targets = targetAccountId
+          ? refreshedVisible.filter((a) => a.id === targetAccountId)
+          : refreshedVisible;
+
+        await Promise.all(
+          targets.map(async (account) => {
+            const idx = refreshedVisible.findIndex((a) => a.id === account.id);
+            const slot = this.slotOf(account.id, idx === 0);
+            const label = names[idx] || account.alias || "";
+            const inLocal = Boolean(
+              localSession?.email && normalizeAgyEmail(account.email) === normalizeAgyEmail(localSession.email),
+            );
+            const hasCloudCred = Boolean(account.credential && !isExpired(account.credential, at) && !account.renewFailed);
+
+            this.loadingAccounts.add(account.id);
+            try {
+              if (hasCloudCred) {
+                try {
+                  const res = await this.cloudFetcher(account);
+                  if (res.projectId) updateAgyProjectId(account.id, res.projectId);
+                  this.applyStatusToSlot(slot, res.status, at, label);
+                  return;
+                } catch (cloudErr) {
+                  // 若 Cloud Code 暂时网络波动，且本机正好开着同一个账号，回退本机接口不中断
+                  if (inLocal && localSession) {
+                    this.applyStatusToSlot(slot, localSession.status, at, label);
+                    return;
+                  }
+                  throw cloudErr;
+                }
+              }
+
+              if (inLocal && localSession) {
+                this.applyStatusToSlot(slot, localSession.status, at, label);
+                return;
+              }
+
+              if (manual) {
+                const reason = account.renewFailed
+                  ? `登录已失效（${account.renewFailed}），请在「设置 → 官方账号」点「重新授权」`
+                  : account.credential
+                    ? "登录凭据已过期，等待自动续期或在设置里点「重新授权」"
+                    : "该账号仅登记了本机登录（未保存独立凭据）；打开 Antigravity 切到该账号，或在设置里点「重新授权」后关掉客户端也能查额度";
+                slot.last = {
+                  ...(slot.last ?? { groups: [] }),
+                  at: slot.last?.at ?? at,
+                  ok: slot.last?.ok ?? false,
+                  error: reason,
+                };
+              }
+            } catch (err) {
+              log.warn("antigravity", `账号 ${account.id} 额度查询失败：` + errorText(err));
+              slot.last = {
+                ...(slot.last ?? { groups: [] }),
+                at: slot.last?.ok ? slot.last.at : at,
+                ok: false,
+                error: err instanceof Error ? err.message : "查询失败",
+              };
+            } finally {
+              this.loadingAccounts.delete(account.id);
+            }
+          }),
+        );
+
+        // 同步首个可见账号到顶层兼容槽，确保旧消费者看到的始终是主顺位账号数据
+        const firstAcc = refreshedVisible[0];
+        if (firstAcc) {
+          const firstSlot = this.slotOf(firstAcc.id, true);
+          this.stored.last = firstSlot.last;
+          this.stored.history = firstSlot.history;
+        }
       }
     } catch (error) {
       this.running = Boolean(antigravityHub());
       log.warn("antigravity", "额度查询失败：" + errorText(error));
-      this.stored.last = { ...(this.stored.last ?? { groups: [] }), at: this.stored.last?.ok ? this.stored.last.at : at, ok: false, error: error instanceof Error ? error.message : "查询失败" };
+      this.stored.last = {
+        ...(this.stored.last ?? { groups: [] }),
+        at: this.stored.last?.ok ? this.stored.last.at : at,
+        ok: false,
+        error: error instanceof Error ? error.message : "查询失败",
+      };
     } finally {
       this.loading = false;
+      this.loadingAccounts.clear();
       this.save();
       nextState = this.state();
       if (!this.stopped) this.options.publish?.(nextState);
     }
-    // 在 finally 之后取状态：界面拿这个返回值覆盖自己的，不能还带着「正在查询」
     return nextState;
   }
 
-  /** 记一条采样：和上一条不一样、或者隔了 10 分钟以上才记。 */
-  private record(at: number, groups: AgyGroupState[]) {
+  private record(at: number, groups: AgyGroupState[], slot: AccountSlot = this.stored) {
     const sample: AgySample = {
       at,
       groups: groups.map((group) => ({
         key: group.key,
         used: group.used,
         ...(group.resetAt ? { resetAt: group.resetAt } : {}),
-        ...(group.week ? {
-          weekUsed: group.week.used,
-          ...(group.week.resetAt ? { weekResetAt: group.week.resetAt } : {}),
-        } : {}),
+        ...(group.week
+          ? {
+              weekUsed: group.week.used,
+              ...(group.week.resetAt ? { weekResetAt: group.week.resetAt } : {}),
+            }
+          : {}),
       })),
     };
-    const previous = this.stored.history.at(-1);
-    const same = previous && JSON.stringify(previous.groups.map((g) => [g.key, g.used, g.weekUsed ?? null])) === JSON.stringify(sample.groups.map((g) => [g.key, g.used, g.weekUsed ?? null]));
+    const previous = slot.history.at(-1);
+    const same =
+      previous &&
+      JSON.stringify(previous.groups.map((g) => [g.key, g.used, g.weekUsed ?? null])) ===
+        JSON.stringify(sample.groups.map((g) => [g.key, g.used, g.weekUsed ?? null]));
     if (same && at - previous.at < SAMPLE_EVERY_MS) return;
-    this.stored.history.push(sample);
+    slot.history.push(sample);
     const since = at - KEEP_MS;
-    this.stored.history = this.stored.history.filter((item) => item.at >= since).slice(-5000);
+    slot.history = slot.history.filter((item) => item.at >= since).slice(-5000);
   }
 
-  /** 一组过了提醒线：每个窗口提醒一次（含 5 小时窗口和周窗口，按额度池去重以防增减型号时重复提醒）。 */
-  private check(groups: AgyGroupState[]) {
+  /** 一组过了提醒线：每个窗口提醒一次（兼容测试直接调用 q.check(groups)）。 */
+  check(groups: AgyGroupState[], slot: AccountSlot = this.stored, accountLabel?: string) {
     const limit = this.options.notifyAt?.() ?? 0;
     if (!limit) return;
     for (const group of groups) {
       const poolKey = quotaPoolId(group.models, group.title);
       if (group.used >= limit) {
         const resetAt = group.resetAt ? Date.parse(group.resetAt) || 0 : 0;
-        const previous = this.stored.notified[poolKey] ?? this.stored.notified[group.key];
+        const previous = slot.notified[poolKey] ?? slot.notified[group.key];
         if (previous == null || Math.abs(resetAt - previous) >= SAME_WINDOW_MS) {
-          this.stored.notified[poolKey] = resetAt;
-          this.stored.notified[group.key] = resetAt;
-          this.options.notify?.(group.models, group.used, group.resetAt);
+          slot.notified[poolKey] = resetAt;
+          slot.notified[group.key] = resetAt;
+          this.options.notify?.(group.models, group.used, group.resetAt, accountLabel);
         }
       }
       if (group.week && group.week.used >= limit) {
         const weekPoolKey = `${poolKey}:week`;
         const weekKey = `${group.key}:week`;
         const resetAt = group.week.resetAt ? Date.parse(group.week.resetAt) || 0 : 0;
-        const previous = this.stored.notified[weekPoolKey] ?? this.stored.notified[weekKey];
+        const previous = slot.notified[weekPoolKey] ?? slot.notified[weekKey];
         if (previous == null || Math.abs(resetAt - previous) >= SAME_WINDOW_MS) {
-          this.stored.notified[weekPoolKey] = resetAt;
-          this.stored.notified[weekKey] = resetAt;
-          this.options.notify?.(group.models, group.week.used, group.week.resetAt);
+          slot.notified[weekPoolKey] = resetAt;
+          slot.notified[weekKey] = resetAt;
+          this.options.notify?.(group.models, group.week.used, group.week.resetAt, accountLabel);
         }
       }
     }
   }
 }
 
-/** 测试用：存盘的位置。 */
 export const antigravityQuotaFile = () => path.join(dataFile("antigravity-quota.json"));

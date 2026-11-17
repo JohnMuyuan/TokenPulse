@@ -1239,7 +1239,7 @@ export function modelFamily(label: string) {
   return label.replace(/\s*\([^)]*\)\s*$/, "").trim();
 }
 
-type ParsedSummaryGroup = {
+export type ParsedSummaryGroup = {
   idx: number;
   title: string;
   description: string;
@@ -1248,45 +1248,81 @@ type ParsedSummaryGroup = {
   week?: AgyWindowQuota;
 };
 
-function poolCategory(family: string): string {
+export function poolCategory(family: string): string {
   if (/gemini|orchestrator/i.test(family)) return "gemini";
   if (/claude|gpt|anthropic|openai/i.test(family)) return "3p";
   return family.toLowerCase();
 }
 
-function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
-  const root = (summaryJson as { response?: { groups?: unknown }; command?: { data?: { groups?: unknown } }; groups?: unknown } | null);
-  const rawGroups = (root?.response?.groups ?? root?.command?.data?.groups ?? root?.groups) as Record<string, unknown>[] | undefined;
+export function parseSummaryGroups(summaryJson: unknown): ParsedSummaryGroup[] {
+  const root = summaryJson as {
+    response?: { groups?: unknown; quotaSummaryGroups?: unknown; quota_summary_groups?: unknown };
+    command?: { data?: { groups?: unknown; quotaSummaryGroups?: unknown } };
+    groups?: unknown;
+    quotaSummaryGroups?: unknown;
+    quota_summary_groups?: unknown;
+  } | null;
+  const rawGroups = (
+    root?.response?.groups ??
+    root?.response?.quotaSummaryGroups ??
+    root?.response?.quota_summary_groups ??
+    root?.command?.data?.groups ??
+    root?.command?.data?.quotaSummaryGroups ??
+    root?.groups ??
+    root?.quotaSummaryGroups ??
+    root?.quota_summary_groups
+  ) as Record<string, unknown>[] | undefined;
   if (!Array.isArray(rawGroups) || !rawGroups.length) return [];
+  const parseDirectWin = (w: unknown): AgyWindowQuota | undefined => {
+    if (!w || typeof w !== "object") return undefined;
+    const obj = w as Record<string, unknown>;
+    const rawRem = obj.remainingFraction ?? obj.remaining_fraction;
+    if (rawRem === undefined && !obj.resetTime && !obj.reset_time) return undefined;
+    const remaining = Math.min(1, Math.max(0, Number(rawRem ?? 0) || 0));
+    const used = Math.round((1 - remaining) * 1000) / 10;
+    const rawReset = obj.resetTime ?? obj.reset_time;
+    const resetAt = typeof rawReset === "string" && rawReset ? rawReset : undefined;
+    return { used, ...(resetAt ? { resetAt } : {}) };
+  };
   const out: ParsedSummaryGroup[] = [];
   rawGroups.forEach((raw, idx) => {
     if (!raw || typeof raw !== "object") return;
     const title = typeof raw.displayName === "string" && raw.displayName.trim()
       ? raw.displayName.trim()
-      : typeof raw.title === "string" && raw.title.trim()
-        ? raw.title.trim()
-        : typeof raw.name === "string"
-          ? raw.name.trim()
-          : "";
+      : typeof raw.display_name === "string" && raw.display_name.trim()
+        ? raw.display_name.trim()
+        : typeof raw.groupName === "string" && raw.groupName.trim()
+          ? raw.groupName.trim()
+          : typeof raw.group_name === "string" && raw.group_name.trim()
+            ? raw.group_name.trim()
+            : typeof raw.title === "string" && raw.title.trim()
+              ? raw.title.trim()
+              : typeof raw.name === "string"
+                ? raw.name.trim()
+                : "";
     const description = typeof raw.description === "string" ? raw.description.trim() : "";
     const buckets = Array.isArray(raw.buckets) ? (raw.buckets as Record<string, unknown>[]) : [];
     const bucketIds: string[] = [];
-    let five: AgyWindowQuota | undefined;
-    let week: AgyWindowQuota | undefined;
+    let five: AgyWindowQuota | undefined = parseDirectWin(raw.fiveHourQuota ?? raw.five_hour_quota);
+    let week: AgyWindowQuota | undefined = parseDirectWin(raw.weeklyQuota ?? raw.weekly_quota);
     for (const bucket of buckets) {
       if (!bucket || typeof bucket !== "object") continue;
       const id = typeof bucket.bucketId === "string" && bucket.bucketId
         ? bucket.bucketId
-        : typeof bucket.id === "string"
-          ? bucket.id
-          : "";
+        : typeof bucket.bucket_id === "string" && bucket.bucket_id
+          ? bucket.bucket_id
+          : typeof bucket.id === "string"
+            ? bucket.id
+            : "";
       const bTitle = typeof bucket.displayName === "string" && bucket.displayName
         ? bucket.displayName
-        : typeof bucket.title === "string" && bucket.title
-          ? bucket.title
-          : typeof bucket.name === "string"
-            ? bucket.name
-            : "";
+        : typeof bucket.display_name === "string" && bucket.display_name
+          ? bucket.display_name
+          : typeof bucket.title === "string" && bucket.title
+            ? bucket.title
+            : typeof bucket.name === "string"
+              ? bucket.name
+              : "";
       const win = typeof bucket.window === "string" ? bucket.window : "";
       if (id) bucketIds.push(id);
       const rawRem = bucket.remainingFraction ?? bucket.remaining_fraction;
@@ -1311,7 +1347,7 @@ function sameResetTime(a?: string, b?: string, maxDiffMs = 10_000): boolean {
   return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) <= maxDiffMs;
 }
 
-function matchSummaryGroup(family: string, used: number, resetAt: string | undefined, summaryGroups: ParsedSummaryGroup[]): ParsedSummaryGroup | undefined {
+export function matchSummaryGroup(family: string, used: number, resetAt: string | undefined, summaryGroups: ParsedSummaryGroup[]): ParsedSummaryGroup | undefined {
   if (!summaryGroups.length) return undefined;
   if (/gemini|orchestrator/i.test(family)) {
     const byFamily = summaryGroups.find(
@@ -1402,8 +1438,21 @@ export function parseAntigravityStatus(json: unknown, summaryJson?: unknown): Ag
   };
 }
 
-/** 问一次额度（同时拉 GetUserStatus 和 RetrieveUserQuotaSummary 拿到 5 小时与周额度）。Antigravity 没开返回 null。 */
-export async function fetchAntigravityStatus(): Promise<AgyStatus | null> {
+export type AgyLocalSession = {
+  status: AgyStatus;
+  email: string;
+  name: string;
+};
+
+export function parseAntigravityIdentity(json: unknown): { email: string; name: string } {
+  const status = (json as { userStatus?: Record<string, unknown> } | null)?.userStatus;
+  const email = typeof status?.email === "string" ? status.email.trim() : "";
+  const name = typeof status?.name === "string" ? status.name.trim() : "";
+  return { email, name };
+}
+
+/** 问一次本机运行中的 Antigravity（含当前登录身份，仅供多账号管理与归属时间线内部使用，不直接发给界面）。 */
+export async function fetchAntigravityLocalSession(): Promise<AgyLocalSession | null> {
   const hub = antigravityHub();
   if (!hub) return null;
   const meta = { metadata: { ideName: "antigravity", extensionName: "antigravity" } };
@@ -1412,5 +1461,12 @@ export async function fetchAntigravityStatus(): Promise<AgyStatus | null> {
   const status = parseAntigravityStatus(json, summaryJson);
   if (!status) throw new Error("Antigravity 本机接口的返回认不出来");
   if (Object.keys(status.labels).length) rememberModelLabels(status.labels);
-  return status;
+  const { email, name } = parseAntigravityIdentity(json);
+  return { status, email, name };
+}
+
+/** 问一次额度（同时拉 GetUserStatus 和 RetrieveUserQuotaSummary 拿到 5 小时与周额度）。Antigravity 没开返回 null。 */
+export async function fetchAntigravityStatus(): Promise<AgyStatus | null> {
+  const session = await fetchAntigravityLocalSession();
+  return session ? session.status : null;
 }

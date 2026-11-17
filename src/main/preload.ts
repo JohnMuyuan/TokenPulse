@@ -47,12 +47,18 @@ contextBridge.exposeInMainWorld("tokenpulse", {
       return () => ipcRenderer.off("deepseek-balance-state", listener);
     },
   },
-  /** Google Antigravity 的额度：问本机开着的 Antigravity，见 main/antigravity-quota.ts。只读。 */
+  /** Google Antigravity 的多账号与本机额度监控，见 main/antigravity-quota.ts。凭据不传到渲染进程。 */
   antigravityQuota: {
     state: () => ipcRenderer.invoke("antigravity-quota:state"),
-    refresh: () => (demo ? blocked() : ipcRenderer.invoke("antigravity-quota:refresh")),
+    refresh: (accountId?: string) => (demo ? blocked() : ipcRenderer.invoke("antigravity-quota:refresh", accountId)),
     timeline: (query?: unknown) => ipcRenderer.invoke("antigravity-quota:timeline", query),
-    speed: (days: number) => ipcRenderer.invoke("antigravity-quota:speed", days),
+    speed: (days: number, accountId?: string) => ipcRenderer.invoke("antigravity-quota:speed", days, accountId),
+    accounts: () => ipcRenderer.invoke("antigravity-accounts:list"),
+    login: (replaceId?: string) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:login", replaceId)),
+    addLocal: () => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:add-local")),
+    manage: (action: "remove" | "purge" | "restore" | "rename" | "share-mode", id: string, value?: string) =>
+      demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:manage", action, id, value),
+    reorder: (ids: string[]) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:reorder", ids)),
     onState: (handler: (state: unknown) => void) => {
       const listener = (_event: unknown, state: unknown) => handler(state);
       ipcRenderer.on("antigravity-quota-state", listener);

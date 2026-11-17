@@ -868,6 +868,8 @@
     return infoTip([
       el('b', { text: '时间线怎么看' }),
       ...[['curve', '绿色折线：这一组（额度池）在这个窗口的已用百分比。Gemini 组和 Claude / GPT 组各有自己的 5 小时、周额度窗口，重置时间不同，分开画。'],
+        ['offband', '橙色竖条与「家庭组 / 他端」轨道：额度上涨但同期本机没有 Antigravity 请求（家庭组其他成员或其他设备使用），已自动从容量折算中剔除。'],
+        ['uncertain', '灰色竖条：同期多人共用或采样间隔较长的额度上涨，额外部分已从容量折算中剔除。'],
         ['run', '模型轨道上的色块：本机 Antigravity 的请求，颜色越深思考等级越高。轨道名下面写着「等级 · 用了多久 · 占多少」。'],
         ['now', '绿色竖虚线：现在。']].map(([kind, text]) => el('span', { class: 'ms-help-row' }, [el('i', { class: 'ms-sw ' + kind, 'aria-hidden': 'true' }), el('span', { text })])),
       el('b', { text: '鼠标' }),
@@ -1030,11 +1032,16 @@
     }
 
     // 上方：采样区间里说不清的（缺口、刚发生还没下结论）灰色；本机以外的（可点）橙色
+    const agyTimeline = isAntigravity(study);
     const bands = plot(); node.append(bands);
     for (const interval of study.attribution?.intervals || []) {
       if (interval.kind === 'local_present' || !inView(interval.from, interval.to)) continue;
-      const band = svg('rect', { x: xs(interval.from), y: bandTop, width: Math.max(2, xs(interval.to) - xs(interval.from)), height: bandH, class: 'ms-unmatched-band' + (interval.kind === 'unmatched' ? ' off' : ''), tabindex: 0, role: 'img', 'aria-label': interval.kind === 'unmatched' ? '本机以外的额度增长' : '说不清来源的额度增长' });
-      tipOn(band, date(interval.from) + ' → ' + date(interval.to) + '\n官方增加 ' + interval.points.toFixed(2) + ' 个百分点\n' + (interval.kind === 'unmatched' ? '同期本机没有 Code 请求：算作本机以外的使用（聊天、其他设备），不计入容量折算。点下方「本机以外」轨道可以标注用了什么模型。' : '采样缺口或刚发生、还不能判断来源，不计入容量折算。'));
+      const isOff = interval.kind === 'unmatched';
+      const band = svg('rect', { x: xs(interval.from), y: bandTop, width: Math.max(2, xs(interval.to) - xs(interval.from)), height: bandH, class: 'ms-unmatched-band' + (isOff ? ' off' : ''), tabindex: 0, role: 'img', 'aria-label': isOff ? (agyTimeline ? '家庭组或其他设备的额度增长' : '本机以外的额度增长') : '说不清来源的额度增长' });
+      const detail = agyTimeline
+        ? (isOff ? '同期本机没有 Antigravity 请求：属于家庭组其他成员或其他设备的消耗，已自动从容量折算中剔除。' : '同期多人共用或采样间隔较长，额外涨幅已自动从容量折算中剔除。')
+        : (isOff ? '同期本机没有 Code 请求：算作本机以外的使用（聊天、其他设备），不计入容量折算。点下方「本机以外」轨道可以标注用了什么模型。' : '采样缺口或刚发生、还不能判断来源，不计入容量折算。');
+      tipOn(band, date(interval.from) + ' → ' + date(interval.to) + '\n官方增加 ' + interval.points.toFixed(2) + ' 个百分点\n' + detail);
       bands.append(band);
     }
     const y = pct => bandTop + bandH - Math.min(100, Math.max(0, pct)) / 100 * bandH;
@@ -1070,30 +1077,34 @@
     if (hasOff) {
       const cy = laneTop + laneH / 2;
       const lane = svg('g', { class: 'ms-lane ms-off-lane' });
-      const name = svg('text', { class: 'ms-lane-name', x: 4, y: cy - 2 }); name.textContent = '本机以外';
-      const sub = svg('text', { class: 'ms-lane-level', x: 4, y: cy + 12 }); sub.textContent = '聊天 / 其他设备';
+      const name = svg('text', { class: 'ms-lane-name', x: 4, y: cy - 2 }); name.textContent = agyTimeline ? '家庭组 / 他端' : '本机以外';
+      const sub = svg('text', { class: 'ms-lane-level', x: 4, y: cy + 12 }); sub.textContent = agyTimeline ? '其他成员或设备' : '聊天 / 其他设备';
       const blocks = plot();
       lane.append(svg('rect', { class: 'ms-lane-bg', x: 0, y: cy - laneH / 2 + 2, width, height: laneH - 4, rx: 6 }), name, sub, svg('line', { class: 'ms-rail', x1: left, x2: right, y1: cy, y2: cy }), blocks);
       const block = (item, marked) => {
         if (!inView(item.from, item.to)) return;
         const bx = xs(item.from), bw = Math.max(8, xs(item.to) - bx);
         const state = !marked ? 'detected' : item.ignored ? 'ignored' : item.model ? 'marked' : 'pending';
-        const picked = T.pick?.w === w && pickKey(T.pick.item) === pickKey(item);
-        const rect = svg('rect', { class: `ms-off ${state}${picked ? ' picked' : ''}`, x: bx, y: cy - 9, width: bw, height: 18, rx: 4, tabindex: 0, role: 'button', 'data-off': marked ? item.id : `${item.from}-${item.to}` });
-        const text = state === 'ignored' ? `${date(item.from)} – ${hm(item.to)}\n已删除：不算本机以外的使用\n点一下可以恢复`
+        const picked = !agyTimeline && T.pick?.w === w && pickKey(T.pick.item) === pickKey(item);
+        const rect = svg('rect', { class: `ms-off ${state}${picked ? ' picked' : ''}`, x: bx, y: cy - 9, width: bw, height: 18, rx: 4, tabindex: 0, role: agyTimeline ? 'img' : 'button', 'data-off': marked ? item.id : `${item.from}-${item.to}` });
+        const text = agyTimeline
+          ? `${date(item.from)} – ${hm(item.to)}\n官方增加 ${item.points.toFixed(1)} 个百分点，同期本机没有 Antigravity 请求\n属于家庭组其他成员或其他设备的消耗，已自动从容量折算中剔除`
+          : state === 'ignored' ? `${date(item.from)} – ${hm(item.to)}\n已删除：不算本机以外的使用\n点一下可以恢复`
           : state === 'pending' ? `${date(item.from)} – ${hm(item.to)}\n官方增加 ${item.points.toFixed(1)} 个百分点（你分割出来的一段）\n点一下标注、继续分割或删除`
           : marked
           ? `${date(item.from)} – ${hm(item.to)}\n${item.model} · ${levelName(item.effort)}（${SOURCES.find(s => s[0] === item.source)?.[1] || ''}）\n官方增加 ${item.points.toFixed(1)} 个百分点${item.equivalentTokens != null ? `\n≈ ${tokens(item.equivalentTokens)} Tokens` : ''}\n点一下修改`
           : `${date(item.from)} – ${hm(item.to)}\n官方增加 ${item.points.toFixed(1)} 个百分点，同期本机没有 Code 请求\n点一下标注用了什么模型`;
         rect.setAttribute('aria-label', text.replaceAll('\n', '，'));
         tipOn(rect, text);
-        const open = () => pickOff(w, marked ? item : { from: item.from, to: item.to, points: item.points });
-        rect.addEventListener('click', e => { e.stopPropagation(); if (host._dragged || T.split) return; open(); });
-        rect.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+        if (!agyTimeline) {
+          const open = () => pickOff(w, marked ? item : { from: item.from, to: item.to, points: item.points });
+          rect.addEventListener('click', e => { e.stopPropagation(); if (host._dragged || T.split) return; open(); });
+          rect.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+        }
         blocks.append(rect);
         if (bw > 70) {
           const t = svg('text', { class: 'ms-off-text' + (marked ? ' marked' : ''), x: bx + 6, y: cy + 4 });
-          t.textContent = state === 'marked' ? `${item.model} · ${levelName(item.effort)}` : state === 'ignored' ? '已删除' : `待标注 +${item.points.toFixed(1)}%`;
+          t.textContent = agyTimeline ? `外部 +${item.points.toFixed(1)}%` : state === 'marked' ? `${item.model} · ${levelName(item.effort)}` : state === 'ignored' ? '已删除' : `待标注 +${item.points.toFixed(1)}%`;
           if (state === 'marked') t.setAttribute('translate', 'no');
           if (state === 'ignored') t.classList.add('ignored');
           blocks.append(t);

@@ -17,11 +17,17 @@
   const STALE_MS = 15 * 60000;
   const EFFORT_LABEL = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' };
   const CONFIDENCE_TEXT = { medium: '样本较充分', low: '初步参考', current: '按当前窗口估算', insufficient: '样本不足' };
+  const SHARE_MODES = [
+    ['auto', '自动防偏移', '自动剥离本机空闲时段与同期多人共用的外部涨幅，防止家庭组共享把整窗容量算小'],
+    ['family', '家庭组共享', '明确标记为 Google One 家庭组共享额度池，始终启用家庭组并发防偏移校准'],
+    ['solo', '仅本机独享', '这个账号的额度变化全部按这台电脑的使用直接折算整窗容量，不做外部扣除'],
+  ];
   const RESET_NOTE = {
     moved: '窗口已提前重置，重置日期已顺延',
     kept: '窗口已提前重置，重置日期不变',
   };
   let quota = null;
+  let activeId = KEY;
   let studyWindow = 'five';
   let capWindow = 'five';
   let capMetric = 'tokens';
@@ -29,10 +35,23 @@
 
   const demo = () => Boolean(window.tokenpulse?.isDemo?.());
   const visible = () => Boolean(quota?.installed) && !demo();
-  const last = () => quota?.last;
-  const insight = () => quota?.insight || null;
-  const groups = () => last()?.groups || [];
-  const stale = () => !last()?.ok || Date.now() - (last()?.at || 0) > STALE_MS;
+  const accountsList = () => Array.isArray(quota?.accounts) ? quota.accounts : [];
+  const resolveAccount = preferred => {
+    const list = accountsList();
+    if (!list.length) return null;
+    if (preferred && preferred !== KEY) {
+      const hit = list.find(item => item.id === preferred);
+      if (hit) return hit;
+    }
+    return list.find(item => item.id === activeId) || list[0];
+  };
+  const curAcc = () => resolveAccount(activeId);
+  const last = (acc = curAcc()) => acc ? acc.last : quota?.last;
+  const insight = (acc = curAcc()) => acc ? (acc.insight || null) : (quota?.insight || null);
+  const historyOf = (acc = curAcc()) => acc ? (acc.history || []) : (quota?.history || []);
+  const groups = (acc = curAcc()) => last(acc)?.groups || [];
+  const isBusy = (acc = curAcc()) => Boolean(acc ? acc.loading : quota?.loading);
+  const stale = (acc = curAcc()) => !last(acc)?.ok || Date.now() - (last(acc)?.at || 0) > STALE_MS;
   /** 页面启用了 CSP style-src 'self'，行内颜色与尺寸统一经 CSSOM 设置，不走 setAttribute('style')。 */
   const paint = (node, props) => {
     for (const [k, v] of Object.entries(props || {})) {
@@ -76,27 +95,41 @@
     if (ended(group) && (!group.week || ended(group.week))) return '';
     return u >= 100 ? 'critical' : u >= 90 ? 'critical' : u >= 75 ? 'warning' : 'good';
   };
-  const planText = () => [last()?.tier, last()?.plan && last()?.plan !== last()?.tier ? last()?.plan : ''].filter(Boolean).join(' · ');
-  const updatedText = () => {
-    const at = last()?.at;
-    if (quota?.loading) return '正在查询…';
-    if (!at) return '还没查询过';
-    return `${date(at)} ${last()?.ok ? '更新' : '查询失败'}`;
+  const planText = (acc = curAcc()) => [last(acc)?.tier, last(acc)?.plan && last(acc)?.plan !== last(acc)?.tier ? last(acc)?.plan : ''].filter(Boolean).join(' · ');
+  const displayNameOf = acc => {
+    const raw = acc?.displayName || '';
+    return raw === '未命名账号' && window.PulseI18n?.lang() === 'en' ? window.PulseI18n.t(raw) : raw;
   };
-  /** 关着、查询失败、过期：说清楚现在看到的是什么。 */
-  function notes() {
+  const updatedText = (acc = curAcc()) => {
+    const at = last(acc)?.at;
+    if (isBusy(acc)) return '正在查询…';
+    if (!at) return '还没查询过';
+    return `${date(at)} ${last(acc)?.ok ? '更新' : '查询失败'}`;
+  };
+  /** 关着、查询失败、过期、待重新授权：说清楚现在看到的是什么。 */
+  function notes(acc = curAcc()) {
     const out = [];
+    if (acc) {
+      if (acc.needsLogin) out.push('这个账号的授权已经失效，请在「设置 → 官方账号」里点「重新授权」。');
+      else if (acc.waitLocal && !acc.inLocal) out.push(last(acc)?.at ? '这个账号只登记了本机登录，现在 Antigravity 登录的不是它（或没有打开），下面是上次查到的额度。在「设置 → 官方账号」里重新授权后，关着 Antigravity 也能自动查。' : '这个账号只登记了本机登录，请打开 Antigravity 切到它，或在「设置 → 官方账号」里点「重新授权」保存独立凭据。');
+      else if (!acc.cloudAuth && !quota?.running) out.push(last(acc)?.at ? 'Antigravity 现在没有开着，下面是最后一次查到的额度。打开 Antigravity 后会自动更新。' : '打开 Antigravity 后才能查到额度：额度只能问本机开着的 Antigravity。');
+      else if (last(acc) && !last(acc).ok) out.push([last(acc).error || '查询失败', '下面是之前查到的额度。']);
+      else if (last(acc)?.ok && stale(acc)) out.push('超过 15 分钟没有查到新的额度，数字可能已经变了。');
+      return out;
+    }
     if (!quota?.running) out.push(last()?.at ? 'Antigravity 现在没有开着，下面是最后一次查到的额度。打开 Antigravity 后会自动更新。' : '打开 Antigravity 后才能查到额度：额度只能问本机开着的 Antigravity。');
     else if (last() && !last().ok) out.push([last().error || '查询失败', '下面是之前查到的额度。']);
     else if (last()?.ok && stale()) out.push('超过 15 分钟没有查到新的额度，数字可能已经变了。');
     return out;
   }
-  const refresh = async () => {
-    try { apply(await api.refresh()); } catch (error) { toast(error?.message || '查询失败', { kind: 'error' }); }
+  const refresh = async targetId => {
+    const id = typeof targetId === 'string' && targetId.startsWith('antigravity:') ? targetId : undefined;
+    try { apply(await api.refresh(id)); } catch (error) { toast(error?.message || '查询失败', { kind: 'error' }); }
   };
-  const refreshButton = (cls = 'btn') => {
-    const b = el('button', { type: 'button', class: cls + (quota?.loading ? ' is-busy' : ''), 'data-action': 'agy-refresh', disabled: quota?.loading ? '' : null }, [icon('refresh'), el('span', { text: '刷新' })]);
-    b.addEventListener('click', refresh);
+  const refreshButton = (cls = 'btn', targetId = undefined) => {
+    const busy = Boolean(quota?.loading);
+    const b = el('button', { type: 'button', class: cls + (busy ? ' is-busy' : ''), 'data-action': 'agy-refresh', disabled: busy ? '' : null }, [icon('refresh'), el('span', { text: '刷新' })]);
+    b.addEventListener('click', () => refresh(targetId));
     return b;
   };
 
@@ -115,7 +148,7 @@
       };
     }
     const reset = Date.parse(target.resetAt);
-    const points = (quota?.history || []).flatMap(sample => {
+    const points = historyOf().flatMap(sample => {
       const item = pickPoolItem(sample.groups, group);
       if (!item) return [];
       const r = windowKind === 'week' ? item.weekResetAt : item.resetAt;
@@ -182,7 +215,8 @@
   /** 给请求记录列表估算单次请求占所属分组 5 小时 / 周额度的比例。 */
   function quotaShare(row) {
     if (!row || row.source !== 'Antigravity' || !(row.tokens > 0)) return null;
-    const gList = insight()?.groups || [];
+    const matchedAcc = row.accountId ? accountsList().find(a => a.id === row.accountId) : null;
+    const gList = (matchedAcc?.insight || insight())?.groups || [];
     const model = String(row.model || row.requested || '').toLowerCase();
     const g = gList.find(item => item.items?.some(m => m.model === model || model.startsWith(m.model + '-')) || (/gemini|orchestrator/i.test(model) && item.models.some(m => /gemini|orchestrator/i.test(m))) || (/claude|gpt/i.test(model) && item.models.some(m => /claude|gpt/i.test(m))));
     if (!g) return null;
@@ -197,15 +231,30 @@
 
   function tabs() {
     if (!visible()) return [];
-    return [{ key: KEY, kind: KEY, who: planText(), title: planText() || 'Google Antigravity' }];
+    const list = accountsList();
+    if (!list.length) {
+      return [{ key: KEY, kind: KEY, who: planText(null), title: planText(null) || 'Google Antigravity' }];
+    }
+    return list.map(acc => {
+      const dn = displayNameOf(acc);
+      const plan = planText(acc);
+      const who = [dn, list.length === 1 ? plan : ''].filter(Boolean).join(' · ') || plan;
+      return {
+        key: acc.id,
+        kind: KEY,
+        who,
+        familyShared: Boolean(acc.familyShared),
+        title: [acc.accountHint || dn, plan, acc.familyShared ? '家庭组共享额度' : ''].filter(Boolean).join(' · ') || 'Google Antigravity',
+      };
+    });
   }
   function tabButton(tab) {
-    return el('button', { type: 'button', 'data-account': KEY, 'data-kind': KEY, 'data-antigravity': '', title: tab.title }, [
+    return el('button', { type: 'button', 'data-account': tab.key || KEY, 'data-kind': KEY, 'data-antigravity': '', title: tab.title }, [
       el('span', { class: 'brand-glyph' }, [brandSvg('antigravity')]), 'Antigravity',
       tab.who ? el('small', { class: 'tab-who', text: tab.who, translate: 'no' }) : null,
     ]);
   }
-  const owns = key => key === KEY && visible();
+  const owns = key => Boolean(visible() && typeof key === 'string' && (key === KEY || key.startsWith('antigravity:')));
 
   /* ---------------- 额度详情：各板块 ---------------- */
 
@@ -216,8 +265,42 @@
       || null;
   }
 
+  /** 家庭组 / 其他设备共享额度归因条：直观区分「本机消耗」与「家庭成员/他端消耗」，说明防偏移校准。 */
+  function sharedAttributionBox(shared) {
+    if (!shared || shared.mode === 'solo' || (!shared.familyShared && !(shared.externalUsedPct >= 0.5))) return null;
+    const localW = Math.max(0, Math.min(100, shared.localUsedPct || 0));
+    const extW = Math.max(0, Math.min(100 - localW, shared.externalUsedPct || 0));
+    const subText = shared.coUsedPoints >= 0.5 && shared.offPoints >= 0.5
+      ? `空闲时段外部 +${shared.offPoints.toFixed(1)}% · 同期多人共用 +${shared.coUsedPoints.toFixed(1)}%，均已从整窗容量折算中剔除`
+      : shared.coUsedPoints >= 0.5
+        ? `检测到同期多人共用约 +${shared.coUsedPoints.toFixed(1)}%，已按独享基准从容量折算中剔除`
+        : shared.offPoints >= 0.5
+          ? `本机空闲时段外部消耗 +${shared.offPoints.toFixed(1)}%，已从整窗容量折算中剔除`
+          : '当前窗口涨幅均与本机请求吻合，未检测到家庭成员额外占用';
+    const localSeg = paint(el('i', { class: 'agy-shared-fill local' }), { width: `${localW.toFixed(1)}%` });
+    const extSeg = paint(el('i', { class: 'agy-shared-fill external' }), { width: `${extW.toFixed(1)}%` });
+    return el('div', { class: 'agy-shared-box' }, [
+      el('div', { class: 'agy-shared-head' }, [
+        el('div', { class: 'agy-shared-title' }, [
+          el('b', { text: shared.familyShared ? '家庭组共享归因' : '多端共享归因' }),
+          el('span', { class: 'ms-badge good', text: '已防偏移校准' }),
+        ]),
+        el('span', { class: 'num agy-shared-nums', text: `本机约 ${percent(shared.localUsedPct)} · 家庭组/他端约 ${percent(shared.externalUsedPct)}` }),
+      ]),
+      el('div', {
+        class: 'agy-shared-track',
+        role: 'img',
+        'aria-label': `本机约 ${percent(shared.localUsedPct)}，家庭组或其他设备约 ${percent(shared.externalUsedPct)}`,
+      }, [localSeg, extSeg]),
+      el('p', { class: 'agy-shared-sub', text: subText }),
+    ]);
+  }
+
   function groupPanel(group, index) {
     const gInsight = groupInsightOf(group);
+    const fiveShared = gInsight?.five?.shared || null;
+    const weekShared = gInsight?.week?.shared || null;
+    const staleHint = curAcc()?.cloudAuth ? '数据不是最新的，点右上角「刷新」后再判断' : '数据不是最新的，打开 Antigravity 后再判断';
     const panel = paint(el('article', { class: 'panel window-panel agy-group', 'data-group': group.key }, [
       el('div', { class: 'panel-heading' }, [
         el('h2', {}, [el('i', { class: 'agy-dot', 'aria-hidden': 'true' }), groupName(group)]),
@@ -241,13 +324,17 @@
     const caution = Boolean(f?.etaAt) || stale() || (!done && group.used >= 75);
     panel.append(el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [
       icon(caution ? 'alert' : 'trend'),
-      stale() ? '数据不是最新的，打开 Antigravity 后再判断' : forecastText(group, 'five'),
+      stale() ? staleHint : forecastText(group, 'five'),
     ]));
     if (gInsight?.five?.startedByReset && !done) {
       panel.append(el('p', { class: 'reset-card-note' }, [
         icon('refresh'),
         `${RESET_NOTE[gInsight.five.startedByReset] || RESET_NOTE.moved} · 从 ${date(gInsight.five.startAt)} 起算`,
       ]));
+    }
+    if (!done) {
+      const sharedBox = sharedAttributionBox(fiveShared);
+      if (sharedBox) panel.append(sharedBox);
     }
 
     // 周额度窗口（RetrieveUserQuotaSummary 返回的二级窗口）
@@ -258,6 +345,7 @@
       const weekCaution = Boolean(wf?.etaAt) || (!weekDone && week.used >= 75);
       const weekBar = weekDone ? el('div', { class: 'track' }) : track(week.used, week.used >= 75, '周已用额度');
       weekBar.classList.add('window-track', 'agy-week-track');
+      const showWeekShared = !weekDone && weekShared && weekShared.mode !== 'solo' && weekShared.externalUsedPct >= 0.5;
       panel.append(el('div', { class: 'agy-week-box' }, [
         el('div', { class: 'agy-week-head' }, [
           el('div', { class: 'agy-week-title' }, [
@@ -274,9 +362,12 @@
           el('span', { text: weekDone ? '等待查询确认' : `周已用 ${percent(week.used)}` }),
           el('span', { text: resetText(week) }),
         ]),
+        showWeekShared
+          ? el('div', { class: 'agy-week-shared num', text: `周归因：本机约 ${percent(weekShared.localUsedPct)} · 家庭组/他端约 ${percent(weekShared.externalUsedPct)}（已防偏移校准）` })
+          : null,
         el('div', { class: 'prediction-line agy-week-pred' + (weekCaution ? ' caution' : '') }, [
           icon(weekCaution ? 'alert' : 'trend'),
-          stale() ? '数据不是最新的，打开 Antigravity 后再判断' : forecastText(group, 'week'),
+          stale() ? staleHint : forecastText(group, 'week'),
         ]),
         gInsight?.week?.startedByReset && !weekDone
           ? el('p', { class: 'reset-card-note' }, [
@@ -317,7 +408,9 @@
           ? `${money(fiveCap.fullCostUsd)} · 约剩 ${tokens(fiveCap.remainingTokens || 0)}`
           : !done && group.used > 0 && group.used < 2
             ? '已用不到 2%，暂不折算整窗容量'
-            : '需窗口内已用 ≥ 2% 且有本机用量',
+            : fiveShared && fiveShared.externalUsedPct >= 0.5 && !(fiveLocal?.tokens > 0)
+              ? '当前涨幅来自家庭组/他端，等待本机使用后再折算'
+              : '需窗口内已用 ≥ 2% 且有本机用量',
         chip: fiveCap?.fullTokens ? { tone: fiveCap.confidence === 'medium' ? 'medium' : 'low', text: CONFIDENCE_TEXT[fiveCap.confidence] || '估算' } : null,
       }),
       metric('周额度整窗折算', weekCap?.fullTokens ? amount(weekCap.fullTokens) : '—', {
@@ -326,14 +419,19 @@
           ? `${money(weekCap.fullCostUsd)} · 约剩 ${tokens(weekCap.remainingTokens || 0)}`
           : week && !ended(week) && week.used > 0 && week.used < 2
             ? '已用不到 2%，暂不折算整窗容量'
-            : '需窗口内已用 ≥ 2% 且有本机用量',
+            : weekShared && weekShared.externalUsedPct >= 0.5 && !(weekLocal?.tokens > 0)
+              ? '当前涨幅来自家庭组/他端，等待本机使用后再折算'
+              : '需窗口内已用 ≥ 2% 且有本机用量',
         chip: weekCap?.fullTokens ? { tone: weekCap.confidence === 'medium' ? 'medium' : 'low', text: CONFIDENCE_TEXT[weekCap.confidence] || '估算' } : null,
       }),
     ], 'two'));
 
     // 速度与时间
+    const dualPaceSub = f && !stale() && fiveShared && fiveShared.mode !== 'solo' && (fiveShared.externalUsedPct >= 0.5 || fiveShared.familyShared) && (fiveShared.localRatePerHour != null || fiveShared.externalRatePerHour != null)
+      ? `本机 ${(fiveShared.localRatePerHour || 0).toFixed(2)} · 他端 ${(fiveShared.externalRatePerHour || 0).toFixed(2)} 点/时`
+      : '这个窗口里的采样';
     panel.append(metricGroup('速度与时间', 'clock', [
-      metric('最近速度', f && !stale() ? f.ratePerH.toFixed(2) : '—', { unit: f && !stale() ? '点 / 时' : '', sub: '这个窗口里的采样' }),
+      metric('最近速度', f && !stale() ? f.ratePerH.toFixed(2) : '—', { unit: f && !stale() ? '点 / 时' : '', sub: dualPaceSub }),
       metric('重置时预计使用', f && !stale() ? percent(Math.min(100, f.projected)) : '—', { sub: f ? '按最近的速度' : '采样还不够' }),
       metric('重置时间', group.resetAt ? date(Date.parse(group.resetAt)) : '未知', { sub: group.resetAt && !done ? `${duration(Date.parse(group.resetAt) - Date.now())}后` : '' }),
       metric(week?.resetAt ? '周额度重置时间' : '这一组的型号', week?.resetAt ? date(Date.parse(week.resetAt)) : String(group.models.length), {
@@ -434,10 +532,13 @@
         const isCurrent = Boolean(p.current || (i === pts.length - 1 && activeResetMs > 0 && !p.endedByReset && Math.abs((p.resetAt || 0) - activeResetMs) < 15 * 60000));
         const isLow = (p.usedPct || 0) < 5;
         const clamped = rawV > yMax;
+        const deltaLine = p.excludedPct >= 0.5
+          ? `净计本机额度 +${Number(p.usedPct || 0).toFixed(1)}%（总涨 +${Number(p.rawUsedPct ?? ((p.usedPct || 0) + p.excludedPct)).toFixed(1)}%，已剔除家庭组/他端 +${Number(p.excludedPct).toFixed(1)}%）`
+          : `区间额度变化 +${Number(p.usedPct || 0).toFixed(1)}%`;
         const tipLines = [
           `${date(p.startAt)} → ${date(p.endAt || p.resetAt)}${isCurrent ? '（进行中）' : ''}`,
           ...(p.startedByReset ? [RESET_NOTE[p.startedByReset] || RESET_NOTE.moved] : []),
-          `区间额度变化 +${Number(p.usedPct || 0).toFixed(1)}%`,
+          deltaLine,
           `同期本机 ${tokens(p.tokens || 0)} Tokens · ${money(p.costUsd || 0)}`,
           `折算整窗约 ${tokens(p.fullTokens || 0)} Tokens · ${money(p.fullCostUsd || 0)}`,
         ];
@@ -571,9 +672,9 @@
       ]),
     ]);
     const list = groups();
-    const samples = quota?.history || [];
+    const samples = historyOf();
     if (samples.length < 2) {
-      panel.append(empty('采样还不够。Antigravity 开着的时候每次查询都会记一条，过一阵就能看到走势。'));
+      panel.append(empty(curAcc()?.cloudAuth ? '采样还不够。TokenPulse 每次定时查询都会记一条，过一阵就能看到走势。' : '采样还不够。Antigravity 开着的时候每次查询都会记一条，过一阵就能看到走势。'));
       return panel;
     }
     const now = Math.max(Date.now(), last()?.at || 0, samples[samples.length - 1]?.at || 0);
@@ -1012,10 +1113,163 @@
     return panel;
   }
 
-  function renderQuota(host, timelineNode) {
+  function accountLiveSummary(acc) {
+    const gList = acc?.last?.groups || [];
+    const live = gList.filter(g => !ended(g) || (g.week && !ended(g.week)));
+    const reporting = Boolean(acc?.last?.ok && live.length > 0);
+    const left = reporting ? Math.min(...live.map(g => Math.max(0, 100 - effectiveUsed(g)))) : null;
+    const exhausted = reporting && left != null && left <= 0;
+    return { gList, live, reporting, left, exhausted };
+  }
+
+  function leadAccount() {
+    const list = accountsList();
+    if (!list.length) return null;
+    return list.find(a => a.usable && !accountLiveSummary(a).exhausted && accountLiveSummary(a).reporting)
+      || list.find(a => accountLiveSummary(a).reporting)
+      || list[0];
+  }
+
+  function accountStrip(selectedAcc) {
+    const list = accountsList();
+    if (list.length <= 1) return null;
+    const poolIds = new Set(list.map(a => a.familyGroupId || a.id));
+    const readyPools = new Set(list.filter(a => {
+      const s = accountLiveSummary(a);
+      return s.reporting && !s.exhausted;
+    }).map(a => a.familyGroupId || a.id));
+    const hasSharedPool = poolIds.size < list.length || list.some(a => a.familyShared);
+    const summaryText = hasSharedPool
+      ? `${number(list.length)} 个账号 · ${number(readyPools.size)} / ${number(poolIds.size)} 份独立额度池有余量`
+      : `${number(list.length)} 个账号 · ${number(readyPools.size)} / ${number(list.length)} 个有余量`;
+
+    const manageBtn = el('button', { type: 'button', class: 'text-btn agy-manage-btn', 'data-action': 'agy-manage-accounts' }, [
+      el('span', { text: '管理账号' }),
+      icon('arrow'),
+    ]);
+    manageBtn.addEventListener('click', () => { if (typeof openSettings === 'function') openSettings('accounts'); });
+
+    const items = list.map(item => {
+      const on = item.id === selectedAcc?.id;
+      const sum = accountLiveSummary(item);
+      const name = displayNameOf(item) || item.accountHint || '未命名账号';
+      const statusText = sum.exhausted ? '已用完' : sum.reporting && sum.left != null ? `剩 ${sum.left.toFixed(1)}%` : item.needsLogin ? '需重登' : '待查询';
+      const btn = el('button', {
+        type: 'button',
+        class: 'agy-strip-item' + (on ? ' on' : '') + (sum.exhausted ? ' exhausted' : ''),
+        'data-agy-pick': item.id,
+        'aria-pressed': String(on),
+        'aria-label': `${name}，${statusText}${item.familyShared ? '，家庭组共享池' : ''}`,
+      }, [
+        el('div', { class: 'agy-strip-main' }, [
+          el('b', { class: 'agy-strip-name', translate: 'no', text: name }),
+          item.inLocal ? el('span', { class: 'agy-mini-tag local', text: '本机当前' }) : null,
+          item.familyShared ? el('span', { class: 'agy-mini-tag family', text: '家庭共享' }) : null,
+        ]),
+        el('div', { class: 'agy-strip-meta' }, [
+          el('span', { class: 'muted', translate: 'no', text: planText(item) || 'Google' }),
+          el('span', { class: 'num agy-strip-left', text: statusText }),
+        ]),
+      ]);
+      btn.addEventListener('click', () => {
+        if (item.id === activeId && state.account === item.id) return;
+        activeId = item.id;
+        state.account = item.id;
+        keepScroll(() => window.renderQuota());
+      });
+      return btn;
+    });
+
+    return el('div', { class: 'panel agy-account-strip', role: 'region', 'aria-label': 'Antigravity 账号概览' }, [
+      el('div', { class: 'agy-strip-head' }, [
+        el('div', { class: 'agy-strip-title' }, [
+          el('b', { text: 'Antigravity 多账号概览' }),
+          el('span', { class: 'section-tag', text: summaryText }),
+        ]),
+        manageBtn,
+      ]),
+      hasSharedPool
+        ? el('p', { class: 'agy-strip-hint muted', text: '同 Google One 家庭组的账号共用同一份 Antigravity 额度池：上方计数已自动合并同池账号，避免重复计池。' })
+        : null,
+      el('div', { class: 'agy-strip-grid' }, items),
+    ]);
+  }
+
+  function shareModeBar(acc) {
+    if (!acc) {
+      const addBtn = el('button', { type: 'button', class: 'text-btn agy-manage-btn', 'data-action': 'agy-open-accounts' }, [
+        icon('plus'),
+        el('span', { text: '添加更多 Antigravity 账号' }),
+      ]);
+      addBtn.addEventListener('click', () => { if (typeof openSettings === 'function') openSettings('accounts'); });
+      return el('div', { class: 'agy-share-bar is-lite' }, [addBtn]);
+    }
+    const modeGroup = el('div', { class: 'seg compact agy-share-seg', role: 'group', 'aria-label': '额度共享校准模式' }, [
+      el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }),
+      ...SHARE_MODES.map(([mode, label, hint]) => {
+        const on = (acc.shareMode || 'auto') === mode;
+        const b = el('button', {
+          type: 'button',
+          'data-agy-share': mode,
+          class: on ? 'on' : null,
+          'aria-pressed': String(on),
+          title: hint,
+          text: label,
+        });
+        b.addEventListener('click', async () => {
+          if ((acc.shareMode || 'auto') === mode || b.disabled) return;
+          for (const item of modeGroup.querySelectorAll('button')) item.disabled = true;
+          try {
+            await api.manage('share-mode', acc.id, mode);
+            const fresh = await api.state();
+            apply(fresh);
+            if (typeof showStatus === 'function') showStatus(`已切换为「${label}」`);
+          } catch (err) {
+            if (typeof toast === 'function') toast(err?.message || '设置保存失败', { kind: 'error' });
+          } finally {
+            for (const item of modeGroup.querySelectorAll('button')) if (item.isConnected) item.disabled = false;
+          }
+        });
+        return b;
+      }),
+    ]);
+
+    const familyBadge = acc.familyShared
+      ? el('span', {
+          class: 'agy-family-pill',
+          title: '检测到该账号处于 Google One 家庭组共享池：本机空闲与多人并发消耗会自动从容量折算中剥离，防止容量算小',
+        }, [
+          el('span', { text: '家庭组共享池' }),
+          acc.familyPeers?.length ? el('small', { text: ` · 与 ${acc.familyPeers.join(' / ')} 共用` }) : null,
+        ])
+      : null;
+
+    const manageBtn = el('button', { type: 'button', class: 'text-btn agy-manage-btn', 'data-action': 'agy-open-accounts' }, [
+      el('span', { text: '账号设置' }),
+      icon('arrow'),
+    ]);
+    manageBtn.addEventListener('click', () => { if (typeof openSettings === 'function') openSettings('accounts'); });
+
+    return el('div', { class: 'agy-share-bar' }, [
+      familyBadge,
+      el('span', { class: 'agy-share-label muted', text: '容量校准：' }),
+      modeGroup,
+      manageBtn,
+    ]);
+  }
+
+  function renderQuota(host, keyOrTimeline, maybeTimeline) {
     if (detailResizeObs) { detailResizeObs.disconnect(); detailResizeObs = null; }
-    const ins = insight();
-    const credits = last()?.credits;
+    const isLegacyCall = keyOrTimeline && typeof keyOrTimeline === 'object' && keyOrTimeline.nodeType === 1;
+    const requestedKey = isLegacyCall ? KEY : (typeof keyOrTimeline === 'string' ? keyOrTimeline : KEY);
+    const timelineNode = isLegacyCall ? keyOrTimeline : maybeTimeline;
+
+    const acc = resolveAccount(requestedKey);
+    activeId = acc ? acc.id : KEY;
+    const selectedKey = activeId;
+
+    const ins = insight(acc);
+    const credits = last(acc)?.credits;
     const creditParts = [];
     if (credits?.availablePromptCredits != null && credits?.monthlyPromptCredits != null) {
       creditParts.push(`Prompt 积分 ${number(credits.availablePromptCredits)} / ${number(credits.monthlyPromptCredits)}`);
@@ -1024,26 +1278,35 @@
       creditParts.push(`Flow 积分 ${number(credits.availableFlowCredits)} / ${number(credits.monthlyFlowCredits)}`);
     }
     const convCount = ins?.conversations ?? quota?.conversations ?? 0;
-    const sampleCount = ins?.sampleCount ?? (quota?.history || []).length;
+    const sampleCount = ins?.sampleCount ?? historyOf(acc).length;
+    const whoParts = [acc ? displayNameOf(acc) : '', planText(acc)].filter(Boolean).join(' · ');
+    const descText = acc?.cloudAuth
+      ? '额度按型号分组：一组里的型号共用一份，包含 5 小时窗口与周额度窗口。已保存独立授权，关着 Antigravity 也能自动续期并直连查询。'
+      : '额度按型号分组：一组里的型号共用一份，包含 5 小时窗口与周额度窗口。只能问本机开着的 Antigravity。';
 
     host.append(el('div', { class: 'quota-context agy-context' }, [
       avatar('antigravity'),
-      el('div', {}, [
-        el('h2', {}, ['Google Antigravity', planText() ? el('span', { class: 'context-who', text: planText(), translate: 'no' }) : null]),
-        el('p', { class: 'muted', text: '额度按型号分组：一组里的型号共用一份，包含 5 小时窗口与周额度窗口。只能问本机开着的 Antigravity。' }),
+      el('div', { class: 'agy-context-body' }, [
+        el('h2', {}, ['Google Antigravity', whoParts ? el('span', { class: 'context-who', text: whoParts, translate: 'no' }) : null]),
+        el('p', { class: 'muted', text: descText }),
         el('p', { class: 'muted agy-context-sub', text: [`${number(convCount)} 个本机对话`, `${number(sampleCount)} 个额度采样`, ...creditParts].join(' · ') }),
+        shareModeBar(acc),
       ]),
-      el('div', { class: 'context-meta agy-context-meta' }, [el('span', { text: updatedText() }), refreshButton()]),
+      el('div', { class: 'context-meta agy-context-meta' }, [el('span', { text: updatedText(acc) }), refreshButton('btn', acc?.id)]),
     ]));
+
+    const strip = accountStrip(acc);
+    if (strip) host.append(strip);
+
     // 一条说明可以是几句：分开放，翻译按句对得上
-    for (const note of notes()) host.append(el('p', { class: 'stale-note agy-note' }, [icon('alert'), ...[].concat(note).map(text => el('span', { text: text + ' ' }))]));
-    const list = groups();
+    for (const note of notes(acc)) host.append(el('p', { class: 'stale-note agy-note' }, [icon('alert'), ...[].concat(note).map(text => el('span', { text: text + ' ' }))]));
+    const list = groups(acc);
     let capPanel = null;
     let histPanel = null;
     if (!list.length) {
       host.append(el('article', { class: 'panel empty large' }, [
-        el('h3', { text: quota?.loading ? '正在查询额度…' : '还没有查到额度' }),
-        el('p', { text: '打开 Antigravity，等它登录好之后点「刷新」。' }),
+        el('h3', { text: isBusy(acc) ? '正在查询额度…' : '还没有查到额度' }),
+        el('p', { text: acc?.cloudAuth ? '点右上角「刷新」立即从 Google Cloud Code 拉取最新额度。' : '打开 Antigravity，等它登录好之后点「刷新」，或在设置里登录独立账号。' }),
       ]));
     } else {
       host.append(markLayout(el('div', { class: 'quota-window-grid agy-groups' }, list.map((group, index) => groupPanel(group, index))), 'quota:agy-groups'));
@@ -1057,13 +1320,13 @@
     if (timelineNode) {
       delete timelineNode.dataset.layoutNatural;
       host.append(timelineNode);
-      window.PulseModelStudy?.timeline(typeof current !== 'undefined' ? current : null, KEY, { kind: KEY, accountId: KEY, lastCheckedAt: last()?.at || 0 });
+      window.PulseModelStudy?.timeline(typeof current !== 'undefined' ? current : null, selectedKey, { kind: KEY, accountId: selectedKey, lastCheckedAt: last(acc)?.at || 0 });
     }
     if (typeof speedPanel === 'function') {
-      const speed = speedPanel({ accountId: KEY, accountLabel: 'Antigravity' }, KEY, {
+      const speed = speedPanel({ accountId: selectedKey, accountLabel: acc ? `Antigravity · ${displayNameOf(acc) || '账号'}` : 'Antigravity' }, KEY, {
         tag: 'Antigravity 本地记录',
         hint: '每个模型每秒输出多少 Token、首字延迟多少秒，直接从本机 Antigravity 对话数据库（gen_metadata）读取。',
-        load: days => api.speed(days),
+        load: days => api.speed(days, acc?.id),
         empty: () => el('div', { class: 'empty speed-empty' }, [
           el('p', { text: '这段时间还没有带流式耗时的 Antigravity 回复记录。用 Antigravity 生成几条回复后，这里就会显示各模型的出字速度和首字延迟。' }),
         ]),
@@ -1096,23 +1359,82 @@
       });
       detailResizeObs.observe(host);
     }
-    return KEY;
+    return selectedKey;
   }
 
   /* ---------------- 总览里的卡片 ---------------- */
 
+  function agyQueueSection(lead) {
+    const all = accountsList();
+    if (all.length <= 1 || !lead) return null;
+    const others = all.filter(item => item.id !== lead.id);
+    const poolIds = new Set(all.map(a => a.familyGroupId || a.id));
+    const readyPools = new Set(all.filter(a => {
+      const s = accountLiveSummary(a);
+      return s.reporting && !s.exhausted;
+    }).map(a => a.familyGroupId || a.id));
+    const hasSharedPool = poolIds.size < all.length || all.some(a => a.familyShared);
+    const headRight = hasSharedPool
+      ? `${number(readyPools.size)} / ${number(poolIds.size)} 份额度池有余量`
+      : `${number(readyPools.size)} / ${number(all.length)} 个有余量`;
+
+    const MAX_ROWS = 4;
+    const rows = others.slice(0, MAX_ROWS).map(item => {
+      const sum = accountLiveSummary(item);
+      const mini = ring({
+        five: sum.live[0] ? { used: effectiveUsed(sum.live[0]) } : null,
+        week: sum.live[1] ? { used: effectiveUsed(sum.live[1]) } : null,
+      });
+      mini.classList.add('pool-mini-ring');
+      mini.removeAttribute('title');
+      const statusText = sum.exhausted ? '已用完' : !sum.reporting || sum.left == null ? '暂无数据' : `剩 ${sum.left.toFixed(1)}%`;
+      const name = displayNameOf(item) || item.accountHint || '未命名账号';
+      const row = el('button', {
+        type: 'button',
+        class: 'pool-queue-row' + (sum.exhausted ? ' exhausted' : ''),
+        title: [item.accountHint || name, planText(item)].filter(Boolean).join(' · '),
+      }, [
+        mini,
+        el('span', { class: 'pool-queue-name', text: name, translate: 'no' }),
+        item.familyShared
+          ? el('span', { class: 'agy-queue-tag', text: '同家庭组' })
+          : el('span', { 'aria-hidden': 'true' }),
+        el('span', { class: 'pool-queue-left', text: statusText }),
+      ]);
+      row.addEventListener('click', () => { activeId = item.id; state.account = item.id; navigate('quota'); });
+      return row;
+    });
+    const more = others.length > MAX_ROWS
+      ? el('button', { type: 'button', class: 'pool-queue-more' }, [`还有 ${number(others.length - MAX_ROWS)} 个账号`, icon('arrow')])
+      : null;
+    more?.addEventListener('click', () => { activeId = lead.id; state.account = lead.id; navigate('quota'); });
+    return el('div', { class: 'pool-queue agy-pool-queue' }, [
+      el('div', { class: 'pool-queue-head' }, [el('span', { text: '其他账号' }), el('small', { text: headRight })]),
+      ...rows,
+      more,
+    ]);
+  }
+
   function card() {
-    const list = groups();
+    const lead = leadAccount();
+    const list = groups(lead);
     const live = list.filter(group => !ended(group) || (group.week && !ended(group.week)));
     const worst = live.slice().sort((a, b) => effectiveUsed(b) - effectiveUsed(a))[0];
     const worstUsed = worst ? effectiveUsed(worst) : 0;
-    const level = !last() ? '' : stale() ? '' : worst ? levelOf(worst) : '';
-    const badge = !last()?.at ? [quota?.loading ? '正在查询…' : quota?.running ? '还没查询过' : '没有开着', '']
-      : !quota?.running ? ['没有开着', ''] : !last().ok ? ['查询失败', 'critical'] : stale() ? ['采样已过期', '']
+    const isStaleLead = stale(lead);
+    const leadLast = last(lead);
+    const canQuery = lead ? (lead.cloudAuth || lead.inLocal || quota?.running) : Boolean(quota?.running);
+    const level = !leadLast ? '' : isStaleLead ? '' : worst ? levelOf(worst) : '';
+    const badge = !leadLast?.at ? [isBusy(lead) ? '正在查询…' : canQuery ? '还没查询过' : '没有开着', '']
+      : !canQuery ? ['没有开着', ''] : !leadLast.ok ? ['查询失败', 'critical'] : isStaleLead ? ['采样已过期', '']
       : worstUsed >= 100 ? ['有一组用完了', 'critical'] : worstUsed >= 90 ? ['快用完了', 'critical'] : worstUsed >= 75 ? ['用量偏高', 'warning'] : ['节奏正常', 'good'];
+    const whoText = lead ? ([displayNameOf(lead), planText(lead)].filter(Boolean).join(' · ') || 'Google') : (planText(null) || 'Google');
     const body = [el('div', { class: 'account-head' }, [
       avatar('antigravity'),
-      el('div', { class: 'account-title' }, [el('span', { class: 'account-name', text: 'Antigravity' }), el('span', { class: 'plan who', translate: 'no', text: planText() || 'Google' })]),
+      el('div', { class: 'account-title' }, [
+        el('span', { class: 'account-name', text: 'Antigravity' }),
+        el('span', { class: 'plan who', translate: 'no', text: whoText }),
+      ]),
       el('span', { class: 'badge ' + badge[1], text: badge[0] }),
     ])];
     const ringNode = ring({ five: live[0] ? { used: effectiveUsed(live[0]) } : null, week: live[1] ? { used: effectiveUsed(live[1]) } : null });
@@ -1120,10 +1442,11 @@
     const left = live.length ? Math.min(...live.map(group => Math.max(0, 100 - effectiveUsed(group)))) : null;
     ringNode.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining' + (left == null ? ' empty-number' : ''), text: left == null ? '—' : left.toFixed(1) }, left == null ? [] : [el('small', { text: '%' })])]));
     const worstReset = worst?.resetAt || worst?.week?.resetAt;
+    const subFallback = lead?.cloudAuth ? '已开启独立授权自动查询' : '额度只能问本机开着的 Antigravity';
     body.push(el('div', { class: 'quota-hero' }, [ringNode, el('div', { class: 'quota-hero-text' }, [
-      el('span', { class: 'quota-hero-label', text: `${stale() ? '上次' : ''}${live.length > 1 ? '较低一组' : '额度'}剩余` }),
+      el('span', { class: 'quota-hero-label', text: `${isStaleLead ? '上次' : ''}${live.length > 1 ? '较低一组' : '额度'}剩余` }),
       el('span', { class: 'quota-hero-value', text: worstReset ? `${duration(Date.parse(worstReset) - Date.now())}后重置` : list.length ? '重置时间未知' : '尚未取得额度' }),
-      el('span', { class: 'quota-hero-sub', text: worstReset ? `${date(Date.parse(worstReset))} · 本地时间` : '额度只能问本机开着的 Antigravity' }),
+      el('span', { class: 'quota-hero-sub', text: worstReset ? `${date(Date.parse(worstReset))} · ${lead?.familyShared ? '家庭组共享额度' : '本地时间'}` : subFallback }),
     ])]));
     list.forEach((group, index) => {
       const done = ended(group);
@@ -1150,11 +1473,14 @@
       }
       body.push(paint(el('div', { class: 'quota-mini agy-mini', 'data-group': group.key }, rows), { '--agy-color': COLORS[index % COLORS.length] }));
     });
-    if (!list.length) body.push(el('div', { class: 'quota-missing' }, [el('p', { text: [].concat(notes()[0] || '打开 Antigravity 后会自动查询。')[0] })]));
+    if (!list.length) body.push(el('div', { class: 'quota-missing' }, [el('p', { text: [].concat(notes(lead)[0] || '打开 Antigravity 后会自动查询。')[0] })]));
+    const queue = agyQueueSection(lead);
+    if (queue) body.push(queue);
+    const targetAccount = lead ? lead.id : KEY;
     const link = el('button', { type: 'button', class: 'text-btn', 'data-go': 'quota', 'aria-label': 'Antigravity 额度详情' }, ['详情', icon('arrow')]);
     link.hidden = typeof navHidden === 'function' && navHidden('quota');
-    link.addEventListener('click', () => { state.account = KEY; navigate('quota'); });
-    body.push(el('div', { class: 'quota-card-foot' }, [el('span', { text: updatedText() }), el('span', { class: 'agy-card-actions' }, [refreshButton('text-btn'), link])]));
+    link.addEventListener('click', () => { activeId = targetAccount; state.account = targetAccount; navigate('quota'); });
+    body.push(el('div', { class: 'quota-card-foot' }, [el('span', { text: updatedText(lead) }), el('span', { class: 'agy-card-actions' }, [refreshButton('text-btn'), link])]));
     return el('article', { class: 'quota-card antigravity ' + level, 'data-antigravity': '' }, body);
   }
   const marked = () => { const node = card(); return window.markLayout ? window.markLayout(node, 'overview:quota:antigravity') : node; };
@@ -1175,7 +1501,7 @@
   }
   function apply(next) { if (!next || typeof next !== 'object') return; quota = next; render(); }
 
-  window.AntigravityQuota = { render, cards, tabs, tabButton, owns, renderQuota, quotaShare, state: () => quota };
+  window.AntigravityQuota = { render, cards, tabs, tabButton, owns, renderQuota, quotaShare, apply, state: () => quota };
   api.onState(apply);
   api.state().then(apply).catch(() => {});
 })();

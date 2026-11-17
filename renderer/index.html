@@ -421,6 +421,7 @@
           <div class="setting-title">官方账号</div>
           <p class="setting-hint">每家可以登记多个账号，列表显示各自的额度和用完提醒，按住左边的把手拖动可以调整显示顺序。点铅笔可以给账号起名字。在 TokenPulse 里登录过的账号可以点「切到 CLI」，把官方 CLI 的登录换成它，不用再去终端里登出、登录。点「添加账号」可继续添加。</p>
           <div id="official-accounts" class="official-account-list"></div>
+          <div id="antigravity-accounts" class="official-account-list agy-official-list"></div>
           <p class="account-security-note"><svg class="icon"><use href="#i-lock"/></svg>CLI 自己的登录只读取不复制，也不会被续期（用「本机 CLI 已登录的账号」添加的就是这种，不保存凭据）；在这里登录的账号，凭据（含续期用的 refresh token）保存在本机 official-accounts.json，仅用于查询额度，不会上传，并在过期前自动续期。</p>
         </div>
       </section>
