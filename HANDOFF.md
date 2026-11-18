@@ -1,6 +1,54 @@
-# 当前接手入口 · TokenPulse v0.3.96 正式发布（修复 Antigravity OAuth 登录新账号报 `403 restricted_client`，2026-11-17）
+# 当前接手入口 · Antigravity 多账号全套修复代码已推送到 GitHub `main`（基于 `v0.3.96`，暂未打包发版，2026-11-17）
 
-## 发布状态 · `v0.3.96`（已正式发布）
+## 当前状态 · 修复代码提交 `ddc8491` 已推送至 `origin/main`（当前 UDP 代理可正常完成代码推送；`v0.3.97` 暂未升版打包）
+
+- **当前版本号与 Git 状态**：`package.json` 仍为 **`0.3.96`**；全部 Antigravity 多账号/家庭组/历史归属源码与测试修复已于本地编译测试通过后以提交 **`ddc8491`**（`fix(antigravity): restore dual quota groups, plan tiers, and local history ownership`）推送到 `origin/main`（经当前 `127.0.0.1:7890` UDP 节点推送成功）。尚未升级 `0.3.97`、尚未重跑 `npm run dist` 打包，也未发布新 GitHub Release（等待用户确认是否继续打包/上传 ~112 MB 安装包）。
+- **本机 `~/.tokenpulse` 实测排查定位出的全部 5 个根因缺陷（均已根治）**：
+  1. **Cloud Code 缺少客户端版本号 + 端点顺位导致 Gemini 分组消失且被合并进 Claude 组**：
+     - `fetchAntigravityCloudStatus()` 此前仅发送不带版本号的 `User-Agent: antigravity`，且将 `cloudcode-pa.googleapis.com` 排在 `daily-cloudcode-pa.googleapis.com`（本机 Antigravity `2.32.2` `language_server` 实际使用的端点）之前；不带版本号请求时服务端主动裁剪掉 `Gemini Models` 摘要桶（只返回 `Claude and GPT models`），且响应仍是 HTTP 200 未触发备用端点重试。
+     - 叠加 `matchSummaryGroup()` 在找不到 `gemini` 摘要桶时回落到按 `resetTime` 匹配，而未使用的 Gemini 与 3P 池 `resetAt` 恰好都在 `idle + 5h`（相差仅 1~2 秒），导致把 Gemini 全部塞进「Claude and GPT models」单组里，界面只剩 1 张混合窗口卡片、Gemini 真实用量被掩盖成 `0%`、`Gemini 3.5 Flash Lite` 因多别名重复出现。
+  2. **`sanitizeSlot()` 混组清理误删原本机账号的 `last` 与套餐信息**：
+     - 当槽位仅剩这条被污染的混合分组（如用户后登录的原本机账号槽位仅 1 条样本）时，`sanitizeSlot()` 在过滤混组后直接将 `last` 置为 `undefined`，导致重开后该账号彻底丢失 `tier` / `plan` / 分组（界面变成「还没有查到额度」且不显示套餐等级）。
+  3. **未自动记住电脑上原本正在登录的 Antigravity 账号 + 先加新号时误抢占历史数据**：
+     - 零配置阶段 `AntigravityQuota.refreshNow()` 调用 `fetchAntigravityStatus()` 丢弃了 `session.email` 未写时间线；`listAgyAccountStatus()` 与 `loginAntigravityOAuth()` 也未像 Codex/Claude 那样自动将本机当前运行账号（保持在 `removed` 除外）只读记入账号列表；
+     - 且 `slotOf(accountId, index === 0)` 仅按列表第 `0` 位继承零配置 `antigravity-quota.json` 历史采样，导致用户先在 `v0.3.96` 登录另一个副账号、后登录原本机主账号时，`1,341` 条历史采样全被副账号吞并，原本机主账号历史采样归 `0`、容量折算与 7 天曲线全空，副账号还误继承了主账号早先的 `15.4%` 残余曲线。
+  4. **本机当前登录账号未合并本地 `language_server` 完整模型列表与 Prompt/Flow 积分，且初始 `inLocal` 未预先识别**：
+     - 多账号模式下即使 `inLocal === true`，`refreshNow()` 也仅采用 Cloud Code 响应，丢掉了本机 `GetUserStatus` 自带的 `Gemini 4 Carbon / Argon / Hydrogen`、`Orchestrator` 及 `Prompt / Flow` 积分；启动构造器 `AntigravityQuota()` 在首次异步刷新完成前也未从最近登录时间线初始化 `activeLocalAccountId`。
+  5. **套餐等级格式重复/小写且未在设置页多账号列表展示**：
+     - `parseAntigravityCloudQuota()` 对 `g1-ultra-lite-tier` / `g1-ultra-tier` 提取出全小写 `ultra lite` / `ultra`，拼成冗余的 `Google AI Ultra · ultra`；设置页 `#antigravity-accounts` 账号行也未展示所属套餐等级。
+- **已完成修复与关键改动文件**：
+  - `src/core/antigravity.ts`：新增 `summaryPoolCategory()`；重构 `matchSummaryGroup()` 严格按 `gemini` / `3p` 额度池隔离摘要匹配与时间戳兜底，杜绝跨池误合并。
+  - `src/core/antigravity-accounts.ts`：
+    - 将 `AGY_CLOUDCODE_ENDPOINTS` 主端点调整为 `https://daily-cloudcode-pa.googleapis.com`（`cloudcode-pa` 作为备用）；新增 `detectAntigravityIdeVersion()` 与 `cloudUserAgent()` 在请求头 `User-Agent: antigravity/<ver> <os>/<arch>` 及 `loadCodeAssist.metadata.ideVersion` 携带客户端版本号；新增 `isCloudResponseDegraded()` 在服务端返回缺池单组时自动切换备用端点；
+    - 重构 `parseAntigravityCloudQuota()`：`formatAgyCloudPlan()` 规范输出 Title-Case 套餐名称（`Ultra` / `Ultra Lite` / `Pro` / `Free`）、对同型号别名（`Gemini 3.5 Flash Lite`）去重、补齐仅摘要桶存在的分组，并保持 `Gemini Models` → `Claude and GPT models` 稳定顺序；
+    - 在 `listAgyAccountStatus()` 与 `runAntigravityLogin()` 中自动只读记住本机当前运行的 Antigravity 账号（尊重 `removed` / `hidden`）；`readAgyLoginTimeline()` / `recordAgyLocalLogin()` 保持时间线严格按 `from` 升序排列。
+  - `src/main/antigravity-quota.ts`：
+    - 拆分 `sanitizeSlotHistoryAndNotified()` + `sanitizeSlotLast()` + `cleanMixedGroup()`，清洗残余混组同时绝不抹除 `tier` / `plan` / `credits`；
+    - 新增 `reconcileLegacyHistory()` 与 `legacyOwnerId()`：按 `antigravity-logins.json` 与本机身份精准归属零配置历史采样，并在启动加载时自动追回此前被先加副账号错占的 `createdAt` 之前老采样；
+    - 构造函数结合存活 hub 与最近时间线预置 `activeLocalAccountId`；零配置刷新同样记录本机登录账号时间线；`inLocal` 账号刷新时调用 `mergeLocalAndCloudStatus()` 融合本地 `Gemini 4` 模型名与 `Prompt / Flow` 积分以及 Cloud Code 精准等级（`Ultra` / `Ultra Lite`）。
+  - `renderer/antigravity-quota.js` & `renderer/app.js`：`planText()` 自动去重（`Google AI Ultra` / `Google AI Ultra · Ultra Lite`，保留 `Google AI Ultra · Pro` 兼容单测）；分组标题补充完整模型 `title` 悬停提示；设置页 `#antigravity-accounts` 账号行补齐套餐等级展示。
+  - `scripts/test-antigravity-accounts.cjs` & `scripts/test-antigravity-capacity.cjs`：补充 `User-Agent` 版本号断言、残缺 3P 单组故障转移、跨池隔离、重复别名去重，以及误归属历史自动追回与非破坏性混组清洗回归测试。
+- **本轮验证命令与实际结果（均在最终修改后通过）**：
+  - `npm run build`（`tsc -p tsconfig.json`）：PASS（0 错误）
+  - `node scripts/test-antigravity-accounts.cjs`：6/6 PASS
+  - `node scripts/test-antigravity-capacity.cjs`：7/7 PASS
+  - `node scripts/test-antigravity-timeline.cjs`：7/7 PASS
+  - `node scripts/test-antigravity-usage.cjs`：12/12 PASS
+  - `node scripts/test-antigravity-cli-import.cjs`：8/8 PASS
+  - `node scripts/test-accounts.cjs`：79/79 PASS
+  - `node scripts/test-features.cjs`：46/46 PASS（含英文词典零漏翻校验）
+  - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：8/8 PASS
+  - `npx.cmd electron --lang=zh-CN scripts/test-ui.cjs`：26/26 PASS
+  - **本机 `~/.tokenpulse` 克隆副本非破坏性实测**（不修改用户真实数据目录、使用真实双账号令牌与本机 `language_server` 验证后已删除临时副本）：
+    - 副账号（`4bb25c650e85618a`）：`tier: Google AI Ultra` / `plan: Ultra Lite`，正常拉取 `Gemini Models`（5h + 周额度）与 `Claude and GPT models`（5h + 周额度）双组（15 个去重后模型），被错占的 1,341 条老采样已清零；
+    - 原本机主账号（`fe55f992d8a46e9e`，`inLocal: true`）：`tier: Google AI Ultra` / `plan: Ultra`，完整恢复 `Gemini Models`（实测已用 `44.9%` + 周额度）与 `Claude and GPT models` 双组、`Gemini 4 Carbon / Argon / Hydrogen` 与 `Orchestrator` 全 22 个模型、`Prompt 积分 500 / 50,000`、`Flow 积分 100 / 150,000`、全部 `1,341` 条历史采样、`30` 个 5 小时与 `3` 个周容量趋势点及 `22,400` 条 30 天本机请求。
+  - **未执行的验证与阶段边界**：未升级版本并运行 `npm run dist` 打包或重跑其余无关供应商测试，也未新建 GitHub Release 上传约 112 MB `.exe` 附件；仅完成源码与回归测试提交并推送到 `origin/main`（注：上轮亦跑通 `test-ui.cjs` 26/26 与本机 `~/.tokenpulse` 克隆副本实测；本轮推送前再次实测 `npm run build`、`test-antigravity-*`、`test-accounts.cjs` 79/79、`test-features.cjs` 46/46 与 `test-antigravity-ui.cjs` 8/8 全部通过）。
+  - **收尾进程与文件句柄检查**：`SECRET_HITS=0`（全部修改与暂存 diff 中无任何 Google 客户端密钥、令牌或用户邮箱明文）；`WORKSPACE_PROCS=0`（无残留 `node.exe` / `electron.exe` / `gh.exe` / `TokenPulse.exe`）；`SCRATCH_FILES=0`；`build/main/index.js`、`build/main/antigravity-quota.js`、`build/core/antigravity.js`、`build/core/antigravity-accounts.js`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测后已立即 `Dispose`）。用户工作区未动目录：`clawd-pet-extracted/`。
+- **下一步具体动作**：向用户确认本次源码更新已推送到 GitHub `origin/main`，并结合实际传输日志解答 UDP/TCP 代理对 GitHub 的影响（代码/小文件可通过 UDP 节点，~112 MB Release 安装包上行此前仅在切换 TCP 后成功）；若用户需要更新桌面端安装包，待其确认后再升级 `0.3.97` 并打包发布 Release（届时按需测试 UDP 上传或切换 TCP 上传）。
+
+---
+
+## 上一已发布基线 · `v0.3.96`（已正式发布）
 
 - **版本与发布概览**：
   - 版本：**`0.3.96`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译均已补齐；仓库内继续保持零硬编码密钥 `SECRET_HITS=0`）。
