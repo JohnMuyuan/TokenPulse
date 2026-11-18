@@ -1,8 +1,18 @@
-# 当前接手入口 · Antigravity 多账号全套修复代码已推送到 GitHub `main`（基于 `v0.3.96`，暂未打包发版，2026-11-17）
+# 当前接手入口 · TokenPulse v0.3.97 正式发布（Antigravity 多账号双池分组、套餐等级与历史归属全面修复，2026-11-17）
 
-## 当前状态 · 修复代码提交 `ddc8491` 已推送至 `origin/main`（当前 UDP 代理可正常完成代码推送；`v0.3.97` 暂未升版打包）
+## 发布状态 · `v0.3.97`（已打包校验并正式发布至 GitHub Release）
 
-- **当前版本号与 Git 状态**：`package.json` 仍为 **`0.3.96`**；全部 Antigravity 多账号/家庭组/历史归属源码与测试修复已于本地编译测试通过后以提交 **`ddc8491`**（`fix(antigravity): restore dual quota groups, plan tiers, and local history ownership`）推送到 `origin/main`（经当前 `127.0.0.1:7890` UDP 节点推送成功）。尚未升级 `0.3.97`、尚未重跑 `npm run dist` 打包，也未发布新 GitHub Release（等待用户确认是否继续打包/上传 ~112 MB 安装包）。
+- **版本与发布概览**：
+  - 版本：**`0.3.97`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译均已补齐；仓库内继续保持零硬编码密钥 `SECRET_HITS=0`）。
+  - **Git / GitHub（已完成）**：源码修复提交 **`ddc8491`**、交接记录 **`92a2cb8`** 与发版提交 **`1abbc3f`**（`chore: release v0.3.97 (fix Antigravity multi-account dual pools, tiers, and history recovery)`）均已推送到 `origin/main`，标签 **`v0.3.97`** 已推送到远端；GitHub Release **`v0.3.97`** 已正式发布（非草稿、非预发布、`latest`）：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.97 ，4 个远端附件大小与 SHA256 与本地逐字节一致。未纳入提交：`clawd-pet-extracted/`（原样保留未动；未关闭/覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`）。
+  - **UDP 节点上传排查与直传完成**：实测通过 `socks5h://127.0.0.1:7890`（`6,291,132 B` / `3.18s`）与 `http://127.0.0.1:7890`（`6,602,428 B` / `3.60s`）上传大附件均会稳定在 ~6.3–6.6 MB 处触发 `curl: (56) Recv failure: Connection was reset`；针对 `uploads.github.com` 使用 `curl.exe --noproxy '*'` 直连（跳过本机 UDP 代理），无需用户切换节点即完成两个 ~112 MB 安装包上传（`Setup.exe` `4.34 MB/s` 用时 `26.00s`，`Portable.exe` `2.17 MB/s` 用时 `51.88s`，均返回 `HTTP 201`）。
+- **打包产物与远端校验（全部一致）**：
+  - `npm run dist` PASS；校验 `dist/win-unpacked/resources/app.asar` 含 `"version": "0.3.97"`、`summaryPoolCategory`、`detectAntigravityIdeVersion`、`reconcileLegacyHistory`、`mergeLocalAndCloudStatus`。
+  - `dist/TokenPulse-0.3.97-Setup.exe`（`112,874,214` B，SHA256 `4043C8F0FAA870E6161DF42F5535A77A747353EE14C7C3346E3BCBE153B0FD76`）
+  - `dist/TokenPulse-0.3.97-Portable.exe`（`112,617,061` B，SHA256 `54E64F6E54037A9E434C837D53D76882588E73ED8CEB7D24010AD23A7D26A322`）
+  - `dist/TokenPulse-0.3.97-Setup.exe.blockmap`（`120,020` B，SHA256 `F22F18790F0FD7C523F2F09487664A65E5A23D4BD14B3CD4E9BD5A4E83EC4A6F`）
+  - `dist/latest.yml`（`352` B，version `0.3.97`，SHA256 `8703CC4115CF714979E8581CA35AD47D2A6468C26B41869836885CA304D9B283`）
+  - 发布说明文件：`dist/release-0.3.97.md`。
 - **本机 `~/.tokenpulse` 实测排查定位出的全部 5 个根因缺陷（均已根治）**：
   1. **Cloud Code 缺少客户端版本号 + 端点顺位导致 Gemini 分组消失且被合并进 Claude 组**：
      - `fetchAntigravityCloudStatus()` 此前仅发送不带版本号的 `User-Agent: antigravity`，且将 `cloudcode-pa.googleapis.com` 排在 `daily-cloudcode-pa.googleapis.com`（本机 Antigravity `2.32.2` `language_server` 实际使用的端点）之前；不带版本号请求时服务端主动裁剪掉 `Gemini Models` 摘要桶（只返回 `Claude and GPT models`），且响应仍是 HTTP 200 未触发备用端点重试。
@@ -28,7 +38,7 @@
     - 构造函数结合存活 hub 与最近时间线预置 `activeLocalAccountId`；零配置刷新同样记录本机登录账号时间线；`inLocal` 账号刷新时调用 `mergeLocalAndCloudStatus()` 融合本地 `Gemini 4` 模型名与 `Prompt / Flow` 积分以及 Cloud Code 精准等级（`Ultra` / `Ultra Lite`）。
   - `renderer/antigravity-quota.js` & `renderer/app.js`：`planText()` 自动去重（`Google AI Ultra` / `Google AI Ultra · Ultra Lite`，保留 `Google AI Ultra · Pro` 兼容单测）；分组标题补充完整模型 `title` 悬停提示；设置页 `#antigravity-accounts` 账号行补齐套餐等级展示。
   - `scripts/test-antigravity-accounts.cjs` & `scripts/test-antigravity-capacity.cjs`：补充 `User-Agent` 版本号断言、残缺 3P 单组故障转移、跨池隔离、重复别名去重，以及误归属历史自动追回与非破坏性混组清洗回归测试。
-- **本轮验证命令与实际结果（均在最终修改后通过）**：
+- **本轮验证命令与实际结果（均在发版打包前通过）**：
   - `npm run build`（`tsc -p tsconfig.json`）：PASS（0 错误）
   - `node scripts/test-antigravity-accounts.cjs`：6/6 PASS
   - `node scripts/test-antigravity-capacity.cjs`：7/7 PASS
@@ -36,15 +46,17 @@
   - `node scripts/test-antigravity-usage.cjs`：12/12 PASS
   - `node scripts/test-antigravity-cli-import.cjs`：8/8 PASS
   - `node scripts/test-accounts.cjs`：79/79 PASS
-  - `node scripts/test-features.cjs`：46/46 PASS（含英文词典零漏翻校验）
+  - `node scripts/test-features.cjs`：46/46 PASS（含 `0.3.97` 更新说明英文词典零漏翻校验）
+  - `npx.cmd electron --lang=zh-CN scripts/test-intro-ui.cjs`：3/3 PASS
   - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：8/8 PASS
   - `npx.cmd electron --lang=zh-CN scripts/test-ui.cjs`：26/26 PASS
-  - **本机 `~/.tokenpulse` 克隆副本非破坏性实测**（不修改用户真实数据目录、使用真实双账号令牌与本机 `language_server` 验证后已删除临时副本）：
+  - `npm run dist`：PASS
+  - **本机 `~/.tokenpulse` 克隆副本非破坏性实测**（上轮在同份代码上执行，不修改用户真实数据目录、使用真实双账号令牌与本机 `language_server` 验证后已删除临时副本）：
     - 副账号（`4bb25c650e85618a`）：`tier: Google AI Ultra` / `plan: Ultra Lite`，正常拉取 `Gemini Models`（5h + 周额度）与 `Claude and GPT models`（5h + 周额度）双组（15 个去重后模型），被错占的 1,341 条老采样已清零；
     - 原本机主账号（`fe55f992d8a46e9e`，`inLocal: true`）：`tier: Google AI Ultra` / `plan: Ultra`，完整恢复 `Gemini Models`（实测已用 `44.9%` + 周额度）与 `Claude and GPT models` 双组、`Gemini 4 Carbon / Argon / Hydrogen` 与 `Orchestrator` 全 22 个模型、`Prompt 积分 500 / 50,000`、`Flow 积分 100 / 150,000`、全部 `1,341` 条历史采样、`30` 个 5 小时与 `3` 个周容量趋势点及 `22,400` 条 30 天本机请求。
-  - **未执行的验证与阶段边界**：未升级版本并运行 `npm run dist` 打包或重跑其余无关供应商测试，也未新建 GitHub Release 上传约 112 MB `.exe` 附件；仅完成源码与回归测试提交并推送到 `origin/main`（注：上轮亦跑通 `test-ui.cjs` 26/26 与本机 `~/.tokenpulse` 克隆副本实测；本轮推送前再次实测 `npm run build`、`test-antigravity-*`、`test-accounts.cjs` 79/79、`test-features.cjs` 46/46 与 `test-antigravity-ui.cjs` 8/8 全部通过）。
-  - **收尾进程与文件句柄检查**：`SECRET_HITS=0`（全部修改与暂存 diff 中无任何 Google 客户端密钥、令牌或用户邮箱明文）；`WORKSPACE_PROCS=0`（无残留 `node.exe` / `electron.exe` / `gh.exe` / `TokenPulse.exe`）；`SCRATCH_FILES=0`；`build/main/index.js`、`build/main/antigravity-quota.js`、`build/core/antigravity.js`、`build/core/antigravity-accounts.js`、`dist/win-unpacked/TokenPulse.exe` 独占句柄检测全部为 `UNLOCKED`（检测后已立即 `Dispose`）。用户工作区未动目录：`clawd-pet-extracted/`。
-- **下一步具体动作**：向用户确认本次源码更新已推送到 GitHub `origin/main`，并结合实际传输日志解答 UDP/TCP 代理对 GitHub 的影响（代码/小文件可通过 UDP 节点，~112 MB Release 安装包上行此前仅在切换 TCP 后成功）；若用户需要更新桌面端安装包，待其确认后再升级 `0.3.97` 并打包发布 Release（届时按需测试 UDP 上传或切换 TCP 上传）。
+  - **未执行的验证**：未重跑与本轮改动无关的其他独立供应商 UI 脚本及打包后增量自动更新安装器（`test-updater.cjs`）。
+  - **收尾进程与文件句柄检查**：`SECRET_HITS=0`（全部修改与暂存 diff 中无任何 Google 客户端密钥、令牌或用户邮箱明文）；本仓库路径相关 `node.exe` / `electron.exe` / `gh.exe` / `TokenPulse.exe` 进程为 `0`（用户自用 `AppData\Local\Programs\TokenPulse\TokenPulse.exe` 保持原样未动）；`build/main/index.js`、`build/main/antigravity-quota.js`、`build/core/antigravity.js`、`build/core/antigravity-accounts.js`、`dist/TokenPulse-0.3.97-Setup.exe`、`dist/TokenPulse-0.3.97-Portable.exe`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 独占句柄检测均处于 `UNLOCKED` 未占用状态。用户工作区未动目录：`clawd-pet-extracted/`。
+- **已知限制**：用户真实 `~/.tokenpulse` 目录未被手动篡改，本机正式版升级到 `v0.3.97` 后首次启动刷新时将自动触发 `reconcileLegacyHistory()` 迁移历史归属与重拉双组数据。
 
 ---
 
