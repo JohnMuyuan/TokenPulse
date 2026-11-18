@@ -13,6 +13,7 @@ import {
   poolCategory,
   rememberModelLabels,
   splitModelLabel,
+  summaryPoolCategory,
   type AgyCredits,
   type AgyModelQuotaItem,
   type AgyQuotaGroup,
@@ -42,8 +43,8 @@ export const AGY_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 export const AGY_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const AGY_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 export const AGY_CLOUDCODE_ENDPOINTS = [
-  "https://cloudcode-pa.googleapis.com",
   "https://daily-cloudcode-pa.googleapis.com",
+  "https://cloudcode-pa.googleapis.com",
 ] as const;
 
 export type AgyOAuthClient = {
@@ -696,7 +697,9 @@ type AgyLoginTimeline = { version: 1; spans: AgyLoginSpan[] };
 export function readAgyLoginTimeline(): AgyLoginSpan[] {
   const raw = readJson<AgyLoginTimeline | null>(loginTimelineFile(), null);
   return raw?.version === 1 && Array.isArray(raw.spans)
-    ? raw.spans.filter((s) => s && typeof s.from === "number" && typeof s.id === "string")
+    ? raw.spans
+        .filter((s) => s && typeof s.from === "number" && typeof s.id === "string")
+        .sort((a, b) => a.from - b.from)
     : [];
 }
 
@@ -706,10 +709,14 @@ export function recordAgyLocalLogin(email: string, now = Date.now()): string {
   const store = readAgyAccountStore();
   const matched = store.accounts.find((a) => normalizeAgyEmail(a.email) === norm);
   const id = matched?.id || agyAccountIdOf(agyRefFromIdentity(norm));
-  const spans = readAgyLoginTimeline();
-  const last = spans.at(-1);
-  if (!last || last.id !== id) {
-    spans.push({ from: now, id });
+  const raw = [...readAgyLoginTimeline(), { from: now, id }].sort((a, b) => a.from - b.from);
+  const spans: AgyLoginSpan[] = [];
+  for (const s of raw) {
+    const prev = spans.at(-1);
+    if (prev && prev.id === s.id) continue;
+    spans.push(s);
+  }
+  if (spans.length !== readAgyLoginTimeline().length || JSON.stringify(spans) !== JSON.stringify(readAgyLoginTimeline())) {
     try {
       writeJson(loginTimelineFile(), { version: 1, spans: spans.slice(-500) });
     } catch { /* 只读时跳过 */ }
@@ -1109,6 +1116,17 @@ async function runAntigravityLogin(
       }
     }
 
+    if (!replaceId && !deps.openExternal && antigravityHub()) {
+      // 若本机 Antigravity 正登录着另一个账号且尚未进入账号列表，先记下它的只读身份再加入新号，避免历史统计与顺位被新号顶替
+      const local = await fetchAntigravityLocalSession().catch(() => null);
+      if (local?.email && normalizeAgyEmail(local.email) !== normalizeAgyEmail(email)) {
+        try {
+          recordAgyLocalLogin(local.email);
+          rememberAgyAccount({ email: local.email, label: local.email || local.name }, false);
+        } catch { /* ignore */ }
+      }
+    }
+
     const savedId = rememberAgyAccount(
       {
         ref: replaceId ? replaceId.replace(/^antigravity:/, "") : ref,
@@ -1162,6 +1180,38 @@ function extractCreditsFromLoad(loadJson: Record<string, unknown> | null | undef
   return undefined;
 }
 
+function formatAgyCloudPlan(rawPlan: string, tier?: string): string {
+  const cleaned = rawPlan.replace(/^g1-|-tier$/gi, "").replace(/[-_]+/g, " ").trim();
+  if (!cleaned) return tier ? "Pro" : "";
+  return cleaned
+    .split(/\s+/)
+    .map((word) => (word.length ? word[0].toUpperCase() + word.slice(1).toLowerCase() : word))
+    .join(" ");
+}
+
+function isCloudResponseDegraded(modelsJson: unknown, summaryJson: unknown): boolean {
+  const mRoot = (modelsJson && typeof modelsJson === "object" ? modelsJson : null) as Record<string, unknown> | null;
+  const modelsMap = (mRoot?.models && typeof mRoot.models === "object" && !Array.isArray(mRoot.models)
+    ? mRoot.models
+    : null) as Record<string, Record<string, unknown>> | null;
+  if (!modelsMap) return false;
+  let hasGeminiModel = false;
+  let has3pModel = false;
+  for (const [k, detail] of Object.entries(modelsMap)) {
+    if (!detail || typeof detail !== "object" || detail.disabled === true) continue;
+    const label = str(detail.displayName ?? detail.display_name ?? detail.label);
+    if (!label) continue;
+    const cat = poolCategory(`${k} ${label}`);
+    if (cat === "gemini") hasGeminiModel = true;
+    else if (cat === "3p") has3pModel = true;
+  }
+  const sgs = parseSummaryGroups(summaryJson);
+  if (!sgs.length) return false;
+  const hasGeminiSg = sgs.some((sg) => summaryPoolCategory(sg) === "gemini");
+  const has3pSg = sgs.some((sg) => summaryPoolCategory(sg) === "3p");
+  return (hasGeminiModel && !hasGeminiSg) || (has3pModel && !has3pSg);
+}
+
 export function parseAntigravityCloudQuota(
   loadJson: unknown,
   modelsJson: unknown,
@@ -1173,7 +1223,7 @@ export function parseAntigravityCloudQuota(
   const tier = str(paidTier?.name) || str(currentTier?.name) || undefined;
   const g1Tier = str(load.g1Tier ?? load.g1_tier);
   const rawPlan = g1Tier || str(paidTier?.id) || str(currentTier?.id) || "";
-  const plan = rawPlan.replace(/^g1-|-tier$/gi, "").replace(/-/g, " ").trim() || (tier ? "Pro" : "");
+  const plan = formatAgyCloudPlan(rawPlan, tier);
   const projectId = extractProjectId(load);
   const credits = extractCreditsFromLoad(load);
 
@@ -1185,7 +1235,8 @@ export function parseAntigravityCloudQuota(
 
   const labels: Record<string, string> = {};
   const groups = new Map<string, AgyQuotaGroup>();
-  const models: AgyModelQuotaItem[] = [];
+  const matchedSummaryIdx = new Set<number>();
+  const modelBySignature = new Map<string, { item: AgyModelQuotaItem; exactKeyMatch: boolean }>();
 
   if (modelsMap) {
     const orderedKeys: string[] = [];
@@ -1226,6 +1277,7 @@ export function parseAntigravityCloudQuota(
       const { model, family, effort } = splitModelLabel(label);
       const groupFamily = modelFamily(label);
       const matched = matchSummaryGroup(groupFamily, used, resetAt, summaryGroups);
+      if (matched) matchedSummaryIdx.add(matched.idx);
       const key = matched ? `sg:${matched.idx}` : `${poolCategory(groupFamily)}|${remaining}|${resetAt ?? ""}`;
       const groupUsed = matched?.five ? matched.five.used : used;
       const groupResetAt = matched?.five?.resetAt ?? resetAt;
@@ -1238,7 +1290,11 @@ export function parseAntigravityCloudQuota(
       };
       if (!group.models.includes(groupFamily)) group.models.push(groupFamily);
       groups.set(key, group);
-      models.push({
+
+      const sig = `${model}|${effort ?? ""}|${family}`;
+      const exactKeyMatch = mapKey === (effort ? `${model}-${effort}` : model);
+      const prev = modelBySignature.get(sig);
+      const item: AgyModelQuotaItem = {
         label,
         family,
         model,
@@ -1247,35 +1303,52 @@ export function parseAntigravityCloudQuota(
         used: groupUsed,
         ...(groupResetAt ? { resetAt: groupResetAt } : {}),
         ...(matched?.week ? { weekUsed: matched.week.used, ...(matched.week.resetAt ? { weekResetAt: matched.week.resetAt } : {}) } : {}),
-      });
+      };
+      if (!prev || (!prev.exactKeyMatch && exactKeyMatch)) {
+        modelBySignature.set(sig, { item, exactKeyMatch });
+      }
     }
   }
 
-  // 若 fetchAvailableModels 未返回型号列表但 RetrieveUserQuotaSummary 有分组桶，兜底生成分组卡片
-  if (!groups.size && summaryGroups.length) {
-    for (const sg of summaryGroups) {
-      const fallbackModels = /gemini/i.test(sg.title)
+  // 补齐 RetrieveUserQuotaSummary 有但 fetchAvailableModels 未列出任何属于它的型号的分组（例如仅返回摘要桶的场景）
+  for (const sg of summaryGroups) {
+    if (matchedSummaryIdx.has(sg.idx) || groups.has(`sg:${sg.idx}`)) continue;
+    const cat = summaryPoolCategory(sg);
+    const fallbackModels =
+      cat === "gemini"
         ? ["Gemini Models"]
-        : /claude|gpt|3p/i.test(sg.title)
+        : cat === "3p"
           ? ["Claude and GPT models"]
           : [sg.title || `Group ${sg.idx + 1}`];
-      groups.set(`sg:${sg.idx}`, {
-        ...(sg.title ? { title: sg.title } : {}),
-        models: fallbackModels,
-        used: sg.five?.used ?? sg.week?.used ?? 0,
-        ...(sg.five?.resetAt ? { resetAt: sg.five.resetAt } : {}),
-        ...(sg.week ? { week: sg.week } : {}),
-      });
-    }
+    groups.set(`sg:${sg.idx}`, {
+      ...(sg.title ? { title: sg.title } : {}),
+      models: fallbackModels,
+      used: sg.five?.used ?? sg.week?.used ?? 0,
+      ...(sg.five?.resetAt ? { resetAt: sg.five.resetAt } : {}),
+      ...(sg.week ? { week: sg.week } : {}),
+    });
   }
 
-  if (!groups.size && !tier && !plan) return null;
+  const orderedGroups = [...groups.entries()]
+    .sort(([ka, ga], [kb, gb]) => {
+      const rank = (k: string, g: AgyQuotaGroup) => {
+        const hay = `${g.title || ""} ${g.models.join(" ")}`;
+        if (/gemini|orchestrator/i.test(hay)) return 0;
+        if (/claude|gpt|3p/i.test(hay)) return 1;
+        return k.startsWith("sg:") ? 2 : 3;
+      };
+      return rank(ka, ga) - rank(kb, gb);
+    })
+    .map(([, g]) => g);
+
+  const models = [...modelBySignature.values()].map((entry) => entry.item);
+  if (!orderedGroups.length && !tier && !plan) return null;
   return {
     projectId,
     status: {
       plan,
       ...(tier ? { tier } : {}),
-      groups: [...groups.values()],
+      groups: orderedGroups,
       labels,
       ...(models.length ? { models } : {}),
       ...(credits ? { credits } : {}),
@@ -1283,27 +1356,68 @@ export function parseAntigravityCloudQuota(
   };
 }
 
+const DEFAULT_AGY_IDE_VERSION = "2.32.2";
+
+function detectAntigravityIdeVersion(): string {
+  let best = DEFAULT_AGY_IDE_VERSION;
+  const cmp = (a: string, b: string) => {
+    const pa = a.split(".").map((n) => Number(n) || 0);
+    const pb = b.split(".").map((n) => Number(n) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const diff = (pa[i] || 0) - (pb[i] || 0);
+      if (diff !== 0) return diff;
+    }
+    return 0;
+  };
+  for (const root of antigravityDirs()) {
+    const dir = path.join(root, "daemon");
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(dir).filter((n) => /^hub_\d+\.json$/.test(n));
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as Record<string, unknown>;
+        const ver = str(raw.lsVersion);
+        if (/^\d+\.\d+\.\d+/.test(ver) && cmp(ver, best) > 0) best = ver;
+      } catch { /* ignore */ }
+    }
+  }
+  return best;
+}
+
+function cloudUserAgent(ideVersion: string): string {
+  const plat = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux";
+  const arch = process.arch === "arm64" ? "arm64" : "amd64";
+  return `antigravity/${ideVersion} ${plat}/${arch}`;
+}
+
 export async function fetchAntigravityCloudStatus(
   credential: AgyCredential,
   deps: AgyNetDeps = {},
 ): Promise<{ status: AgyStatus; projectId?: string }> {
   const post = deps.postJson ?? ((url, body, headers) => curlPost(url, body, headers));
+  const ideVersion = detectAntigravityIdeVersion();
   const headers = [
     `Authorization: Bearer ${credential.token}`,
     "Content-Type: application/json",
     "Accept: application/json",
-    "User-Agent: antigravity",
+    `User-Agent: ${cloudUserAgent(ideVersion)}`,
   ];
   const loadPayload = JSON.stringify({
     ...(credential.projectId ? { cloudaicompanionProject: credential.projectId } : {}),
     metadata: {
       ideType: "ANTIGRAVITY",
+      ideVersion,
       platform: cloudPlatformName(),
       pluginType: "GEMINI",
     },
   });
 
   let lastErr: Error | undefined;
+  let fallbackCandidate: { status: AgyStatus; projectId?: string } | null = null;
   for (const base of AGY_CLOUDCODE_ENDPOINTS) {
     try {
       const loadRes = await post(`${base}/v1internal:loadCodeAssist`, loadPayload, headers);
@@ -1326,14 +1440,19 @@ export async function fetchAntigravityCloudStatus(
       if (modelsRes.status === 401 || modelsRes.status === 403) {
         throw new Error(`登录凭据已失效（HTTP ${modelsRes.status}）`);
       }
-      const parsed = parseAntigravityCloudQuota(
-        loadRes.json,
-        modelsRes.status >= 200 && modelsRes.status < 300 ? modelsRes.json : null,
-        summaryRes.status >= 200 && summaryRes.status < 300 ? summaryRes.json : null,
-      );
+      const okModels = modelsRes.status >= 200 && modelsRes.status < 300 ? modelsRes.json : null;
+      const okSummary = summaryRes.status >= 200 && summaryRes.status < 300 ? summaryRes.json : null;
+      const parsed = parseAntigravityCloudQuota(loadRes.json, okModels, okSummary);
       if (parsed) {
+        const result = { status: parsed.status, ...(parsed.projectId ? { projectId: parsed.projectId } : {}) };
         if (Object.keys(parsed.status.labels).length) rememberModelLabels(parsed.status.labels);
-        return { status: parsed.status, ...(parsed.projectId ? { projectId: parsed.projectId } : {}) };
+        if (isCloudResponseDegraded(okModels, okSummary)) {
+          if (!fallbackCandidate || result.status.groups.length > fallbackCandidate.status.groups.length) {
+            fallbackCandidate = result;
+          }
+          continue;
+        }
+        return result;
       }
       lastErr = new Error("Cloud Code 返回的数据里没有识别出额度分组");
     } catch (error) {
@@ -1342,6 +1461,7 @@ export async function fetchAntigravityCloudStatus(
       lastErr = error instanceof Error ? error : new Error(msg);
     }
   }
+  if (fallbackCandidate) return fallbackCandidate;
   log.warn("antigravity", "Cloud Code 额度直连失败：" + errorText(lastErr));
   throw lastErr ?? new Error("Cloud Code 额度查询失败");
 }
@@ -1358,6 +1478,9 @@ export async function listAgyAccountStatus(now = Date.now(), localEmail?: string
     if (local?.email) {
       activeLocalEmail = normalizeAgyEmail(local.email);
       recordAgyLocalLogin(local.email, now);
+      try {
+        rememberAgyAccount({ email: local.email, label: local.email || local.name }, false, now);
+      } catch { /* 只读时跳过，遵循 removed/hidden 规则 */ }
     }
   }
 

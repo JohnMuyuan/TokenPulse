@@ -81,7 +81,7 @@
     return [...matches].sort((a, b) => Number(b.weekUsed != null) - Number(a.weekUsed != null) || b.key.length - a.key.length)[0];
   }
   /** 组名：组里的型号（不翻译）。 */
-  const groupName = group => el('span', { class: 'agy-group-name', translate: 'no', text: group.models.join(' · ') });
+  const groupName = group => el('span', { class: 'agy-group-name', translate: 'no', text: group.models.join(' · '), title: group.models.join(' · ') });
   /** 重置时间已经过了、还没查到新的：不显示旧的百分比。 */
   const ended = item => Boolean(item?.resetAt && Date.parse(item.resetAt) <= Date.now());
   const resetText = item => !item ? '没有重置时间' : ended(item) ? '已经重置，等待下一次查询' : item.resetAt ? `${duration(Date.parse(item.resetAt) - Date.now())}后重置 · ${date(Date.parse(item.resetAt))}` : '没有重置时间';
@@ -95,7 +95,16 @@
     if (ended(group) && (!group.week || ended(group.week))) return '';
     return u >= 100 ? 'critical' : u >= 90 ? 'critical' : u >= 75 ? 'warning' : 'good';
   };
-  const planText = (acc = curAcc()) => [last(acc)?.tier, last(acc)?.plan && last(acc)?.plan !== last(acc)?.tier ? last(acc)?.plan : ''].filter(Boolean).join(' · ');
+  const planText = (acc = curAcc()) => {
+    const t = String(last(acc)?.tier || '').trim();
+    const p = String(last(acc)?.plan || '').trim();
+    if (!t) return p;
+    if (!p) return t;
+    const tl = t.toLowerCase();
+    const pl = p.toLowerCase();
+    if (tl === pl || tl.endsWith(' ' + pl)) return t;
+    return `${t} · ${p}`;
+  };
   const displayNameOf = acc => {
     const raw = acc?.displayName || '';
     return raw === '未命名账号' && window.PulseI18n?.lang() === 'en' ? window.PulseI18n.t(raw) : raw;

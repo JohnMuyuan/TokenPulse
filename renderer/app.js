@@ -336,20 +336,26 @@ function renderAgyAccounts(agyStatus) {
     const email = account.email || account.label;
     const name = account.alias || email;
     const live = liveById.get(account.id);
-    const liveGroups = (live?.last?.groups || []).filter(g => !(g?.resetAt && Date.parse(g.resetAt) <= Date.now()) || (g?.week && !(g.week.resetAt && Date.parse(g.week.resetAt) <= Date.now())));
+    const liveLast = live?.last;
+    const liveTier = String(liveLast?.tier || '').trim();
+    const livePlan = String(liveLast?.plan || '').trim();
+    const tierText = !liveTier ? livePlan
+      : !livePlan || liveTier.toLowerCase() === livePlan.toLowerCase() || liveTier.toLowerCase().endsWith(' ' + livePlan.toLowerCase()) ? liveTier
+      : `${liveTier} · ${livePlan}`;
+    const liveGroups = (liveLast?.groups || []).filter(g => !(g?.resetAt && Date.parse(g.resetAt) <= Date.now()) || (g?.week && !(g.week.resetAt && Date.parse(g.week.resetAt) <= Date.now())));
     let quotaText = '';
     let exhausted = false;
-    if (!account.hidden && live?.last?.ok && liveGroups.length) {
+    if (!account.hidden && liveLast?.ok && liveGroups.length) {
       const minLeft = Math.min(...liveGroups.map(g => {
         const u5 = g.resetAt && Date.parse(g.resetAt) <= Date.now() ? 0 : (g.used || 0);
         const uw = g.week && !(g.week.resetAt && Date.parse(g.week.resetAt) <= Date.now()) ? (g.week.used || 0) : 0;
         return Math.max(0, 100 - Math.max(u5, uw));
       }));
       exhausted = minLeft <= 0;
-      quotaText = exhausted ? '额度已用完' : `剩余 ${minLeft.toFixed(1)}%`;
+      quotaText = [tierText, exhausted ? '额度已用完' : `剩余 ${minLeft.toFixed(1)}%`].filter(Boolean).join(' · ');
       if (live.familyShared) quotaText += ' · 家庭组共享';
     } else if (!account.hidden) {
-      quotaText = '暂无额度数据';
+      quotaText = [tierText, '暂无额度数据'].filter(Boolean).join(' · ');
     }
     const stateText = account.hidden ? '已隐藏'
       : account.needsLogin ? '需重新登录'

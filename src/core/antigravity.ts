@@ -1347,26 +1347,31 @@ function sameResetTime(a?: string, b?: string, maxDiffMs = 10_000): boolean {
   return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) <= maxDiffMs;
 }
 
+export function summaryPoolCategory(sg: ParsedSummaryGroup): string {
+  const hay = `${sg.title} ${sg.description} ${sg.bucketIds.join(" ")}`;
+  if (/gemini|orchestrator/i.test(hay)) return "gemini";
+  if (/claude|gpt|3p|anthropic|openai/i.test(hay)) return "3p";
+  return "";
+}
+
 export function matchSummaryGroup(family: string, used: number, resetAt: string | undefined, summaryGroups: ParsedSummaryGroup[]): ParsedSummaryGroup | undefined {
   if (!summaryGroups.length) return undefined;
-  if (/gemini|orchestrator/i.test(family)) {
-    const byFamily = summaryGroups.find(
-      (sg) => /gemini/i.test(sg.title) || /gemini/i.test(sg.description) || sg.bucketIds.some((id) => /gemini/i.test(id)),
-    );
+  const familyPool = poolCategory(family);
+  if (familyPool === "gemini") {
+    const byFamily = summaryGroups.find((sg) => summaryPoolCategory(sg) === "gemini");
+    if (byFamily) return byFamily;
+  } else if (familyPool === "3p") {
+    const byFamily = summaryGroups.find((sg) => summaryPoolCategory(sg) === "3p");
     if (byFamily) return byFamily;
   }
-  if (/claude|gpt|anthropic|openai/i.test(family)) {
-    const byFamily = summaryGroups.find(
-      (sg) =>
-        /claude|gpt|3p|anthropic|openai/i.test(sg.title)
-        || /claude|gpt|3p|anthropic|openai/i.test(sg.description)
-        || sg.bucketIds.some((id) => /3p|claude|gpt/i.test(id)),
-    );
-    if (byFamily) return byFamily;
-  }
-  const exact = summaryGroups.find((sg) => sg.five && sameResetTime(sg.five.resetAt, resetAt) && Math.abs(sg.five.used - used) <= 0.2);
+  const compatible = (sg: ParsedSummaryGroup) => {
+    const sgPool = summaryPoolCategory(sg);
+    if (!sgPool) return true;
+    return sgPool === familyPool;
+  };
+  const exact = summaryGroups.find((sg) => compatible(sg) && sg.five && sameResetTime(sg.five.resetAt, resetAt) && Math.abs(sg.five.used - used) <= 0.2);
   if (exact) return exact;
-  return summaryGroups.find((sg) => sg.five && sameResetTime(sg.five.resetAt, resetAt));
+  return summaryGroups.find((sg) => compatible(sg) && sg.five && sameResetTime(sg.five.resetAt, resetAt));
 }
 
 /** 把 GetUserStatus（以及可选的 RetrieveUserQuotaSummary）的返回整理成套餐 + 额度分组（含 5h 与周额度）+ 型号标签。认不出来返回 null。 */

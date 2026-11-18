@@ -15,7 +15,9 @@ import {
   type AgyWindowQuota,
 } from "../core/antigravity";
 import {
+  agyAccountIdOf,
   agyDisplayNames,
+  agyRefFromIdentity,
   fetchAntigravityCloudStatus,
   normalizeAgyEmail,
   normalizeShareMode,
@@ -359,22 +361,50 @@ function isMixedPoolModels(modelsOrKey: string[] | string): boolean {
   return /gemini|orchestrator/i.test(text) && /claude|gpt/i.test(text);
 }
 
-function sanitizeSlot(raw: Partial<AccountSlot> | null | undefined): AccountSlot {
+function cleanMixedGroup(g: AgyGroupState): AgyGroupState | null {
+  if (!isMixedPoolModels(g.models)) return g;
+  const title = g.title || "";
+  if (/claude|gpt|3p|anthropic|openai/i.test(title) && !/gemini/i.test(title)) {
+    const models = g.models.filter((m) => /claude|gpt|anthropic|openai/i.test(m));
+    if (models.length) return { ...g, models, key: groupKey(models) };
+  }
+  if (/gemini|orchestrator/i.test(title) && !/claude|gpt/i.test(title)) {
+    const models = g.models.filter((m) => /gemini|orchestrator/i.test(m));
+    if (models.length) return { ...g, models, key: groupKey(models) };
+  }
+  return null;
+}
+
+function sanitizeSlotHistoryAndNotified(raw: Partial<AccountSlot> | null | undefined): AccountSlot {
   const history = (Array.isArray(raw?.history) ? raw!.history : [])
     .map((sample) => ({
       ...sample,
       groups: Array.isArray(sample.groups) ? sample.groups.filter((g) => !isMixedPoolModels(g.key)) : [],
     }))
     .filter((sample) => sample.groups.length > 0);
-  const rawLast = raw?.last;
-  let last = rawLast;
-  if (rawLast && Array.isArray(rawLast.groups) && rawLast.groups.some((g) => isMixedPoolModels(g.models))) {
-    const cleanGroups = rawLast.groups.filter((g) => !isMixedPoolModels(g.models));
-    if (cleanGroups.length) {
-      last = { ...rawLast, groups: cleanGroups };
-    } else if (history.length) {
-      const prev = history[history.length - 1];
-      last = {
+  const rawNotified = raw?.notified && typeof raw.notified === "object" ? raw.notified : {};
+  const notified: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rawNotified)) {
+    if (!isMixedPoolModels(k)) notified[k] = v;
+  }
+  return { ...(raw?.last ? { last: raw.last } : {}), history, notified };
+}
+
+function sanitizeSlotLast(slot: AccountSlot): AccountSlot {
+  const rawLast = slot.last;
+  if (!rawLast || !Array.isArray(rawLast.groups)) return slot;
+  if (!rawLast.groups.some((g) => isMixedPoolModels(g.models))) return slot;
+  const cleanGroups = rawLast.groups
+    .map((g) => cleanMixedGroup(g))
+    .filter((g): g is AgyGroupState => Boolean(g));
+  if (cleanGroups.length) {
+    return { ...slot, last: { ...rawLast, groups: cleanGroups } };
+  }
+  if (slot.history.length) {
+    const prev = slot.history[slot.history.length - 1];
+    return {
+      ...slot,
+      last: {
         ...rawLast,
         groups: prev.groups.map((g) => ({
           key: g.key,
@@ -383,30 +413,89 @@ function sanitizeSlot(raw: Partial<AccountSlot> | null | undefined): AccountSlot
           ...(g.resetAt ? { resetAt: g.resetAt } : {}),
           ...(g.weekUsed != null ? { week: { used: g.weekUsed, ...(g.weekResetAt ? { resetAt: g.weekResetAt } : {}) } } : {}),
         })),
-      };
-    } else {
-      last = undefined;
+      },
+    };
+  }
+  // 即使分组暂时缺失也保留 tier / plan / at，避免升级或重开后套餐信息与账号状态一同清空
+  return {
+    ...slot,
+    last: {
+      ...rawLast,
+      ok: false,
+      groups: [],
+      error: rawLast.error || "等待重新拉取分组额度",
+    },
+  };
+}
+
+function mergeSampleLists(lists: AgySample[][]): AgySample[] {
+  const byAt = new Map<number, AgySample>();
+  for (const list of lists) {
+    for (const s of list) {
+      if (s && Number.isFinite(s.at) && Array.isArray(s.groups) && s.groups.length) {
+        byAt.set(s.at, s);
+      }
     }
   }
-  const rawNotified = raw?.notified && typeof raw.notified === "object" ? raw.notified : {};
-  const notified: Record<string, number> = {};
-  for (const [k, v] of Object.entries(rawNotified)) {
-    if (!isMixedPoolModels(k)) notified[k] = v;
+  return [...byAt.values()].sort((a, b) => a.at - b.at).slice(-5000);
+}
+
+function reconcileLegacyHistory(base: AccountSlot, accounts: Record<string, AccountSlot>): void {
+  const store = readAgyAccountStore();
+  if (!store.accounts.length) return;
+  const spans = readAgyLoginTimeline();
+  const ownerId = spans[0]?.id;
+  if (!ownerId || !accounts[ownerId]) return;
+
+  const accById = new Map(store.accounts.map((a) => [a.id, a]));
+  const earliestCreated = Math.min(...store.accounts.map((a) => a.createdAt || Infinity));
+  if (!Number.isFinite(earliestCreated)) return;
+
+  const ownerSlot = accounts[ownerId];
+  const ownerHasPreHistory = ownerSlot.history.some((s) => s.at < earliestCreated - 60_000);
+  if (ownerHasPreHistory) return;
+
+  const rescued: AgySample[] = [];
+  let movedFromAny = false;
+  for (const [id, slot] of Object.entries(accounts)) {
+    if (id === ownerId) continue;
+    const acc = accById.get(id);
+    if (!acc?.createdAt) continue;
+    const cutoff = acc.createdAt - 60_000;
+    const pre = slot.history.filter((s) => s.at < cutoff);
+    if (!pre.length) continue;
+    movedFromAny = true;
+    rescued.push(...pre);
+    slot.history = slot.history.filter((s) => s.at >= cutoff);
+    if (slot.last && slot.last.at < cutoff) {
+      slot.last = { ...slot.last, ok: false, groups: [], error: slot.last.error || "等待刷新该账号最新额度" };
+    }
   }
-  return { ...(last ? { last } : {}), history, notified };
+
+  const basePre = base.history.filter((s) => s.at < earliestCreated - 60_000);
+  if (!movedFromAny && !basePre.length) return;
+  rescued.push(...basePre);
+  ownerSlot.history = mergeSampleLists([rescued, ownerSlot.history]);
 }
 
 function sanitizeStored(raw: Partial<Stored> | null): Stored {
-  const base = sanitizeSlot(raw);
+  const base = sanitizeSlotHistoryAndNotified(raw);
   const accounts: Record<string, AccountSlot> = {};
   if (raw?.accounts && typeof raw.accounts === "object") {
     for (const [id, slot] of Object.entries(raw.accounts)) {
       if (typeof id === "string" && id.startsWith("antigravity:")) {
-        accounts[id] = sanitizeSlot(slot);
+        accounts[id] = sanitizeSlotHistoryAndNotified(slot);
       }
     }
   }
-  return { ...base, ...(Object.keys(accounts).length ? { accounts } : {}) };
+  if (Object.keys(accounts).length) {
+    reconcileLegacyHistory(base, accounts);
+    for (const [id, slot] of Object.entries(accounts)) {
+      accounts[id] = sanitizeSlotLast(slot);
+    }
+  }
+  const cleanBase = sanitizeSlotLast(base);
+  return { ...cleanBase, ...(Object.keys(accounts).length ? { accounts } : {}) };
 }
 
 function dayStr(at: number) {
@@ -1541,12 +1630,33 @@ function buildTimelineWindow(
   };
 }
 
+function mergeLocalAndCloudStatus(local: AgyStatus, cloud: AgyStatus): AgyStatus {
+  const pickPrimary = local.groups.length >= cloud.groups.length ? local : cloud;
+  const tier = cloud.tier || local.tier;
+  const plan =
+    (cloud.plan && (!local.plan || (local.plan === "Pro" && cloud.plan !== "Pro")))
+      ? cloud.plan
+      : local.plan || cloud.plan;
+  const credits = local.credits ?? cloud.credits;
+  const labels = { ...cloud.labels, ...local.labels };
+  const models = pickPrimary.models ?? local.models ?? cloud.models;
+  return {
+    plan,
+    ...(tier ? { tier } : {}),
+    groups: pickPrimary.groups,
+    labels,
+    ...(models?.length ? { models } : {}),
+    ...(credits ? { credits } : {}),
+  };
+}
+
 export class AntigravityQuota {
   private stored: Stored;
   private loading = false;
   private loadingAccounts = new Set<string>();
   private running = false;
   private activeLocalEmail = "";
+  private activeLocalAccountId = "";
   private pending?: Promise<AgyQuotaState>;
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
@@ -1575,6 +1685,9 @@ export class AntigravityQuota {
     const raw = readJson<Partial<Stored> | null>(this.file, null);
     this.stored = sanitizeStored(raw);
     this.running = Boolean(antigravityHub());
+    if (this.running) {
+      this.activeLocalAccountId = readAgyLoginTimeline().at(-1)?.id || "";
+    }
   }
 
   installed() {
@@ -1585,13 +1698,30 @@ export class AntigravityQuota {
     );
   }
 
-  /** 获取或初始化某个登记账号的存储槽；首次从零配置模式切入第一个登记账号时无缝继承历史采样。 */
+  /** 判断零配置时期积攒的顶层历史采样真正属于哪个账号，防止先添加了另一个账号后被误继承。 */
+  private legacyOwnerId(visible: StoredAgyAccount[]): string {
+    if (!visible.length) return "";
+    const spans = readAgyLoginTimeline();
+    const visibleIds = new Set(visible.map((a) => a.id));
+    const spanOwner = spans.find((s) => visibleIds.has(s.id))?.id || spans[0]?.id || "";
+    if (spanOwner) return spanOwner;
+    if (this.activeLocalEmail) {
+      const localId = agyAccountIdOf(agyRefFromIdentity(this.activeLocalEmail));
+      if (localId) return localId;
+    }
+    if (this.activeLocalAccountId) return this.activeLocalAccountId;
+    return visible.length === 1 ? visible[0].id : "";
+  }
+
+  /** 获取或初始化某个登记账号的存储槽；仅把零配置时期的顶层历史精确继承给它的原主账号。 */
   private slotOf(accountId?: string, allowSeedFromLegacy = false): AccountSlot {
     if (!accountId || accountId === "antigravity") return this.stored;
     this.stored.accounts ??= {};
     let slot = this.stored.accounts[accountId];
     if (!slot) {
-      if (allowSeedFromLegacy && Object.keys(this.stored.accounts).length === 0 && (this.stored.history.length > 0 || this.stored.last)) {
+      const hasLegacyData = this.stored.history.length > 0 || Boolean(this.stored.last);
+      const canSeedHere = allowSeedFromLegacy && !Object.values(this.stored.accounts).some((s) => s.history.length > 0);
+      if (canSeedHere && hasLegacyData) {
         slot = {
           ...(this.stored.last ? { last: JSON.parse(JSON.stringify(this.stored.last)) } : {}),
           history: JSON.parse(JSON.stringify(this.stored.history)),
@@ -1918,11 +2048,12 @@ export class AntigravityQuota {
       };
     }
 
+    const legacyOwner = this.legacyOwnerId(visible);
     const names = agyDisplayNames(visible);
     const linkInput = visible.map((acc) => ({
       id: acc.id,
       shareMode: normalizeShareMode(acc.shareMode),
-      last: this.slotOf(acc.id, true).last,
+      last: this.slotOf(acc.id, acc.id === legacyOwner).last,
     }));
     const familyLinks = detectFamilyLinks(linkInput);
     const nameById = new Map<string, string>();
@@ -1931,8 +2062,10 @@ export class AntigravityQuota {
     });
 
     const accountStates: AgyAccountQuotaState[] = visible.map((acc, index) => {
-      const slot = this.slotOf(acc.id, index === 0);
-      const inLocal = Boolean(this.activeLocalEmail && normalizeAgyEmail(acc.email) === this.activeLocalEmail);
+      const slot = this.slotOf(acc.id, acc.id === legacyOwner);
+      const inLocal = this.activeLocalEmail
+        ? normalizeAgyEmail(acc.email) === this.activeLocalEmail
+        : Boolean(this.running && this.activeLocalAccountId && acc.id === this.activeLocalAccountId);
       const cloudAuth = Boolean(acc.credential && !isExpired(acc.credential, now) && !acc.renewFailed);
       const usable = cloudAuth || inLocal;
       const autoRenew = Boolean(acc.credential?.refreshToken) && !acc.renewFailed;
@@ -2004,7 +2137,8 @@ export class AntigravityQuota {
     const rawAccountId = typeof q.accountId === "string" && q.accountId ? q.accountId : "antigravity";
     const matchedAcc = visible.find((a) => a.id === rawAccountId);
     const effectiveId = matchedAcc ? matchedAcc.id : visible[0]?.id ?? "antigravity";
-    const slot = matchedAcc || visible.length ? this.slotOf(effectiveId, true) : this.stored;
+    const legacyOwner = this.legacyOwnerId(visible);
+    const slot = matchedAcc || visible.length ? this.slotOf(effectiveId, effectiveId === legacyOwner) : this.stored;
     const soloMode = matchedAcc ? normalizeShareMode(matchedAcc.shareMode) === "solo" : false;
 
     const allRows = this.recentRows(now);
@@ -2175,8 +2309,20 @@ export class AntigravityQuota {
     try {
       const visible = visibleAgyAccounts();
       if (!visible.length) {
-        // 传统零配置单账号模式：完全走本机 language server
-        const status = await this.fetcher();
+        // 传统零配置单账号模式：优先读取本地完整会话，顺带记下本机当时登录的账号时间线，日后切多账号时不丢失归属
+        let status: AgyStatus | null = null;
+        if (this.options.fetcher) {
+          status = await this.fetcher();
+        } else {
+          const sess = await fetchAntigravityLocalSession().catch(() => null);
+          if (sess) {
+            status = sess.status;
+            if (sess.email) {
+              this.activeLocalEmail = normalizeAgyEmail(sess.email);
+              this.activeLocalAccountId = recordAgyLocalLogin(sess.email, at);
+            }
+          }
+        }
         this.running = Boolean(status);
         if (!status) {
           if (manual) {
@@ -2194,6 +2340,7 @@ export class AntigravityQuota {
         // 多账号模式：先自动续期快过期的 OAuth 账号，并顺带探一次本机运行中的 Antigravity
         await renewAgyCredentials(at).catch(() => 0);
         const refreshedVisible = visibleAgyAccounts();
+        const legacyOwner = this.legacyOwnerId(refreshedVisible);
         const names = agyDisplayNames(refreshedVisible);
 
         let localSession: { status: AgyStatus; email: string } | null = null;
@@ -2206,10 +2353,11 @@ export class AntigravityQuota {
           this.running = Boolean(sess);
           if (sess) {
             this.activeLocalEmail = normalizeAgyEmail(sess.email);
-            if (sess.email) recordAgyLocalLogin(sess.email, at);
+            if (sess.email) this.activeLocalAccountId = recordAgyLocalLogin(sess.email, at);
             localSession = { status: sess.status, email: sess.email };
           } else {
             this.activeLocalEmail = "";
+            this.activeLocalAccountId = "";
           }
         }
 
@@ -2220,7 +2368,7 @@ export class AntigravityQuota {
         await Promise.all(
           targets.map(async (account) => {
             const idx = refreshedVisible.findIndex((a) => a.id === account.id);
-            const slot = this.slotOf(account.id, idx === 0);
+            const slot = this.slotOf(account.id, account.id === legacyOwner);
             const label = names[idx] || account.alias || "";
             const inLocal = Boolean(
               localSession?.email && normalizeAgyEmail(account.email) === normalizeAgyEmail(localSession.email),
@@ -2233,7 +2381,11 @@ export class AntigravityQuota {
                 try {
                   const res = await this.cloudFetcher(account);
                   if (res.projectId) updateAgyProjectId(account.id, res.projectId);
-                  this.applyStatusToSlot(slot, res.status, at, label);
+                  let finalStatus = res.status;
+                  if (inLocal && localSession?.status) {
+                    finalStatus = mergeLocalAndCloudStatus(localSession.status, res.status);
+                  }
+                  this.applyStatusToSlot(slot, finalStatus, at, label);
                   return;
                 } catch (cloudErr) {
                   // 若 Cloud Code 暂时网络波动，且本机正好开着同一个账号，回退本机接口不中断
@@ -2277,10 +2429,11 @@ export class AntigravityQuota {
           }),
         );
 
-        // 同步首个可见账号到顶层兼容槽，确保旧消费者看到的始终是主顺位账号数据
+        // 仅当顶层历史已经落入对应账号（或无待归属的原主账号）时同步兼容槽，防止先加别的号时把老采样洗掉
         const firstAcc = refreshedVisible[0];
-        if (firstAcc) {
-          const firstSlot = this.slotOf(firstAcc.id, true);
+        const waitingLegacyOwner = Boolean(legacyOwner && !this.stored.accounts?.[legacyOwner]);
+        if (firstAcc && !waitingLegacyOwner) {
+          const firstSlot = this.slotOf(firstAcc.id, firstAcc.id === legacyOwner);
           this.stored.last = firstSlot.last;
           this.stored.history = firstSlot.history;
         }

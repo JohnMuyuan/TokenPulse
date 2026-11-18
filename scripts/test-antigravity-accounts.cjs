@@ -278,23 +278,49 @@ function httpGet(url) {
     assert.equal(revokedAlice.autoRenew, false);
     pass('automatic credential renewal and permanent invalid_grant detection');
 
-    // 5. Cloud Code 直连配额解析与备用端点故障转移
+    // 5. Cloud Code 直连配额解析（含残缺 3P 单组响应自动故障转移 + 防跨池误并入 + plan 格式化去重）
     const endpointsHit = [];
     const cloudRes = await mod.fetchAntigravityCloudStatus(
       { token: 'tp_mock_cloud_test' },
       {
-        postJson: async (url, body) => {
+        postJson: async (url, body, headers) => {
+          assert.ok(headers.some((h) => /^User-Agent:\s*antigravity\/\d+\.\d+/i.test(h)), '必须携带带版本号的 Antigravity User-Agent 以免服务端裁剪 Gemini 分组');
           endpointsHit.push(url);
-          if (url.startsWith('https://cloudcode-pa.googleapis.com')) {
-            return { status: 503, json: {} }; // 主端点故障，自动切 daily 备用端点
+          if (url.startsWith('https://daily-cloudcode-pa.googleapis.com')) {
+            if (url.endsWith(':loadCodeAssist')) {
+              return { status: 200, json: { cloudaicompanionProject: 'agy-proj-daily', paidTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra' } } };
+            }
+            if (url.endsWith(':fetchAvailableModels')) {
+              return {
+                status: 200,
+                json: {
+                  models: {
+                    'gemini-3-flash': { displayName: 'Gemini 3 Flash', model: 'MODEL_PLACEHOLDER_M18', quotaInfo: { remainingFraction: 1, resetTime: '2026-11-18T12:00:00Z' } },
+                    'gemini-2.5-flash': { displayName: 'Gemini 3.5 Flash Lite', model: 'MODEL_GOOGLE_GEMINI_2_5_FLASH', quotaInfo: { remainingFraction: 1, resetTime: '2026-11-18T12:00:00Z' } },
+                    'gemini-3.5-flash-lite': { displayName: 'Gemini 3.5 Flash Lite', model: 'MODEL_PLACEHOLDER_M198', quotaInfo: { remainingFraction: 1, resetTime: '2026-11-18T12:00:00Z' } },
+                    'claude-opus-5-5-low': { displayName: 'Claude Opus 5.5 (Low)', model: 'MODEL_PLACEHOLDER_M400', quotaInfo: { remainingFraction: 1, resetTime: '2026-11-18T12:00:01Z' } },
+                  },
+                },
+              };
+            }
+            // 模拟残缺响应：只返 Claude and GPT models、漏掉 Gemini Models；应继续尝试备用端点而不是污染合并
+            return {
+              status: 200,
+              json: {
+                groups: [{
+                  displayName: 'Claude and GPT models',
+                  buckets: [{ bucketId: '3p-5h', window: '5h', remainingFraction: 1, resetTime: '2026-11-18T12:00:01Z' }],
+                }],
+              },
+            };
           }
           if (url.endsWith(':loadCodeAssist')) {
             return {
               status: 200,
               json: {
                 cloudaicompanionProject: { id: 'agy-proj-42' },
-                g1Tier: 'g1-pro-tier',
-                paidTier: { id: 'g1-pro-tier', name: 'Google AI Pro', availableCredits: [{ creditAmount: 500 }] },
+                g1Tier: 'g1-ultra-lite-tier',
+                paidTier: { id: 'g1-ultra-lite-tier', name: 'Google AI Ultra', availableCredits: [{ creditAmount: 500 }] },
               },
             };
           }
@@ -304,15 +330,25 @@ function httpGet(url) {
               status: 200,
               json: {
                 models: {
-                  MODEL_PLACEHOLDER_M37: {
-                    displayName: 'Gemini 4 Argon (High)',
-                    model: 'MODEL_PLACEHOLDER_M37',
-                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-18T12:00:00Z' },
-                  },
-                  MODEL_CLAUDE_OPUS: {
+                  'claude-opus-5-5-low': {
                     displayName: 'Claude Opus 5.5 (Thinking)',
                     model: 'MODEL_CLAUDE_OPUS',
                     quotaInfo: { remainingFraction: 0.9, resetTime: '2026-11-18T14:00:00Z' },
+                  },
+                  'gemini-3.8-flash-high': {
+                    displayName: 'Gemini 3.8 Flash (High)',
+                    model: 'MODEL_PLACEHOLDER_M318',
+                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-18T12:00:00Z' },
+                  },
+                  'gemini-2.5-flash': {
+                    displayName: 'Gemini 3.5 Flash Lite',
+                    model: 'MODEL_GOOGLE_GEMINI_2_5_FLASH',
+                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-18T12:00:00Z' },
+                  },
+                  'gemini-3.5-flash-lite': {
+                    displayName: 'Gemini 3.5 Flash Lite',
+                    model: 'MODEL_PLACEHOLDER_M198',
+                    quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-18T12:00:00Z' },
                   },
                 },
               },
@@ -339,14 +375,38 @@ function httpGet(url) {
       },
     );
     assert.equal(cloudRes.projectId, 'agy-proj-42');
-    assert.equal(cloudRes.status.tier, 'Google AI Pro');
+    assert.equal(cloudRes.status.tier, 'Google AI Ultra');
+    assert.equal(cloudRes.status.plan, 'Ultra Lite');
     assert.equal(cloudRes.status.groups.length, 2);
+    assert.ok(cloudRes.status.groups[0].title.includes('Gemini'), 'Gemini 组始终排在首位且不被降级合并');
     assert.equal(cloudRes.status.groups[0].used, 35);
     assert.equal(cloudRes.status.groups[0].week.used, 18);
     assert.equal(cloudRes.status.groups[1].used, 10);
+    assert.equal(cloudRes.status.models.filter((m) => m.family === 'Gemini 3.5 Flash Lite').length, 1, '同显示名多别名去重保留主条目');
     assert.equal(cloudRes.status.credits.availablePromptCredits, 500);
-    assert.ok(endpointsHit.some((u) => u.startsWith('https://daily-cloudcode-pa.googleapis.com')), '主端点 503 时自动切换备用端点');
-    pass('Cloud Code direct quota parsing, dual-window merge, and fallback endpoint failover');
+    assert.ok(endpointsHit.some((u) => u.startsWith('https://daily-cloudcode-pa.googleapis.com')) && endpointsHit.some((u) => u.startsWith('https://cloudcode-pa.googleapis.com')), '主端点返回残缺单组时自动切换备用端点补齐双组');
+
+    // 即便 summaryGroups 缺少 Gemini 分组且两个未使用池重置时间接近，也绝不能把 Gemini 塞进 Claude 组
+    const isolatedRes = mod.parseAntigravityCloudQuota(
+      { paidTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' } },
+      {
+        models: {
+          'claude-opus-5-5-low': { displayName: 'Claude Opus 5.5 (Low)', model: 'M400', quotaInfo: { remainingFraction: 1, resetTime: '2026-11-18T12:00:01Z' } },
+          'gemini-3-flash': { displayName: 'Gemini 3 Flash', model: 'M18', quotaInfo: { remainingFraction: 1, resetTime: '2026-11-18T12:00:00Z' } },
+        },
+      },
+      {
+        groups: [{
+          displayName: 'Claude and GPT models',
+          buckets: [{ bucketId: '3p-5h', window: '5h', remainingFraction: 1, resetTime: '2026-11-18T12:00:01Z' }],
+        }],
+      },
+    );
+    assert.equal(isolatedRes.status.plan, 'Ultra');
+    assert.equal(isolatedRes.status.groups.length, 2, '缺少 Gemini 摘要桶时仍保留独立的 Gemini 与 Claude 两个分组');
+    assert.equal(isolatedRes.status.groups[0].models.some((m) => /Claude/i.test(m)), false);
+    assert.equal(isolatedRes.status.groups[1].models.some((m) => /Gemini/i.test(m)), false);
+    pass('Cloud Code direct quota parsing, dual-window merge, incomplete-group failover, and cross-pool isolation');
 
     // 6. 账号排序、重命名、共享模式切换、隐藏/恢复与完全删除
     mod.reorderAgyAccounts([bobId, aliceId]);

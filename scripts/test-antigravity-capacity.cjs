@@ -212,10 +212,65 @@ try {
   assert.equal(stW.familyShared, false, '独立工作号不会被误判进家庭组');
   assert.equal(stW.familyGroupId, undefined);
   pass('multi-account detectFamilyLinks links shared family accounts while keeping independent accounts separate');
+
+  // 7. 误归属历史自动追回与非破坏性混组清洗（即使先添加了别的账号、原本地账号后补登记，也不丢失老采样和套餐等级）
+  const repairRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-agy-repair-'));
+  const prevDataDir = process.env.TOKENPULSE_DATA_DIR;
+  process.env.TOKENPULSE_DATA_DIR = repairRoot;
+  try {
+    const idAlt = accMod.rememberAgyAccount(
+      { email: 'alt@example.com', credential: { token: 't-alt', refreshToken: 'r-alt', expiresAt: famNow + 3600_000 } },
+      true,
+      now - 10 * 60_000,
+    );
+    const idOrig = accMod.rememberAgyAccount(
+      { email: 'orig-local@example.com', credential: { token: 't-orig', refreshToken: 'r-orig', expiresAt: famNow + 3600_000 } },
+      true,
+      now - 9 * 60_000,
+    );
+    fs.writeFileSync(path.join(repairRoot, 'antigravity-logins.json'), JSON.stringify({
+      version: 1,
+      spans: [{ from: now - 3 * 24 * H, id: idOrig }],
+    }));
+    const oldSamples = [
+      { at: now - 48 * H, groups: [{ key: KEY, used: 12, resetAt: iso(now - 45 * H), weekUsed: 5, weekResetAt: iso(now + 4 * 24 * H) }] },
+      { at: now - 24 * H, groups: [{ key: KEY, used: 24, resetAt: iso(now - 21 * H), weekUsed: 10, weekResetAt: iso(now + 4 * 24 * H) }] },
+    ];
+    const mixedGroup = {
+      title: 'Claude and GPT models',
+      models: ['Claude Opus 5.5', 'Claude Sonnet 5.5', 'GPT-OSS 120B', 'Gemini 3 Flash'],
+      used: 0,
+      resetAt: iso(now + 4 * H),
+      week: { used: 1, resetAt: iso(now + 5 * 24 * H) },
+      key: 'Claude Opus 5.5|Claude Sonnet 5.5|GPT-OSS 120B|Gemini 3 Flash',
+    };
+    fs.writeFileSync(path.join(repairRoot, 'antigravity-quota.json'), JSON.stringify({
+      last: { at: now - 30_000, ok: true, tier: 'Google AI Ultra', plan: 'Ultra Lite', groups: [mixedGroup] },
+      history: oldSamples,
+      accounts: {
+        [idAlt]: { last: { at: now - 30_000, ok: true, tier: 'Google AI Ultra', plan: 'Ultra Lite', groups: [mixedGroup] }, history: [...oldSamples], notified: {} },
+        [idOrig]: { last: { at: now - 20_000, ok: true, tier: 'Google AI Ultra', plan: 'Ultra', groups: [mixedGroup] }, history: [{ at: now - 20_000, groups: [mixedGroup] }], notified: {} },
+      },
+    }));
+    const qRepaired = new mod.AntigravityQuota({ now: () => now, fetcher: async () => null });
+    const repairedState = qRepaired.state();
+    const altState = repairedState.accounts.find((a) => a.id === idAlt);
+    const origState = repairedState.accounts.find((a) => a.id === idOrig);
+    assert.equal(altState.history.length, 0, '先加的副号不再占位原本机账号的老历史采样');
+    assert.equal(origState.history.length, 2, '原本机账号完整找回迁移前的历史采样');
+    assert.equal(origState.last.tier, 'Google AI Ultra', '混组清洗后不抹除套餐等级');
+    assert.equal(origState.last.plan, 'Ultra');
+    assert.equal(origState.last.groups.length, 1);
+    assert.equal(origState.last.groups[0].models.some((m) => /Gemini/i.test(m)), false, '残余混组中的跨池 Gemini 已剔除，保留干净的 Claude/GPT 组');
+    pass('reconcileLegacyHistory restores pre-migration history to original local account without wiping tier/plan');
+  } finally {
+    process.env.TOKENPULSE_DATA_DIR = prevDataDir;
+    try { fs.rmSync(repairRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
 } finally {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 忽略 */ }
 }
-console.log(`\n${checks}/6 antigravity capacity & family-group checks`);
+console.log(`\n${checks}/7 antigravity capacity & family-group checks`);
