@@ -14,8 +14,8 @@
     return node;
   };
   const svg = (tag, attrs = {}) => { const node = document.createElementNS(NS, tag); for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value); return node; };
-  const NAMES = { claude: 'Claude', chatgpt: 'ChatGPT', grok: 'Grok' };
-  const BRANDS = { claude: 'claude', chatgpt: 'openai', grok: 'grok', codex: 'openai', desktop: 'claude' };
+  const NAMES = { claude: 'Claude', chatgpt: 'ChatGPT', grok: 'Grok', antigravity: 'Antigravity' };
+  const BRANDS = { claude: 'claude', chatgpt: 'openai', grok: 'grok', antigravity: 'antigravity', codex: 'openai', desktop: 'claude' };
   // 带数字和时间的句子在这里直接按语言拼好（节点标 translate=no），固定的文字交给 i18n.js 的词典
   const EN = window.PulseI18n?.lang?.() === 'en';
   const L = (zh, en) => EN ? en : zh;

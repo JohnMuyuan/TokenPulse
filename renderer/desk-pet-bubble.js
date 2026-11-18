@@ -91,7 +91,7 @@
     return [
       el('p', { class: 'bb-say' + (data.mood === 'ok' || !account ? '' : ' ' + data.mood), text: say(data) }),
       account ? el('div', { class: 'bb-acc' }, [el('i', { class: 'bb-kind ' + account.kind }), el('b', { text: account.name, title: account.name }), account.plan ? el('span', { class: 'bb-plan', text: account.plan }) : null]) : null,
-      ...(account ? [...meter('five', L('5 小时', '5-hour'), account.five, now), ...meter('week', L('周', 'Weekly'), account.week, now)] : [el('p', { class: 'bb-note', text: L('在 TokenPulse 里登录 Claude 或 ChatGPT 官方账号后，这里会显示额度。', 'Sign in to an official Claude or ChatGPT account in TokenPulse to see quota here.') })]),
+      ...(account ? [...meter('five', L('5 小时', '5-hour'), account.five, now), ...meter('week', L('周', 'Weekly'), account.week, now)] : [el('p', { class: 'bb-note', text: L('在 TokenPulse 里登录 Claude、ChatGPT、Grok 或 Antigravity 官方账号后，这里会显示额度。', 'Sign in to an official Claude, ChatGPT, Grok, or Antigravity account in TokenPulse to see quota here.') })]),
       stale ? el('p', { class: 'bb-note', text: L(`额度超过 ${limit} 分钟没有更新`, `Quota not updated for over ${limit} minutes`) }) : null,
       taskLine(data),
     ];
@@ -121,7 +121,7 @@
       : L('现在没有任务在跑，歇会儿～', 'Nothing running, taking a break~');
     return [
       el('p', { class: 'bb-say', text: head }),
-      rows.length ? el('div', { class: 'bb-list' }, rows) : el('p', { class: 'bb-note', text: L('支持 Claude Code 和 Codex。点一条打开会话管理。', 'Claude Code and Codex are supported. Click one to open Sessions.') }),
+      rows.length ? el('div', { class: 'bb-list' }, rows) : el('p', { class: 'bb-note', text: L('支持 Claude Code、Codex、Grok Build、DeepSeek Harness、pi 和 Antigravity。点一条打开会话管理。', 'Supports Claude Code, Codex, Grok Build, DeepSeek Harness, pi, and Antigravity. Click one to open Sessions.') }),
     ];
   }
 

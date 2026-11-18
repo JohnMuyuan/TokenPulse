@@ -5,6 +5,7 @@
  */
 const assert = require('node:assert/strict');
 const { trayPanelData, panelBounds } = require('../build/main/tray-panel');
+const { agyQuotaAccounts } = require('../build/main/antigravity-quota');
 
 const now = Date.now();
 const snapshot = {
@@ -30,7 +31,27 @@ assert.deepEqual(trayPanelData(null, 'light', () => '').accounts, []); assert.de
 // 后台账号（「后台账号少查一点」）带上 quiet，面板放宽过期判断；别的账号没有这一项
 const quietData = trayPanelData({ ...snapshot, accounts: [{ ...snapshot.accounts[0], quiet: true }, snapshot.accounts[1]] }, 'light', () => '');
 assert.equal(quietData.accounts[0].quiet, true); assert.equal('quiet' in quietData.accounts[1], false);
-console.log('PASS tray panel: data picked from the snapshot, clamped, accounts without quota skipped, background accounts marked');
+// Antigravity 多账号摘要：取最紧张的 5h 与周窗口合并到托盘面板里，标题只带显示名
+const agyExtras = agyQuotaAccounts({
+  installed: true, running: true, loading: false, history: [], registeredCount: 2, multiAccount: true,
+  accounts: [
+    { id: 'antigravity:a1', displayName: '主号', accountHint: '', inLocal: true, cloudAuth: true, usable: true, autoRenew: true, waitLocal: false, needsLogin: false, shareMode: 'auto', familyShared: false, familyPeers: [], loading: false, history: [],
+      last: { at: now - 2000, ok: true, tier: 'Pro', groups: [
+        { key: 'gemini', title: 'Gemini', models: ['gemini'], used: 15, remaining: 85, resetAt: new Date(now + 2 * 3600e3).toISOString(), week: { used: 12, remaining: 88, resetAt: new Date(now + 5 * 86400e3).toISOString() } },
+        { key: 'claude', title: 'Claude', models: ['claude'], used: 72, remaining: 28, resetAt: new Date(now + 1 * 3600e3).toISOString(), week: { used: 45, remaining: 55, resetAt: new Date(now + 4 * 86400e3).toISOString() } },
+      ] } },
+    { id: 'antigravity:a2', displayName: 'empty', accountHint: '', inLocal: false, cloudAuth: false, usable: false, autoRenew: false, waitLocal: true, needsLogin: false, shareMode: 'auto', familyShared: false, familyPeers: [], loading: false, history: [] },
+  ],
+}, now, { week: 'default', five: 'relaxed' });
+const withAgy = trayPanelData(snapshot, 'dark', a => a.displayName ? `${a.kind} · ${a.displayName}` : a.kind, agents, agyExtras);
+const agyCard = withAgy.accounts.find(a => a.kind === 'antigravity');
+assert.ok(agyCard, '有分组数据的 Antigravity 账号进入托盘面板');
+assert.equal(withAgy.accounts.filter(a => a.kind === 'antigravity').length, 1, '没拉到额度的 Antigravity 账号跳过');
+assert.equal(agyCard.name, 'antigravity · 主号');
+assert.equal(agyCard.plan, 'Pro');
+assert.equal(agyCard.five.used, 72, '5h 选最紧张的分组');
+assert.equal(agyCard.week.used, 45, '周窗口选最紧张的分组');
+console.log('PASS tray panel: data picked from the snapshot, clamped, accounts without quota skipped, background accounts marked, Antigravity multi-account merged');
 
 const size = { width: 340, height: 400 }, work = { x: 0, y: 0, width: 1920, height: 1040 };
 // 任务栏在下：面板在图标正上方，贴着可用区域的底边

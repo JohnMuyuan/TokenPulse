@@ -57,8 +57,8 @@ import { randomUUID } from "crypto";
 import { readFileSync } from "fs";
 import { TokensUploader } from "./tokens-ci";
 import { DeepSeekBalance } from "./deepseek-balance";
-import { AntigravityQuota } from "./antigravity-quota";
-import { addLocalAgyAccount, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts } from "../core/antigravity-accounts";
+import { AntigravityQuota, agyQuotaAccounts, type AgyQuotaState } from "./antigravity-quota";
+import { addLocalAgyAccount, agyDisplayNames, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts, resolveAgyLocalOwner, visibleAgyAccounts } from "../core/antigravity-accounts";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 
@@ -101,9 +101,18 @@ const deepseekBalance = new DeepSeekBalance({
     note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
   },
 });
+let agyStateCache: AgyQuotaState | null = null;
 /** Google Antigravity 的多账号与本机额度监控，见 antigravity-quota.ts。提醒线和官方订阅共用。 */
 const antigravityQuota = new AntigravityQuota({
-  publish: state => { if (win && !win.isDestroyed()) win.webContents.send("antigravity-quota-state", state); },
+  publish: state => {
+    agyStateCache = state;
+    concurrencyCatalogAt = 0;
+    if (win && !win.isDestroyed()) win.webContents.send("antigravity-quota-state", state);
+    if (lastSnapshot) updateTrayTip(lastSnapshot);
+    pushTrayPanel();
+    deskPetSnapshotChanged();
+    if (win && !win.isDestroyed()) win.webContents.send("desk-pet-changed");
+  },
   notifyAt: () => readPrefs().notifyAt,
   notify: (models, used, resetAt, accountLabel) => {
     if (!Notification.isSupported()) return;
@@ -112,6 +121,14 @@ const antigravityQuota = new AntigravityQuota({
     note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
   },
 });
+function currentAgyState(): AgyQuotaState {
+  if (!agyStateCache) agyStateCache = antigravityQuota.state();
+  return agyStateCache;
+}
+function currentAgyLocalAccountId(): string {
+  const state = currentAgyState();
+  return state.accounts.find((acc) => acc.inLocal)?.id || resolveAgyLocalOwner(Date.now()) || state.accounts[0]?.id || "antigravity";
+}
 /** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
 const tokensUploader = new TokensUploader({ publish: state => { if (win && !win.isDestroyed()) win.webContents.send("tokens-ci-state", state); } });
 let concurrencyCatalogAt = 0;
@@ -130,12 +147,36 @@ function concurrencyState(): ConcurrencyLiveState {
     concurrencyMonitor.register(view.providers.map(provider => ({ id: 'provider:' + provider.id, label: provider.name, kind: 'provider' as const })));
     concurrencyMonitor.register(accounts.map(account => ({ id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' as const })));
     concurrencyMonitor.register(['claude', 'codex', 'grok', 'deepseek', 'pi'].flatMap(app => providerScopes(app)));
-    const agyLast = antigravityQuota.state().last;
+    const agyState = currentAgyState();
+    const agyVisible = visibleAgyAccounts();
+    const agyNames = agyDisplayNames(agyVisible);
+    const agyLast = agyState.last;
+    const tierSuffix = agyLast?.tier ? ` · ${agyLast.tier}` : agyLast?.plan ? ` · ${agyLast.plan}` : "";
+    const agyScopeLabel = (acc: (typeof agyVisible)[number], idx: number) => {
+      const stateAcc = agyState.accounts.find((item) => item.id === acc.id);
+      const shortName = agyNames[idx] || "";
+      if (shortName) return `Antigravity · ${shortName}`;
+      const tier = stateAcc?.last?.tier || stateAcc?.last?.plan || "";
+      return `Antigravity${tier ? ` · ${tier}` : ""}`;
+    };
+    const agyRegisteredScopes: ConcurrencyScope[] = agyVisible.map((acc, idx) => ({
+      id: `account:${acc.id}`,
+      label: agyScopeLabel(acc, idx),
+      kind: "account",
+    }));
+    if (agyRegisteredScopes.length) concurrencyMonitor.register(agyRegisteredScopes);
     const agyIdeMonitored = antigravityQuota.installed() || fsSync.existsSync(path.join(antigravityDir(), 'conversation_summaries.db'));
     const agyCliMonitored = Boolean(resolveCli('antigravity')) || fsSync.existsSync(path.join(antigravityCliDir(), 'conversation_summaries.db'));
-    const agyAccountScope: ConcurrencyScope[] = (agyIdeMonitored || agyCliMonitored)
-      ? [{ id: 'account:antigravity', label: `Antigravity${agyLast?.tier ? ' · ' + agyLast.tier : agyLast?.plan ? ' · ' + agyLast.plan : ''}`, kind: 'account' }]
-      : [];
+    let agyAccountScope: ConcurrencyScope[] = [];
+    if (agyIdeMonitored || agyCliMonitored) {
+      const activeId = currentAgyLocalAccountId();
+      const activeIdx = agyVisible.findIndex((acc) => acc.id === activeId);
+      if (activeIdx >= 0) {
+        agyAccountScope = [{ id: `account:${agyVisible[activeIdx].id}`, label: agyScopeLabel(agyVisible[activeIdx], activeIdx), kind: "account" }];
+      } else {
+        agyAccountScope = [{ id: 'account:antigravity', label: `Antigravity${tierSuffix}`, kind: 'account' }];
+      }
+    }
     concurrencyAgyScopes = {
       ide: [{ id: 'provider:antigravity', label: 'Antigravity · 本机监控', kind: 'provider' }, ...agyAccountScope],
       cli: [{ id: 'provider:antigravity-cli', label: 'Antigravity CLI · 本机监控', kind: 'provider' }, ...agyAccountScope],
@@ -443,14 +484,14 @@ function trayPanelView() {
       return { app, label: AGENT_LABEL[app], current: rows.find((item) => item.active)?.name ?? "", readOnly: view.readOnly, providers: rows.map((item) => ({ id: item.id, name: item.name, active: !!item.active })) };
     }).filter((item) => item.providers.length > 0);
   } catch { /* 供应商读不出来：面板只显示额度 */ }
-  return trayPanelData(lastSnapshot, readPrefs().theme, accountTitle, agents);
+  return trayPanelData(lastSnapshot, readPrefs().theme, accountTitle, agents, agyQuotaAccounts(currentAgyState()));
 }
 function setTrayMenu() { if (!TRAY_PANEL) tray?.setContextMenu(buildTrayMenu()); }
 
-const KIND_NAMES: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
+const KIND_NAMES: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok", antigravity: "Antigravity" };
 
 /** 一家不止一个账号、或起过名字时带上短名，否则只写家名。短名在报表里算好。 */
-function accountTitle(account: Snapshot["accounts"][number]) {
+function accountTitle(account: { kind: string; displayName?: string }) {
   const name = KIND_NAMES[account.kind] ?? account.kind;
   return account.displayName ? `${name} · ${account.displayName}` : name;
 }
@@ -468,7 +509,8 @@ function clipTip(text: string, max: number) {
 function updateTrayTip(snapshot: Snapshot) {
   if (!tray) return;
   const head = tr(`TokenPulse · 今日 ${formatTokens(snapshot.totals.today.tokens)} tokens`);
-  const lines = snapshot.accounts.map((account) => {
+  const allAccounts = [...snapshot.accounts, ...agyQuotaAccounts(currentAgyState())];
+  const lines = allAccounts.map((account) => {
     const week = account.week ? tr(`周 ${Math.round(account.week.used)}%`) : "";
     const five = account.five ? `5h ${Math.round(account.five.used)}%` : "";
     return [accountTitle(account), [five, week].filter(Boolean).join("  ")].filter(Boolean).join("  ");
@@ -807,6 +849,7 @@ function quotaGlances(snapshot: Snapshot | null): QuotaGlance[] {
  * 手动点刷新时 `notifyQuota` 为 true：额度没查到要说出来，不能当成刷新成功。
  */
 async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
+  if (withQuota) await antigravityQuota.syncLocalLogin().catch(() => {});
   // 先展示已有统计，再更新本地文件；网络慢或断网时仍然可以使用界面。
   await getInitialSnapshot();
   let snapshot = publishSnapshot(await loadSnapshot(true));
@@ -1148,6 +1191,8 @@ if (!app.requestSingleInstanceLock()) {
       saveMini: (on, edge) => { writePrefs(edge ? { deskPetMini: on, deskPetEdge: edge } : { deskPetMini: on }); win?.webContents.send("desk-pet-changed"); },
       hide: () => applyPrefs({ deskPet: false }),
       snapshot: () => lastSnapshot,
+      extraAccounts: () => agyQuotaAccounts(currentAgyState()),
+      antigravityLogin: () => currentAgyLocalAccountId(),
       title: accountTitle,
       openMain: (target) => { revealWindow(); if (target) win?.webContents.send("open-page", target); },
       openSettings: () => { revealWindow(); win?.webContents.send("open-page", { page: "pet" }); },
@@ -1349,7 +1394,11 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.on("desk-pet:bubble-size", (_event, width: unknown, height: unknown) => resizeDeskPetBubble(Number(width), Number(height)));
     ipcMain.on("desk-pet:bubble-action", (_event, action: unknown, value: unknown) => deskPetBubbleAction(action, value));
     ipcMain.handle("desk-pet:status", () => ({ on: readPrefs().deskPet, view: deskPetView(), shown: !!deskPetWindows().pet }));
-    ipcMain.handle("desk-pet:accounts", () => (lastSnapshot?.accounts ?? []).filter((account) => account.five || account.week).map((account) => ({ id: accountKey(account), name: accountTitle(account) })));
+    ipcMain.handle("desk-pet:accounts", () => {
+      const state = antigravityQuota.state();
+      agyStateCache = state;
+      return [...(lastSnapshot?.accounts ?? []), ...agyQuotaAccounts(state)].filter((account) => account.five || account.week).map((account) => ({ id: accountKey(account), name: accountTitle(account) }));
+    });
     ipcMain.handle("desk-pet:packs", () => listPetPacks());
     ipcMain.handle("desk-pet:pack-images", (_event, id: unknown) => petPackImages(id));
     ipcMain.handle("desk-pet:remove-pack", (_event, id: unknown) => {

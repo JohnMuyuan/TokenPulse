@@ -1202,6 +1202,31 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.ok(eye.look.x > -0.5 && eye.look.x < 1.5, `自己东张西望是慢慢转的 ${eye.look.x}`);
   });
 
+  check('desk pet: Antigravity active login and multi-account quota adapter', () => {
+    const { agyQuotaAccounts } = require('../build/main/antigravity-quota');
+    const now = Date.now();
+    const agyList = agyQuotaAccounts({
+      installed: true, running: true, loading: false, history: [], registeredCount: 2, multiAccount: true,
+      accounts: [
+        { id: 'antigravity:a1', displayName: 'Alice', accountHint: '', inLocal: false, cloudAuth: true, usable: true, autoRenew: true, waitLocal: false, needsLogin: false, shareMode: 'auto', familyShared: false, familyPeers: [], loading: false, history: [],
+          last: { at: now, ok: true, tier: 'Ultra', groups: [{ key: 'claude', title: 'Claude', models: ['claude'], used: 20, remaining: 80, resetAt: new Date(now + 3600e3).toISOString() }] } },
+        { id: 'antigravity:a2', displayName: 'Bob', accountHint: '', inLocal: true, cloudAuth: true, usable: true, autoRenew: true, waitLocal: false, needsLogin: false, shareMode: 'auto', familyShared: false, familyPeers: [], loading: false, history: [],
+          last: { at: now, ok: true, tier: 'Pro', groups: [{ key: 'gemini', title: 'Gemini', models: ['gemini'], used: 65, remaining: 35, resetAt: new Date(now + 3600e3).toISOString(), week: { used: 88, remaining: 12, resetAt: new Date(now + 86400e3).toISOString() } }] } },
+      ],
+    }, now, { week: 'default', five: 'relaxed' });
+    const mixed = { accounts: [{ kind: 'claude', key: 'claude:one', accountId: 'claude:one', five: { used: 10 }, week: null }, ...agyList] };
+    assert.equal(model.pickPetAccount(mixed.accounts, '', { kinds: ['antigravity', 'claude'], current: { antigravity: 'antigravity:a2' } })?.accountId, 'antigravity:a2', '在跑 Antigravity 任务时优先跟本机当前登录的 Antigravity 账号');
+    const pq = model.petQuota(mixed, '', a => a.displayName ? `Antigravity · ${a.displayName}` : a.kind, { kinds: ['antigravity'], current: { antigravity: 'antigravity:a2' } });
+    assert.deepEqual(pq, { quota: 12, mood: 'tight', account: 'Antigravity · Bob', accountId: 'antigravity:a2' });
+    // 零配置单账号兼容：不暴露邮箱，title 为空 displayName
+    const single = agyQuotaAccounts({
+      installed: true, running: true, loading: false, history: [], registeredCount: 0, multiAccount: false, accounts: [],
+      last: { at: now, ok: true, plan: 'Pro', groups: [{ key: 'gemini', title: 'Gemini', models: ['gemini'], used: 15, remaining: 85 }] },
+    }, now, { week: 'default', five: 'relaxed' });
+    assert.equal(single.length, 1);
+    assert.deepEqual([single[0].accountId, single[0].displayName, single[0].plan], ['antigravity', '', 'Pro']);
+  });
+
   check('desk pet: phase — tool beats thinking beats waiting', () => {
     const task = status => ({ status });
     assert.equal(model.petPhase(null), null);

@@ -6,7 +6,19 @@
  */
 import { BrowserWindow, screen, type Rectangle, type Tray } from "electron";
 import path from "path";
+import type { PetQuotaWindow } from "../core/desk-pet-model";
 import type { Snapshot } from "../core/report";
+
+export type TraySourceAccount = {
+  kind: string;
+  displayName?: string;
+  plan?: string;
+  lastCheckedAt?: number;
+  lastSampleAt?: number;
+  quiet?: boolean;
+  five: PetQuotaWindow | null;
+  week: PetQuotaWindow | null;
+};
 
 export type TrayPanelAccount = {
   kind: string;
@@ -43,16 +55,17 @@ let destroyTimer: NodeJS.Timeout | null = null;
 
 export function setupTrayPanel(next: Options) { options = next; }
 
-/** 从快照里挑出面板要用的那几项；不带邮箱以外的任何账号信息。 */
-export function trayPanelData(snapshot: Snapshot | null, theme: "light" | "dark", title: (account: Snapshot["accounts"][number]) => string, agents: TrayPanelAgent[] = []): TrayPanelData {
-  const pick = (window: Snapshot["accounts"][number]["five"]): TrayPanelWindow | null => window
+/** 从快照（以及 Antigravity 等额外额度源）挑出面板要用的那几项；不带邮箱以外的任何账号信息。 */
+export function trayPanelData(snapshot: Snapshot | null, theme: "light" | "dark", title: (account: TraySourceAccount) => string, agents: TrayPanelAgent[] = [], extraAccounts: TraySourceAccount[] = []): TrayPanelData {
+  const pick = (window: TraySourceAccount["five"]): TrayPanelWindow | null => window
     ? { used: Math.max(0, Math.min(100, window.used)), resetAt: window.resetAt ?? 0, etaAt: window.etaAt ?? 0, runsOut: window.pressure === "high",
         pace: window.elapsedH != null && window.leftH != null && window.elapsedH + window.leftH > 0 ? Math.max(0, Math.min(100, window.elapsedH / (window.elapsedH + window.leftH) * 100)) : -1 }
     : null;
+  const allAccounts: TraySourceAccount[] = [...(snapshot?.accounts ?? []), ...extraAccounts];
   return {
     now: Date.now(), theme, agents,
     today: { tokens: snapshot?.totals.today.tokens ?? 0, costUsd: snapshot?.totals.today.costUsd ?? 0 },
-    accounts: (snapshot?.accounts ?? []).filter((account) => account.five || account.week).map((account) => ({
+    accounts: allAccounts.filter((account) => account.five || account.week).map((account) => ({
       kind: account.kind, name: title(account), plan: account.plan ?? "", checkedAt: account.lastCheckedAt ?? account.lastSampleAt ?? 0,
       ...(account.quiet ? { quiet: true } : {}),
       five: pick(account.five), week: pick(account.week),

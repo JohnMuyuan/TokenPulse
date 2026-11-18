@@ -23,7 +23,7 @@ export type HealthInputs = {
   /** 本地路由：有没有工具要走它、在不在跑、端口能不能连上（没在跑时 listening 是 null）。 */
   route: { port: number; running: boolean; listening: boolean | null; users: string[] };
   readOnly: boolean;
-  accounts: { kindLabel: string; name: string; inCli: boolean; usable: boolean; needsLogin: boolean; waitCli: boolean; renewError?: string; hidden: boolean }[];
+  accounts: { kindLabel: string; name: string; inCli: boolean; usable: boolean; needsLogin: boolean; waitCli: boolean; waitLocal?: boolean; renewError?: string; hidden: boolean }[];
   /** 开着自动切换、这会儿却不起作用的原因。 */
   autoSwitchIdle: { cli: string; reason: string }[];
   /** 最近 24 小时的续期记录。name 是账号显示名（认不出是空）。 */
@@ -78,6 +78,7 @@ export function buildHealthReport(input: HealthInputs, ms = 0): HealthReport {
     const who = `${account.kindLabel} 的 ${account.name}`;
     if (account.needsLogin) add({ id: `account-${i}`, group: "accounts", level: "bad", title: `${who} 需要重新登录`, detail: `官方拒绝了续期${account.renewError ? `（${account.renewError}）` : ""}。${account.inCli ? "请在 CLI 里重新登录。" : "在设置里点「重新授权」。"}`, action: accountsPage });
     else if (account.waitCli) add({ id: `account-${i}`, group: "accounts", level: "info", title: `${who} 的凭据过期了，等 CLI 续`, detail: "它登录在 CLI 里。CLI 没在运行时 TokenPulse 会替它续；正在运行时等它下次发请求自己续上，不用重新登录。" });
+    else if (account.waitLocal) add({ id: `account-${i}`, group: "accounts", level: "info", title: `${who} 仅登记了本机登录`, detail: "还没有保存独立凭据；打开 Antigravity 并切到该账号，或在设置里点「重新授权」后关掉客户端也能直连查询。", action: accountsPage });
     else if (!account.usable) add({ id: `account-${i}`, group: "accounts", level: "warn", title: `${who} 的凭据过期了`, detail: account.renewError ? `上次续期没成功（${account.renewError}），会继续重试。` : "下一轮查额度时会自动续期；一直这样的话，看看网络或者重新授权。", action: accountsPage });
     else if (account.renewError) add({ id: `account-${i}`, group: "accounts", level: "warn", title: `${who} 上次续期没成功`, detail: `现在的凭据还能用，会继续重试（${account.renewError}）。`, action: accountsPage });
     else healthy += 1;

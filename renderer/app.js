@@ -2342,7 +2342,8 @@ function syncAccountOptions(page) {
   if (wanted.join('\u0000') !== have.join('\u0000')) {
     select.replaceChildren(el('option', { value: '', text: '全部账号' }), ...wanted.slice(1).map(id => {
       const item = items.find(entry => entry.id === id);
-      return el('option', { value: id, text: item ? `${accountName(item)} · ${item.source}` : id });
+      const fallback = !item && id.startsWith('antigravity:') ? window.AntigravityQuota?.accountLabel?.(id) : '';
+      return el('option', { value: id, text: item ? `${accountName(item)} · ${item.source}` : (fallback ? `${fallback} · Antigravity` : id) });
     }));
   }
   select.value = state.reqAccount;
@@ -3466,7 +3467,7 @@ function quotaIntervalRow(prefs) {
     paint();
   });
   paint();
-  return settingRow('额度查询间隔', 'Claude、ChatGPT、Grok 的订阅额度，以及 DeepSeek 和第三方 Key 的余额，共用这一个间隔。默认 1 分钟。拖动滑块后点保存才会改掉正在跑的查询。最短 1 分钟，最长 10 分钟。', el('div', { class: 'interval-row' }, [
+  return settingRow('额度查询间隔', 'Claude、ChatGPT、Grok、Antigravity 的订阅额度，以及 DeepSeek 和第三方 Key 的余额，共用这一个间隔。默认 1 分钟。拖动滑块后点保存才会改掉正在跑的查询。最短 1 分钟，最长 10 分钟。', el('div', { class: 'interval-row' }, [
     el('span', { class: 'interval-bound', text: '1 分钟' }),
     slider,
     el('span', { class: 'interval-bound', text: '10 分钟' }),

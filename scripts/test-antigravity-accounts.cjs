@@ -276,6 +276,10 @@ function httpGet(url) {
     const revokedAlice = statusAfterRevoke.accounts.find((a) => a.id === aliceId);
     assert.equal(revokedAlice.needsLogin, true, 'refresh_token 被拒且不在本机登录时标记 needsLogin');
     assert.equal(revokedAlice.autoRenew, false);
+    const { readRenewLog } = require('../build/core/renew-log');
+    const renewEntries = readRenewLog(20).filter((row) => row.kind === 'antigravity');
+    assert.ok(renewEntries.some((row) => row.ok === true), 'Antigravity 续期成功写入 renew-log');
+    assert.ok(renewEntries.some((row) => row.ok === false && row.status === 400 && row.code === 'invalid_grant' && row.permanent === true), 'Antigravity 续期永久拒绝写入 renew-log（供体检展示）');
     pass('automatic credential renewal and permanent invalid_grant detection');
 
     // 5. Cloud Code 直连配额解析（含残缺 3P 单组响应自动故障转移 + 防跨池误并入 + plan 格式化去重）
@@ -429,7 +433,38 @@ function httpGet(url) {
     assert.equal(st.accounts.some((a) => a.id === aliceId), false);
     pass('account reorder, rename, share-mode, hide/restore, and purge');
 
-    console.log(`\n${checks}/6 antigravity multi-account checks passed`);
+    // 7. 用量明细请求流水多账号归属（时间线 + 推断 + 别名 + 官方渠道 + 零配置隐私回退）
+    mod.rememberAgyAccount({ email: 'alice@example.com', label: 'alice@example.com', credential: { token: 'syn-tok', expiresAt: t0 + 7200_000 } }, true, t0);
+    mod.renameAgyAccount(aliceId, '主号 Alice');
+    const reqLog = require('../build/core/request-log');
+    reqLog.appendRequests([
+      { id: 'agy-pre', at: t0 - 600_000, kind: 'antigravity', file: 'conv-pre.db', model: 'gemini-4-argon', input: 100, output: 20, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0.01, calls: 1 },
+      { id: 'agy-alice', at: t0 + 600_000, kind: 'antigravity', file: 'conv-a.db', model: 'gemini-4-argon', input: 200, output: 40, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0.02, calls: 1 },
+      { id: 'agy-bob', at: t0 + 4200_000, kind: 'antigravity', file: 'conv-b.db', model: 'claude-opus-5-5', input: 300, output: 60, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0.03, calls: 1 },
+    ]);
+    const dayStr = new Date(t0).toISOString().slice(0, 10);
+    const reqRes = reqLog.queryRequests({ from: '2026-01-01', to: '2027-01-01', source: 'Antigravity', status: 'all', channel: 'official', search: '', sort: 'time', page: 0, pageSize: 20, all: true });
+    assert.equal(reqRes.total, 3, 'Antigravity 请求按官方渠道查询全部命中');
+    const rowPre = reqRes.rows.find((r) => r.key.endsWith('agy-pre'));
+    const rowAlice = reqRes.rows.find((r) => r.key.endsWith('agy-alice'));
+    const rowBob = reqRes.rows.find((r) => r.key.endsWith('agy-bob'));
+    assert.equal(rowPre.official, true);
+    assert.deepEqual(rowPre.account, { id: aliceId, label: '主号 Alice', basis: 'inferred' });
+    assert.deepEqual(rowAlice.account, { id: aliceId, label: '主号 Alice', basis: 'timeline' });
+    assert.deepEqual(rowBob.account, { id: bobId, label: 'bob@example.com', basis: 'timeline' });
+    assert.equal(reqRes.accounts.some((a) => a.id === 'none'), false, '不再把 Antigravity 请求归进账号未知');
+    const bobOnly = reqLog.queryRequests({ from: '2026-01-01', to: '2027-01-01', source: 'Antigravity', account: bobId, status: 'all', search: '', sort: 'time', page: 0, pageSize: 20, all: true });
+    assert.equal(bobOnly.total, 1);
+    assert.equal(bobOnly.rows[0].key, rowBob.key);
+    assert.ok(dayStr);
+
+    // 零配置（antigravity-accounts.json 为空）：只显示脱敏「本机 Antigravity」，不泄漏邮箱
+    fs.rmSync(path.join(dataDir, 'antigravity-accounts.json'), { force: true });
+    const zeroRes = reqLog.queryRequests({ from: '2026-01-01', to: '2027-01-01', source: 'Antigravity', status: 'all', search: '', sort: 'time', page: 0, pageSize: 20, all: true });
+    assert.equal(zeroRes.rows.find((r) => r.key === rowBob.key).account.label, '本机 Antigravity');
+    pass('Antigravity multi-account usage attribution, official channel, account filter, and zero-config privacy fallback');
+
+    console.log(`\n${checks}/7 antigravity multi-account checks passed`);
   } catch (err) {
     console.error(err);
     process.exitCode = 1;

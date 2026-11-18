@@ -24,11 +24,11 @@ import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask, typ
 import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
-import { anchorOf, askBounds, bubbleBounds, edgeReached, flingPath, GRID, jumpPoint, miniBounds, miniPose, miniSpriteBox, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetEdge, type PetMood, type PetUsing } from "../core/desk-pet-model";
+import { anchorOf, askBounds, bubbleBounds, edgeReached, flingPath, GRID, jumpPoint, miniBounds, miniPose, miniSpriteBox, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetAccount, type PetAccountKind, type PetEdge, type PetMood, type PetUsing } from "../core/desk-pet-model";
 import { petPackImages } from "../core/pet-pack";
 import { tr } from "./i18n";
 
-type Account = Snapshot["accounts"][number];
+type Account = PetAccount;
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 
 type TaskBrief = Pick<AgentTask, "key" | "kind" | "agent" | "title" | "project" | "status" | "tool" | "since" | "doneAt"> & { asking: boolean };
@@ -54,6 +54,8 @@ type Options = {
   saveMini: (on: boolean, edge?: PetEdge) => void;
   hide: () => void;
   snapshot: () => Snapshot | null;
+  extraAccounts?: () => PetAccount[];
+  antigravityLogin?: () => string;
   title: (account: Account) => string;
   openMain: (target?: { page: string }) => void;
   openSettings: () => void;
@@ -71,7 +73,7 @@ const TOPMOST_EVERY_MS = 3000;
 /** 置顶用的层级：比任务栏高（"floating" 这几档在 Windows 上会放到任务栏后面）。 */
 const TOP_LEVEL = "pop-up-menu";
 /** 会话里的工具 → 它用哪家的额度（DeepSeek Harness、pi 没有官方账号额度）。 */
-const TASK_ACCOUNT: Partial<Record<TaskKind, Account["kind"]>> = { claude: "claude", codex: "chatgpt", grok: "grok" };
+const TASK_ACCOUNT: Partial<Record<TaskKind, PetAccountKind>> = { claude: "claude", codex: "chatgpt", grok: "grok", antigravity: "antigravity" };
 
 let options: Options | null = null;
 let pet: BrowserWindow | null = null;
@@ -91,7 +93,7 @@ let scanning = false, listening = false, interactive = false, bubbleShown = fals
 let watchers: fs.FSWatcher[] = [], soonTimer: NodeJS.Timeout | null = null, scanGen = 0;
 let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "";
 /** 最近一次有任务的是哪家（任务做完十分钟后不在 activity 里了，靠它记住「最近用的」）。 */
-let lastUsedKind: Account["kind"] | null = null;
+let lastUsedKind: PetAccountKind | null = null;
 let bubbleBox = { width: 236, height: 120 }, bubbleView: BubbleView = "quota", bubbleOpened = 0, bubbleHiddenAt = 0;
 let bubblePlace: BubblePlace | null = null;
 let drag: { dx: number; dy: number; size: { width: number; height: number }; at: { x: number; y: number; width: number; height: number }; trail: DragSample[] } | null = null;
@@ -272,9 +274,9 @@ function idleSeconds() { try { return powerMonitor.getSystemIdleTime(); } catch 
 /* ---------------- 正在用的账号 ---------------- */
 
 /** 现在在用哪家：有任务在跑的（最近有动静的在前），然后是刚做完的，再然后是之前记住的。 */
-function usingKinds(): Account["kind"][] {
-  const out: Account["kind"][] = [];
-  const add = (kind: Account["kind"] | null | undefined) => { if (kind && !out.includes(kind)) out.push(kind); };
+function usingKinds(): PetAccountKind[] {
+  const out: PetAccountKind[] = [];
+  const add = (kind: PetAccountKind | null | undefined) => { if (kind && !out.includes(kind)) out.push(kind); };
   for (const task of [...(activity?.running ?? [])].sort((a, b) => b.updatedAt - a.updatedAt)) add(TASK_ACCOUNT[task.kind]);
   for (const task of [...(activity?.recent ?? [])].sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0))) add(TASK_ACCOUNT[task.kind]);
   add(lastUsedKind);
@@ -296,14 +298,20 @@ function currentLogin(kind: "claude" | "chatgpt") {
 function petUsing(): PetUsing {
   const current: PetUsing["current"] = {};
   for (const kind of ["claude", "chatgpt"] as const) { const id = currentLogin(kind); if (id) current[kind] = id; }
+  const agyId = options?.antigravityLogin?.();
+  if (agyId) current.antigravity = agyId;
   return { kinds: usingKinds(), current };
+}
+function allPetAccounts(): PetAccount[] {
+  if (!options) return [];
+  return [...(options.snapshot()?.accounts ?? []), ...(options.extraAccounts?.() ?? [])];
 }
 
 /** 宠物要画的状态。和上次一样就不发（force：设置变了，照样发一次）。 */
 export function deskPetView() {
   if (!options) return null;
   const prefs = options.prefs();
-  const quota = petQuota(options.snapshot(), prefs.deskPetAccount, options.title, prefs.deskPetAccount ? undefined : petUsing());
+  const quota = petQuota({ accounts: allPetAccounts() }, prefs.deskPetAccount, options.title, prefs.deskPetAccount ? undefined : petUsing());
   const running = activity?.running ?? [];
   return {
     pet: prefs.deskPetKind, scale: prefs.deskPetScale, theme: prefs.theme, fidget: prefs.deskPetFidget, badge: prefs.deskPetBadge, fps: prefs.deskPetFps,
@@ -518,10 +526,11 @@ function bubbleWindow(window: Account["five"]): BubbleWindow | null {
 }
 export function deskPetBubbleData(): DeskPetBubbleData | null {
   if (!options) return null;
-  const prefs = options.prefs(), snapshot = options.snapshot();
+  const prefs = options.prefs();
+  const accounts = allPetAccounts();
   const using = prefs.deskPetAccount ? undefined : petUsing();
-  const account = pickPetAccount(snapshot?.accounts ?? [], prefs.deskPetAccount, using);
-  const quota = petQuota(snapshot, prefs.deskPetAccount, options.title, using);
+  const account = pickPetAccount(accounts, prefs.deskPetAccount, using);
+  const quota = petQuota({ accounts }, prefs.deskPetAccount, options.title, using);
   return {
     now: Date.now(), theme: prefs.theme, view: bubbleView, opened: bubbleOpened,
     place: { side: bubblePlace?.side ?? "down", at: bubblePlace?.at ?? Math.round(bubbleBox.width / 2) },

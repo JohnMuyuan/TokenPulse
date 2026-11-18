@@ -177,6 +177,10 @@ app.whenReady().then(async () => {
     await until(() => bjs("document.getElementById('bb').offsetLeft === 18"), '尾巴在左边');
     assert.equal(await bjs("Math.min(...[...document.querySelectorAll('#bb-tail rect')].map(r => +r.getAttribute('x')))"), 6, '尾巴尖在左边外沿');
     assert.match(await bjs("document.querySelector('.bb-say').textContent"), /^(额度还很充足～|还剩 80%，放心用！)$/);
+    // Antigravity 账号气泡：带上 Antigravity 品牌色标识
+    send({ quota: 75, mood: 'ok', opened: 1003, place: { side: 'down', at: 120 }, account: { kind: 'antigravity', name: 'Antigravity · QA', plan: 'Pro', checkedAt: Date.now(), five: { used: 25, resetAt: 0, high: false }, week: { used: 10, resetAt: 0, high: false } } });
+    await until(() => bjs("document.querySelector('.bb-kind.antigravity') && document.querySelector('.bb-acc b')?.textContent === 'Antigravity · QA'"), 'Antigravity 气泡');
+    assert.equal(await bjs("getComputedStyle(document.querySelector('.bb-kind.antigravity')).backgroundColor"), 'rgb(49, 134, 255)');
     // Esc 收起
     assert.equal(bubble.isVisible(), true, 'Esc 之前气泡还开着');
     await bjs("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");

@@ -224,7 +224,8 @@
   /** 给请求记录列表估算单次请求占所属分组 5 小时 / 周额度的比例。 */
   function quotaShare(row) {
     if (!row || row.source !== 'Antigravity' || !(row.tokens > 0)) return null;
-    const matchedAcc = row.accountId ? accountsList().find(a => a.id === row.accountId) : null;
+    const rowAccId = row.account?.id || row.accountId;
+    const matchedAcc = rowAccId ? accountsList().find(a => a.id === rowAccId) : null;
     const gList = (matchedAcc?.insight || insight())?.groups || [];
     const model = String(row.model || row.requested || '').toLowerCase();
     const g = gList.find(item => item.items?.some(m => m.model === model || model.startsWith(m.model + '-')) || (/gemini|orchestrator/i.test(model) && item.models.some(m => /gemini|orchestrator/i.test(m))) || (/claude|gpt/i.test(model) && item.models.some(m => /claude|gpt/i.test(m))));
@@ -1051,7 +1052,10 @@
     openAll.addEventListener('click', () => {
       const select = document.getElementById('source-filter');
       if (select && [...select.options].some(option => option.value === 'Antigravity')) select.value = 'Antigravity';
-      state.source = 'Antigravity'; state.reqStatus = 'all'; state.reqPage = 0;
+      state.source = 'Antigravity';
+      const accId = curAcc()?.id || activeId;
+      state.reqAccount = typeof accId === 'string' && accId.startsWith('antigravity:') ? accId : '';
+      state.reqStatus = 'all'; state.reqPage = 0;
       const statusSel = document.getElementById('request-status');
       if (statusSel) statusSel.value = 'all';
       if (typeof showUsageView === 'function') showUsageView('requests');
@@ -1510,7 +1514,12 @@
   }
   function apply(next) { if (!next || typeof next !== 'object') return; quota = next; render(); }
 
-  window.AntigravityQuota = { render, cards, tabs, tabButton, owns, renderQuota, quotaShare, apply, state: () => quota };
+  function accountLabel(id) {
+    const acc = typeof id === 'string' ? accountsList().find(a => a.id === id) : null;
+    return acc ? (acc.accountHint || displayNameOf(acc) || id) : '';
+  }
+
+  window.AntigravityQuota = { render, cards, tabs, tabButton, owns, renderQuota, quotaShare, accountLabel, apply, state: () => quota };
   api.onState(apply);
   api.state().then(apply).catch(() => {});
 })();

@@ -92,8 +92,22 @@ const listening = healthy();
 listening.route.listening = false;
 check("路由在跑但端口连不上：bad", buildHealthReport(listening).items.find((item) => item.id === "route").title === "本地路由的端口 17621 连不上");
 
+const agyHealth = healthy();
+agyHealth.accounts = [
+  { kindLabel: "Antigravity", name: "local@example.com", inCli: false, usable: false, needsLogin: false, waitCli: false, waitLocal: true, hidden: false },
+  { kindLabel: "Antigravity", name: "dead@example.com", inCli: false, usable: false, needsLogin: true, waitCli: false, renewError: "HTTP 400 invalid_grant", hidden: false },
+  { kindLabel: "Antigravity", name: "shaky@example.com", inCli: true, usable: true, needsLogin: false, waitCli: false, renewError: "HTTP 401", hidden: false },
+];
+agyHealth.renewLog = [
+  { at: NOW - 1200_000, kindLabel: "Antigravity", name: "dead@example.com", source: "stored", ok: false, status: 400, code: "invalid_grant", permanent: true },
+];
+agyHealth.reach = [...agyHealth.reach, { name: "Antigravity", host: "cloudcode-pa.googleapis.com", ok: false, error: "timed out" }];
+const agyReport = buildHealthReport(agyHealth);
+check("Antigravity 仅本机登录：info 提示", find(agyReport, "account-0")?.level === "info" && /仅登记了本机登录/.test(find(agyReport, "account-0").title));
+check("Antigravity 失效与续期日志：bad", find(agyReport, "account-1")?.level === "bad" && find(agyReport, "account-2")?.level === "warn" && find(agyReport, "renew-log")?.level === "bad" && find(agyReport, "reach-cloudcode-pa.googleapis.com")?.level === "bad");
+
 // 英文：每一条标题和说明都要翻得出来（不能留中文）
-const english = [buildHealthReport(healthy()), buildHealthReport(broken), buildHealthReport(empty), buildHealthReport(listening)]
+const english = [buildHealthReport(healthy()), buildHealthReport(broken), buildHealthReport(empty), buildHealthReport(listening), agyReport]
   .flatMap((r) => r.items.flatMap((item) => [item.title, item.detail, item.action?.label, ...(item.lines || [])]))
   .filter(Boolean);
 const untranslated = [...new Set(english.filter((text) => /[\u4e00-\u9fff]/.test(translate(text))))];

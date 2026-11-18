@@ -3,6 +3,7 @@ import fs from "fs";
 import net from "net";
 import path from "path";
 import { readOfficialAccountStore } from "../core/accounts";
+import { listAgyAccountStatus, readAgyAccountStore } from "../core/antigravity-accounts";
 import { agentDrift, agentView, localRouteLeftovers } from "../core/agent-switch";
 import { AGENT_LABEL, type AgentApp } from "../core/agent-types";
 import { curlBin } from "../core/curl";
@@ -19,7 +20,7 @@ import { readPrefs } from "./prefs";
  * 唯一的网络动作是不带账号地连一下三家官方地址（出口设了白名单、现在又不在白名单里的那家不连）。
  */
 
-const KIND_LABEL = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" } as const;
+const KIND_LABEL = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok", antigravity: "Antigravity" } as const;
 const SITES = [
   { kind: "claude", name: "Claude", host: "api.anthropic.com" },
   { kind: "chatgpt", name: "ChatGPT", host: "chatgpt.com" },
@@ -118,14 +119,26 @@ async function check(exitMonitor: ExitMonitor): Promise<HealthReport> {
   } catch { /* 供应商数据读不了：这一组只剩能读到的 */ }
 
   const prefs = readPrefs();
-  const statuses = await listOfficialOAuthStatus().catch(() => []);
-  const accounts = statuses.flatMap((status) => status.accounts.map((account) => ({
-    kindLabel: status.label, name: account.alias || account.email || account.label, inCli: account.inCli, usable: account.usable,
-    needsLogin: account.needsLogin, waitCli: account.waitCli, renewError: account.renewError, hidden: account.hidden,
-  })));
+  const [statuses, agyStatus] = await Promise.all([
+    listOfficialOAuthStatus().catch(() => []),
+    listAgyAccountStatus().catch(() => null),
+  ]);
+  const accounts: HealthInputs["accounts"] = [
+    ...statuses.flatMap((status) => status.accounts.map((account) => ({
+      kindLabel: status.label, name: account.alias || account.email || account.label, inCli: account.inCli, usable: account.usable,
+      needsLogin: account.needsLogin, waitCli: account.waitCli, renewError: account.renewError, hidden: account.hidden,
+    }))),
+    ...(agyStatus?.accounts ?? []).map((account) => ({
+      kindLabel: agyStatus!.label, name: account.alias || account.email || account.label, inCli: account.inCli, usable: account.usable,
+      needsLogin: account.needsLogin, waitCli: false, waitLocal: account.waitLocal, renewError: account.renewError, hidden: account.hidden,
+    })),
+  ];
   const autoSwitchIdle = statuses.filter((status) => status.autoSwitch.on && status.autoSwitch.idle).map((status) => ({ cli: { claude: "Claude Code", chatgpt: "Codex", grok: "Grok CLI" }[status.kind], reason: status.autoSwitch.idle! }));
 
-  const names = new Map(readOfficialAccountStore().accounts.map((account) => [accountHash(account.id), account.alias || account.email || account.label]));
+  const names = new Map<string, string>([
+    ...readOfficialAccountStore().accounts.map((account): [string, string] => [accountHash(account.id), account.alias || account.email || account.label]),
+    ...readAgyAccountStore().accounts.map((account): [string, string] => [accountHash(account.id), account.alias || account.email || account.label]),
+  ]);
   const renewLog = readRenewLog(1000).filter((row) => now - row.at < DAY).map((row) => ({
     at: row.at, kindLabel: KIND_LABEL[row.kind as keyof typeof KIND_LABEL] || row.kind, name: names.get(row.account) || "", source: row.source,
     ok: row.ok, status: row.status, code: row.code, error: row.error, permanent: row.permanent,
@@ -141,12 +154,17 @@ async function check(exitMonitor: ExitMonitor): Promise<HealthReport> {
     })),
   };
 
-  // 出口设了白名单的那家，先按规则放行再连（和查额度同一个规矩）
-  const reachRows = await Promise.all(SITES.map(async (site) => {
-    const allowed = await exitMonitor.gateQuota(site.kind).catch(() => false);
-    if (!allowed) return { name: site.name, host: site.host, ok: false, skipped: true };
-    return { name: site.name, host: site.host, ...(await reach(site.host)) };
-  }));
+  // 出口设了白名单的那家，先按规则放行再连（和查额度同一个规矩）；安装了 Antigravity 或登记了账号时也测 Cloud Code
+  const reachRows = await Promise.all([
+    ...SITES.map(async (site) => {
+      const allowed = await exitMonitor.gateQuota(site.kind).catch(() => false);
+      if (!allowed) return { name: site.name, host: site.host, ok: false, skipped: true };
+      return { name: site.name, host: site.host, ...(await reach(site.host)) };
+    }),
+    ...(agyStatus && (agyStatus.installed || agyStatus.accounts.some((account) => !account.hidden))
+      ? [{ name: "Antigravity", host: "cloudcode-pa.googleapis.com", ...(await reach("cloudcode-pa.googleapis.com")) }]
+      : []),
+  ]);
 
   const inputs: HealthInputs = { now, drift, leftovers, route, readOnly: prefs.agentReadOnly === true, accounts, autoSwitchIdle, renewLog, egress, proxy: await proxyInfo(), reach: reachRows, data: dataState() };
   return buildHealthReport(inputs, Date.now() - started);

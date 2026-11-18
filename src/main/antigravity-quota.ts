@@ -24,6 +24,7 @@ import {
   readAgyAccountStore,
   readAgyLoginTimeline,
   recordAgyLocalLogin,
+  rememberAgyAccount,
   renewAgyCredentials,
   resolveAgyLocalOwner,
   updateAgyProjectId,
@@ -39,6 +40,8 @@ import { comboKey } from "../core/model-catalog";
 import { estimateCost, priceOf } from "../core/model-pricing";
 import { speedSeriesOf, type SpeedSeries } from "../core/pass-speed";
 import { dataFile, readJson, writeJson } from "../core/paths";
+import type { PetAccount, PetQuotaWindow } from "../core/desk-pet-model";
+import { pressureRule, readPressurePrefs, type PressurePrefs, type PressureRule } from "../core/quota-pressure";
 import { queryRequests, type RequestRow } from "../core/request-log";
 
 /**
@@ -2273,6 +2276,24 @@ export class AntigravityQuota {
     } catch { /* 存不下来：这次的结果还在内存里 */ }
   }
 
+  /** 快速同步本机正在运行的 Antigravity IDE 登录态到时间线（供刷新前调用，Antigravity 未开时零开销）。 */
+  async syncLocalLogin(): Promise<void> {
+    if (this.options.fetcher || !antigravityHub()) return;
+    const sess = await fetchAntigravityLocalSession().catch(() => null);
+    if (!sess) return;
+    this.running = true;
+    const at = this.now();
+    if (sess.email) {
+      this.activeLocalEmail = normalizeAgyEmail(sess.email);
+      this.activeLocalAccountId = recordAgyLocalLogin(sess.email, at);
+      if (visibleAgyAccounts().length > 0) {
+        try {
+          rememberAgyAccount({ email: sess.email, label: sess.email || sess.name }, false, at);
+        } catch { /* 尊重 removed / hidden */ }
+      }
+    }
+  }
+
   refresh(manual: boolean, targetAccountId?: string): Promise<AgyQuotaState> {
     if (this.pending) return this.pending;
     const hasAccounts = visibleAgyAccounts().length > 0;
@@ -2514,3 +2535,119 @@ export class AntigravityQuota {
 }
 
 export const antigravityQuotaFile = () => path.join(dataFile("antigravity-quota.json"));
+
+function calcAgyPressure(
+  used: number,
+  etaAt: number | null | undefined,
+  resetAt: number | undefined,
+  now: number,
+  rule: PressureRule,
+): "none" | "watch" | "high" {
+  if (used >= 100) return "high";
+  if (!etaAt || !resetAt || etaAt >= resetAt) return "none";
+  if (used < rule.minUsed) return "watch";
+  const remaining = Math.max(1, resetAt - now);
+  return (resetAt - etaAt) / remaining >= rule.lockoutShare ? "high" : "watch";
+}
+
+function clampPct(value: number) {
+  return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0));
+}
+
+function parseIsoMs(iso?: string): number | undefined {
+  if (!iso) return undefined;
+  const parsed = Date.parse(iso);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function slotToPetAccount(
+  id: string,
+  displayName: string,
+  last: AgyLast | undefined,
+  insight: AgyInsight | undefined,
+  now: number,
+  prefs: PressurePrefs,
+): PetAccount | null {
+  const groups = last?.groups ?? [];
+  if (!groups.length) return null;
+  const insightGroups = insight?.groups ?? [];
+  const findInsight = (group: AgyGroupState) =>
+    insightGroups.find((item) => item.key === group.key) ??
+    insightGroups.find((item) => quotaPoolId(item.models, item.title) === quotaPoolId(group.models, group.title));
+
+  const pickWindow = (kind: "five" | "week"): PetQuotaWindow | null => {
+    const entries: { used: number; resetAt?: number; etaAt?: number; startAt?: number; endAt?: number }[] = [];
+    for (const group of groups) {
+      const ig = findInsight(group);
+      if (kind === "five") {
+        const w = ig?.five;
+        const resetAt = parseIsoMs(group.resetAt);
+        entries.push({
+          used: clampPct(w?.used ?? group.used),
+          resetAt,
+          etaAt: w?.etaAt ?? undefined,
+          startAt: w?.startAt,
+          endAt: w?.endAt ?? resetAt,
+        });
+      } else if (group.week) {
+        const w = ig?.week;
+        const resetAt = parseIsoMs(group.week.resetAt);
+        entries.push({
+          used: clampPct(w?.used ?? group.week.used),
+          resetAt,
+          etaAt: w?.etaAt ?? undefined,
+          startAt: w?.startAt,
+          endAt: w?.endAt ?? resetAt,
+        });
+      }
+    }
+    if (!entries.length) return null;
+    entries.sort((a, b) => b.used - a.used || (a.resetAt ?? Infinity) - (b.resetAt ?? Infinity));
+    const chosen = entries[0];
+    const spanMs = kind === "five" ? FIVE_MS : WEEK_MS;
+    const endAt = chosen.endAt ?? chosen.resetAt;
+    const startAt = chosen.startAt ?? (endAt != null ? endAt - spanMs : undefined);
+    const rule = pressureRule(kind === "five" ? prefs.five : prefs.week, kind === "five" ? "relaxed" : "default");
+    return {
+      used: chosen.used,
+      ...(chosen.resetAt != null ? { resetAt: chosen.resetAt } : {}),
+      ...(chosen.etaAt != null ? { etaAt: chosen.etaAt } : {}),
+      ...(startAt != null && endAt != null && endAt > startAt
+        ? {
+            elapsedH: Math.max(0, Math.min(now, endAt) - startAt) / HOUR,
+            leftH: Math.max(0, endAt - now) / HOUR,
+          }
+        : {}),
+      pressure: calcAgyPressure(chosen.used, chosen.etaAt, chosen.resetAt, now, rule),
+    };
+  };
+
+  const five = pickWindow("five");
+  const week = pickWindow("week");
+  if (!five && !week) return null;
+  return {
+    kind: "antigravity",
+    accountId: id,
+    key: id,
+    displayName,
+    plan: last?.tier || last?.plan || "",
+    lastCheckedAt: last?.at ?? 0,
+    five,
+    week,
+  };
+}
+
+/** 把 Antigravity 额度状态转换成托盘面板、托盘悬停提示与桌宠共用的轻量账号摘要。 */
+export function agyQuotaAccounts(
+  state: AgyQuotaState,
+  now = Date.now(),
+  pressurePrefs = readPressurePrefs(),
+): PetAccount[] {
+  if (state.accounts.length) {
+    return state.accounts
+      .map((acc) => slotToPetAccount(acc.id, acc.displayName, acc.last, acc.insight, now, pressurePrefs))
+      .filter((item): item is PetAccount => item !== null);
+  }
+  const single = slotToPetAccount("antigravity", "", state.last, state.insight, now, pressurePrefs);
+  return single ? [single] : [];
+}

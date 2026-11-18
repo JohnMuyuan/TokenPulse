@@ -411,6 +411,14 @@ app.on('web-contents-created', (_event, wc) => {
     await e("document.querySelector('.agy-share-seg button[data-agy-share=\"auto\"]').click()");
     await until("Boolean(document.querySelector('#quota-detail .agy-shared-box'))");
 
+    // 从该账号额度详情跳转「在请求记录里查看全部」→ 自动选中该账号并显示真实账号名（不再是「账号未知」）
+    await e("document.querySelector('#quota-detail .agy-requests [data-action=\"agy-requests-all\"]').click()");
+    await until("document.body.dataset.page === 'usage' && document.querySelector('#request-rows .account-line')");
+    assert.equal(await e("state.reqAccount"), idAlpha, '从账号详情跳转请求记录时自动筛选当前 Antigravity 账号');
+    const agyUsageAccounts = await e("[...document.querySelectorAll('#request-rows .account-line')].map(n => n.textContent.trim())");
+    assert.ok(agyUsageAccounts.length > 0 && agyUsageAccounts.every((t) => !t.includes('账号未知') && t.includes('fam-alpha@example.com')), '多账号用量明细显示具体账号，不再显示账号未知: ' + JSON.stringify(agyUsageAccounts));
+    await e("state.reqAccount = ''; navigate('quota')");
+
     // 设置 → 官方账号：#official-accounts 仍保持 3 张卡片，#antigravity-accounts 展示 3 个账号且不泄漏任何真实 token
     await e("openSettings('accounts')");
     await until("document.querySelectorAll('#antigravity-accounts .oauth-account').length === 3");

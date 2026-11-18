@@ -1,5 +1,6 @@
 import { routeAccount } from "./route-ledger";
 import { accountIdOf, readOfficialAccountStore } from "./accounts";
+import { readAgyAccountStore, readAgyLoginTimeline, type AgyLoginSpan } from "./antigravity-accounts";
 import { OFFICIAL_KINDS, readCliAccounts, type OfficialAccountKind } from "./credentials";
 import { dataFile, readJson, writeJson } from "./paths";
 
@@ -65,10 +66,17 @@ export function recordCliLogins(now = Date.now(), read: typeof readCliAccounts =
   return timeline;
 }
 
+export type SourceAccountKind = OfficialAccountKind | "antigravity";
+
 export const KIND_OF_SOURCE: Record<string, OfficialAccountKind> = {
   "Claude Code": "claude",
   "Codex CLI": "chatgpt",
   "Grok Build": "grok",
+};
+
+export const ACCOUNT_KIND_OF_SOURCE: Record<string, SourceAccountKind> = {
+  ...KIND_OF_SOURCE,
+  Antigravity: "antigravity",
 };
 
 /** 账号 id → 显示名；emails 是 id → 邮箱，按邮箱对账号时用（显示名可能是用户起的别名，不能拿来比邮箱）。 */
@@ -86,6 +94,10 @@ export function accountLabels(): AccountLabels {
     if (span.email) emails.set(span.id, span.email);
   }
   for (const account of readOfficialAccountStore().accounts) {
+    labels.set(account.id, account.alias || account.email || account.label || account.id);
+    if (account.email) emails.set(account.id, account.email);
+  }
+  for (const account of readAgyAccountStore().accounts) {
     labels.set(account.id, account.alias || account.email || account.label || account.id);
     if (account.email) emails.set(account.id, account.email);
   }
@@ -107,13 +119,28 @@ export function routedAccount(kind: OfficialAccountKind | undefined, at: number,
 }
 
 export function resolveAccount(
-  kind: OfficialAccountKind | undefined,
+  kind: SourceAccountKind | undefined,
   at: number,
   evidence: { ref?: string; email?: string; at?: number },
   timeline: LoginTimeline,
   labels: AccountLabels,
+  agyTimeline?: AgyLoginSpan[],
 ): RequestAccount | null {
   if (!kind) return null;
+  if (kind === "antigravity") {
+    const spans = agyTimeline ?? readAgyLoginTimeline();
+    if (!spans.length) return null;
+    let hit: AgyLoginSpan | undefined;
+    for (const item of spans) {
+      if (item.from <= at) hit = item;
+      else break;
+    }
+    if (hit) {
+      return hit.id ? { id: hit.id, label: labels.get(hit.id) ?? "本机 Antigravity", basis: "timeline" } : null;
+    }
+    const first = spans.find((item) => item.id);
+    return first ? { id: first.id, label: labels.get(first.id) ?? "本机 Antigravity", basis: "inferred" } : null;
+  }
   const spans = timeline.kinds[kind] ?? [];
   let span: LoginSpan | undefined;
   let index = -1;

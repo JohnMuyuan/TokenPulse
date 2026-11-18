@@ -6,7 +6,8 @@ import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
 import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-switch";
 import { routeEvents, routeLogDir, routeReturned, type RouteTiming } from "./route-ledger";
-import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline, type RequestAccount } from "./login-timeline";
+import { accountLabels, ACCOUNT_KIND_OF_SOURCE, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type AccountLabels, type LoginTimeline, type RequestAccount } from "./login-timeline";
+import { readAgyLoginTimeline, type AgyLoginSpan } from "./antigravity-accounts";
 import { quotaAttribution } from "./quota-attribution";
 import { readQuotaHistory } from "./quota-history";
 import { windowSegments } from "./quota-monitor";
@@ -422,9 +423,9 @@ function sessionOf(record: RequestRecord) {
 }
 
 /** 对账号要用到的：登录时间线和账号名，一次查询读一次。 */
-type AccountContext = { timeline: LoginTimeline; labels: Map<string, string> };
+type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; labels: AccountLabels };
 function accountContext(): AccountContext {
-  return { timeline: readLoginTimeline(), labels: accountLabels() };
+  return { timeline: readLoginTimeline(), agyTimeline: readAgyLoginTimeline(), labels: accountLabels() };
 }
 
 const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，按压缩前的上下文大小和摘要长度估算";
@@ -472,12 +473,12 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     // Grok：这一轮的请求在转发记录里全部交给了同一个号池账号（见 usage-scan.ts）
     : record.routedAccount && record.routedAccountBasis === "route-window" ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route-window" }
     : routedAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, accounts.labels, record.responseId);
-  const official = routed ? true : fileOfficial;
+  const official = routed ? true : record.kind === "antigravity" ? (fileOfficial ?? true) : fileOfficial;
   // 走中转 / API Key 的不是官方账号发的；CC Switch 导入的走它代理的也一样
   const account = routed ? routed :
     official === false || (record.kind === "cc-switch" && record.viaProxy)
       ? null
-      : resolveAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt }, accounts.timeline, accounts.labels);
+      : resolveAccount(ACCOUNT_KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt }, accounts.timeline, accounts.labels, accounts.agyTimeline);
   const verdict: { status: VerifyStatus; reasons: string[]; channel: string } = record.compaction
     ? { status: "unverified", reasons: [COMPACTION_REASON], channel: "压缩上下文（估算）" }
     : verifyRequest({

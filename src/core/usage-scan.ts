@@ -319,8 +319,8 @@ function configOfficial(): Record<Kind, boolean | undefined> {
   } catch {
     // 没有 config.toml 同上
   }
-  // DeepSeek 按量付费，没有订阅额度窗口，不分官方 / 第三方；pi 没有自己的额度，也不算进任何官方账号
-  return { "claude-code": claude, codex: undefined, "grok-build": grok, "deepseek-harness": undefined, pi: undefined, antigravity: undefined };
+  // DeepSeek 按量付费，没有订阅额度窗口，不分官方 / 第三方；pi 没有自己的额度；Antigravity 为 Google 官方客户端登录
+  return { "claude-code": claude, codex: undefined, "grok-build": grok, "deepseek-harness": undefined, pi: undefined, antigravity: true };
 }
 
 type CodexProviderRule = { official: boolean };

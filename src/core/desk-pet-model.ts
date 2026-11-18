@@ -1,4 +1,5 @@
 import type { Snapshot } from "./report";
+import type { WindowReport } from "./quota-monitor";
 import type { ActivityState } from "./agent-activity";
 import { SOUND_KINDS, type SoundKind } from "./pet-sound-file";
 
@@ -82,31 +83,45 @@ export function normalizeDeskPet(patch: Record<string, unknown>): Partial<DeskPe
 }
 
 type Account = Snapshot["accounts"][number];
+export type PetAccountKind = Account["kind"] | "antigravity";
+export type PetQuotaWindow = Pick<WindowReport, "used" | "resetAt" | "etaAt" | "pressure" | "elapsedH" | "leftH">;
+export type PetAccount = {
+  kind: PetAccountKind;
+  accountId?: string;
+  key?: string;
+  displayName?: string;
+  plan?: string;
+  lastCheckedAt?: number;
+  lastSampleAt?: number;
+  quiet?: boolean;
+  five: PetQuotaWindow | null;
+  week: PetQuotaWindow | null;
+};
 export type PetMood = "ok" | "tight" | "empty";
 export type PetQuota = { quota: number | null; mood: PetMood; account: string; accountId: string };
-export const accountKey = (account: Account) => account.key || account.accountId || account.kind;
+export const accountKey = (account: Pick<PetAccount, "key" | "accountId" | "kind">) => account.key || account.accountId || account.kind;
 
 /**
- * 现在在用哪个工具、各家 CLI 当前登录的是哪个账号（账号 id，和额度报告的 accountId 对得上）。
+ * 现在在用哪个工具、各家 CLI / 本地客户端当前登录的是哪个账号（账号 id，和额度报告的 accountId 对得上）。
  * kinds 按优先顺序：有任务在跑的工具在前，然后是刚做完任务的、再之前用过的。
  */
-export type PetUsing = { kinds: Account["kind"][]; current: Partial<Record<Account["kind"], string>> };
+export type PetUsing = { kinds: PetAccountKind[]; current: Partial<Record<PetAccountKind, string>> };
 
 /**
  * 宠物跟哪个账号：指定了就用指定的；没指定（或指定的没有额度数据）跟着正在用的——
- * 按 kinds 的顺序找那家 CLI 当前登录的账号，没登录的取那家第一个；都不知道就用排第一的账号（也优先它那家当前登录的）。
+ * 按 kinds 的顺序找那家当前登录的账号，没登录的取那家第一个；都不知道就用排第一的账号（也优先它那家当前登录的）。
  */
-export function pickPetAccount(accounts: Account[], pick: string, using: PetUsing = { kinds: [], current: {} }): Account | undefined {
+export function pickPetAccount(accounts: PetAccount[], pick: string, using: PetUsing = { kinds: [], current: {} }): PetAccount | undefined {
   const list = accounts.filter((account) => account.five || account.week);
   const chosen = pick ? list.find((item) => accountKey(item) === pick) : undefined;
   if (chosen) return chosen;
-  const ofKind = (kind: Account["kind"]) => list.find((item) => item.kind === kind && !!using.current[kind] && item.accountId === using.current[kind]) ?? list.find((item) => item.kind === kind);
+  const ofKind = (kind: PetAccountKind) => list.find((item) => item.kind === kind && !!using.current[kind] && item.accountId === using.current[kind]) ?? list.find((item) => item.kind === kind);
   for (const kind of using.kinds) { const hit = ofKind(kind); if (hit) return hit; }
   return list[0] ? ofKind(list[0].kind) : undefined;
 }
 
 /** 宠物跟的额度。剩余 = 100 − 两个窗口里用得多的那个；用完是 empty，压力高或剩不到 15% 是 tight。 */
-export function petQuota(snapshot: Snapshot | null, pick: string, title: (account: Account) => string, using?: PetUsing): PetQuota {
+export function petQuota(snapshot: { accounts?: PetAccount[] } | null, pick: string, title: (account: PetAccount) => string, using?: PetUsing): PetQuota {
   const account = pickPetAccount(snapshot?.accounts ?? [], pick, using);
   if (!account) return { quota: null, mood: "ok", account: "", accountId: "" };
   const windows = [account.five, account.week].filter((item): item is NonNullable<typeof item> => !!item);

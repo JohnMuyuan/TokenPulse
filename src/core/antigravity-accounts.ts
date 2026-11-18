@@ -24,6 +24,7 @@ import { isExpired, jwtClaims } from "./credentials";
 import { curlJson, curlPost } from "./curl";
 import { startLoginLog } from "./login-log";
 import { dataFile, readJson, writeJson } from "./paths";
+import { logRenew } from "./renew-log";
 import { errorCodeOf, isPermanentFailure } from "./token-refresh";
 
 /**
@@ -858,10 +859,33 @@ export function renewAgyCredentials(
           result.status >= 400 &&
           result.status < 500 &&
           result.status !== 429;
-        if (!result.ok && !result.permanent && !rejected) continue;
+        if (!result.ok && !result.permanent && !rejected) {
+          logRenew({
+            at: now,
+            kind: "antigravity",
+            accountId: account.id,
+            source: "stored",
+            ok: false,
+            status: result.status,
+            code: result.code,
+            error: result.error,
+          });
+          continue;
+        }
         const store = readAgyAccountStore();
         const target = store.accounts.find((item) => item.id === account.id);
-        if (!target || target.credential?.refreshToken !== account.credential!.refreshToken) continue;
+        if (!target || target.credential?.refreshToken !== account.credential!.refreshToken) {
+          logRenew({
+            at: now,
+            kind: "antigravity",
+            accountId: account.id,
+            source: "stored",
+            ok: result.ok,
+            note: "续期期间重新登录过，结果丢弃",
+          });
+          continue;
+        }
+        let note: string | undefined;
         if (result.ok) {
           target.credential = result.credential;
           delete target.renewFailed;
@@ -875,9 +899,20 @@ export function renewAgyCredentials(
           target.renewTrouble = { since: trouble.since, count: trouble.count + 1, error: result.error };
           if (target.renewTrouble.count >= RENEW_GIVE_UP && now - target.renewTrouble.since >= RENEW_GIVE_UP_MS) {
             target.renewFailed = `${result.error}（连续 ${target.renewTrouble.count} 次被拒）`;
+            note = "连续被拒，判为需要重新登录";
             delete target.renewTrouble;
           }
         }
+        logRenew({
+          at: now,
+          kind: "antigravity",
+          accountId: account.id,
+          source: "stored",
+          ok: result.ok,
+          ...(result.ok
+            ? {}
+            : { status: result.status, code: result.code, error: result.error, permanent: Boolean(target.renewFailed), note }),
+        });
         writeAgyAccountStore(store);
       }
       return renewed;

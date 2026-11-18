@@ -17,6 +17,7 @@
   --bb-claude: #d97757;
   --bb-chatgpt: #10a37f;
   --bb-deepseek: #4d6bfe;
+  --bb-antigravity: #3186ff;
   --bb-grok: #6f7782;
   font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
 }
@@ -32,6 +33,7 @@
   --bb-ok: #4fc97f;
   --bb-warn: #efb24f;
   --bb-danger: #f2766c;
+  --bb-antigravity: #7aaeff;
 }
 [hidden] { display: none !important; }
 html.bb-html, body.bb-body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; -webkit-user-select: none; user-select: none; }
@@ -63,6 +65,7 @@ body.bb-body { position: relative; color: var(--bb-text); font-size: 12px; line-
 .bb-kind.claude { background: var(--bb-claude); }
 .bb-kind.chatgpt { background: var(--bb-chatgpt); }
 .bb-kind.deepseek { background: var(--bb-deepseek); }
+.bb-kind.antigravity { background: var(--bb-antigravity); }
 .bb-plan { flex: none; padding: 0 4px; border: 1px solid var(--bb-muted); color: var(--bb-muted); font-size: 10.5px; line-height: 14px; }
 
 /* 一个窗口：名字、10 格（剩多少亮多少）、剩余百分比；下面一行写什么时候重置 */

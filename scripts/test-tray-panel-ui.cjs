@@ -97,9 +97,10 @@ app.whenReady().then(async () => {
 
     // 账号超过三个：只露出前三个的高度，其余的在这一块里滚动，面板不会越来越高
     {
-      const one = (name, used) => ({ kind: 'claude', name, plan: '', checkedAt: Date.now(), five: { used, resetAt: Date.now() + 3600000, etaAt: 0, runsOut: false, pace: 50 }, week: { used, resetAt: Date.now() + 86400000, etaAt: 0, runsOut: false, pace: 50 } });
-      const send = count => panel.webContents.send('tray-panel', { now: Date.now(), theme: 'light', today: { tokens: 1, costUsd: 0 }, accounts: Array.from({ length: count }, (_, i) => one('A' + i, 10 + i)), agents: [] });
+      const one = (name, used, kind = 'claude') => ({ kind, name, plan: kind === 'antigravity' ? 'Pro' : '', checkedAt: Date.now(), five: { used, resetAt: Date.now() + 3600000, etaAt: 0, runsOut: false, pace: 50 }, week: { used, resetAt: Date.now() + 86400000, etaAt: 0, runsOut: false, pace: 50 } });
+      const send = count => panel.webContents.send('tray-panel', { now: Date.now(), theme: 'light', today: { tokens: 1, costUsd: 0 }, accounts: Array.from({ length: count }, (_, i) => one('A' + i, 10 + i, i === 1 ? 'antigravity' : 'claude')) , agents: [] });
       send(3); await until(() => js("document.querySelectorAll('.tp-card').length === 3"), '三个账号'); await until(fits, '三个账号的高度');
+      assert.equal(await js("!!document.querySelector('.tp-card[data-kind=antigravity] .tp-avatar.antigravity path')"), true, 'Antigravity 卡片画出品牌图标');
       const three = panel.getBounds().height;
       send(6); await until(() => js("document.querySelectorAll('.tp-card').length === 6"), '六个账号'); await delay(200);
       assert.ok(Math.abs(panel.getBounds().height - three) <= 3, `六个账号和三个一样高（${panel.getBounds().height} / ${three}）`);
