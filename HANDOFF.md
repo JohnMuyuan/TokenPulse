@@ -1,6 +1,67 @@
-# 当前接手入口 · TokenPulse v0.3.97 正式发布（Antigravity 多账号双池分组、套餐等级与历史归属全面修复，2026-11-17）
+# 当前接手入口 · TokenPulse v0.3.98 已正式发布至 GitHub Release（2026-11-17）
 
-## 发布状态 · `v0.3.97`（已打包校验并正式发布至 GitHub Release）
+## 当前已发布状态 · `v0.3.98`（工作区干净，未动 `clawd-pet-extracted/` 与本机正式版进程）
+
+- **版本与发布概览**：
+  - 版本：**`0.3.98`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译与 `npm run dist` 打包产物已全部同步；`SECRET_HITS=0`）。
+  - **Git / GitHub（已完成）**：发布提交 **`e724009`**（`chore: release v0.3.98 (fix Antigravity usage attribution & wire tray/pet/health/concurrency)`）与标签 **`v0.3.98`**（`28e697f`）已推送到 `origin/main`；本交接更新随后单独提交推送到 `origin/main`。
+  - **GitHub Release（已正式发布）**：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.98 （`isDraft: false`，`isPrerelease: false`），4 个附件经 `curl.exe --noproxy '*'` 上传（`Setup.exe` `36.21s`、`Portable.exe` `40.43s`，均返回 `HTTP 201`），远端字节大小与 SHA256 与本地逐字节一致。
+  - **本机未覆盖说明**：未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`；用户可在软件内检测升级或直接运行 [TokenPulse-0.3.98-Setup.exe](file:///d:/CodePorject/Tools/TokenPulse/dist/TokenPulse-0.3.98-Setup.exe)。
+- **打包产物与远端校验（`ASAR_OK` 且 SHA256 逐字节一致）**：
+  - `npm run dist` PASS；校验 `dist/win-unpacked/resources/app.asar` 含 `0.3.98`、`agyQuotaAccounts`、`ACCOUNT_KIND_OF_SOURCE`、`waitLocal`、`cloudcode-pa.googleapis.com`。
+  - `dist/TokenPulse-0.3.98-Setup.exe`：`112,877,966` B，SHA256 `80AE77C06EBFE7C5614C75D64F3D197A0545AC8AFE8A4C7CF7FFEBD86AC0797D`
+  - `dist/TokenPulse-0.3.98-Portable.exe`：`112,620,818` B，SHA256 `9DFFDEF85D27F9243BBC25F1E9886B4523606BA527B7488BB0A85681E4711C5F`
+  - `dist/TokenPulse-0.3.98-Setup.exe.blockmap`：`120,020` B，SHA256 `891F124B7F2C34F0B185E10CBE28B82B5DB943D6050E5D22D36E31DE68564E20`
+  - `dist/latest.yml`：`352` B（version `0.3.98`），SHA256 `F1D672D7721BD9A547897D812DBFDABC025C76AE05CBCACF3B654613E2D9B547`
+  - 发布说明文件：`dist/release-0.3.98.md`。
+- **第一部分：多账号用量明细 / 请求流水归属修复**：
+  - `src/core/login-timeline.ts`：新增 `SourceAccountKind`、`ACCOUNT_KIND_OF_SOURCE`（含 `Antigravity: "antigravity"`）；`accountLabels()` 加载 `readAgyAccountStore().accounts` 别名/邮箱；`resolveAccount()` 对 `"antigravity"` 读取 `agyTimeline`（`antigravity-logins.json`）返回 `timeline` / `inferred`，零配置无登记账号时脱敏回退为 `"本机 Antigravity"`（兼顾隐私）。
+  - `src/core/request-log.ts`：`accountContext()` 预加载 `agyTimeline`；`toRow()` 对 Antigravity 将 `official` 兜底为 `true`，并通过 `ACCOUNT_KIND_OF_SOURCE` 归属请求账号与筛选分面。
+  - `src/core/usage-scan.ts`：`configOfficial()` 将 `antigravity` 置为 `true`。
+  - `src/main/antigravity-quota.ts` & `src/main/index.ts`：新增 `AntigravityQuota.syncLocalLogin()` 并在 `runRefresh(true)` 扫描前同步一次本机活跃 Antigravity 登录时间线。
+  - `renderer/antigravity-quota.js`、`renderer/app.js`、`renderer/i18n.js`：`quotaShare(row)` 读取 `row.account?.id || row.accountId`；`openAll` 跳转「在请求记录里查看全部」时携带 `state.reqAccount`；`syncAccountOptions()` 兜底显示 0 请求时段多账号标签；补充 `'本机 Antigravity': 'Local Antigravity'` 翻译。
+- **第二部分：全项目剩余子系统接入排查与补齐**：
+  1. **托盘小面板与托盘悬停提示（已接入）**：
+     - `src/main/antigravity-quota.ts` 新增 `agyQuotaAccounts()`（每个可见多账号、或零配置单账号回退槽，取分组中最紧张的 5 小时与周额度窗口，计算 `elapsedH` / `leftH` / 预测 `pressure`，并在零配置下保持不暴露邮箱）；
+     - `src/main/tray-panel.ts` `trayPanelData()` 新增可选第 5 参数 `extraAccounts`，兼容原有 4 参调用；
+     - `src/main/index.ts` 在 `KIND_NAMES`、`trayPanelView()`、`updateTrayTip()` 中并入 `agyQuotaAccounts(currentAgyState())`，并在 `antigravityQuota` 的 `publish` 回调中刷新缓存（`agyStateCache`）、托盘悬停提示与托盘面板；
+     - `renderer/tray-panel.js` & `renderer/tray-panel.css`：补齐 `NAMES.antigravity`、`BRANDS.antigravity` 与 `.tp-avatar.antigravity` 品牌色样式。
+  2. **桌宠、对话气泡与设置页「额度跟哪个账号」（已接入）**：
+     - `src/core/desk-pet-model.ts`：放宽 `PetAccountKind = Account["kind"] | "antigravity"` 与轻量 `PetAccount` 结构；
+     - `src/main/desk-pet.ts`：`TASK_ACCOUNT` 新增 `antigravity: "antigravity"`（本机 IDE/CLI 在跑 Antigravity 任务时桌宠自动切换跟随），`petUsing()` 写入当前本机登录的 Antigravity 账号 ID，`deskPetView()` 与 `deskPetBubbleData()` 合并 `extraAccounts()`；
+     - `src/main/index.ts`：`setupDeskPet` 注入 `extraAccounts` 与 `antigravityLogin`，`ipcMain.handle("desk-pet:accounts")` 返回包含 Antigravity 多账号/本机槽在内的可选清单，`antigravityQuota.publish` 触发 `deskPetSnapshotChanged()` 与 `desk-pet-changed`；
+     - `renderer/desk-pet-bubble.css`、`renderer/desk-pet-bubble.js`、`renderer/desk-pet-settings.js`、`renderer/app.js`、`renderer/i18n.js`：补齐气泡 `.bb-kind.antigravity` 蓝色像素标，更新气泡空状态、桌宠说明与设置页「额度查询间隔」文案及英文翻译（同时保留 `quota-add-account` 菜单原有选项名以兼容既有余额 UI 断言）。
+  3. **一键体检与续期日志（已接入）**：
+     - `src/core/antigravity-accounts.ts`：`renewAgyCredentials()` 补齐调用 `logRenew()` 记录 Antigravity OAuth 续期成功、失败状态码/错误码与永久失效（不含凭据和明文邮箱）；
+     - `src/core/health-check.ts`：新增可选字段 `waitLocal`，将仅登记本机登录的账号显示为 `info` 级提示（「仅登记了本机登录」，指导切换本机登录或「重新授权」），不再误判或漏检；
+     - `src/main/health.ts`：`check()` 合并 `listAgyAccountStatus()` 账号状态与 `readAgyAccountStore()` 续期日志名称映射（`KIND_LABEL.antigravity = "Antigravity"`），并在检测到本机安装或登记了 Antigravity 时探测 `cloudcode-pa.googleapis.com` 连通性；
+     - `renderer/i18n.js`：将 `(Claude|ChatGPT|Grok)` 体检正则扩展为 `(Claude|ChatGPT|Grok|Antigravity)`，并补全「仅登记了本机登录」标题/说明英文翻译。
+  4. **并发监控多账号作用域（已接入）**：
+     - `src/main/index.ts`：`concurrencyState()` 注册 `visibleAgyAccounts()` 全部可见账号作用域（单账号未起别名时保持隐私不露邮箱），并按 `currentAgyLocalAccountId()` 将实时 IDE / CLI 并发归入当前本机实际登录的 Antigravity 账号作用域（未知时回退 `account:antigravity`），`antigravityQuota.publish` 同步使目录缓存失效。
+  5. **经核查已接入或有意排除边界**：
+     - 已自然兼容或早先已接入：`cache-analysis.ts`（已按 `row.account?.id` 汇总）、`share-report.ts`（按工具/模型统计）、`weekly-summary.ts`、`sessions.ts`、`agent-activity.ts`、`request-verify.ts`（已支持 `Antigravity` 思考后缀与内部名）、`renderer/usage-projects.js` & `#source-filter`。
+     - 有意不接入 Antigravity（架构边界一致）：`cli-auto-switch.ts` / `cli-switch.ts` / `pool-strategy.ts` / `agent-switch.ts` / `egress.ts` / `report.ts`（CLI-only），因为 Antigravity 走独立桌面端 Google OAuth / `language_server` 且不经 TokenPulse 本地路由 `17621` 或修改外部 CLI auth 文件；`quotaQuietBackground` 暂仅作用于 Claude/ChatGPT/Grok，Antigravity Cloud Code 账号（尤其家庭组共享识别）保持每轮同步。
+- **本轮验证命令与实际结果（均在 `v0.3.98` 升版修改后实测通过）**：
+  - `npm run build` / `npm test`（`tsc -p tsconfig.json` + 全部 **69** 个单元与安全审计脚本，含 `test-tray-panel.cjs`、`test-desk-pet.cjs`、`test-health-check.cjs`、`test-antigravity-accounts.cjs` 与 `test-features.cjs` 更新日志/英文词典零漏翻校验）：**69/69 PASS**
+  - Electron UI 测试（升版 `0.3.98` 后直接实测，均传 `--lang=zh-CN`）：
+    - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3 PASS**（验证 `0.3.98` 升级说明与新手引导）
+    - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**8/8 PASS**
+    - `npx electron --lang=zh-CN scripts/test-tray-panel-ui.cjs`：**4 PASS**（含 `.tp-avatar.antigravity`）
+    - `npx electron --lang=zh-CN scripts/test-health-ui.cjs`：**2 PASS**
+    - `npx electron --lang=zh-CN scripts/test-ui.cjs`：**26 PASS**
+    - `npx electron --lang=zh-CN scripts/test-desk-pet-ui.cjs`：**21 PASS**（含 `.bb-kind.antigravity`）
+  - 此前在同一套源码实现（`0.3.97` 升版前）上已通过：`npx electron --lang=zh-CN scripts/test-concurrency-ui.cjs`、`npx electron --lang=zh-CN scripts/test-deepseek-balance-ui.cjs`（9 项 PASS）、`npx electron --lang=zh-CN scripts/test-usage-projects-ui.cjs`。
+  - `npm run dist`：**PASS**（NSIS Setup + Portable + blockmap + latest.yml 全部生成并校验）。
+  - **本机 `~/.tokenpulse` 克隆副本非破坏性实测**：
+    - `AntigravityQuota` + `agyQuotaAccounts()` 对本机 2 个已登记账号正确输出 2 张摘要卡（均含 `tier: Google AI Ultra`，副号 `0% / 0%`，本机主号 `inLocal: true`，最紧张分组 5h `9.2%` / 周 `2.8%`）；
+    - `queryRequests({ source: 'Antigravity' })` 查出全量 `23,180` 条请求且 `noneRequests = 0`（全部正确归属）。
+  - **未执行的验证**：未在升版 `0.3.98` 后重跑 `test-concurrency-ui.cjs`、`test-deepseek-balance-ui.cjs`、`test-usage-projects-ui.cjs`、其余单一供应商独立 UI 脚本或打包后安装器 `test-updater.cjs`。
+  - **收尾进程与文件句柄检查**：`SECRET_HITS=0`；`REPO_PROCS=0`；`build/main/index.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与 `dist/TokenPulse-0.3.98-*` 全部文件句柄 `UNLOCKED`。用户工作区未动目录：`clawd-pet-extracted/`；用户自用 `AppData\Local\Programs\TokenPulse\TokenPulse.exe` 未被关闭或改动。
+- **下一步具体动作**：等待用户确认自动升级或在合适时机关闭本机旧版并运行 `TokenPulse-0.3.98-Setup.exe`；当前任务已完整闭环，无遗留阻塞。
+
+---
+
+## 上一已发布基线 · `v0.3.97`（已正式发布至 GitHub Release）
 
 - **版本与发布概览**：
   - 版本：**`0.3.97`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译均已补齐；仓库内继续保持零硬编码密钥 `SECRET_HITS=0`）。
