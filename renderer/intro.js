@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.97': [
+      ['quota', '修复：Antigravity 多账号缺失 Gemini 分组、等级识别与旧历史数据错位', '携带客户端版本号并优先使用可用 Cloud Code 端点，同时按额度池严格隔离模型归组，不再把 Gemini 模型误合并到 Claude/GPT 单组；自动只读记住本机当前登录的 Antigravity 账号，把升级前错归到新加账号的历史采样迁回原主账号；本机活跃账号同步融合本地 Gemini 4 系列模型与 Prompt / Flow 积分，并规范展示 Google AI Ultra / Ultra Lite 等套餐等级。'],
+    ],
     '0.3.96': [
       ['quota', '修复：Antigravity 登录新账号时报 403 restricted_client', '修正从本机 Antigravity 客户端提取 Google OAuth 配置时的客户端筛选逻辑，精准匹配支持个人版 auth/aicode 权限的客户端 ID 与对应密钥（并支持候选密钥自动回退），不再误用企业版客户端 ID 导致浏览器授权页拦截。'],
     ],

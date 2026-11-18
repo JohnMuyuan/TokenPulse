@@ -2901,6 +2901,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.97 修复 Antigravity 多账号缺失 Gemini 分组、等级识别与旧历史数据错位
+    '修复：Antigravity 多账号缺失 Gemini 分组、等级识别与旧历史数据错位': 'Fix: missing Gemini pool, plan tiers, and misplaced history in Antigravity multi-account mode',
+    '携带客户端版本号并优先使用可用 Cloud Code 端点，同时按额度池严格隔离模型归组，不再把 Gemini 模型误合并到 Claude/GPT 单组；自动只读记住本机当前登录的 Antigravity 账号，把升级前错归到新加账号的历史采样迁回原主账号；本机活跃账号同步融合本地 Gemini 4 系列模型与 Prompt / Flow 积分，并规范展示 Google AI Ultra / Ultra Lite 等套餐等级。': 'Includes the Antigravity client version in Cloud Code requests, prefers working endpoints with automatic degraded-response failover, and isolates Gemini and 3P quota pools so Gemini models are never merged into the Claude/GPT group. Also automatically remembers the active local Antigravity sign-in (read-only), migrates legacy history samples back to their true original owner, merges local Gemini 4 models plus Prompt / Flow credits for the active local account, and cleanly displays plan tiers such as Google AI Ultra and Ultra Lite.',
     // 0.3.96 修复 Antigravity OAuth 登录新账号报 403 restricted_client
     '修复：Antigravity 登录新账号时报 403 restricted_client': 'Fix: 403 restricted_client when signing in to a new Antigravity account',
     '修正从本机 Antigravity 客户端提取 Google OAuth 配置时的客户端筛选逻辑，精准匹配支持个人版 auth/aicode 权限的客户端 ID 与对应密钥（并支持候选密钥自动回退），不再误用企业版客户端 ID 导致浏览器授权页拦截。': 'Fixed Google OAuth client selection when reading local Antigravity installations so it accurately picks the personal client ID registered for the auth/aicode scope and its matching secret (with automatic candidate secret fallback), preventing browser sign-in blocks caused by picking the enterprise client ID.',
