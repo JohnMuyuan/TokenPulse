@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.11.12.1",
-  "updatedAt": "2026-11-12T19:25:00.000Z",
+  "version": "2026.11.18",
+  "updatedAt": "2026-11-18T08:39:18.316Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。 labels：给型号打标签（promo 优惠价、until 到期日 YYYY-MM-DD、note 说明），到期自动去掉；pinned 规则也可以带 until。",
   "prices": [
     {
@@ -757,6 +757,23 @@
       "auto": "gpt-5.1-codex-max"
     },
     {
+      "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-6\\.2-astra-law(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
+      "input": 8,
+      "output": 40,
+      "cacheRead": 0.4,
+      "cacheWrite": 10,
+      "note": "自动：gpt-6.2-astra-law（LiteLLM）",
+      "auto": "gpt-6.2-astra-law",
+      "changedAt": "2026-11-18",
+      "previous": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      },
+      "previousFallback": true
+    },
+    {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?grok-build-latest(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
       "input": 2,
       "output": 6,
@@ -1167,6 +1184,23 @@
       "previousFallback": true
     },
     {
+      "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-6\\.2-astra(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
+      "input": 8,
+      "output": 40,
+      "cacheRead": 0.4,
+      "cacheWrite": 10,
+      "note": "自动：gpt-6.2-astra（LiteLLM）",
+      "auto": "gpt-6.2-astra",
+      "changedAt": "2026-11-18",
+      "previous": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      },
+      "previousFallback": true
+    },
+    {
       "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-4\\.1-mini(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
       "input": 0.4,
       "output": 1.6,
@@ -1355,6 +1389,23 @@
       "note": "自动：gpt-6.1-sol（LiteLLM）",
       "auto": "gpt-6.1-sol",
       "changedAt": "2026-09-30",
+      "previous": {
+        "input": 5,
+        "output": 30,
+        "cacheRead": 0.5,
+        "cacheWrite": 0
+      },
+      "previousFallback": true
+    },
+    {
+      "match": "^(?:[\\w.-]+/)?(?:[a-z]{2}\\.)?(?:(?:anthropic|openai|xai)\\.)?gpt-6\\.2-sol(?:-\\d{8}|@\\d{8}|-\\d{4}-\\d{2}-\\d{2}|-v\\d+(?::\\d+)?)?(?:\\[[^\\]]*\\])?$",
+      "input": 2,
+      "output": 10,
+      "cacheRead": 0.1,
+      "cacheWrite": 2.5,
+      "note": "自动：gpt-6.2-sol（LiteLLM）",
+      "auto": "gpt-6.2-sol",
+      "changedAt": "2026-11-18",
       "previous": {
         "input": 5,
         "output": 30,
