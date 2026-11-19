@@ -476,7 +476,7 @@
     "/ 5 小时": "/ 5h",
     "等待额度变化以校准容量": "Waiting for quota change to calibrate capacity",
     "需要这一组额度已用百分比上涨，且同期本机有对话记录": "Needs quota used % to rise while this PC has conversations",
-    "实心点可信，空心点已用不到 5%、偏差较大；虚线为近期窗口加权中位数。按本机用量倒推，只统计这台电脑上的 Antigravity 对话。": "Solid dots are reliable; hollow dots had under 5% used and may vary more; dashed line shows the recent weighted median. Back-calculated from Antigravity conversations on this PC.",
+    "实心点可信，空心点已用不到 5%、偏差较大；虚线为近期窗口稳健加权估算。按本机用量倒推，只统计这台电脑上的 Antigravity 对话。": "Solid dots are reliable; hollow dots had under 5% used and may vary more; dashed line shows the robust recency-weighted estimate. Back-calculated from Antigravity conversations on this PC.",
     "历史周额度容量折线": "Historical weekly quota capacity",
     "历史 5 小时额度容量折线": "Historical 5-hour quota capacity",
     "窗口已提前重置，重置日期已顺延": "Window reset early; reset date moved forward",
@@ -2906,6 +2906,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.100 Antigravity 额度池短名化与周额度实时稳健折算修复
+    '精简 Antigravity 额度池标题，修复周额度折算长期锁死与锯齿抖动重复计数': 'Concise Antigravity pool titles, anti-jitter attribution, and live weekly capacity updates',
+    '总览、额度详情、走势图与过线通知统一使用简洁池名（Gemini、Claude / GPT），完整模型列表保留在悬停提示与下方「组内模型档位」；区间归因引入单调高水位与请求单调游标，不再因 Google 官方百分比小幅回落回弹而重复累计本机或家庭组消耗；周额度整窗折算改为近期稳健加权估算，既剔除极端旧窗口又随本周新用量实时平滑更新。': 'Uses concise pool labels (Gemini, Claude / GPT) across Overview, Quota Details, charts, and alerts while keeping the full model list in hover tooltips and the model breakdown table; adds a monotonic high-water mark and single-consumption row cursor so small official percentage dips/bounces no longer double-count local or family usage; and switches weekly capacity estimation to a robust recency-weighted average that rejects extreme outliers while updating smoothly with ongoing usage.',
     // 0.3.99 Antigravity 测速与思考耗时校准 + 假重置卡与预测失真修复
     '修复：Antigravity 流式思考测速偏低、短整包明细缺速度与漏网假首字': 'Fix: under-reported Antigravity streaming thinking speeds, missing buffered speeds, and false slow TTFT',
     '读取 Antigravity 原生思考耗时（thinking_duration）精准区分流式思考、静默思考与思考后正文段，修复长思考回复速度被误腰斩的问题；补齐短流式缓冲工具调用的假首字守卫，并在用量明细与详情抽屉中展示思考耗时与整包均速（标「≈」，不污染模型速度走势曲线），升级后自动重扫刷新历史记录。': 'Reads Antigravity native thinking_duration to distinguish streamed thinking, silent thinking, and post-thinking text segments, fixing under-reported speeds on long thinking replies; tightens buffered short tool-call TTFT guards; and shows thinking time plus approximate buffered averages (marked ≈, excluded from speed trend charts) in Usage Details and request drawers, with automatic rescan on upgrade.',

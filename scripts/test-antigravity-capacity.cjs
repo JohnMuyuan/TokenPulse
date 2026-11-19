@@ -267,10 +267,75 @@ try {
     process.env.TOKENPULSE_DATA_DIR = prevDataDir;
     try { fs.rmSync(repairRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   }
+
+  // 8. 锯齿抖动抗重复计数（单调高水位 + 请求单调游标）与周额度平滑跟进（不再因权重未过半锁死在旧周）
+  {
+    const jNow = Date.UTC(2026, 10, 19, 12, 0, 0);
+    const w1Reset = jNow - 14 * 24 * H;
+    const w2Reset = jNow - 7 * 24 * H;
+    const w3Reset = jNow + 5 * 24 * H;
+    const w3Start = w3Reset - 7 * 24 * H;
+    const jHistory = [
+      // 前两周：分别折算出 1.2B 和 1.0B（权重 25 和 15）
+      { at: w1Reset - 3 * 24 * H, groups: [{ key: KEY, used: 0, resetAt: iso(w1Reset - 3 * 24 * H + 5 * H), weekUsed: 0, weekResetAt: iso(w1Reset) }] },
+      { at: w1Reset - 2 * 24 * H, groups: [{ key: KEY, used: 0, resetAt: iso(w1Reset - 2 * 24 * H + 5 * H), weekUsed: 25, weekResetAt: iso(w1Reset) }] },
+      { at: w2Reset - 3 * 24 * H, groups: [{ key: KEY, used: 0, resetAt: iso(w2Reset - 3 * 24 * H + 5 * H), weekUsed: 0, weekResetAt: iso(w2Reset) }] },
+      { at: w2Reset - 2 * 24 * H, groups: [{ key: KEY, used: 0, resetAt: iso(w2Reset - 2 * 24 * H + 5 * H), weekUsed: 15, weekResetAt: iso(w2Reset) }] },
+      // 本周：先上升到 10%，随后反复锯齿抖动（闲时与活跃时都有回落再回弹），最终到 20%
+      { at: w3Start + 1 * H, groups: [{ key: KEY, used: 0, resetAt: iso(w3Start + 6 * H), weekUsed: 0, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 2 * H, groups: [{ key: KEY, used: 10, resetAt: iso(w3Start + 6 * H), weekUsed: 10, weekResetAt: iso(w3Reset) }] },
+      // 闲时锯齿抖动 3 次（10 -> 9.2 -> 10 -> 9.0 -> 10 -> 9.3 -> 10）：不应记为外部消耗或重复本机消耗
+      { at: w3Start + 2 * H + 10 * 60_000, groups: [{ key: KEY, used: 9.2, resetAt: iso(w3Start + 6 * H), weekUsed: 9.2, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 2 * H + 20 * 60_000, groups: [{ key: KEY, used: 10, resetAt: iso(w3Start + 6 * H), weekUsed: 10, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 2 * H + 30 * 60_000, groups: [{ key: KEY, used: 9.0, resetAt: iso(w3Start + 6 * H), weekUsed: 9.0, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 2 * H + 40 * 60_000, groups: [{ key: KEY, used: 10, resetAt: iso(w3Start + 6 * H), weekUsed: 10, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 2 * H + 50 * 60_000, groups: [{ key: KEY, used: 9.3, resetAt: iso(w3Start + 6 * H), weekUsed: 9.3, weekResetAt: iso(w3Reset) }] },
+      // 活跃期短暂回落后继续净涨到 20%（再回落至 19.5% 收尾）
+      { at: w3Start + 4 * H, groups: [{ key: KEY, used: 9.5, resetAt: iso(w3Start + 6 * H), weekUsed: 9.5, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 4 * H + 10 * 60_000, groups: [{ key: KEY, used: 9.6, resetAt: iso(w3Start + 6 * H), weekUsed: 9.6, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 4 * H + 20 * 60_000, groups: [{ key: KEY, used: 20, resetAt: iso(w3Start + 6 * H), weekUsed: 20, weekResetAt: iso(w3Reset) }] },
+      { at: w3Start + 4 * H + 30 * 60_000, groups: [{ key: KEY, used: 19.5, resetAt: iso(w3Start + 6 * H), weekUsed: 19.5, weekResetAt: iso(w3Reset) }] },
+    ];
+    const mkRow = (at, tok) => ({ at, model: 'gemini-4-argon', effort: 'high', tokens: tok, costUsd: tok / 1e6, calls: 1, input: tok, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, requests: 1, source: 'Antigravity', kind: 'antigravity' });
+    const baseRows = [
+      mkRow(w1Reset - 2.5 * 24 * H, 300e6), // 300M / 25% = 1.2B
+      mkRow(w2Reset - 2.5 * 24 * H, 150e6), // 150M / 15% = 1.0B
+      mkRow(w3Start + 1.5 * H, 80e6),
+      mkRow(w3Start + 4 * H + 3 * 60_000, 30e6),
+      mkRow(w3Start + 4 * H + 15 * 60_000, 50e6),
+    ];
+    fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+      last: { at: jNow - 60_000, ok: true, plan: 'Ultra', groups: [{ key: KEY, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 19.5, resetAt: iso(w3Start + 6 * H), week: { used: 19.5, resetAt: iso(w3Reset) } }] },
+      history: jHistory, notified: {},
+    }));
+    const qJ = new mod.AntigravityQuota({ now: () => jNow, fetcher: async () => null });
+    qJ.recentRows = () => baseRows;
+    const wIns1 = qJ.buildInsight(jNow).groups[0];
+    const wPt1 = wIns1.capacityHistory.week.at(-1);
+    assert.equal(wIns1.week.shared.offPoints, 0, '闲时锯齿抖动回弹不再被误判成家庭组/他端消耗');
+    assert.ok(wPt1.usedPct <= 20.1, `本周有效点数不超过高水位 20%（实际 ${wPt1.usedPct}）`);
+    assert.ok(wPt1.tokens <= 160e6, `单调游标保证本机 Token 不被重复累加（实际 ${wPt1.tokens}）`);
+    // 本周进一步消耗（20% -> 28%，Token 从 160M 增至 196M → 本周折算从 800M 降到 700M），周额度整窗折算必须实时变化而非钉死在 1.0B
+    const cap1 = wIns1.week.capacity.fullTokens;
+    assert.ok(cap1 < 980e6, `周额度折算平滑吸收本周 800M 变化，不再锁死在旧周 1.0B（实际 ${cap1}）`);
+    jHistory.push({ at: w3Start + 5 * H, groups: [{ key: KEY, used: 28, resetAt: iso(w3Start + 6 * H), weekUsed: 28, weekResetAt: iso(w3Reset) }] });
+    fs.writeFileSync(path.join(root, 'data', 'antigravity-quota.json'), JSON.stringify({
+      last: { at: jNow - 30_000, ok: true, plan: 'Ultra', groups: [{ key: KEY, title: 'Gemini Models', models: ['Gemini 4 Argon', 'Gemini 3.8 Flash'], used: 28, resetAt: iso(w3Start + 6 * H), week: { used: 28, resetAt: iso(w3Reset) } }] },
+      history: jHistory, notified: {},
+    }));
+    const qJ2 = new mod.AntigravityQuota({ now: () => jNow, fetcher: async () => null });
+    qJ2.recentRows = () => [...baseRows, mkRow(w3Start + 4.8 * H, 36e6)];
+    const cap2 = qJ2.buildInsight(jNow).groups[0].week.capacity.fullTokens;
+    assert.ok(cap2 < cap1 - 20e6, `本周继续消耗并改变折算率时，周额度整窗折算持续响应变化（${cap1} -> ${cap2}）`);
+    // 极端离群旧周（如 10 倍 Flash 窗口）仍被稳健剔除
+    const robust = mod.robustRecencyEstimate([{ value: 10000, weight: 20 }, { value: 900, weight: 15 }, { value: 800, weight: 25 }], 0.55);
+    assert.ok(robust >= 780 && robust <= 900, `稳健近期加权剔除 10 倍离群旧周（实际 ${robust}）`);
+    pass('monotonic peakUsed + row cursor prevent jitter double-counting and weekly capacity updates smoothly');
+  }
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
 } finally {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 忽略 */ }
 }
-console.log(`\n${checks}/7 antigravity capacity & family-group checks`);
+console.log(`\n${checks}/8 antigravity capacity & family-group checks`);

@@ -80,8 +80,30 @@
     if (matches.length === 1) return matches[0];
     return [...matches].sort((a, b) => Number(b.weekUsed != null) - Number(a.weekUsed != null) || b.key.length - a.key.length)[0];
   }
-  /** 组名：组里的型号（不翻译）。 */
-  const groupName = group => el('span', { class: 'agy-group-name', translate: 'no', text: group.models.join(' · '), title: group.models.join(' · ') });
+  /** 额度池短名：优先用官方额度池简称（Gemini / Claude / GPT），完整型号列表留在悬停提示与下方档位明细里。 */
+  function groupTitleOf(group) {
+    if (!group) return '';
+    const pool = poolIdOf(group.models || group.key, group.title);
+    if (pool === 'pool:gemini') return 'Gemini';
+    if (pool === 'pool:3p') {
+      const models = Array.isArray(group.models) ? group.models : [];
+      const hasClaude = models.some(m => /claude/i.test(m)) || /claude/i.test(group.title || '');
+      const hasGpt = models.some(m => /gpt/i.test(m)) || /gpt/i.test(group.title || '');
+      if (hasClaude && hasGpt) return 'Claude / GPT';
+      if (hasClaude) return 'Claude';
+      if (hasGpt) return 'GPT';
+      return 'Claude / GPT';
+    }
+    const rawTitle = String(group.title || '').trim();
+    if (rawTitle) return rawTitle;
+    const models = Array.isArray(group.models) ? group.models : [];
+    return models.length > 2 ? `${models.slice(0, 2).join(' · ')} +${models.length - 2}` : models.join(' · ');
+  }
+  const groupName = group => {
+    const label = groupTitleOf(group);
+    const full = Array.isArray(group?.models) && group.models.length ? group.models.join(' · ') : label;
+    return el('span', { class: 'agy-group-name', translate: 'no', text: label, title: full !== label ? `${label}：${full}` : label });
+  };
   /** 重置时间已经过了、还没查到新的：不显示旧的百分比。 */
   const ended = item => Boolean(item?.resetAt && Date.parse(item.resetAt) <= Date.now());
   const resetText = item => !item ? '没有重置时间' : ended(item) ? '已经重置，等待下一次查询' : item.resetAt ? `${duration(Date.parse(item.resetAt) - Date.now())}后重置 · ${date(Date.parse(item.resetAt))}` : '没有重置时间';
@@ -642,7 +664,7 @@
       });
       body.replaceChildren(el('div', { class: 'agy-cap-list' }, cards));
       for (const slot of capChartSlots) renderPoolCapChart(slot.chartHost, slot.pts, slot.fullVal, slot.w, slot.color, slot.fmt);
-      note.textContent = '实心点可信，空心点已用不到 5%、偏差较大；虚线为近期窗口加权中位数。按本机用量倒推，只统计这台电脑上的 Antigravity 对话。';
+      note.textContent = '实心点可信，空心点已用不到 5%、偏差较大；虚线为近期窗口稳健加权估算。按本机用量倒推，只统计这台电脑上的 Antigravity 对话。';
     };
 
     const panel = el('article', { class: 'panel capacity-panel agy-capacity' }, [
@@ -835,7 +857,7 @@
         for (const group of list) {
           const item = pickPoolItem(nearest.groups, group);
           if (!item) continue;
-          const shortName = group.title || group.models.slice(0, 2).join(' · ');
+          const shortName = groupTitleOf(group);
           lines.push(`${shortName}：5 小时已用 ${percent(item.used)}${item.weekUsed != null ? ` · 周已用 ${percent(item.weekUsed)}` : ''}`);
         }
         if (typeof tipAt === 'function') tipAt(lines.join('\n'), ev.clientX, ev.clientY);
@@ -1458,7 +1480,7 @@
       el('span', { class: 'badge ' + badge[1], text: badge[0] }),
     ])];
     const ringNode = ring({ five: live[0] ? { used: effectiveUsed(live[0]) } : null, week: live[1] ? { used: effectiveUsed(live[1]) } : null });
-    ringNode.title = live.length > 1 ? `外环：${live[0].models.join(' · ')}　内环：${live[1].models.join(' · ')}` : '';
+    ringNode.title = live.length > 1 ? `外环：${groupTitleOf(live[0])}（${live[0].models.join(' · ')}）　内环：${groupTitleOf(live[1])}（${live[1].models.join(' · ')}）` : '';
     const left = live.length ? Math.min(...live.map(group => Math.max(0, 100 - effectiveUsed(group)))) : null;
     ringNode.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining' + (left == null ? ' empty-number' : ''), text: left == null ? '—' : left.toFixed(1) }, left == null ? [] : [el('small', { text: '%' })])]));
     const worstReset = worst?.resetAt || worst?.week?.resetAt;

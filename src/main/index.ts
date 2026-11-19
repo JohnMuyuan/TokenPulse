@@ -117,7 +117,14 @@ const antigravityQuota = new AntigravityQuota({
   notify: (models, used, resetAt, accountLabel) => {
     if (!Notification.isSupported()) return;
     const prefix = accountLabel ? `Antigravity (${accountLabel})` : "Antigravity";
-    const note = new Notification({ title: `${prefix} · ${models.join("、")} ${tr("额度已用")} ${Math.round(used)}%`, body: resetAt ? `${new Date(resetAt).toLocaleString()} ${tr("重置")}` : tr("注意节奏"), icon: windowIcon() });
+    const hasGemini = models.some((m) => /gemini|orchestrator/i.test(m));
+    const has3p = models.some((m) => /claude|gpt/i.test(m));
+    const poolLabel = hasGemini && !has3p
+      ? "Gemini"
+      : has3p && !hasGemini
+        ? (models.some((m) => /claude/i.test(m)) && models.some((m) => /gpt/i.test(m)) ? "Claude / GPT" : models.some((m) => /claude/i.test(m)) ? "Claude" : "GPT")
+        : models.length > 2 ? `${models.slice(0, 2).join("、")} 等` : models.join("、");
+    const note = new Notification({ title: `${prefix} · ${poolLabel} ${tr("额度已用")} ${Math.round(used)}%`, body: resetAt ? `${new Date(resetAt).toLocaleString()} ${tr("重置")}` : tr("注意节奏"), icon: windowIcon() });
     note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
   },
 });

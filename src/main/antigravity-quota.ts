@@ -587,6 +587,36 @@ function weightedQuantile(pairs: [number, number][], q: number): number {
 }
 
 /**
+ * 稳健近期加权平均（抗离群窗口 + 随当前窗口平滑更新）：
+ * - 越新的窗口权重越高（周窗口每往前一周期 ×0.55，5 小时窗口 ×0.85），避免新周期长时间被旧周期钉死；
+ * - 先以近期加权中位数确定稳健锚点，剔除偏离超过 2.5 倍的极端离群历史窗口（如早先全用低价 Flash 的窗口）；
+ * - 对保留窗口做加权平均，使当前进行中的窗口每次产生新用量时整窗折算都能平滑实时跟进。
+ */
+export function robustRecencyEstimate(
+  items: { value: number; weight: number }[],
+  decay: number,
+): number {
+  const valid = items
+    .map((item, idx) => ({
+      value: item.value,
+      weight: item.weight * Math.pow(decay, items.length - 1 - idx),
+    }))
+    .filter((item) => Number.isFinite(item.value) && item.value > 0 && item.weight > 0);
+  if (!valid.length) return 0;
+  if (valid.length === 1) return valid[0].value;
+  const anchor = weightedMedian(valid.map((item) => [item.value, item.weight]));
+  if (anchor <= 0) return valid[valid.length - 1].value;
+  const kept = valid.filter((item) => {
+    const ratio = item.value / anchor;
+    return ratio >= 0.4 && ratio <= 2.5;
+  });
+  const pool = kept.length ? kept : valid;
+  const sumW = pool.reduce((s, item) => s + item.weight, 0);
+  if (sumW <= 0) return anchor;
+  return pool.reduce((s, item) => s + item.value * item.weight, 0) / sumW;
+}
+
+/**
  * 自动识别处于同一 Google One 家庭组共享池的多账号：
  * 当两个账号在同一额度池上已有实际消耗（>= 0.5%），且 5 小时或周窗口的官方 resetAt 秒级一致（相差 <= 10 秒）、
  * 已用百分比同步（相差 <= 1.2%），即可确认它们背后连接的是同一个家庭组共享配额桶。
@@ -904,58 +934,69 @@ function analyzeSegmentIntervals(
 
   let anchor = pts[0];
   let prev = pts[0];
+  let peakUsed = anchor.used;
+  // 单调消费游标：保证每一条本机请求至多被归入一次本机区间（绝不因尾包吸附或回落等待而重复累加 Token）
+  let consumedRowAt = segment.startAt - 1;
 
   for (let i = 1; i < pts.length; i++) {
     const pt = pts[i];
     if (pt.at <= anchor.at) continue;
     const stepMs = pt.at - prev.at;
-    const delta = pt.used - anchor.used;
     const stepDelta = pt.used - prev.used;
+    // 同一窗口未发生真正重置时，后端多副本/滚动窗口可能小幅回落再回弹（如 3.1% → 2.6% → 3.1%）。
+    // 使用单调高水位 peakUsed 兜底，仅对真正突破高水位的净涨幅记账，防止把抖动回弹重复累计成本机或家庭组消耗。
+    const delta = pt.used - peakUsed;
     prev = pt;
 
-    if (delta < -0.2) {
-      anchor = pt;
-      continue;
-    }
-    // 超过 6 小时未采样且期间涨了点（例如电脑关机一整晚期间家人用过）：标为缺口不确定区间，不混入容量分母
-    if (stepMs > MAX_INTERVAL_GAP_MS && stepDelta >= 0.5) {
-      const gapRows = sliceRows(anchor.at, pt.at);
+    // 超过 6 小时未采样且期间净涨了点（例如电脑关机一整晚期间家人用过）：标为缺口不确定区间，不混入容量分母
+    if (stepMs > MAX_INTERVAL_GAP_MS && delta >= 0.5 && stepDelta >= 0.5) {
+      const gapRows = sliceRows(Math.max(anchor.at, consumedRowAt), pt.at);
       if (!gapRows.length) {
-        out.offPoints += Math.max(0, delta);
+        out.offPoints += delta;
         out.offIntervals.push({ from: anchor.at, to: pt.at, points: Math.round(delta * 10) / 10, kind: "off" });
       } else {
         out.uncertainIntervals.push({ from: anchor.at, to: pt.at, points: Math.round(delta * 10) / 10 });
       }
-      anchor = pt;
+      consumedRowAt = Math.max(consumedRowAt, pt.at);
+      peakUsed = pt.used;
+      anchor = { at: pt.at, used: peakUsed };
       continue;
     }
 
     const isLast = i === pts.length - 1;
     if (delta <= 0.05) {
       if (isLast) {
-        // 末尾尚未跳点但可能有刚产生的本地请求：若有上一条紧邻本机区间则吸附 Token
-        const tailRows = sliceRows(anchor.at, Math.min(segment.endAt, pt.at + 60_000, now));
+        // 末尾尚未再创高点但可能有刚产生的本地请求：若有上一条紧邻本机区间则吸附未消费过的尾包 Token
+        const tailFrom = Math.max(anchor.at, consumedRowAt);
+        const tailTo = Math.min(segment.endAt, pt.at + 60_000, now);
+        const tailRows = sliceRows(tailFrom, tailTo);
         const lastLocal = out.localIntervals.at(-1);
-        if (tailRows.length && lastLocal && anchor.at - lastLocal.to <= LAG_MS) {
+        if (tailRows.length && lastLocal && anchor.at >= lastLocal.to - LAG_MS && anchor.at - lastLocal.to <= LAG_MS) {
           const sum = summarizeRows(tailRows);
-          lastLocal.to = pt.at;
+          lastLocal.to = Math.max(lastLocal.to, pt.at);
           lastLocal.tokens += sum.tokens;
           lastLocal.costUsd += sum.costUsd;
           lastLocal.effectiveCostUsd += tailRows.reduce((s, r) => s + rowEffectiveCost(r), 0);
+          consumedRowAt = Math.max(consumedRowAt, tailTo);
         }
       } else if (pt.at - anchor.at > LAG_MS) {
-        // 平稳无涨幅超过延迟窗口：收尾紧挨上一轮采样的尾包后，将锚点推进到当前静默采样点，防止后续家庭成员突增吞并更早的本机请求
-        const trailing = sliceRows(anchor.at, anchor.at + LAG_MS);
+        // 平稳或短暂回落且超过延迟窗口：仅消费一次紧挨上一轮采样的尾包，且仅在闲置时推进时间锚点，绝不拉低高水位 peakUsed
+        const trailFrom = Math.max(anchor.at, consumedRowAt);
+        const trailTo = anchor.at + LAG_MS;
         const lastLocal = out.localIntervals.at(-1);
-        if (trailing.length && lastLocal && anchor.at - lastLocal.to <= LAG_MS) {
-          const sum = summarizeRows(trailing);
-          lastLocal.to = anchor.at + LAG_MS;
-          lastLocal.tokens += sum.tokens;
-          lastLocal.costUsd += sum.costUsd;
-          lastLocal.effectiveCostUsd += trailing.reduce((s, r) => s + rowEffectiveCost(r), 0);
+        if (lastLocal && lastLocal.to <= anchor.at && anchor.at - lastLocal.to <= LAG_MS && trailTo > trailFrom) {
+          const trailing = sliceRows(trailFrom, trailTo);
+          if (trailing.length) {
+            const sum = summarizeRows(trailing);
+            lastLocal.to = trailTo;
+            lastLocal.tokens += sum.tokens;
+            lastLocal.costUsd += sum.costUsd;
+            lastLocal.effectiveCostUsd += trailing.reduce((s, r) => s + rowEffectiveCost(r), 0);
+            consumedRowAt = Math.max(consumedRowAt, trailTo);
+          }
         }
-        if (!sliceRows(anchor.at + LAG_MS, pt.at).length) {
-          anchor = pt;
+        if (!sliceRows(Math.max(anchor.at + LAG_MS, consumedRowAt), pt.at).length) {
+          anchor = { at: pt.at, used: peakUsed };
         }
       }
       continue;
@@ -965,15 +1006,18 @@ function analyzeSegmentIntervals(
 
     const from = anchor.at;
     const to = pt.at;
-    const rowFrom = anchor === pts[0] && hasOrigin ? segment.startAt - 1 : from;
+    const baseFrom = anchor === pts[0] && hasOrigin ? segment.startAt - 1 : from;
+    const rowFrom = Math.max(baseFrom, consumedRowAt);
     const rowTo = isLast ? Math.min(segment.endAt, to + 60_000, now) : to;
     const part = sliceRows(rowFrom, rowTo);
-    anchor = pt;
+    peakUsed = pt.used;
+    anchor = { at: pt.at, used: peakUsed };
     out.rawUsedPct += delta;
 
     if (part.length > 0) {
       const sum = summarizeRows(part);
       const effCost = part.reduce((s, r) => s + rowEffectiveCost(r), 0);
+      consumedRowAt = Math.max(consumedRowAt, rowTo);
       out.localIntervals.push({
         from,
         to,
@@ -1213,8 +1257,21 @@ function buildWindowInsight(
   let confidence: AgyWindowCapacity["confidence"] = "insufficient";
 
   if (sumPoints >= MIN_CAPACITY_PCT && sumTokens > 0) {
-    fullTokens = Math.round(weightedMedian(recent.map((point) => [point.fullTokens, point.usedPct])));
-    fullCostUsd = sumCost > 0 ? Math.round(weightedMedian(recent.map((point) => [point.fullCostUsd, point.usedPct])) * 100) / 100 : null;
+    const decay = windowKind === "week" ? 0.55 : 0.85;
+    fullTokens = Math.round(
+      robustRecencyEstimate(
+        recent.map((point) => ({ value: point.fullTokens, weight: point.usedPct })),
+        decay,
+      ),
+    );
+    fullCostUsd = sumCost > 0
+      ? Math.round(
+          robustRecencyEstimate(
+            recent.map((point) => ({ value: point.fullCostUsd, weight: point.usedPct })),
+            decay,
+          ) * 100,
+        ) / 100
+      : null;
     basis = intervals >= 2 && sumPoints >= 5 ? "measured" : "current";
     confidence = intervals >= 3 && sumPoints >= 15 ? "medium" : sumPoints >= 5 ? "low" : "current";
   } else if (!ended && used >= MIN_CAPACITY_PCT && local.tokens > 0) {

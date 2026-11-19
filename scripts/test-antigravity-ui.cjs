@@ -110,7 +110,10 @@ app.on('web-contents-created', (_event, wc) => {
     const card = '#quota-cards [data-antigravity]';
     assert.equal(await e(`document.querySelectorAll('${card} .agy-mini').length`), 2);
     assert.match(await text(card), /Antigravity[\s\S]*Google AI Ultra[\s\S]*节奏正常/);
-    assert.match(await text(`${card} .agy-mini[data-group="${KEY_A}"]`), /Gemini 4 Argon · Gemini 3\.8 Flash[\s\S]*已用 30\.0%[\s\S]*后重置[\s\S]*周额度[\s\S]*周已用 20\.0%/);
+    assert.match(await text(`${card} .agy-mini[data-group="${KEY_A}"]`), /Gemini[\s\S]*已用 30\.0%[\s\S]*后重置[\s\S]*周额度[\s\S]*周已用 20\.0%/);
+    assert.equal(await text(`${card} .agy-mini[data-group="${KEY_A}"] .agy-group-name`), 'Gemini', 'Gemini 池用简短标题，不再把一长串型号全拼上去');
+    assert.match(await e(`document.querySelector('${card} .agy-mini[data-group="${KEY_A}"] .agy-group-name')?.title || ''`), /Gemini 4 Argon · Gemini 3\.8 Flash/, '悬停提示保留完整模型列表');
+    assert.equal(await text(`${card} .agy-mini[data-group="${KEY_B}"] .agy-group-name`), 'Claude / GPT', 'Claude 与 GPT 池显示简短名称');
     assert.equal(await text(`${card} .ring-center`), '70.0%', '圆环中间是剩得最少的那一组');
     assert.equal(await e(`document.querySelectorAll('${card} .ring-value').length`), 2, '两组各一个环');
     assert.ok(hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') && hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary'));
