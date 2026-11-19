@@ -1,6 +1,47 @@
-# 当前接手入口 · TokenPulse v0.3.99 已正式发布至 GitHub Release（2026-11-18）
+# 当前接手入口 · TokenPulse v0.3.100 已正式发布至 GitHub Release（2026-11-19）
 
-## 当前已发布状态 · `v0.3.99`（工作区干净，未动 `clawd-pet-extracted/` 与本机正式版进程）
+## 最新已发布基线 · `v0.3.100`（已正式发布至 GitHub Release，2026-11-19）
+
+- **版本与发布概览**：
+  - 版本：**`0.3.100`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译、已合入 `origin/main` 最新 `2026.11.19` 模型知识库 `8be88cf` 及 `npm run dist` 打包产物均已同步；`SECRET_HITS=0`）。
+  - **Git / GitHub（已完成）**：发布提交 **`04feb2c`**（`chore: release v0.3.100 (shorten Antigravity pool titles & fix weekly capacity jitter/freeze)`，完整 SHA `04feb2cfaa5916696f0b6dcde0d5cbaa763808ba`，基于最新 `8be88cf`）与标签 **`v0.3.100`**（`24dfe89`）已推送到 `origin/main`；本交接更新随后单独提交推送到 `origin/main`。
+  - **GitHub Release（已正式发布）**：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.100 （`isDraft: false`，`isPrerelease: false`，`latest`），4 个附件经 `curl.exe --noproxy '*'` 直传均返回 `HTTP 201`，远端字节大小与 SHA256 与本地逐字节一致（`match=True`）。
+  - **本机未覆盖说明**：未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`；用户可在软件内检测升级或直接运行 [TokenPulse-0.3.100-Setup.exe](file:///d:/CodePorject/Tools/TokenPulse/dist/TokenPulse-0.3.100-Setup.exe)。
+- **打包产物与远端校验（`ASAR_OK` 且 SHA256 逐字节一致）**：
+  - `npm run dist` PASS；校验 `dist/win-unpacked/resources/app.asar` 含 `0.3.100`、`groupTitleOf`、`robustRecencyEstimate`、`consumedRowAt`、`peakUsed`、`2026.11.19`。
+  - `dist/TokenPulse-0.3.100-Setup.exe`：`112,883,234` B，SHA256 `490E3253EDB4B5B8BB7A5CE6C0B2EA48A9D52AA88A8FCE16121F0918F8DB9A94`
+  - `dist/TokenPulse-0.3.100-Portable.exe`：`112,626,078` B，SHA256 `5648B43C2F46AD1EF6D9401FE539A413A15C629FD76D4C370BC3984DC26970DC`
+  - `dist/TokenPulse-0.3.100-Setup.exe.blockmap`：`119,955` B，SHA256 `4FE23A0FE1B3A4EDEEB58DDF512D6012BE5C257809FB62BAE79C28F6AD32FA15`
+  - `dist/latest.yml`：`355` B（version `0.3.100`），SHA256 `9E11EA62DBB0501014571BB71DA0381DCEE355ADC8AED657B1869F995A8DD719`
+  - 发布说明文件：[release-0.3.100.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.100.md)。
+- **问题定位与已完成修复**：
+  1. **额度池超长命名精简**：
+     - 原因：`renderer/antigravity-quota.js` 的 `groupName()` 此前直接拼接 `group.models.join(' · ')`，在 Gemini 池扩充到 6 个模型后被拉长并截断为 `Gemini 4 Neon · Gemini 4 Carbon · ... · Orch`。
+     - 修复：[renderer/antigravity-quota.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity-quota.js) 新增 `groupTitleOf()` 与重构 `groupName()`，统一展示简洁池名（**`Gemini`**、**`Claude / GPT`** / `Claude` / `GPT`，其余池优先 `group.title`），将完整包含模型清单保留在悬停 `title` 提示、总览圆环 `title` 与下方「组内模型档位」中；同步在 [src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts) 精简 Antigravity 过线通知标题。
+  2. **区间抗锯齿抖动重复计数 + 请求单调游标**：
+     - 原因：Google 后端多副本 / 滚动周额度存在高频小幅回落再回弹（本机 11-18 以来 266 条采样中出现 65 次回落、累计 28.4 个百分点），旧 `analyzeSegmentIntervals()` 在 `delta < -0.2` 时把锚点拉低导致每次回弹重复累计成虚假本机/他端消耗（使 `31.9%` 实际周已用被虚算为 `52.7%`、`externalUsedPct` 虚高到 `20.7%`）；且旧尾包吸附判断在回落等待期可能重复叠加同一段尾包 Token。
+     - 修复：[src/main/antigravity-quota.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/antigravity-quota.ts) 的 `analyzeSegmentIntervals()` 引入窗口内**单调高水位 `peakUsed`**（仅对真正突破高水位的净增量记账，闲置时只推时间锚点不拉低高水位）与**请求单调消费游标 `consumedRowAt`**（保证每条本机请求至多被消费一次）。
+  3. **周额度整窗折算实时平滑响应（不再锁死旧周）**：
+     - 原因：`buildWindowInsight()` 此前对最近 3 个周窗口直接取离散不插值的 `weightedMedian`，导致本周权重（如 `32.0`）未超过前两周之和（`38.7`）前永远咬死在单条历史周（如 11-16 的 `1.07B / $620.88`）一动不动。
+     - 修复：[src/main/antigravity-quota.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/antigravity-quota.ts) 新增 `robustRecencyEstimate()`（周窗口衰减 `0.55`、5 小时窗口衰减 `0.85`，以近期加权中位数作锚点剔除偏离超过 `2.5×` 的极端历史离群窗口，再对保留窗口做近期加权平均），并在 [renderer/antigravity-quota.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity-quota.js)、[renderer/intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js) 与 [renderer/i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js) 同步更新虚线说明文案、`0.3.100` 更新日志与英文翻译。
+- **本轮验证命令与实际结果（均在最终修改与合入 `8be88cf` 后通过）**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **69** 个单元与安全审计脚本，含 [scripts/test-antigravity-capacity.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-antigravity-capacity.cjs) Check 8 8/8 PASS 与 `test-features.cjs` 46/46 PASS，覆盖 `2026.11.19` 知识库与英文词典零漏翻校验）：**69/69 PASS**
+  - Electron UI 测试（升版 `0.3.100` 后实测，传 `--lang=zh-CN`）：
+    - `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`：**PASS**（验证 `0.3.100` 升级说明）
+    - `npx electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**8/8 PASS**（验证 `Gemini` / `Claude / GPT` 短名且悬停 `title` 保留完整型号列表）
+    - `npx electron --lang=zh-CN scripts/test-tray-panel-ui.cjs`：**4/4 PASS**
+    - `npx electron --lang=zh-CN scripts/test-ui.cjs`：**PASS**（0 失败）
+  - `npm run dist`：**PASS**（合入 `2026.11.19` 知识库后重新打包并逐字节核验 `app.asar` 与远端 SHA256）。
+  - **本机 `~/.tokenpulse` 克隆副本非破坏性对比实测（不改原目录）**：
+    - 修复前：本周 `week.used = 31.9%`，`capHistWeek` 虚算 `used = 32.0% + excl = 20.7% = 52.7%`，`externalUsedPct = 20.7%` / `localUsedPct = 11.2%`，周额度整窗折算长期钉死在 11-16 的 `1.07B / $620.88`。
+    - 修复后：本周 `week.used = 32.1%`（峰值 `33.4%`），`capHistWeek` 严格守恒 `used = 22.3% + excl = 10.6% <= 33.4%`、`tok = 254.4M <= localTokens 261.4M`，`localUsedPct = 21.5%` / `externalUsedPct = 10.6%`，周额度整窗折算平滑响应为 `1.30B Tokens / $899.03`（本周自身折算 `1.14B / $888.42`，4 周 API 折算稳定在 `$810–$1,098` 区间）。
+  - **未执行的验证**：未重跑与本轮改动无关的其余单一供应商独立 UI 脚本或打包后安装器增量更新测试（`test-updater.cjs`）。
+- **收尾进程与文件句柄检查**：`SECRET_HITS=0`；`REPO_PROCS=0`；`build/main/index.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与 `dist/TokenPulse-0.3.100-*`、`dist/latest.yml` 全部文件句柄 `UNLOCKED`。用户工作区未动目录：`clawd-pet-extracted/`；用户自用 `AppData\Local\Programs\TokenPulse\TokenPulse.exe` 未被关闭或改动。
+- **下一步具体动作**：等待用户在软件内自动升级或在合适时机关闭本机旧版并运行 `TokenPulse-0.3.100-Setup.exe`；当前任务已完整闭环，无遗留阻塞。
+
+---
+
+## 上一已发布基线 · `v0.3.99`（已正式发布至 GitHub Release，2026-11-18）
 
 - **版本与发布概览**：
   - 版本：**`0.3.99`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译、已合入 `origin/main` 最新 `2026.11.18` 模型知识库 `acf7d8d` 及 `npm run dist` 打包产物均已同步；`SECRET_HITS=0`）。
