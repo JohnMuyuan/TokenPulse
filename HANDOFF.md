@@ -1,15 +1,19 @@
 # 当前接手入口 · TokenPulse v0.3.101 发布（2026-11-19）
 
-## `v0.3.101` 发布进度 · 进行中
+## 最新已发布版本 · `v0.3.101` · 2026-11-19
 
-- 用户已授权升一个补丁版本并正式发布 GitHub Release。范围为下方两轮工作区改动，随版本更新中英文应用内说明。
-- 已将 `package.json`、`package-lock.json` 和应用内更新说明同步到 `0.3.101`。GitHub 远端 `main` 为 `e042d7b`，最新公开版本为 `v0.3.100`，远端暂无 `v0.3.101` 标签。接手前已有未跟踪的 `clawd-pet-extracted/`。
-- 首次 `npm test` 在 TypeScript 编译阶段退出 2。`model-study.ts` 的空数组被推断成 `never[]`，`report.ts` 的独立模型窗口可为空。已分别补上统计类型和窗口存在检查，待复跑。
-- 正式 `npm test` 复跑退出 0（TypeScript 和 69 个脚本），额外 Antigravity CLI 导入脚本 9/9 通过。Electron 的模型研究夹具将第一次 0% 采样前的未知等级请求混入首次涨点，已改用采样后请求来验证「时间线显示但尚未折算」，再推进采样验证其进入用量。该脚本复跑通过，自动更新的模拟安装流程亦已通过 13/13。其余 Electron 脚本仍在运行。
-- 复用正式测试产出的 `build/` 执行 `electron-builder --publish never`，退出 0。解包 EXE 的产品版本为 `0.3.101.0`，ASAR 的包版本和 16 个受影响运行文件已核对，安装器大小及 SHA512 与 `latest.yml` 一致。Windows 发行附件已在 `dist/` 生成，发布说明在 `dist/release-0.3.101.md`。
-- 下一步提交已核对的文件，等界面套件收尾后推送标签并上传到 GitHub 草稿，逐个对比 SHA256 后公开。当前公开 Release 仍为 `v0.3.100`。
+- **Git 与发布**。[TokenPulse v0.3.101](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.101) 已公开，GitHub 最新正式版为 `v0.3.101`，Release ID `451353179`。发布提交 `8e8cd537ac551a581fdce3c3b6c3278744595e3e` 与签注标签 `v0.3.101`（`36d47e7305002b4c938a65d8d82357f3a03216c6`）已原子推送。版本与应用内更新说明已同步。发布内容为下方两轮修复，未跟踪的 `clawd-pet-extracted/` 保留在工作区。暂存差异及发布说明的凭据模式检查为 `SECRET_HITS=0`。
+- **Windows 构建**。正式 `npm test` 生成 `build/` 后执行 `node_modules/.bin/electron-builder.cmd --publish never`，两步均退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.101.0`；`resources/app.asar` 内包版本、升级说明与 16 个运行文件核对通过。安装器大小及 SHA512 与 `latest.yml` 一致。发布说明在 `dist/release-0.3.101.md`。
+- **发行附件**。公开前后通过 GitHub API 校验，四件附件状态均为 uploaded，字节大小和 SHA256 与本地一致。
+  - `dist/TokenPulse-0.3.101-Setup.exe`，112,886,348 B，SHA256 `41dfbf733fb49fa19b69a2122ac50c154bd606659293dc5a06a8712ce423e2aa`
+  - `dist/TokenPulse-0.3.101-Portable.exe`，112,629,191 B，SHA256 `ec6419789cac75b241fa94f0b07337c533ea28dc3011f8bb3cca82390098939f`
+  - `dist/TokenPulse-0.3.101-Setup.exe.blockmap`，120,012 B，SHA256 `cfa9078e9be8d63cacfd5725e0525ba78432fd7ec543a66505deddaf8a875e97`
+  - `dist/latest.yml`，355 B，SHA256 `16be5072c60d7c3ee471e232e246a3499073f7b9b341729eb7216ceeb8e22a49`
+- **正式验证**。`npm test`（TypeScript 编译及 69 个脚本）退出 0，`node scripts/test-antigravity-cli-import.cjs` 9/9，通过 Electron 运行 `scripts/test-updater.cjs` 13/13。首次编译的 `never[]` 推断和独立模型窗口可空已修正。Electron 按 `test:ui` 清单依次执行 24 个脚本，首轮 20 个通过，模型研究夹具修正后及 DeepSeek 禁用测试进程后台节流后分别复跑通过，最终 22/24。`git diff --check` 通过。
+- **界面例外**。`test-pi-ui.cjs` 在新版本和已发布的 `v0.3.100` 便携包都重现明暗主题图标填充同色。`test-desk-pet-ui.cjs` 的自动收起时长断言在本次 ASAR 仍失败，诊断记录显示气泡于 1,672 ms 失焦、1,676 ms 隐藏，走的是现有失焦收起逻辑；旧包在此次基准上跑通，当前测试环境下仍未证实自动收起路径通过。日志见 `test-release-ui-0.3.101.log`、`test-release-pi-baseline-0.3.100.log` 和 `test-release-desk-pet-diagnostic-0.3.101.log`。真实订阅账号容量误差与真实安装器覆盖升级留待实测。
+- **收尾**。测试、打包及仓库应用进程按范围检查为 0。已核对 `build/`、`dist/`、解包目录与主入口、EXE、ASAR 和四件发行附件可独占打开，检查句柄均已关闭。此次发布没有手动安装或关闭用户正式版。
 
-## 当前改动 · Claude、ChatGPT、Grok 额度估算 · 源码及回归完成
+## 发版前记录 · Claude、ChatGPT、Grok 额度估算 · 已纳入 `v0.3.101`
 
 - 周、5 小时及 Claude Fable 独立周额度共用窗口净涨幅与本机请求区间。窗口内按高水位计算，回落后反弹不重复记账；长缺口中的变化及已标注的混用区间不进入容量折算。同期有本机请求时，至少有三个稳定的同窗口、同型号、同等级且可计价的区间作参照，才将明显异常的区间标作疑似混用并整体排除。时间线仍显示官方已用和本机请求，不为异常区间虚构具体的外部消耗量。
 - 整窗卡片与模型预算复用 Antigravity 的稳健近期加权。周最多 3 个、5 小时最多 6 个有效窗口，同套餐才合并，降低极端历史值的影响。新窗口只有少量样本时可借用近期同套餐观测；历史趋势保留每窗自己的观测值。启用「只在本机用 Code」的账号保留其直接折算口径。
@@ -19,7 +23,7 @@
 - **Git、产物与资源**。`main` HEAD 仍为 `e042d7b`，版本 `0.3.100`，本轮和此前源码改动均留在工作区。未提交、升版、编译、打包、安装或发布。现有安装包 `dist/TokenPulse-0.3.100-Setup.exe`、`dist/TokenPulse-0.3.100-Portable.exe`、blockmap 与 `latest.yml` 的 SHA256 均与下方发布基线一致。临时加载器与套件脚本已删除；测试及仓库应用进程筛查均为 0，`build/`、`dist/`、解包目录和关键文件均可独占打开，检查句柄已关闭。
 - **下一步**。等待用户决定是否编译和发布。
 
-## 此前后端审查 · 基于已发布的 `v0.3.100` · 源码修复及回归完成
+## 发版前记录 · 后端审查 · 已纳入 `v0.3.101`
 
 - 目标是审查并修复后端逻辑、计数和功能问题，先汇报源码结果，再由用户决定是否编译和发布。
 - **会话扫描及流水**。扫描器沿用会话功能的 CLI 目录解析，配置和登录态也从该目录读取；超出常规 32 MiB 批次的完整 JSONL 行可继续处理。月流水恢复时将断尾与新批次分开，UTF-8 字符跨块正确解码，最早月份损坏时继续查找首条有效记录（`src/core/usage-scan.ts`、`src/core/request-log.ts`、`src/core/paths.ts`）。
@@ -31,7 +35,7 @@
 - **Git、产物和资源状态**。`main` HEAD 为 `e042d7b`，源码修改在工作区，尚未提交、升版、安装或发布。原有 `clawd-pet-extracted/` 为接手前的未跟踪目录。最新打包产物仍为下方发布基线的 `dist/TokenPulse-0.3.100-Setup.exe`、`dist/TokenPulse-0.3.100-Portable.exe`、`dist/TokenPulse-0.3.100-Setup.exe.blockmap`、`dist/latest.yml`，四件 SHA256 与发布交接一致。按命令行筛查测试进程和仓库内应用进程均为 0。`build/`、`dist/`、`dist/win-unpacked/`、`dist/win-unpacked/resources/`、主入口 JS、解包 EXE/ASAR 和四件发布产物均可独占打开，检查句柄已关闭。
 - **下一步**。等待用户决定是否编译及发布，以及需采用的版本号。
 
-## 最新已发布基线 · `v0.3.100`（已正式发布至 GitHub Release，2026-11-19）
+## 上一已发布基线 · `v0.3.100`（已正式发布至 GitHub Release，2026-11-19）
 
 - **版本与发布概览**：
   - 版本：**`0.3.100`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译、已合入 `origin/main` 最新 `2026.11.19` 模型知识库 `8be88cf` 及 `npm run dist` 打包产物均已同步；`SECRET_HITS=0`）。
