@@ -1096,11 +1096,18 @@
             const proj = row.cwd ? row.cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || row.cwd : '—';
             const speedText = row.timing?.tokensPerSec != null
               ? `${row.timing.firstTokenMs != null ? `首字 ${fmtSec(row.timing.firstTokenMs)} · ` : ''}${row.timing.tokensPerSec} Token/秒`
-              : row.timing?.firstTokenMs != null
-                ? `首字 ${fmtSec(row.timing.firstTokenMs)}`
-                : row.timing?.ms != null
-                  ? `耗时 ${fmtSec(row.timing.ms)}`
-                  : '—';
+              : row.timing?.avgTokensPerSec != null
+                ? `${row.timing.firstTokenMs != null ? `首字 ${fmtSec(row.timing.firstTokenMs)} · ` : ''}≈ ${row.timing.avgTokensPerSec} Token/秒`
+                : row.timing?.firstTokenMs != null
+                  ? `首字 ${fmtSec(row.timing.firstTokenMs)}`
+                  : row.timing?.ms != null
+                    ? `耗时 ${fmtSec(row.timing.ms)}`
+                    : '—';
+            const speedTitle = row.timing?.tokensPerSec == null && row.timing?.avgTokensPerSec != null
+              ? '速度 ≈ 按总耗时估算，不计入速度走势'
+              : row.timing?.thinkingMs > 0
+                ? `思考 ${fmtSec(row.timing.thinkingMs)} · 首字含模型思考与首包等待`
+                : '';
             const mainModel = row.returned || row.requested || row.model;
             const diffSub = row.requested && row.returned && row.requested !== row.returned ? `请求 ${row.requested}` : null;
             return el('tr', { class: `request-row ${row.verify.status}` }, [
@@ -1111,7 +1118,7 @@
                 diffSub ? el('small', { text: diffSub }) : null,
                 row.effort ? el('div', { class: 'request-tags' }, [el('span', { class: 'request-tag', translate: 'no', text: row.effort })]) : null,
               ]),
-              el('td', { class: 'agy-req-speed', text: speedText }),
+              el('td', { class: 'agy-req-speed', text: speedText, ...(speedTitle ? { title: speedTitle } : {}) }),
               el('td', { class: 'n token-strong', title: number(row.tokens), text: tokens(row.tokens) }),
               el('td', { class: 'n', text: row.priced ? money(row.costUsd) : '未定价' }),
               el('td', {}, [el('span', { class: 'badge ' + (toneMap[row.verify.status] || 'neutral'), text: row.verify.label, title: row.verify.reasons?.[0] || '' })]),

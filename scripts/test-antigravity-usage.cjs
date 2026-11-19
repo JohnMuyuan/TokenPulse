@@ -44,8 +44,8 @@ function makeConversation(id, steps, gens) {
   const file = path.join(agy, 'conversations', id + '.db');
   const db = new DatabaseSync(file);
   db.exec('create table steps (idx integer primary key, step_type integer, status integer, has_subtrajectory numeric, metadata blob, step_payload blob); create table gen_metadata (idx integer primary key, data blob, size integer);');
-  const put = db.prepare('insert or replace into steps (idx, step_type, status, metadata) values (?, ?, ?, ?)');
-  for (const s of steps) put.run(s.idx, s.type, s.status, s.meta ?? null);
+  const put = db.prepare('insert or replace into steps (idx, step_type, status, metadata, step_payload) values (?, ?, ?, ?, ?)');
+  for (const s of steps) put.run(s.idx, s.type, s.status, s.meta ?? null, s.payload ?? null);
   const gm = db.prepare('insert or replace into gen_metadata (idx, data, size) values (?, ?, ?)');
   for (const [idx, data] of gens) gm.run(idx, data, data.length);
   db.close();
@@ -161,19 +161,56 @@ function addSteps(file, steps) {
       msg(20, str(1, 'request_id'), str(2, 'req-buffered-short')),
       str(21, 'Gemini 4 Argon (High)'),
     )]);
+    const replyPayload = ({ text = '', thought = '', tools = 0, thinkingMs = 0 }) => msg(
+      20,
+      ...(text ? [str(1, text)] : []),
+      ...(thought ? [str(3, thought)] : []),
+      ...Array.from({ length: tools }, (_, i) => msg(7, str(1, `c${i}`), str(2, 'read_file'), str(3, '{}'))),
+      ...(thinkingMs > 0 ? [time(11, thinkingMs)] : []),
+    );
+    const streamThinkToolGen = Buffer.concat([msg(1,
+      time(11, 9767),
+      time(12, 44449),
+      str(19, 'gemini-4-neon'),
+      msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_UNKNOWN')),
+      msg(20, str(1, 'request_id'), str(2, 'req-stream-think-tool')),
+      str(21, 'Gemini 4 Neon (High)'),
+    )]);
+    const postThinkTextGen = Buffer.concat([msg(1,
+      time(11, 8415),
+      time(12, 6334),
+      str(19, 'gemini-4-hydrogen'),
+      msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_UNKNOWN')),
+      msg(20, str(1, 'request_id'), str(2, 'req-post-think-text')),
+      str(21, 'Gemini 4 Hydrogen (High)'),
+    )]);
+    const shortMidBufferedGen = Buffer.concat([msg(1,
+      time(11, 6126),
+      time(12, 233),
+      str(19, 'gemini-4-hydrogen'),
+      msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_UNKNOWN')),
+      msg(20, str(1, 'request_id'), str(2, 'req-buffered-233ms')),
+      str(21, 'Gemini 4 Hydrogen (High)'),
+    )]);
     makeConversation(conv4, [
       { idx: 0, type: 15, status: 3, meta: stepMeta({ start: now - 10000, end: now - 6000, modelId: 1999, gen: 0, input: 800, output: 200 }) },
       { idx: 1, type: 15, status: 3, meta: stepMeta({ start: now - 150000, end: now - 20952, modelId: 1999, gen: 1, input: 120000, output: 16155, thinking: 35 }) },
       { idx: 2, type: 15, status: 3, meta: stepMeta({ start: now - 40000, end: now - 7955, modelId: 1999, gen: 2, input: 5000, output: 130, thinking: 20 }) },
-    ], [[0, richGen], [1, bufferedGen], [2, shortBufferedGen]]);
+      { idx: 3, type: 15, status: 3, meta: stepMeta({ start: now - 90000, end: now - 35784, modelId: 2001, gen: 3, input: 30000, output: 6911, thinking: 3603 }), payload: replyPayload({ thought: 'long thinking', tools: 1, thinkingMs: 54081 }) },
+      { idx: 4, type: 15, status: 3, meta: stepMeta({ start: now - 35000, end: now - 20251, modelId: 2002, gen: 4, input: 20000, output: 1632, thinking: 1189 }), payload: replyPayload({ text: 'final answer', thought: 'thinking summary', thinkingMs: 13268 }) },
+      { idx: 5, type: 15, status: 3, meta: stepMeta({ start: now - 18000, end: now - 11641, modelId: 2002, gen: 5, input: 10000, output: 126, thinking: 36 }), payload: replyPayload({ tools: 1 }) },
+    ], [[0, richGen], [1, bufferedGen], [2, shortBufferedGen], [3, streamThinkToolGen], [4, postThinkTextGen], [5, shortMidBufferedGen]]);
     r = scan.scanLocalUsage();
-    assert.equal(r.records.length, 3);
+    assert.equal(r.records.length, 6);
     assert.deepEqual([r.records[0].model, r.records[0].effort, r.records[0].returned, r.records[0].requestId], ['gemini-4-argon', 'high', 'gemini-4-argon-b', 'req-rich-1']);
     assert.deepEqual(r.records[0].timing, { stream: true, ms: 4000, firstTokenMs: 1500, tokensPerSec: 80, provider: 'Antigravity' }, '流式回复按纯出字阶段（200 Token ÷ 2.5s = 80）计速，不把 1.5s 首包等待算进分母');
     assert.deepEqual(r.records[1].timing, { stream: false, ms: 129048, tokensPerSec: 125.2, provider: 'Antigravity' }, '服务端整包缓冲的大工具调用不把 129 秒总生成时间误记成首字延迟');
-    assert.deepEqual(r.records[2].timing, { stream: false, ms: 32045, provider: 'Antigravity' }, '整包缓冲的短工具调用既不误记 32s 首字延迟，也不把排队等待算成 4 Token/秒');
+    assert.deepEqual(r.records[2].timing, { stream: false, ms: 32045, avgTokensPerSec: 4.1, provider: 'Antigravity' }, '整包缓冲的短工具调用不记首字与实测流式速度（不污染曲线），仅记录 avgTokensPerSec 供明细标 ≈ 展示');
     assert.equal(r.records[2].estimate, undefined, '跳过计速的短工具调用不回退写入 estimate');
-    pass('antigravity usage: gen_metadata streaming timing (TTFT + duration), buffered tool-call TTFT guard, and fallback model_display_name are extracted');
+    assert.deepEqual(r.records[3].timing, { stream: true, ms: 54216, firstTokenMs: 9767, tokensPerSec: 155.5, thinkingMs: 54081, provider: 'Antigravity' }, '流式思考 + 工具调用依据 thinking_duration 保留全部流式输出（6911 ÷ 44.449s = 155.5），不再误腰斩成 74.4');
+    assert.deepEqual(r.records[4].timing, { stream: true, ms: 14749, firstTokenMs: 8415, tokensPerSec: 299.1, thinkingMs: 13268, provider: 'Antigravity' }, '纯文本回复剥离思考段，按思考后纯正文流式段（443 ÷ 1.481s = 299.1）计速');
+    assert.deepEqual(r.records[5].timing, { stream: false, ms: 6359, avgTokensPerSec: 19.8, provider: 'Antigravity' }, 'streamMs < 300ms 且总速率 > 500 或纯工具调用的整包缓冲不误报 6.13s 首字延迟，同时给出整包均速 ≈ 19.8');
+    pass('antigravity usage: gen_metadata streaming timing (TTFT + duration), thinking_duration calibration, buffered tool-call guard, and avgTokensPerSec fallback are extracted');
 
     // 额度：GetUserStatus 按剩余比例 + 重置时间分组；用完的那组没有 remainingFraction
     const status = { userStatus: { name: 'QA', email: 'qa@example.com', planStatus: { planInfo: { planName: 'Pro' } }, userTier: { name: 'Google AI Ultra' }, cascadeModelConfigData: { clientModelConfigs: [
@@ -286,7 +323,31 @@ function addSteps(file, steps) {
     assert.equal(segs[0].endAt, baseT + 22 * HOUR, '第一段结束时间截断在重置发生点而非 7 天后');
     assert.equal(segs[1].startedByReset, 'moved', '第二段标记为从顺延式提前重置开始');
     assert.equal(segs[1].startAt, baseT + 22 * HOUR, '第二段起点不早于重置点，不会吞入重置前 Token');
-    pass('antigravity quota: agyWindowSegments splits early resets (moved/kept) and clamps segment boundaries');
+    // 瞬时单点脏采样（备用端点闪断返回 0% + 未来 resetAt，3 分钟后恢复原窗口）绝不把进行中的窗口腰斩成假提前重置
+    const MIN = 60_000;
+    const glitchFutureReset = new Date(baseT + 30 * HOUR + 7 * DAY).toISOString();
+    const glitchHistory = [
+      { at: baseT + 2 * HOUR, groups: [{ key: gKey, used: 1.2, resetAt: new Date(baseT + 5 * HOUR).toISOString(), weekUsed: 1.2, weekResetAt: weekReset1 }] },
+      { at: baseT + 29 * HOUR, groups: [{ key: gKey, used: 2.0, resetAt: new Date(baseT + 34 * HOUR).toISOString(), weekUsed: 28.1, weekResetAt: weekReset1 }] },
+      { at: baseT + 30 * HOUR, groups: [{ key: gKey, used: 0, resetAt: new Date(baseT + 35 * HOUR).toISOString(), weekUsed: 0, weekResetAt: glitchFutureReset }] },
+      { at: baseT + 30 * HOUR + 3 * MIN, groups: [{ key: gKey, used: 3.1, resetAt: new Date(baseT + 34 * HOUR).toISOString(), weekUsed: 27.9, weekResetAt: weekReset1 }] },
+      { at: baseT + 30 * HOUR + 24 * MIN, groups: [{ key: gKey, used: 4.8, resetAt: new Date(baseT + 34 * HOUR).toISOString(), weekUsed: 29.3, weekResetAt: weekReset1 }] },
+    ];
+    const glitchSegs = aqMod.agyWindowSegments('week', gKey, glitchHistory, { used: 29.3, resetAt: weekReset1 }, baseT + 30 * HOUR + 24 * MIN);
+    assert.equal(glitchSegs.length, 1, '夹在同窗口中间的单帧 0% 脏采样被自动剔除，保持单段连续窗口');
+    assert.equal(glitchSegs[0].startedByReset, undefined, '不被单帧 0% 脏采样误标成「窗口已提前重置」');
+    assert.equal(glitchSegs[0].points.length, 4, '脏点被移除，保留 4 个真实采样点以保持消耗速率准确');
+    assert.equal(glitchSegs[0].points[0].used, 1.2, '段起点仍为真实的 1.2%，不会从脏点 0% 跳涨到 29.3%');
+    // 0% 空闲副号中间闪回 1 帧 0.3% 旧窗口噪点后立刻回到 0% 空闲：不误报提前重置
+    const idleFlashHistory = [
+      { at: baseT + 1 * HOUR, groups: [{ key: gKey, used: 0, resetAt: new Date(baseT + 6 * HOUR).toISOString(), weekUsed: 0, weekResetAt: new Date(baseT + 1 * HOUR + 7 * DAY).toISOString() }] },
+      { at: baseT + 1 * HOUR + 30 * MIN, groups: [{ key: gKey, used: 0, resetAt: new Date(baseT + 6 * HOUR + 30 * MIN).toISOString(), weekUsed: 0.3, weekResetAt: weekReset1 }] },
+      { at: baseT + 1 * HOUR + 33 * MIN, groups: [{ key: gKey, used: 0, resetAt: new Date(baseT + 6 * HOUR + 33 * MIN).toISOString(), weekUsed: 0, weekResetAt: new Date(baseT + 1 * HOUR + 33 * MIN + 7 * DAY).toISOString() }] },
+    ];
+    const idleFlashSegs = aqMod.agyWindowSegments('week', gKey, idleFlashHistory, { used: 0, resetAt: new Date(baseT + 1 * HOUR + 33 * MIN + 7 * DAY).toISOString() }, baseT + 1 * HOUR + 33 * MIN);
+    assert.equal(idleFlashSegs.length, 1, '0% 空闲期单帧 0.3% 备用节点闪回被剔除');
+    assert.equal(idleFlashSegs[0].startedByReset, undefined, '空闲副号不被闪回噪点误标成提前重置');
+    pass('antigravity quota: agyWindowSegments splits early resets (moved/kept), ignores transient glitches, and clamps segment boundaries');
 
     // Antigravity CLI（~/.gemini/antigravity-cli）：CLI 会话同样被扫描入账，并识别 snake_case 的 RetrieveUserQuotaSummary
     const agyCli = a.antigravityCliDir();

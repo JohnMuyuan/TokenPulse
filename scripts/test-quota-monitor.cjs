@@ -410,6 +410,49 @@ try {
     check("风格只影响说明：别家出现同样的形状也按重置切开，但不标成「日期顺延」", claude[0].endAt === newReset - WEEK_MS && !claude[0].endedByReset);
   }
 
+  // ---- 10g. 0% 空闲等待期 resetAt 顺滑推进不误判成重置卡（ChatGPT / Codex 刚托管场景）----
+  {
+    const MIN = 60_000;
+    const FIVE = 5 * HOUR_MS;
+    const activeAt = NOW - 30 * MIN;
+    const anchoredReset = activeAt + FIVE;
+    const samples = [
+      // 空闲 0% 期间每 3 分钟查询，OpenAI 返回 resetAt = now + 5h 顺滑推进
+      { at: activeAt - 45 * MIN, five: 0, fiveReset: iso(activeAt - 45 * MIN + FIVE) },
+      { at: activeAt - 30 * MIN, five: 0, fiveReset: iso(activeAt - 30 * MIN + FIVE) },
+      { at: activeAt - 15 * MIN, five: 0, fiveReset: iso(activeAt - 15 * MIN + FIVE) },
+      { at: activeAt - 2 * MIN, five: 0, fiveReset: iso(activeAt - 2 * MIN + FIVE) },
+      // 首次使用，窗口锚定在 activeAt + 5h
+      { at: activeAt + 1 * MIN, five: 1, fiveReset: iso(anchoredReset) },
+      { at: NOW, five: 2, fiveReset: iso(anchoredReset) },
+    ];
+    const segs = windowSegments(samples, "five", "moves");
+    check("0% 空闲期 resetAt 顺滑滑动不裂变成假重置卡，且起点锚定到真实激活时刻", segs.length === 1 && !segs[0].startedByReset && !segs[0].endedByReset && segs[0].startAt === activeAt && segs[0].resetAt === anchoredReset, JSON.stringify(segs.map((s) => ({ startAt: s.startAt, resetAt: s.resetAt, startedByReset: s.startedByReset }))));
+    const report = analyzeAccount("chatgpt", samples, [], NOW);
+    check("新托管账号首次消耗后不显示「用过重置卡」假提示", !report.five.startedByReset && report.five.startAt === activeAt, JSON.stringify({ startedByReset: report.five.startedByReset, startAt: report.five.startAt }));
+  }
+
+  // ---- 10h. 瞬时单点脏采样（异 resetAt 归零 / 组内单帧回落反弹）不误判成重置卡 ----
+  {
+    const MIN = 60_000;
+    const reset = NOW + 5 * 24 * HOUR_MS;
+    const glitchReset = NOW + 7 * 24 * HOUR_MS;
+    const samples = [
+      { at: NOW - 24 * HOUR_MS, week: 10, weekReset: iso(reset) },
+      { at: NOW - 1 * HOUR_MS, week: 28, weekReset: iso(reset) },
+      // 1 帧接口闪断返回 0% + 未来 7 天 resetAt
+      { at: NOW - 30 * MIN, week: 0, weekReset: iso(glitchReset) },
+      // 3 分钟后立刻恢复原窗口与真实进度
+      { at: NOW - 27 * MIN, week: 28, weekReset: iso(reset) },
+      // 组内 1 帧单点回落到 0%，3 分钟后立刻反弹回 29%
+      { at: NOW - 6 * MIN, week: 0, weekReset: iso(reset) },
+      { at: NOW - 3 * MIN, week: 29, weekReset: iso(reset) },
+      { at: NOW, week: 29, weekReset: iso(reset) },
+    ];
+    const segs = windowSegments(samples, "week", "moves");
+    check("瞬时夹心脏采样与组内单帧回落反弹均被过滤，保持单段连续窗口且不误报重置卡", segs.length === 1 && !segs[0].startedByReset && !segs[0].endedByReset && segs[0].points.length === 5, JSON.stringify(segs.map((s) => ({ pts: s.points.length, startedByReset: s.startedByReset, endedByReset: s.endedByReset }))));
+  }
+
   // ---- 11. 采样器 ----
   {
     const t0 = Date.UTC(2026, 8, 13, 0, 0, 0);

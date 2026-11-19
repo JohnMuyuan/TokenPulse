@@ -288,6 +288,8 @@ export type WindowSegment = {
  */
 export function windowSegments(samples: QuotaSample[], kind: "week" | "five", style: "moves" | "keeps" = "keeps"): WindowSegment[] {
   const length = kind === "week" ? WEEK_MS : FIVE_HOUR_MS;
+  const SAME_RESET_MS = 10 * 60_000;
+  const GLITCH_SPAN_MS = 30 * 60_000;
   const groups: { resetAt: number; startAt: number; list: Point[] }[] = [];
   for (const sample of samples) {
     const pct = kind === "week" ? sample.week : sample.five;
@@ -296,22 +298,56 @@ export function windowSegments(samples: QuotaSample[], kind: "week" | "five", st
     // 采样时窗口其实已经过了重置点（接口还没来得及更新），这条不属于任何完整窗口。
     if (sample.at > resetAt) continue;
     const last = groups.at(-1);
-    if (last && Math.abs(last.resetAt - resetAt) < 10 * 60_000) {
+    const startAt = (kind === "week" ? time(sample.weekStart) : undefined) ?? resetAt - length;
+    // 0% 空闲等待期：OpenAI / Codex 等接口在额度尚未激活（pct = 0）时，每次轮询会把 resetAt 顺滑推成「now + 周期」。
+    // 这不是重置卡；只要前一组全是 0% 且 resetAt 未回跳、滑动不足一整窗，就并入同一组并在首次出现消耗时锚定真实重置时间。
+    if (last && last.list.every((p) => p.pct <= 0) && resetAt >= last.resetAt - SAME_RESET_MS && resetAt - last.resetAt < length) {
+      if (resetAt >= last.resetAt || pct > 0) {
+        last.resetAt = resetAt;
+        last.startAt = startAt;
+      }
+      last.list = [...last.list.filter((p) => p.at >= last.startAt - SAME_RESET_MS), { at: sample.at, pct }];
+      continue;
+    }
+    if (last && Math.abs(last.resetAt - resetAt) < SAME_RESET_MS) {
       last.list.push({ at: sample.at, pct });
       continue;
     }
-    const startAt = (kind === "week" ? time(sample.weekStart) : undefined) ?? resetAt - length;
     groups.push({ resetAt, startAt, list: [{ at: sample.at, pct }] });
   }
+
+  // 剔除夹在同一个窗口（resetAt 相同）之间的短暂瞬时脏组（<= 3 点且 < 30 分钟），防止接口抖动把正常窗口劈成假重置卡。
+  const cleaned: typeof groups = [];
+  for (let i = 0; i < groups.length; i += 1) {
+    const group = groups[i];
+    const prev = cleaned.at(-1);
+    const next = groups[i + 1];
+    if (
+      prev &&
+      next &&
+      Math.abs(prev.resetAt - next.resetAt) < SAME_RESET_MS &&
+      group.list.length <= 3 &&
+      group.list.at(-1)!.at - group.list[0].at < GLITCH_SPAN_MS
+    ) {
+      continue;
+    }
+    if (prev && Math.abs(prev.resetAt - group.resetAt) < SAME_RESET_MS) {
+      prev.list.push(...group.list);
+      continue;
+    }
+    cleaned.push(group);
+  }
+
   const segments: WindowSegment[] = [];
-  for (const group of groups) {
+  for (const group of cleaned) {
     const previous = segments.at(-1);
     let startAt = group.startAt;
     let startedByReset: WindowSegment["startedByReset"];
     if (previous) {
       const lastAt = previous.points.at(-1)!.at;
-      // 上一组的重置时间还没到，这一组就开始了：上一组被提前结束
-      if (startAt < previous.endAt - 10 * 60_000) {
+      const prevHasUsage = previous.points.some((p) => p.pct > 0);
+      // 上一组的重置时间还没到，这一组就开始了：只有上一段确实有消耗时才算被重置卡提前结束（0% 空闲漂移不算）
+      if (prevHasUsage && startAt < previous.endAt - SAME_RESET_MS) {
         previous.endAt = Math.max(lastAt, startAt);
         if (style === "moves") {
           previous.endedByReset = "moved";
@@ -320,20 +356,26 @@ export function windowSegments(samples: QuotaSample[], kind: "week" | "five", st
       }
       startAt = Math.max(startAt, lastAt);
     }
-    // 同一组里的回落：重置日期没变的重置卡
+    // 同一组里的回落：重置日期没变的重置卡；若 1~2 帧（30 分钟内）立刻反弹回原值附近，判定为瞬时接口抖动而非重置卡
     let part: Point[] = [];
     let partStart = startAt;
     let partStarted = startedByReset;
-    group.list.forEach((point, i) => {
-      if (i > 0 && point.pct < group.list[i - 1].pct - 0.5) {
-        const cut = group.list[i - 1].at;
+    for (let i = 0; i < group.list.length; i += 1) {
+      const point = group.list[i];
+      const prevPt = part.at(-1);
+      if (prevPt && point.pct < prevPt.pct - 0.5) {
+        const rebound = group.list
+          .slice(i + 1, i + 3)
+          .some((p) => p.at - point.at < GLITCH_SPAN_MS && p.pct >= prevPt.pct - 1);
+        if (rebound) continue;
+        const cut = prevPt.at;
         segments.push({ startAt: partStart, endAt: cut, resetAt: group.resetAt, points: part, endedByReset: "kept", ...(partStarted ? { startedByReset: partStarted } : {}) });
         part = [];
         partStart = cut;
         partStarted = "kept";
       }
       part.push(point);
-    });
+    }
     segments.push({ startAt: partStart, endAt: group.resetAt, resetAt: group.resetAt, points: part, ...(partStarted ? { startedByReset: partStarted } : {}) });
   }
   return segments;

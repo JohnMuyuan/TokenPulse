@@ -139,6 +139,8 @@ export type AgyGeneration = {
   firstTokenMs?: number;
   totalMs?: number;
   tokensPerSec?: number;
+  avgTokensPerSec?: number;
+  thinkingMs?: number;
 };
 
 /** 一条 gen_metadata 里的型号、档位标签、请求 ID 和流式耗时（首字 + 生成时长）。 */
@@ -252,14 +254,52 @@ export const MODEL_REPLY = 15;
 /** 一步卡在「没完成」超过这么久，就当它不会再完成了，接着往后读（不然后面的都算不上）。 */
 const STUCK_MS = 60 * 60_000;
 
+export type AgyStreamMetricsOpts = {
+  /** step_payload.body field 11（thinking_duration，从开始到最后一个思考块结束的毫秒数）。 */
+  thinkingMs?: number;
+  hasText?: boolean;
+  hasThought?: boolean;
+  hasTool?: boolean;
+};
+
+export type AgyStreamMetrics = {
+  firstTokenMs: number;
+  tokensPerSec: number;
+  /** 未算出纯流式速度但输出与总耗时够长时的整包均速（供明细页展示 ≈，不计入速度走势曲线）。 */
+  avgTokensPerSec: number;
+};
+
+/** 从 steps.step_payload（只读元数据，不提取正文）中解析思考耗时与回复形态。 */
+function parseReplyBodyHints(payload: Buffer | null | undefined): AgyStreamMetricsOpts {
+  if (!payload) return {};
+  const body = pbMessage(payload, 20);
+  if (!body) return {};
+  let hasText = false, hasThought = false, hasTool = false, thinkingMs = 0;
+  for (const field of pbFields(body) ?? []) {
+    if (field.no === 1 && field.bytes && field.bytes.length > 0) hasText = true;
+    else if (field.no === 3 && field.bytes && field.bytes.length > 0) hasThought = true;
+    else if (field.no === 7 && field.bytes && field.bytes.length > 0) hasTool = true;
+    else if (field.no === 11 && field.bytes) thinkingMs = pbDurationMs(field.bytes);
+  }
+  return {
+    ...(thinkingMs > 0 ? { thinkingMs } : {}),
+    ...(hasText ? { hasText } : {}),
+    ...(hasThought ? { hasThought } : {}),
+    ...(hasTool ? { hasTool } : {}),
+  };
+}
+
 /**
- * 计算一步生成的真实首字延迟与流式输出速度（与 agent-proxy 透明转发的「扣掉首包排队等待」口径对齐）：
- * - 服务端整包缓冲的工具调用（如 read_file / write_file / edit_file，服务端拼完 JSON 一次性返回）：
- *   field 11 (viewableAt - startAt) 吞入了排队与生成总耗时，field 12 (streamingMs) 只剩几十毫秒收尾（表观速度 > 500 T/s）。
- *   此类不记首字延迟；仅在输出够长（>= 300 Token，生成耗时占主导）时用总耗时算速度，短工具包不把排队时间误算成几 Token/秒。
+ * 计算一步生成的真实首字延迟、流式输出速度与整包均速（与 agent-proxy 透明转发的「扣掉首包排队等待」口径对齐）：
+ * - 服务端整包缓冲的工具调用（服务端拼完 JSON 一次性返回）：
+ *   field 11 (time_to_first_token = viewable_at - created_at) 吞入了排队、思考与整段生成耗时，
+ *   field 12 (streaming_duration) 只剩几十到两百多毫秒收尾（可见输出表观速度 > 500 T/s，或流式段 < 300ms 且总输出表观速度 > 500 T/s / 纯工具包）。
+ *   此类不记首字延迟；仅在输出够长（>= 300 Token，生成耗时占主导）时用总耗时算 tokensPerSec，短整包记入 avgTokensPerSec（明细标 ≈，不污染速度走势）。
  * - 正常流式回复（streamingMs >= 300ms）：
- *   若思考块在首字前静默完成（总输出 ÷ streamingMs 虚高，而可见输出 ÷ streamingMs 正常），按可见输出算流式速度；
- *   若思考块本身随流式推送（streamingMs 覆盖全部生成），按总输出 ÷ streamingMs 算流式速度。
+ *   优先依据 step_payload 原生 thinking_duration（field 11）精准区分思考阶段：
+ *   1. 纯文本回复且思考结束后仍有 >= 500ms / >= 30 Token 的正文流式段：直接按「可见输出 ÷ 思考后流式时长」计速，完全剥离思考偏差；
+ *   2. 思考在首字前静默完成（thinkingDuration - rawFirstTokenMs < 200ms）：按「可见输出 ÷ streamingMs」计速；
+ *   3. 思考在首字后仍在 streamingMs 内持续流式推送：按「总输出 ÷ streamingMs」计速，避免误扣 reasoning 导致速度腰斩。
  */
 export function antigravityStreamMetrics(
   output: number,
@@ -267,22 +307,49 @@ export function antigravityStreamMetrics(
   rawFirstTokenMs: number,
   streamingMs: number,
   totalMs: number,
-): { firstTokenMs: number; tokensPerSec: number } {
+  opts?: AgyStreamMetricsOpts,
+): AgyStreamMetrics {
   const outNoThink = Math.max(0, output - reasoning);
+  const thinkingMs = opts?.thinkingMs ?? 0;
+  const hasText = Boolean(opts?.hasText);
+  const hasThought = Boolean(opts?.hasThought);
+  const hasTool = Boolean(opts?.hasTool);
+
+  const visRate = streamingMs > 0 ? outNoThink / (streamingMs / 1000) : Infinity;
+  const allRate = streamingMs > 0 ? output / (streamingMs / 1000) : Infinity;
   const isBufferedToolCall =
-    rawFirstTokenMs > 0 &&
-    outNoThink >= 20 &&
-    (streamingMs <= 0 || outNoThink / (streamingMs / 1000) > 500);
+    rawFirstTokenMs > 0 && (
+      (outNoThink >= 20 && (streamingMs <= 0 || visRate > 500)) ||
+      (output >= 20 && streamingMs > 0 && streamingMs < 300 && (allRate > 500 || (hasTool && !hasText && !hasThought)))
+    );
+
   const firstTokenMs = isBufferedToolCall || rawFirstTokenMs <= 0 ? 0 : rawFirstTokenMs;
   let tokensPerSec = 0;
+
   if (!isBufferedToolCall && streamingMs >= 300 && streamingMs <= 30 * 60_000) {
     const sec = streamingMs / 1000;
     const allStreamTps = output / sec;
     const visStreamTps = outNoThink / sec;
-    if (
+    if (reasoning > 0 && thinkingMs > 0) {
+      const thinkInStreamMs = Math.max(0, Math.min(streamingMs, thinkingMs - rawFirstTokenMs));
+      const postThinkMs = Math.max(0, totalMs - thinkingMs);
+      if (hasText && !hasTool && outNoThink >= 30 && postThinkMs >= 500) {
+        const postTps = outNoThink / (postThinkMs / 1000);
+        if (postTps <= 500) tokensPerSec = Math.round(postTps * 10) / 10;
+      }
+      if (!tokensPerSec) {
+        if (thinkInStreamMs < 200) {
+          if (outNoThink >= 20 && visStreamTps <= 500) tokensPerSec = Math.round(visStreamTps * 10) / 10;
+          else if (output >= 20 && allStreamTps <= 500) tokensPerSec = Math.round(allStreamTps * 10) / 10;
+        } else {
+          if (output >= 20 && allStreamTps <= 500) tokensPerSec = Math.round(allStreamTps * 10) / 10;
+          else if (outNoThink >= 20 && visStreamTps <= 500) tokensPerSec = Math.round(visStreamTps * 10) / 10;
+        }
+      }
+    } else if (
       reasoning > 0 &&
       outNoThink >= 20 &&
-      (allStreamTps > 260 || (rawFirstTokenMs >= 2000 && visStreamTps >= 25 && allStreamTps > visStreamTps * 1.8))
+      (allStreamTps > 260 || (rawFirstTokenMs >= 2000 && streamingMs <= 3000 && visStreamTps >= 25 && allStreamTps > visStreamTps * 2.2))
     ) {
       if (visStreamTps <= 500) tokensPerSec = Math.round(visStreamTps * 10) / 10;
     } else if (output >= 20 && allStreamTps <= 500) {
@@ -292,7 +359,14 @@ export function antigravityStreamMetrics(
     const tps = output / (totalMs / 1000);
     if (tps <= 500) tokensPerSec = Math.round(tps * 10) / 10;
   }
-  return { firstTokenMs, tokensPerSec };
+
+  let avgTokensPerSec = 0;
+  if (!tokensPerSec && output >= 20 && totalMs >= 500 && totalMs <= 30 * 60_000) {
+    const avg = output / (totalMs / 1000);
+    if (avg > 0 && avg <= 500) avgTokensPerSec = Math.round(avg * 10) / 10;
+  }
+
+  return { firstTokenMs, tokensPerSec, avgTokensPerSec };
 }
 
 /**
@@ -307,6 +381,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
     const rows: AgyGeneration[] = [];
     const models: Record<string, AgyModel> = {};
     const genModel = prepareOptional(db, "select data from gen_metadata where idx = ?");
+    const stepPayloadStmt = prepareOptional(db, "select step_payload from steps where idx = ?");
     let next = from;
     for (const rawStep of stepStmt.iterate(from)) {
       const step = rawStep as { idx: number; step_type: number; status: number; metadata: Uint8Array | null };
@@ -362,7 +437,19 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
                 : rawFirstTokenMs || streamingMs)
         : 0;
       const reasoning = pbNumber(usage, 9);
-      const { firstTokenMs, tokensPerSec } = antigravityStreamMetrics(output, reasoning, rawFirstTokenMs, streamingMs, totalMs);
+      const rawPayload = hasStreamTiming
+        ? (stepPayloadStmt?.get(step.idx) as { step_payload?: Uint8Array } | undefined)?.step_payload
+        : undefined;
+      const bodyHints = parseReplyBodyHints(toBuf(rawPayload));
+      const { firstTokenMs, tokensPerSec, avgTokensPerSec } = antigravityStreamMetrics(
+        output,
+        reasoning,
+        rawFirstTokenMs,
+        streamingMs,
+        totalMs,
+        bodyHints,
+      );
+      const thinkingMs = bodyHints.thinkingMs && bodyHints.thinkingMs > 0 ? bodyHints.thinkingMs : 0;
       const responseId = pbString(usage, 11);
       const messageId = pbString(usage, 7);
       const requestId = genParsed?.requestId || messageId;
@@ -376,6 +463,8 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
         ...(firstTokenMs > 0 ? { firstTokenMs } : {}),
         ...(totalMs > 0 ? { totalMs } : {}),
         ...(tokensPerSec > 0 ? { tokensPerSec } : {}),
+        ...(avgTokensPerSec > 0 ? { avgTokensPerSec } : {}),
+        ...(thinkingMs > 0 ? { thinkingMs } : {}),
       });
     }
     return { rows, next, total, models };
@@ -411,6 +500,8 @@ export type AgyStep =
       durationMs?: number;
       firstTokenMs?: number;
       tokensPerSec?: number;
+      avgTokensPerSec?: number;
+      thinkingMs?: number;
       isMeasured?: boolean;
     }
   | { kind: "result"; at: number; id: string; name: string; args: string; output: string; error: boolean };
@@ -491,9 +582,12 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
                 ? completedAt - startAt
                 : 0);
 
-        const metrics = antigravityStreamMetrics(output, reasoning, rawFirstTokenMs, streamingMs, totalMs);
+        const bodyHints = parseReplyBodyHints(payload);
+        const metrics = antigravityStreamMetrics(output, reasoning, rawFirstTokenMs, streamingMs, totalMs, bodyHints);
         const firstTokenMs = metrics.firstTokenMs > 0 ? metrics.firstTokenMs : undefined;
         const tokensPerSec = metrics.tokensPerSec > 0 ? metrics.tokensPerSec : undefined;
+        const avgTokensPerSec = metrics.avgTokensPerSec > 0 ? metrics.avgTokensPerSec : undefined;
+        const thinkingMs = bodyHints.thinkingMs && bodyHints.thinkingMs > 0 ? bodyHints.thinkingMs : undefined;
 
         if (text.trim() || tools.length || usage) {
           out.push({
@@ -506,6 +600,8 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
             ...(totalMs > 0 ? { durationMs: totalMs, isMeasured: true } : {}),
             ...(firstTokenMs != null ? { firstTokenMs } : {}),
             ...(tokensPerSec != null ? { tokensPerSec } : {}),
+            ...(avgTokensPerSec != null ? { avgTokensPerSec } : {}),
+            ...(thinkingMs != null ? { thinkingMs } : {}),
           });
         }
       } else if (row.step_type === TOOL_STEP) {

@@ -717,6 +717,7 @@ export function agyWindowSegments(
 
   rawPoints.sort((a, b) => a.at - b.at);
 
+  const GLITCH_SPAN_MS = 45 * 60_000;
   const groups: { resetAt: number; startAt: number; firstAt: number; list: { at: number; used: number }[] }[] = [];
   for (const pt of rawPoints) {
     const last = groups[groups.length - 1];
@@ -726,7 +727,8 @@ export function agyWindowSegments(
       last.list.push({ at: pt.at, used: pt.used });
       continue;
     }
-    if (last && last.list.every((p) => p.used <= 0) && pt.resetAt - last.resetAt < periodMs) {
+    // 仅合并 0% 空闲等待期向前顺滑推进的 resetAt（严格要求 pt.resetAt >= last.resetAt，防止把回跳到旧窗口的正常点吸附进瞬时 0% 脏点）
+    if (last && last.list.every((p) => p.used <= 0) && pt.resetAt >= last.resetAt && pt.resetAt - last.resetAt < periodMs) {
       last.resetAt = pt.resetAt;
       last.startAt = pt.resetAt - periodMs;
       last.list = [...last.list.filter((p) => p.at >= last.startAt - SAME_WINDOW_MS), { at: pt.at, used: pt.used }];
@@ -740,8 +742,53 @@ export function agyWindowSegments(
     });
   }
 
+  // 剔除夹在同一个窗口（或连续 0% 空闲期）之间的短暂瞬时脏组（如备用端点闪回 0%/旧缓存 1~3 帧后立刻恢复），
+  // 防止单次接口抖动把进行中的窗口拦腰切出「窗口已提前重置」假提示并炸毁消耗速度预测。
+  const cleanedGroups: typeof groups = [];
+  for (let i = 0; i < groups.length; i += 1) {
+    const group = groups[i];
+    const prev = cleanedGroups[cleanedGroups.length - 1];
+    const next = groups[i + 1];
+    const spanMs = group.list[group.list.length - 1].at - group.list[0].at;
+    const isShortGlitch = group.list.length <= 3 && spanMs < GLITCH_SPAN_MS;
+    if (prev && next && Math.abs(prev.resetAt - next.resetAt) < SAME_WINDOW_MS && isShortGlitch) {
+      continue;
+    }
+    if (
+      prev &&
+      next &&
+      prev.list.every((p) => p.used <= 0) &&
+      next.list.every((p) => p.used <= 0) &&
+      next.resetAt >= prev.resetAt &&
+      next.resetAt - prev.resetAt < periodMs &&
+      group.list.length <= 2 &&
+      spanMs < 15 * 60_000 &&
+      Math.max(...group.list.map((p) => p.used)) < 1
+    ) {
+      continue;
+    }
+    if (prev && Math.abs(prev.resetAt - group.resetAt) < SAME_WINDOW_MS) {
+      prev.resetAt = group.resetAt;
+      prev.startAt = group.resetAt - periodMs;
+      prev.list.push(...group.list);
+      continue;
+    }
+    if (
+      prev &&
+      prev.list.every((p) => p.used <= 0) &&
+      group.resetAt >= prev.resetAt &&
+      group.resetAt - prev.resetAt < periodMs
+    ) {
+      prev.resetAt = group.resetAt;
+      prev.startAt = group.resetAt - periodMs;
+      prev.list = [...prev.list.filter((p) => p.at >= prev.startAt - SAME_WINDOW_MS), ...group.list];
+      continue;
+    }
+    cleanedGroups.push(group);
+  }
+
   const segments: AgyWindowSegment[] = [];
-  for (const group of groups) {
+  for (const group of cleanedGroups) {
     const previous = segments[segments.length - 1];
     const firstListAt = group.list[0]?.at ?? group.firstAt;
     let startAt = Math.max(group.startAt - SAME_WINDOW_MS, Math.min(group.startAt, firstListAt));
@@ -749,7 +796,8 @@ export function agyWindowSegments(
     if (previous) {
       const prevLastAt = previous.points[previous.points.length - 1].at;
       const prevHasUsage = previous.points.some((p) => p.used > 0);
-      if (prevHasUsage && group.firstAt < previous.endAt - SAME_WINDOW_MS) {
+      const currAllZero = group.list.every((p) => p.used <= 0);
+      if (prevHasUsage && !(currAllZero && previous.points.length <= 1) && group.firstAt < previous.endAt - SAME_WINDOW_MS) {
         const cutAt = group.startAt >= prevLastAt ? Math.min(group.startAt, group.firstAt) : group.firstAt;
         previous.endAt = Math.max(prevLastAt, Math.min(previous.endAt, cutAt));
         previous.endedByReset = "moved";
@@ -765,12 +813,16 @@ export function agyWindowSegments(
     let partStarted = startedByReset;
     for (let i = 0; i < group.list.length; i += 1) {
       const point = group.list[i];
-      if (i > 0) {
-        const prev = group.list[i - 1];
+      const prev = part[part.length - 1];
+      if (prev) {
         const isInPlaceReset =
           (prev.used >= 2 && point.used <= 1 && prev.used - point.used >= 1.5) ||
           point.used < prev.used - 3;
         if (isInPlaceReset) {
+          const rebound = group.list
+            .slice(i + 1, i + 3)
+            .some((p) => p.at - point.at < 30 * 60_000 && p.used >= prev.used - 1.5);
+          if (rebound) continue;
           const cut = prev.at;
           segments.push({
             startAt: partStart,

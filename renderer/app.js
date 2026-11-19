@@ -2272,9 +2272,16 @@ function latencyCell(row) {
   if (!t || (t.ms == null && t.firstByteMs == null && t.firstTokenMs == null)) return el('td', { class: 'request-latency empty', title: '这次请求没有经过 TokenPulse 转发，量不到延迟。打开「供应商 → 透明转发」，或者走本地路由（第三方供应商、号池）的请求会有。', text: '—' });
   const first = t.firstTokenMs ?? t.firstByteMs;
   const line = (label, value) => el('span', {}, [el('small', { text: label }), el('b', { translate: 'no', text: value })]);
-  const via = t.provider === 'Antigravity' ? 'Antigravity 本地记录' : t.pass ? '透明转发' : '本地路由';
-  return el('td', { class: 'request-latency ' + latencyTone(t), title: `${via}${t.stream === false ? ' · 非流式' : ' · 流式'}` }, [el('div', {}, [
-    line('首字', first == null ? '—' : secs(first)), line('总耗时', t.ms == null ? '—' : secs(t.ms)), line('速度', t.tokensPerSec == null ? '—' : `${t.tokensPerSec} t/s`)])]);
+  const isAgy = t.provider === 'Antigravity';
+  const via = isAgy ? 'Antigravity 本地记录' : t.pass ? '透明转发' : '本地路由';
+  const modeText = t.stream === false ? (isAgy ? '整包返回' : '非流式') : '流式';
+  const tipParts = [`${via} · ${modeText}`];
+  if (t.thinkingMs > 0) tipParts.push(`思考 ${secs(t.thinkingMs)}`);
+  if (isAgy && first != null && (t.thinkingMs > 0 || row.reasoning > 0)) tipParts.push('首字含模型思考与首包等待');
+  if (t.tokensPerSec == null && t.avgTokensPerSec != null) tipParts.push('速度 ≈ 按总耗时估算，不计入速度走势');
+  const speedText = t.tokensPerSec != null ? `${t.tokensPerSec} t/s` : t.avgTokensPerSec != null ? `≈ ${t.avgTokensPerSec} t/s` : '—';
+  return el('td', { class: 'request-latency ' + latencyTone(t), title: tipParts.join(' · ') }, [el('div', {}, [
+    line('首字', first == null ? '—' : secs(first)), line('总耗时', t.ms == null ? '—' : secs(t.ms)), line('速度', speedText)])]);
 }
 function modelCell(row) {
   const main = row.returned || row.requested || row.model;
@@ -2364,9 +2371,12 @@ function requestDetail(row) {
     ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)], ['推理 Tokens', number(row.reasoning)],
     ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : []),
     ...(row.effort ? [['思考等级', row.effort]] : []),
-    ...(row.timing ? [['经由', row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发（原样转给官方）' : `本地路由 · ${row.timing.provider || '供应商'}`], ['接口', row.timing.path || '—', true], ['类型', row.timing.stream === false ? '非流式' : '流式'],
-      ['首字节', row.timing.firstByteMs == null ? '—' : secs(row.timing.firstByteMs)], ['首段内容', row.timing.firstTokenMs == null ? '—' : secs(row.timing.firstTokenMs)], ['总耗时', row.timing.ms == null ? '—' : secs(row.timing.ms)],
-      ['输出速度', row.timing.tokensPerSec == null ? '—（输出太少，不算）' : `${row.timing.tokensPerSec} Token/秒`]] : []),
+    ...(row.timing ? [['经由', row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发（原样转给官方）' : `本地路由 · ${row.timing.provider || '供应商'}`], ['接口', row.timing.path || '—', true], ['类型', row.timing.stream === false ? (row.timing.provider === 'Antigravity' ? '整包返回' : '非流式') : '流式'],
+      ['首字节', row.timing.firstByteMs == null ? '—' : secs(row.timing.firstByteMs)],
+      ['首段内容', row.timing.firstTokenMs == null ? (row.timing.provider === 'Antigravity' && row.timing.stream === false ? '—（整包返回，无独立首字）' : '—') : secs(row.timing.firstTokenMs)],
+      ...(row.timing.thinkingMs > 0 ? [['思考耗时', secs(row.timing.thinkingMs)]] : []),
+      ['总耗时', row.timing.ms == null ? '—' : secs(row.timing.ms)],
+      ['输出速度', row.timing.tokensPerSec != null ? `${row.timing.tokensPerSec} Token/秒` : row.timing.avgTokensPerSec != null ? `≈ ${row.timing.avgTokensPerSec} Token/秒（按总耗时估算，不计入速度走势）` : '—（输出太少，不算）']] : []),
     ...(!row.timing && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' && row.estimate ? [['估算用时', '≈ ' + secs(row.estimate.ms)], ['估算速度', `≈ ${row.estimate.tokensPerSec} Token/秒（按日志时间戳，偏慢）`]] : [])
   ];
   return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 10 }, [
@@ -3822,7 +3832,7 @@ $('export-requests').addEventListener('click', async () => {
   const button = $('export-requests'); button.disabled = true;
   try {
     const page = await api.requests(requestQuery({ all: true }));
-    const rows = page.rows.map(row => ({ ...row, firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? '') : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
+    const rows = page.rows.map(row => ({ ...row, firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? (row.timing.avgTokensPerSec != null ? '≈' + row.timing.avgTokensPerSec : '')) : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
     if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
   } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
   finally { button.disabled = !requestPage?.total; }

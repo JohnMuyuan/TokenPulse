@@ -122,7 +122,7 @@ try {
     fs.writeFileSync(reqFile, [
       { id: "agy:1", at: now - 2000, kind: "antigravity", model: "gemini-4-argon", effort: "high", output: 400, timing: { stream: true, ms: 10000, firstTokenMs: 1200, tokensPerSec: 40, provider: "Antigravity" } },
       { id: "agy:2", at: now - 1500, kind: "antigravity", model: "gemini-4-argon", effort: "high", output: 600, timing: { stream: true, ms: 12000, firstTokenMs: 1600, tokensPerSec: 50, provider: "Antigravity" } },
-      { id: "agy:short", at: now - 1300, kind: "antigravity", model: "gemini-4-carbon", effort: "high", output: 130, timing: { stream: false, ms: 32045, provider: "Antigravity" }, estimate: { ms: 32045, tokensPerSec: 4.1 } },
+      { id: "agy:short", at: now - 1300, kind: "antigravity", model: "gemini-4-carbon", effort: "high", output: 130, timing: { stream: false, ms: 32045, avgTokensPerSec: 4.1, provider: "Antigravity" }, estimate: { ms: 32045, tokensPerSec: 4.1 } },
       { id: "agy:legacy-est", at: now - 1200, kind: "antigravity", model: "gemini-3.8-flash", effort: "medium", output: 300, estimate: { ms: 5000, tokensPerSec: 60 } },
       { id: "dsh:short", at: now - 1100, kind: "deepseek-harness", model: "DeepSeek-V4.1-Flash", effort: "high", output: 10, timing: { stream: true, firstTokenMs: 1500 }, estimate: { ms: 5000, tokensPerSec: 2 } },
       { id: "dsh:legacy-est", at: now - 1050, kind: "deepseek-harness", model: "DeepSeek-V4-Pro", effort: "high", output: 300, estimate: { ms: 5000, tokensPerSec: 60 } },

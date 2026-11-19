@@ -290,7 +290,21 @@ export function passSpeed(days = 7, now = Date.now()): PassSpeedRow[] {
  * 按月份文件建索引（响应 ID → 请求的型号、返回的型号），文件没变就用缓存；查的时候看请求所在的那个月和前后各一个月。
  */
 /** 转发时量到的：首字延迟、总耗时、速度，以及这一次是怎么转的。用量明细里每条请求旁边显示（0.3.38）。 */
-export type RouteTiming = { ms?: number; firstByteMs?: number; firstTokenMs?: number; tokensPerSec?: number; stream?: boolean; path?: string; pass?: boolean; provider?: string; fast?: boolean };
+export type RouteTiming = {
+  ms?: number;
+  firstByteMs?: number;
+  firstTokenMs?: number;
+  tokensPerSec?: number;
+  /** 整包返回或流式段过短时按总输出 ÷ 总耗时估算的均速（仅明细展示 ≈，不计入速度走势曲线）。 */
+  avgTokensPerSec?: number;
+  /** 本地日志记录的思考耗时（毫秒，如 Antigravity 的 thinking_duration）。 */
+  thinkingMs?: number;
+  stream?: boolean;
+  path?: string;
+  pass?: boolean;
+  provider?: string;
+  fast?: boolean;
+};
 export type RouteReturned = { requested?: string; returned: string; /** 回复开头报的型号，和结束时报的不一样才有（0.3.41）。 */ declared?: string; timing?: RouteTiming };
 const returnedCache = new Map<string, { size: number; mtimeMs: number; index: Map<string, RouteReturned> }>();
 function returnedIndex(name: string): Map<string, RouteReturned> | null {
