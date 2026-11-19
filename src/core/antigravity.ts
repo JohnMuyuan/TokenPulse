@@ -396,7 +396,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       if (step.step_type !== MODEL_REPLY || STEP_OPEN.has(step.status) || !meta) continue;
       const usage = pbMessage(meta, 9);
       const input = pbNumber(usage, 2), output = pbNumber(usage, 3), cacheRead = pbNumber(usage, 5), cacheWrite = pbNumber(usage, 4);
-      if (!usage || (!input && !output && !cacheRead)) continue;
+      if (!usage || (!input && !output && !cacheRead && !cacheWrite)) continue;
       const modelId = pbNumber(meta, 11) || pbNumber(usage, 1);
       const key = String(modelId);
       const genInfo = pbMessage(meta, 20);
@@ -896,6 +896,7 @@ function busyError(error: unknown) {
 }
 
 export type CliImportResult = "native" | "current" | "kept" | "imported";
+const cliImportsInFlight = new Map<string, Promise<CliImportResult>>();
 
 /**
  * 让 Antigravity CLI 能接着这段对话：桌面端的对话导入（或刷新）到 CLI 目录。
@@ -904,6 +905,19 @@ export type CliImportResult = "native" | "current" | "kept" | "imported";
  */
 export async function prepareAntigravityCliConversation(id: string): Promise<CliImportResult> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("对话 ID 不对");
+  const key = id.toLowerCase();
+  const existing = cliImportsInFlight.get(key);
+  if (existing) return existing;
+  const pending = importCliConversation(id);
+  cliImportsInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    cliImportsInFlight.delete(key);
+  }
+}
+
+async function importCliConversation(id: string): Promise<CliImportResult> {
   const ideRoot = antigravityDir();
   const cliRoot = antigravityCliDir();
   if (path.resolve(ideRoot) === path.resolve(cliRoot)) return "native";
@@ -938,27 +952,37 @@ export async function prepareAntigravityCliConversation(id: string): Promise<Cli
     try { await sqlite.backup(src, tmp); } finally { src.close(); }
     // 以快照里的步数为准：读步数到做快照之间桌面端可能又写了几步
     importedSteps = stepCount(tmp);
-    if (fs.existsSync(cliFile)) {
-      // 先把旧库挪开：CLI 正开着这段对话时 Windows 不让挪，这时不能覆盖
-      const aside = backup
-        ? path.join(dataFile("antigravity-cli-backup"), `${id}-${Date.now()}.db`)
-        : `${cliFile}.tokenpulse-old-${process.pid}`;
-      if (backup) fs.mkdirSync(path.dirname(aside), { recursive: true });
-      try {
+    const sidecars = ["-wal", "-shm"];
+    const staged: { from: string; to: string }[] = [];
+    try {
+      if (fs.existsSync(cliFile)) {
         if (backup) {
-          // 备份要带上 -wal：新内容可能还没合并进主库
-          for (const suffix of ["-wal", "-shm"]) if (fs.existsSync(cliFile + suffix)) fs.copyFileSync(cliFile + suffix, aside + suffix);
-          fs.copyFileSync(cliFile, aside);
-          fs.rmSync(cliFile);
-        } else fs.renameSync(cliFile, aside);
-      } catch (error) {
-        if (busyError(error)) throw new Error("这段对话正在 Antigravity CLI 里打开，请先关掉那个终端再试");
-        throw error;
+          const archive = path.join(dataFile("antigravity-cli-backup"), `${id}-${Date.now()}.db`);
+          fs.mkdirSync(path.dirname(archive), { recursive: true });
+          for (const suffix of ["", ...sidecars]) if (fs.existsSync(cliFile + suffix)) fs.copyFileSync(cliFile + suffix, archive + suffix);
+        }
+        for (const suffix of sidecars) {
+          const from = cliFile + suffix;
+          const to = `${cliFile}.tokenpulse-old-${process.pid}${suffix}`;
+          if (!fs.existsSync(from)) continue;
+          fs.renameSync(from, to);
+          staged.push({ from, to });
+        }
       }
-      for (const suffix of ["-wal", "-shm"]) fs.rmSync(cliFile + suffix, { force: true });
-      if (!backup) fs.rmSync(aside, { force: true });
+      // 保留旧主库，直至新快照原子替换成功。
+      fs.renameSync(tmp, cliFile);
+    } catch (error) {
+      let restoreFailed = false;
+      for (const { from, to } of staged.reverse()) {
+        try { fs.renameSync(to, from); } catch { restoreFailed = true; }
+      }
+      if (restoreFailed) throw new Error("导入失败且无法恢复对话库的附属文件，原文件保存在对话目录的 tokenpulse-old 副本中", { cause: error });
+      if (busyError(error)) throw new Error("这段对话正在 Antigravity CLI 里打开，请先关掉那个终端再试", { cause: error });
+      throw error;
     }
-    fs.renameSync(tmp, cliFile);
+    for (const { to } of staged) {
+      try { fs.rmSync(to, { force: true }); } catch { /* 新库已安装，旧附属文件不影响读取 */ }
+    }
   } finally {
     for (const suffix of ["", "-wal", "-shm"]) fs.rmSync(tmp + suffix, { force: true });
   }
@@ -974,8 +998,9 @@ export async function prepareAntigravityCliConversation(id: string): Promise<Cli
     try { fs.mkdirSync(path.dirname(cliNote), { recursive: true }); fs.copyFileSync(note, cliNote); } catch { /* 同上 */ }
   }
 
-  marks[id] = { steps: importedSteps, ide: ideStamp, at: Date.now() };
-  writeJson(cliImportFile(), marks);
+  const updated = readJson<Record<string, CliImportMark>>(cliImportFile(), {});
+  updated[id] = { steps: importedSteps, ide: ideStamp, at: Date.now() };
+  writeJson(cliImportFile(), updated);
   return "imported";
 }
 

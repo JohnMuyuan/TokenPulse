@@ -48,6 +48,48 @@ test('real snapshot exports aggregated usage with matching totals and exact 7-da
   assert.equal(s.daily.length, 60); assert.equal(s.daily.at(-1).day, '2026-09-22');
   assert.equal(s.usage.some(r => 'path' in r || 'content' in r), false);
 });
+test('request flags share the same seven local calendar days after a DST transition', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-report-dst-'));
+  const previousZone = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    const { Worker } = require('node:worker_threads');
+    const file = require.resolve('../build/core/report-worker.js');
+    const requests = path.join(dir, 'requests');
+    fs.mkdirSync(requests);
+    const row = (id, day) => ({
+      id, at: Date.parse(`2026-03-${day}T18:00:00Z`), kind: 'codex', file: 'fixture.jsonl',
+      model: 'gpt-5', requested: 'gpt-5', returned: 'claude-opus-4-6', input: 10, output: 2,
+      cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, calls: 1,
+    });
+    fs.writeFileSync(path.join(requests, '2026-03.jsonl'), [row('outside', '02'), row('inside', '03')].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const worker = new Worker(`
+      const RealDate = Date;
+      const now = RealDate.parse('2026-03-09T07:30:00Z');
+      global.Date = class extends RealDate {
+        constructor(...args) { super(...(args.length ? args : [now])); }
+        static now() { return now; }
+      };
+      require(${JSON.stringify(file)});
+    `, { eval: true, workerData: {}, env: { ...process.env, TOKENPULSE_DATA_DIR: dir } });
+    try {
+      const snapshot = await new Promise((resolve, reject) => {
+        worker.once('message', resolve);
+        worker.once('error', reject);
+        worker.once('exit', (code) => reject(new Error(`worker exited: ${code}`)));
+      });
+      assert.equal(snapshot.daily.at(-7).day, '2026-03-03');
+      assert.equal(snapshot.requestFlags.mismatch, 1);
+    } finally {
+      await worker.terminate();
+    }
+  } finally {
+    if (previousZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousZone;
+    assert.equal(path.dirname(dir), os.tmpdir());
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 test('quota reports: one per account, in settings order, hidden / removed skipped, old samples join the first account', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-multi-'));
   process.env.TOKENPULSE_DATA_DIR = dir;

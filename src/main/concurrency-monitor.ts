@@ -68,14 +68,16 @@ export class ConcurrencyService {
     const q = query as { days?: number; scope?: string; metric?: ConcurrencyMetric };
     if (!q || ![0, 1, 7, 30, 90].includes(q.days ?? 1) || !['requests', 'clients', 'upstream'].includes(q.metric || 'requests') || typeof q.scope !== 'string' || q.scope.length > 200) throw Error('Invalid concurrency history query');
     const at = Date.now(), retention = concurrencyMonitor.snapshot().settings.retention;
-    const since = Math.max(q.days ? at - q.days * 86400_000 : 0, retention ? at - retention * 86400_000 : 0);
+    const days = q.days ?? 1;
+    const since = Math.max(days ? at - days * 86400_000 : 0, retention ? at - retention * 86400_000 : 0);
     const metric = q.metric || 'requests';
+    const current = concurrencyMonitor.currentBucket();
     // All-history resolution is one day; other ranges have at most 1440 bins.
-    const step = q.days === 0 ? 86400_000 : Math.max(60_000, (q.days || 1) * 60_000);
+    const step = days === 0 ? 86400_000 : days * 60_000;
     const bins = new Map<string, ConcurrencyHistoryPoint>();
     let previous: ConcurrencyBucket | null = null, segment = 0;
     const add = (bucket: ConcurrencyBucket) => {
-      if (!bucket || bucket.until < since || bucket.from > at || !bucket.rows?.global) return;
+      if (!bucket || bucket.until < since || bucket.until > at || !bucket.rows?.global) return;
       if (bucket.available === false) { previous = null; segment++; return; }
       if (previous && (previous.session !== bucket.session || (bucket.observedFrom ?? bucket.from) - previous.until > 65000)) segment++;
       previous = bucket;
@@ -88,10 +90,21 @@ export class ConcurrencyService {
       if (!/^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name) || name.slice(0, 10) < new Date(since).toISOString().slice(0, 10)) continue;
       const stream = fs.createReadStream(path.join(this.directory(), name), { encoding: 'utf8' });
       const reader = readline.createInterface({ input: stream, crlfDelay: Infinity });
-      try { for await (const line of reader) { try { add(JSON.parse(line)); } catch { /* skip incomplete / malformed records */ } } }
+      try {
+        for await (const line of reader) {
+          try {
+            const bucket: ConcurrencyBucket = JSON.parse(line);
+            // 读取期间当前桶可能正好写盘，仍按查询开始时捕获的版本统计一次。
+            if (current && bucket?.from === current.from && bucket.session === current.session && bucket.observedFrom === current.observedFrom) continue;
+            add(bucket);
+          } catch { /* skip incomplete / malformed records */ }
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
       finally { reader.close(); stream.destroy(); }
     }
-    const current = concurrencyMonitor.currentBucket(); if (current) add(current);
+    if (current) add(current);
     return { at, since, step, metric, scope: q.scope!, points: [...bins.values()].sort((a, b) => a.at - b.at) };
   }
   stop() {

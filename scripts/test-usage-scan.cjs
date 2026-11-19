@@ -60,6 +60,43 @@ try {
   check("换型号的下一轮跟着 turn_context 走", models["gpt-5.6-sol"] === 1, JSON.stringify(models));
   check("没有 thread_settings_applied 的会话也认得型号", models["gpt-6-astra"] === 1, JSON.stringify(models));
 
+  {
+    const custom = path.join(root, "custom-codex");
+    const session = path.join(custom, "sessions", "rollout-custom.jsonl");
+    process.env.CODEX_HOME = custom;
+    try {
+      fs.mkdirSync(path.dirname(session), { recursive: true });
+      fs.writeFileSync(path.join(custom, "auth.json"), JSON.stringify({ tokens: { access_token: "fixture" } }));
+      fs.writeFileSync(path.join(custom, "config.toml"), '[model_providers.qa]\nrequires_openai_auth = true\n');
+      fs.writeFileSync(session, [
+        { type: "session_meta", payload: { model_provider: "qa" } },
+        { type: "turn_context", payload: { model: "gpt-custom" } },
+        usage("resp_custom", 7),
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+      const scanned = scanLocalUsage();
+      check("Codex 自定义目录同时用于扫描会话、配置和登录态",
+        scanned.records.some((row) => row.id === "resp_custom") && readRollups().files[session]?.official === true);
+    } finally {
+      delete process.env.CODEX_HOME;
+    }
+  }
+
+  {
+    const dir = path.join(process.env.HOME, ".codex", "sessions", "2026", "09", "04");
+    const file = path.join(dir, "rollout-long-line.jsonl");
+    const metadata = '{"type":"turn_context","payload":{"model":"gpt-long","padding":"' + "a".repeat(32 * 1024 * 1024) + '"}}';
+    fs.writeFileSync(file, metadata);
+    check("超长行尚未写完时等待换行", !scanLocalUsage().records.some((row) => row.file === file));
+    fs.appendFileSync(file, "\n" + JSON.stringify(usage("resp_long", 8)) + "\n");
+    scanLocalUsage();
+    const resumed = scanLocalUsage();
+    const long = readRollups().files[file];
+    check("超长 JSONL 行之后继续读取且保留上下文",
+      long?.offset === fs.statSync(file).size && Object.values(long.days).some((day) => day["Codex CLI"]?.["gpt-long"]?.requests === 1)
+      && resumed.records.filter((row) => row.file === file).length <= 1);
+    fs.unlinkSync(file);
+  }
+
   // Codex 旧版本只写 event_msg / token_count：以前整份漏算。用本次（last），不用累计（total）
   {
     const tc = (min, total, last) => ({ timestamp: at(min), type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: total, output_tokens: 0 }, last_token_usage: { input_tokens: last, cached_input_tokens: 0, output_tokens: 5, reasoning_output_tokens: 0 } } } });

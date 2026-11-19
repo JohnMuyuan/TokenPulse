@@ -230,9 +230,11 @@
     const text = off && off.points + off.markedPoints > 0 ? `本机以外 +${(off.points + off.markedPoints).toFixed(1)}%，不计入折算` : '按本机区间折算';
     const detail = off && off.points + off.markedPoints > 0
       ? '额度涨了、同期本机没有 Code 请求的时段算作聊天或其他设备，已从折算里排除；可以在下方时间线里标注用了什么模型。'
-      : '只用「额度上涨、同期本机有 Code 请求」的区间折算；同一时刻也在聊天的话分不出来，会让容量略偏小。';
+      : '按近期可用的本机区间估算，明显异常的同期涨幅会被排除。';
     // 0.3.13：说明不常驻，收进标题旁的圆圈感叹号（悬停 / 聚焦显示）
-    return infoTip([el('span', {}, [el('b', { text })]), el('span', { text: detail })], '折算口径说明', 'ms-attribution-tip');
+    return infoTip([el('span', {}, [el('b', { text })]), el('span', { text: detail }),
+      off?.suspectedPoints > 0 ? el('span', { text: '疑似同期混用的区间已排除' }) : null
+    ], '折算口径说明', 'ms-attribution-tip');
   }
   function budgetTile(w, label, study) {
     const b = study.budget, sel = study.selected;
@@ -1040,7 +1042,9 @@
       const band = svg('rect', { x: xs(interval.from), y: bandTop, width: Math.max(2, xs(interval.to) - xs(interval.from)), height: bandH, class: 'ms-unmatched-band' + (isOff ? ' off' : ''), tabindex: 0, role: 'img', 'aria-label': isOff ? (agyTimeline ? '家庭组或其他设备的额度增长' : '本机以外的额度增长') : '说不清来源的额度增长' });
       const detail = agyTimeline
         ? (isOff ? '同期本机没有 Antigravity 请求：属于家庭组其他成员或其他设备的消耗，已自动从容量折算中剔除。' : '同期多人共用或采样间隔较长，额外涨幅已自动从容量折算中剔除。')
-        : (isOff ? '同期本机没有 Code 请求：算作本机以外的使用（聊天、其他设备），不计入容量折算。点下方「本机以外」轨道可以标注用了什么模型。' : '采样缺口或刚发生、还不能判断来源，不计入容量折算。');
+        : (isOff ? '同期本机没有 Code 请求：算作本机以外的使用（聊天、其他设备），不计入容量折算。点下方「本机以外」轨道可以标注用了什么模型。'
+          : interval.suspected ? '涨幅明显高于同窗口同模型同等级的本机区间，疑似同期混用，已从容量折算中排除。'
+          : '这段涨幅的来源或采样边界不确定，已从容量折算中排除。');
       tipOn(band, date(interval.from) + ' → ' + date(interval.to) + '\n官方增加 ' + interval.points.toFixed(2) + ' 个百分点\n' + detail);
       bands.append(band);
     }

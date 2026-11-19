@@ -172,6 +172,9 @@ async function persistence() {
     fs.appendFileSync(path.join(dir, new Date(now).toISOString().slice(0, 10) + '.jsonl'), [point(now - 300000, 'same'), point(now - 120000, 'same'), point(now - 60000, 'restart')].map(JSON.stringify).join('\n') + '\n');
     const history = await service.history({ days: 0, scope: 'global', metric: 'requests' });
     assert.ok(history.points.some(point => point.max === 5)); assert.ok(new Set(history.points.filter(point => point.session.startsWith('same')).map(point => point.session)).size === 2, 'pause gap remains explicit');
+    const byDefault = await service.history({ scope: 'global' });
+    assert.equal(byDefault.at - byDefault.since, 86400_000);
+    assert.ok(!byDefault.points.some(point => point.session.startsWith('old/')), 'missing days defaults to one day');
     service.save({ retention: 7, rules: {} }); assert.equal(fs.existsSync(oldFile), false);
     const files = fs.readdirSync(dir).map(name => fs.readFileSync(path.join(dir, name), 'utf8')).join(''); assert.equal(/synthetic-secret|Bearer|input_text/.test(files), false);
     assert.throws(() => service.save({ retention: 8, rules: {} }));
@@ -183,6 +186,21 @@ async function persistence() {
     assert.ok(published.every((time, index) => !index || time - published[index - 1] >= 245), 'live publishing is throttled to 4 Hz'); requests.forEach(request => request.release());
     monitor.setAvailable(false); monitor.tick(); const disabled = monitor.currentBucket(); assert.equal(disabled.available, false); monitor.flush();
     assert.ok(!(await service.history({ days: 1, scope: 'global', metric: 'requests' })).points.some(point => point.session.startsWith(disabled.session)), 'unmonitored interval is a gap'); monitor.setAvailable(true);
+    monitor.recordRejectedRequest({ scope: 'global', label: '全部转发', metric: 'requests', count: 1, limit: 1, rejected: true });
+    const active = monitor.currentBucket();
+    const activeFile = new Date(active.from).toISOString().slice(0, 10) + '.jsonl';
+    const originalRead = fs.createReadStream;
+    fs.createReadStream = (file, options) => {
+      const stream = originalRead(file, options);
+      if (path.basename(file) === activeFile) stream.once('end', () => monitor.flush());
+      return stream;
+    };
+    try {
+      const duringFlush = await service.history({ days: 1, scope: 'global', metric: 'requests' });
+      assert.equal(duringFlush.points.find(point => point.session.startsWith(active.session + '/') && point.at === active.observedFrom)?.rejected, active.rows.global.rejected, 'a bucket flushed during the history read is kept exactly once');
+    } finally {
+      fs.createReadStream = originalRead;
+    }
     console.log('PASS concurrency persistence: peaks, permanent retention, finite pruning, pause/restart gaps, validated settings and privacy');
   } finally { service.stop(); }
 }

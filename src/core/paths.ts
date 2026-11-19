@@ -17,6 +17,10 @@ export function piDir() {
   return process.env.PI_CODING_AGENT_DIR || path.join(process.env.AGENT_SWITCH_HOME || os.homedir(), ".pi", "agent");
 }
 
+export function dshRoot() {
+  return process.env.TOKENPULSE_DSH_HOME || path.join(os.homedir(), ".dsh");
+}
+
 /**
  * 原子写：先写同目录的临时文件再 rename。
  * 账本文件是「整份读、整份写」的，写到一半被杀进程就全没了。

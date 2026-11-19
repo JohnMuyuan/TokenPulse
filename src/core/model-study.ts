@@ -1,5 +1,5 @@
 import { calibrationContains, calibrationStatus, localOnlyAccounts, readCalibrations, type CalibrationSession } from "./quota-calibration";
-import { cleanSegment, FAMILY, mergeOff, overlapsMark, readMarks, type OffMachineMark } from "./quota-offmachine";
+import { cleanSegment, FAMILY, mergeOff, quotaCapacityEstimate, quotaPlans, readMarks, recentQuotaWindows, type OffMachineMark } from "./quota-offmachine";
 import { quotaAttribution, summarizeAttribution } from "./quota-attribution";
 import { readQuotaHistory, type QuotaSample } from "./quota-history";
 import { windowSegments, type WindowSegment } from "./quota-monitor";
@@ -14,7 +14,7 @@ import type { AccountKind } from "./quota";
 /*
  * 官方百分比属于整个账号池（含聊天、其他设备）。0.3.9 起按采样区间分开：同期没有本机请求的涨幅是「本机以外」，
  * 用户在时间线上标注过的时段可能混用，都不进折算；只用同期有本机请求、没标注的区间（见 quota-offmachine.ts）。
- * 同一时刻本机在跑、网页也在聊的情况分不出来，会让容量略偏小。
+ * 同一窗口可用相近的同型号区间排除异常涨幅；这些涨幅的具体来源仍不可确定。
  * API 费用的可加性不证明官方按 API 价格扣额度；跨模型换算仍只是费用情景参考。
  */
 
@@ -107,58 +107,57 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
   const selectedSegment = selected ? segments.find(s => idOf(s) === selected.id) : undefined;
   const observed = selected ? rows.filter(r => r.at > selected.startAt && r.at <= Math.min(selected.endAt, now)) : [];
   const quotaStale = Boolean(selected && now - selected.sampleAt > GAP_MS);
-  const upperBound = (at: number) => { let low = 0, high = rows.length; while (low < high) { const mid = (low + high) >>> 1; if (rows[mid].at <= at) low = mid + 1; else high = mid; } return low; };
-
-  const attributions = quotaAttribution(segments, rows, now);
+  const plans = quotaPlans(ownSamples);
+  const analyzed = segments.map(segment => ({ segment, at: segment.points.at(-1)?.at ?? segment.endAt, clean: cleanSegment(segment, rows, marks, now, plans, !localOnly) }));
+  const attributions = analyzed.flatMap(entry => entry.clean.measurements.map(item => item.interval));
   const otherSegments = windowSegments(ownSamples, q.window === "week" ? "five" : "week", q.kind === "chatgpt" ? "moves" : "keeps");
   const allAttributions = [...attributions, ...quotaAttribution(otherSegments, rows, now)];
   const blockedSessionIds = sessions.filter(s => allAttributions.some(i => i.kind === "unmatched" && calibrationContains(s, q.accountId, i.from, i.to, now))).map(s => s.id);
   const eligibleSessions = sessions.filter(s => s.kind === q.kind && s.accountId === q.accountId && !blockedSessionIds.includes(s.id));
   const attribution = { ...summarizeAttribution(attributions.filter(i => !selected || i.cycleId === selected.id)), scope: "account_total" as const, simultaneousUsageUnknown: true, blockedSessionIds };
-  const stats = new Map<string, { input: number; cacheRead: number; tokens: number; cost: number; priced: boolean; points: number; intervals: number; cycles: Set<string>; rates: number[]; lastAt: number }>();
-  const pool = { cost: 0, points: 0, intervals: 0, cycles: new Set<string>() };
-  const excluded = { mixed: 0, unknownEffort: 0, empty: 0, gap: 0, accountUncertain: 0, planChange: 0, unverifiedScope: 0, offMachine: 0 };
-  const sampleAt = new Map(ownSamples.map(s => [s.at, s]));
-  const currentPlan = ownSamples.at(-1)?.plan;
-  for (const segment of segments) {
-    let anchor = segment.points[0], prev = anchor;
-    for (const point of segment.points.slice(1)) {
-      if (!anchor) { anchor = prev = point; continue; }
-      // 缺口看相邻两次采样：周额度涨 1 个点常常要半小时以上，按锚点算会把连续采样的慢速区间误判成缺口。
-      const step = point.at - prev.at, elapsed = point.at - anchor.at, delta = point.pct - anchor.pct;
-      prev = point;
-      if (elapsed <= 0) continue;
-      if (step > GAP_MS || delta < -0.01) { excluded.gap++; anchor = point; continue; }
-      // 百分比可能按整数报告：0 点变化先累积，避免只把最后一小段 token 除以 1%。
-      if (delta < 1) continue;
-      const part = rows.slice(upperBound(anchor.at), upperBound(point.at));
-      const from = anchor.at;
-      const plans = [sampleAt.get(anchor.at)?.plan, sampleAt.get(point.at)?.plan];
-      anchor = point;
-      if (plans.some(p => p && currentPlan && p !== currentPlan)) { excluded.planChange++; continue; }
-      if (!part.length) { excluded.empty++; continue; }
-      if (part.some(r => r.account?.basis === "inferred")) { excluded.accountUncertain++; continue; }
-      if (delta > 100) continue;
-      // 用户标注过「这段时间在别处用了」的区间可能混用，不进折算。
-      // 同期没有本机请求的涨幅在上面的 empty 里已经排除（那就是本机以外的消耗）；以前还要求有校准时段，0.3.9 起不再需要
-      if (overlapsMark(marks, from, point.at)) { excluded.offMachine++; continue; }
-      // 整窗预算：费用跨模型可加，混用区间也算；有没定价的请求就不算（费用会偏低）。
-      if (part.every(r => r.priced)) { pool.cost += sum(part, r => r.costUsd); pool.points += delta; pool.intervals++; pool.cycles.add(idOf(segment)); }
+  type CycleRate = { cost: number; tokens: number; points: number };
+  type ModelStats = { input: number; cacheRead: number; priced: boolean; points: number; intervals: number; cycles: Map<string, CycleRate>; rates: number[]; lastAt: number };
+  const stats = new Map<string, ModelStats>();
+  const pool = { points: 0, intervals: 0, cycles: new Map<string, CycleRate>() };
+  const excluded = { mixed: 0, unknownEffort: 0, empty: 0, gap: 0, accountUncertain: 0, planChange: 0, unverifiedScope: 0, offMachine: 0, suspected: 0 };
+  const addRate = (cycles: Map<string, CycleRate>, id: string, points: number, cost: number, tokens: number) => {
+    const rate = cycles.get(id) ?? { cost: 0, tokens: 0, points: 0 };
+    rate.points += points;
+    rate.cost += cost;
+    rate.tokens += tokens;
+    cycles.set(id, rate);
+  };
+  const currentPlan = analyzed.at(-1)?.clean.plan;
+  const recent = new Set(recentQuotaWindows(analyzed.filter(entry => entry.clean.plan === currentPlan && entry.clean.points > 0), q.window, now));
+  for (const entry of analyzed) {
+    const cycle = idOf(entry.segment);
+    for (const { interval, rows: part, issue, cost, priced } of entry.clean.measurements) {
+      if (issue === "gap" || issue === "baseline") { excluded.gap++; continue; }
+      if (issue === "planChange" || entry.clean.plan !== currentPlan) { excluded.planChange++; continue; }
+      if (issue === "marked" || issue === "ignored") { excluded.offMachine++; continue; }
+      if (issue === "accountUncertain") { excluded.accountUncertain++; continue; }
+      if (issue === "suspected") { excluded.suspected++; continue; }
+      if (interval.kind !== "local_present") { excluded.empty++; continue; }
+      if (!recent.has(entry)) continue;
+      const { points: delta, localTokens: tokens } = interval;
+      // 混模型的区间可给整窗 API 等价预算提供样本；单模型容量只用单一组合。
+      if (priced) { pool.points += delta; pool.intervals++; addRate(pool.cycles, cycle, delta, cost, tokens); }
       if (part.some(unknownEffort)) { excluded.unknownEffort++; continue; }
       const keys = new Set(part.map(r => comboKey(r.model, r.effort)));
       if (keys.size !== 1) { excluded.mixed++; continue; }
-      const key = [...keys][0], tokens = sum(part, r => r.tokens);
-      if (tokens <= 0) continue;
-      const stat = stats.get(key) ?? { input: 0, cacheRead: 0, tokens: 0, cost: 0, priced: true, points: 0, intervals: 0, cycles: new Set(), rates: [], lastAt: 0 };
+      const key = [...keys][0];
+      const stat: ModelStats = stats.get(key) ?? { input: 0, cacheRead: 0, priced: true, points: 0, intervals: 0, cycles: new Map(), rates: [], lastAt: 0 };
       stat.input += sum(part, r => r.input); stat.cacheRead += sum(part, r => r.cacheRead);
-      stat.tokens += tokens; stat.cost += sum(part, r => r.costUsd); stat.priced &&= part.every(r => r.priced);
-      stat.points += delta; stat.intervals++; stat.cycles.add(idOf(segment)); stat.rates.push(tokens / delta * 100); stat.lastAt = point.at;
+      stat.priced &&= priced;
+      stat.points += delta; stat.intervals++; addRate(stat.cycles, cycle, delta, cost, tokens); stat.rates.push(tokens / delta * 100); stat.lastAt = interval.to;
       stats.set(key, stat);
     }
   }
   const budgetEnough = pool.points >= 5 && pool.intervals >= 3;
   const budgetConfidence: Confidence = !budgetEnough ? "insufficient" : pool.intervals >= 6 && pool.points >= 15 && pool.cycles.size >= 2 ? "medium" : "low";
-  const budget: Budget = { costUsd: budgetConfidence === "insufficient" || pool.cost <= 0 ? null : pool.cost / pool.points * 100, points: pool.points, intervals: pool.intervals, cycles: pool.cycles.size, confidence: budgetConfidence };
+  const rateEstimate = (cycles: Map<string, CycleRate>, metric: "cost" | "tokens") =>
+    quotaCapacityEstimate([...cycles.values()].map(cycle => ({ value: cycle[metric] / cycle.points * 100, weight: cycle.points })), q.window);
+  const budget: Budget = { costUsd: budgetEnough ? rateEstimate(pool.cycles, "cost") || null : null, points: pool.points, intervals: pool.intervals, cycles: pool.cycles.size, confidence: budgetConfidence };
 
   // 单价：组合自己 → 同模型 → 价格表 × 本账号用量结构（输入 / 缓存 / 输出的比例）。
   const pricedRows = rows.filter(r => r.priced && r.tokens > 0);
@@ -248,8 +247,8 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
     const actual = observed.filter(r => comboKey(r.model, r.effort) === key), recent = rows.filter(r => comboKey(r.model, r.effort) === key), stat = stats.get(key);
     const enough = Boolean(stat && stat.intervals >= 3 && stat.points >= 5);
     const confidence: Confidence = !enough ? "insufficient" : stat!.intervals >= 6 && stat!.points >= 15 && stat!.cycles.size >= 2 ? "medium" : "low";
-    const estimatedTokens = enough ? stat!.tokens / stat!.points * 100 : null;
-    const estimatedCostUsd = enough && stat!.priced ? stat!.cost / stat!.points * 100 : null;
+    const estimatedTokens = enough ? rateEstimate(stat!.cycles, "tokens") : null;
+    const estimatedCostUsd = enough && stat!.priced ? rateEstimate(stat!.cycles, "cost") : null;
     // 未知等级没法说「全用这一档」；不换算，只在时间轴和用量里出现。
     const [unit, priceBasis, effortInfo, base, priceMix] = entry.effort === "unknown" ? [null, null, { ratio: 1, basis: null, source: null } as EffortRatio, null, null] : unitCost(entry.model, key, entry.effort);
     const derivedTokens = budget.costUsd != null && unit ? budget.costUsd / unit : null;
@@ -280,12 +279,13 @@ export function analyzeModelStudy(q: WindowStudyQuery, samples: QuotaSample[], r
 
   // 本机以外的时段：所选周期里「额度涨了、本机没有请求」的区间合并成段，再加上用户的标注。
   // 标注按容量表换算：这段涨了几个点 × 这个模型 × 等级的整窗容量 = 大约相当于多少 Token。
-  const offClean = selectedSegment ? cleanSegment(selectedSegment, rows, marks, now) : null;
+  const offClean = analyzed.find(entry => entry.segment === selectedSegment)?.clean;
   const pctAt = (at: number) => { let value = 0; for (const p of selectedSegment?.points ?? []) { if (p.at > at) break; value = p.pct; } return value; };
   const cycleMarks = selected ? marks.filter(m => m.from < Math.min(selected.endAt, now) && m.to > selected.startAt) : [];
   const offMachine = {
     points: offClean?.offPoints ?? 0,
     markedPoints: offClean?.markedPoints ?? 0,
+    suspectedPoints: offClean?.suspectedPoints ?? 0,
     // 用户切过 / 标过 / 删过的部分不再算「检测到」：只把没被任何标注盖住的区间合并成段
     detected: mergeOff((offClean?.offIntervals ?? []).filter(i => !cycleMarks.some(m => m.from < i.to && m.to > i.from)), rows),
     marks: cycleMarks.map(m => {

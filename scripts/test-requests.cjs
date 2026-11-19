@@ -302,6 +302,24 @@ try {
     check("按项目周额度：筛选后分母不变", onlyGamma.projects.length === 1 && Math.abs(onlyGamma.projects[0].quota.week - 2.25) < 1e-9, JSON.stringify(onlyGamma.projects.map((p) => p.quota)));
   }
 
+  {
+    const { appendRequests, compactRequests } = require(path.join(build, "request-log.js"));
+    const when = new Date(2025, 3, 10, 12).getTime();
+    const make = (id, cwd) => ({ id, at: when, kind: "codex", file: "rollout-boundary.jsonl", cwd, model: "qa", input: 2, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, calls: 1 });
+    const file = path.join(requestDir(), "2025-04.jsonl");
+    const original = make("utf8", "测试🙂");
+    const line = JSON.stringify(original);
+    const prefix = Buffer.byteLength(line.slice(0, line.indexOf("测")), "utf8");
+    fs.writeFileSync(file, " ".repeat(256 * 1024 - prefix - 2) + "\n" + line + "\n" + '{"id":"interrupted"');
+    fs.writeFileSync(path.join(requestDir(), "2025-03.jsonl"), '{"id":"incomplete"');
+    appendRequests([make("replayed", "恢复"), make("after", "下一条")]);
+    compactRequests();
+    const result = queryRequests({ from: "2025-04-10", to: "2025-04-10", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 20 });
+    check("流水块边界跨 UTF-8 字节时保留原目录", result.rows.some((row) => row.cwd === original.cwd));
+    check("流水断尾后的第一条重放记录可查询", result.rows.some((row) => row.cwd === "恢复") && result.rows.length === 3);
+    check("首月只有断尾时回溯到首条有效流水", result.firstAt === when);
+  }
+
   /* ---------------- 额度归属 ---------------- */
   const { buildSnapshot } = require(path.join(build, "report.js"));
   const claude = buildSnapshot(now);

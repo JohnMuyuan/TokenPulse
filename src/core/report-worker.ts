@@ -10,11 +10,6 @@ import { recordCliLogins } from "./login-timeline";
 import { getSession, hasCurrentSessionIndex, listSessions } from "./sessions";
 import { searchSessions } from "./session-search";
 
-function localDay(at: number) {
-  const d = new Date(at);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 // 扫描、JSON 解析和汇总都含同步 CPU / 文件操作，不能占用 Electron 的窗口事件循环。
 if (workerData.deepseek) {
   // DeepSeek 账号页的分析（余额历史 + DeepSeek Harness 的流水）
@@ -55,8 +50,8 @@ if (workerData.deepseek) {
   if (scanned?.records.length) snapshot.requestAlerts = recentAlerts(scanned.records, snapshot.now);
   // 侧栏红点：最近 7 天型号不一致 / 响应存疑的次数。只读最近一两个月的流水，几十毫秒。
   const week = queryRequests({
-    from: localDay(snapshot.now - 6 * 86_400_000),
-    to: localDay(snapshot.now),
+    from: snapshot.daily.at(-7)!.day,
+    to: snapshot.daily.at(-1)!.day,
     source: "all",
     status: "all",
     search: "",

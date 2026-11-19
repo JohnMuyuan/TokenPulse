@@ -14,10 +14,11 @@ write(path.join(root, 'data', 'prefs.json'), { autoLaunch:false, autoUpdate:fals
 write(path.join(root, 'data', 'official-accounts.json'), { version:2, accounts, active:{}, removed:[] });
 write(path.join(root, 'data', 'quota-calibrations.json'), {version:1,sessions:accounts.map(a=>({id:'test-'+a.ref,kind:'chatgpt',accountId:a.id,startAt:now-50*minute,endAt:now+10*minute,confirmedLocalOnly:true}))});
 write(path.join(root, 'home', '.codex', 'models_cache.json'), { fetched_at:iso(now), models:[{slug:'gpt-qa',visibility:'list',supported_reasoning_levels:[{effort:'low'},{effort:'high'}],default_reasoning_level:'high'}] });
-const samples = accounts.flatMap(a => Array.from({length:4},(_,i)=>({account:a.id,at:now-(3-i)*5*minute,five:i*2,fiveReset:iso(now+2*3600000),week:i,weekReset:iso(now+3*86400000),plan:'plus'})));
+const samples = accounts.flatMap(a => Array.from({length:4},(_,i)=>({account:a.id,at:now-30_000-(3-i)*5*minute,five:i*2,fiveReset:iso(now+2*3600000),week:i,weekReset:iso(now+3*86400000),plan:'plus'})));
 write(path.join(root,'data','quota-history.json'),{version:1,accounts:{chatgpt:samples}});
 const records=accounts.flatMap((a,index)=>Array.from({length:3},(_,i)=>({id:a.ref+'-'+i,at:now-(2-i)*5*minute-minute,kind:'codex',file:'fixture-'+a.ref,model:'gpt-qa',requested:'gpt-qa',effort:'high',effortSource:'turn_context.effort',accountRef:a.ref,input:index?3200:800,output:index?800:200,cacheRead:index?1600:400,cacheWrite:0,reasoning:100,costUsd:0.01,calls:1})));
-records.push({...records[0],id:'unknown-effort',at:now-17*minute,effort:undefined,effortSource:undefined});
+// 最新采样后完成的请求能出现在时间线，额度尚未采样，先不参与容量折算。
+records.push({...records[0],id:'unknown-effort',at:now-15_000,effort:undefined,effortSource:undefined});
 const months=new Map();for(const r of records){const m=dateKey(r.at).slice(0,7);if(!months.has(m))months.set(m,[]);months.get(m).push(JSON.stringify(r));}
 for(const[m,rows]of months)write(path.join(root,'data','requests',m+'.jsonl'),rows.join('\n')+'\n');
 write(path.join(root,'data','usage-rollups.json'),{version:1,files:Object.fromEntries(accounts.map(a=>['fixture-'+a.ref,{kind:'codex',official:true,days:{[dateKey(now)]:{'Codex CLI':{'gpt-qa':records.filter(r=>r.file==='fixture-'+a.ref).reduce((b,r)=>({input:b.input+r.input,output:b.output+r.output,cacheRead:b.cacheRead+r.cacheRead,cacheWrite:0,reasoning:b.reasoning+r.reasoning,costUsd:b.costUsd+r.costUsd,requests:b.requests+1}),{input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0,costUsd:0,requests:0})}}}}]))});
@@ -180,7 +181,7 @@ app.on('web-contents-created',(_,contents)=>contents.once('did-finish-load',asyn
   const offBase = samples.filter(s => s.account === 'chatgpt:qa-study');
   const shifted = [
     ...[40, 35, 30, 25, 20].map((ago, i) => ({ ...offBase[0], at: now - ago * minute, five: i === 0 ? 0 : 3, week: i === 0 ? 0 : 3 })),
-    ...offBase.map(s => ({ ...s, five: s.five + 3, week: s.week + 3 })),
+    ...offBase.map((s, i) => ({ ...s, at: i === offBase.length - 1 ? now : s.at, five: s.five + 3, week: s.week + 3 })),
   ];
   write(path.join(root,'data','quota-history.json'),{version:1,accounts:{chatgpt:[...samples.filter(s => s.account !== 'chatgpt:qa-study'), ...shifted]}});
   await evaluate("window.tokenpulse.refresh()");

@@ -41,8 +41,11 @@ import { estimateCost, priceOf } from "../core/model-pricing";
 import { speedSeriesOf, type SpeedSeries } from "../core/pass-speed";
 import { dataFile, readJson, writeJson } from "../core/paths";
 import type { PetAccount, PetQuotaWindow } from "../core/desk-pet-model";
+import { robustRecencyEstimate } from "../core/quota-monitor";
 import { pressureRule, readPressurePrefs, type PressurePrefs, type PressureRule } from "../core/quota-pressure";
 import { queryRequests, type RequestRow } from "../core/request-log";
+
+export { robustRecencyEstimate, weightedMedian } from "../core/quota-monitor";
 
 /**
  * Google Antigravity 的多账号额度监控、家庭组共享额度归因与深度防偏移分析。
@@ -560,19 +563,6 @@ const MIN_CAPACITY_PCT = 2;
 const RECENT_CAPACITY_FIVE = 6;
 const RECENT_CAPACITY_WEEK = 3;
 
-export function weightedMedian(pairs: [number, number][]): number {
-  const list = pairs.filter(([value, weight]) => Number.isFinite(value) && weight > 0).sort((a, b) => a[0] - b[0]);
-  if (!list.length) return 0;
-  const half = list.reduce((sum, [, weight]) => sum + weight, 0) / 2;
-  let acc = 0;
-  for (let i = 0; i < list.length; i++) {
-    acc += list[i][1];
-    if (Math.abs(acc - half) < 1e-9 && i + 1 < list.length) return (list[i][0] + list[i + 1][0]) / 2;
-    if (acc > half) return list[i][0];
-  }
-  return list[list.length - 1][0];
-}
-
 /** 加权分位数（q ∈ [0,1]）：在存在家庭组并发下拉噪声时，用偏高分位锚定纯本机独享成本基准。 */
 function weightedQuantile(pairs: [number, number][], q: number): number {
   const list = pairs.filter(([value, weight]) => Number.isFinite(value) && weight > 0).sort((a, b) => a[0] - b[0]);
@@ -584,36 +574,6 @@ function weightedQuantile(pairs: [number, number][], q: number): number {
     if (acc >= target) return list[i][0];
   }
   return list[list.length - 1][0];
-}
-
-/**
- * 稳健近期加权平均（抗离群窗口 + 随当前窗口平滑更新）：
- * - 越新的窗口权重越高（周窗口每往前一周期 ×0.55，5 小时窗口 ×0.85），避免新周期长时间被旧周期钉死；
- * - 先以近期加权中位数确定稳健锚点，剔除偏离超过 2.5 倍的极端离群历史窗口（如早先全用低价 Flash 的窗口）；
- * - 对保留窗口做加权平均，使当前进行中的窗口每次产生新用量时整窗折算都能平滑实时跟进。
- */
-export function robustRecencyEstimate(
-  items: { value: number; weight: number }[],
-  decay: number,
-): number {
-  const valid = items
-    .map((item, idx) => ({
-      value: item.value,
-      weight: item.weight * Math.pow(decay, items.length - 1 - idx),
-    }))
-    .filter((item) => Number.isFinite(item.value) && item.value > 0 && item.weight > 0);
-  if (!valid.length) return 0;
-  if (valid.length === 1) return valid[0].value;
-  const anchor = weightedMedian(valid.map((item) => [item.value, item.weight]));
-  if (anchor <= 0) return valid[valid.length - 1].value;
-  const kept = valid.filter((item) => {
-    const ratio = item.value / anchor;
-    return ratio >= 0.4 && ratio <= 2.5;
-  });
-  const pool = kept.length ? kept : valid;
-  const sumW = pool.reduce((s, item) => s + item.weight, 0);
-  if (sumW <= 0) return anchor;
-  return pool.reduce((s, item) => s + item.value * item.weight, 0) / sumW;
 }
 
 /**
@@ -1769,7 +1729,7 @@ export class AntigravityQuota {
   private running = false;
   private activeLocalEmail = "";
   private activeLocalAccountId = "";
-  private pending?: Promise<AgyQuotaState>;
+  private pending?: { manual: boolean; targetAccountId?: string; promise: Promise<AgyQuotaState> };
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
   private readonly file = dataFile("antigravity-quota.json");
@@ -2404,15 +2364,22 @@ export class AntigravityQuota {
   }
 
   refresh(manual: boolean, targetAccountId?: string): Promise<AgyQuotaState> {
-    if (this.pending) return this.pending;
+    if (this.pending) {
+      const pending = this.pending;
+      const sameTarget = pending.targetAccountId === targetAccountId;
+      if (manual ? pending.manual && sameTarget : sameTarget || !pending.targetAccountId) return pending.promise;
+      const refreshTarget = () => this.refresh(manual, targetAccountId);
+      return pending.promise.then(refreshTarget, refreshTarget);
+    }
     const hasAccounts = visibleAgyAccounts().length > 0;
     if (!manual && !hasAccounts && !antigravityDirs().some((dir) => fs.existsSync(dir))) {
       return Promise.resolve(this.state());
     }
-    this.pending = this.refreshNow(manual, targetAccountId).finally(() => {
+    const promise = Promise.resolve().then(() => this.refreshNow(manual, targetAccountId)).finally(() => {
       this.pending = undefined;
     });
-    return this.pending;
+    this.pending = { manual, targetAccountId, promise };
+    return promise;
   }
 
   private applyStatusToSlot(slot: AccountSlot, status: AgyStatus, at: number, accountLabel?: string) {

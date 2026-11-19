@@ -1345,13 +1345,25 @@ function tokenMetric(label, value, extra = {}) {
   if (!value) return metric(label, '—', { sub: extra.missing || '样本不足，暂无法折算' });
   return metric(label, amount(value.tokens), { unit: 'Tokens', sub: money(value.costUsd), approx: cnApprox(value.tokens), ...extra });
 }
+function windowCapacityMetric(win, waiting) {
+  if (waiting) return metric('整窗容量折算', '—', { sub: '等待有效采样' });
+  const capacity = win.capacity;
+  if (!capacity) {
+    const sub = win.capacityReason === 'insufficient-clean' ? '可用于折算的本机样本不足'
+      : win.capacityReason === 'unattributed' ? '账号池含其他端，不能按本机日志倒推容量' : '已用不到 2%，暂无法折算';
+    return metric('整窗容量折算', '—', { sub });
+  }
+  const card = tokenMetric('整窗容量折算', byCapacity(win, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } });
+  if (capacity.basis === 'recent') card.title = '按近期有效窗口加权估计';
+  return card;
+}
 /**
  * 按型号的周额度（Fable）也给出和总窗口一样的判断：预测一句话 + 本机用了多少、还能用多少、整窗折合多少、什么时候用完。
  * 数字只算这个型号的请求（见 quota-monitor.ts 的 rowsOfModelFamily）；文案和总窗口共用，判断规则也一样。
  */
 function modelWeekDetail(win, account) {
   const unknown = isStale(account) || waitingReset(account, win), waitText = '等待有效采样';
-  const caution = pressured(win) || unknown, capacity = win.capacity;
+  const caution = pressured(win) || unknown;
   const willRunOut = !unknown && win.used < 100 && win.etaAt && win.runsOutBeforeReset;
   const limit = unknown ? metric('预计达到上限', '—', { sub: waitText })
     : win.used >= 100 ? metric('预计达到上限', '已用完', { sub: '等待重置', tone: 'warn' })
@@ -1362,8 +1374,7 @@ function modelWeekDetail(win, account) {
     el('div', { class: 'metric-grid two' }, [
       metric('本窗口已用（本机）', amount(win.usedTokens), { unit: 'Tokens', approx: cnApprox(win.usedTokens), sub: money(win.usedCostUsd) }),
       unknown ? metric('剩余可用（估算）', '—', { sub: waitText }) : tokenMetric('剩余可用（估算）', byCapacity(win, 100 - win.used), { tone: 'accent' }),
-      unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : win.capacityReason === 'unattributed' ? '账号池含其他端，不能按本机日志倒推容量' : '已用不到 2%，暂无法折算' })
-        : tokenMetric('整窗容量折算', byCapacity(win, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } }),
+      windowCapacityMetric(win, unknown),
       limit
     ])
   ]);
@@ -1395,13 +1406,11 @@ function windowPanel(label, report, account) {
   // 这个窗口是重置卡之后开始的：本窗口用量、容量、平均速度都从重置那一刻算
   if (report.startedByReset && !pending) panel.append(el('p', { class: 'reset-card-note' }, [icon('refresh'), `${RESET_CARD[report.startedByReset]} · 从 ${date(report.startAt)} 起算`]));
 
-  const capacity = report.capacity;
   const waitText = '等待有效采样';
   panel.append(metricGroup('Token 与费用', 'tokens', [
     metric('本窗口已用（本机）', amount(report.usedTokens), { unit: 'Tokens', approx: cnApprox(report.usedTokens), sub: money(report.usedCostUsd) }),
     unknown ? metric('剩余可用（估算）', '—', { sub: waitText }) : tokenMetric('剩余可用（估算）', byCapacity(report, 100 - report.used), { tone: 'accent' }),
-    unknown || !capacity ? metric('整窗容量折算', '—', { sub: unknown ? waitText : report.capacityReason === 'unattributed' ? '账号池含其他端，不能按本机日志倒推容量' : '已用不到 2%，暂无法折算' })
-      : tokenMetric('整窗容量折算', byCapacity(report, 100), { chip: { tone: capacity.confidence, text: CONFIDENCE[capacity.confidence] } })
+    windowCapacityMetric(report, unknown)
   ]));
 
   const willRunOut = !unknown && report.used < 100 && report.etaAt && report.runsOutBeforeReset;
@@ -1458,7 +1467,8 @@ function capacityChart(host, history, windowName, metric, animate) {
   points.forEach((p, i) => {
     // 被重置卡提前结束的段，结束时间是重置那一刻，不是原来的重置日期
     const resetNote = [p.startedByReset && `从重置卡之后开始（${RESET_CARD[p.startedByReset]}）`, p.endedByReset && `用了重置卡，提前结束（${RESET_CARD[p.endedByReset]}）`].filter(Boolean).join('\n');
-    const text = `${date(p.startAt)} → ${date(p.endAt ?? p.resetAt)}${p.current ? '（进行中）' : ''}${resetNote ? '\n' + resetNote : ''}\n最后一次采样已用 ${percent(p.pct)}${p.cleanPoints != null ? `\n折算用的区间：官方 +${p.cleanPoints.toFixed(1)}%，同期本机 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}${p.offPoints || p.markedPoints ? `\n本机以外 +${((p.offPoints || 0) + (p.markedPoints || 0)).toFixed(1)}%（不计入）` : ''}` : `\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}`}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
+    const suspectNote = p.suspectedPoints > 0 ? '\n' + '疑似同期混用的区间已排除' : '';
+    const text = `${date(p.startAt)} → ${date(p.endAt ?? p.resetAt)}${p.current ? '（进行中）' : ''}${resetNote ? '\n' + resetNote : ''}\n最后一次采样已用 ${percent(p.pct)}${p.cleanPoints != null ? `\n折算用的区间：官方 +${p.cleanPoints.toFixed(1)}%，同期本机 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}${p.offPoints || p.markedPoints ? `\n本机以外 +${((p.offPoints || 0) + (p.markedPoints || 0)).toFixed(1)}%（不计入）` : ''}` : `\n本机用量 ${tokens(p.tokens)} Tokens · ${money(p.costUsd)}`}${suspectNote}\n折算整窗约 ${tokens(p.capacityTokens)} Tokens · ${money(p.capacityCostUsd)}\n${CONFIDENCE[p.confidence]}`;
     const dot = svg('circle', { class: `cap-dot ${p.confidence === 'low' ? 'low' : 'solid'}${p.current ? ' current' : ''}`, cx: x(p), cy: y(value(p)), r: p.current ? 6 : 4.5, tabindex: 0, 'aria-label': text });
     dot.style.animationDelay = `${Math.round(600 + i * 60)}ms`;
     dot.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));

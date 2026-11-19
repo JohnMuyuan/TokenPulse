@@ -108,6 +108,25 @@ function addSteps(file, steps) {
     assert.equal(scan.scanLocalUsage().records.length, 0, '重算过一次就不再重算');
     pass('antigravity usage: model labels from the quota API rename models and effort once, rescanning without duplicates');
 
+    const resumedFile = path.join(a.antigravityCliDir(), 'conversations', path.basename(fileA));
+    fs.mkdirSync(path.dirname(resumedFile), { recursive: true });
+    fs.writeFileSync(resumedFile, 'unreadable fixture');
+    const newest = new Date(Date.now() + 10_000);
+    fs.utimesSync(resumedFile, newest, newest);
+    scan.scanLocalUsage();
+    assert.deepEqual(scan.readRollups().files[fileA].days, days, '新库暂时不可读时保留已有汇总，稍后重试');
+    fs.copyFileSync(fileA, resumedFile);
+    addSteps(resumedFile, [{ idx: 5, type: 15, status: 3, meta: stepMeta({ start: T0 + 10_000, end: T0 + 12_000, modelId: 1417, gen: 2, input: 100, output: 10 }) }]);
+    fs.utimesSync(resumedFile, newest, newest);
+    scan.scanLocalUsage();
+    const copies = Object.entries(scan.readRollups().files).filter(([file]) => path.basename(file) === path.basename(fileA));
+    assert.deepEqual(copies.map(([file]) => file), [resumedFile], '切换到较新的 CLI 库时移除桌面库的重复汇总');
+    const calls = Object.values(copies[0][1].days).flatMap((day) => Object.values(day.Antigravity)).reduce((sum, bucket) => sum + bucket.requests, 0);
+    assert.equal(calls, 4, '复制的三条旧回复和一条 CLI 新回复各计一次');
+    const req = require('../build/core/request-log').queryRequests({ from: '2026-11-04', to: '2026-11-05', source: 'Antigravity', status: 'all', search: '', sort: 'time', page: 0, pageSize: 20 });
+    assert.equal(req.total, calls, '流水与汇总拥有相同的调用数');
+    pass('antigravity usage: switching the same conversation from IDE to CLI keeps a single rollup');
+
     // 卡住很久的一步（崩溃、被杀）不挡住后面的
     const conv2 = 'bbbbbbbb-0000-4000-8000-000000000002';
     makeConversation(conv2, [
@@ -437,6 +456,14 @@ function addSteps(file, steps) {
       agyQuota.stop();
     }
     pass('antigravity quota speed: avgSpeed and speed() ignore estimate fallbacks on skipped or legacy records');
+
+    const cacheOnly = 'aaaaaaaa-0000-4000-8000-000000000008';
+    makeConversation(cacheOnly, [
+      { idx: 0, type: 15, status: 3, meta: stepMeta({ start: T0 + 15_000, end: T0 + 16_000, modelId: 1319, gen: 0, input: 0, output: 0, cacheWrite: 200 }) },
+    ], [[0, genMeta('gemini-3.8-flash', 'MODEL_PLACEHOLDER_M319')]]);
+    const cacheOnlyRows = scan.scanLocalUsage().records.filter((row) => row.id === cacheOnly + ':0');
+    assert.deepEqual(cacheOnlyRows.map((row) => [row.input, row.cacheWrite, row.calls]), [[200, 200, 1]]);
+    pass('antigravity usage: a cache-write-only response counts toward tokens and requests');
 
     console.log(`${checks}/${checks} antigravity checks passed`);
   } finally {

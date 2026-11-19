@@ -2073,8 +2073,13 @@
     "还没有「额度上涨、同期本机有请求」的区间": "No intervals yet where quota rose while this PC had requests",
     "最近 30 天里「额度上涨、同期本机有 Code 请求」的区间还不够多，暂不折算绝对 Token / 美元容量。下面的倍数仅比较 API 参考单价，不是官方额度倍数。": "Not enough intervals in the last 30 days where quota rose while this PC had Code requests, so absolute token / dollar capacity isn't computed yet. The multiples below only compare API reference prices, not official quota multiples.",
     "按本机区间折算": "From local intervals",
+    "可用于折算的本机样本不足": "Not enough eligible local samples",
+    "按近期有效窗口加权估计": "Weighted estimate from recent eligible windows",
+    "按近期可用的本机区间估算，明显异常的同期涨幅会被排除。": "Estimated from recent eligible local intervals, with unusually high concurrent increases excluded.",
+    "疑似同期混用的区间已排除": "Intervals with suspected concurrent use were excluded",
+    "涨幅明显高于同窗口同模型同等级的本机区间，疑似同期混用，已从容量折算中排除。": "Quota rose much more than in local intervals with the same model and effort in this window. This period was excluded due to suspected concurrent use.",
+    "这段涨幅的来源或采样边界不确定，已从容量折算中排除。": "Excluded from the estimate because attribution or the sampling boundary is uncertain.",
     "额度涨了、同期本机没有 Code 请求的时段算作聊天或其他设备，已从折算里排除；可以在下方时间线里标注用了什么模型。": "Periods where quota rose with no Code requests on this PC count as chat or other devices and are excluded from the estimate; you can mark which model was used in the timeline below.",
-    "只用「额度上涨、同期本机有 Code 请求」的区间折算；同一时刻也在聊天的话分不出来，会让容量略偏小。": "Only intervals where quota rose while this PC had Code requests are used; simultaneous chat can't be separated and makes capacity read slightly low.",
     "官方已用是整个账号的（含网页聊天、其他设备）。额度上涨时本机没有 Code 请求的时段会被识别为「本机以外」，不计入容量折算；可以在下方时间线里标注这些时段用了什么模型。": "Official usage covers the whole account (including web chat and other devices). Periods where quota rose with no Code requests on this PC are treated as “off this PC” and excluded from capacity; you can mark which model was used in the timeline below.",
     "只用「额度上涨、同期本机有 Code 请求」的区间折算，本机以外的使用不计入。": "Only intervals where quota rose while this PC had Code requests are used; usage off this PC is excluded.",
     // 设置 · 只在本机用 Code（0.3.9）
@@ -2906,6 +2911,11 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.101 订阅额度估算与后端修复
+    '改进 Claude、ChatGPT 和 Grok 的额度估算': 'Improved capacity estimates for Claude, ChatGPT, and Grok',
+    '周额度和 5 小时额度按近期同套餐窗口加权。容量折算排除疑似同期混用的异常区间，百分比回落后的反弹只计新增涨幅。Claude Fable 的独立周额度也采用这套方法。': 'Weekly and 5-hour estimates give more weight to recent windows on the same plan. Capacity estimates exclude intervals with suspected concurrent use and count only new increases after a percentage dip. Claude Fable’s separate weekly limit uses the same method.',
+    '修复用量漏计、账号刷新和对话导入': 'Fixed missing usage, account refreshes, and conversation imports',
+    '修复自定义 CLI 目录和超长日志漏扫、请求流水恢复丢记录及 Grok 调用次数虚增。Antigravity 同一对话切换桌面和 CLI 时只汇总一次，账号刷新各自完成，导入失败时保留原对话库。': 'Fixed missed usage in custom CLI directories and very long log entries, lost records during recovery, and inflated Grok call counts. Antigravity counts a conversation once when switching between desktop and CLI, completes each account refresh, and preserves the existing conversation if an import fails.',
     // 0.3.100 Antigravity 额度池短名化与周额度实时稳健折算修复
     '精简 Antigravity 额度池标题，修复周额度折算长期锁死与锯齿抖动重复计数': 'Concise Antigravity pool titles, anti-jitter attribution, and live weekly capacity updates',
     '总览、额度详情、走势图与过线通知统一使用简洁池名（Gemini、Claude / GPT），完整模型列表保留在悬停提示与下方「组内模型档位」；区间归因引入单调高水位与请求单调游标，不再因 Google 官方百分比小幅回落回弹而重复累计本机或家庭组消耗；周额度整窗折算改为近期稳健加权估算，既剔除极端旧窗口又随本周新用量实时平滑更新。': 'Uses concise pool labels (Gemini, Claude / GPT) across Overview, Quota Details, charts, and alerts while keeping the full model list in hover tooltips and the model breakdown table; adds a monotonic high-water mark and single-consumption row cursor so small official percentage dips/bounces no longer double-count local or family usage; and switches weekly capacity estimation to a robust recency-weighted average that rejects extreme outliers while updating smoothly with ongoing usage.',

@@ -2,7 +2,8 @@ import { randomUUID } from "crypto";
 import { dataFile, readJson, writeJson } from "./paths";
 import type { AccountKind } from "./quota";
 import type { RequestRow } from "./request-log";
-import { confidenceOf, windowSegments, RESET_STYLE, type CapacityHistory, type CapacityPoint, type WindowSegment } from "./quota-monitor";
+import { confidenceOf, FIVE_HOUR_MS, robustRecencyEstimate, weightedMedian, WEEK_MS, windowSegments, RESET_STYLE, type CapacityHistory, type CapacityPoint, type WindowSegment } from "./quota-monitor";
+import { observeQuotaIntervals } from "./quota-attribution";
 import type { QuotaSample } from "./quota-history";
 
 /**
@@ -11,10 +12,10 @@ import type { QuotaSample } from "./quota-history";
  * 官方的已用百分比是整个账号的：网页 / App 聊天、别的电脑也在用。以前要么把这些全算成本机 Code（容量算小），
  * 要么干脆不折算容量（要用户做「本机专用校准」）。现在按采样区间自动分开：
  * - 额度涨了、同期本机没有任何 Code 请求（前后 5 分钟也没有）→ 本机以外的消耗，不进容量折算，时间线上标出来；
- * - 额度涨了、同期本机有请求 → 按本机用量折算（同一时刻也在聊天的话没法分辨，会让容量略微偏小）；
+ * - 额度涨了、同期本机有请求 → 按本机用量折算；同窗口、同模型和思考等级有稳定对照时，可排除明显偏高的上涨；
  * - 用户在时间线上标注过的时段（「这段时间我在网页上用 Opus 聊天」）→ 可能是混用，整段不进折算；
  *   标注的模型和思考等级用来把这段涨幅换算成等价的 Token。
- * - 采样间隔超过 30 分钟、或者百分比回落的区间说不清，跳过。
+ * - 长缺口里的变化不进折算，回落反弹只计高水位以上的新涨幅。
  */
 
 export type OffMachineSource = "chat" | "device" | "other";
@@ -28,7 +29,6 @@ type Store = { version: 1; marks: OffMachineMark[] };
 export const FAMILY: Record<AccountKind, RegExp> = { chatgpt: /^(gpt|codex|o\d)/i, claude: /^claude/i, grok: /^grok/i };
 const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "adaptive", "auto", "unknown"]);
 const GAP_MS = 30 * 60000;
-const LAG_MS = 5 * 60000;
 /** 一段干净区间至少要累计这么多个百分点，容量才算得出来（和以前 2% 的门槛一致）。 */
 export const MIN_CLEAN_POINTS = 2;
 const file = () => dataFile("quota-offmachine.json");
@@ -126,50 +126,93 @@ export function overlapsIgnored(marks: OffMachineMark[], from: number, to: numbe
 }
 
 export type OffInterval = { from: number; to: number; points: number };
-export type CleanSegment = { cost: number; tokens: number; points: number; priced: boolean; offPoints: number; markedPoints: number; offIntervals: OffInterval[] };
+type Observation = ReturnType<typeof observeQuotaIntervals>[number];
+type Measurement = Omit<Observation, "issue"> & {
+  issue?: Observation["issue"] | "marked" | "ignored" | "planChange" | "suspected";
+  cost: number;
+  priced: boolean;
+};
+export function quotaPlans(samples: QuotaSample[]) {
+  return new Map(samples.map(sample => [sample.at, typeof sample.plan === "string" ? sample.plan.trim().toLowerCase() || undefined : undefined]));
+}
 
-/**
- * 把一个窗口段按相邻采样切成区间，分出干净的本机区间和本机以外的涨幅。rows 必须按时间排好、只含这个账号这一家的官方请求。
- * 周额度常常半小时以上才涨 1 个点：不到 1 点的变化先累积，避免把最后一小段请求除以 1%。
- *
- * 官方百分比只给整数，区间要从一次跳点数到下一次跳点才是整整那么多个点（0.3.70）：
- * - 采样隔了半小时以上、但这期间百分比没变：没什么说不清的，接着累积（以前整段丢掉，丢了 Token 却没丢那零点几个点的进度，
- *   进度算到了下一个区间头上，容量偏小，本机实测睡眠多的账号小 5%～9%，「已用 + 剩余」比整窗还多）；
- * - 隔太久期间涨了、或者回落：锚点落在两次跳点中间，到下一次跳点为止的那个区间点数不准，也丢掉；
- * - 窗口开头还是 0%：从窗口开始算起，第一次跳点前的请求也算进去。
- */
-export function cleanSegment(segment: WindowSegment, rows: RequestRow[], marks: OffMachineMark[], now: number): CleanSegment {
-  const upper = (at: number) => { let low = 0, high = rows.length; while (low < high) { const mid = (low + high) >>> 1; if (rows[mid].at <= at) low = mid + 1; else high = mid; } return low; };
-  const out: CleanSegment = { cost: 0, tokens: 0, points: 0, priced: true, offPoints: 0, markedPoints: 0, offIntervals: [] };
-  const start = segment.points[0];
-  let anchor = start && start.pct <= 0.01 && Number.isFinite(segment.startAt) && segment.startAt < start.at ? { at: segment.startAt, pct: 0 } : start, prev = anchor;
-  let aligned = anchor !== start;
-  for (const point of segment.points.slice(aligned ? 0 : 1)) {
-    if (!anchor) { anchor = prev = point; continue; }
-    const step = point.at - prev.at, delta = point.pct - anchor.pct, moved = Math.abs(point.pct - prev.pct) > 0.01;
-    prev = point;
-    if (point.at <= anchor.at) continue;
-    if ((step > GAP_MS && moved) || delta < -0.01) { anchor = point; aligned = false; continue; }
-    if (delta < 1) continue;
-    const from = anchor.at, to = point.at;
-    anchor = point;
-    if (!aligned) { aligned = true; continue; }
-    if (delta > 100) continue;
-    if (overlapsMark(marks, from, to)) { out.markedPoints += delta; continue; }
-    const part = rows.slice(upper(from), upper(to));
-    if (!part.length) {
-      // 前后 5 分钟也没有本机请求才算本机以外（统计延迟、采样刚好卡在请求边上的不算）；还没过 5 分钟的最新区间先不下结论
-      const near = rows.slice(upper(from - LAG_MS), upper(Math.min(to + LAG_MS, now))).length;
-      if (!near && to + LAG_MS <= now && !overlapsIgnored(marks, from, to)) { out.offPoints += delta; out.offIntervals.push({ from, to, points: delta }); }
-      continue;
-    }
-    if (part.some((r) => r.account?.basis === "inferred")) continue;
-    if (!part.every((r) => r.priced)) out.priced = false;
-    out.cost += part.reduce((s, r) => s + r.costUsd, 0);
-    out.tokens += part.reduce((s, r) => s + r.tokens, 0);
-    out.points += delta;
+/** 同一窗口内只比较同模型、同等级且费用完整的请求。异常段整体退出折算，避免估造外部占用。 */
+export function cleanSegment(segment: WindowSegment, rows: RequestRow[], marks: OffMachineMark[], now: number, plans: ReturnType<typeof quotaPlans>, detectMixed = true) {
+  let plan: string | undefined;
+  let changedPlanAt = -Infinity;
+  for (const point of segment.points) {
+    const nextPlan = plans.get(point.at);
+    if (!nextPlan) continue;
+    if (plan && nextPlan !== plan) changedPlanAt = point.at;
+    plan = nextPlan;
   }
-  return out;
+  const measurements: Measurement[] = observeQuotaIntervals(segment, rows, now).map((observation) => {
+    const { from, to } = observation.interval;
+    const cost = observation.rows.reduce((sum, row) => sum + row.costUsd, 0);
+    const priced = observation.rows.length > 0 && observation.rows.every(row => row.priced);
+    let issue: Measurement["issue"] = observation.issue;
+    if (!issue && from < changedPlanAt) issue = "planChange";
+    if (!issue && overlapsMark(marks, from, to)) issue = "marked";
+    if (!issue && overlapsIgnored(marks, from, to)) issue = "ignored";
+    return { ...observation, cost, priced, issue };
+  });
+  if (detectMixed) {
+    const cohorts = new Map<string, Measurement[]>();
+    for (const measurement of measurements) {
+      const { issue, interval, rows: part, priced, cost } = measurement;
+      if (issue || interval.kind !== "local_present" || !priced || cost <= 0 || interval.points < 2) continue;
+      const { model, effort } = part[0];
+      if (!effort || effort === "unknown" || effort === "enabled" || !part.every(row => row.model === model && row.effort === effort)) continue;
+      const key = `${model}\u0000${effort}`;
+      const cohort = cohorts.get(key) ?? [];
+      cohort.push(measurement);
+      cohorts.set(key, cohort);
+    }
+    for (const cohort of cohorts.values()) {
+      if (cohort.length < 4) continue;
+      const rates = cohort.map(measurement => measurement.cost / measurement.interval.points);
+      const reference = weightedMedian(rates.map(rate => [rate, 1]));
+      // 至少三个接近的参照区间，分歧较大时继续保留观测，不猜测混用。
+      if (rates.filter(rate => rate >= reference * 0.75 && rate <= reference * 1.33).length < 3) continue;
+      for (const measurement of cohort) {
+        const expected = measurement.cost / reference;
+        if (expected >= measurement.interval.points * 0.4 || measurement.interval.points - expected < 2) continue;
+        measurement.issue = "suspected";
+        measurement.interval.kind = "uncertain";
+        measurement.interval.suspected = true;
+      }
+    }
+  }
+  const offIntervals: OffInterval[] = [];
+  let points = 0, tokens = 0, cost = 0, offPoints = 0, markedPoints = 0, suspectedPoints = 0, priced = true;
+  for (const measurement of measurements) {
+    const { interval, issue } = measurement;
+    if (issue === "marked") markedPoints += interval.points;
+    if (issue === "suspected") suspectedPoints += interval.points;
+    if (issue) continue;
+    if (interval.kind === "unmatched") {
+      offPoints += interval.points;
+      offIntervals.push({ from: interval.from, to: interval.to, points: interval.points });
+    }
+    if (interval.kind !== "local_present") continue;
+    points += interval.points;
+    tokens += interval.localTokens;
+    cost += measurement.cost;
+    priced &&= measurement.priced;
+  }
+  return { plan, measurements, points, tokens, cost, priced, offIntervals, offPoints, markedPoints, suspectedPoints };
+}
+
+const RECENCY = { week: { count: 3, decay: 0.55, length: WEEK_MS }, five: { count: 6, decay: 0.85, length: FIVE_HOUR_MS } };
+
+export function recentQuotaWindows<T extends { at: number }>(windows: T[], window: "week" | "five", now: number) {
+  const { count, length } = RECENCY[window];
+  return windows.filter(item => item.at >= now - (count + 1) * length).slice(-count);
+}
+
+export function quotaCapacityEstimate(items: { value: number; weight: number }[], window: "week" | "five") {
+  // 限制单个窗口的权重，避免一个消耗特别多的旧窗口压住近期窗口。
+  return robustRecencyEstimate(items.map(item => ({ ...item, weight: Math.min(item.weight, 20) })), RECENCY[window].decay);
 }
 
 /**
@@ -194,27 +237,45 @@ export function mergeOff(intervals: OffInterval[], rows?: RequestRow[]) {
  * 容量 = 干净区间里的本机用量 ÷ 这些区间的官方涨幅 × 100；本机以外和标注过的涨幅都不参与。
  */
 export function cleanCapacity(kind: AccountKind, samples: QuotaSample[], rows: RequestRow[], marks: OffMachineMark[], window: "week" | "five", now: number) {
-  const segments = windowSegments(samples, window, RESET_STYLE[kind] ?? "keeps");
+  const sorted = samples.filter(sample => Number.isFinite(sample.at) && sample.at <= now).sort((a, b) => a.at - b.at);
+  const plans = quotaPlans(sorted);
+  const segments = windowSegments(sorted, window, RESET_STYLE[kind] ?? "keeps");
   const history: CapacityHistory & { basis: "clean" } = { points: [], skipped: { tooLow: 0, noLocal: 0 }, basis: "clean" };
-  let current: { tokens: number; costUsd: number; confidence: CapacityPoint["confidence"]; offPoints: number } | undefined;
-  segments.forEach((segment, index) => {
+  const measured: { at: number; point: CapacityPoint; weight: number; plan?: string; priced: boolean }[] = [];
+  let active: ReturnType<typeof cleanSegment> | undefined;
+  for (const [index, segment] of segments.entries()) {
     const final = segment.points.at(-1);
-    if (!final || final.pct <= 0) return;
-    const clean = cleanSegment(segment, rows, marks, now);
-    const isCurrent = index === segments.length - 1 && segment.endAt > now;
-    if (clean.points < MIN_CLEAN_POINTS || clean.tokens <= 0) { if (clean.points < MIN_CLEAN_POINTS && final.pct < MIN_CLEAN_POINTS) history.skipped.tooLow += 1; else history.skipped.noLocal += 1; return; }
+    if (!final) continue;
+    const clean = cleanSegment(segment, rows, marks, now, plans);
+    const isCurrent = index === segments.length - 1 && segment.startAt <= now && segment.endAt > now;
+    if (isCurrent) active = clean;
+    if (final.pct <= 0) continue;
+    if (clean.points < MIN_CLEAN_POINTS || clean.tokens <= 0) {
+      if (final.pct < MIN_CLEAN_POINTS) history.skipped.tooLow += 1;
+      else history.skipped.noLocal += 1;
+      continue;
+    }
     const scale = 100 / clean.points;
-    const point: CapacityPoint & { offPoints: number; markedPoints: number; cleanPoints: number } = {
+    const point: CapacityPoint = {
       startAt: segment.startAt, resetAt: segment.resetAt, endAt: segment.endAt, at: final.at, pct: final.pct,
       tokens: clean.tokens, costUsd: clean.cost, capacityTokens: clean.tokens * scale, capacityCostUsd: clean.cost * scale,
       confidence: confidenceOf(clean.points), current: isCurrent,
-      offPoints: clean.offPoints, markedPoints: clean.markedPoints, cleanPoints: clean.points,
+      offPoints: clean.offPoints, markedPoints: clean.markedPoints, cleanPoints: clean.points, suspectedPoints: clean.suspectedPoints,
       ...(segment.endedByReset ? { endedByReset: segment.endedByReset } : {}),
       ...(segment.startedByReset ? { startedByReset: segment.startedByReset } : {}),
     };
     history.points.push(point);
-    if (isCurrent) current = { tokens: point.capacityTokens, costUsd: point.capacityCostUsd, confidence: point.confidence, offPoints: clean.offPoints };
-  });
+    measured.push({ at: final.at, point, weight: clean.points, plan: clean.plan, priced: clean.priced });
+  }
+  const recent = active ? recentQuotaWindows(measured.filter(item => item.plan === active?.plan), window, now) : [];
+  const current = active && recent.length ? {
+    tokens: quotaCapacityEstimate(recent.map(item => ({ value: item.point.capacityTokens, weight: item.weight })), window),
+    costUsd: quotaCapacityEstimate(recent.map(item => ({ value: item.priced ? item.point.capacityCostUsd : 0, weight: item.weight })), window),
+    confidence: recent.at(-1)!.point.current ? recent.at(-1)!.point.confidence : "low" as const,
+    offPoints: active.offPoints,
+    suspectedPoints: active.suspectedPoints,
+    basis: recent.length > 1 || !recent[0].point.current ? "recent" as const : "current" as const,
+  } : undefined;
   return { history, current };
 }
 

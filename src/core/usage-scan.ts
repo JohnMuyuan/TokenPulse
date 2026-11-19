@@ -1,9 +1,9 @@
 import { normalizeEffort, recordedEffort } from "./model-effort";
 import { normalizeModel } from "./request-verify";
 import fs from "fs";
-import os from "os";
 import path from "path";
-import { dataFile, piDir, readJson, writeJson } from "./paths";
+import { cliDir, authFile } from "./credentials";
+import { dataFile, dshRoot, piDir, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline } from "./login-timeline";
 import { routeEvents, type RouteEvent } from "./route-ledger";
@@ -148,6 +148,7 @@ type FileState = {
   /** Grok：这一轮从什么时候开始（第一段用户消息）、上一轮什么时候结束。给号池分摊找时间范围用（0.3.42）。 */
   turnStartAt?: number;
   lastTurnAt?: number;
+  grokRouteVersion?: number;
   /**
    * 估算速度（0.3.53）：这一次模型调用大概从什么时候开始。Claude Code 是上一条 user（提问或工具结果）/ 上一次回复的时间，
    * Codex 是 turn_context、工具输出或上一次 token_usage_record 的时间。见 estimateOf。
@@ -205,8 +206,9 @@ export type UsageRollups = {
  * 17：流水补记按日志时间戳估算的速度（estimate，0.3.53），Claude Code 和 Codex 重扫一遍。
  */
 const STATE_VERSION = 17;
+const GROK_ROUTE_VERSION = 1;
 const HOUR_MS = 3_600_000;
-/** 一次最多读多少字节，免得单个超大文件把内存吃满。剩下的下一轮接着读。 */
+/** 常规批次大小。单个 JSONL 事件超出时，续读到该行结束。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
 
 function rollupFile() {
@@ -297,10 +299,9 @@ const num = (value: unknown) => {
 
 
 function configOfficial(): Record<Kind, boolean | undefined> {
-  const home = os.homedir();
   let claude = true;
   try {
-    const settings = JSON.parse(fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8")) as {
+    const settings = JSON.parse(fs.readFileSync(path.join(cliDir("claude"), "settings.json"), "utf8")) as {
       env?: Record<string, unknown>;
     };
     const env = settings.env ?? {};
@@ -314,7 +315,7 @@ function configOfficial(): Record<Kind, boolean | undefined> {
   }
   let grok = true;
   try {
-    const toml = fs.readFileSync(path.join(home, ".grok", "config.toml"), "utf8");
+    const toml = fs.readFileSync(path.join(cliDir("grok"), "config.toml"), "utf8");
     grok = !/^\s*base_url\s*=\s*["'][^"']+["']/m.test(toml);
   } catch {
     // 没有 config.toml 同上
@@ -377,7 +378,7 @@ function parseCodexProviders(toml: string) {
 /** 本机 Codex 是不是 ChatGPT 登录（而不是 API Key）。 */
 function codexUsesChatGptLogin() {
   try {
-    const auth = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".codex", "auth.json"), "utf8")) as {
+    const auth = JSON.parse(fs.readFileSync(authFile("chatgpt"), "utf8")) as {
       auth_mode?: string;
       OPENAI_API_KEY?: string | null;
       tokens?: { access_token?: string };
@@ -400,7 +401,7 @@ type CodexAuth = {
 function codexAuthContext(remembered: Record<string, boolean>): CodexAuth {
   let rules = new Map<string, CodexProviderRule>();
   try {
-    rules = parseCodexProviders(fs.readFileSync(path.join(os.homedir(), ".codex", "config.toml"), "utf8"));
+    rules = parseCodexProviders(fs.readFileSync(path.join(cliDir("chatgpt"), "config.toml"), "utf8"));
   } catch {
     // 没有 config.toml：按记住的判定 + 内置名字 + 登录方式来
   }
@@ -496,13 +497,12 @@ function walkJsonl(dir: string, out: string[] = [], depth = 0) {
 }
 
 function roots(): { kind: Kind; dir: string }[] {
-  const home = os.homedir();
   return [
-    { kind: "claude-code", dir: path.join(home, ".claude", "projects") },
-    { kind: "codex", dir: path.join(home, ".codex", "sessions") },
-    { kind: "grok-build", dir: path.join(home, ".grok", "sessions") },
+    { kind: "claude-code", dir: path.join(cliDir("claude"), "projects") },
+    { kind: "codex", dir: path.join(cliDir("chatgpt"), "sessions") },
+    { kind: "grok-build", dir: path.join(cliDir("grok"), "sessions") },
     // DeepSeek Harness（0.3.42）：~/.dsh/sessions/<工作目录>/session-<id>/session.v4.jsonl.zstd
-    { kind: "deepseek-harness", dir: path.join(home, ".dsh", "sessions") },
+    { kind: "deepseek-harness", dir: path.join(dshRoot(), "sessions") },
     { kind: "pi", dir: path.join(piDir(), "sessions") },
   ];
 }
@@ -876,8 +876,9 @@ function scanFile(
     state.callStartAt = undefined;
     state.piForkAt = undefined;
   };
-  if (state.v !== STATE_VERSION) {
+  if (state.v !== STATE_VERSION || (kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION)) {
     state.v = STATE_VERSION;
+    if (kind === "grok-build") state.grokRouteVersion = GROK_ROUTE_VERSION;
     // 结构升级整份重算，同时清掉旧账号归属（重读的流水扫完会整理去重）。
     reset();
   }
@@ -889,18 +890,44 @@ function scanFile(
     state.mtimeMs = stat.mtimeMs;
     return false;
   }
-  const end = Math.min(stat.size, state.offset + MAX_CHUNK);
   let text = "";
+  let plainBytes = 0;
   // 压缩的会话文件（DeepSeek Harness）：偏移按压缩后的字节算，一次推进到最后一个完整的帧
   let packed = -1;
   try {
     const fd = fs.openSync(file, "r");
     try {
-      const length = end - state.offset;
+      const length = Math.min(MAX_CHUNK, stat.size - state.offset);
       const buffer = Buffer.allocUnsafe(length);
       const read = fs.readSync(fd, buffer, 0, length, state.offset);
       if (kind === "deepseek-harness") { const frames = zstdFrames(buffer.subarray(0, read)); text = frames.text; packed = frames.consumed; }
-      else text = buffer.subarray(0, read).toString("utf8");
+      else {
+        const first = buffer.subarray(0, read);
+        const lastBreak = first.lastIndexOf(10);
+        if (lastBreak >= 0) {
+          plainBytes = lastBreak + 1;
+          text = first.toString("utf8", 0, plainBytes);
+        } else {
+          // 一个完整的 JSON 事件可能超过常规批次，只续读到这一行的换行。
+          const parts = [first];
+          let position = state.offset + read;
+          while (position < stat.size) {
+            const next = Buffer.allocUnsafe(Math.min(1024 * 1024, stat.size - position));
+            const bytes = fs.readSync(fd, next, 0, next.length, position);
+            if (!bytes) break;
+            const chunk = next.subarray(0, bytes);
+            const newline = chunk.indexOf(10);
+            if (newline >= 0) {
+              parts.push(chunk.subarray(0, newline + 1));
+              plainBytes = position - state.offset + newline + 1;
+              text = Buffer.concat(parts, plainBytes).toString("utf8");
+              break;
+            }
+            parts.push(chunk);
+            position += bytes;
+          }
+        }
+      }
     } finally {
       fs.closeSync(fd);
     }
@@ -910,7 +937,7 @@ function scanFile(
   // 最后一行可能只读了一半：留到下次，偏移只推进到最后一个完整换行。
   const lastBreak = text.lastIndexOf(String.fromCharCode(10));
   if (lastBreak < 0) return false;
-  const consumed = packed >= 0 ? packed : Buffer.byteLength(text.slice(0, lastBreak + 1), "utf8");
+  const consumed = packed >= 0 ? packed : plainBytes;
   const source = SOURCES[kind];
   let touched = false;
   let lineEnd = state.offset;
@@ -1069,15 +1096,13 @@ function scanFile(
      * 每一次转发给官方账号的，请求流水记在那一次的时间上、归到那个账号——额度时间线认的是这些时间，
      * 不是轮次结束的那一个点。交给第三方供应商的那一份仍然不归任何官方账号。总量不变。
      */
-    let poolEvents: RouteEvent[] = [], otherWeight = 0;
+    let turnEvents: RouteEvent[] = [];
+    const turnModels = turnRows.map((row) => normalizeModel(row.model));
     if (kind === "grok-build" && turnRows.length) {
       const at = turnRows[0].at;
       // 没记下这一轮什么时候开始的：只往前看 10 分钟，宁可少归也不把更早的号池请求算进来
       const from = Math.max(state.turnStartAt ?? Math.max(state.lastTurnAt ?? 0, at - 10 * 60_000), at - 6 * HOUR_MS);
-      for (const event of routeEvents("grok", from - 2000, at + 2000)) {
-        if (event.account) poolEvents.push(event);
-        else otherWeight += event.weight;
-      }
+      turnEvents = routeEvents("grok", from - 2000, at + 2000);
       state.lastTurnAt = at;
       state.turnStartAt = undefined;
     }
@@ -1103,6 +1128,16 @@ function scanFile(
       const routed = !row.compaction ? routedAccount(KIND_OF_SOURCE[source], row.at, accountContext.labels, row.responseId) : null;
       const baseId = row.id || `${row.at}:${model}:${row.usage.input}:${row.usage.output}`;
       // 号池这一轮里的每一次官方转发各成一条；第一条沿用原来的 id，重扫时替掉按整轮记的那一条
+      let matchingEvents: RouteEvent[] = [];
+      if (!row.compaction && turnEvents.length) {
+        const normalized = normalizeModel(model);
+        if (turnRows.length === 1) matchingEvents = turnEvents;
+        else if (turnModels.filter((candidate) => candidate === normalized).length === 1) {
+          matchingEvents = turnEvents.filter((event) => normalizeModel(event.model) === normalized);
+        }
+      }
+      const poolEvents = matchingEvents.filter((event) => event.account);
+      const otherWeight = matchingEvents.reduce((sum, event) => sum + (event.account ? 0 : event.weight), 0);
       const poolSplit = !routed && !row.compaction && poolEvents.length > 0;
       const pieces: { at: number; usage: UsageBucket; id: string; account?: string; basis?: "response-id" | "route-window"; routeEventId?: string; effort?: string; effortSource?: string }[] = [];
       if (poolSplit) {
@@ -1197,7 +1232,7 @@ function scanFile(
  * 费用交给统计时按型号估；不归任何官方账号（Antigravity 的额度按模型分组单独看，见 quota.ts）。
  * 型号就是请求的型号，没有上游返回的型号，核验显示无法核对。
  */
-const ANTIGRAVITY_STATE_VERSION = 7;
+const ANTIGRAVITY_STATE_VERSION = 8;
 
 /** 之前没对上显示名的型号，现在有标签了：这个对话要整份重算一遍，型号和档位才对。 */
 export function antigravityNeedsRelabel(state: FileState, labels: Record<string, string>) {
@@ -1206,26 +1241,26 @@ export function antigravityNeedsRelabel(state: FileState, labels: Record<string,
 
 function scanAntigravity(file: string, state: FileState, out: ScanOutput, workspaces: Map<string, string>, labels: Record<string, string>) {
   const stamp = antigravityStamp(file);
-  if (!stamp) return false;
-  if (state.v !== STATE_VERSION || state.agyV !== ANTIGRAVITY_STATE_VERSION || antigravityNeedsRelabel(state, labels)) {
-    if (state.offset > 0) out.rescanned = true;
-    const resetModels = state.agyV !== ANTIGRAVITY_STATE_VERSION ? {} : (state.agyModels ?? {});
-    Object.assign(state, { v: STATE_VERSION, agyV: ANTIGRAVITY_STATE_VERSION, offset: 0, days: {}, hours: {}, accountHours: {}, routedHours: {}, agyUnlabeled: [], agyModels: resetModels });
-  }
+  if (!stamp) return null;
+  let reset = state.v !== STATE_VERSION || state.agyV !== ANTIGRAVITY_STATE_VERSION || antigravityNeedsRelabel(state, labels);
+  const models = state.agyV === ANTIGRAVITY_STATE_VERSION ? (state.agyModels ?? {}) : {};
   let read: ReturnType<typeof readAntigravityGenerations>;
   try {
-    read = readAntigravityGenerations(file, state.offset, state.agyModels ?? {});
+    read = readAntigravityGenerations(file, reset ? 0 : state.offset, models);
+    // 步数比上次少：对话被删了重建或被回退过，重新读整份。
+    if (!reset && read.total < state.offset) {
+      read = readAntigravityGenerations(file, 0, models);
+      reset = true;
+    }
   } catch {
     // 正在写（SQLITE_BUSY）、文件损坏、Node 太老没有 node:sqlite：这一轮不动，size 不更新，下次再试
-    return false;
+    return null;
   }
-  // 步数比上次读到的还少：对话被删了重建、或者被回退过，之前记的账对不上了，整份重算
-  if (read.total < state.offset) {
-    out.rescanned = true;
-    Object.assign(state, { offset: 0, days: {}, hours: {}, accountHours: {}, routedHours: {} });
-    try { read = readAntigravityGenerations(file, 0, state.agyModels ?? {}); } catch { return false; }
+  if (reset) {
+    if (state.offset > 0) out.rescanned = true;
+    Object.assign(state, { v: STATE_VERSION, agyV: ANTIGRAVITY_STATE_VERSION, offset: 0, days: {}, hours: {}, accountHours: {}, routedHours: {}, agyUnlabeled: [] });
   }
-  state.agyModels = { ...(state.agyModels ?? {}), ...read.models };
+  state.agyModels = { ...models, ...read.models };
   const conversation = path.basename(file, ".db");
   const source = SOURCES.antigravity;
   const cwd = workspaces.get(conversation);
@@ -1315,7 +1350,8 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
         const needsAccountHours =
           state.official === true &&
           (!state.accountHours || (Object.keys(state.accountHours).length === 0 && Object.keys(state.hours ?? {}).length > 0));
-        if (stat && state.v === STATE_VERSION && state.offset >= stat.size && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours) continue;
+        const needsGrokReplay = kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION;
+        if (stat && state.v === STATE_VERSION && state.offset >= stat.size && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours && !needsGrokReplay) continue;
         // 缺按账号的小时账：得从头重读这个文件才补得出来。只把它交给 scanFile 的话，偏移没变它直接返回，永远补不上
         if (needsAccountHours) state.v = 0;
         if (scanFile(file, kind, state, out, accountContext)) changed += 1;
@@ -1323,6 +1359,9 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     }
     // Antigravity：每个对话一个 SQLite（见 scanAntigravity）
     const agyFiles = antigravityConversationFiles();
+    const conversationKey = (file: string) => path.basename(file).toLowerCase();
+    const selectedAgyFiles = new Set(agyFiles.map(conversationKey));
+    const agyRollupFiles = new Map<string, string>();
     let workspaces: Map<string, string> | null = null;
     const labels = agyFiles.length ? readModelLabels() : {};
     for (const file of agyFiles) {
@@ -1332,9 +1371,32 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
       state.kind = "antigravity";
       state.official = official.antigravity;
       const stamp = antigravityStamp(file);
-      if (!stamp || (state.v === STATE_VERSION && state.agyV === ANTIGRAVITY_STATE_VERSION && stamp.size === state.size && stamp.mtimeMs === state.mtimeMs && !antigravityNeedsRelabel(state, labels))) continue;
+      if (!stamp) continue;
+      if (state.v === STATE_VERSION && state.agyV === ANTIGRAVITY_STATE_VERSION && stamp.size === state.size && stamp.mtimeMs === state.mtimeMs && !antigravityNeedsRelabel(state, labels)) {
+        agyRollupFiles.set(conversationKey(file), file);
+        continue;
+      }
       workspaces ??= antigravityWorkspaces();
-      if (scanAntigravity(file, state, out, workspaces, labels)) changed += 1;
+      const scanned = scanAntigravity(file, state, out, workspaces, labels);
+      if (scanned !== null) agyRollupFiles.set(conversationKey(file), file);
+      if (scanned) changed += 1;
+    }
+    // 桌面和 CLI 可能保存同一个对话；同一个 UUID 只保留当前可读库的账。
+    for (const [file, state] of Object.entries(rollups.files)) {
+      if (state.kind !== "antigravity") continue;
+      const key = conversationKey(file);
+      if (selectedAgyFiles.has(key)) continue;
+      const previous = agyRollupFiles.get(key);
+      const prior = previous ? rollups.files[previous] : undefined;
+      if (!prior || state.offset > prior.offset || (state.offset === prior.offset && state.mtimeMs > prior.mtimeMs)) agyRollupFiles.set(key, file);
+    }
+    for (const [file, state] of Object.entries(rollups.files)) {
+      if (state.kind !== "antigravity") continue;
+      const selected = agyRollupFiles.get(conversationKey(file));
+      if (selected && selected !== file) {
+        delete rollups.files[file];
+        out.rescanned = true;
+      }
     }
     // CLI 自己清掉的老会话：账留着（那些 token 确实花过），只是不会再更新。
     for (const key of Object.keys(rollups.files)) {
@@ -1354,7 +1416,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     }
     appendRequests(out.records);
     if (out.rescanned) {
-      compactRequests();
+      compactRequests(out.records);
       rollups.requestsCompacted = 1;
     }
     rollups.scannedAt = Date.now();

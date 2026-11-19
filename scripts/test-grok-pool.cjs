@@ -134,6 +134,40 @@ try {
   const third = Object.values(readRollups().files).find(file => file.kind === 'grok-build');
   assert.deepEqual(third.routedHours, after.routedHours);
 
+  forward(sec(900), 'grok:acc-a', 900, 0, { requestModel: 'grok-4.7' });
+  forward(sec(901), 'grok:acc-b', 100, 0, { requestModel: 'grok-4.7', returnedModel: 'grok-4.6' });
+  forward(sec(902), 'grok:acc-b', 100, 0, { requestModel: 'grok-4.6' });
+  const multiple = turnDone(sec(930), 'p6', 0, 0);
+  multiple.params.update.usage.modelUsage = {
+    'grok-4.7-build': { inputTokens: 900, modelCalls: 1 },
+    'grok-4.6-build': { inputTokens: 200, modelCalls: 1 },
+  };
+  fs.appendFileSync(session, [userMessage(sec(890)), multiple].map(row => JSON.stringify(row)).join('\n') + '\n');
+  scanLocalUsage();
+  const split = ask({ since: sec(890), until: sec(940) });
+  assert.deepEqual(split.map(row => [row.model, row.account?.id, row.input]), [
+    ['grok-4.7-build', 'grok:acc-a', 900],
+    ['grok-4.6-build', 'grok:acc-b', 100],
+    ['grok-4.6-build', 'grok:acc-b', 100],
+  ]);
+  assert.equal(split.reduce((total, row) => total + row.calls, 0), 2, '分摊用量不会凭空添加调用次数');
+  pass('multi-model turns only attribute matching forwards and conserve reported calls');
+
+  const { appendRequests } = require(path.join(build, 'request-log.js'));
+  const obsolete = {
+    at: sec(901), kind: 'grok-build', file: session, model: 'grok-4.7-build', input: 80, output: 0,
+    cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, calls: 0, routedAccount: 'grok:acc-b', routedAccountBasis: 'route-window',
+  };
+  const event = ledger.routeEvents('grok', sec(901), sec(901))[0];
+  appendRequests([{ ...obsolete, id: `p6:grok-4.7-build~${event.id}`, routeEventId: event.id }]);
+  const oldRollups = readRollups();
+  delete oldRollups.files[session].grokRouteVersion;
+  require(path.join(build, 'usage-scan.js')).writeRollups(oldRollups);
+  scanLocalUsage();
+  assert.deepEqual(ask({ since: sec(890), until: sec(940) }), split, '旧账本重扫后清除过时明细');
+  assert.equal(scanLocalUsage().records.length, 0, '升级只重扫一次');
+  pass('legacy Grok replay replaces obsolete split rows without affecting the next scan');
+
   console.log(`${checks}/${checks} grok pool checks passed`);
 } catch (error) {
   console.error('FAIL', error);

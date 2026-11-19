@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { StringDecoder } from "node:string_decoder";
 import { estimateCost, priceOf } from "./model-pricing";
 import { analyzeCache, type CacheAnalysis } from "./cache-analysis";
 import { dataFile, readJson } from "./paths";
@@ -120,7 +121,18 @@ export function appendRequests(records: RequestRecord[]) {
     byMonth.set(month, lines);
   }
   fs.mkdirSync(requestDir(), { recursive: true });
-  for (const [month, lines] of byMonth) fs.appendFileSync(path.join(requestDir(), `${month}.jsonl`), lines.join("\n") + "\n");
+  for (const [month, lines] of byMonth) {
+    const fd = fs.openSync(path.join(requestDir(), `${month}.jsonl`), "a+");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const last = Buffer.alloc(1);
+      const needsSeparator = size > 0 && fs.readSync(fd, last, 0, 1, size - 1) === 1 && last[0] !== 10;
+      // 进程中断留下的半行不能吞掉重放批次的第一条。
+      fs.writeFileSync(fd, (needsSeparator ? "\n" : "") + lines.join("\n") + "\n");
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
 }
 
 function monthFiles() {
@@ -144,10 +156,11 @@ function* streamMonth(name: string, hint?: string, skipAntigravity = false): Gen
   }
   try {
     const chunk = Buffer.allocUnsafe(256 * 1024);
+    const decoder = new StringDecoder("utf8");
     let carry = "";
     let n = 0;
     while ((n = fs.readSync(fd, chunk, 0, chunk.length, null)) > 0) {
-      const text = carry + chunk.toString("utf8", 0, n);
+      const text = carry + decoder.write(chunk.subarray(0, n));
       let start = 0;
       let idx = text.indexOf("\n", start);
       while (idx !== -1) {
@@ -164,6 +177,7 @@ function* streamMonth(name: string, hint?: string, skipAntigravity = false): Gen
       }
       carry = text.slice(start);
     }
+    carry += decoder.end();
     if (carry.startsWith("{") && (!hint || carry.includes(hint)) && (!skipAntigravity || !carry.includes('"kind":"antigravity"'))) {
       try {
         yield JSON.parse(carry) as RequestRecord;
@@ -192,7 +206,7 @@ function readFirstAt(firstName?: string): number | undefined {
     }
     let min: number | undefined;
     for (const r of streamMonth(firstName)) {
-      if (min == null || r.at < min) min = r.at;
+      if (Number.isFinite(r.at) && (min == null || r.at < min)) min = r.at;
     }
     firstAtCache = { name: firstName, size: st.size, mtimeMs: st.mtimeMs, firstAt: min };
     return min;
@@ -205,11 +219,24 @@ function readFirstAt(firstName?: string): number | undefined {
  * 去重整理。会话文件被重写 / 截断、或者账本结构升级时，那个文件会从头重读，
  * 已经记过的请求会被再追加一遍 —— 这时整理一次，同一个键只留最后一条。
  */
-export function compactRequests() {
+export function compactRequests(replayed: RequestRecord[] = []) {
+  const replacements = new Map<string, Set<string>>();
+  const groupOf = (id: string) => id.split("~", 1)[0];
+  for (const record of replayed) {
+    if (record.kind !== "grok-build" || record.compaction) continue;
+    const group = groupOf(record.id);
+    const keys = replacements.get(group) ?? new Set<string>();
+    keys.add(`${monthOf(record.at)}.jsonl\u0000${record.id}`);
+    replacements.set(group, keys);
+  }
   for (const name of monthFiles()) {
     const records = readMonth(name);
     const unique = new Map<string, RequestRecord>();
-    for (const record of records) unique.set(keyOf(record), record);
+    for (const record of records) {
+      // 同一轮重分摊后，上一版可能在别的月份或使用了已失效的拆分后缀。
+      const keys = record.kind === "grok-build" && !record.compaction ? replacements.get(groupOf(record.id)) : undefined;
+      if (!keys || keys.has(`${name}\u0000${record.id}`)) unique.set(keyOf(record), record);
+    }
     if (unique.size === records.length) continue;
     const file = path.join(requestDir(), name);
     const tmp = `${file}.${process.pid}.tmp`;
@@ -450,13 +477,14 @@ function toCapacityRow(record: RequestRecord, fileOfficial: boolean | undefined,
     at: record.at,
     source: sourceOf(record),
     model: record.model,
+    effort: record.effort,
     session: "",
     ...usage,
     reasoning: record.reasoning,
     tokens: record.input + record.output,
     costUsd: record.costUsd || estimateCost(record.model, usage),
     priced: record.costUsd > 0 || priceOf(record.model) !== null,
-    calls: record.calls || 1,
+    calls: record.calls ?? 1,
     official: true,
     account,
     status: "unverified",
@@ -510,7 +538,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     tokens: record.input + record.output,
     costUsd: record.costUsd || estimateCost(record.model, usage),
     priced: record.costUsd > 0 || priceOf(record.model) !== null,
-    calls: record.calls || 1,
+    calls: record.calls ?? 1,
     official,
     account,
     status: verdict.status,
@@ -667,7 +695,6 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const fromMonth = query.from.slice(0, 7);
   const toMonth = query.to.slice(0, 7);
   const names = monthFiles();
-  const firstName = names[0];
   const official = attribution();
   const skipCc = Boolean(query.capacityOnly || query.source === "Antigravity");
   const cc = ccSwitchRecords(official.covered, skipCc);
@@ -759,7 +786,13 @@ export function queryRequests(query: RequestQuery): RequestPage {
   let tokens = 0;
   let costUsd = 0;
   const matched: RequestRow[] = [];
-  const firstAt = query.capacityOnly ? undefined : readFirstAt(firstName);
+  let firstAt: number | undefined;
+  if (!query.capacityOnly) {
+    for (const name of names) {
+      firstAt = readFirstAt(name);
+      if (firstAt !== undefined) break;
+    }
+  }
   const cmp = (a: RequestRow, b: RequestRow) =>
     query.sort === "tokens" ? b.tokens - a.tokens || b.at - a.at : query.sort === "cost" ? b.costUsd - a.costUsd || b.at - a.at : b.at - a.at;
   const pageSize = Math.max(1, query.pageSize || 20);

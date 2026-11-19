@@ -367,7 +367,7 @@ function shareIndex(name: string): Map<string, ShareRow[]> {
       const id = typeof row.id === "string" && row.id ? row.id : `${at}:${list.length}`;
       list.push({
         at, account: typeof row.account === "string" ? row.account : "", weight, id,
-        model: String(row.requestModel || row.model || "").slice(0, 120),
+        model: String(row.returnedModel || row.requestModel || row.model || "").slice(0, 120),
         effort: typeof row.effort === "string" ? row.effort.slice(0, 20) : "",
         input, output, cacheRead: Number(row.cacheRead) || 0,
       });

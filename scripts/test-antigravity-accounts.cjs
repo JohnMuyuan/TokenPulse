@@ -458,13 +458,36 @@ function httpGet(url) {
     assert.equal(bobOnly.rows[0].key, rowBob.key);
     assert.ok(dayStr);
 
+    mod.rememberAgyAccount({ email: 'bob@example.com', label: 'bob@example.com', credential: { token: 'fixture-b', expiresAt: t0 + 7200_000 } }, true, t0);
+    const { AntigravityQuota } = require('../build/main/antigravity-quota');
+    const refreshed = [];
+    let begin, release;
+    const started = new Promise((resolve) => { begin = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const quota = new AntigravityQuota({
+      now: () => t0, fetcher: async () => null,
+      cloudFetcher: async (account) => {
+        refreshed.push(account.id);
+        if (account.id === aliceId) { begin(); await held; }
+        return { status: { plan: 'Pro', groups: [], labels: {} } };
+      },
+    });
+    const alicePoll = quota.refresh(true, aliceId);
+    await started;
+    const sameAlicePoll = quota.refresh(true, aliceId);
+    const bobPoll = quota.refresh(true, bobId);
+    release();
+    await Promise.all([alicePoll, sameAlicePoll, bobPoll]);
+    assert.deepEqual(refreshed, [aliceId, bobId], '两个账号分别刷新，同一账号合并');
+    pass('concurrent manual refreshes coalesce only for the same account');
+
     // 零配置（antigravity-accounts.json 为空）：只显示脱敏「本机 Antigravity」，不泄漏邮箱
     fs.rmSync(path.join(dataDir, 'antigravity-accounts.json'), { force: true });
     const zeroRes = reqLog.queryRequests({ from: '2026-01-01', to: '2027-01-01', source: 'Antigravity', status: 'all', search: '', sort: 'time', page: 0, pageSize: 20, all: true });
     assert.equal(zeroRes.rows.find((r) => r.key === rowBob.key).account.label, '本机 Antigravity');
     pass('Antigravity multi-account usage attribution, official channel, account filter, and zero-config privacy fallback');
 
-    console.log(`\n${checks}/7 antigravity multi-account checks passed`);
+    console.log(`\n${checks}/8 antigravity multi-account checks passed`);
   } catch (err) {
     console.error(err);
     process.exitCode = 1;

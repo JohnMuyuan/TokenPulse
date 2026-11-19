@@ -71,9 +71,9 @@ export type WindowReport = {
   usedTokens: number;
   usedCostUsd: number;
   /** 整个窗口（100%）大约折合多少。 */
-  capacity?: { tokens: number; costUsd: number; confidence: Confidence };
+  capacity?: { tokens: number; costUsd: number; confidence: Confidence; basis?: "current" | "recent" };
   /** 账号池百分比无法直接分配给本机日志；原始消耗保持不变。 */
-  capacityReason?: "unattributed";
+  capacityReason?: "unattributed" | "insufficient-clean";
 };
 
 export type Confidence = "low" | "medium" | "high";
@@ -97,6 +97,10 @@ export type CapacityPoint = {
   costUsd: number;
   capacityTokens: number;
   capacityCostUsd: number;
+  cleanPoints?: number;
+  offPoints?: number;
+  markedPoints?: number;
+  suspectedPoints?: number;
   confidence: Confidence;
   /** 当前还没结束的窗口。 */
   current: boolean;
@@ -249,6 +253,49 @@ export function confidenceOf(pct: number): Confidence {
 /** 折算整窗容量至少要已用这么多：Claude 的百分比是整数，1% 时误差能放大几十倍。 */
 export const MIN_CAPACITY_PCT = 2;
 
+export function weightedMedian(pairs: [number, number][]): number {
+  const list = pairs.filter(([value, weight]) => Number.isFinite(value) && weight > 0).sort((a, b) => a[0] - b[0]);
+  if (!list.length) return 0;
+  const half = list.reduce((sum, [, weight]) => sum + weight, 0) / 2;
+  let acc = 0;
+  for (let i = 0; i < list.length; i++) {
+    acc += list[i][1];
+    if (Math.abs(acc - half) < 1e-9 && i + 1 < list.length) return (list[i][0] + list[i + 1][0]) / 2;
+    if (acc > half) return list[i][0];
+  }
+  return list[list.length - 1][0];
+}
+
+/**
+ * 稳健近期加权平均（抗离群窗口 + 随当前窗口平滑更新）：
+ * - 越新的窗口权重越高（周窗口每往前一周期 ×0.55，5 小时窗口 ×0.85），避免新周期长时间被旧周期钉死；
+ * - 先以近期加权中位数确定稳健锚点，剔除偏离超过 2.5 倍的极端离群历史窗口（如早先全用低价 Flash 的窗口）；
+ * - 对保留窗口做加权平均，使当前进行中的窗口每次产生新用量时整窗折算都能平滑实时跟进。
+ */
+export function robustRecencyEstimate(
+  items: { value: number; weight: number }[],
+  decay: number,
+): number {
+  const valid = items
+    .map((item, idx) => ({
+      value: item.value,
+      weight: item.weight * Math.pow(decay, items.length - 1 - idx),
+    }))
+    .filter((item) => Number.isFinite(item.value) && item.value > 0 && item.weight > 0);
+  if (!valid.length) return 0;
+  if (valid.length === 1) return valid[0].value;
+  const anchor = weightedMedian(valid.map((item) => [item.value, item.weight]));
+  if (anchor <= 0) return valid[valid.length - 1].value;
+  const kept = valid.filter((item) => {
+    const ratio = item.value / anchor;
+    return ratio >= 0.4 && ratio <= 2.5;
+  });
+  const pool = kept.length ? kept : valid;
+  const sumW = pool.reduce((s, item) => s + item.weight, 0);
+  if (sumW <= 0) return anchor;
+  return pool.reduce((s, item) => s + item.value * item.weight, 0) / sumW;
+}
+
 /**
  * 各家「重置卡」（用户自己用的、或者官方时不时送的一次重置）的表现不一样：
  * - **ChatGPT / Codex：重置日期跟着变** —— 用了之后已用归零，重置日期改成「现在 + 一个周期」，等于提前开了一个新窗口。
@@ -356,14 +403,14 @@ export function windowSegments(samples: QuotaSample[], kind: "week" | "five", st
       }
       startAt = Math.max(startAt, lastAt);
     }
-    // 同一组里的回落：重置日期没变的重置卡；若 1~2 帧（30 分钟内）立刻反弹回原值附近，判定为瞬时接口抖动而非重置卡
+    // 同一重置时间的小幅回落保留在窗口内。接近归零或大幅下降才可能是重置卡。
     let part: Point[] = [];
     let partStart = startAt;
     let partStarted = startedByReset;
     for (let i = 0; i < group.list.length; i += 1) {
       const point = group.list[i];
       const prevPt = part.at(-1);
-      if (prevPt && point.pct < prevPt.pct - 0.5) {
+      if (prevPt && ((prevPt.pct >= 2 && point.pct <= 1 && prevPt.pct - point.pct >= 1.5) || prevPt.pct - point.pct > 3)) {
         const rebound = group.list
           .slice(i + 1, i + 3)
           .some((p) => p.at - point.at < GLITCH_SPAN_MS && p.pct >= prevPt.pct - 1);
@@ -449,7 +496,7 @@ function activeShareOf(rows: HourRow[], startAt: number | undefined, now: number
  * 按型号的周额度只算这个型号的请求：额度接口给的是显示名（Fable、Claude Fable、Fable 5.2 都可能），
  * 日志里是 claude-fable-5-1 这种。取显示名里第一个不是 claude 的英文词当家族名，型号名按非字母切开后含这个词才算。
  */
-export function rowsOfModelFamily(rows: HourRow[], name: string) {
+export function rowsOfModelFamily<T extends { model: string }>(rows: T[], name: string) {
   const family = name.toLowerCase().replace(/\bclaude\b/g, " ").match(/[a-z]+/)?.[0];
   if (!family) return [];
   return rows.filter((row) => row.model.toLowerCase().split(/[^a-z]+/).includes(family));

@@ -33,11 +33,12 @@ const count = target => { const db = new DatabaseSync(target, { readOnly: true }
 const tags = target => { const db = new DatabaseSync(target, { readOnly: true }); try { return db.prepare('select step_payload p from steps order by idx').all().map(r => Buffer.from(r.p).toString()); } finally { db.close(); } };
 
 (async () => {
+  let ideDb;
   try {
     const A = 'aaaaaaaa-3333-4000-8000-000000000001', NATIVE = 'bbbbbbbb-3333-4000-8000-000000000002', BLANK = 'cccccccc-3333-4000-8000-000000000003';
 
     // 1. 桌面端对话（桌面端开着、内容还在 -wal 里）→ 导入 CLI，历史完整，附件跟着过去
-    const ideDb = makeDb(file(ide, A), 4);
+    ideDb = makeDb(file(ide, A), 4);
     fs.mkdirSync(path.join(ide, 'brain', A), { recursive: true });
     fs.writeFileSync(path.join(ide, 'brain', A, 'implementation_plan.md'), '# plan');
     fs.mkdirSync(path.join(ide, 'annotations'), { recursive: true });
@@ -56,9 +57,23 @@ const tags = target => { const db = new DatabaseSync(target, { readOnly: true })
 
     // 3. 桌面端接着聊了、CLI 那份没动 → 刷新
     addSteps(ideDb, 2, 'ide');
-    assert.equal(await a.prepareAntigravityCliConversation(A), 'imported');
+    const rename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (String(from).endsWith('.tmp') && to === file(cli, A)) throw Object.assign(new Error('fixture: replacing the CLI file failed'), { code: 'EIO' });
+      return rename(from, to);
+    };
+    try {
+      await assert.rejects(a.prepareAntigravityCliConversation(A), /replacing the CLI file failed/);
+      assert.equal(count(file(cli, A)), 4, '替换失败时旧 CLI 对话仍然可读');
+    } finally {
+      fs.renameSync = rename;
+    }
+    pass('failed replacement preserves the previous CLI database');
+    const first = a.prepareAntigravityCliConversation(A);
+    const simultaneous = a.prepareAntigravityCliConversation(A);
+    assert.deepEqual(await Promise.all([first, simultaneous]), ['imported', 'imported']);
     assert.equal(count(file(cli, A)), 6);
-    pass('desktop progress refreshes an untouched CLI copy');
+    pass('simultaneous imports of one conversation share a successful refresh');
 
     // 4. CLI 里接着聊过 → 保留 CLI 那份，不覆盖
     const cliDb = new DatabaseSync(file(cli, A));
@@ -70,6 +85,7 @@ const tags = target => { const db = new DatabaseSync(target, { readOnly: true })
     assert.equal(tags(file(cli, A)).at(-1), 'cli-6');
     pass('CLI copy with its own new steps is kept');
     ideDb.close();
+    ideDb = undefined;
 
     // 5. CLI 自己的对话（桌面端没有）→ native，什么都不动
     makeDb(file(cli, NATIVE), 2, 'cli').close();
@@ -101,6 +117,7 @@ const tags = target => { const db = new DatabaseSync(target, { readOnly: true })
     console.error(error);
     process.exitCode = 1;
   } finally {
+    ideDb?.close();
     try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 句柄晚一点才释放 */ }
   }
 })();

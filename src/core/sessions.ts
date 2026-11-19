@@ -1,9 +1,8 @@
 import { createHash } from "crypto";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { cliDir } from "./credentials";
-import { dataFile, piDir, readJson, writeJson } from "./paths";
+import { dataFile, dshRoot, piDir, readJson, writeJson } from "./paths";
 import { zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
@@ -962,9 +961,6 @@ function parseGrok(file: string): Parsed | null {
 /* ---------------- DeepSeek Harness ---------------- */
 
 /** 测试把会话目录指到临时文件夹。正式运行读用户主目录下的 .dsh。 */
-export function dshRoot() {
-  return process.env.TOKENPULSE_DSH_HOME || path.join(os.homedir(), ".dsh");
-}
 
 function blockText(content: unknown, keep: (type: string) => boolean) {
   if (!Array.isArray(content)) return "";

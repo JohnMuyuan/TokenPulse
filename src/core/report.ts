@@ -1,5 +1,5 @@
 import { estimateCost, priceOf } from "./model-pricing";
-import { analyzeAccount, ACCOUNT_KINDS, type AccountKind, type AccountReport, type HourRow } from "./quota-monitor";
+import { analyzeAccount, ACCOUNT_KINDS, rowsOfModelFamily, type AccountKind, type AccountReport, type HourRow, type WindowReport } from "./quota-monitor";
 import { readQuotaChecks, readQuotaHistory } from "./quota-history";
 import type { RequestRow } from "./request-log";
 import { accountLabels } from "./login-timeline";
@@ -338,7 +338,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   const localOnly = new Set(localOnlyAccounts());
   const pressure = readPressurePrefs();
   /*
-   * 共享额度的账号（默认）：容量只用「同期有本机请求」的采样区间折算，本机以外的涨幅和用户标注的时段不参与。
+   * 共享额度的账号（默认）：用可归属的本机采样区间折算，明显异常的同期涨幅也排除。
    * 要逐条请求的时间，按天的账切不出来，所以读一次全部官方请求流水（在 worker 里，几千条约一百毫秒）。
    */
   let official: RequestRow[] | null = null;
@@ -377,14 +377,26 @@ export function buildSnapshot(now = Date.now()): Snapshot {
     return official;
   };
   const allMarks = readMarks();
+  const setCapacity = (window: WindowReport, result: ReturnType<typeof cleanCapacity>) => {
+    const measured = result.current;
+    if (!measured) { window.capacityReason = "insufficient-clean"; return; }
+    if (window.resetAt == null || window.resetAt <= now) return;
+    delete window.capacityReason;
+    window.capacity = { tokens: measured.tokens, costUsd: measured.costUsd, confidence: measured.confidence, basis: measured.basis };
+  };
   const applyClean = (report: AccountReport, kind: AccountKind, samples: QuotaSample[], id: string) => {
     const rowsFor = accountRows(officialRows(), kind, id), marks = allMarks.filter((m) => m.accountId === id);
     const week = cleanCapacity(kind, samples, rowsFor, marks, "week", now), five = cleanCapacity(kind, samples, rowsFor, marks, "five", now);
     report.capacityHistory = { week: week.history, five: five.history };
-    for (const [window, result] of [[report.week, week], [report.five, five]] as const) {
-      if (!window) continue;
-      delete window.capacityReason;
-      if (result.current) window.capacity = { tokens: result.current.tokens, costUsd: result.current.costUsd, confidence: result.current.confidence };
+    if (report.week) setCapacity(report.week, week);
+    if (report.five) setCapacity(report.five, five);
+    for (const modelWeek of report.modelWeeks ?? []) {
+      if (!modelWeek.window) continue;
+      const modelSamples = samples.flatMap(sample => {
+        const match = sample.models?.find(model => model.model === modelWeek.model);
+        return match ? [{ at: sample.at, account: sample.account, plan: sample.plan, week: match.pct, weekReset: match.reset }] : [];
+      });
+      setCapacity(modelWeek.window, cleanCapacity(kind, modelSamples, rowsOfModelFamily(rowsFor, modelWeek.model), marks, "week", now));
     }
     report.capacityBasis = "clean";
     return report;

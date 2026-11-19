@@ -92,6 +92,65 @@ const local=rows.map((r,i)=>({...r,at:now-(51-i*5)*minute}));
   assert.equal(capacity.tokens,6000/3*100,'以前丢了没涨点的空档里的 Token，却把那零点几个点算到下一段，容量只有 100000');
   console.log('PASS clean capacity counts from one official tick to the next: quiet sampling gaps keep accumulating, the first tick after an unclear gap is dropped, a window still at 0% counts from its start');
 }
+{
+  for (const [kind, model] of [['claude', 'claude-sonnet-5'], ['chatgpt', 'gpt-5.5'], ['grok', 'grok-4.6']]) {
+    const accountId = kind + ':mixed';
+    const at = i => now - (5 - i) * 5 * minute;
+    const points = values => values.map((pct, i) => ({ ...samples[0], account: accountId, at: at(i), week: pct, five: pct, plan: 'fixture' }));
+    const use = (i, size = 1) => ({ ...rows[0], key: 'mixed' + i, at: at(i) - minute, model, input: 800 * size, output: 200 * size, tokens: 1000 * size, costUsd: .01 * size, account: { ...rows[0].account, id: accountId } });
+    const entries = [{ model, effort: 'high', origins: ['observed'] }];
+    for (const window of ['week', 'five']) {
+      const history = points([0, 2, 4, 6, 26, 28]);
+      const requests = [1, 2, 3, 4, 5].map(i => use(i));
+      const capacity = cleanCapacity(kind, history, requests, [], window, now);
+      const study = analyzeModelStudy({ kind, accountId, window }, history, requests, entries, now);
+      assert.equal(study.selected.used, 28, '官方总消耗始终保持原值');
+      assert.equal(study.totals.tokens, 5000, '混用可疑区间的本机 Token 仍在明细中');
+      assert.equal(Math.round(capacity.current.tokens), 50_000, kind + ' ' + window + ' 同期异常上涨不拉低容量');
+      assert.equal(Math.round(study.capacities[0].estimatedTokens), 50_000);
+      assert.equal(study.budget.costUsd, .5);
+      assert.equal(study.offMachine.points, 0, '不能把同期异常当作已确认的本机外用量');
+      assert.equal(study.offMachine.suspectedPoints, 20);
+      assert.equal(study.attribution.intervals.find(interval => interval.suspected).kind, 'uncertain');
+      const otherEffort = requests.map((request, i) => i === 3 ? { ...request, effort: 'max' } : request);
+      assert.equal(analyzeModelStudy({ kind, accountId, window }, history, otherEffort, entries, now).offMachine.suspectedPoints, 0, '不同等级不能作为可疑判断的对照');
+      assert.equal(analyzeModelStudy({ kind, accountId, window }, history, requests, entries, now, [], true).offMachine.suspectedPoints, 0, '本机专用声明关闭同期异常过滤');
+
+      const jitter = points([0, 2, 4, 3.7, 5, 7]), jitterRows = [use(1, 2), use(2, 2), use(4), use(5, 2)];
+      const restored = cleanCapacity(kind, jitter, jitterRows, [], window, now);
+      const jitterStudy = analyzeModelStudy({ kind, accountId, window }, jitter, jitterRows, entries, now);
+      assert.equal(restored.history.points[0].cleanPoints, 7);
+      assert.equal(Math.round(restored.current.tokens), 100_000);
+      assert.equal(jitterStudy.capacities[0].quotaPoints, 7);
+
+      const length = window === 'week' ? 7 * 86400000 : 5 * 3600000;
+      const shift = (samples, cycles) => samples.map(s => ({
+        ...s, at: s.at - cycles * length,
+        [window + 'Reset']: new Date(Date.parse(s[window + 'Reset']) - cycles * length).toISOString(),
+      }));
+      const earlier = (cycles, size) => [1, 2, 3].map(i => {
+        const request = use(i, size);
+        return { ...request, key: request.key + ':' + cycles, at: request.at - cycles * length };
+      });
+      const base = points([0, 2, 4, 6]);
+      const windows = [...shift(base, 2), ...shift(base, 1), ...base];
+      const usage = [...earlier(2, 20), ...earlier(1, 1), ...earlier(0, 1.2)];
+      const recent = cleanCapacity(kind, windows, usage, [], window, now);
+      const recentStudy = analyzeModelStudy({ kind, accountId, window }, windows, usage, entries, now);
+      assert.deepEqual(recent.history.points.map(point => Math.round(point.capacityTokens)), [1_000_000, 50_000, 60_000], '趋势保留独立窗口的观测值');
+      assert.equal(recent.current.basis, 'recent');
+      assert.ok(recent.current.tokens > 50_000 && recent.current.tokens < 60_000);
+      assert.equal(Math.round(recentStudy.capacities[0].estimatedTokens), Math.round(recent.current.tokens));
+      assert.ok(recentStudy.budget.costUsd > .5 && recentStudy.budget.costUsd < .6);
+      const newEmpty = [...shift(base, 1), ...points([0])];
+      assert.equal(cleanCapacity(kind, newEmpty, earlier(1, 1), [], window, now).current.tokens, 50_000, '同套餐的有效旧窗可用于新窗口初期');
+      newEmpty.at(-1).plan = 'upgraded';
+      assert.equal(cleanCapacity(kind, newEmpty, earlier(1, 1), [], window, now).current, undefined, '切换套餐后不借用上一套餐的容量');
+      assert.equal(analyzeModelStudy({ kind, accountId, window }, newEmpty, earlier(1, 1), entries, now).budget.costUsd, null);
+    }
+  }
+  console.log('PASS Claude, ChatGPT and Grok: shared estimates filter concurrent spikes, keep a high-water mark, use recent windows and respect plan boundaries');
+}
 const { calibrationContains, updateCalibration, readCalibrations, calibrationStatus, forgetCalibrations } = require('../build/core/quota-calibration');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'tokenpulse-calibration-'));
@@ -144,3 +203,46 @@ try {
  forgetMarks(id);assert.equal(readMarks().length,0);
  console.log('PASS calibration store (kept for old records) and off-machine marks: create, edit, validate, delete, purge; 0.3.13 split / ignore / restore, ignored excluded from off-machine and capacity, pending pieces, merge across quiet gaps');
 } finally { if(oldDir===undefined)delete process.env.TOKENPULSE_DATA_DIR;else process.env.TOKENPULSE_DATA_DIR=oldDir;assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep)&&path.basename(root).startsWith('tokenpulse-calibration-'));fs.rmSync(root,{recursive:true,force:true}); }
+
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-shared-capacity-'));
+  const env = {
+    TOKENPULSE_DATA_DIR: path.join(dir, 'data'),
+    HOME: path.join(dir, 'home'), USERPROFILE: path.join(dir, 'home'),
+    CLAUDE_CONFIG_DIR: path.join(dir, 'claude'), CODEX_HOME: path.join(dir, 'codex'), GROK_HOME: path.join(dir, 'grok'),
+  };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  try {
+    const { appendRequests } = require('../build/core/request-log');
+    const { buildSnapshot } = require('../build/core/report');
+    const model = 'claude-fable-5-1', account = 'claude:snapshot-fixture';
+    const weekReset = new Date(now + 3 * 86400000).toISOString();
+    const fiveReset = new Date(now + 3600000).toISOString();
+    const at = i => now - (5 - i) * 5 * minute;
+    const samples = [0, 2, 4, 6, 26, 28].map((pct, i) => ({
+      at: at(i), account, plan: 'max', week: pct, weekReset, five: pct, fiveReset,
+      models: [{ model: 'Fable', pct, reset: weekReset }],
+    }));
+    function request(i, name) {
+      return { id: String(i), at: at(i) - minute, kind: 'claude-code', file: 'fixture.jsonl', model: name, effort: 'high',
+        responseId: 'fixture-' + i, routedAccount: account, routedAccountBasis: 'response-id',
+        input: 800, output: 200, cacheRead: 400, cacheWrite: 0, reasoning: 0, calls: 1, costUsd: .01 };
+    }
+    appendRequests([1, 2, 3, 4, 5].map(i => request(i, model)).concat({ ...request(6, 'claude-sonnet-5'), at: now }));
+    fs.writeFileSync(path.join(env.TOKENPULSE_DATA_DIR, 'quota-history.json'), JSON.stringify({ version: 1, accounts: { claude: samples } }));
+    const report = buildSnapshot(now).accounts.find(report => report.accountId === account);
+    assert.equal(report.week.used, 28);
+    assert.equal(report.week.capacity.tokens, 62_500, '账号窗口还包含同区间的 Sonnet 请求');
+    assert.equal(report.five.capacity.tokens, 62_500);
+    assert.equal(report.capacityHistory.week.points[0].suspectedPoints, 20);
+    assert.equal(report.modelWeeks[0].window.capacity.tokens, 50_000);
+    console.log('PASS snapshot applies the shared estimator to subscription and Claude Fable model-specific quota cards');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    assert.equal(path.dirname(dir), os.tmpdir());
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}

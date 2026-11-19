@@ -1,4 +1,35 @@
-# 当前接手入口 · TokenPulse v0.3.100 已正式发布至 GitHub Release（2026-11-19）
+# 当前接手入口 · TokenPulse v0.3.101 发布（2026-11-19）
+
+## `v0.3.101` 发布进度 · 进行中
+
+- 用户已授权升一个补丁版本并正式发布 GitHub Release。范围为下方两轮工作区改动，随版本更新中英文应用内说明。
+- 已将 `package.json`、`package-lock.json` 和应用内更新说明同步到 `0.3.101`。GitHub 远端 `main` 为 `e042d7b`，最新公开版本为 `v0.3.100`，远端暂无 `v0.3.101` 标签。接手前已有未跟踪的 `clawd-pet-extracted/`。
+- 首次 `npm test` 在 TypeScript 编译阶段退出 2。`model-study.ts` 的空数组被推断成 `never[]`，`report.ts` 的独立模型窗口可为空。已分别补上统计类型和窗口存在检查，待复跑。
+- 正式 `npm test` 复跑退出 0（TypeScript 和 69 个脚本），额外 Antigravity CLI 导入脚本 9/9 通过。Electron 的模型研究夹具将第一次 0% 采样前的未知等级请求混入首次涨点，已改用采样后请求来验证「时间线显示但尚未折算」，再推进采样验证其进入用量。该脚本复跑通过，自动更新的模拟安装流程亦已通过 13/13。其余 Electron 脚本仍在运行。
+- 复用正式测试产出的 `build/` 执行 `electron-builder --publish never`，退出 0。解包 EXE 的产品版本为 `0.3.101.0`，ASAR 的包版本和 16 个受影响运行文件已核对，安装器大小及 SHA512 与 `latest.yml` 一致。Windows 发行附件已在 `dist/` 生成，发布说明在 `dist/release-0.3.101.md`。
+- 下一步提交已核对的文件，等界面套件收尾后推送标签并上传到 GitHub 草稿，逐个对比 SHA256 后公开。当前公开 Release 仍为 `v0.3.100`。
+
+## 当前改动 · Claude、ChatGPT、Grok 额度估算 · 源码及回归完成
+
+- 周、5 小时及 Claude Fable 独立周额度共用窗口净涨幅与本机请求区间。窗口内按高水位计算，回落后反弹不重复记账；长缺口中的变化及已标注的混用区间不进入容量折算。同期有本机请求时，至少有三个稳定的同窗口、同型号、同等级且可计价的区间作参照，才将明显异常的区间标作疑似混用并整体排除。时间线仍显示官方已用和本机请求，不为异常区间虚构具体的外部消耗量。
+- 整窗卡片与模型预算复用 Antigravity 的稳健近期加权。周最多 3 个、5 小时最多 6 个有效窗口，同套餐才合并，降低极端历史值的影响。新窗口只有少量样本时可借用近期同套餐观测；历史趋势保留每窗自己的观测值。启用「只在本机用 Code」的账号保留其直接折算口径。
+- 主要变更在 `src/core/quota-attribution.ts`、`quota-offmachine.ts`、`quota-monitor.ts`、`model-study.ts`、`report.ts` 与 `request-log.ts`。额度卡片和模型时间线补充了疑似混用、不足样本及近期加权的说明，中文与英文文案同步。
+- **实际验证**。旧产物运行 `node scripts/test-shared-quota.cjs` 复现 17,857 对 50,000 Token 的低估。源码加载器运行同一测试后三家在周与 5 小时模拟中均回到 50,000 Token，官方已用仍为 28%。回归同时覆盖混用不同等级、回落反弹、近期离群值、早期同套餐回退、套餐切换、历史区间和 Fable 快照。使用临时 `NODE_OPTIONS=--require=<源码加载器>` 跑 `package.json` 全部 69 个 Node 脚本及额外的 Antigravity CLI 导入脚本，**70/70 PASS**。最后的调整后复跑 `shared-quota`、`model-study`、`quota-monitor`、`antigravity-capacity`、`features`、`dashboard`、`requests`、`model-weeks`，**8/8 PASS**。`node --check` 通过三个改动的 renderer 脚本，`git diff --check` 通过。
+- **限制**。厂商百分比无法确认同期异常的具体来源，缺少可比样本时不自动判定同期混用。API 等价费用为参考估计，真实账号准确率、Electron UI、正式 TypeScript 编译、安装与升级尚未验证。
+- **Git、产物与资源**。`main` HEAD 仍为 `e042d7b`，版本 `0.3.100`，本轮和此前源码改动均留在工作区。未提交、升版、编译、打包、安装或发布。现有安装包 `dist/TokenPulse-0.3.100-Setup.exe`、`dist/TokenPulse-0.3.100-Portable.exe`、blockmap 与 `latest.yml` 的 SHA256 均与下方发布基线一致。临时加载器与套件脚本已删除；测试及仓库应用进程筛查均为 0，`build/`、`dist/`、解包目录和关键文件均可独占打开，检查句柄已关闭。
+- **下一步**。等待用户决定是否编译和发布。
+
+## 此前后端审查 · 基于已发布的 `v0.3.100` · 源码修复及回归完成
+
+- 目标是审查并修复后端逻辑、计数和功能问题，先汇报源码结果，再由用户决定是否编译和发布。
+- **会话扫描及流水**。扫描器沿用会话功能的 CLI 目录解析，配置和登录态也从该目录读取；超出常规 32 MiB 批次的完整 JSONL 行可继续处理。月流水恢复时将断尾与新批次分开，UTF-8 字符跨块正确解码，最早月份损坏时继续查找首条有效记录（`src/core/usage-scan.ts`、`src/core/request-log.ts`、`src/core/paths.ts`）。
+- **Grok 号池**。多模型轮次按对应型号分摊，优先采用转发返回的型号；分摊后保留零调用份额，汇总调用次数守恒。可读取的旧 Grok 会话会一次性重扫并清除过期拆分流水（`src/core/usage-scan.ts`、`src/core/request-log.ts`、`src/core/route-ledger.ts`）。
+- **Antigravity**。桌面和 CLI 同 UUID 共用一份汇总，新源暂时不可读时保留已有账；仅有缓存写入的请求也会计入 Token 和次数，通过内部账本版本 `8` 重扫现存对话。账号刷新按请求范围合并或排队。CLI 同对话并发导入合并执行，新快照替换失败时保留旧主库并恢复已挪开的附属文件（`src/core/usage-scan.ts`、`src/core/antigravity.ts`、`src/main/antigravity-quota.ts`）。
+- **并发历史及核验**。省略天数的历史查询范围为一天，查询过程中写盘的当前桶只计一次；最近七天核验标记与快照使用相同的本地日历日期，覆盖夏令时切换（`src/main/concurrency-monitor.ts`、`src/core/report-worker.ts`）。
+- **实际验证**。以临时 `NODE_OPTIONS=--require=<源码加载器>` 运行 `package.json` 中的 69 个 Node 脚本及 `node scripts/test-antigravity-cli-import.cjs`，**70/70 PASS**。最后一次调整 Grok 转发型号优先级后，同方式复跑 `route-ledger`、`grok-pool`、`shared-quota`、`pool-insight`、`requests`、`antigravity-usage`、`antigravity-accounts`、`antigravity-cli-import`、`concurrency`、`dashboard` 对应脚本，**10/10 PASS**。`git diff --check` 通过。回环测试首次受沙箱 `EACCES 127.0.0.1` 限制，获准访问本地模拟服务后通过。测试加载器仅在内存转换源码，临时脚本已删除。
+- **未执行及已知限制**。项目编译和完整 TS 类型检查、Electron UI、真实供应商账号联网、安装和升级验证待授权后进行。若旧流水已损坏且原始会话已删除，缺失数据无法恢复。Grok 同型号并发缺少可关联的请求 ID，账号归属仍依赖时间窗口。Antigravity 同 UUID 两份独立分叉沿用应用的单库选择规则，分叉合并未覆盖。
+- **Git、产物和资源状态**。`main` HEAD 为 `e042d7b`，源码修改在工作区，尚未提交、升版、安装或发布。原有 `clawd-pet-extracted/` 为接手前的未跟踪目录。最新打包产物仍为下方发布基线的 `dist/TokenPulse-0.3.100-Setup.exe`、`dist/TokenPulse-0.3.100-Portable.exe`、`dist/TokenPulse-0.3.100-Setup.exe.blockmap`、`dist/latest.yml`，四件 SHA256 与发布交接一致。按命令行筛查测试进程和仓库内应用进程均为 0。`build/`、`dist/`、`dist/win-unpacked/`、`dist/win-unpacked/resources/`、主入口 JS、解包 EXE/ASAR 和四件发布产物均可独占打开，检查句柄已关闭。
+- **下一步**。等待用户决定是否编译及发布，以及需采用的版本号。
 
 ## 最新已发布基线 · `v0.3.100`（已正式发布至 GitHub Release，2026-11-19）
 

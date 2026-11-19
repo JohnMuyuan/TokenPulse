@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { cliDir } from "./credentials";
-import { piDir } from "./paths";
+import { dshRoot, piDir } from "./paths";
 import { antigravityCliDir, antigravityDir, readAntigravityActivity } from "./antigravity";
-import { claudeUserText, codexUserText, dshRoot } from "./sessions";
+import { claudeUserText, codexUserText } from "./sessions";
 import { zstdFrames } from "./zstd-frames";
 
 /**
