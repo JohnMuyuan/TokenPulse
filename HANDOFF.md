@@ -1,6 +1,55 @@
-# 当前接手入口 · TokenPulse v0.3.98 已正式发布至 GitHub Release（2026-11-17）
+# 当前接手入口 · TokenPulse v0.3.99 已正式发布至 GitHub Release（2026-11-18）
 
-## 当前已发布状态 · `v0.3.98`（工作区干净，未动 `clawd-pet-extracted/` 与本机正式版进程）
+## 当前已发布状态 · `v0.3.99`（工作区干净，未动 `clawd-pet-extracted/` 与本机正式版进程）
+
+- **版本与发布概览**：
+  - 版本：**`0.3.99`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译、已合入 `origin/main` 最新 `2026.11.18` 模型知识库 `acf7d8d` 及 `npm run dist` 打包产物均已同步；`SECRET_HITS=0`）。
+  - **Git / GitHub（已完成）**：发布提交 **`4d586db`**（`chore: release v0.3.99 (calibrate Antigravity streaming speed & fix false reset-card splits)`）与标签 **`v0.3.99`**（`d71a3fb`）已推送到 `origin/main`；本交接更新随后单独提交推送到 `origin/main`。
+  - **GitHub Release（已正式发布）**：https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.99 （`isDraft: false`，`isPrerelease: false`，`latest`），4 个附件经 `curl.exe --noproxy '*'` 直传（`Setup.exe` `24.78s`、`Portable.exe` `31.70s`、`.blockmap` `1.29s`、`latest.yml` `1.09s`，均返回 `HTTP 201`），远端字节大小与 SHA256 与本地逐字节一致。
+  - **本机未覆盖说明**：未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`；用户可在软件内检测升级或直接运行 [TokenPulse-0.3.99-Setup.exe](file:///d:/CodePorject/Tools/TokenPulse/dist/TokenPulse-0.3.99-Setup.exe)。
+- **打包产物与远端校验（`ASAR_OK=true` 且 SHA256 逐字节一致）**：
+  - `npm run dist` PASS；校验 `dist/win-unpacked/resources/app.asar` 含 `0.3.99`、`2026.11.18`、`parseReplyBodyHints`、`avgTokensPerSec`、`thinkingMs`、`GLITCH_SPAN_MS`、`cleanedGroups`。
+  - `dist/TokenPulse-0.3.99-Setup.exe`：`112,881,450` B，SHA256 `CFDD56FD238160A9483E420D84653B79D9AC4FFA8FF9C609690D3AA47EAB8DC2`
+  - `dist/TokenPulse-0.3.99-Portable.exe`：`112,624,312` B，SHA256 `53E069218365D2AEF8509B8CAE8276CEE0BCDBE3DD8DA54FE9D626B8926D6C8A`
+  - `dist/TokenPulse-0.3.99-Setup.exe.blockmap`：`120,050` B，SHA256 `2C2B9A90C6B561BBDBD75C2970720F231B3C5EA3D15A2ECD48B29AB478C31608`
+  - `dist/latest.yml`：`352` B（version `0.3.99`），SHA256 `13727682BBE81CC8A5D6D4E33528E32280F42C73435742CC9C7026A40BC673F3`
+  - 发布说明文件：`dist/release-0.3.99.md`。
+- **排查结论（源码 + 本机 `language_server.exe` protobuf 定义 + 本机只读数据核验）**：
+  1. **Antigravity 首字慢、无速度与流式思考腰斩**：
+     - 首字慢主体为 Google / Gemini 真实机制（`gen_metadata.request` field 11/12 确为官方 `time_to_first_token` / `streaming_duration`，同源 `Claude Opus 5.5` P50 仅 `2.11s`）；另有少量 `< 300ms` 整包缓冲工具调用漏网误报假首字；
+     - 旧逻辑对 `streamingMs < 300ms && output < 300` 直接留空且禁用 `estimate`，导致 51%（12,035/23,581）Antigravity 明细无速度；
+     - 旧启发式在触发 `visStreamTps` 分支的 3,299 条 Gemini 请求中有 1,766 条（53.5%）其实在 `streamingMs` 期间仍在流式思考（核对原生 `step_payload.body` field 11 `thinking_duration`），导致流式速度被腰斩。
+  2. **Gemini 缓存命中率低（确认非 TokenPulse 统计 BUG，属 Google 后端隐式缓存特性）**：
+     - `3,855 / 3,856`（99.97%）条记录核验 `usage.field2 (非缓存输入) + usage.field5 (cacheRead)` 精确等于上下文总 Token 数，无遗漏缓存字段；
+     - 命中时单次命中率高达 `95.2%–97.5%`，但 `Gemini 4 Neon`（55% 请求 0 命中，总命中率 `39.7%`）与 `Gemini 4 Carbon`（25% 请求 0 命中，总命中率 `68.9%`）频繁出现全量未命中，且未命中时 TTFT 同步暴涨 2.1–3.2 倍（如 `Carbon` `13.0s → 34.7s`）。
+     - **2026-11-18 复核（只分析、未改代码；用户怀疑是 Antigravity agent 导致）**：近 14 天 23,421 条明细只读复核后修正上条结论——Carbon/Neon 的主因**不是 TTL，也不是 agent**，而是这两个型号后端缓存本身不稳：① 同一 agent 工具循环（两次请求间只追加工具结果 step 132、sessionID 全程不变、同一轨迹内）下，间隔 `<10s` 的 0 命中率 `Carbon 18.2%`、`Neon 39.2%`，而 `Argon 4.7%`、`Hydrogen 3.0%`、`Flash(≥50k) 0.2–0.4%`；Carbon 约 64% 的未命中发生在 10 秒内；② Carbon 短间隔 0 命中率按天从 `11-11 6.8%` 升到 `11-18 60.3%`，同期 Hydrogen 稳定 `1.5–4.3%`，Argon 曾在 `11-08~11-10` 短暂升到 `16–20%` 后回落，型号相关、随时间波动；③ 未命中具有粘性：Carbon 未命中后紧接请求仍 0 命中 `65.5%`（Hydrogen 仅 `7.6%`、`83.8%` 能整段读回刚写入的前缀），说明不是 agent 改了一次前缀；④ 上下文缩短（压缩/截断）只解释 Carbon `5.6%`、Neon `0%` 的未命中。agent 侧仅有次要影响：新一轮用户输入（轨迹 ID 变化）时各型号未命中都偏高，主要因用户思考间隔超出 TTL。分析脚本在会话 scratchpad（临时，未入库）。
+  3. **托管账号误报「用过重置卡 / 窗口已提前重置」与预估用完速度失真（确认双处代码 BUG）**：
+     - `src/core/quota-monitor.ts`（`windowSegments`）：ChatGPT / Codex 在 `0%` 空闲未激活期每次轮询 `resetAt` 顺滑推进为 `now + 5h` / `now + 7d`，滑满 10 分钟即被拆成新组且未判断前一段是否 `pct > 0`，导致 `chatgpt` 账号裂变出 982 / 57 段假重置卡，首次消耗立刻显示「用过重置卡，重置日期已顺延」；
+     - `src/main/antigravity-quota.ts`（`agyWindowSegments`）：第 729 行 0% 空闲合并漏了 `pt.resetAt >= last.resetAt` 方向判断，且缺少夹心瞬时脏采样（1~3 帧接口闪断/备用端点旧缓存）与组内单帧回落反弹过滤；实测本机 Antigravity 主号在 `05:49:15Z` 出现 1 帧瞬时 `0% + 未来 7d` 脏采样、3 分钟后恢复 `27.9% + 原窗口`，结果当前周窗口被拦腰切在 `05:49:15` 并标上「窗口已提前重置」，导致周消耗速率从真实 `0.95%/h` 被放大 75 倍到 `73.25%/h`；副号也因空闲期间单帧 `0.3%` 闪回被标假提前重置。
+- **已完成改动与关键文件**：
+  - `src/core/route-ledger.ts`：`RouteTiming` 新增可选字段 `avgTokensPerSec`（整包/短流式均速，仅明细标 `≈`，不污染速度曲线）与 `thinkingMs`（本地思考耗时）。
+  - `src/core/antigravity.ts`：新增只读 `parseReplyBodyHints()` 解析 `thinking_duration` 与回复形态；重构 `antigravityStreamMetrics()`（堵住 `< 300ms` 漏网缓冲包假首字、基于实测 `thinking_duration` 校准流式思考与纯文本后思考计速、补齐 `avgTokensPerSec` 兜底）；`readAntigravityGenerations()` 按主键按需读取已完成回复的 `step_payload`，`readAntigravityConversation()` 复用已读 `payload`。
+  - `src/core/usage-scan.ts` & `src/core/sessions.ts`：`ANTIGRAVITY_STATE_VERSION` `6 -> 7`、`INDEX_VERSION` `8 -> 9`；透传 `avgTokensPerSec` 与 `thinkingMs`。
+  - `src/core/quota-monitor.ts`：修复 `windowSegments()`：① `0%` 空闲等待期向前滑动的 `resetAt` 合并为单组，首次出现消耗时锚定真实 `startAt/resetAt`，且前一段全 `0%` 时绝不标记 `moved` 重置卡；② 剔除夹在同一窗口间的短时瞬时脏组（`<= 3` 点且 `< 30 分钟`）与组内 1~2 帧回落立即反弹抖动。
+  - `src/main/antigravity-quota.ts`：修复 `agyWindowSegments()`：① 0% 空闲合并补齐 `pt.resetAt >= last.resetAt` 方向约束；② 新增夹心瞬时脏组过滤（`<= 3` 点且 `< 45 分钟`）、0% 空闲期孤立微噪闪回（`< 1%`、`<= 2` 点、`< 15 分钟`）过滤、组内单帧回落反弹过滤，并防止前段仅 1 个残留脏点给全 `0%` 副号误标 `moved`。
+  - `renderer/app.js` & `renderer/antigravity-quota.js` & `renderer/intro.js` & `renderer/i18n.js`：明细延迟列、详情抽屉、CSV 导出与 Antigravity 最近请求表支持展示 `≈` 整包均速、`整包返回`、`思考耗时` 与原因 tooltip；补齐 `0.3.99` 更新说明及全部中英文翻译词条与正则模板。
+  - `scripts/test-antigravity-usage.cjs`、`scripts/test-pass-speed.cjs`、`scripts/test-quota-monitor.cjs`：补齐 `thinking_duration` 校准、漏网缓冲包、`avgTokensPerSec` 不污染走势曲线、0% 空闲滑动不误报重置卡，以及夹心单帧脏采样/空闲闪回过滤等回归断言。
+- **本轮验证命令与实际结果（均在升版 `0.3.99` 后实测通过）**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **69** 个单元与安全审计脚本，含 `test-quota-monitor.cjs` 82/82、`test-antigravity-usage.cjs` 12/12、`test-antigravity-capacity.cjs` 7/7、`test-antigravity-timeline.cjs` 7/7、`test-antigravity-sessions.cjs` 6/6、`test-pass-speed.cjs`、`test-features.cjs` 46/46 含 `2026.11.18` 知识库与英文词典零漏翻校验）：**69/69 PASS**
+  - Electron UI 测试（升版 `0.3.99` 后直接实测，均传 `--lang=zh-CN`）：
+    - `npx.cmd electron --lang=zh-CN scripts/test-intro-ui.cjs`：**3/3 PASS**（验证 `0.3.99` 升级说明与新手引导）
+    - `npx.cmd electron --lang=zh-CN scripts/test-antigravity-ui.cjs`：**8/8 PASS**
+    - `npx.cmd electron --lang=zh-CN scripts/test-ui.cjs`：**26/26 PASS**
+  - `npm run dist`：**PASS**（NSIS Setup + Portable + blockmap + latest.yml 全部生成并校验）。
+  - 本机真实 `~/.tokenpulse/quota-history.json` 与 `~/.tokenpulse/antigravity-quota.json` 只读回归验证：`chatgpt` 假重置卡全消（`wSegs 57 -> 13`、`fSegs 982 -> 140`）；Antigravity 主号 5h/周窗口剔除 `05:49:15` 脏点，周速率由错误 `73.25%/h` 恢复真实 `0.95%/h`，副号 4 窗口假提前重置全消。
+- **未执行的验证**：未重跑与本轮改动无关的其他单一供应商独立 UI 脚本或打包后安装器增量更新测试（`test-updater.cjs`）。
+- **收尾进程与文件句柄检查**：`SECRET_HITS=0`；`REPO_PROCS=0`；`build/main/index.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与 `dist/TokenPulse-0.3.99-*`、`dist/latest.yml` 全部文件句柄 `UNLOCKED`。用户工作区未动目录：`clawd-pet-extracted/`；用户自用 `AppData\Local\Programs\TokenPulse\TokenPulse.exe` 未被关闭或改动。
+- **已知限制**：Gemini 后端隐式缓存不稳（尤其 Carbon / Neon）与首字思考等待均为 Google 服务端行为，无法在客户端消除；现有历史脏采样在代码层实时过滤自愈，无需手动清理用户 `~/.tokenpulse` 数据文件。
+- **下一步具体动作**：等待用户在软件内自动升级或在合适时机关闭本机旧版并运行 `TokenPulse-0.3.99-Setup.exe`；当前任务已完整闭环，无遗留阻塞。
+
+---
+
+## 上一已发布基线 · `v0.3.98`（已正式发布至 GitHub Release，2026-11-17）
 
 - **版本与发布概览**：
   - 版本：**`0.3.98`**（`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明、`renderer/i18n.js` 英文翻译与 `npm run dist` 打包产物已全部同步；`SECRET_HITS=0`）。
