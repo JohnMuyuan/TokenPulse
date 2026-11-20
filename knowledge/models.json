@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "2026.11.19",
-  "updatedAt": "2026-11-19T08:54:36.932Z",
+  "version": "2026.11.20",
+  "updatedAt": "2026-11-20T08:41:36.485Z",
   "notes": "自动生成，不要手改：改 knowledge/manual.json。TokenPulse 模型知识库的手动部分。knowledge/models.json 由 scripts/update-knowledge.cjs 每天自动生成（GitHub Actions），不要手改它，改这里：pinned 排在最前（一定生效的特例），fallback 排在最后（按家族估的兜底），中间是从公开价格表（LiteLLM，OpenRouter 交叉核对）自动同步的逐个型号单价。单价是美元 / 每百万 token；cacheWrite 为 0 表示没有单独的缓存写入价、按输入价算。 labels：给型号打标签（promo 优惠价、until 到期日 YYYY-MM-DD、note 说明），到期自动去掉；pinned 规则也可以带 until。",
   "prices": [
     {
@@ -1008,14 +1008,14 @@
       "input": 10,
       "output": 50,
       "cacheRead": 1,
-      "cacheWrite": 18.75,
+      "cacheWrite": 12.5,
       "note": "自动：gpt-6-rosalind（LiteLLM）",
       "auto": "gpt-6-rosalind",
-      "changedAt": "2026-11-19",
+      "changedAt": "2026-11-20",
       "previous": {
-        "input": 15,
-        "output": 75,
-        "cacheRead": 1.5,
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
         "cacheWrite": 18.75
       }
     },
@@ -2010,7 +2010,7 @@
     "sourceUrl": "https://epoch.ai/data/ai-benchmarking-dashboard",
     "license": "CC BY 4.0",
     "anchor": "medium",
-    "updatedAt": "2026-11-12",
+    "updatedAt": "2026-11-20",
     "models": {
       "claude-fable-5": {
         "basis": "DeepSWE",
@@ -2022,34 +2022,24 @@
           "low": 25243
         }
       },
-      "claude-fable-5-1": {
-        "basis": "CursorBench",
-        "perTask": {
-          "max": 117236,
-          "xhigh": 87294,
-          "high": 58438,
-          "medium": 45411,
-          "low": 34795
-        }
-      },
       "claude-fable-5-2": {
         "basis": "CursorBench",
         "perTask": {
-          "max": 352794,
-          "high": 99259,
-          "xhigh": 161251,
-          "medium": 44103,
-          "low": 36616
+          "max": 541003,
+          "xhigh": 194918,
+          "high": 108213,
+          "medium": 47678,
+          "low": 40384
         }
       },
       "claude-haiku-5-5": {
         "basis": "CursorBench",
         "perTask": {
-          "max": 325934,
-          "xhigh": 143813,
-          "high": 77057,
-          "medium": 42659,
-          "low": 23382
+          "max": 344890,
+          "xhigh": 149314,
+          "high": 77196,
+          "medium": 43441,
+          "low": 23673
         }
       },
       "claude-opus-4-8": {
@@ -2075,11 +2065,11 @@
       "claude-opus-5-5": {
         "basis": "CursorBench",
         "perTask": {
-          "max": 218363,
-          "xhigh": 101083,
-          "high": 53078,
-          "medium": 37954,
-          "low": 15811
+          "max": 213070,
+          "xhigh": 104901,
+          "high": 56162,
+          "medium": 39736,
+          "low": 19497
         }
       },
       "claude-sonnet-5": {
@@ -2095,11 +2085,11 @@
       "claude-sonnet-5-5": {
         "basis": "CursorBench",
         "perTask": {
-          "max": 271920,
-          "xhigh": 100158,
-          "high": 37391,
-          "medium": 16036,
-          "low": 11668
+          "max": 342273,
+          "xhigh": 112299,
+          "high": 43088,
+          "medium": 19144,
+          "low": 13798
         }
       },
       "gpt-5.5": {
@@ -2163,20 +2153,20 @@
       "grok-4.7": {
         "basis": "CursorBench",
         "perTask": {
-          "xhigh": 70141,
-          "high": 56382,
-          "medium": 36683,
-          "low": 15677
+          "xhigh": 90268,
+          "high": 65850,
+          "medium": 41173,
+          "low": 14493
         }
       }
     },
     "families": {
       "claude": {
-        "xhigh": 2.738,
-        "max": 4.948,
-        "high": 1.624,
+        "xhigh": 2.883,
+        "max": 5.622,
+        "high": 1.665,
         "medium": 1,
-        "low": 0.63
+        "low": 0.628
       },
       "chatgpt": {
         "xhigh": 2.685,
@@ -2187,9 +2177,9 @@
       },
       "grok": {
         "medium": 1,
-        "xhigh": 1.656,
-        "high": 1.374,
-        "low": 0.376
+        "xhigh": 1.774,
+        "high": 1.402,
+        "low": 0.341
       }
     }
   },
