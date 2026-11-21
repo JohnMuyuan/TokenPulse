@@ -1,6 +1,33 @@
-# 当前接手入口 · TokenPulse `v0.3.102` 发布（2026-11-20）
+# 当前接手入口 · TokenPulse `v0.3.103` 发布（2026-11-21）
 
-## 最新已发布版本 · `v0.3.102` · 2026-11-20
+## 最新已发布版本 · `v0.3.103` · 2026-11-21
+
+- **Git 与发布**。[TokenPulse v0.3.103](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.103) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `453824381`）。发布提交 `2c0240fc9ed4ccae60c7decab9f322f739fceabb` 与签注标签 `v0.3.103`（`1542cf38598486ccb35c7002f38ccf45dde9d1fd`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异与发布说明凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（7 项体验与功能优化）**：
+  1. **界面降噪与 `?`/`!` 悬停提示**：升级 [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 中的 `infoTip()`（支持悬停、聚焦、点击固定、`Esc` 关闭与 `aria-expanded` 同步，遵循 WCAG 1.4.13）及 `hydrateInlineTips()`；收紧设置、额度详情、用量明细、并发监控与桌宠设置中的长段说明，将补充解释和注意事项收纳到 `?` / `!` 悬停图标中；数据页「统计口径」改为可折叠 `<details>`（[renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)、[renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css)、[renderer/usage-projects.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-projects.js)、[renderer/usage-cache.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-cache.js)）。
+  2. **DeepSeek 兼容 `pi` 等本机工具并支持手动标注「本机使用 / 本机以外」**：[src/core/deepseek-insight.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/deepseek-insight.ts) 新增 `isLocalDeepSeekRow()`（自动识别 `pi` 等本机工具调用 DeepSeek 模型的请求）及持久化标注存储 `deepseek-attribution.json`；经 [src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)（`deepseek-balance:mark`）和 [src/main/preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts) 暴露至 [renderer/deepseek-balance.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/deepseek-balance.js) / [renderer/deepseek-balance.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/deepseek-balance.css)，在「本机用量」新增「扣费归属标注」，支持一键切换「本机使用」「本机以外」或「重置」并实时重算。
+  3. **用量明细支持输入页码跳转**：[renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)、[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)、[renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 为「逐条请求」与「按日汇总」分页栏加入页码输入框与跳转按钮，支持回车提交与边界钳制。
+  4. **用量明细直接展示单次请求缓存命中率**：[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 在「逐条请求」与「按日汇总」的「缓存读取 / 命中率」列直接展示分级着色命中率标签，并同步加入展开详情与 CSV 导出列 `缓存命中率`。
+  5. **并发监控列表重构**：[renderer/concurrency.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/concurrency.js) 与 [renderer/concurrency.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/concurrency.css) 新增 `活跃 / 已设上限`、`供应商`、`账号`、`全部` 分组切换与名称筛选框；默认折叠全为 0 且未设上限的空闲项（底部一键展开/收起），多行启用有界滚动与吸顶表头。
+  6. **体检去掉官方账号续期提醒，改为提前 1 天（24 小时）过期提醒**：[src/main/oauth.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/oauth.ts) 与 [src/core/antigravity-accounts.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity-accounts.ts) 暴露 `expiresAt`；[src/core/health-check.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/health-check.ts) 与 [src/main/health.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/health.ts) 移除 `renew-log` 并新增 `accounts-expiring`（24 小时预警，不误报正常短 TTL 自动续期令牌）；[src/main/prefs.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/prefs.ts) 与 [src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts) 新增 `notifyAccountExpiry`（默认开启）主动推送系统通知。
+  7. **设置布局统一为「左：名称与解释，右：选项与控件」**：统一重构 [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)、[renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)、[renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 与 [renderer/desk-pet-settings.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-settings.js) / [renderer/desk-pet-settings.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-settings.css)。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.103.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_OK=True`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.103.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.103.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.103-Setup.exe`，`112,899,939` B，SHA256 `328adda79643e5bec2afdb10c3236b3f1339a8be4a4af14a025ce1628207afd1`
+  - `dist/TokenPulse-0.3.103-Portable.exe`，`112,642,742` B，SHA256 `59efdf6a66847795f7fe56f95ef887bb46aa81e79af81c7cc8788a2d32024357`
+  - `dist/TokenPulse-0.3.103-Setup.exe.blockmap`，`120,071` B，SHA256 `1362a9c5647b646613dc202da497233216e7c5df243262a6bfd870754e52afe5`
+  - `dist/latest.yml`，`355` B，SHA256 `9e1ef97e1a23ea0e8d72b00ccf73bcf60c8ef4a45dc3cd9f2f197ba377f309b9`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **69** 个 Node 单测脚本，升版 `0.3.103` 后复跑）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`test-intro-ui.cjs`（验证 `0.3.103` 升级说明）、`test-health-ui.cjs`、`test-concurrency-ui.cjs`、`test-ui.cjs`、`test-deepseek-balance-ui.cjs`、`test-usage-projects-ui.cjs`、`test-cache-ui.cjs`、`test-desk-pet-ui.cjs` **全部 PASS**。
+  - 隔离演示数据视觉截图与布局几何自查通过；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：`REPO_PROCS=0`；`build/main/index.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.103` 发行产物均 `UNLOCKED`，检查句柄均已关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.103` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.102` · 2026-11-20
 
 - **Git 与发布**。[TokenPulse v0.3.102](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.102) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `453487996`）。基于远端最新 `2026.11.20` 模型知识库（`9b661af`）构建，发布提交 `9409e41d477459ab28702d9449f11acdcee38e6f` 与签注标签 `v0.3.102`（`8d0e0c83804fecd855f9e3d7abbbda5503d4edf2`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异与发布说明凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（自定义日期范围查询支持精确到小时和分钟）**：
