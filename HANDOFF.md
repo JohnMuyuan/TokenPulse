@@ -1,6 +1,35 @@
-# 当前接手入口 · TokenPulse v0.3.101 发布（2026-11-19）
+# 当前接手入口 · TokenPulse `v0.3.102` 发布（2026-11-20）
 
-## 最新已发布版本 · `v0.3.101` · 2026-11-19
+## 最新已发布版本 · `v0.3.102` · 2026-11-20
+
+- **Git 与发布**。[TokenPulse v0.3.102](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.102) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `453487996`）。基于远端最新 `2026.11.20` 模型知识库（`9b661af`）构建，发布提交 `9409e41d477459ab28702d9449f11acdcee38e6f` 与签注标签 `v0.3.102`（`8d0e0c83804fecd855f9e3d7abbbda5503d4edf2`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异与发布说明凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（自定义日期范围查询支持精确到小时和分钟）**：
+  - 全项目排查所有自选日期查询入口：仅顶部时间范围选择器（`#range-popover` / `#custom-range`，覆盖「总览」与「用量明细」全部视图及 CSV 导出）此前只支持按日选择；其余涉及自定义时刻的入口（模型时间线「本机以外使用」标注与分割）已使用 `datetime-local`，其余页面为固定预设或按月/按周下拉。
+  - [renderer/data.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/data.js)：新增纯函数 `timeKey`、`parseTime`、`dateTimeMs`、`hasTimePrecision`、`rangeBounds`（结束分钟包含 `:59.999`；整日 `00:00`–`23:59` 或 `00:00` + 跟随当前仍走按日汇总以兼容更早仅有日汇总的历史账本，设定具体小时/分钟后切换为精确毫秒区间 `[since, until]`）。
+  - [renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html) & [renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css)：自定义范围表单升级为语义化 `<fieldset>/<legend>`，在开始/结束日期旁增加 `<input type="time" step="60">`（`#time-from`、`#time-to`），支持「结束时间跟随当前」同步锁定起止校验与 `aria-invalid`/`role="alert"` 提示，明暗主题截图自查通过。
+  - [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) & [renderer/usage-insights.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-insights.js)：`requestQuery()` 透传 `until`；`windowAnalysis()`、`detailAnalysis()`、`rangeHours()` 全链路支持精确 `[since, until]` 过滤与等长上一时段环比（`span = until - since + 1`）；跨度 `<= 48` 小时自动按小时绘柱（跨多日自动标出 `M/D H:00`），超过 48 小时按日汇总但首尾日严格按时分截断；总览 ↔ 用量明细切换及再次打开弹窗均保留当前时分；修复 `windowCache` 在途重复请求。
+  - [renderer/intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js) & [renderer/i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js)：补齐 `0.3.102` 更新说明与全部中英文词条及 `(.+) — 现在` 模板。
+  - [scripts/test-dashboard.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-dashboard.cjs)、[scripts/test-requests.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-requests.cjs)、[scripts/test-ui.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-ui.cjs)：补齐时分辅助单测、分钟边界流水/汇总/项目/缓存测试与 Electron UI 端到端用例。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.102.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_OK=true`（含 `0.3.102`、`2026.11.20`、`time-from`、`time-to`、`rangeBounds`、`hasTimePrecision`、`isPreciseRange` 与 `0.3.102` 更新说明）；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.102.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.102.md)。
+- **发行附件**。4 件附件经 `curl.exe --noproxy '*'` 直传均返回 `HTTP 201`，公开前后经 GitHub API 校验状态均为 `uploaded`，字节大小与 SHA256 与本地逐字节一致：
+  - `dist/TokenPulse-0.3.102-Setup.exe`，`112,888,611` B，SHA256 `c8a2208ec3bf244bb8703ec410c2243f706c64231baa88ca1cce774f1d784e21`
+  - `dist/TokenPulse-0.3.102-Portable.exe`，`112,631,436` B，SHA256 `af933768a404a541f590aa60eca950162430c658d1b989acc224a60a16b7710d`
+  - `dist/TokenPulse-0.3.102-Setup.exe.blockmap`，`119,932` B，SHA256 `e9fbc86e64a0ddc566857b7b46c2b02c2f144f5d7e4bfe9cc3606f444e7b301f`
+  - `dist/latest.yml`，`355` B，SHA256 `e846b2c4cc7c6ec26afe0c9c1382142492c6cbfad595b0dc444c98485ba95c0a`
+- **正式验证（升版 `0.3.102` 并合入 `2026.11.20` 知识库后全量实测）**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **69** 个 Node 脚本，含 `test-dashboard.cjs` 9/9、`test-requests.cjs` 78/78、`test-features.cjs` 46/46）：**退出 0，全部 PASS**。
+  - Electron UI 测试（`--lang=zh-CN`）：`scripts/test-intro-ui.cjs`（验证 `0.3.102` 升级说明）、`scripts/test-ui.cjs`（含时分精确查询端到端用例）、`scripts/test-usage-projects-ui.cjs`、`scripts/test-cache-ui.cjs` 均**退出 0，PASS**。
+  - 明暗主题视觉截图自查（隔离临时演示数据，不含本机真实数据）：浅色与深色主题弹窗布局与对比度正常。
+  - `git diff --check`：PASS。
+- **未执行的验证与已知限制**：
+  - 未重跑与本轮改动无关的其余 20 个单一模块独立 UI 脚本及打包后安装器增量更新测试（`test-updater.cjs`）；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+  - 精确到小时和分钟的查询基于逐条请求流水（`requests/<年-月>.jsonl`），若更早的历史月份仅有按日汇总而无逐条流水，则需使用整日范围（`00:00`–`23:59`）查看历史日汇总。
+- **收尾进程与文件句柄检查**：`REPO_PROCS=0`；`build/main/index.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.102` 发行产物均 `UNLOCKED`，检查句柄均已关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或直接运行 [TokenPulse-0.3.102-Setup.exe](file:///d:/CodePorject/Tools/TokenPulse/dist/TokenPulse-0.3.102-Setup.exe)；当前发版任务已完整闭环。
+
+---
+
+## 上一已发布基线 · `v0.3.101` · 2026-11-19
 
 - **Git 与发布**。[TokenPulse v0.3.101](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.101) 已公开，GitHub 最新正式版为 `v0.3.101`，Release ID `451353179`。发布提交 `8e8cd537ac551a581fdce3c3b6c3278744595e3e` 与签注标签 `v0.3.101`（`36d47e7305002b4c938a65d8d82357f3a03216c6`）已原子推送。版本与应用内更新说明已同步。发布内容为下方两轮修复，未跟踪的 `clawd-pet-extracted/` 保留在工作区。暂存差异及发布说明的凭据模式检查为 `SECRET_HITS=0`。
 - **Windows 构建**。正式 `npm test` 生成 `build/` 后执行 `node_modules/.bin/electron-builder.cmd --publish never`，两步均退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.101.0`；`resources/app.asar` 内包版本、升级说明与 16 个运行文件核对通过。安装器大小及 SHA512 与 `latest.yml` 一致。发布说明在 `dist/release-0.3.101.md`。
