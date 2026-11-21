@@ -356,7 +356,7 @@
           </div>
           <div class="table-scroll">
             <table class="request-table">
-              <thead><tr><th>时间 / 工具</th><th>项目 / 账号</th><th>型号</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取</th><th class="n">额度占用</th><th class="n">参考费用</th><th>延迟</th><th>核验</th></tr></thead>
+              <thead><tr><th>时间 / 工具</th><th>项目 / 账号</th><th>型号</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取 / 命中率</th><th class="n">额度占用</th><th class="n">参考费用</th><th>延迟</th><th>核验</th></tr></thead>
               <tbody id="request-rows"></tbody>
             </table>
           </div>
@@ -364,6 +364,7 @@
             <span id="request-pagination"></span>
             <div class="pager">
               <button id="request-prev" class="btn icon-btn" aria-label="上一页"><svg class="icon"><use href="#i-left"/></svg>上一页</button>
+              <label class="pager-jump"><span>跳到</span><input id="request-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转页码"><span>页</span><button id="request-page-go" class="btn" type="button">跳转</button></label>
               <button id="request-next" class="btn icon-btn" aria-label="下一页">下一页<svg class="icon"><use href="#i-right"/></svg></button>
             </div>
           </div>
@@ -384,7 +385,7 @@
           </div>
           <div class="table-scroll">
             <table>
-              <thead><tr><th>日期 / 工具</th><th>模型</th><th class="n">请求</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取</th><th class="n">Tokens</th><th class="n">参考费用</th></tr></thead>
+              <thead><tr><th>日期 / 工具</th><th>模型</th><th class="n">请求</th><th class="n">输入</th><th class="n">输出</th><th class="n">缓存读取 / 命中率</th><th class="n">Tokens</th><th class="n">参考费用</th></tr></thead>
               <tbody id="records"></tbody>
             </table>
           </div>
@@ -392,6 +393,7 @@
             <span id="pagination-label"></span>
             <div class="pager">
               <button id="prev-page" class="btn icon-btn" aria-label="上一页"><svg class="icon"><use href="#i-left"/></svg>上一页</button>
+              <label class="pager-jump"><span>跳到</span><input id="daily-page-input" type="number" min="1" step="1" inputmode="numeric" aria-label="跳转页码"><span>页</span><button id="daily-page-go" class="btn" type="button">跳转</button></label>
               <button id="next-page" class="btn icon-btn" aria-label="下一页">下一页<svg class="icon"><use href="#i-right"/></svg></button>
             </div>
           </div>
@@ -437,11 +439,12 @@
 
       <section class="settings-panel" data-panel="accounts" role="tabpanel" hidden>
         <div class="setting-block">
-          <div class="setting-title">官方账号</div>
-          <p class="setting-hint">每家可以登记多个账号，列表显示各自的额度和用完提醒，按住左边的把手拖动可以调整显示顺序。点铅笔可以给账号起名字。在 TokenPulse 里登录过的账号可以点「切到 CLI」，把官方 CLI 的登录换成它，不用再去终端里登出、登录。点「添加账号」可继续添加。</p>
+          <div class="setting-title setting-title-row" data-tip="每家可登记多个账号，拖动左侧把手可排序，点铅笔可起别名。在 TokenPulse 内登录的账号支持一键「切到 CLI」。" data-tip-label="账号管理说明"><span>官方账号</span></div>
+          <p class="setting-hint">管理各家官方订阅账号，拖动可排序，点「添加账号」新增。
+            <span class="setting-title-row" data-tip="CLI 自己的登录只读取不复制、不保存凭据；在这里登录的账号凭据仅保存在本机 official-accounts.json，不会上传，仅用于查询额度。" data-tip-label="凭据安全说明" data-tip-icon="notice"></span>
+          </p>
           <div id="official-accounts" class="official-account-list"></div>
           <div id="antigravity-accounts" class="official-account-list agy-official-list"></div>
-          <p class="account-security-note"><svg class="icon"><use href="#i-lock"/></svg>CLI 自己的登录只读取不复制，也不会被续期（用「本机 CLI 已登录的账号」添加的就是这种，不保存凭据）；在这里登录的账号，凭据（含续期用的 refresh token）保存在本机 official-accounts.json，仅用于查询额度，不会上传，并在过期前自动续期。</p>
         </div>
       </section>
 
@@ -482,12 +485,12 @@
         </div>
 
         <!-- Data Directory & Logs Card -->
-        <div class="setting-block setting-card">
+        <div class="setting-block setting-card setting-card-row">
           <div class="setting-group-head">
             <svg class="icon"><use href="#i-folder"/></svg>
             <div>
-              <div class="setting-title">数据位置与日志</div>
-              <p class="setting-hint">数据存储在 <code>~/.tokenpulse/</code>。删掉用量账本会从头重扫、不丢数据；额度采样历史删了无法恢复。</p>
+              <div class="setting-title setting-title-row" data-tip="删掉用量账本会自动重扫不丢数据；额度采样历史删后无法恢复。排查日志 logs/tokenpulse.log 已脱敏且已打码邮箱。" data-tip-label="数据位置与日志说明"><span>数据位置与日志</span></div>
+              <p class="setting-hint">本地目录 <code>~/.tokenpulse/</code></p>
             </div>
           </div>
           <div class="setting-actions-row">
@@ -495,28 +498,29 @@
             <button id="open-log" class="btn" type="button"><svg class="icon"><use href="#i-folder"/></svg>打开日志</button>
             <button id="data-trim-cache" class="btn" type="button"><svg class="icon"><use href="#i-restore"/></svg>清理渲染缓存</button>
           </div>
-          <p class="setting-subhint">日志 <code>logs/tokenpulse.log</code> 记录请求状态与操作，链接参数已脱敏，邮箱已打码。</p>
         </div>
 
         <!-- tokens.ci Card -->
-        <div class="setting-block setting-card">
+        <div class="setting-block setting-card setting-card-row">
           <div class="setting-group-head">
             <svg class="icon"><use href="#i-up"/></svg>
             <div>
-              <div class="setting-title">tokens.ci 自动上传</div>
-              <p class="setting-hint">按你设的间隔，由 TokenPulse 运行 tokens.ci 的官方工具，把用量上传到 tokens.ci 排行榜。上传的数据由那个工具自己扫描，只有 Token 数、型号和时间；TokenPulse 自己的账本仍然只在本机。</p>
+              <div class="setting-title setting-title-row" data-tip="按设定间隔运行 tokens.ci 官方工具上传排行榜数据（仅含 Token 数、型号和时间），TokenPulse 本地账本仍仅存本机。" data-tip-label="tokens.ci 上传说明"><span>tokens.ci 自动上传</span></div>
+              <p class="setting-hint">定时上传用量汇总到 tokens.ci 排行榜</p>
             </div>
           </div>
-          <button id="open-tokens-ci" class="btn" type="button"><svg class="icon"><use href="#i-up"/></svg>设置 tokens.ci 上传</button>
+          <div class="setting-actions-row">
+            <button id="open-tokens-ci" class="btn" type="button"><svg class="icon"><use href="#i-up"/></svg>设置 tokens.ci 上传</button>
+          </div>
         </div>
 
         <!-- API Key Monitoring Card -->
-        <div class="setting-block setting-card">
+        <div class="setting-block setting-card setting-card-row">
           <div class="setting-group-head">
             <svg class="icon"><use href="#i-plus"/></svg>
             <div>
-              <div class="setting-title">API Key 余额监控</div>
-              <p class="setting-hint">DeepSeek 按量付费，没有订阅额度。填一个 DeepSeek 开放平台的 API Key，TokenPulse 按「设置 → 通用」里的额度查询间隔查余额，低于你设的数时提醒。有几个账号可以填几个，每个账号在额度详情里各有一页。Key 只保存在这台电脑上，只用来查余额，查余额不花钱。</p>
+              <div class="setting-title setting-title-row" data-tip="DeepSeek 与中转站按量付费，填入 API Key 后按通用间隔查询余额并支持低余额提醒。Key 仅存本机，查余额不花钱。" data-tip-label="API Key 余额监控说明"><span>API Key 余额监控</span></div>
+              <p class="setting-hint">监控 DeepSeek 或第三方中转站余额</p>
             </div>
           </div>
           <div class="setting-actions-row">
@@ -526,15 +530,17 @@
         </div>
 
         <!-- Provider Config Backups Card -->
-        <div class="setting-block setting-card">
+        <div class="setting-block setting-card setting-card-row">
           <div class="setting-group-head">
             <svg class="icon"><use href="#i-lock"/></svg>
             <div>
-              <div class="setting-title">供应商配置备份</div>
-              <p class="setting-hint">TokenPulse 每次改动 Claude / Codex / Grok 的配置文件前都会先让你确认，并自动留一份备份；接管前的原件也单独保存。可以在这里一键还原，或打开只读保护。</p>
+              <div class="setting-title setting-title-row" data-tip="每次修改 Claude / Codex / Grok 配置前都会先确认并自动留份备份，接管前原件也会单独保存，可一键还原或开启只读保护。" data-tip-label="配置保护说明"><span>供应商配置备份</span></div>
+              <p class="setting-hint">查看历史备份、一键还原或开启只读保护</p>
             </div>
           </div>
-          <button id="open-config-backups" class="btn" type="button"><svg class="icon"><use href="#i-lock"/></svg>打开配置保护</button>
+          <div class="setting-actions-row">
+            <button id="open-config-backups" class="btn" type="button"><svg class="icon"><use href="#i-lock"/></svg>打开配置保护</button>
+          </div>
         </div>
 
         <!-- CC Switch Import Card -->
@@ -542,26 +548,26 @@
           <div class="setting-group-head">
             <svg class="icon"><use href="#i-route"/></svg>
             <div>
-              <div class="setting-title">从 CC Switch 导入</div>
-              <p class="setting-hint">只读 CC Switch 的本地库，补上 TokenPulse 自己没有的那部分：CLI 已经清掉的老会话、OpenCode 这类不扫描的工具。同一天同一个工具两边都有时只算 TokenPulse 自己的，不会重复。走 CC Switch 代理的请求还会用它记下的上游返回型号来核验。</p>
+              <div class="setting-title setting-title-row" data-tip="只读 CC Switch 本地库，补齐 CLI 已清理的老会话或 OpenCode 等记录，同天同工具自动去重，并支持代理型号核验。" data-tip-label="CC Switch 导入说明"><span>从 CC Switch 导入</span></div>
+              <p class="setting-hint">补齐本机未覆盖的历史会话与代理核验信息</p>
             </div>
           </div>
           <div id="cc-switch-card" class="update-card"></div>
           <div id="cc-switch-pref"></div>
         </div>
 
-        <!-- Methodology -->
-        <div class="setting-block methodology-copy setting-card">
-          <div class="setting-title">统计口径</div>
+        <!-- Methodology (collapsible) -->
+        <details class="setting-block methodology-copy setting-card methodology-details">
+          <summary>统计口径说明</summary>
           <h3>本机用量</h3>
           <p>读取 Claude Code、Codex CLI、Grok Build、DeepSeek Harness、pi 和 Antigravity 的会话记录，并按天补上 CC Switch 里有、本机会话已经没有的记录。时间范围按本地自然日（含今天）计算，对比紧邻的上一段等长时间；今天尚未结束。</p>
           <h3>输入、输出与缓存</h3>
           <p>总 Tokens = 输入 + 输出。缓存读取和缓存写入已包含在输入中，推理 Tokens 已包含在输出中，不能再次累加。缓存读取占比 = 缓存读取 / 全部输入。</p>
           <h3>额度与预测</h3>
-          <p>官方账号额度独立采样。达到上限的时间以最近采样趋势估计，并限制单次跳点的影响；近期没有新增用量时不会虚构耗尽时间。预测只是使用节奏的参考：默认周额度只有按趋势会在重置前断档四分之一以上时间、且已用超过 10% 才让进度条和徽标变色，5 小时窗口放宽到一半；只差一点点就用完的只用文字说明。宽松程度可以在设置的「提醒」里按窗口调整。超过 15 分钟的采样标为过期，重置后需等待新采样确认。</p>
+          <p>官方账号额度独立采样。达到上限的时间以最近采样趋势估计，并限制单次跳点的影响；近期没有新增用量时不会虚构耗尽时间。预测宽松程度可在设置的「提醒」里按窗口调整。超过 15 分钟的采样标为过期，重置后需等待新采样确认。</p>
           <h3>费用与导出</h3>
-          <p>优先使用日志自报费用，其余按项目内单价表估算。未知模型不会被当作免费。CSV 导出当前时间、工具和搜索筛选下的全部匹配明细，不受分页限制。</p>
-        </div>
+          <p>优先使用日志自报费用，其余按项目内单价表估算。未知模型不会被当作免费。CSV 导出当前筛选下的全部匹配明细，不受分页限制。</p>
+        </details>
       </section>
 
       <section class="settings-panel" data-panel="about" role="tabpanel" hidden>
@@ -569,33 +575,37 @@
           <span class="brand-mark about-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle class="brand-track" cx="12" cy="12" r="7.5"/><path class="brand-progress" d="M7.9 5.7A7.5 7.5 0 0 1 17.6 17"/><rect class="brand-bar" x="7.8" y="13.2" width="2" height="3.8" rx="1"/><rect class="brand-bar" x="11" y="10.8" width="2" height="6.2" rx="1"/><rect class="brand-bar" x="14.2" y="8" width="2" height="9" rx="1"/><circle class="brand-node" cx="17.6" cy="17" r="1.5"/></svg></span>
           <div><div class="about-name">TokenPulse <span class="app-version"></span><i class="preview-tag" hidden>预览版</i></div><p>Your AI usage, at a glance. 常驻托盘，记录本机 AI CLI 的用量，盯住官方订阅额度。</p><p class="preview-note" hidden>现在还是预览版：功能在快速增加和调整，所以更新比较频繁。正式版会从 1.0 开始。</p></div>
         </div>
-        <div class="setting-block">
-          <div class="setting-title">上手指南</div>
-          <p class="setting-hint">跟着新手引导把各个页面走一遍，或者看看这个版本新加了什么。</p>
-          <div class="about-links">
+        <div class="setting-block setting-flex-row">
+          <div class="setting-label-col">
+            <div class="setting-title">上手指南</div>
+            <p class="setting-hint">重温新手引导或查看本版本更新亮点</p>
+          </div>
+          <div class="setting-control about-links">
             <button id="intro-replay" class="btn" type="button"><svg class="icon"><use href="#i-overview"/></svg>重新查看新手引导</button>
             <button id="whatsnew-open" class="btn" type="button"><svg class="icon"><use href="#i-update"/></svg>这个版本的新内容</button>
           </div>
         </div>
         <div class="setting-block">
-          <div class="setting-title">软件更新</div>
-          <p class="setting-hint">开启自动更新后，TokenPulse 会在后台检查并下载新版本，等窗口收进托盘或最小化时静默安装并自动重启，全程不用你动手。</p>
+          <div class="setting-title setting-title-row" data-tip="开启自动更新后会在后台检查并下载新版本，窗口收进托盘或最小化时静默安装并自动重启。" data-tip-label="自动更新说明"><span>软件更新</span></div>
+          <p class="setting-hint">检查版本与配置后台自动更新</p>
           <div id="update-card" class="update-card"></div>
           <div id="update-auto" class="update-auto"></div>
         </div>
         <div class="setting-block">
-          <div class="setting-title">模型知识库</div>
-          <p class="setting-hint">各个型号的单价、「哪些名字是同一个型号」和思考等级规则。GitHub 上每天自动从公开价格表（LiteLLM，并用 OpenRouter 交叉核对）同步一次，TokenPulse 每天自动检查并下载，新型号不用等新版本就能认出来、算出费用。各思考等级的 token 消耗参考 <a href="https://epoch.ai/data/ai-benchmarking-dashboard" target="_blank" rel="noreferrer">Epoch AI</a> 的基准数据（CC BY 4.0）。</p>
+          <div class="setting-title setting-title-row" data-tip="包含模型单价、别名映射和思考等级规则。GitHub 每日自动从 LiteLLM / OpenRouter 同步，TokenPulse 每日检查更新；思考等级消耗参考 Epoch AI 基准数据（CC BY 4.0）。" data-tip-label="模型知识库说明"><span>模型知识库</span></div>
+          <p class="setting-hint">自动同步模型单价、型号别名与思考等级规则</p>
           <div id="knowledge-card" class="update-card"></div>
           <div id="knowledge-gaps" class="knowledge-gaps" hidden></div>
         </div>
-        <div class="setting-block">
-          <div class="setting-title">作者</div>
-          <p class="about-author" translate="no">江木源 (JohnMuYuan)</p>
-          <div class="about-links">
+        <div class="setting-block setting-flex-row">
+          <div class="setting-label-col">
+            <div class="setting-title">作者</div>
+            <p class="about-author setting-hint" translate="no">江木源 (JohnMuYuan)</p>
+          </div>
+          <div class="setting-control about-links">
             <a class="btn" href="mailto:Hi@muyno.com" translate="no"><svg class="icon"><use href="#i-user"/></svg>Hi@muyno.com</a>
             <a class="btn" href="https://johnmuyuan.com" target="_blank" rel="noreferrer" translate="no"><svg class="icon"><use href="#i-external"/></svg>JohnMuYuan.com</a>
-            <a class="btn" href="https://github.com/JohnMuyuan/TokenPulse" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-external"/></svg>GitHub · JohnMuyuan/TokenPulse</a>
+            <a class="btn" href="https://github.com/JohnMuyuan/TokenPulse" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-external"/></svg>GitHub</a>
           </div>
         </div>
       </section>

@@ -158,15 +158,19 @@ function icon(name, cls = 'icon') {
   return node;
 }
 /**
- * 带圆圈感叹号（或问号，iconName = 'help'）的说明：平时只占一个小图标，鼠标悬停或键盘聚焦时弹出说明。
+ * 带圆圈问号 / 感叹号的说明（iconName = 'notice' | 'help'）：平时只占一个小图标，鼠标悬停、聚焦或点击时弹出说明。
  * 浮层打开时挂到 body 上、用 fixed 定位（卡片的 overflow / 后面面板的层级都挡不住它），关上再放回图标旁边。
- * content 可以带按钮：鼠标从图标移到浮层上不会关。
+ * 遵循 WCAG 1.4.13（可悬停、可按 Esc 关、焦点移开自动关闭、不把焦点强行拉进浮层）。
  */
 function infoTip(content, label = '说明', cls = '', iconName = 'notice') {
-  const pop = el('span', { class: 'info-tip-pop', role: 'tooltip' }, content);
-  const button = el('button', { type: 'button', class: 'info-tip-btn', 'aria-label': label }, [icon(iconName)]);
-  const tip = el('span', { class: ('info-tip ' + cls).trim() }, [button, pop]);
-  let timer = 0, watch = null;
+  const body = typeof content === 'string'
+    ? content.split('\n').filter(Boolean).map(line => el('span', { class: 'info-tip-line', text: line }))
+    : content;
+  const pop = el('span', { class: 'info-tip-pop', role: 'tooltip' }, body);
+  const kindCls = iconName === 'help' ? 'is-help' : 'is-notice';
+  const button = el('button', { type: 'button', class: `info-tip-btn ${kindCls}`, 'aria-label': label, 'aria-expanded': 'false' }, [icon(iconName)]);
+  const tip = el('span', { class: ('info-tip ' + kindCls + ' ' + cls).trim() }, [button, pop]);
+  let timer = 0, watch = null, pinned = false;
   const place = () => {
     const r = button.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, gap = 8;
     const left = Math.min(Math.max(12, r.left + r.width / 2 - w / 2), window.innerWidth - w - 12);
@@ -174,32 +178,62 @@ function infoTip(content, label = '说明', cls = '', iconName = 'notice') {
     pop.style.left = Math.round(left) + 'px';
     pop.style.top = Math.round(below ? r.bottom + gap : r.top - gap - h) + 'px';
   };
+  const onDocDown = e => {
+    if (!tip.contains(e.target) && !pop.contains(e.target)) { pinned = false; close(); }
+  };
   const open = () => {
     clearTimeout(timer);
     if (pop.classList.contains('open') || !tip.isConnected) return;
     document.body.append(pop);
     pop.classList.add('open');
+    button.setAttribute('aria-expanded', 'true');
     place();
     window.addEventListener('scroll', close, true);
+    document.addEventListener('pointerdown', onDocDown, true);
     // 打开期间定时重画把图标换掉了：浮层跟着收掉，不留在 body 上
     watch = new MutationObserver(() => { if (!tip.isConnected) close(); });
     watch.observe(document.body, { childList: true, subtree: true });
   };
   function close() {
     clearTimeout(timer);
+    pinned = false;
     pop.classList.remove('open');
+    button.setAttribute('aria-expanded', 'false');
     window.removeEventListener('scroll', close, true);
+    document.removeEventListener('pointerdown', onDocDown, true);
     watch?.disconnect(); watch = null;
     if (tip.isConnected) tip.append(pop); else pop.remove();
   }
-  const later = () => { clearTimeout(timer); timer = setTimeout(() => { if (!tip.matches(':hover') && !pop.matches(':hover') && !tip.contains(document.activeElement) && !pop.contains(document.activeElement)) close(); }, 120); };
+  const later = () => {
+    if (pinned) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (!pinned && !tip.matches(':hover') && !pop.matches(':hover') && !tip.contains(document.activeElement) && !pop.contains(document.activeElement)) close();
+    }, 140);
+  };
   tip.addEventListener('mouseenter', open); tip.addEventListener('mouseleave', later);
   pop.addEventListener('mouseenter', () => clearTimeout(timer)); pop.addEventListener('mouseleave', later);
   button.addEventListener('focus', open);
+  button.addEventListener('click', e => {
+    e.stopPropagation();
+    if (pinned && pop.classList.contains('open')) { close(); }
+    else { pinned = true; open(); }
+  });
   tip.addEventListener('focusout', later); pop.addEventListener('focusout', later);
   const onKey = e => { if (e.key === 'Escape' && pop.classList.contains('open')) { e.stopPropagation(); close(); button.focus(); } };
   tip.addEventListener('keydown', onKey); pop.addEventListener('keydown', onKey);
   return tip;
+}
+function hydrateInlineTips(root = document) {
+  for (const node of root.querySelectorAll('[data-tip]')) {
+    if (node.dataset.tipMounted) continue;
+    node.dataset.tipMounted = '1';
+    const text = node.dataset.tip;
+    if (!text) continue;
+    const label = node.dataset.tipLabel || '说明';
+    const iconName = node.dataset.tipIcon === 'notice' ? 'notice' : 'help';
+    node.append(infoTip(text, label, '', iconName));
+  }
 }
 /** 官方品牌图标：有自带颜色的路径保留原色（Claude 橙），其余跟随 currentColor。 */
 function brandSvg(brand) {
@@ -1439,7 +1473,8 @@ function modelWeekDetail(win, account) {
   ]);
 }
 function windowPanel(label, report, account) {
-  const panel = el('article', { class: 'panel window-panel' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: label }), el('span', { class: 'section-tag', text: '官方额度窗口' })])]);
+  const tip = infoTip('Token 和费用按「本机已用 ÷ 已用百分比」倒推，仅统计本机记录；其他设备同用该账号时会偏低，并非官方公布上限。', '额度折算说明', '', 'help');
+  const panel = el('article', { class: 'panel window-panel' }, [el('div', { class: 'panel-heading' }, [el('div', { class: 'panel-title-with-tip' }, [el('h2', { text: label }), tip]), el('span', { class: 'section-tag', text: '官方额度窗口' })])]);
   if (!report) { panel.append(empty('接口未提供此窗口')); return panel; }
   const pending = waitingReset(account, report), stale = isStale(account), unknown = stale || pending;
   panel.append(el('div', { class: 'window-number' }, [el('strong', { text: pending ? '—' : percent(Math.max(0, 100 - report.used)) }), el('span', { text: stale ? '上次采样剩余' : '剩余额度' })]));
@@ -1491,7 +1526,6 @@ function windowPanel(label, report, account) {
     metric('窗口开始', report.startAt ? date(report.startAt) : '未知', { sub: report.startAt ? new Date(report.startAt).getFullYear() + ' 年 · 本地时间' : '' }),
     metric('重置时间', report.resetAt ? date(report.resetAt) : '未知', { sub: report.resetAt ? `${duration(report.resetAt - Date.now())}后` : '' })
   ], 'two'));
-  panel.append(el('p', { class: 'quota-footnote', text: 'Token 和费用按「本机已用 ÷ 已用百分比」倒推，只统计这台电脑；在别的设备上也用这个账号时会偏低，也不是官方公布的上限。' }));
   return panel;
 }
 /** 重置卡的两种表现（见 quota-monitor.ts 的 RESET_STYLE）。 */
@@ -2106,11 +2140,35 @@ function drawSpeed(body, data, kind, custom = null) {
     ]), index);
   });
   const axis = el('div', { class: 'speed-row speed-axis', 'aria-hidden': 'true' }, [el('span'), el('span'), el('div', { class: 'speed-axis-labels' }, [el('span', { text: speedBucketLabel(data.from, bucketMs === 3600000 ? bucketMs : 86400000) }), el('span', { text: '现在' })]), el('span')]);
+  const speedTip = `点是那段时间（${bucketMs <= 3600000 ? '一小时' : bucketMs > 86400000 ? '一周' : '一天'}）的中位数，竖线是中间一半请求的范围。走势线每一行用自己的刻度（左边标着上下限），看的是这个模型自己变快还是变慢；模型之间比快慢看右边：数字是整段时间的中位数，下面的条都按 0 – ${max} Token/秒画。速度 = 输出 Token ÷ 出字用的时间（含思考）。`;
   body.replaceChildren(el('div', { class: 'speed-rows', role: 'table', 'aria-label': '各模型的速度走势' }, [...rows, axis]), tip,
-    el('p', { class: 'sample-caption', text: `点是那段时间（${bucketMs <= 3600000 ? '一小时' : bucketMs > 86400000 ? '一周' : '一天'}）的中位数，竖线是中间一半请求的范围。走势线每一行用自己的刻度（左边标着上下限），看的是这个模型自己变快还是变慢；模型之间比快慢看右边：数字是整段时间的中位数，下面的条都按 0 – ${max} Token/秒画。速度 = 输出 Token ÷ 出字用的时间（含思考）。` }));
+    el('div', { class: 'sample-caption panel-title-with-tip' }, [el('span', { text: `中位输出速度（0 – ${max} Token/秒）` }), infoTip(speedTip, '速度计算说明', '', 'help')]));
 }
 
 /* ---------------- 用量明细 ---------------- */
+
+function cacheHitPct(row) {
+  const input = Number(row?.input) || 0;
+  if (input <= 0) return null;
+  const read = Math.max(0, Number(row?.cacheRead) || 0);
+  return Math.min(100, (read / input) * 100);
+}
+function cacheHitText(row) {
+  const pct = cacheHitPct(row);
+  if (pct == null) return '—';
+  if (pct === 0) return '0%';
+  return pct >= 99.95 ? '100%' : pct >= 10 ? pct.toFixed(1) + '%' : pct >= 0.1 ? pct.toFixed(1) + '%' : '<0.1%';
+}
+function cacheReadCell(row) {
+  const pct = cacheHitPct(row);
+  const hitText = cacheHitText(row);
+  const tone = pct == null ? 'is-empty' : pct >= 60 ? 'is-high' : pct >= 20 ? 'is-mid' : pct > 0 ? 'is-low' : 'is-zero';
+  const title = pct == null ? `${number(row.cacheRead)}（无输入）` : `缓存读取 ${number(row.cacheRead)} / 输入 ${number(row.input)}（命中率 ${hitText}）`;
+  return el('td', { class: 'n cache-cell', title }, [
+    el('span', { class: 'cache-read-val' }, qty(row.cacheRead)),
+    el('small', { class: `cache-hit-rate ${tone}`, text: pct == null ? '—' : `命中 ${hitText}` }),
+  ]);
+}
 
 function renderRecords() {
   // 搜索统一在流水查询中执行，排序不修改汇总原始数组。
@@ -2122,12 +2180,16 @@ function renderRecords() {
   $('export-csv').disabled = Boolean(analysis.loading || analysis.error) || !filteredRecords.length;
   $('records').replaceChildren(...visible.map((row, i) => stagger(el('tr', {}, [
     el('td', {}, [row.day, el('small', {}, [miniLogo(row.source), row.source])]), el('td', { class: 'model-cell', text: row.model, title: row.model }),
-    ...['requests', 'input', 'output', 'cacheRead', 'tokens'].map(key => el('td', { class: 'n' + (key === 'tokens' ? ' token-strong' : ''), title: number(row[key]) }, qty(row[key]))),
+    ...['requests', 'input', 'output'].map(key => el('td', { class: 'n', title: number(row[key]) }, qty(row[key]))),
+    cacheReadCell(row),
+    el('td', { class: 'n token-strong', title: number(row.tokens) }, qty(row.tokens)),
     el('td', { class: 'n', text: row.priced === false ? '未定价' : money(row.costUsd) })
   ]), i)));
   if (!visible.length) $('records').append(el('tr', {}, [el('td', { colspan: 8, class: 'empty', text: analysis.error ? '筛选统计读取失败，请重试。' : analysis.loading ? '正在读取请求记录…' : '没有匹配的记录，试试其他时间、工具或关键词。' })]));
   $('pagination-label').textContent = `第 ${state.tablePage + 1} / ${pages} 页 · 共 ${number(filteredRecords.length)} 条匹配明细`;
   $('prev-page').disabled = state.tablePage === 0; $('next-page').disabled = state.tablePage >= pages - 1;
+  const dailyInput = $('daily-page-input'), dailyGo = $('daily-page-go');
+  if (dailyInput && dailyGo) { dailyInput.max = String(pages); dailyInput.value = String(state.tablePage + 1); dailyInput.disabled = pages <= 1; dailyGo.disabled = pages <= 1; }
 }
 function renderUsage() {
   const t = analysis.total;
@@ -2235,7 +2297,7 @@ function drawAccountRequests(panel, account, meta, data) {
 /* ---------------- 请求记录与型号核验 ---------------- */
 
 const VERIFY_TONE = { match: 'good', mismatch: 'critical', suspect: 'warning', unverified: 'neutral' };
-const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话'], ['firstTokenMs', '首字延迟（毫秒）'], ['totalMs', '总耗时（毫秒）'], ['tokensPerSec', '输出速度（Token/秒）'], ['routeVia', '经由']];
+const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheHitRate', '缓存命中率'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话'], ['firstTokenMs', '首字延迟（毫秒）'], ['totalMs', '总耗时（毫秒）'], ['tokensPerSec', '输出速度（Token/秒）'], ['routeVia', '经由']];
 let requestPage = null, requestSeq = 0, requestKey = '', requestError = false;
 const openRequests = new Set();
 function projectOf(cwd) { return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd : '—'; }
@@ -2436,7 +2498,7 @@ function requestDetail(row) {
     ['账号依据', row.account ? `${ACCOUNT_BASIS[row.account.basis]}：${ACCOUNT_BASIS_HINT[row.account.basis]}` : '—'],
     ['账号类型', row.official === true ? '官方登录账号' : row.official === false ? 'API Key / 中转站' : '未知'],
     ['额度占用（估算）', (share => share ? [share.five ? `5 小时 ${sharePct(share.five.pct)}` : '', share.week ? `周 ${sharePct(share.week.pct)}` : ''].filter(Boolean).join(' · ') : '—')(quotaShare(row))],
-    ['Tokens', number(row.tokens)],
+    ['Tokens', number(row.tokens)], ['缓存命中率', cacheHitText(row)],
     ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.session, true],
     ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)], ['推理 Tokens', number(row.reasoning)],
     ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : []),
@@ -2481,7 +2543,7 @@ function drawRequests() {
       modelCell(row),
       el('td', { class: 'n', title: number(row.input) }, qty(row.input)),
       el('td', { class: 'n', title: number(row.output) }, qty(row.output)),
-      el('td', { class: 'n', title: number(row.cacheRead) }, qty(row.cacheRead)),
+      cacheReadCell(row),
       quotaCell(row),
       el('td', { class: 'n', text: row.priced ? money(row.costUsd) : '未定价' }),
       latencyCell(row),
@@ -2493,6 +2555,8 @@ function drawRequests() {
   $('request-rows').replaceChildren(...rows);
   $('request-pagination').textContent = `第 ${page.page + 1} / ${page.pages} 页 · 共 ${number(page.total)} 次请求`;
   $('request-prev').disabled = page.page === 0; $('request-next').disabled = page.page >= page.pages - 1;
+  const reqInput = $('request-page-input'), reqGo = $('request-page-go');
+  if (reqInput && reqGo) { reqInput.max = String(page.pages); reqInput.value = String(page.page + 1); reqInput.disabled = page.pages <= 1; reqGo.disabled = page.pages <= 1; }
 }
 /** 看过用量明细之后，比这更早的不一致不再在侧栏标红点。 */
 const REQUEST_ALERT_SEEN = 'tokenpulse-request-alert-seen';
@@ -3128,7 +3192,7 @@ function navigate(page, options = {}) {
   if (page !== 'providers') window.PulseProviders?.hide();
   if (page !== 'pet') window.PulseDeskPet?.hide();
   if (page !== 'sessions') window.PulseSessions?.hide?.();
-  const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '工具配置、本地路由、官方账号续期、网络和出口、数据目录，集中检查一遍，并告诉你去哪里处理。体检只读，不改任何配置。'], concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
+  const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '检查工具配置、本地路由、官方账号到期状态、网络和出口与数据目录（只读不改配置）。'], concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
@@ -3253,27 +3317,28 @@ const PRESSURE_OPTIONS = fallback => [
 ].map(option => option.value === fallback ? { ...option, hint: option.hint + '（默认）' } : option);
 /** 存进 prefs.json 的设置项。外观不在这里：它要在读 prefs 之前就生效，存在 localStorage。 */
 /** 后台账号少查一点（见 core/quota-quiet.ts）：放在额度查询间隔下面。 */
-const QUIET_ROW = { key: 'quotaQuietBackground', title: '后台账号少查一点', hint: '定时查询只查在用的官方账号（各家 CLI 当前登录的、号池里的、桌宠固定看的），其他账号每 30 分钟查一次。手动刷新照常全查；开了额度用满自动切换时，切之前会先查一次候选账号。它只减少请求次数，不能防止在用的账号被官方限流。', options: [
+const QUIET_ROW = { key: 'quotaQuietBackground', title: '后台账号少查一点', hint: '定时仅高频查在用账号，其余每 30 分钟一次', tip: '在用账号指各家 CLI 当前登录、号池内及桌宠固定的账号。手动刷新照常全查；自动切换前会先查候选账号。只减少请求频次，不保证防止在用账号限流。', options: [
   { value: false, label: '全部账号按间隔查', hint: '默认' },
   { value: true, label: '后台账号每 30 分钟查一次', hint: '少发请求，后台账号的额度会旧一些' }] };
 const PREF_ROWS = {
   general: [
-    { key: 'closeToTray', title: '关闭窗口时', hint: '收进托盘后照常每分钟记录用量，额度按设置里的间隔继续查。真正退出请用托盘图标的右键菜单。', type: 'switch', onLabel: '收进托盘继续运行', offLabel: '直接退出' },
-    { key: 'autoLaunch', title: '开机自启', hint: '登录电脑后自动在托盘里开始记录。只对安装版和免安装版生效，开发模式不会写入启动项。', type: 'switch', onLabel: '开机自动启动', offLabel: '不自动启动' },
-    { key: 'startMinimized', title: '启动时', hint: '手动打开 TokenPulse 时是否弹出窗口。开机自启那一次总是直接进托盘。', type: 'switch', onLabel: '直接进入托盘', offLabel: '显示窗口' }
+    { key: 'closeToTray', title: '关闭窗口时', hint: '关闭主窗口后驻留托盘继续记录', tip: '收进托盘后照常每分钟记录用量并按间隔查额度。彻底退出请右键托盘图标。', type: 'switch', onLabel: '收进托盘', offLabel: '直接退出' },
+    { key: 'autoLaunch', title: '开机自启', hint: '登录系统后自动在托盘运行', tip: '仅对安装版和免安装版生效，开发模式不写入开机启动项。', type: 'switch', onLabel: '已开启', offLabel: '已关闭' },
+    { key: 'startMinimized', title: '启动时隐藏窗口', hint: '手动打开软件时是否直接进托盘', tip: '开机自启默认直接进托盘；此项仅影响手动打开时的窗口行为。', type: 'switch', onLabel: '直接进托盘', offLabel: '显示窗口' }
   ],
   alerts: [
-    { key: 'notifyAt', title: '额度提醒', hint: '任一官方额度窗口（5 小时或每周）的已用比例达到这个值时，发一条系统通知。同一个窗口只提醒一次，重置后重新计算。', custom: value => `已用 ${value}% 时提醒`, options: [
+    { key: 'notifyAt', title: '额度提醒', hint: '任一官方窗口已用达到该比例时推送通知', tip: '覆盖 5 小时和周额度窗口；同一窗口只提醒一次，重置后重新计算。', custom: value => `已用 ${value}% 时提醒`, options: [
       { value: 0, label: '不提醒', hint: '关闭额度通知' },
       { value: 70, label: '已用 70% 时提醒', hint: '留出充足余量' },
       { value: 80, label: '已用 80% 时提醒' },
       { value: 85, label: '已用 85% 时提醒', hint: '默认' },
       { value: 90, label: '已用 90% 时提醒' },
       { value: 95, label: '已用 95% 时提醒', hint: '快用完才提醒' }] },
-    { key: 'pressureWeek', title: '周额度「达到上限」提示', hint: '按最近趋势会在重置前用完时，进度条和徽标什么时候变色。「断档」指用完之后到重置之间没额度可用的那段时间占剩余时间的比例。只影响颜色和文字语气，预测本身照常显示。', options: PRESSURE_OPTIONS('default') },
-    { key: 'pressureFive', title: '5 小时额度「达到上限」提示', hint: '同上，单独给 5 小时窗口设。这个窗口本来就是拿来用完的，默认比周额度宽松。', options: PRESSURE_OPTIONS('relaxed') },
-    { key: 'notifyMismatch', title: '型号核验提醒', hint: '新请求的返回型号和请求的对不上、或者响应格式不像官方时，发一条系统通知，点开直接跳到请求记录。', type: 'switch', onLabel: '发现就提醒', offLabel: '不提醒' },
-    { key: 'weeklySummary', title: '每周小结', hint: '每周一 9 点以后发一条系统通知，概括上周（周一到周日）的用量、和前一周的对比、用得最多的模型和缓存省下的钱；那时软件没开，就在这周第一次打开时补发。点开可以生成周报卡片。', options: [
+    { key: 'notifyAccountExpiry', title: '账号过期前提醒', hint: '官方账号凭据距过期不足 24 小时时通知', tip: '提前一天提醒即将失效的官方账号凭据，方便提前重新登录或授权，避免额度监控中断。', type: 'switch', onLabel: '提前一天提醒', offLabel: '不提醒' },
+    { key: 'pressureWeek', title: '周额度「达到上限」提示', hint: '控制周额度预测进度条与徽标的变色阈值', tip: '「断档」指按趋势用完后到重置之间的空窗占剩余时间的比例。仅影响颜色和提示语气，预测数值照常显示。', options: PRESSURE_OPTIONS('default') },
+    { key: 'pressureFive', title: '5 小时额度「达到上限」提示', hint: '控制 5 小时窗口的变色阈值（默认更宽松）', tip: '5 小时窗口本身常会用满，默认比周额度更宽松，减少不必要的焦虑提示。', options: PRESSURE_OPTIONS('relaxed') },
+    { key: 'notifyMismatch', title: '型号核验提醒', hint: '检测到返回型号不一致或响应存疑时通知', tip: '发现上游返回型号与请求不符或响应格式异常时发系统通知，点击直达请求记录。', type: 'switch', onLabel: '发现就提醒', offLabel: '不提醒' },
+    { key: 'weeklySummary', title: '每周小结', hint: '每周一上午汇总上周用量并推送周报通知', tip: '每周一 9 点后推送上周用量、环比变化、常用模型和缓存节省；当时未开软件则在本周首次打开时补发。', options: [
       { value: true, label: '每周一提醒', hint: '默认' },
       { value: false, label: '不提醒', hint: '周报仍可以在分享卡片里随时查看' }] }
   ]
@@ -3310,17 +3375,21 @@ function prefToggle({ id, label, value, onLabel, offLabel, onChange }) {
 
   return el('div', { class: 'dps-switch-control' }, [status, button]);
 }
-function settingRow(title, hint, control, isFlexRow = false) {
-  if (isFlexRow) {
-    return el('div', { class: 'setting-block setting-flex-row' }, [
-      el('div', { class: 'setting-label-col' }, [
-        el('div', { class: 'setting-title', text: title }),
-        hint ? el('p', { class: 'setting-hint', text: hint }) : null
-      ].filter(Boolean)),
-      control
-    ]);
-  }
-  return el('div', { class: 'setting-block' }, [el('div', { class: 'setting-title', text: title }), el('p', { class: 'setting-hint', text: hint }), control]);
+function settingRow(title, hint, control, extra = null) {
+  const tip = typeof extra === 'string' ? extra : extra?.tip || '';
+  const tipIcon = (typeof extra === 'object' && extra?.tipIcon) || 'help';
+  const titleNode = el('div', { class: 'setting-title setting-title-row' }, [
+    el('span', { text: title }),
+    tip ? infoTip(tip, `${title}说明`, '', tipIcon) : null
+  ].filter(Boolean));
+  const controlWrap = el('div', { class: 'setting-control' }, [control]);
+  return el('div', { class: 'setting-block setting-flex-row' }, [
+    el('div', { class: 'setting-label-col' }, [
+      titleNode,
+      hint ? el('p', { class: 'setting-hint', text: hint }) : null
+    ].filter(Boolean)),
+    controlWrap
+  ]);
 }
 async function savePref(key, value) {
   $('prefs-status').textContent = '正在保存…';
@@ -3329,6 +3398,7 @@ async function savePref(key, value) {
 }
 function prefRow(row, prefs) {
   const value = prefs[row.key];
+  const tipOpt = row.tip ? { tip: row.tip, tipIcon: row.tipIcon || 'help' } : null;
   if (row.type === 'switch') {
     return settingRow(row.title, row.hint, prefToggle({
       id: 'pref-' + row.key,
@@ -3337,11 +3407,11 @@ function prefRow(row, prefs) {
       onLabel: row.onLabel,
       offLabel: row.offLabel,
       onChange: next => savePref(row.key, next)
-    }), true);
+    }), tipOpt);
   }
   // 手改过 prefs.json、值不在预设里时，把它当成一个选项显示出来，而不是显示「未选择」。
   const options = row.options.some(option => option.value === value) || !row.custom ? row.options : [...row.options, { value, label: row.custom(value), hint: '当前自定义值' }];
-  return settingRow(row.title, row.hint, optionSelect({ id: 'pref-' + row.key, label: row.title, value, options, onChange: next => savePref(row.key, next) }));
+  return settingRow(row.title, row.hint, optionSelect({ id: 'pref-' + row.key, label: row.title, value, options, onChange: next => savePref(row.key, next) }), tipOpt);
 }
 /* ---------------- 软件更新（关于页） ---------------- */
 
@@ -3389,14 +3459,14 @@ function renderUpdate(info = updateInfo) {
   // 不支持自动更新的版本（便携版 / 免安装版）不显示开关，免得误以为打开就能更新。
   if (info.status === 'unsupported') { $('update-auto').replaceChildren(); return; }
   if (!$('pref-autoUpdate')) {
-    $('update-auto').replaceChildren(optionSelect({
+    $('update-auto').replaceChildren(settingRow('自动更新方式', '决定发现新版本后的更新策略', optionSelect({
       id: 'pref-autoUpdate', label: '自动更新', value: info.autoUpdate,
       options: [
         { value: true, label: '自动更新（推荐）', hint: '后台下载，窗口收起时静默安装并重启' },
         { value: false, label: '只提醒', hint: '发现新版本时在这里提示，由你决定何时安装' }
       ],
       onChange: next => savePref('autoUpdate', next)
-    }));
+    })));
   }
 }
 function loadUpdateState() {
@@ -3438,14 +3508,14 @@ function renderCcSwitch(status = current?.ccSwitch, prefs) {
     el('div', { class: 'update-actions' }, [sync])
   );
   if (prefs) {
-    $('cc-switch-pref').replaceChildren(optionSelect({
+    $('cc-switch-pref').replaceChildren(settingRow('自动同步', '检测到 CC Switch 时自动补齐历史用量', optionSelect({
       id: 'pref-ccSwitch', label: '从 CC Switch 导入', value: prefs.ccSwitch !== false,
       options: [
         { value: true, label: '自动导入', hint: '默认。检测到 CC Switch 就补上缺的记录' },
         { value: false, label: '不导入', hint: '只统计 TokenPulse 自己扫描到的' }
       ],
       onChange: async next => { if (await savePref('ccSwitch', next)) { render(await api.refresh()); renderCcSwitch(); } }
-    }));
+    })));
   }
 }
 
@@ -3547,13 +3617,11 @@ function quotaIntervalRow(prefs) {
     paint();
   });
   paint();
-  return settingRow('额度查询间隔', 'Claude、ChatGPT、Grok、Antigravity 的订阅额度，以及 DeepSeek 和第三方 Key 的余额，共用这一个间隔。默认 1 分钟。拖动滑块后点保存才会改掉正在跑的查询。最短 1 分钟，最长 10 分钟。', el('div', { class: 'interval-row' }, [
-    el('span', { class: 'interval-bound', text: '1 分钟' }),
+  return settingRow('额度查询间隔', '官方订阅额度与余额监控的定时查询频率（1 – 10 分钟）', el('div', { class: 'interval-row' }, [
     slider,
-    el('span', { class: 'interval-bound', text: '10 分钟' }),
     value,
     save,
-  ]));
+  ]), 'Claude、ChatGPT、Grok、Antigravity 的订阅额度，以及 DeepSeek 和第三方 Key 的余额共用此间隔。默认 1 分钟；拖动后点保存生效。');
 }
 function renderDataMetrics(snapshot) {
   if (!$('data-metric-files')) return;
@@ -3566,11 +3634,11 @@ function renderDataMetrics(snapshot) {
 }
 function renderSettings(prefs) {
   $('settings-general').replaceChildren(
-    settingRow('外观', '深浅色。选「跟随系统」就跟着 Windows 的设置走。', optionSelect({ id: 'pref-theme', label: '外观', value: themeMode, options: THEME_OPTIONS, onChange: setThemeMode })),
-    settingRow('数字显示', 'Token 和请求数怎么显示。中文界面会在数字后面再加一个小字，例如「≈30.3亿」，方便按中文习惯读。图表坐标轴始终用简写。', optionSelect({
+    settingRow('外观', '切换日间、夜间或跟随系统主题', optionSelect({ id: 'pref-theme', label: '外观', value: themeMode, options: THEME_OPTIONS, onChange: setThemeMode })),
+    settingRow('数字显示', 'Token 与请求数的展示格式', optionSelect({
       id: 'pref-number', label: '数字显示', value: numberMode, options: NUMBER_OPTIONS, onChange: setNumberMode
-    })),
-    settingRow('语言', '界面语言。切换后界面会重新加载。', optionSelect({
+    }), '中文界面会在大数字旁附带「≈30.3亿」简读提示；图表坐标轴始终使用简写。'),
+    settingRow('语言', '切换界面显示语言（切换后自动重载）', optionSelect({
       id: 'pref-language', label: '语言', value: window.PulseI18n?.mode() || 'system', options: LANGUAGE_OPTIONS,
       // 主进程的托盘菜单和通知也跟着换：先存进 prefs，再重新加载界面
       onChange: async next => { await savePref('language', next); window.PulseI18n?.setMode(next); }
@@ -3581,6 +3649,7 @@ function renderSettings(prefs) {
   $('settings-alerts').replaceChildren(...PREF_ROWS.alerts.map(row => prefRow(row, prefs)));
   renderCcSwitch(current?.ccSwitch, prefs);
   renderDataMetrics(current);
+  hydrateInlineTips($('settings'));
 }
 function showSettingsTab(tab) {
   closeOptionMenu();
@@ -3930,6 +3999,18 @@ $('request-search').addEventListener('input', event => {
 });
 $('request-prev').addEventListener('click', () => { state.reqPage--; requeryRequests(false); });
 $('request-next').addEventListener('click', () => { state.reqPage++; requeryRequests(false); });
+function jumpRequestPage() {
+  const pages = Math.max(1, requestPage?.pages || 1);
+  const raw = Math.floor(Number($('request-page-input')?.value));
+  if (!Number.isFinite(raw)) return;
+  const target = Math.min(pages, Math.max(1, raw));
+  $('request-page-input').value = String(target);
+  if (target - 1 === state.reqPage) return;
+  state.reqPage = target - 1;
+  requeryRequests(false);
+}
+$('request-page-go')?.addEventListener('click', jumpRequestPage);
+$('request-page-input')?.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); jumpRequestPage(); } });
 /**
  * 展开 / 收起只动这一行下面的详情，不整表重画：整表 replaceChildren 时被点的那一行（刚拿到焦点）
  * 被删掉再插回来，Chromium 的滚动锚点跟着丢了，页面会往上跳好几百像素（真实鼠标点击才复现）。
@@ -3957,7 +4038,7 @@ $('export-requests').addEventListener('click', async () => {
   const button = $('export-requests'); button.disabled = true;
   try {
     const page = await api.requests(requestQuery({ all: true }));
-    const rows = page.rows.map(row => ({ ...row, firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? (row.timing.avgTokensPerSec != null ? '≈' + row.timing.avgTokensPerSec : '')) : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
+    const rows = page.rows.map(row => ({ ...row, cacheHitRate: cacheHitText(row), firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? (row.timing.avgTokensPerSec != null ? '≈' + row.timing.avgTokensPerSec : '')) : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
     if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
   } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
   finally { button.disabled = !requestPage?.total; }
@@ -4070,6 +4151,18 @@ $('model-search').closest('label').hidden = true;
 $('record-sort').addEventListener('change', event => { state.sort = event.target.value; state.tablePage = 0; if (analysis) renderRecords(); });
 $('prev-page').addEventListener('click', () => { state.tablePage--; renderRecords(); });
 $('next-page').addEventListener('click', () => { state.tablePage++; renderRecords(); });
+function jumpDailyPage() {
+  const pages = Math.max(1, Math.ceil(filteredRecords.length / 15));
+  const raw = Math.floor(Number($('daily-page-input')?.value));
+  if (!Number.isFinite(raw)) return;
+  const target = Math.min(pages, Math.max(1, raw));
+  $('daily-page-input').value = String(target);
+  if (target - 1 === state.tablePage) return;
+  state.tablePage = target - 1;
+  renderRecords();
+}
+$('daily-page-go')?.addEventListener('click', jumpDailyPage);
+$('daily-page-input')?.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); jumpDailyPage(); } });
 $('export-csv').addEventListener('click', async () => {
   const button = $('export-csv'); button.disabled = true;
   try { if (await api.exportCsv(D.csv(filteredRecords))) showStatus(`已导出 ${number(filteredRecords.length)} 条明细。`); }
@@ -4349,6 +4442,7 @@ api.onWindowAway?.(away => {
   }
 });
 api.snapshot().then(receive).catch(() => { bootFailed(); showStatus('本地数据读取失败，请点击刷新重试。', true); });
+hydrateInlineTips(document);
 
 function updateRelativeTimes() {
   const now = Date.now();

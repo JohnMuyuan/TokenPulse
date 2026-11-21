@@ -430,6 +430,7 @@ export type AgyAccountView = {
   /** 仅登记了本机账号、未保存独立 OAuth 凭据，且当前本机未运行或登录着别的账号。 */
   waitLocal: boolean;
   renewError?: string;
+  expiresAt?: number;
   hidden: boolean;
   shareMode: AgyShareMode;
 };
@@ -1540,6 +1541,7 @@ export async function listAgyAccountStatus(now = Date.now(), localEmail?: string
       needsLogin,
       waitLocal,
       ...(item.renewFailed || item.renewTrouble ? { renewError: item.renewFailed || item.renewTrouble!.error } : {}),
+      ...(item.credential?.expiresAt != null ? { expiresAt: item.credential.expiresAt } : {}),
       hidden: Boolean(item.hidden),
       shareMode: normalizeShareMode(item.shareMode),
     };

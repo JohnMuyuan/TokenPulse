@@ -89,15 +89,15 @@
       syncSeg(seg); view.animate = !reducedMotion.matches; draw();
     });
     nodes.seg = seg;
+    const tip = typeof infoTip === 'function' ? infoTip('一个对话 = 一个会话文件。\n周额度按同期官方周额度涨幅和各项目 API 等价费用分摊并跨周累加；若同时在网页聊天或用其他设备可能偏高；没有同期额度采样的用量不折算。\n「压缩」指 CLI 压缩上下文时的调用，按上下文大小估算。', '按项目统计说明', '', 'help') : null;
     nodes.toolbar = el('div', { class: 'table-toolbar pj-toolbar' }, [
       el('label', { class: 'search-field' }, [icon('search'), el('span', { class: 'sr-only', text: '搜索项目' }), search]),
-      el('div', { class: 'toolbar-group' }, [el('span', { class: 'pj-sort-label', text: '排序' }), seg])
+      el('div', { class: 'toolbar-group' }, [el('span', { class: 'pj-sort-label', text: '排序' }), seg, tip].filter(Boolean))
     ]);
     nodes.list = el('div', { class: 'pj-list', role: 'list' });
     nodes.list.addEventListener('click', onListClick);
     nodes.more = el('div', { class: 'pj-more' });
-    nodes.note = el('p', { class: 'pj-note', text: '一个对话 = 一个会话文件。周额度：官方周额度每次上涨时，按同一时段各项目的 API 等价费用分摊涨幅，跨几周累加；同一时段若也在聊天或用其他设备，会偏高。没有同期额度采样的用量不折算。「压缩」是 CLI 压缩上下文那一次调用，按上下文大小估算。' });
-    host.replaceChildren(nodes.summary, nodes.toolbar, nodes.list, nodes.more, nodes.note);
+    host.replaceChildren(nodes.summary, nodes.toolbar, nodes.list, nodes.more);
     view.built = true;
   }
 

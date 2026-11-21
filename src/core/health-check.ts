@@ -23,11 +23,11 @@ export type HealthInputs = {
   /** 本地路由：有没有工具要走它、在不在跑、端口能不能连上（没在跑时 listening 是 null）。 */
   route: { port: number; running: boolean; listening: boolean | null; users: string[] };
   readOnly: boolean;
-  accounts: { kindLabel: string; name: string; inCli: boolean; usable: boolean; needsLogin: boolean; waitCli: boolean; waitLocal?: boolean; renewError?: string; hidden: boolean }[];
+  accounts: { kindLabel: string; name: string; inCli: boolean; usable: boolean; autoRenew?: boolean; expiresAt?: number; needsLogin: boolean; waitCli: boolean; waitLocal?: boolean; renewError?: string; hidden: boolean }[];
   /** 开着自动切换、这会儿却不起作用的原因。 */
   autoSwitchIdle: { cli: string; reason: string }[];
-  /** 最近 24 小时的续期记录。name 是账号显示名（认不出是空）。 */
-  renewLog: { at: number; kindLabel: string; name: string; source: "stored" | "cli"; ok: boolean; status?: number; code?: string; error?: string; permanent?: boolean }[];
+  /** 已废弃，保留可选以兼容旧调用。 */
+  renewLog?: { at: number; kindLabel: string; name: string; source: "stored" | "cli"; ok: boolean; status?: number; code?: string; error?: string; permanent?: boolean }[];
   egress: { enabled: boolean; providers: { name: string; ip?: string; region?: string; error?: string; blocked?: "ip_mismatch" | "probe_failed" }[] };
   /** 访问官方用的代理：环境变量 / 系统代理 / 直连。 */
   proxy: { mode: "env" | "system" | "direct"; address?: string };
@@ -37,13 +37,34 @@ export type HealthInputs = {
 };
 
 const LOW_DISK = 1024 ** 3;
+export const EXPIRING_SOON_MS = 24 * 60 * 60_000;
+
+/** 判断账号凭据是否将在 24 小时内过期且需要提醒（未开启自动续期，或自动续期已报错）。 */
+export function isAccountExpiringSoon(
+  account: { usable: boolean; needsLogin?: boolean; hidden?: boolean; autoRenew?: boolean; expiresAt?: number; renewError?: string },
+  now: number,
+): boolean {
+  if (account.hidden || !account.usable || account.needsLogin) return false;
+  if (typeof account.expiresAt !== "number" || !Number.isFinite(account.expiresAt)) return false;
+  const remain = account.expiresAt - now;
+  if (remain <= 0 || remain > EXPIRING_SOON_MS) return false;
+  return !account.autoRenew || Boolean(account.renewError);
+}
+
+export function formatRemainingDuration(ms: number): string {
+  const mins = Math.max(1, Math.round(ms / 60_000));
+  if (mins < 60) return `${mins} 分钟`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `${hours} 小时 ${rem} 分钟` : `${hours} 小时`;
+}
 
 function mb(bytes: number) {
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.max(0.1, bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 function hm(at: number) {
   const d = new Date(at);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 export function buildHealthReport(input: HealthInputs, ms = 0): HealthReport {
@@ -74,28 +95,30 @@ export function buildHealthReport(input: HealthInputs, ms = 0): HealthReport {
   /* ---- 官方账号 ---- */
   const visible = input.accounts.filter((account) => !account.hidden);
   let healthy = 0;
+  const expiringSoon: typeof visible = [];
   for (const [i, account] of visible.entries()) {
     const who = `${account.kindLabel} 的 ${account.name}`;
-    if (account.needsLogin) add({ id: `account-${i}`, group: "accounts", level: "bad", title: `${who} 需要重新登录`, detail: `官方拒绝了续期${account.renewError ? `（${account.renewError}）` : ""}。${account.inCli ? "请在 CLI 里重新登录。" : "在设置里点「重新授权」。"}`, action: accountsPage });
-    else if (account.waitCli) add({ id: `account-${i}`, group: "accounts", level: "info", title: `${who} 的凭据过期了，等 CLI 续`, detail: "它登录在 CLI 里。CLI 没在运行时 TokenPulse 会替它续；正在运行时等它下次发请求自己续上，不用重新登录。" });
-    else if (account.waitLocal) add({ id: `account-${i}`, group: "accounts", level: "info", title: `${who} 仅登记了本机登录`, detail: "还没有保存独立凭据；打开 Antigravity 并切到该账号，或在设置里点「重新授权」后关掉客户端也能直连查询。", action: accountsPage });
-    else if (!account.usable) add({ id: `account-${i}`, group: "accounts", level: "warn", title: `${who} 的凭据过期了`, detail: account.renewError ? `上次续期没成功（${account.renewError}），会继续重试。` : "下一轮查额度时会自动续期；一直这样的话，看看网络或者重新授权。", action: accountsPage });
-    else if (account.renewError) add({ id: `account-${i}`, group: "accounts", level: "warn", title: `${who} 上次续期没成功`, detail: `现在的凭据还能用，会继续重试（${account.renewError}）。`, action: accountsPage });
+    if (account.needsLogin) add({ id: `account-${i}`, group: "accounts", level: "bad", title: `${who} 需要重新登录`, detail: `登录凭据已失效${account.renewError ? `（${account.renewError}）` : ""}。${account.inCli ? "请在 CLI 里重新登录。" : "在设置里点「重新授权」。"}`, action: accountsPage });
+    else if (account.waitCli) add({ id: `account-${i}`, group: "accounts", level: "info", title: `${who} 的凭据已过期，等 CLI 刷新`, detail: "该账号登录在 CLI 中，下次运行 CLI 会自动更新凭据。" });
+    else if (account.waitLocal) add({ id: `account-${i}`, group: "accounts", level: "info", title: `${who} 仅登记了本机登录`, detail: "未保存独立凭据；打开 Antigravity 切到该账号或点「重新授权」即可直连查询。", action: accountsPage });
+    else if (!account.usable) add({ id: `account-${i}`, group: "accounts", level: "warn", title: `${who} 的凭据已过期`, detail: "请检查网络或在账号设置里重新授权。", action: accountsPage });
+    else if (isAccountExpiringSoon(account, input.now)) expiringSoon.push(account);
     else healthy += 1;
   }
-  if (!visible.length) add({ id: "accounts", group: "accounts", level: "info", title: "还没有登记官方账号", detail: "在设置 → 官方账号里添加后，就能查额度、自动续期。", action: accountsPage });
-  else if (healthy === visible.length) add({ id: "accounts", group: "accounts", level: "ok", title: `${visible.length} 个官方账号的凭据都正常` });
-  else if (healthy) add({ id: "accounts", group: "accounts", level: "ok", title: `另外 ${healthy} 个官方账号的凭据正常` });
-
-  const failed = input.renewLog.filter((row) => !row.ok);
-  if (failed.length) {
+  if (expiringSoon.length) {
     add({
-      id: "renew-log", group: "accounts", level: failed.some((row) => row.permanent) ? "bad" : "warn", title: `最近 24 小时有 ${failed.length} 次续期没成功`,
-      detail: `共续期 ${input.renewLog.length} 次。下面是没成功的几次（只有状态码和错误类型，不含凭据），完整记录在数据目录的 renew-log.jsonl。`,
-      lines: failed.slice(-8).reverse().map((row) => `${hm(row.at)} ${row.kindLabel}${row.name ? ` · ${row.name}` : ""}${row.source === "cli" ? "（CLI 的凭据）" : ""}：${[row.status ? `HTTP ${row.status}` : "", row.code || "", row.status ? "" : row.error || ""].filter(Boolean).join(" ") || "失败"}${row.permanent ? "，需要重新登录" : ""}`),
+      id: "accounts-expiring",
+      group: "accounts",
+      level: "warn",
+      title: `${expiringSoon.length} 个官方账号将在 24 小时内过期`,
+      detail: "建议提前重新登录或重新授权，避免到期后额度监控中断。",
+      lines: expiringSoon.map((account) => `${account.kindLabel} · ${account.name}：还剩约 ${formatRemainingDuration(account.expiresAt! - input.now)}（${hm(account.expiresAt!)} 到期）`),
       action: accountsPage,
     });
-  } else if (input.renewLog.length) add({ id: "renew-log", group: "accounts", level: "ok", title: `最近 24 小时续期 ${input.renewLog.length} 次，全部成功` });
+  }
+  if (!visible.length) add({ id: "accounts", group: "accounts", level: "info", title: "还没有登记官方账号", detail: "在设置 → 官方账号里添加后即可查看额度。", action: accountsPage });
+  else if (healthy === visible.length) add({ id: "accounts", group: "accounts", level: "ok", title: `${visible.length} 个官方账号的凭据都正常` });
+  else if (healthy) add({ id: "accounts", group: "accounts", level: "ok", title: `另外 ${healthy} 个官方账号的凭据正常` });
 
   for (const [i, idle] of input.autoSwitchIdle.entries()) add({ id: `auto-switch-${i}`, group: "accounts", level: "info", title: `${idle.cli} 的自动切换暂时不起作用`, detail: idle.reason, action: accountsPage });
 

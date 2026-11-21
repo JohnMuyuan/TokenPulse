@@ -130,7 +130,32 @@ try {
   assert.ok(pastLine.five.track.length > 0);
   pass('the timeline is cut by day and by 7 days, carries the balance curve and has no off-machine markup');
 
-  console.log(`${checks}/5 deepseek insight checks passed`);
+  // 6. pi agent using DeepSeek models is recognized as local usage, and users can manually annotate drops as local or off-machine
+  assert.equal(insight.isLocalDeepSeekRow({ source: 'pi', model: 'deepseek-chat', requested: 'deepseek-chat', returned: 'deepseek-chat' }), true);
+  assert.equal(insight.isLocalDeepSeekRow({ source: 'pi', model: 'claude-sonnet-4-5', requested: 'claude-sonnet-4-5', returned: 'claude-sonnet-4-5' }), false);
+  const nowPi = Date.now();
+  const piMarkSamples = [
+    { at: nowPi - 4 * H, currency: 'CNY', total: 50, granted: 0, toppedUp: 50 },
+    { at: nowPi - 2 * H, currency: 'CNY', total: 48, granted: 0, toppedUp: 48 },
+    { at: nowPi - 1 * H, currency: 'CNY', total: 45, granted: 0, toppedUp: 45 },
+  ];
+  const piRows = [
+    { at: nowPi - 2.5 * H, source: 'pi', model: 'deepseek-chat', requested: 'deepseek-chat', returned: 'deepseek-chat', effort: 'none', input: 10000, output: 500, cacheRead: 0, cacheWrite: 0, tokens: 10500, costUsd: 0.28, calls: 1 },
+  ];
+  const autoIns = insight.analyzeDeepSeek({ accountId: 'pi-acc', local: true, samples: piMarkSamples, rows: piRows, now: nowPi });
+  assert.equal(autoIns.spend.offMachine7, 3, 'first drop matched pi (local ¥2), second drop unmatched (off-machine ¥3)');
+  assert.deepEqual(autoIns.localSources, ['pi']);
+  assert.equal(autoIns.drops.length, 2);
+  const unmatched = autoIns.drops.find(d => d.mode === 'off');
+  insight.setDeepSeekMark('pi-acc', unmatched.from, unmatched.to, 'local');
+  const markedIns = insight.analyzeDeepSeek({ accountId: 'pi-acc', local: true, samples: piMarkSamples, rows: piRows, now: nowPi, marks: insight.readDeepSeekMarks('pi-acc') });
+  assert.equal(markedIns.spend.offMachine7, 0, 'manual mark moves off-machine drop to local');
+  assert.equal(markedIns.rate.drop, 5, 'both drops now count toward local drop');
+  insight.setDeepSeekMark('pi-acc', unmatched.from, unmatched.to, 'auto');
+  assert.equal(insight.readDeepSeekMarks('pi-acc').length, 0, 'auto clears the manual mark');
+  pass('pi DeepSeek usage is recognized locally and manual local/off-machine attribution marks recalculate spend accurately');
+
+  console.log(`${checks}/6 deepseek insight checks passed`);
 } catch (error) {
   console.error('FAIL', error.stack || error.message);
   process.exitCode = 1;

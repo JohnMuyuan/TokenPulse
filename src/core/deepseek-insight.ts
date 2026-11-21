@@ -79,11 +79,55 @@ export function removeBalanceHistory(id: string) {
   writeJson(historyFile(), file);
 }
 
-/** 最近 30 天 DeepSeek Harness 的请求流水，按时间从早到晚。days = 0 读全部（速度走势看「全部」时用）。 */
+export type DeepSeekMarkMode = "local" | "off";
+export type DeepSeekAttributionMark = { from: number; to: number; mode: DeepSeekMarkMode; note?: string; updatedAt: number };
+type MarkFile = { version: 1; accounts: Record<string, DeepSeekAttributionMark[]> };
+
+const marksFile = () => dataFile("deepseek-attribution.json");
+
+function readMarkFile(): MarkFile {
+  const raw = readJson<MarkFile | null>(marksFile(), null);
+  return raw && raw.version === 1 && raw.accounts && typeof raw.accounts === "object" ? raw : { version: 1, accounts: {} };
+}
+
+export function readDeepSeekMarks(accountId: string): DeepSeekAttributionMark[] {
+  const list = readMarkFile().accounts[accountId];
+  return Array.isArray(list) ? list.filter((m) => m && typeof m.from === "number" && typeof m.to === "number" && (m.mode === "local" || m.mode === "off")) : [];
+}
+
+export function setDeepSeekMark(accountId: string, from: number, to: number, mode: DeepSeekMarkMode | "auto", note?: string): DeepSeekAttributionMark[] {
+  const file = readMarkFile();
+  const prev = Array.isArray(file.accounts[accountId]) ? file.accounts[accountId] : [];
+  const next = prev.filter((item) => !(item.from === from && item.to === to));
+  if (mode === "local" || mode === "off") {
+    const cleanNote = typeof note === "string" ? note.trim().slice(0, 80) : "";
+    next.push({ from, to, mode, ...(cleanNote ? { note: cleanNote } : {}), updatedAt: Date.now() });
+  }
+  const cutoff = Date.now() - KEEP_MS;
+  const kept = next.filter((item) => item.to >= cutoff).slice(-200);
+  if (kept.length) file.accounts[accountId] = kept;
+  else delete file.accounts[accountId];
+  writeJson(marksFile(), file);
+  return kept;
+}
+
+export function removeDeepSeekMarks(accountId: string) {
+  const file = readMarkFile();
+  if (!(accountId in file.accounts)) return;
+  delete file.accounts[accountId];
+  writeJson(marksFile(), file);
+}
+
+export function isLocalDeepSeekRow(row: Pick<RequestRow, "source" | "model" | "requested" | "returned">): boolean {
+  if (row.source === DEEPSEEK_SOURCE) return true;
+  return /deepseek/i.test(row.returned || row.model || row.requested || "");
+}
+
+/** 最近 30 天本机 DeepSeek 请求流水（含 DeepSeek Harness、pi 等使用 DeepSeek 模型的本机工具），按时间从早到晚。days = 0 读全部。 */
 export function deepseekRows(days: number, now = Date.now()): RequestRow[] {
   const since = days > 0 ? now - days * DAY : 0;
-  const page = queryRequests({ from: days > 0 ? dayKey(since) : "2000-01-01", to: dayKey(now), ...(since ? { since } : {}), until: now, source: DEEPSEEK_SOURCE, status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true });
-  return page.rows.filter((row) => Number.isFinite(row.tokens) && row.tokens >= 0).sort((a, b) => a.at - b.at);
+  const page = queryRequests({ from: days > 0 ? dayKey(since) : "2000-01-01", to: dayKey(now), ...(since ? { since } : {}), until: now, source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true });
+  return page.rows.filter((row) => Number.isFinite(row.tokens) && row.tokens >= 0 && isLocalDeepSeekRow(row)).sort((a, b) => a.at - b.at);
 }
 
 type Step = { from: number; to: number; spent: number; added: number };
@@ -111,8 +155,20 @@ export type DeepSeekModelRow = {
   mixBasis: "model" | "account" | "default";
 };
 
-export function analyzeDeepSeek(input: { accountId: string; local: boolean; samples: BalanceSample[]; rows: RequestRow[]; now: number }) {
+export type DeepSeekDropItem = {
+  from: number;
+  to: number;
+  spent: number;
+  mode: DeepSeekMarkMode;
+  auto: DeepSeekMarkMode;
+  manual: DeepSeekMarkMode | null;
+  sources: string[];
+  note: string;
+};
+
+export function analyzeDeepSeek(input: { accountId: string; local: boolean; samples: BalanceSample[]; rows: RequestRow[]; now: number; marks?: DeepSeekAttributionMark[] }) {
   const { now } = input;
+  const marks = input.marks ?? [];
   const latest = input.samples.at(-1);
   const currency = latest?.currency ?? "";
   // 一个账号可能同时有人民币和美元余额：分析最近查到的第一种，另一种只在上面的卡片里显示数字
@@ -140,17 +196,30 @@ export function analyzeDeepSeek(input: { accountId: string; local: boolean; samp
   const perDay = coveredDays >= 0.25 && spent7 > 0 ? spent7 / Math.max(1, coveredDays) : null;
   const daysLeft = perDay && latest ? latest.total / perDay : null;
 
-  // 余额掉的那些区间里本机有没有请求。费用从上一次余额变化算起：单次请求不到一分钱，要攒几次余额才动一下
+  // 余额掉的那些区间里本机有没有请求，同时支持用户手动标注为「本机使用」或「本机以外」。
   let costFrom = firstAt ?? now, localDrop = 0, localCost = 0, localSteps = 0, offDrop7 = 0, offDrop30 = 0;
   const off: { from: number; to: number; spent: number }[] = [];
+  const drops: DeepSeekDropItem[] = [];
   for (const step of steps) {
     if (step.to < now - DEEPSEEK_DAYS * DAY) { costFrom = step.to; continue; }
     if (step.added > 0) { costFrom = step.to; continue; }
     const part = rowsIn(costFrom - 60_000, step.to);
-    if (input.local && part.length) { localDrop += step.spent; localCost += sum(part, (r) => r.costUsd); localSteps++; }
-    else if (input.local) { offDrop30 += step.spent; if (step.to > now - 7 * DAY) offDrop7 += step.spent; off.push({ from: costFrom, to: step.to, spent: step.spent }); }
+    const sources = [...new Set(part.map((r) => r.source).filter(Boolean))];
+    const autoMode: DeepSeekMarkMode = input.local && part.length > 0 ? "local" : "off";
+    const mark = marks.find((item) => item.from === costFrom && item.to === step.to) ?? marks.find((item) => item.to === step.to);
+    const mode: DeepSeekMarkMode = mark ? mark.mode : autoMode;
+    drops.push({ from: costFrom, to: step.to, spent: step.spent, mode, auto: autoMode, manual: mark?.mode ?? null, sources, note: mark?.note ?? "" });
+    if (mode === "local") {
+      localDrop += step.spent;
+      if (part.length) { localCost += sum(part, (r) => r.costUsd); localSteps++; }
+    } else if (input.local || mark?.mode === "off") {
+      offDrop30 += step.spent;
+      if (step.to > now - 7 * DAY) offDrop7 += step.spent;
+      off.push({ from: costFrom, to: step.to, spent: step.spent });
+    }
     costFrom = step.to;
   }
+  const localSources = [...new Set(rows.map((r) => r.source).filter(Boolean))];
   const range = RATE_RANGE[currency], reference = REFERENCE_RATE[currency] ?? null;
   const measuredRate = localSteps >= 3 && localCost >= 0.02 ? localDrop / localCost : null;
   const measuredOk = measuredRate != null && (!range || (measuredRate >= range[0] && measuredRate <= range[1]));
@@ -229,7 +298,7 @@ export function analyzeDeepSeek(input: { accountId: string; local: boolean; samp
       perDay, coveredDays, daysLeft, emptyAt: daysLeft != null ? now + daysLeft * DAY : null,
       offMachine7: cents(offDrop7), offMachine30: cents(offDrop30),
     },
-    days, track, topUps, off: off.slice(-200),
+    days, track, topUps, off: off.slice(-200), drops: drops.slice(-40).reverse(), localSources,
     localUsage: { today: usage(rowsIn(today, now)), d7: usage(rowsIn(now - 7 * DAY, now)), d30: recent, lastAt: rows.at(-1)?.at ?? null },
     hourly, rate, models, current,
     priceSource: { version: kb.knowledge.version, updatedAt: kb.knowledge.updatedAt },
@@ -298,7 +367,7 @@ export function queryDeepSeek(query: DeepSeekQuery) {
   if (query.op === "speed") return deepseekSpeed(deepseekRows(query.days, now), query.days, now);
   const samples = readBalanceHistory(query.accountId);
   const rows = query.local ? deepseekRows(DEEPSEEK_DAYS, now) : [];
-  if (query.op === "insight") return analyzeDeepSeek({ accountId: query.accountId, local: query.local, samples, rows, now });
+  if (query.op === "insight") return analyzeDeepSeek({ accountId: query.accountId, local: query.local, samples, rows, now, marks: readDeepSeekMarks(query.accountId) });
   const currency = samples.at(-1)?.currency ?? "";
   const primary = samples.filter((sample) => sample.currency === currency);
   const one = (window: "five" | "week") => timelineStudy(query.accountId, window, query.cycles?.[window], rows, primary, now);

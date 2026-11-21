@@ -50,6 +50,7 @@ import { foregroundAccounts, quietPick } from "../core/quota-quiet";
 import { readQuotaChecks } from "../core/quota-history";
 import { switchCliAccount } from "../core/cli-switch";
 import { runHealthCheck } from "./health";
+import { formatRemainingDuration, isAccountExpiringSoon } from "../core/health-check";
 import { activateProvider, agentDrift, agentView as coreAgentView, usesOfficialLogin, poolAccountIds, deleteProvider, poolDef, importCcProviders, importCurrent, listPoolModels, listProviderModels, probeProvider, releaseAgentSwitch, restoreConfigBackup, waitAgentProxyClosed, reorderProviders, resumeAgentProxy, saveProvider, setAppPass, setAppProxy, setFailover, setProxyPort } from "../core/agent-switch";
 import { configExpect, configPreview, configReason, configureReadOnly } from "../core/agent-config";
 import { changeSignature, fileDiff, listHistory, listOriginals, type FileChange } from "../core/agent-history";
@@ -57,6 +58,7 @@ import { randomUUID } from "crypto";
 import { readFileSync } from "fs";
 import { TokensUploader } from "./tokens-ci";
 import { DeepSeekBalance } from "./deepseek-balance";
+import { setDeepSeekMark } from "../core/deepseek-insight";
 import { AntigravityQuota, agyQuotaAccounts, type AgyQuotaState } from "./antigravity-quota";
 import { addLocalAgyAccount, agyDisplayNames, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts, resolveAgyLocalOwner, visibleAgyAccounts } from "../core/antigravity-accounts";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
@@ -597,6 +599,57 @@ function maybeNotify(snapshot: Snapshot) {
   }).show();
 }
 
+const notifiedExpiry = new Map<string, number>();
+
+/** 官方账号凭据距过期不足 24 小时时提前一天发系统通知（同一到期时间戳只提醒一次）。 */
+async function maybeNotifyExpiringAccounts() {
+  if (readPrefs().notifyAccountExpiry === false || !Notification.isSupported()) return;
+  const now = Date.now();
+  const [statuses, agyStatus] = await Promise.all([
+    listOfficialOAuthStatus().catch(() => []),
+    listAgyAccountStatus().catch(() => null),
+  ]);
+  const expiring: { id: string; label: string; expiresAt: number }[] = [];
+  for (const status of statuses) {
+    for (const acc of status.accounts) {
+      if (!isAccountExpiringSoon(acc, now)) continue;
+      const bucket = Math.floor(acc.expiresAt! / 3600_000);
+      if (notifiedExpiry.get(acc.id) === bucket) continue;
+      notifiedExpiry.set(acc.id, bucket);
+      expiring.push({ id: acc.id, label: `${status.label} · ${acc.alias || acc.email || acc.label}`, expiresAt: acc.expiresAt! });
+    }
+  }
+  if (agyStatus) {
+    for (const acc of agyStatus.accounts) {
+      if (!isAccountExpiringSoon(acc, now)) continue;
+      const bucket = Math.floor(acc.expiresAt! / 3600_000);
+      if (notifiedExpiry.get(acc.id) === bucket) continue;
+      notifiedExpiry.set(acc.id, bucket);
+      expiring.push({ id: acc.id, label: `${agyStatus.label} · ${acc.alias || acc.email || acc.label}`, expiresAt: acc.expiresAt! });
+    }
+  }
+  if (!expiring.length) return;
+  const openAccounts = () => { revealWindow(); win?.webContents.send("open-page", { page: "settings", tab: "accounts" }); };
+  if (expiring.length === 1) {
+    const one = expiring[0];
+    const note = new Notification({
+      title: tr(`${one.label} 将在 24 小时内过期`),
+      body: tr(`还剩约 ${formatRemainingDuration(one.expiresAt - now)}，请提前重新登录或重新授权。`),
+      icon: windowIcon(),
+    });
+    note.on("click", openAccounts);
+    note.show();
+    return;
+  }
+  const note = new Notification({
+    title: tr(`${expiring.length} 个官方账号将在 24 小时内过期`),
+    body: expiring.slice(0, 4).map((item) => `${item.label}（${tr(`还剩约 ${formatRemainingDuration(item.expiresAt - now)}`)}）`).join("\n"),
+    icon: windowIcon(),
+  });
+  note.on("click", openAccounts);
+  note.show();
+}
+
 /*
  * 额度用满自动切 CLI 登录（0.3.55，见 core/cli-auto-switch.ts）：每轮额度查询之后跑一次。
  * 切了、没有能切的号、切换失败都弹一条通知，点开是设置里的官方账号；界面开着就刷新账号列表。返回这一轮有没有真的切换。
@@ -890,6 +943,7 @@ async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snap
       if (tell) emitQuotaNotice(lastQuotaNotice, "warning");
     }
     maybeNotify(snapshot);
+    void maybeNotifyExpiringAccounts().catch(() => {});
   }
   return snapshot;
 }
@@ -1254,6 +1308,16 @@ if (!app.requestSingleInstanceLock()) {
       return loadDeepSeek({ op: "timeline", accountId: owner.id, local: owner.local, cycles: { five: cycle(query.cycles?.five), week: cycle(query.cycles?.week) } });
     });
     ipcMain.handle("deepseek-balance:speed", (_event, days: unknown) => loadDeepSeek({ op: "speed", days: Math.max(0, Math.min(3650, Number(days) || 0)) }));
+    ipcMain.handle("deepseek-balance:mark", (_event, value: unknown) => {
+      const input = (value ?? {}) as { accountId?: unknown; from?: unknown; to?: unknown; mode?: unknown; note?: unknown };
+      const rawId = typeof input.accountId === "string" ? input.accountId.replace(/^deepseek:/, "") : "";
+      const owner = deepseekBalance.owner(rawId);
+      if (!owner) throw new Error("找不到这个 DeepSeek 账号，可能已经删除了");
+      const from = Number(input.from), to = Number(input.to);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to <= 0) throw new Error("时间区间无效");
+      const mode = input.mode === "local" || input.mode === "off" || input.mode === "auto" ? input.mode : "auto";
+      return setDeepSeekMark(owner.id, from, to, mode, typeof input.note === "string" ? input.note : undefined);
+    });
     deepseekBalance.start();
     ipcMain.handle("antigravity-quota:state", () => antigravityQuota.state());
     ipcMain.handle("antigravity-quota:refresh", (_event, accountId?: unknown) =>

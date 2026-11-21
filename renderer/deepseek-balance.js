@@ -115,10 +115,12 @@
    */
   const DAY = 86400000;
   const insights = new Map();
+  let markSeq = 0;
+  const dropOpen = new Map();
   const quotaShowing = id => typeof current !== 'undefined' && current && !document.getElementById('page-quota').hidden && state.account === PREFIX + ':' + id;
-  /** 这个账号的分析。数据变了（余额刚查过、本机刚扫过、换了本机归属）才重新取；新的回来之前继续显示上一份。 */
+  /** 这个账号的分析。数据变了（余额刚查过、本机刚扫过、换了本机归属、手动标注了归属）才重新取；新的回来之前继续显示上一份。 */
   function insightOf(account) {
-    const stamp = [account.last?.at || 0, account.harness ? 1 : 0, typeof current !== 'undefined' ? current?.scannedAt || 0 : 0].join('|');
+    const stamp = [account.last?.at || 0, account.harness ? 1 : 0, typeof current !== 'undefined' ? current?.scannedAt || 0 : 0, markSeq].join('|');
     let entry = insights.get(account.id);
     if (!entry) insights.set(account.id, entry = { stamp: '', data: null, pending: false, failed: false });
     if (entry.stamp !== stamp && !entry.pending) {
@@ -130,6 +132,19 @@
       });
     }
     return entry;
+  }
+  async function markDrop(account, drop, mode) {
+    if (demo() || !api.mark) return;
+    try {
+      await api.mark({ accountId: account.id, from: drop.from, to: drop.to, mode });
+      markSeq += 1;
+      const entry = insights.get(account.id);
+      if (entry) entry.stamp = '';
+      insightOf(account);
+      toast(mode === 'local' ? '已标为本机使用' : mode === 'off' ? '已标为本机以外' : '已恢复自动判断');
+    } catch (error) {
+      toast(clean(error) || '标注失败', { kind: 'error' });
+    }
   }
   const daysText = days => days >= 365 ? '一年以上' : days >= 10 ? `${Math.round(days)} 天` : days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(1, Math.round(days * 24))} 小时`;
   const dayLabel = at => new Date(at).toLocaleDateString(locale(), { month: 'numeric', day: 'numeric' });
@@ -238,7 +253,20 @@
   /** 余额和预测：对应官方账号的「额度窗口」那一块。 */
   function balancePanel(account, info, data, level) {
     const spend = data?.spend, same = data && data.currency === info.currency;
-    const panel = el('article', { class: 'panel window-panel ds-window ' + level, 'data-currency': info.currency }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '余额' }), el('span', { class: 'section-tag', text: '按量付费' })])]);
+    const tipText = [
+      '花掉多少按余额变化统计：软件开着时按间隔查一次余额，关闭期间的花费合并到下次查询。',
+      data?.since != null ? `余额记录开始于 ${date(data.since, true)}。` : '',
+      '余额为整个 DeepSeek 账号共用，其他设备/程序消费及赠金过期也会计入。',
+    ].filter(Boolean).join('\n');
+    const panel = el('article', { class: 'panel window-panel ds-window ' + level, 'data-currency': info.currency }, [
+      el('div', { class: 'panel-heading' }, [
+        el('h2', { text: '余额' }),
+        el('div', { class: 'panel-title-with-tip' }, [
+          el('span', { class: 'section-tag', text: '按量付费' }),
+          typeof infoTip === 'function' ? infoTip(tipText, '余额统计说明', '', 'help') : null,
+        ].filter(Boolean)),
+      ]),
+    ]);
     panel.append(el('div', { class: 'window-number' }, [el('strong', { class: 'num ds-total', text: cash(info.total, info.currency) }), el('span', { text: '总余额' })]));
     panel.append(el('div', { class: 'window-meta' }, [
       el('span', {}, [el('span', { text: '充值余额' }), el('span', { class: 'num', text: ' ' + cash(info.toppedUp, info.currency) })]),
@@ -246,38 +274,59 @@
     ]));
     if (!same) { panel.append(el('div', { class: 'prediction-line' }, [icon('trend'), el('span', { text: data ? '消耗和预测按这个账号的另一种币种算。' : '正在读取消耗记录…' })])); return panel; }
     spendBlocks(panel, spend, data, info);
-    panel.append(el('p', { class: 'quota-footnote' }, [
-      el('span', { text: '花掉多少按余额的变化算：TokenPulse 开着的时候按设置里的间隔查一次余额，关着的那段时间合在一起算到下一次查到的时候。' }),
-      data.since != null ? el('span', {}, [el('span', { text: '余额记录开始于' }), el('span', { class: 'num', text: ' ' + date(data.since, true) }), el('span', { text: '。' })]) : null,
-      el('span', { text: '余额是整个 DeepSeek 账号的，其他设备和其他程序花的也在里面；赠送余额过期也会算成花掉的。' }),
-    ]));
     return panel;
   }
 
-  /** 本机用量：只有指定给这个账号的时候才有。 */
+  function dropTimeRange(from, to) {
+    const a = new Date(from), b = new Date(to);
+    const sameDay = a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    const hm = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    const md = d => `${d.getMonth() + 1}/${d.getDate()}`;
+    return sameDay ? `${md(b)} ${hm(a)}–${hm(b)}` : `${md(a)} ${hm(a)} – ${md(b)} ${hm(b)}`;
+  }
+
+  /** 本机用量：只有指定给这个账号的时候才有。支持 DeepSeek Harness、pi 等本机工具及用户手动标注归属。 */
   function localPanel(account, data, currency) {
-    const panel = el('article', { class: 'panel window-panel ds-local' }, [el('div', { class: 'panel-heading' }, [el('h2', { text: '本机用量' }), el('span', { class: 'section-tag', text: 'DeepSeek Harness', translate: 'no' })])]);
+    const sourceTag = data?.localSources?.length ? data.localSources.join(' · ') : 'DeepSeek Harness';
+    const localTip = '参考费用按 DeepSeek 官方标价及高峰/闲时半价估算（美元）；实际扣费看左侧余额。\n已自动识别 DeepSeek Harness、pi 等本机调用 DeepSeek 模型的请求。若某笔扣费被误判为「本机以外」，可在下方手动标注为「本机使用」。';
+    const panel = el('article', { class: 'panel window-panel ds-local' }, [
+      el('div', { class: 'panel-heading' }, [
+        el('h2', { text: '本机用量' }),
+        el('div', { class: 'panel-title-with-tip' }, [
+          el('span', { class: 'section-tag', text: sourceTag, translate: 'no' }),
+          typeof infoTip === 'function' ? infoTip(localTip, '本机用量与归属说明', '', 'help') : null,
+        ].filter(Boolean)),
+      ]),
+    ]);
     if (!account.harness) {
       const owner = accounts().find(item => item.harness);
       panel.append(el('div', { class: 'empty ds-local-off' }, [
-        el('p', { text: owner ? '本机 DeepSeek Harness 的用量现在算在另一个账号上：' : '本机 DeepSeek Harness 的用量现在没有算在任何账号上。' }),
+        el('p', { text: owner ? '本机 DeepSeek 用量现在算在另一个账号上：' : '本机 DeepSeek 用量现在没有算在任何账号上。' }),
         owner ? el('p', {}, [el('b', { text: owner.label || owner.keyHint, translate: 'no' })]) : null,
-        el('p', { text: 'DeepSeek Harness 是用账号登录的，和 API Key 对不上号，TokenPulse 分不出它用的是哪个账号，需要你指定一个。' }),
-        button('本机 Harness 用的是这个账号', () => call(() => api.update(account.id, { harness: true }), '保存失败'), { cls: 'btn btn-accent', action: 'ds-own' }),
+        el('p', { text: '本机工具（DeepSeek Harness / pi 等）和 API Key 对不上号，需要你指定归属到哪个账号。' }),
+        button('本机使用的是这个账号', () => call(() => api.update(account.id, { harness: true }), '保存失败'), { cls: 'btn btn-accent', action: 'ds-own' }),
       ]));
       return panel;
     }
     if (!data) { panel.append(empty('正在读取…')); return panel; }
     const usage = data.localUsage, spend = data.spend, rate = data.rate;
+    const drops = Array.isArray(data.drops) ? data.drops : [];
     panel.append(el('div', { class: 'window-number' }, [el('strong', { class: 'num', text: tokens(usage.today.tokens) }), el('span', { text: '今天的 Tokens' })]));
     panel.append(el('div', { class: 'window-meta' }, [
       el('span', {}, [el('span', { class: 'num', text: number(usage.today.requests) + ' ' }), el('span', { text: '次请求' })]),
       el('span', {}, [el('span', { text: '参考费用' }), el('span', { class: 'num', text: ' ' + money(usage.today.costUsd) })]),
     ]));
     const off = spend.offMachine7 > 0;
-    panel.append(el('div', { class: 'prediction-line' + (off ? ' caution' : '') }, [icon(off ? 'alert' : 'check'), off
+    const hasOpen = dropOpen.has(account.id) ? dropOpen.get(account.id) : off;
+    const predChildren = [icon(off ? 'alert' : 'check'), off
       ? el('span', {}, [el('span', { text: '最近 7 天有一部分是本机以外花的：' }), el('span', { class: 'num', text: cash(spend.offMachine7, currency) }), el('span', { text: '（余额减少的时候本机没有请求）' })])
-      : el('span', { text: spend.d7 > 0 ? '最近 7 天余额每次减少的时候，本机都有请求。' : usage.lastAt ? '最近 7 天余额没有减少。' : '还没有扫到 DeepSeek Harness 的请求。' })]));
+      : el('span', { text: spend.d7 > 0 ? '最近 7 天余额每次减少的时候，本机都有请求。' : usage.lastAt ? '最近 7 天余额没有减少。' : '还没有扫到本机 DeepSeek 请求。' })];
+    if (drops.length && !demo()) {
+      const toggleBtn = el('button', { type: 'button', class: 'text-btn ds-mark-toggle', 'data-action': 'ds-toggle-marks', text: hasOpen ? '收起标注' : '标注本机/以外' });
+      toggleBtn.addEventListener('click', () => { dropOpen.set(account.id, !hasOpen); keepScroll(() => renderQuota_()); });
+      predChildren.push(toggleBtn);
+    }
+    panel.append(el('div', { class: 'prediction-line' + (off ? ' caution' : '') }, predChildren));
     const usageMetric = (label, part) => metric(label, amount(part.tokens), { unit: 'Tokens', approx: cnApprox(part.tokens), sub: money(part.costUsd), chip: { tone: 'medium', text: `${number(part.requests)} 次` } });
     panel.append(metricGroup('Token 与参考费用', 'tokens', [usageMetric('今天', usage.today), usageMetric('最近 7 天', usage.d7), usageMetric('最近 30 天', usage.d30)]));
     const sign = currency === 'CNY' ? '¥' : currency === 'USD' ? '$' : currency + ' ';
@@ -286,7 +335,38 @@
       metric('本机花的', cash(rate.drop, currency), { sub: '最近 30 天' }),
       metric('本机以外花的', cash(spend.offMachine30, currency), { sub: '最近 30 天', tone: spend.offMachine30 > 0 ? 'warn' : '' }),
     ]));
-    panel.append(el('p', { class: 'quota-footnote', text: '参考费用按 DeepSeek 官方标价和每次请求的时间（高峰 / 闲时半价）算，单位是美元；实际从余额里扣了多少看左边。本机只统计 DeepSeek Harness 的请求；余额减少时本机有请求就算本机花的，没有就算本机以外。' }));
+    if (drops.length && hasOpen && !demo()) {
+      const box = el('div', { class: 'ds-drops', 'data-ds-drops': account.id });
+      const head = el('div', { class: 'ds-drops-head' }, [
+        el('b', { text: '扣费归属标注' }),
+        el('small', { text: `最近 ${drops.length} 笔余额变动 · 点击切换归属` }),
+      ]);
+      const list = el('div', { class: 'ds-drops-list' }, drops.slice(0, 12).map(drop => {
+        const isLocal = drop.mode === 'local';
+        const srcText = drop.manual
+          ? (drop.mode === 'local' ? '手动标为本机' : '手动标为以外')
+          : drop.sources.length ? drop.sources.join(' · ') : '未匹配本机请求';
+        const btnLocal = el('button', { type: 'button', class: 'ds-mark-btn' + (isLocal ? ' on' : ''), 'data-ds-mark': 'local', text: '本机使用' });
+        const btnOff = el('button', { type: 'button', class: 'ds-mark-btn' + (!isLocal ? ' on warn' : ''), 'data-ds-mark': 'off', text: '本机以外' });
+        btnLocal.addEventListener('click', () => markDrop(account, drop, 'local'));
+        btnOff.addEventListener('click', () => markDrop(account, drop, 'off'));
+        const resetBtn = drop.manual ? el('button', { type: 'button', class: 'text-btn ds-mark-reset', 'data-ds-mark': 'auto', title: '恢复自动判断', text: '重置' }) : null;
+        resetBtn?.addEventListener('click', () => markDrop(account, drop, 'auto'));
+        return el('div', { class: 'ds-drop-row' + (isLocal ? '' : ' is-off') }, [
+          el('div', { class: 'ds-drop-meta' }, [
+            el('span', { class: 'num ds-drop-time', text: dropTimeRange(drop.from, drop.to) }),
+            el('span', { class: 'num ds-drop-spent', text: cash(drop.spent, currency) }),
+            el('span', { class: 'ds-drop-src' + (drop.manual ? ' is-manual' : ''), text: srcText }),
+          ]),
+          el('div', { class: 'ds-drop-actions' }, [
+            el('div', { class: 'ds-mark-seg', role: 'group', 'aria-label': '消费归属' }, [btnLocal, btnOff]),
+            resetBtn,
+          ]),
+        ]);
+      }));
+      box.append(head, list);
+      panel.append(box);
+    }
     return panel;
   }
 
@@ -789,8 +869,8 @@
       el('small', { text: account ? '站点地址保存之后不能改；换站点请删掉重新添加。' : '中转站的网址，比如 https://example.com。支持 sub2api 和 new-api / one-api 搭的站，添加时会自动认。' })]);
     const officialHint = el('small', {}, [el('span', { text: '在 DeepSeek 开放平台创建：' }), link]);
     const relayHint = el('small', { text: 'Key 只会发给你上面填的这个站点地址。' });
-    const harnessField = el('label', { class: 'ds-balance-check' }, [harness, el('span', {}, [el('b', { text: '本机 DeepSeek Harness 用的是这个账号' }),
-      el('small', { text: '勾上之后，本机 Harness 的用量、时间线、速度都显示在这个账号下面。只能有一个账号勾上。' })])]);
+    const harnessField = el('label', { class: 'ds-balance-check' }, [harness, el('span', {}, [el('b', { text: '本机工具（DeepSeek Harness / pi 等）使用此账号' }),
+      el('small', { text: '勾上后，本机调用 DeepSeek 的用量、时间线、速度和归属标注都关联到此账号。' })])]);
     const syncKind = () => {
       title.textContent = account ? (relay ? '设置第三方 Key' : '设置 DeepSeek 账号') : relay ? '添加第三方 Key' : '添加 DeepSeek 账号';
       urlField.hidden = !relay; relayHint.hidden = !relay; officialHint.hidden = relay; harnessField.hidden = relay; lookField.hidden = !relay;

@@ -47,10 +47,11 @@
   const syncSelects = () => { for (const sync of fancies) sync(); };
   const select = (id, items) => { const control = node('select'); control.id = id; for (const [value, label] of items) { const option = node('option', label); option.value = value; control.append(option); } return control; };
   const button = (text, action, className = 'btn') => { const control = node('button', text, className); control.type = 'button'; control.onclick = action; return control; };
-  const heading = (title, note, side) => {
-    const head = node('div', null, 'panel-heading cm-heading'), text = node('div');
-    text.append(node('h2', title)); if (note) text.append(node('p', note));
-    head.append(text); if (side) head.append(side);
+  const heading = (title, tipText, side) => {
+    const head = node('div', null, 'panel-heading cm-heading'), left = node('div', null, 'panel-title-with-tip');
+    left.append(node('h2', title));
+    if (tipText && typeof infoTip === 'function') left.append(infoTip(tipText, title + '说明', '', 'help'));
+    head.append(left); if (side) head.append(side);
     return head;
   };
   /** 用了上限的多少：没设上限是 null。 */
@@ -58,22 +59,29 @@
   const toneOf = value => value == null ? '' : value > 1 ? 'over' : value >= 1 ? 'full' : value >= 0.8 ? 'near' : '';
   let mounted = false, visible = false, unsubscribe = null, generation = 0, state = null, busy = false, lastHistory = 0, historyTimer = 0;
   let scope, metric, days, ruleScope, retention, action, inputs, chart, status, saveStatus, cards, rows, alerts, coverage, settingsPanel;
+  let filterMode = 'active', filterQuery = '', filterSeg = null, filterSearch = null, tableFooter = null;
+  const isRowActive = row => row.id === 'global' || row.requests > 0 || row.clients > 0 || row.upstream > 0 || row.rejected > 0 || Boolean(row.rule);
   function mount() {
     if (mounted) return; mounted = true;
     // 监控范围：哪些工具的请求经过 TokenPulse
     const intro = node('section', null, 'panel cm-panel cm-intro');
     const introText = node('div', null, 'cm-intro-text');
-    introText.append(node('b', '监控范围'), node('p', '只统计经 TokenPulse 转发的流量（本地路由、号池、透明转发）；工具直连官方时这里看不到。连接包含空闲的复用连接，活跃请求包含正在等上游的请求。', 'cm-help'));
+    const introTitle = node('div', null, 'panel-title-with-tip');
+    introTitle.append(node('b', '监控范围'));
+    if (typeof infoTip === 'function') introTitle.append(infoTip('只统计经 TokenPulse 转发的流量（本地路由、号池、透明转发）；工具直连官方时这里看不到。连接包含空闲的复用连接，活跃请求包含正在等上游的请求。', '监控范围说明', '', 'help'));
+    introText.append(introTitle);
     coverage = node('div', null, 'cm-coverage'); coverage.setAttribute('role', 'list');
     intro.append(introText, coverage); host.append(markLayout(intro, 'concurrency:coverage'));
     cards = node('div', null, 'cm-cards'); host.append(cards);
     for (const [key, title] of Object.entries(metrics)) {
       const card = node('div', null, 'panel cm-card'), head = node('div', null, 'cm-card-head'), mark = node('span', null, 'cm-card-icon');
-      mark.setAttribute('aria-hidden', 'true'); mark.append(icon(METRIC_ICON[key])); head.append(mark, node('span', title));
+      mark.setAttribute('aria-hidden', 'true'); mark.append(icon(METRIC_ICON[key]));
+      head.append(mark, node('span', title));
+      if (typeof infoTip === 'function') head.append(infoTip(METRIC_NOTE[key], title + '说明', '', 'help'));
       const number = node('strong', '—'); number.dataset.metric = key;
       const meter = node('div', null, 'cm-meter'); meter.dataset.meter = key; meter.append(node('i')); meter.hidden = true;
       const limit = node('small', '未设置上限'); limit.dataset.limit = key;
-      card.append(head, number, meter, limit, node('p', METRIC_NOTE[key], 'cm-card-note')); cards.append(markLayout(card, 'concurrency:' + key));
+      card.append(head, number, meter, limit); cards.append(markLayout(card, 'concurrency:' + key));
     }
     alerts = node('div', null, 'cm-alerts'); alerts.setAttribute('role', 'status'); host.append(alerts);
 
@@ -88,10 +96,31 @@
     history.append(heading('并发历史', '图中显示每个时间段的峰值；空白表示未监控或软件没有运行。', toolbar), chart, status); host.append(markLayout(history, 'concurrency:history'));
 
     const breakdown = node('section', null, 'panel cm-panel cm-breakdown');
-    const scroll = node('div', null, 'table-scroll'), table = node('table', null, 'cm-table'), head = node('thead'), header = node('tr');
+    const brControls = node('div', null, 'cm-br-controls');
+    filterSearch = node('input', null, 'cm-br-search');
+    filterSearch.type = 'search'; filterSearch.placeholder = t('筛选名称…'); filterSearch.setAttribute('aria-label', t('筛选供应商或账号'));
+    filterSearch.oninput = () => { filterQuery = filterSearch.value.trim().toLowerCase(); if (state) renderRows(); };
+    filterSeg = node('div', null, 'cm-br-tabs');
+    filterSeg.setAttribute('role', 'tablist');
+    for (const [id, label] of [['active', '活跃 / 已设上限'], ['provider', '供应商'], ['account', '账号'], ['all', '全部']]) {
+      const btn = node('button', label, 'cm-br-tab' + (id === filterMode ? ' on' : ''));
+      btn.type = 'button'; btn.dataset.cmFilter = id; btn.setAttribute('role', 'tab'); btn.setAttribute('aria-selected', String(id === filterMode));
+      btn.onclick = () => {
+        filterMode = id;
+        for (const item of filterSeg.querySelectorAll('.cm-br-tab')) {
+          const on = item.dataset.cmFilter === filterMode;
+          item.classList.toggle('on', on); item.setAttribute('aria-selected', String(on));
+        }
+        if (state) renderRows();
+      };
+      filterSeg.append(btn);
+    }
+    brControls.append(filterSeg, filterSearch);
+    const scroll = node('div', null, 'table-scroll cm-table-scroll'), table = node('table', null, 'cm-table'), head = node('thead'), header = node('tr');
     for (const [i, title] of ['查看范围', ...Object.values(metrics), '拒绝次数', '上限设置'].entries()) { const th = node('th', title); if (i > 0) th.className = 'n'; header.append(th); }
     head.append(header); rows = node('tbody'); rows.id = 'cm-rows'; table.append(head, rows); scroll.append(table);
-    breakdown.append(heading('供应商与账号', '每一行的数字是「当前 / 上限」。共享或归属不确定的连接不能单独设上限。'), scroll); host.append(markLayout(breakdown, 'concurrency:breakdown'));
+    tableFooter = node('div', null, 'cm-table-foot'); tableFooter.hidden = true;
+    breakdown.append(heading('供应商与账号', '每一行的数字是「当前 / 上限」。共享或归属不确定的连接不能单独设上限。默认折叠全为 0 且未设上限的空闲项，可切换「全部」查看。', brControls), scroll, tableFooter); host.append(markLayout(breakdown, 'concurrency:breakdown'));
 
     const settings = settingsPanel = node('section', null, 'panel cm-panel cm-settings');
     settings.append(heading('上限与保存期限', '留空表示不设上限。拒绝只作用于新的 AI 请求，不中断已有请求；连接上限仅提醒。共享或未归属连接不支持个别上限。'));
@@ -135,12 +164,94 @@
   /** 明细表里的一格：当前 / 上限，设了上限的下面一条细进度条。 */
   function countCell(row, key) {
     const td = node('td', null, 'n'), limit = row.rule?.[key], value = ratio(row[key], limit), tone = toneOf(value);
-    const line = node('span', null, 'cm-count' + (tone ? ' ' + tone : ''));
+    const line = node('span', null, 'cm-count' + (tone ? ' ' + tone : '') + (!row[key] && !limit ? ' cm-zero' : ''));
     line.append(node('b', String(row[key])));
     if (limit) line.append(node('span', ' / ' + limit));
     td.append(line);
     if (limit) { const meter = node('div', null, 'cm-meter small' + (tone ? ' ' + tone : '')), fill = node('i'); fill.style.width = Math.min(100, Math.round(value * 100)) + '%'; meter.append(fill); td.append(meter); }
     return td;
+  }
+  function renderRows() {
+    if (!state) return;
+    const allRows = state.rows || [];
+    const activeRows = allRows.filter(isRowActive);
+    const idleCount = Math.max(0, allRows.length - activeRows.length);
+    if (filterSearch) filterSearch.hidden = allRows.length <= 6;
+    if (filterSeg) {
+      const counts = {
+        active: activeRows.length,
+        provider: allRows.filter(r => r.kind === 'provider').length,
+        account: allRows.filter(r => r.kind === 'account').length,
+        all: allRows.length,
+      };
+      const labels = { active: '活跃 / 已设上限', provider: '供应商', account: '账号', all: '全部' };
+      for (const btn of filterSeg.querySelectorAll('.cm-br-tab')) {
+        const key = btn.dataset.cmFilter;
+        btn.textContent = `${t(labels[key])} (${counts[key]})`;
+      }
+    }
+    let list = allRows.filter(row => {
+      if (filterMode === 'active') return isRowActive(row);
+      if (filterMode === 'provider') return row.id === 'global' || row.kind === 'provider';
+      if (filterMode === 'account') return row.id === 'global' || row.kind === 'account';
+      return true;
+    });
+    if (filterQuery) list = list.filter(row => scopeLabel(row).toLowerCase().includes(filterQuery));
+    list.sort((a, b) => {
+      if (a.id === 'global') return -1;
+      if (b.id === 'global') return 1;
+      const aActive = isRowActive(a) ? 1 : 0, bActive = isRowActive(b) ? 1 : 0;
+      return bActive - aActive;
+    });
+    rows.replaceChildren(...list.map(row => {
+      const tr = node('tr'); tr.dataset.scope = row.id;
+      const cls = [];
+      if (row.id === 'global') cls.push('cm-total');
+      if (!isRowActive(row)) cls.push('cm-idle');
+      if (cls.length) tr.className = cls.join(' ');
+      const name = node('td'), wrap = node('div', null, 'cm-scope'), label = node('span', scopeLabel(row), 'cm-scope-name');
+      label.title = scopeLabel(row);
+      const text = node('div', null, 'cm-scope-text'); text.append(label);
+      // 归属不确定的（共享、未归属）只在名字下面说一次，不在每一格里重复
+      if (Object.keys(metrics).some(key => !row.supported[key])) text.append(node('small', t('归属不确定'), 'cm-uncertain'));
+      wrap.append(node('span', t(row.id === 'global' ? '全部' : KIND[row.kind] || row.kind), 'section-tag cm-kind ' + (row.id === 'global' ? 'global' : row.kind)), text); name.append(wrap); tr.append(name);
+      for (const key of Object.keys(metrics)) tr.append(countCell(row, key));
+      const rejected = node('td', String(row.rejected), 'n' + (row.rejected ? ' cm-rejected' : ' cm-zero')); tr.append(rejected);
+      const cell = node('td', null, 'n'), edit = button(row.rule ? '已设' : '设置', () => { ruleScope.value = row.id; fillRule(); settingsPanel.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); settingsPanel.querySelector('[data-for=cm-rule-scope]').focus({ preventScroll: true }); }, row.rule ? 'btn cm-has-rule' : 'btn'); edit.disabled = !row.supported.requests; cell.append(edit); tr.append(cell); return tr;
+    }));
+    const scrollHost = rows.closest('.cm-table-scroll');
+    if (scrollHost) scrollHost.classList.toggle('is-long', list.length > 8);
+    if (!list.length) {
+      const tr = node('tr'), td = node('td', t('没有匹配的条目'), 'empty'); td.colSpan = 6; tr.append(td); rows.append(tr);
+    }
+    if (tableFooter) {
+      if (filterMode === 'active' && !filterQuery && idleCount > 0) {
+        tableFooter.hidden = false;
+        const expand = button(t(`展开其余 ${idleCount} 项空闲条目`), () => {
+          filterMode = 'all';
+          for (const item of filterSeg.querySelectorAll('.cm-br-tab')) {
+            const on = item.dataset.cmFilter === 'all';
+            item.classList.toggle('on', on); item.setAttribute('aria-selected', String(on));
+          }
+          renderRows();
+        }, 'text-btn cm-expand-btn');
+        tableFooter.replaceChildren(node('span', t(`已折叠 ${idleCount} 个当前为 0 且未设上限的空闲项`), 'cm-foot-note'), expand);
+      } else if (filterMode === 'all' && !filterQuery && idleCount > 0) {
+        tableFooter.hidden = false;
+        const collapse = button(t('只看活跃 / 已设上限'), () => {
+          filterMode = 'active';
+          for (const item of filterSeg.querySelectorAll('.cm-br-tab')) {
+            const on = item.dataset.cmFilter === 'active';
+            item.classList.toggle('on', on); item.setAttribute('aria-selected', String(on));
+          }
+          renderRows();
+        }, 'text-btn cm-expand-btn');
+        tableFooter.replaceChildren(node('span', t(`共 ${allRows.length} 项（其中 ${idleCount} 项当前空闲）`), 'cm-foot-note'), collapse);
+      } else {
+        tableFooter.hidden = true;
+        tableFooter.replaceChildren();
+      }
+    }
   }
   function draw(next) {
     const first = !state; state = { ...state, ...next };
@@ -166,18 +277,7 @@
     if (state.storageError) { const item = node('div', null, 'cm-alert'); item.append(icon('alert'), node('span', t(state.storageError))); alerts.append(item); }
     updateOptions(scope, state.rows.map(row => [row.id, scopeLabel(row)]));
     updateOptions(ruleScope, state.rows.filter(row => row.supported.requests).map(row => [row.id, scopeLabel(row)]));
-    rows.replaceChildren(...state.rows.map(row => {
-      const tr = node('tr'); tr.dataset.scope = row.id; if (row.id === 'global') tr.className = 'cm-total';
-      const name = node('td'), wrap = node('div', null, 'cm-scope'), label = node('span', scopeLabel(row), 'cm-scope-name');
-      label.title = scopeLabel(row);
-      const text = node('div', null, 'cm-scope-text'); text.append(label);
-      // 归属不确定的（共享、未归属）只在名字下面说一次，不在每一格里重复
-      if (Object.keys(metrics).some(key => !row.supported[key])) text.append(node('small', t('归属不确定'), 'cm-uncertain'));
-      wrap.append(node('span', t(row.id === 'global' ? '全部' : KIND[row.kind] || row.kind), 'section-tag cm-kind ' + (row.id === 'global' ? 'global' : row.kind)), text); name.append(wrap); tr.append(name);
-      for (const key of Object.keys(metrics)) tr.append(countCell(row, key));
-      const rejected = node('td', String(row.rejected), 'n' + (row.rejected ? ' cm-rejected' : ' cm-zero')); tr.append(rejected);
-      const cell = node('td', null, 'n'), edit = button('设置', () => { ruleScope.value = row.id; fillRule(); settingsPanel.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); settingsPanel.querySelector('[data-for=cm-rule-scope]').focus({ preventScroll: true }); }); edit.disabled = !row.supported.requests; cell.append(edit); tr.append(cell); return tr;
-    }));
+    renderRows();
     for (const [key, input] of Object.entries(inputs)) input.disabled = !state.rows.find(row => row.id === ruleScope.value)?.supported[key];
     if (first) { retention.value = String(state.settings.retention); fillRule(); }
     syncSelects();

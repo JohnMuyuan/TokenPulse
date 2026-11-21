@@ -19,6 +19,8 @@ export type Prefs = DeskPetPrefs & {
   theme: "light" | "dark";
   /** 自动更新：后台下载新版本，在窗口收起时静默安装并重启。默认开。 */
   autoUpdate: boolean;
+  /** 官方账号凭据距过期不足 24 小时时发系统通知。默认开。 */
+  notifyAccountExpiry: boolean;
   /** 发现请求的型号和上游返回的对不上（或响应存疑）时发系统通知。默认开。 */
   notifyMismatch: boolean;
   /** 从 CC Switch 导入缺的用量（core/cc-switch.ts 在 worker 里直接读这个字段）。默认开。 */
@@ -63,7 +65,7 @@ export function quotaEverySeconds(value: unknown): number {
   return minutes * 60;
 }
 
-const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, quotaQuietBackground: false, cliAutoSwitch: {}, pressureWeek: PRESSURE_DEFAULTS.week, pressureFive: PRESSURE_DEFAULTS.five, ...DESK_PET_DEFAULTS };
+const DEFAULTS: Prefs = { autoLaunch: true, closeToTray: true, startMinimized: false, notifyAt: 85, notifyAccountExpiry: true, weeklySummary: true, theme: "light", autoUpdate: true, notifyMismatch: true, ccSwitch: true, language: "system", localOnlyAccounts: [], seenVersion: "", onboarding: "", agentReadOnly: false, studyModels: {}, quotaEverySeconds: QUOTA_EVERY_DEFAULT_SECONDS, quotaQuietBackground: false, cliAutoSwitch: {}, pressureWeek: PRESSURE_DEFAULTS.week, pressureFive: PRESSURE_DEFAULTS.five, ...DESK_PET_DEFAULTS };
 
 function file() {
   return dataFile("prefs.json");

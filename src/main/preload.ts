@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     insight: (id: string) => ipcRenderer.invoke("deepseek-balance:insight", id),
     timeline: (query: unknown) => ipcRenderer.invoke("deepseek-balance:timeline", query),
     speed: (days: number) => ipcRenderer.invoke("deepseek-balance:speed", days),
+    mark: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:mark", value)),
     onState: (handler: (state: unknown) => void) => {
       const listener = (_event: unknown, state: unknown) => handler(state);
       ipcRenderer.on("deepseek-balance-state", listener);

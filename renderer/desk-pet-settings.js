@@ -81,9 +81,14 @@
     N.hero.replaceChildren(
       el('div', { class: 'dps-stage' }, [preview(S.prefs.deskPetKind, 3)]),
       el('div', { class: 'dps-hero-text' }, [
-        el('div', { class: 'dps-toggle-row' }, [el('b', { text: '在桌面上显示桌宠' }), toggle]),
+        el('div', { class: 'dps-toggle-row' }, [
+          el('div', { class: 'panel-title-with-tip' }, [
+            el('b', { text: '在桌面上显示桌宠' }),
+            typeof infoTip === 'function' ? infoTip('点击宠物弹出额度气泡，拖动可移动位置，右键查看任务和更多选项；透明区域不挡鼠标点击。', '桌宠交互说明', '', 'help') : null,
+          ].filter(Boolean)),
+          toggle,
+        ]),
         N.status,
-        el('p', { class: 'setting-hint', text: '点一下宠物，它会冒出一个对话气泡，告诉你正在用的账号还剩多少额度；按住可以拖到别处；右键可以查看任务和更多选项。宠物身边透明的地方不挡鼠标，点下去落到后面的窗口。' }),
         el('div', { class: 'dps-actions' }, [reset]),
       ]),
     );
@@ -131,11 +136,16 @@
     N.choices.replaceChildren(...BUILT_IN.map(item => choiceCard(item.id, item.name, item.line, current === item.id)), ...custom, add);
   }
 
-  function row(id, title, hint, value, options, onChange) {
-    return el('div', { class: 'setting-block' }, [
-      el('div', { class: 'setting-title', text: title }),
-      el('p', { class: 'setting-hint', text: hint }),
-      optionSelect({ id, label: title, value, options, onChange }),
+  function row(id, title, hint, value, options, onChange, tip = '') {
+    return el('div', { class: 'setting-block setting-flex-row' }, [
+      el('div', { class: 'setting-label-col' }, [
+        el('div', { class: 'setting-title setting-title-row' }, [
+          el('span', { text: title }),
+          tip && typeof infoTip === 'function' ? infoTip(tip, `${title}说明`, '', 'help') : null,
+        ].filter(Boolean)),
+        hint ? el('p', { class: 'setting-hint', text: hint }) : null,
+      ].filter(Boolean)),
+      el('div', { class: 'setting-control' }, [optionSelect({ id, label: title, value, options, onChange })]),
     ]);
   }
 
@@ -144,25 +154,25 @@
     const accounts = [{ value: '', label: '跟着正在用的账号', hint: '默认。有任务在跑的工具当前登录的账号；没有任务时用最近用过的' }, ...S.accounts.map(item => ({ value: item.id, label: item.name }))];
     if (p.deskPetAccount && !S.accounts.some(item => item.id === p.deskPetAccount)) accounts.push({ value: p.deskPetAccount, label: '已选的账号（现在没有额度数据）' });
     N.options.replaceChildren(...[
-      row('dps-scale', '大小', '像素按整数倍放大，放大后依然清晰。', p.deskPetScale, [
+      row('dps-scale', '大小', '按像素整数倍缩放', p.deskPetScale, [
         { value: 1, label: '小', hint: '72 × 56' }, { value: 2, label: '中', hint: '默认，144 × 112' }, { value: 3, label: '大', hint: '216 × 168' }], value => save({ deskPetScale: value })),
-      row('dps-opacity', '不透明度', '半透明一点就没那么抢眼。悬停提示和对话气泡不受影响。', p.deskPetOpacity, [
+      row('dps-opacity', '不透明度', '降低存在感，气泡和提示不受影响', p.deskPetOpacity, [
         { value: 100, label: '不透明', hint: '默认' }, { value: 85, label: '85%' }, { value: 70, label: '70%' }, { value: 50, label: '50%' }], value => save({ deskPetOpacity: value })),
-      row('dps-ontop', '窗口层级', '总在最前时，桌宠会显示在其他窗口上面。', p.deskPetOnTop, [
+      row('dps-ontop', '窗口层级', '控制是否始终置顶显示', p.deskPetOnTop, [
         { value: true, label: '总在最前', hint: '默认' }, { value: false, label: '和普通窗口一样', hint: '会被别的窗口挡住' }], value => save({ deskPetOnTop: value })),
-      row('dps-account', '额度跟哪个账号', '宠物表现的剩余额度取这个账号的 5 小时和周窗口里用得多的那一个，点宠物冒出的气泡里也显示这个账号。', p.deskPetAccount, accounts, value => save({ deskPetAccount: value })),
-      row('dps-fidget', '空闲时', '没有任务在跑时，每隔二三十秒随机做一个小动作。', p.deskPetFidget, [
+      row('dps-account', '额度跟哪个账号', '桌宠和气泡展示的额度来源', p.deskPetAccount, accounts, value => save({ deskPetAccount: value }), '取该账号 5 小时和周窗口中已用比例更高的那一个。'),
+      row('dps-fidget', '空闲时动作', '无任务时是否偶尔做小动作', p.deskPetFidget, [
         { value: true, label: '偶尔做小动作', hint: '默认' }, { value: false, label: '安静待着' }], value => save({ deskPetFidget: value })),
-      row('dps-fps', '动画帧率', '主题宠物的动画每秒最多画几帧。帧率越高动作越顺，也越占 CPU 和显卡；高刷新率屏幕上帧率太高，鼠标可能会一顿一顿的。', p.deskPetFps ?? 30, [
-        { value: 30, label: '30 帧', hint: '默认，省电，像素风看不出区别' }, { value: 60, label: '60 帧', hint: '更顺' }, { value: 120, label: '120 帧', hint: '最顺，开销约为 30 帧的 3 倍' }], value => save({ deskPetFps: value })),
-      row('dps-ask', '问题卡片', 'Claude Code 用选择题问你、计划写好等你批准，或者 Codex 向你要信息时，在屏幕右下角弹出卡片，写着问题和选项。回答还是回到终端里。', p.deskPetAsk, [
-        { value: true, label: '弹出卡片', hint: '默认' }, { value: false, label: '不弹' }], value => save({ deskPetAsk: value })),
-      row('dps-sound', '提示音', '任务做完、在问你、出错停下、可能在等你确认、额度用完时，桌宠会响一声短短的提示音。每种都可以换成你自己的音频。', p.deskPetSound, [
+      row('dps-fps', '动画帧率', '主题宠物动画的最高帧率', p.deskPetFps ?? 30, [
+        { value: 30, label: '30 帧', hint: '默认，省电，像素风看不出区别' }, { value: 60, label: '60 帧', hint: '更顺' }, { value: 120, label: '120 帧', hint: '最顺，开销约为 30 帧的 3 倍' }], value => save({ deskPetFps: value }), '帧率越高越流畅但也越耗 CPU/GPU；高刷屏过高帧率可能导致轻微卡顿。'),
+      row('dps-ask', '问题卡片', 'AI 等待选择或确认时在右下角弹窗提醒', p.deskPetAsk, [
+        { value: true, label: '弹出卡片', hint: '默认' }, { value: false, label: '不弹' }], value => save({ deskPetAsk: value }), 'Claude Code 提出选择题/等待计划批准，或 Codex 等待输入时弹出提醒卡片（回答仍在终端完成）。'),
+      row('dps-sound', '提示音', '任务完成、提问、出错或额度用完时响一声', p.deskPetSound, [
         { value: true, label: '开', hint: '默认' }, { value: false, label: '关' }], value => { if (value) play('done'); save({ deskPetSound: value }); }),
-      p.deskPetSound ? row('dps-volume', '音量', '自己选的音频和默认的提示音都按这个音量放。', p.deskPetVolume, [
+      p.deskPetSound ? row('dps-volume', '音量', '所有提示音的播放音量', p.deskPetVolume, [
         { value: 100, label: '100%' }, { value: 70, label: '70%', hint: '默认' }, { value: 50, label: '50%' }, { value: 30, label: '30%' }], value => { play('done', value); save({ deskPetVolume: value }); }) : null,
       p.deskPetSound ? soundList() : null,
-      row('dps-badge', '自定义宠物的额度标签', '自己导入的宠物画不出额度，在它右下角显示剩余百分比和任务数。只对自定义宠物有效。', p.deskPetBadge, [
+      row('dps-badge', '自定义宠物的额度标签', '在自定义宠物右下角叠加剩余额度与任务数', p.deskPetBadge, [
         { value: true, label: '显示', hint: '默认' }, { value: false, label: '不显示' }], value => save({ deskPetBadge: value })),
     ].filter(Boolean));
   }
@@ -207,17 +217,19 @@
       const toggle = el('button', { type: 'button', class: 'dps-switch small' + (muted ? '' : ' on'), role: 'switch', 'aria-checked': String(!muted), 'aria-label': L(`${name}时响`, `Play for “${T(name)}”`), 'data-mute': kind, translate: 'no' }, [el('span', { class: 'dps-knob' })]);
       toggle.addEventListener('click', () => save({ deskPetMute: muted ? mute.filter(item => item !== kind) : [...mute, kind] }));
       return el('div', { class: 'dps-sound' + (muted ? ' muted' : ''), 'data-kind': kind }, [
-        toggle,
         el('div', { class: 'dps-sound-text' }, [
           el('b', { text: name }),
           mine ? el('small', { class: 'mine', translate: 'no', title: mine.name, text: L(`自己的音频：${mine.name}`, `Your audio: ${mine.name}`) }) : el('small', { text: line }),
         ]),
-        el('div', { class: 'dps-sound-actions' }, [reset, test, pick].filter(Boolean)),
+        el('div', { class: 'dps-sound-actions' }, [reset, test, pick, toggle].filter(Boolean)),
       ]);
     });
     return el('div', { class: 'setting-block' }, [
-      el('div', { class: 'setting-title', text: '每种提示音' }),
-      el('p', { class: 'setting-hint', text: '左边的开关单独关掉某一种。换成自己的音频：支持 WAV、MP3、OGG、FLAC、M4A，单个不超过 2 MB，最多放 5 秒；会复制一份到数据目录，原文件之后删改都不影响。' }),
+      el('div', { class: 'setting-title setting-title-row' }, [
+        el('span', { text: '每种提示音' }),
+        typeof infoTip === 'function' ? infoTip('支持 WAV、MP3、OGG、FLAC、M4A，单个不超过 2 MB、最长 5 秒；会复制到数据目录，原文件删改不影响。', '自定义提示音说明', '', 'help') : null,
+      ].filter(Boolean)),
+      el('p', { class: 'setting-hint', text: '右侧开关可单独关闭某一种，也可替换为自定义音频' }),
       el('div', { class: 'dps-sounds' }, rows),
     ]);
   }

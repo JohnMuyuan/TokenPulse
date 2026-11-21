@@ -38,7 +38,7 @@ let report = buildHealthReport(healthy(), 1200);
 check("全都正常：没有 bad / warn", report.summary.bad === 0 && report.summary.warn === 0 && report.ms === 1200, JSON.stringify(report.summary));
 check("四组都有内容", ["tools", "accounts", "network", "data"].every((group) => report.items.some((item) => item.group === group)));
 check("账号都正常：合成一条", find(report, "accounts")?.title === "2 个官方账号的凭据都正常");
-check("续期都成功", find(report, "renew-log")?.title === "最近 24 小时续期 1 次，全部成功");
+check("不再显示无用的续期记录项", !find(report, "renew-log"));
 check("本地路由正常写出端口和谁在用", find(report, "route")?.level === "ok" && /17621/.test(find(report, "route").title) && /Codex（透明转发）/.test(find(report, "route").detail));
 check("代理说明", find(report, "proxy")?.title === "访问官方走系统代理（127.0.0.1:7890）");
 check("连通：拿到任何状态码都算连得上", find(report, "reach-api.anthropic.com")?.level === "ok");
@@ -51,7 +51,8 @@ broken.readOnly = true;
 broken.accounts = [
   { kindLabel: "Claude", name: "dead@example.com", inCli: false, usable: false, needsLogin: true, waitCli: false, renewError: "HTTP 400 invalid_grant", hidden: false },
   { kindLabel: "Claude", name: "cli@example.com", inCli: true, usable: false, needsLogin: false, waitCli: true, hidden: false },
-  { kindLabel: "ChatGPT", name: "shaky@example.com", inCli: false, usable: true, needsLogin: false, waitCli: false, renewError: "HTTP 401", hidden: false },
+  { kindLabel: "ChatGPT", name: "soon@example.com", inCli: true, usable: true, autoRenew: false, expiresAt: NOW + 10 * 3600_000, needsLogin: false, waitCli: false, hidden: false },
+  { kindLabel: "Claude", name: "auto@example.com", inCli: false, usable: true, autoRenew: true, expiresAt: NOW + 4 * 3600_000, needsLogin: false, waitCli: false, hidden: false },
   { kindLabel: "Grok", name: "hidden@example.com", inCli: false, usable: false, needsLogin: true, waitCli: false, hidden: true },
 ];
 broken.autoSwitchIdle = [{ cli: "Claude Code", reason: "供应商「只读保护」开着，不会自动切换" }];
@@ -72,17 +73,17 @@ check("该走本地路由的工具连不上：bad", find(report, "route")?.level
 check("只读保护：提示", find(report, "readonly")?.level === "info");
 check("需要重新登录：bad，带原因，CLI 外的号叫你重新授权", find(report, "account-0")?.level === "bad" && /invalid_grant/.test(find(report, "account-0").detail) && /重新授权/.test(find(report, "account-0").detail));
 check("登在 CLI 里等 CLI 续：只是提示", find(report, "account-1")?.level === "info");
-check("还能用但上次续期没成：warn", find(report, "account-2")?.level === "warn" && /HTTP 401/.test(find(report, "account-2").detail));
+const expiring = find(report, "accounts-expiring");
+check("24 小时内过期提醒：warn，列出快到期账号且不误报正常自动续期账号", expiring?.level === "warn" && /1 个官方账号将在 24 小时内过期/.test(expiring.title) && expiring.lines.length === 1 && /soon@example\.com/.test(expiring.lines[0]) && !expiring.lines.some((l) => /auto@example\.com/.test(l)), JSON.stringify(expiring));
 check("隐藏的账号不报", !report.items.some((item) => /hidden@example\.com/.test(item.title)));
-const renew = find(report, "renew-log");
-check("续期失败列出来（新的在前，只有状态码和错误类型），有要重新登录的就是 bad", renew?.level === "bad" && renew.lines.length === 2 && /HTTP 400 invalid_grant，需要重新登录/.test(renew.lines[1]) && /curl: timed out/.test(renew.lines[0]), JSON.stringify(renew?.lines));
+check("已移除 renew-log", !find(report, "renew-log"));
 check("自动切换不起作用的原因", find(report, "auto-switch-0")?.detail === "供应商「只读保护」开着，不会自动切换");
 check("直连时提示怎么设代理", find(report, "proxy")?.title === "访问官方没有走代理（直连）" && /HTTPS_PROXY/.test(find(report, "proxy").detail));
 check("连不上：bad，带原因", find(report, "reach-api.anthropic.com")?.level === "bad" && /timed out/.test(find(report, "reach-api.anthropic.com").detail));
 check("出口不在白名单：没去测，按钮去出口监控", find(report, "reach-chatgpt.com")?.level === "info" && find(report, "reach-chatgpt.com").action.page === "egress");
 check("额度查询被出口规则拦下：warn", find(report, "egress-0")?.level === "warn" && /198\.51\.100\.7（JP）/.test(find(report, "egress-0").detail));
 check("数据目录写不进去：bad；磁盘不够：warn；临时文件：提示", find(report, "data-write")?.level === "bad" && find(report, "disk")?.level === "warn" && /300\.0 MB/.test(find(report, "disk").title) && find(report, "tmp")?.level === "info");
-check("计数", report.summary.bad === 6, JSON.stringify(report.summary));
+check("计数", report.summary.bad === 5, JSON.stringify(report.summary));
 
 const empty = healthy();
 empty.accounts = []; empty.renewLog = []; empty.route = { port: 17621, running: false, listening: null, users: [] }; empty.egress = { enabled: false, providers: [] };
@@ -96,15 +97,12 @@ const agyHealth = healthy();
 agyHealth.accounts = [
   { kindLabel: "Antigravity", name: "local@example.com", inCli: false, usable: false, needsLogin: false, waitCli: false, waitLocal: true, hidden: false },
   { kindLabel: "Antigravity", name: "dead@example.com", inCli: false, usable: false, needsLogin: true, waitCli: false, renewError: "HTTP 400 invalid_grant", hidden: false },
-  { kindLabel: "Antigravity", name: "shaky@example.com", inCli: true, usable: true, needsLogin: false, waitCli: false, renewError: "HTTP 401", hidden: false },
-];
-agyHealth.renewLog = [
-  { at: NOW - 1200_000, kindLabel: "Antigravity", name: "dead@example.com", source: "stored", ok: false, status: 400, code: "invalid_grant", permanent: true },
+  { kindLabel: "Antigravity", name: "shaky@example.com", inCli: true, usable: true, autoRenew: true, expiresAt: NOW + 6 * 3600_000, needsLogin: false, waitCli: false, renewError: "HTTP 401", hidden: false },
 ];
 agyHealth.reach = [...agyHealth.reach, { name: "Antigravity", host: "cloudcode-pa.googleapis.com", ok: false, error: "timed out" }];
 const agyReport = buildHealthReport(agyHealth);
 check("Antigravity 仅本机登录：info 提示", find(agyReport, "account-0")?.level === "info" && /仅登记了本机登录/.test(find(agyReport, "account-0").title));
-check("Antigravity 失效与续期日志：bad", find(agyReport, "account-1")?.level === "bad" && find(agyReport, "account-2")?.level === "warn" && find(agyReport, "renew-log")?.level === "bad" && find(agyReport, "reach-cloudcode-pa.googleapis.com")?.level === "bad");
+check("Antigravity 失效与即将过期提醒", find(agyReport, "account-1")?.level === "bad" && find(agyReport, "accounts-expiring")?.level === "warn" && /shaky@example\.com/.test(find(agyReport, "accounts-expiring").lines[0]) && !find(agyReport, "renew-log") && find(agyReport, "reach-cloudcode-pa.googleapis.com")?.level === "bad");
 
 // 英文：每一条标题和说明都要翻得出来（不能留中文）
 const english = [buildHealthReport(healthy()), buildHealthReport(broken), buildHealthReport(empty), buildHealthReport(listening), agyReport]

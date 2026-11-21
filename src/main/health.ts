@@ -2,14 +2,12 @@ import { execFile } from "child_process";
 import fs from "fs";
 import net from "net";
 import path from "path";
-import { readOfficialAccountStore } from "../core/accounts";
-import { listAgyAccountStatus, readAgyAccountStore } from "../core/antigravity-accounts";
+import { listAgyAccountStatus } from "../core/antigravity-accounts";
 import { agentDrift, agentView, localRouteLeftovers } from "../core/agent-switch";
 import { AGENT_LABEL, type AgentApp } from "../core/agent-types";
 import { curlBin } from "../core/curl";
 import { buildHealthReport, type HealthInputs, type HealthReport } from "../core/health-check";
 import { dataDir } from "../core/paths";
-import { accountHash, readRenewLog } from "../core/renew-log";
 import { curlProxyArgs, envHasProxy, envProxyFor, proxyFor } from "../core/upstream-proxy";
 import type { ExitMonitor } from "./egress-monitor";
 import { listOfficialOAuthStatus } from "./oauth";
@@ -26,7 +24,6 @@ const SITES = [
   { kind: "chatgpt", name: "ChatGPT", host: "chatgpt.com" },
   { kind: "grok", name: "Grok", host: "api.x.ai" },
 ] as const;
-const DAY = 24 * 3600_000;
 
 function canConnect(port: number) {
   return new Promise<boolean>((resolve) => {
@@ -126,23 +123,16 @@ async function check(exitMonitor: ExitMonitor): Promise<HealthReport> {
   const accounts: HealthInputs["accounts"] = [
     ...statuses.flatMap((status) => status.accounts.map((account) => ({
       kindLabel: status.label, name: account.alias || account.email || account.label, inCli: account.inCli, usable: account.usable,
+      autoRenew: account.autoRenew, expiresAt: account.expiresAt,
       needsLogin: account.needsLogin, waitCli: account.waitCli, renewError: account.renewError, hidden: account.hidden,
     }))),
     ...(agyStatus?.accounts ?? []).map((account) => ({
       kindLabel: agyStatus!.label, name: account.alias || account.email || account.label, inCli: account.inCli, usable: account.usable,
+      autoRenew: account.autoRenew, expiresAt: account.expiresAt,
       needsLogin: account.needsLogin, waitCli: false, waitLocal: account.waitLocal, renewError: account.renewError, hidden: account.hidden,
     })),
   ];
   const autoSwitchIdle = statuses.filter((status) => status.autoSwitch.on && status.autoSwitch.idle).map((status) => ({ cli: { claude: "Claude Code", chatgpt: "Codex", grok: "Grok CLI" }[status.kind], reason: status.autoSwitch.idle! }));
-
-  const names = new Map<string, string>([
-    ...readOfficialAccountStore().accounts.map((account): [string, string] => [accountHash(account.id), account.alias || account.email || account.label]),
-    ...readAgyAccountStore().accounts.map((account): [string, string] => [accountHash(account.id), account.alias || account.email || account.label]),
-  ]);
-  const renewLog = readRenewLog(1000).filter((row) => now - row.at < DAY).map((row) => ({
-    at: row.at, kindLabel: KIND_LABEL[row.kind as keyof typeof KIND_LABEL] || row.kind, name: names.get(row.account) || "", source: row.source,
-    ok: row.ok, status: row.status, code: row.code, error: row.error, permanent: row.permanent,
-  }));
 
   const egressSnap = exitMonitor.snapshot();
   const egress: HealthInputs["egress"] = {
@@ -166,6 +156,6 @@ async function check(exitMonitor: ExitMonitor): Promise<HealthReport> {
       : []),
   ]);
 
-  const inputs: HealthInputs = { now, drift, leftovers, route, readOnly: prefs.agentReadOnly === true, accounts, autoSwitchIdle, renewLog, egress, proxy: await proxyInfo(), reach: reachRows, data: dataState() };
+  const inputs: HealthInputs = { now, drift, leftovers, route, readOnly: prefs.agentReadOnly === true, accounts, autoSwitchIdle, egress, proxy: await proxyInfo(), reach: reachRows, data: dataState() };
   return buildHealthReport(inputs, Date.now() - started);
 }

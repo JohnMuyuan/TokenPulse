@@ -145,6 +145,11 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.match(localText, /本机用量\s*DeepSeek Harness.*最近 7 天有一部分是本机以外花的：\s*¥1\.50.*参考 1 美元实际扣\s*¥7\.14\s*按实际扣费校准.*本机花的\s*¥6\.50.*本机以外花的\s*¥1\.50/);
     // 最近 30 天：7 组 × 6 条 × 60,900 Tokens
     assert.match(localText, /最近 30 天\s*2,557,800/);
+    // 手动把一笔「本机以外」扣费标为「本机使用」→ 本机以外花的立刻减少；点重置恢复自动判断
+    await click(`${DETAIL} .ds-drop-row.is-off [data-ds-mark="local"]`);
+    await until(`/本机以外花的\\s*¥0\\.80/.test(document.querySelector('${DETAIL} .ds-local')?.textContent || '')`, 15000);
+    await click(`${DETAIL} .ds-drop-row [data-ds-mark="auto"]`);
+    await until(`/本机以外花的\\s*¥1\\.50/.test(document.querySelector('${DETAIL} .ds-local')?.textContent || '')`, 15000);
     // 余额记录是 9 天前开始的：只有那之后的天有柱子，更早的空着
     await until(`document.querySelectorAll('${DETAIL} .ds-trend .col').length === 10`);
     assert.equal(await evaluate(`document.querySelectorAll('${DETAIL} .ds-trend .ds-topup-dot').length`), 1, '充值的那一天有标记');
@@ -213,7 +218,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.match(await text(DETAIL), /DeepSeek\s*公司.*已低于提醒线\s*¥50\.00.*¥23\.40\s*总余额.*余额低于\s*¥50\.00\s*时提醒一次.*sk-…4k2m/);
     assert.equal(await evaluate(`document.querySelector('${DETAIL} .ds-window').classList.contains('low')`), true);
     // 第二个账号没有本机用量：说明算在哪个账号上，没有时间线和速度
-    assert.match(await text(`${DETAIL} .ds-local`), /本机 DeepSeek Harness 的用量现在算在另一个账号上：\s*个人.*本机 Harness 用的是这个账号/);
+    assert.match(await text(`${DETAIL} .ds-local`), /本机 DeepSeek 用量现在算在另一个账号上：\s*个人.*本机使用的是这个账号/);
     assert.equal(await evaluate(`document.querySelector('${DETAIL} .speed-panel')`), null);
     assert.equal(await evaluate("(() => { const node = document.getElementById('quota-model-timeline'); return !node || getComputedStyle(node).display === 'none'; })()"), true, '没有本机用量的账号下面不显示时间线');
     await shot('4-second-account-low');

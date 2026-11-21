@@ -43,9 +43,11 @@ const fixture = () => buildHealthReport({
   leftovers: [],
   route: { port: 17621, running: true, listening: true, users: ['Codex'] },
   readOnly: false,
-  accounts: [{ kindLabel: 'Claude', name: 'qa@example.com', inCli: false, usable: false, needsLogin: true, waitCli: false, renewError: 'HTTP 400 invalid_grant', hidden: false }],
+  accounts: [
+    { kindLabel: 'Claude', name: 'qa@example.com', inCli: false, usable: false, needsLogin: true, waitCli: false, renewError: 'HTTP 400 invalid_grant', hidden: false },
+    { kindLabel: 'ChatGPT', name: 'soon@example.com', inCli: true, usable: true, autoRenew: false, expiresAt: Date.now() + 8 * 3600_000, needsLogin: false, waitCli: false, hidden: false },
+  ],
   autoSwitchIdle: [],
-  renewLog: [{ at: Date.now() - 3600_000, kindLabel: 'Claude', name: 'qa@example.com', source: 'stored', ok: false, status: 400, code: 'invalid_grant', permanent: true }],
   egress: { enabled: false, providers: [] },
   proxy: { mode: 'direct' },
   reach: [{ name: 'Claude', host: 'api.anthropic.com', ok: true, status: 404, ms: 120 }],
@@ -71,10 +73,11 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await until("document.body.dataset.page === 'health' && document.querySelectorAll('#page-health .hc-group').length === 4");
     assert.equal(healthCalls, 1, '打开就体检一次');
     assert.equal(await e("document.getElementById('page-title').textContent"), '一键检查哪里不对');
-    assert.match(await e("document.querySelector('.hc-summary').textContent"), /有 2 项需要处理/);
+    assert.match(await e("document.querySelector('.hc-summary').textContent"), /有 1 项需要处理/);
     assert.deepEqual(await e("[...document.querySelectorAll('.hc-group')].map(g => g.dataset.healthGroup + ':' + g.querySelector('.hc-tag').textContent)"), ['tools:建议看看', 'accounts:有问题', 'network:提示', 'data:正常']);
     assert.equal(await e("document.querySelector('[data-health-group=accounts] .hc-item').classList.contains('bad')"), true, '组里最严重的排前面');
-    assert.match(await e("document.querySelector('[data-health-item=renew-log] .hc-lines').textContent"), /HTTP 400 invalid_grant，需要重新登录/);
+    assert.equal(await e("Boolean(document.querySelector('[data-health-item=renew-log]'))"), false, '不再显示续期日志项');
+    assert.match(await e("document.querySelector('[data-health-item=accounts-expiring] .hc-lines').textContent"), /soon@example\.com/);
     assert.equal(await e("document.getElementById('nav-health-alert').hidden"), false, '有问题时侧栏亮红点');
     await shot('health');
     // 按钮带到要处理的页

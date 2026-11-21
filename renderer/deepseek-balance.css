@@ -128,6 +128,28 @@
 .ds-balance-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 .ds-balance-gap { flex: 1; }
 
+/* 扣费归属标注（本机使用 vs 本机以外） */
+.ds-mark-toggle { margin-left: auto; flex: none; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.ds-drops { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+.ds-drops-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.ds-drops-head b { font-size: 13px; font-weight: 650; }
+.ds-drops-head small { font-size: 12px; color: var(--muted); }
+.ds-drops-list { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; padding-right: 2px; }
+.ds-drop-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font-size: 12.5px; }
+.ds-drop-row.is-off { border-color: color-mix(in srgb, var(--ds-warn) 38%, var(--line)); background: color-mix(in srgb, var(--ds-warn) 6%, var(--surface-2)); }
+.ds-drop-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ds-drop-time { color: var(--text-2); font-size: 12px; }
+.ds-drop-spent { font-weight: 650; color: var(--text); }
+.ds-drop-src { font-size: 11.5px; color: var(--muted); padding: 1px 6px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); }
+.ds-drop-src.is-manual { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.ds-drop-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.ds-mark-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); gap: 2px; }
+.ds-mark-btn { padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 11.5px; font-weight: 550; cursor: pointer; transition: background .15s, color .15s; }
+.ds-mark-btn:hover { color: var(--text); }
+.ds-mark-btn.on { background: var(--accent); color: #fff; }
+.ds-mark-btn.on.warn { background: var(--ds-warn); color: #fff; }
+.ds-mark-reset { font-size: 11.5px; color: var(--muted); }
+
 @media (max-width: 900px) {
   .ds-context-meta { align-items: flex-start; }
   .ds-models .ms-rank-head.ds-rank-head { display: none; }

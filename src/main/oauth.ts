@@ -59,6 +59,8 @@ export type AccountView = {
   waitCli: boolean;
   /** 0.3.54：最近一次续期为什么没成（需重新登录的原因，或还在重试的被拒原因）。不含凭据。 */
   renewError?: string;
+  /** 凭据到期时间（毫秒时间戳），用于提前 24 小时过期提醒。 */
+  expiresAt?: number;
   /** 删掉了、但 CLI 还登录着，只是藏起来（见 accounts.ts 的 hidden）。 */
   hidden: boolean;
 };
@@ -388,6 +390,7 @@ export async function listOfficialOAuthStatus(now = Date.now()): Promise<Officia
           needsLogin: (Boolean(item.renewFailed) && !inCli) || Boolean(cliDead && !usable),
           waitCli: inCli && !usable && !cliDead && Boolean(live.find((one) => accountIdOf(kind, one.ref) === item.id)?.credential.refreshToken),
           ...(item.renewFailed || item.renewTrouble ? { renewError: item.renewFailed || item.renewTrouble!.error } : cliDead ? { renewError: cliRenew!.error } : {}),
+          ...(credential?.expiresAt != null ? { expiresAt: credential.expiresAt } : {}),
           hidden: Boolean(item.hidden),
         };
       });

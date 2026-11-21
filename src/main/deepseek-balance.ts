@@ -15,7 +15,7 @@ import fs from "fs";
 import type http from "http";
 import os from "os";
 import path from "path";
-import { appendBalanceSamples, removeBalanceHistory } from "../core/deepseek-insight";
+import { appendBalanceSamples, removeBalanceHistory, removeDeepSeekMarks } from "../core/deepseek-insight";
 import { dataFile, readJson, writeJson } from "../core/paths";
 import { queryRelay, relayBase, type HttpGet, type RelayExtra, type RelayFlavor } from "../core/relay-balance";
 import { describeNetError, proxyFor, upstreamRequest } from "../core/upstream-proxy";
@@ -253,7 +253,7 @@ export class DeepSeekBalance {
     const account = this.find(id);
     this.stored.accounts = this.stored.accounts.filter((item) => item !== account);
     this.loading.delete(account.id); this.lastStarted.delete(account.id);
-    try { removeBalanceHistory(account.id); } catch { /* 历史删不掉不影响删账号 */ }
+    try { removeBalanceHistory(account.id); removeDeepSeekMarks(account.id); } catch { /* 历史删不掉不影响删账号 */ }
     this.save(); this.publish();
     return this.state();
   }

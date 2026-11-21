@@ -36,11 +36,12 @@
 
   function section(title, note, className) {
     const body = el('div', { class: className });
-    return { body, node: el('section', { class: 'cc-section' }, [el('div', { class: 'cc-heading' }, [el('h3', { text: title }), note ? el('p', { text: note }) : null]), body]) };
+    const tip = note && typeof infoTip === 'function' ? infoTip(note, `${title}说明`, '', 'help') : null;
+    return { body, node: el('section', { class: 'cc-section' }, [el('div', { class: 'cc-heading' }, [el('div', { class: 'panel-title-with-tip' }, [el('h3', { text: title }), tip].filter(Boolean))]), body]) };
   }
   function build(host) {
     nodes.summary = el('div', { class: 'cc-summary' });
-    const chart = section('每天的缓存命中', '缓存读取 ÷ 输入（输入含缓存读写）', 'cc-chart');
+    const chart = section('每天的缓存命中', '缓存读取 ÷ 输入（输入含缓存读写）。\nClaude 日志不区分 5 分钟/1 小时缓存；Grok 按轮记录；费用按参考标价估算，未知型号不计金额。', 'cc-chart');
     nodes.chart = chart.body;
     const causes = section('断档原因', '每次断档按一条最可能的原因归类。', 'cc-causes');
     nodes.causes = causes.body;
@@ -53,9 +54,8 @@
     nodes.sessions = sessions.body;
     const recent = section('最近的断档', '最近 20 次。项目只显示文件夹名，会话 ID 不显示。', 'cc-table-host');
     nodes.recent = recent.body;
-    nodes.note = el('p', { class: 'cc-note', text: 'Claude 的记录没有区分 5 分钟和 1 小时缓存。本轮按解析器现有的缓存写入字段分析。Grok 一行是一轮，可能包含多次模型调用。缓存费用按参考标价估算；未知型号不计金额。' });
     nodes.unpriced = el('p', { class: 'cc-note', hidden: true });
-    host.replaceChildren(nodes.summary, chart.node, causes.node, split, sessions.node, recent.node, nodes.note, nodes.unpriced);
+    host.replaceChildren(nodes.summary, chart.node, causes.node, split, sessions.node, recent.node, nodes.unpriced);
     cacheView.built = true;
   }
 
