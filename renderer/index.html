@@ -182,14 +182,33 @@
         </button>
         <div id="range-popover" class="range-popover" role="dialog" aria-label="时间范围" hidden>
           <div id="range-presets" class="range-presets">
-            <button data-days="1">今天</button><button data-days="24h" title="过去 24 小时">一天</button><button data-days="7">7 天</button><button data-days="14">14 天</button><button data-days="30" class="on">30 天</button><button data-days="90">90 天</button><button data-days="all">全部</button>
+            <button type="button" data-days="1">今天</button><button type="button" data-days="24h" title="过去 24 小时">一天</button><button type="button" data-days="7">7 天</button><button type="button" data-days="14">14 天</button><button type="button" data-days="30" class="on">30 天</button><button type="button" data-days="90">90 天</button><button type="button" data-days="all">全部</button>
           </div>
           <div class="range-body">
-            <form id="custom-range" class="range-fields">
-              <label>开始日期<input id="date-from" type="date"></label>
-              <label>结束日期<input id="date-to" type="date"></label>
-              <label class="range-follow"><input id="range-follow" type="checkbox">结束日期跟随今天</label>
-              <p id="range-error" class="range-error" hidden>开始日期不能晚于结束日期</p>
+            <form id="custom-range" class="range-fields" novalidate>
+              <fieldset class="range-group">
+                <legend>开始时间</legend>
+                <div class="range-inputs">
+                  <label class="sr-only" for="date-from">开始日期</label>
+                  <input id="date-from" name="date-from" type="date" aria-describedby="range-error">
+                  <label class="sr-only" for="time-from">开始时分</label>
+                  <input id="time-from" name="time-from" type="time" value="00:00" step="60" aria-describedby="range-error">
+                </div>
+              </fieldset>
+              <fieldset class="range-group">
+                <legend>结束时间</legend>
+                <div class="range-inputs">
+                  <label class="sr-only" for="date-to">结束日期</label>
+                  <input id="date-to" name="date-to" type="date" aria-describedby="range-error">
+                  <label class="sr-only" for="time-to">结束时分</label>
+                  <input id="time-to" name="time-to" type="time" value="23:59" step="60" aria-describedby="range-error">
+                </div>
+              </fieldset>
+              <div class="range-follow-row">
+                <input id="range-follow" name="range-follow" type="checkbox">
+                <label class="range-follow" for="range-follow">结束时间跟随当前</label>
+              </div>
+              <p id="range-error" class="range-error" role="alert" aria-live="polite" hidden>开始时间不能晚于结束时间</p>
               <div class="range-actions"><button id="range-cancel" type="button" class="btn">取消</button><button id="range-apply" type="submit" class="btn btn-accent">确定</button></div>
             </form>
             <div class="range-calendar">

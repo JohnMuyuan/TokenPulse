@@ -20,7 +20,7 @@ const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok 
   // CC Switch 导入的工具（core/cc-switch.ts 的 CC_SOURCES），图标来自 lobe-icons；认不出的还是首字母
   'Gemini CLI': 'geminicli', OpenCode: 'opencode', Hermes: 'hermes', 'Copilot CLI': 'githubcopilot' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
-const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', models: [], project: '', channel: 'all', usageView: 'requests' };
+const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', fromTime: '00:00', toTime: '23:59', since: undefined, until: undefined, search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', models: [], project: '', channel: 'all', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
 const INNER_RING = 2 * Math.PI * 34;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -1056,29 +1056,56 @@ function quotaCard({ kind, key, account }, pool = null) {
 /* ---------------- 用量统计 ---------------- */
 
 const PRESET_LABELS = { 1: '今天', '24h': '一天', 7: '7 天', 14: '14 天', 30: '30 天', 90: '90 天', all: '全部' };
+function isPreciseRange() {
+  return state.days === '24h' || (state.days === 'custom' && D.hasTimePrecision(state.fromTime, state.toTime, state.follow));
+}
+function formatCustomRangeLabel(precise) {
+  const fromDay = state.from.replaceAll('-', '.'), toDay = state.to.replaceAll('-', '.');
+  if (!precise) return `${fromDay} — ${toDay}`;
+  if (state.follow) return `${fromDay} ${state.fromTime} — 现在`;
+  return state.from === state.to ? `${fromDay} ${state.fromTime} — ${state.toTime}` : `${fromDay} ${state.fromTime} — ${toDay} ${state.toTime}`;
+}
+function formatCustomButtonLabel(precise) {
+  const fromShort = state.from.slice(5).replace('-', '/'), toShort = state.to.slice(5).replace('-', '/');
+  if (!precise) return `自定义 · ${fromShort} → ${state.follow ? '今天' : toShort}`;
+  if (state.follow) return `自定义 · ${fromShort} ${state.fromTime} → 现在`;
+  return state.from === state.to ? `自定义 · ${fromShort} ${state.fromTime}–${state.toTime}` : `自定义 · ${fromShort} ${state.fromTime} → ${toShort} ${state.toTime}`;
+}
 function updateRange() {
   const today = D.dayKey(current.now);
   state.since = undefined;
+  state.until = undefined;
   if (state.days === '24h') {
     // 滚动的 24 小时：跨两个自然日，精确的数字从逐条流水里汇总（windowAnalysis）
     state.since = current.now - 86400000;
     state.from = D.dayKey(state.since); state.to = today;
+    state.fromTime = D.timeKey(state.since); state.toTime = D.timeKey(current.now);
   } else if (state.days === 'all') {
     // 数据永久保存，「全部」从有记录的第一天算起。
     state.from = (current.usage || []).reduce((min, row) => row.day < min ? row.day : min, today);
     state.to = today;
+    state.fromTime = '00:00'; state.toTime = '23:59';
   } else if (state.days !== 'custom') {
     state.to = today; state.from = D.shift(today, 1 - state.days);
-  } else if (state.follow) {
-    state.to = today;
+    state.fromTime = '00:00'; state.toTime = '23:59';
+  } else {
+    state.fromTime = D.parseTime(state.fromTime, '00:00');
+    state.toTime = D.parseTime(state.toTime, '23:59');
+    if (state.follow) state.to = today;
+    const bounds = D.rangeBounds(state.from, state.to, state.fromTime, state.toTime, state.follow, current.now);
+    if (bounds) {
+      state.since = bounds.since;
+      state.until = state.follow ? undefined : bounds.until;
+    }
   }
+  const precise = isPreciseRange();
   $('range-label').textContent = state.days === '24h'
     ? `过去 24 小时 · ${date(state.since)} 起`
-    : `${state.from.replaceAll('-', '.')} — ${state.to.replaceAll('-', '.')}`;
+    : formatCustomRangeLabel(state.days === 'custom' && precise);
   $('range-button-label').textContent = state.days === 'custom'
-    ? `自定义 · ${state.from.slice(5).replace('-', '/')} → ${state.follow ? '今天' : state.to.slice(5).replace('-', '/')}`
+    ? formatCustomButtonLabel(precise)
     : PRESET_LABELS[state.days];
-  analysis = state.page === 'usage' && hasDetailFilters() ? detailAnalysis() : state.days === '24h' ? windowAnalysis() : D.analyze(current.usage || [], state.from, state.to, state.source);
+  analysis = state.page === 'usage' && hasDetailFilters() ? detailAnalysis() : precise ? windowAnalysis() : D.analyze(current.usage || [], state.from, state.to, state.source);
   // 「今天」只有一天，按天画只有一根柱子：改成按小时（合计仍用按天的账，柱子来自逐条流水）
   if (state.days === 1 && !analysis.hourly) {
     const hours = todayHourly();
@@ -1093,6 +1120,27 @@ function fillHours(hours, first, count) {
 }
 /** 今天零点（本地时间）。 */
 function startOfToday(now) { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime(); }
+/** 今天 / 过去 24 小时 / 48 小时以内的精确自定义时段：补齐每个整点小时供柱状图绘制。 */
+function rangeHourSeries(hours) {
+  if (!hours) return null;
+  if (state.days === 1) {
+    const first = startOfToday(current.now);
+    return fillHours(hours, first, Math.floor((current.now - first) / 3600000) + 1);
+  }
+  if (state.days === '24h') {
+    const first = Math.floor(current.now / 3600000) * 3600000 - 23 * 3600000;
+    return fillHours(hours, first, 24);
+  }
+  if (state.days === 'custom' && state.since != null) {
+    const end = state.until ?? current.now;
+    if (end - state.since <= 48 * 3600000) {
+      const first = Math.floor(state.since / 3600000) * 3600000;
+      const last = Math.floor(Math.max(state.since, end) / 3600000) * 3600000;
+      return fillHours(hours, first, Math.floor((last - first) / 3600000) + 1);
+    }
+  }
+  return null;
+}
 
 /*
  * 「今天」的小时柱子：从逐条流水里按小时汇总（按天记的账切不出小时）。按「快照时间 + 工具」缓存；
@@ -1120,36 +1168,45 @@ function todayHourly() {
 }
 
 /*
- * 「一天」= 过去 24 小时。按天记的账切不出来，改由 worker 从逐条流水里汇总：这 24 小时和再往前的 24 小时（算环比）。
- * 结果按「快照时间 + 工具」缓存；还没回来时先给一份空的，回来后重画。
+ * 精确到时分的时间范围（「一天」= 过去 24 小时，或自定义了小时/分钟）：按天记的账切不出来，
+ * 改由 worker 从逐条流水里汇总当前时段与紧邻的上一段等长时间（算环比）。
+ * 结果按「范围 + 工具 + 快照」缓存；还没回来时先给一份空的，回来后重画。
  */
 const windowCache = new Map();
 function windowAnalysis() {
-  const key = `${current.now}|${state.source}`;
-  const hit = windowCache.get(key);
-  if (!hit) {
+  const curSince = state.since;
+  const curUntil = state.until ?? current.now;
+  const span = Math.max(60_000, curUntil - curSince + 1);
+  const prevUntil = curSince - 1;
+  const prevSince = curSince - span;
+  const key = `${state.days}|${state.from}|${state.to}|${curSince}|${curUntil}|${state.source}|${current.scannedAt || ''}`;
+  if (!windowCache.has(key)) {
     windowCache.set(key, null);
-    const now = current.now, base = { source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true };
+    const base = { source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true };
     Promise.all([
-      api.requests({ ...base, from: D.dayKey(now - 86400000), to: D.dayKey(now), since: now - 86400000, until: now }),
-      api.requests({ ...base, from: D.dayKey(now - 2 * 86400000), to: D.dayKey(now - 86400000), since: now - 2 * 86400000, until: now - 86400000 - 1 })
+      api.requests({ ...base, from: state.from, to: state.to, since: curSince, until: curUntil }),
+      api.requests({ ...base, from: D.dayKey(prevSince), to: D.dayKey(prevUntil), since: prevSince, until: prevUntil })
     ]).then(([cur, prev]) => {
       windowCache.set(key, { cur: cur.aggregate, prev: prev.aggregate });
-      while (windowCache.size > 6) windowCache.delete(windowCache.keys().next().value);
-      if (state.days === '24h' && current) render(current);
-    }).catch(() => { windowCache.delete(key); showStatus('过去 24 小时的数据读取失败，请重试。', true); });
+      while (windowCache.size > 8) windowCache.delete(windowCache.keys().next().value);
+      if (current && isPreciseRange() && state.since === curSince && (state.until ?? current.now) === curUntil) render(current);
+    }).catch(() => {
+      windowCache.set(key, { error: true });
+      if (current && isPreciseRange() && state.since === curSince && (state.until ?? current.now) === curUntil) {
+        render(current);
+        showStatus(state.days === '24h' ? '过去 24 小时的数据读取失败，请重试。' : '所选时间段的数据读取失败，请重试。', true);
+      }
+    });
   }
   const data = windowCache.get(key);
-  const result = D.analyze(data?.cur.rows || [], state.from, state.to, state.source);
-  result.previous = D.sum(D.select(data?.prev.rows || [], '0000-00-00', '9999-99-99', state.source));
-  // 24 个整点小时，没用的小时补 0，图表才连续
-  const byHour = new Map((data?.cur.hours || []).map(row => [row.hour, row]));
-  // 画最近 24 个整点小时（含当前这一小时）；24 小时窗口开头那半个小时只进合计，不单独占一根柱子
-  const firstHour = Math.floor(current.now / 3600000) * 3600000 - 23 * 3600000;
-  result.hourly = Array.from({ length: 24 }, (_, i) => byHour.get(firstHour + i * 3600000) || { hour: firstHour + i * 3600000, tokens: 0, costUsd: 0, requests: 0 });
+  const result = D.analyze(data?.cur?.rows || [], state.from, state.to, state.source);
+  result.previous = D.sum(D.select(data?.prev?.rows || [], '0000-00-00', '9999-99-99', state.source));
+  const hourly = rangeHourSeries(data?.cur?.hours || []);
+  if (hourly) result.hourly = hourly;
   result.loading = !data;
+  result.error = Boolean(data?.error);
   // 分布图（一天中的时段 / 星期）要用的逐小时数据
-  result.hours = data?.cur.hours || null;
+  result.hours = data?.cur?.hours || null;
   return result;
 }
 function delta(now, previous) {
@@ -1230,7 +1287,7 @@ function groupDaily(daily) {
 }
 function dailyChart(animate) {
   if (analysis.hourly) {
-    $('chart-caption').textContent = state.days === 1 ? '按小时 · 今天' : '按小时 · 过去 24 小时';
+    $('chart-caption').textContent = state.days === 1 ? '按小时 · 今天' : state.days === '24h' ? '按小时 · 过去 24 小时' : '按小时 · 所选时段';
     chart($('daily-chart'), analysis.hourly, state.metric, true, animate);
     return;
   }
@@ -1243,7 +1300,7 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
   if (!rows.length) { host.append(empty('所选范围暂无记录')); return; }
   const w = Math.max(280, host.clientWidth), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
   const max = Math.max(1, ...rows.map(row => row[metric] || 0));
-  const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': hourly ? '最近24小时用量柱状图' : '每日用量柱状图' });
+  const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': hourly ? (state.days === '24h' ? '最近24小时用量柱状图' : '按小时用量柱状图') : '每日用量柱状图' });
   const fmt = metric === 'costUsd' ? money : metric === 'requests' ? number : tokens;
   for (let i = 0; i <= 2; i++) {
     const y = top + (h - top - bottom) * i / 2;
@@ -1254,10 +1311,12 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
   const slot = (w - left - 8) / rows.length, barWidth = Math.max(.5, Math.min(slot * .62, 30));
   const step = Math.min(16, 700 / rows.length);
   const today = D.dayKey(Date.now());
+  const multiDayHourly = hourly && rows.length > 24 && D.dayKey(rows[0].hour) !== D.dayKey(rows[rows.length - 1].hour);
   rows.forEach((row, i) => {
     const barHeight = Math.max(row[metric] > 0 ? 2 : 0, ((row[metric] || 0) / max) * (h - top - bottom));
     const x = left + i * slot + (slot - barWidth) / 2;
-    const label = hourly ? `${new Date(row.hour).getHours()}:00` : row.label || row.day;
+    const hourDate = hourly ? new Date(row.hour) : null;
+    const label = hourly ? (multiDayHourly ? `${hourDate.getMonth() + 1}/${hourDate.getDate()} ${hourDate.getHours()}:00` : `${hourDate.getHours()}:00`) : row.label || row.day;
     const text = `${hourly ? date(row.hour) : label}\n${tokens(row.tokens)} Tokens\n${money(row.costUsd)} · ${number(row.requests)} 次请求`;
     const rect = svg('rect', { class: 'col' + (row.current || row.day === today ? ' today' : ''), x, y: h - bottom - barHeight, width: barWidth, height: barHeight, rx: Math.min(4, barWidth / 2), tabindex: 0, 'aria-label': text });
     rect.style.animationDelay = `${Math.round(i * step)}ms`;
@@ -1303,7 +1362,7 @@ function renderOverview() {
     ['峰值用量', peak?.tokens ? amount(peak.tokens) : '—']
   ];
   $('rhythm').replaceChildren(...rhythms.map(([label, value], i) => stagger(el('div', { class: 'rhythm-row' }, [el('span', { text: label }), el('b', { text: value })]), i)),
-    el('p', { class: 'rhythm-note', text: hourly ? (state.days === 1 ? '今天从零点到现在，按小时统计；平均值按已经过去的小时算，对比昨天全天。' : '过去 24 小时，按小时统计，对比再往前的 24 小时。') : '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。' }));
+    el('p', { class: 'rhythm-note', text: hourly ? (state.days === 1 ? '今天从零点到现在，按小时统计；平均值按已经过去的小时算，对比昨天全天。' : state.days === '24h' ? '过去 24 小时，按小时统计，对比再往前的 24 小时。' : '所选时段按小时统计，对比紧邻的上一段等长时间。') : '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。' }));
   const sources = [...analysis.sources].sort((a, b) => b.tokens - a.tokens);
   $('sources').replaceChildren(...(sources.length ? sources.map((row, i) => {
     const share = t.tokens ? row.tokens / t.tokens * 100 : 0;
@@ -2192,12 +2251,15 @@ function detailAnalysis() {
   if (!detailCache.has(key)) {
     detailCache.set(key, null);
     const previous = { ...query };
-    if (state.days === '24h') {
-      previous.since = state.since - 86400000; previous.until = state.since - 1;
+    if (isPreciseRange() && state.since != null) {
+      const curUntil = state.until ?? current.now;
+      const span = Math.max(60_000, curUntil - state.since + 1);
+      previous.since = state.since - span; previous.until = state.since - 1;
       previous.from = D.dayKey(previous.since); previous.to = D.dayKey(previous.until);
     } else {
       const days = D.dayCount(state.from, state.to);
       previous.from = D.shift(state.from, -days); previous.to = D.shift(state.from, -1);
+      previous.since = undefined; previous.until = undefined;
     }
     Promise.all([api.requests(query), api.requests(previous)]).then(([cur, prev]) => {
       detailCache.set(key, { cur: cur.aggregate, prev: prev.aggregate });
@@ -2216,16 +2278,14 @@ function detailAnalysis() {
   const result = D.analyze(data?.cur?.rows || [], state.from, state.to, state.source);
   result.previous = D.sum(data?.prev?.rows || []);
   result.hours = data?.cur?.hours || null;
-  if (data?.cur?.hours && (state.days === 1 || state.days === '24h')) {
-    const first = state.days === 1 ? startOfToday(current.now) : Math.floor(current.now / 3600000) * 3600000 - 23 * 3600000;
-    result.hourly = fillHours(data.cur.hours, first, state.days === 1 ? Math.floor((current.now - first) / 3600000) + 1 : 24);
-  }
+  const hourly = data?.cur?.hours ? rangeHourSeries(data.cur.hours) : null;
+  if (hourly) result.hourly = hourly;
   result.loading = !data;
   result.error = Boolean(data?.error);
   return result;
 }
 function requestQuery(extra = {}) {
-  return { from: state.from, to: state.to, since: state.since, source: state.source, status: state.reqStatus, search: state.reqSearch.trim(), sort: state.reqSort, page: state.reqPage, pageSize: 20, account: state.reqAccount || undefined, models: state.models, project: state.project || undefined, channel: state.channel, ...extra };
+  return { from: state.from, to: state.to, since: state.since, until: state.until, source: state.source, status: state.reqStatus, search: state.reqSearch.trim(), sort: state.reqSort, page: state.reqPage, pageSize: 20, account: state.reqAccount || undefined, models: state.models, project: state.project || undefined, channel: state.channel, ...extra };
 }
 /** 流水在主进程的 worker 里查；同样的条件、账本也没更新时直接用上一次的结果重画。 */
 async function loadRequests() {
@@ -2618,7 +2678,7 @@ function showUsageView(view) {
 /**
  * 时间范围按页面各管各的：总览默认 30 天、改了会记住；用量明细每次打开都从「今天」开始（看明细一般是看今天的）。
  */
-const overviewRange = { days: 30, from: '', to: '', follow: false };
+const overviewRange = { days: 30, from: '', to: '', fromTime: '00:00', toTime: '23:59', follow: false };
 /* ---------------- 工作空间布局（0.3.43；0.3.49 重做） ---------------- */
 /*
  * 编辑布局。侧栏的每个页面、每一页的每张卡片（总览的官方额度按家拆开）、额度详情顶上的每个账号标签，都能单独隐藏，
@@ -3058,8 +3118,8 @@ function navigate(page, options = {}) {
   if (!force && navHidden(page)) return;
   const rangePage = state.rangePage || 'overview';
   if (page === 'usage' && state.page !== 'usage') {
-    if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, follow: state.follow });
-    Object.assign(state, { days: 1, follow: false, tablePage: 0, reqPage: 0 });
+    if (rangePage === 'overview') Object.assign(overviewRange, { days: state.days, from: state.from, to: state.to, fromTime: state.fromTime, toTime: state.toTime, follow: state.follow });
+    Object.assign(state, { days: 1, fromTime: '00:00', toTime: '23:59', follow: false, tablePage: 0, reqPage: 0 });
   }
   if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
   if (page === 'overview' || page === 'usage') state.rangePage = page;
@@ -3576,19 +3636,41 @@ $('layout-edit').addEventListener('click', () => setLayoutEdit(!layoutEdit));
 $('layout-empty-edit').addEventListener('click', () => setLayoutEdit(true));
 $('layout-restore-page').addEventListener('click', () => { if (state.page) showNav(state.page); });
 watchLayout();
-const picker = { from: '', to: '', follow: false, month: '' };
+const picker = { from: '', to: '', fromTime: '00:00', toTime: '23:59', follow: false, month: '' };
 function monthOf(day) { return day.slice(0, 7); }
 function shiftMonth(month, n) { const [y, m] = month.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
-function pickerValid() { return Boolean(picker.from && picker.to && picker.from <= picker.to); }
+function pickerValid() {
+  const fromTime = D.parseTime(picker.fromTime, '');
+  if (!picker.from || !fromTime) return false;
+  if (picker.follow) {
+    const now = Date.now(), today = D.dayKey(now);
+    const endTime = fromTime === '00:00' ? '23:59' : D.timeKey(now);
+    return `${picker.from}T${fromTime}` <= `${today}T${endTime}`;
+  }
+  const toTime = D.parseTime(picker.toTime, '');
+  if (!picker.to || !toTime) return false;
+  return `${picker.from}T${fromTime}` <= `${picker.to}T${toTime}`;
+}
 function renderPicker() {
-  const today = D.dayKey(Date.now());
+  const now = Date.now(), today = D.dayKey(now);
   if (picker.follow) picker.to = today;
-  $('date-from').value = picker.from; $('date-to').value = picker.to;
+  const shownToTime = picker.follow ? D.timeKey(now) : picker.toTime;
+  if ($('date-from').value !== picker.from) $('date-from').value = picker.from;
+  if ($('time-from').value !== picker.fromTime && document.activeElement !== $('time-from')) $('time-from').value = picker.fromTime;
+  if ($('date-to').value !== picker.to) $('date-to').value = picker.to;
+  if ($('time-to').value !== shownToTime && document.activeElement !== $('time-to')) $('time-to').value = shownToTime;
   $('date-from').max = $('date-to').max = today;
   $('date-to').disabled = picker.follow;
+  $('time-to').disabled = picker.follow;
   $('range-follow').checked = picker.follow;
-  $('range-error').hidden = !(picker.from && picker.to) || pickerValid();
-  $('range-apply').disabled = !pickerValid();
+  const valid = pickerValid();
+  const showError = Boolean(picker.from && (picker.follow || picker.to)) && !valid;
+  $('range-error').hidden = !showError;
+  for (const id of ['date-from', 'time-from', 'date-to', 'time-to']) {
+    if (showError) $(id).setAttribute('aria-invalid', 'true');
+    else $(id).removeAttribute('aria-invalid');
+  }
+  $('range-apply').disabled = !valid;
   for (const button of $('range-presets').querySelectorAll('button')) button.classList.toggle('on', String(state.days) === button.dataset.days);
   const [y, m] = picker.month.split('-').map(Number);
   $('cal-title').textContent = `${y} 年 ${m} 月`;
@@ -3605,8 +3687,20 @@ function renderPicker() {
   }));
 }
 function openPicker() {
-  picker.from = state.from; picker.to = state.to; picker.follow = state.days === 'custom' ? state.follow : state.days !== 'custom' && state.to === D.dayKey(Date.now());
-  picker.month = monthOf(picker.from || D.dayKey(Date.now()));
+  const now = Date.now(), today = D.dayKey(now);
+  picker.from = state.from; picker.to = state.to;
+  picker.follow = state.days === 'custom' ? state.follow : state.days === '24h' || (state.days !== 'custom' && state.to === today);
+  if (state.days === 'custom') {
+    picker.fromTime = D.parseTime(state.fromTime, '00:00');
+    picker.toTime = D.parseTime(state.toTime, '23:59');
+  } else if (state.days === '24h' && state.since != null) {
+    picker.fromTime = D.timeKey(state.since);
+    picker.toTime = D.timeKey(current?.now || now);
+  } else {
+    picker.fromTime = '00:00';
+    picker.toTime = '23:59';
+  }
+  picker.month = monthOf(picker.from || today);
   $('range-popover').hidden = false;
   $('range-button').setAttribute('aria-expanded', 'true');
   renderPicker();
@@ -3622,9 +3716,19 @@ function closePicker() {
   $('range-popover').hidden = true;
   $('range-button').setAttribute('aria-expanded', 'false');
 }
-function applyRange(days, from, to, follow = false) {
-  state.days = days; state.tablePage = 0;
-  if (days === 'custom') { state.from = from; state.to = to; state.follow = follow; }
+function applyRange(days, from, to, follow = false, fromTime = '00:00', toTime = '23:59') {
+  state.days = days; state.tablePage = 0; state.reqPage = 0;
+  if (days === 'custom') {
+    state.from = from; state.to = to; state.follow = follow;
+    state.fromTime = D.parseTime(fromTime, '00:00');
+    state.toTime = D.parseTime(toTime, '23:59');
+  } else {
+    state.follow = false;
+    state.fromTime = '00:00';
+    state.toTime = '23:59';
+  }
+  for (const [k, v] of windowCache) if (v?.error) windowCache.delete(k);
+  for (const [k, v] of detailCache) if (v?.error) detailCache.delete(k);
   closePicker();
   $('app-status').hidden = true;
   if (current) { render(current); if (state.page === 'overview') playChart($('daily-chart'), true); }
@@ -3637,7 +3741,7 @@ $('range-presets').addEventListener('click', event => {
 // 点日历：第一下定开始，第二下定结束；第二下早于开始就重新从这一天开始（和 AllAi 一样）。
 $('cal-grid').addEventListener('click', event => {
   const key = event.target.closest('[data-day]')?.dataset.day; if (!key) return;
-  if (picker.follow) picker.from = key; // 结束日期跟着今天走，点哪天就是从哪天开始
+  if (picker.follow) picker.from = key; // 结束时间跟着当前走，点哪天就是从哪天开始
   else if (!picker.from || picker.to || key < picker.from) { picker.from = key; picker.to = ''; }
   else picker.to = key;
   renderPicker();
@@ -3646,12 +3750,22 @@ $('cal-prev').addEventListener('click', () => { picker.month = shiftMonth(picker
 $('cal-next').addEventListener('click', () => { picker.month = shiftMonth(picker.month, 1); renderPicker(); });
 $('date-from').addEventListener('change', event => { picker.from = event.target.value; if (picker.from) picker.month = monthOf(picker.from); renderPicker(); });
 $('date-to').addEventListener('change', event => { picker.to = event.target.value; if (picker.to) picker.month = monthOf(picker.to); renderPicker(); });
+$('time-from').addEventListener('input', event => { if (D.parseTime(event.target.value, '')) { picker.fromTime = event.target.value; renderPicker(); } });
+$('time-from').addEventListener('change', event => { picker.fromTime = D.parseTime(event.target.value, '00:00'); $('time-from').value = picker.fromTime; renderPicker(); });
+$('time-to').addEventListener('input', event => { if (D.parseTime(event.target.value, '')) { picker.toTime = event.target.value; renderPicker(); } });
+$('time-to').addEventListener('change', event => { picker.toTime = D.parseTime(event.target.value, '23:59'); $('time-to').value = picker.toTime; renderPicker(); });
 $('range-follow').addEventListener('change', event => { picker.follow = event.target.checked; renderPicker(); });
 $('range-cancel').addEventListener('click', closePicker);
 $('custom-range').addEventListener('submit', event => {
   event.preventDefault();
-  if (!pickerValid()) { renderPicker(); return; }
-  applyRange('custom', picker.from, picker.to, picker.follow);
+  if (!pickerValid()) {
+    renderPicker();
+    if (!picker.from) $('date-from').focus();
+    else if (!picker.follow && !picker.to) $('date-to').focus();
+    else $('time-from').focus();
+    return;
+  }
+  applyRange('custom', picker.from, picker.to, picker.follow, picker.fromTime, picker.toTime);
 });
 document.addEventListener('pointerdown', event => {
   if (!$('range-popover').hidden && !event.target.closest('.range-picker')) closePicker();
@@ -3691,6 +3805,7 @@ $('detail-search').append($('request-search').closest('label'));
 $('detail-more').append($('request-account').closest('label'), $('request-status').closest('label'));
 $('retry-detail-query').addEventListener('click', () => {
   for (const [key, value] of detailCache) if (value?.error) detailCache.delete(key);
+  for (const [key, value] of windowCache) if (value?.error) windowCache.delete(key);
   requestError = false; requestKey = '';
   $('app-status').hidden = true;
   requeryRequests();

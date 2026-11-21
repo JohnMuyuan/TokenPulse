@@ -32,6 +32,26 @@ test('calendar arithmetic handles daylight saving and leap days', () => {
   assert.equal(D.analyze([], '2026-03-07', '2026-03-10').daily.length, 4);
   assert.equal(D.shift('2026-01-01', -1), '2025-12-31');
 });
+test('hour and minute range helpers parse, format, and compute inclusive bounds', () => {
+  assert.equal(D.parseTime('09:30'), '09:30');
+  assert.equal(D.parseTime('23:59'), '23:59');
+  assert.equal(D.parseTime('24:00', '00:00'), '00:00');
+  assert.equal(D.parseTime('bad', '23:59'), '23:59');
+  assert.equal(D.timeKey(new Date(2026, 5, 15, 9, 5, 42).getTime()), '09:05');
+  assert.equal(D.hasTimePrecision('00:00', '23:59', false), false);
+  assert.equal(D.hasTimePrecision('00:00', '12:00', true), false);
+  assert.equal(D.hasTimePrecision('09:30', '23:59', true), true);
+  assert.equal(D.hasTimePrecision('00:00', '18:30', false), true);
+  assert.equal(D.rangeBounds('2026-06-15', '2026-06-15', '00:00', '23:59', false), null);
+  const sameMin = D.rangeBounds('2026-06-15', '2026-06-15', '14:30', '14:30', false);
+  assert.equal(sameMin.since, new Date(2026, 5, 15, 14, 30, 0, 0).getTime());
+  assert.equal(sameMin.until, new Date(2026, 5, 15, 14, 30, 59, 999).getTime());
+  assert.equal(sameMin.until - sameMin.since + 1, 60_000);
+  const now = new Date(2026, 5, 15, 16, 12, 34).getTime();
+  const follow = D.rangeBounds('2026-06-15', '2026-06-15', '09:15', '23:59', true, now);
+  assert.equal(follow.since, new Date(2026, 5, 15, 9, 15, 0, 0).getTime());
+  assert.equal(follow.until, now);
+});
 // 不读真实的 ~/.gemini/antigravity（这个测试没隔离用户目录）
 process.env.TOKENPULSE_ANTIGRAVITY_DIR = path.join(os.tmpdir(), 'tokenpulse-no-antigravity');
 test('real snapshot exports aggregated usage with matching totals and exact 7-day boundary', () => {

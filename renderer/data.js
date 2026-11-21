@@ -7,6 +7,34 @@
     const d = new Date(at);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
+  function timeKey(at) {
+    const d = new Date(at);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  function parseTime(value, fallback = '00:00') {
+    const m = /^(\d{2}):(\d{2})$/.exec(String(value || '').trim());
+    if (!m) return fallback;
+    const hh = Number(m[1]), mm = Number(m[2]);
+    return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59 ? `${m[1]}:${m[2]}` : fallback;
+  }
+  function dateTimeMs(day, time = '00:00', endOfMinute = false) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) return NaN;
+    const [y, m, d] = day.split('-').map(Number);
+    const [hh, mm] = parseTime(time, endOfMinute ? '23:59' : '00:00').split(':').map(Number);
+    return new Date(y, m - 1, d, hh, mm, endOfMinute ? 59 : 0, endOfMinute ? 999 : 0).getTime();
+  }
+  function hasTimePrecision(fromTime = '00:00', toTime = '23:59', follow = false) {
+    return parseTime(fromTime, '00:00') !== '00:00' || (!follow && parseTime(toTime, '23:59') !== '23:59');
+  }
+  function rangeBounds(from, to, fromTime = '00:00', toTime = '23:59', follow = false, now = Date.now()) {
+    const startTime = parseTime(fromTime, '00:00');
+    const endTime = parseTime(toTime, '23:59');
+    if (!hasTimePrecision(startTime, endTime, follow)) return null;
+    const since = dateTimeMs(from, startTime, false);
+    const until = follow ? now : dateTimeMs(to, endTime, true);
+    if (!Number.isFinite(since) || !Number.isFinite(until)) return null;
+    return { since, until: Math.max(since, until) };
+  }
   function shift(day, n) {
     const [y, m, d] = day.split('-').map(Number);
     return dayKey(new Date(y, m - 1, d + n, 12));
@@ -57,7 +85,7 @@
     };
     return [columns.map(([, label]) => cell(label)).join(','), ...rows.map(row => columns.map(([key]) => cell(row[key])).join(','))].join('\r\n');
   }
-  const api = { dayKey, shift, dayCount, select, sum, group, analyze, csv };
+  const api = { dayKey, timeKey, parseTime, dateTimeMs, hasTimePrecision, rangeBounds, shift, dayCount, select, sum, group, analyze, csv };
   if (typeof module !== 'undefined') module.exports = api;
   else root.PulseData = api;
 })(typeof window !== 'undefined' ? window : globalThis);

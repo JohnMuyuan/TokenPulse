@@ -37,7 +37,11 @@
   /** 趋势图的桶：今天 / 一天按小时；两个月以内按天；两年以内按周（周一开始）；再长按月。每个桶带各工具的分量。 */
   function buckets(analysis) {
     if (analysis.hourly) {
-      return { unit: '小时', rows: analysis.hourly.map(row => ({ key: row.hour, label: `${new Date(row.hour).getHours()}:00`, title: date(row.hour), tokens: row.tokens, costUsd: row.costUsd, requests: row.requests, sources: row.sources || {} })) };
+      const multiDay = analysis.hourly.length > 24 && D.dayKey(analysis.hourly[0].hour) !== D.dayKey(analysis.hourly.at(-1).hour);
+      return { unit: '小时', rows: analysis.hourly.map(row => {
+        const d = new Date(row.hour);
+        return { key: row.hour, label: multiDay ? `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:00` : `${d.getHours()}:00`, title: date(row.hour), tokens: row.tokens, costUsd: row.costUsd, requests: row.requests, sources: row.sources || {} };
+      }) };
     }
     const days = analysis.daily;
     const unit = days.length <= 62 ? '天' : days.length <= 730 ? '周' : '月';
@@ -86,11 +90,11 @@
   let lastHours = null;
   function rangeHours(analysis) {
     if (analysis.hours) return { hours: analysis.hours, loading: false };
-    const key = `${state.from}|${state.to}|${state.since ?? ''}|${state.source}|${current.now}`;
-    const scope = `${state.from}|${state.to}|${state.since ?? ''}|${state.source}`;
+    const key = `${state.from}|${state.to}|${state.since ?? ''}|${state.until ?? ''}|${state.source}|${current.now}`;
+    const scope = `${state.from}|${state.to}|${state.since ?? ''}|${state.until ?? ''}|${state.source}`;
     if (!hourCache.has(key)) {
       hourCache.set(key, null);
-      api.requests({ from: state.from, to: state.to, since: state.since, source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true })
+      api.requests({ from: state.from, to: state.to, since: state.since, until: state.until, source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true })
         .then(page => {
           hourCache.set(key, { hours: page.aggregate.hours, firstAt: page.firstAt });
           lastHours = { scope, hours: page.aggregate.hours, firstAt: page.firstAt };

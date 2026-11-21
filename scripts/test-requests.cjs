@@ -320,6 +320,33 @@ try {
     check("首月只有断尾时回溯到首条有效流水", result.firstAt === when);
   }
 
+  /* ---------------- 精确到小时和分钟的查询边界 ---------------- */
+  {
+    const { appendRequests } = require(path.join(build, "request-log.js"));
+    const at = (h, m, s) => new Date(2026, 5, 15, h, m, s, 0).getTime();
+    const rec = (id, when, model, cwd, input) => ({ id, at: when, kind: "claude-code", file: path.join(root, `hm-${id}.jsonl`), cwd, model, input, output: 100, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, calls: 1 });
+    appendRequests([
+      rec("hm-before", at(9, 14, 59), "m-before", "D:\\Work\\Before", 1000),
+      rec("hm-start", at(9, 15, 0), "m-in-1", "D:\\Work\\Inside", 2000),
+      rec("hm-end", at(10, 30, 59), "m-in-2", "D:\\Work\\Inside", 3000),
+      rec("hm-after", at(10, 31, 0), "m-after", "D:\\Work\\After", 4000),
+    ]);
+    const since = new Date(2026, 5, 15, 9, 15, 0, 0).getTime();
+    const until = new Date(2026, 5, 15, 10, 30, 59, 999).getTime();
+    const page = queryRequests({ from: "2026-06-15", to: "2026-06-15", since, until, source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 20, aggregate: true, projects: true, cache: true });
+    check(
+      "精确时分查询：包含起止分钟边界（含结束分钟的 59 秒），排除前后相邻分钟",
+      page.total === 2 &&
+        page.rows.map((r) => r.model).sort().join(",") === "m-in-1,m-in-2" &&
+        page.aggregate.rows.reduce((n, r) => n + r.tokens, 0) === 5200 &&
+        page.aggregate.hours.length === 2 &&
+        page.projects.length === 1 &&
+        page.projects[0].cwd === "D:\\Work\\Inside" &&
+        page.cache.totals.input === 5000,
+      JSON.stringify({ total: page.total, models: page.rows.map((r) => r.model), agg: page.aggregate.rows.length, hours: page.aggregate.hours.length, projects: page.projects.length, cacheInput: page.cache.totals.input }),
+    );
+  }
+
   /* ---------------- 额度归属 ---------------- */
   const { buildSnapshot } = require(path.join(build, "report.js"));
   const claude = buildSnapshot(now);

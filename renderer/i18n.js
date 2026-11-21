@@ -2717,10 +2717,11 @@
     '所选范围暂无记录': 'No records in this range', '所选范围还没有工具用量': 'No tool usage in this range', '所选范围还没有模型用量': 'No model usage in this range',
     '活跃天数': 'Active days', '日均': 'Daily avg', '日均请求': 'Daily requests', '峰值用量': 'Peak day', '用量最高的一天': 'Busiest day', '单次平均用量': 'Avg per request', '工具 token 占比': 'Token share by tool',
     '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。': 'Averages include days without usage. Compared with the previous period of equal length; today is still in progress.',
-    '每日用量柱状图': 'Daily usage bar chart', '最近24小时用量柱状图': 'Last 24 hours usage bar chart',
+    '每日用量柱状图': 'Daily usage bar chart', '最近24小时用量柱状图': 'Last 24 hours usage bar chart', '按小时用量柱状图': 'Hourly usage bar chart',
     // 时间选择
     '今天': 'Today', '7 天': '7 days', '14 天': '14 days', '30 天': '30 days', '90 天': '90 days', '全部': 'All', '自定义': 'Custom', '时间范围': 'Time range',
     '开始日期': 'Start date', '结束日期': 'End date', '结束日期跟随今天': 'End date follows today', '开始日期不能晚于结束日期': 'The start date can’t be after the end date',
+    '开始时间': 'Start time', '结束时间': 'End time', '开始时分': 'Start hour and minute', '结束时分': 'End hour and minute', '结束时间跟随当前': 'End time follows now', '开始时间不能晚于结束时间': 'The start time can’t be after the end time',
     '取消': 'Cancel', '确定': 'Apply', '上个月': 'Previous month', '下个月': 'Next month', '日': 'S', '一': 'M', '二': 'T', '三': 'W', '四': 'T', '五': 'F', '六': 'S',
     '全部工具': 'All tools', '筛选工具': 'Filter by tool', '天': 'day', '周': 'Week', '月': 'Month', '年': 'Year',
     // 额度详情
@@ -2883,9 +2884,11 @@
     '按本机用量倒推，多设备使用时会偏低。': 'Back-calculated from local usage, so it runs low with multiple devices.',
     '。': '.', '未知模型': 'Unknown model',
     // 一天 / 数字显示
-    '一天': '24 hours', '过去 24 小时': 'Past 24 hours', '按小时 · 过去 24 小时': 'Hourly · past 24 hours', '每小时平均': 'Hourly avg', '活跃小时': 'Active hours',
+    '一天': '24 hours', '过去 24 小时': 'Past 24 hours', '按小时 · 过去 24 小时': 'Hourly · past 24 hours', '按小时 · 所选时段': 'Hourly · selected range', '每小时平均': 'Hourly avg', '活跃小时': 'Active hours',
     '每小时平均请求': 'Requests per hour', '用量最高的一小时': 'Busiest hour', '过去 24 小时，按小时统计，对比再往前的 24 小时。': 'Past 24 hours, by hour, compared with the 24 hours before.',
+    '所选时段按小时统计，对比紧邻的上一段等长时间。': 'Selected range, by hour, compared with the preceding period of equal length.',
     '过去 24 小时的数据读取失败，请重试。': 'Could not load the past 24 hours. Please try again.',
+    '所选时间段的数据读取失败，请重试。': 'Could not load data for the selected time range. Please try again.',
     '数字显示': 'Numbers', '精确到个位': 'Exact', '默认。例如 3,031,245,120': 'Default. e.g. 3,031,245,120', '简写': 'Compact', '例如 3.03B、240.3M': 'e.g. 3.03B, 240.3M',
     'Token 和请求数怎么显示。中文界面会在数字后面再加一个小字，例如「≈30.3亿」，方便按中文习惯读。图表坐标轴始终用简写。': 'How token and request counts are shown. Chart axes always use the compact form.',
     // 用量明细（合并了请求记录）
@@ -2911,6 +2914,9 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.102 自定义日期范围支持精确到小时和分钟
+    '自定义时间范围支持精确到小时和分钟': 'Custom date ranges now support hour and minute precision',
+    '总览与用量明细的时间选择器现可在开始、结束日期旁指定小时和分钟（默认 00:00 至 23:59，并支持「结束时间跟随当前」）。总览趋势、用量分析、逐条请求、按日汇总、按项目、缓存分析与 CSV 导出均按精确时分过滤，48 小时以内自动按小时绘柱。': 'The range picker in Overview and Usage Details now lets you set start and end hours and minutes alongside dates (defaulting to 00:00–23:59, with “End time follows now”). Overview trends, usage insights, per-request logs, daily summaries, projects, cache analysis, and CSV exports all filter to the exact minute, and ranges up to 48 hours chart hourly automatically.',
     // 0.3.101 订阅额度估算与后端修复
     '改进 Claude、ChatGPT 和 Grok 的额度估算': 'Improved capacity estimates for Claude, ChatGPT, and Grok',
     '周额度和 5 小时额度按近期同套餐窗口加权。容量折算排除疑似同期混用的异常区间，百分比回落后的反弹只计新增涨幅。Claude Fable 的独立周额度也采用这套方法。': 'Weekly and 5-hour estimates give more weight to recent windows on the same plan. Capacity estimates exclude intervals with suspected concurrent use and count only new increases after a percentage dip. Claude Fable’s separate weekly limit uses the same method.',
@@ -3735,6 +3741,7 @@
     P(N + ' 次无法核验', m => `${m[1]} unverifiable`),
     P(N + ' 次一致', m => `${m[1]} matched`),
     P('过去 24 小时 · (.+) 起', m => `Past 24 hours · since ${m[1]}`),
+    P('(.+) — 现在', m => `${m[1]} — Now`),
     P('(\\d+) / (\\d+) 小时', m => `${m[1]} / ${m[2]} hours`),
     P('≈ 5 小时 (.+)', m => `≈ 5h ${m[1]}`),
     P('≈ 周 (.+)', m => `≈ week ${m[1]}`),

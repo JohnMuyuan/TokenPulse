@@ -48,6 +48,11 @@ fs.writeFileSync(path.join(dataPath, 'requests', `${requestMonth}.jsonl`), [
   qaRequest('qa-2', 2, { model: 'claude-QA-opus', requested: 'claude-QA-opus[1m]', returned: 'claude-QA-opus', responseId: 'msg_01' + 'C'.repeat(22), requestId: 'req_011C' + 'D'.repeat(20) }),
   qaRequest('qa-3', 1, { kind: 'codex', file: 'ui-test-codex', model: 'gpt-QA', requested: 'gpt-QA', responseId: 'resp_' + 'e'.repeat(50) })
 ].map(row => JSON.stringify(row)).join('\n') + '\n');
+// 固定历史日期的两条请求（09:15 与 14:40）：验证自定义查询精确到小时和分钟，不受测试运行时刻影响
+fs.writeFileSync(path.join(dataPath, 'requests', '2026-06.jsonl'), [
+  { id: 'hm-morning', at: new Date(2026, 5, 15, 9, 15, 30).getTime(), kind: 'claude-code', file: 'ui-test-hm-a', cwd: 'D:\\qa\\hm-morning', model: 'QA-morning-slot', requested: 'QA-morning-slot', returned: 'QA-morning-slot', input: 1400, output: 100, cacheRead: 700, cacheWrite: 0, reasoning: 0, costUsd: 0.05, calls: 1 },
+  { id: 'hm-afternoon', at: new Date(2026, 5, 15, 14, 40, 20).getTime(), kind: 'codex', file: 'ui-test-hm-b', cwd: 'D:\\qa\\hm-afternoon', model: 'QA-afternoon-slot', requested: 'QA-afternoon-slot', input: 3000, output: 200, cacheRead: 1500, cacheWrite: 0, reasoning: 0, costUsd: 0.12, calls: 1 },
+].map(row => JSON.stringify(row)).join('\n') + '\n');
 // 透明转发量到的速度（0.3.35）：两个模型，QA-speed-a 今天和三天前各有几次，QA-speed-b 今天一次。额度详情的「模型速度」读它
 fs.mkdirSync(path.join(dataPath, 'route-log'), { recursive: true });
 {
@@ -677,6 +682,57 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(await evaluate("document.getElementById('range-apply').disabled"), false);
       assert.equal(await evaluate("[...document.querySelectorAll('#cal-grid .cal-day')].filter(d => !d.disabled && d.dataset.day > '" + today + "').length"), 0);
       await evaluate("document.getElementById('range-cancel').click()");
+      // 自定义范围精确到小时和分钟：同日时分校验、总览按小时汇总、跨页记忆与用量明细（逐条/按日/按项目/缓存）过滤
+      await evaluate(`(() => {
+        document.getElementById('range-button').click();
+        const follow = document.getElementById('range-follow'); follow.checked = false; follow.dispatchEvent(new Event('change'));
+        const df = document.getElementById('date-from'); df.value = '2026-06-15'; df.dispatchEvent(new Event('change'));
+        const dt = document.getElementById('date-to'); dt.value = '2026-06-15'; dt.dispatchEvent(new Event('change'));
+        const tf = document.getElementById('time-from'); tf.value = '15:00'; tf.dispatchEvent(new Event('change'));
+        const tt = document.getElementById('time-to'); tt.value = '14:00'; tt.dispatchEvent(new Event('change'));
+      })()`);
+      assert.equal(await evaluate("document.getElementById('range-apply').disabled"), true, 'start time after end time on same day is rejected');
+      assert.equal(await evaluate("document.getElementById('range-error').hidden"), false, 'range error shown for inverted times');
+      assert.equal(await evaluate("document.getElementById('time-from').getAttribute('aria-invalid')"), 'true');
+      await evaluate(`(() => {
+        const tf = document.getElementById('time-from'); tf.value = '09:00'; tf.dispatchEvent(new Event('change'));
+        const tt = document.getElementById('time-to'); tt.value = '10:30'; tt.dispatchEvent(new Event('change'));
+        document.getElementById('custom-range').requestSubmit();
+      })()`);
+      assert.equal(await evaluate("document.getElementById('range-popover').hidden"), true);
+      await until("state.days === 'custom' && analysis && !analysis.loading && analysis.total.tokens === 1500");
+      assert.equal(await evaluate("document.getElementById('range-button-label').textContent"), '自定义 · 06/15 09:00–10:30');
+      assert.equal(await evaluate("document.getElementById('range-label').textContent"), '2026.06.15 09:00 — 10:30');
+      assert.equal(await evaluate("document.getElementById('chart-caption').textContent"), '按小时 · 所选时段');
+      assert.equal(await evaluate("analysis.hourly.length"), 2);
+      // 切到用量明细选下午时段（14:00–14:40，含 14:40:20），核对逐条请求、按日汇总、按项目、缓存全部精确过滤
+      await evaluate("document.querySelector('[data-page=usage]').click()");
+      await evaluate(`(() => {
+        document.getElementById('range-button').click();
+        const follow = document.getElementById('range-follow'); follow.checked = false; follow.dispatchEvent(new Event('change'));
+        const df = document.getElementById('date-from'); df.value = '2026-06-15'; df.dispatchEvent(new Event('change'));
+        const dt = document.getElementById('date-to'); dt.value = '2026-06-15'; dt.dispatchEvent(new Event('change'));
+        const tf = document.getElementById('time-from'); tf.value = '14:00'; tf.dispatchEvent(new Event('change'));
+        const tt = document.getElementById('time-to'); tt.value = '14:40'; tt.dispatchEvent(new Event('change'));
+        document.getElementById('custom-range').requestSubmit();
+      })()`);
+      await until("analysis && !analysis.loading && analysis.total.tokens === 3200 && requestPage && requestPage.total === 1");
+      assert.equal(await evaluate("requestPage.rows[0].model"), 'QA-afternoon-slot');
+      assert.equal(await evaluate("filteredRecords.length === 1 && filteredRecords[0].model === 'QA-afternoon-slot'"), true);
+      // 再次打开选择器应保留当前起止时分
+      await evaluate("document.getElementById('range-button').click()");
+      assert.deepEqual(await evaluate("[document.getElementById('time-from').value, document.getElementById('time-to').value]"), ['14:00', '14:40']);
+      await evaluate("document.getElementById('range-cancel').click()");
+      // 按项目视图和缓存视图也走精确时分
+      await evaluate("document.querySelector('#usage-view [data-view=projects]').click()");
+      await until("document.querySelector('#view-projects .pj-title b')?.textContent === 'hm-afternoon'");
+      await evaluate("document.querySelector('#usage-view [data-view=cache]').click()");
+      await until("document.querySelector('#view-cache .cc-stat-value')?.textContent === '50.0%'");
+      await evaluate("document.querySelector('#usage-view [data-view=requests]').click()");
+      // 回到总览，总览的自定义小时和分钟应原样恢复
+      await evaluate("document.querySelector('[data-page=overview]').click()");
+      await until("state.days === 'custom' && analysis && !analysis.loading && analysis.total.tokens === 1500");
+      assert.equal(await evaluate("document.getElementById('range-button-label').textContent"), '自定义 · 06/15 09:00–10:30');
       // 「全部」：数据永久保存，从有记录的第一天算起；不再有 366 天上限
       await evaluate("document.querySelector('[data-days=\"all\"]').click()");
       assert.match(await evaluate("document.getElementById('range-button-label').textContent"), /全部/);
