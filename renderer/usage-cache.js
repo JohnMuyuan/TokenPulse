@@ -80,8 +80,10 @@
 
   function drawChart(host, daily) {
     host.replaceChildren();
-    if (!daily.length) { host.append(el('div', { class: 'empty', text: '这段时间、这些筛选条件下没有请求记录。' })); return; }
-    const width = Math.max(360, host.clientWidth || 800), height = 260, left = 52, right = 38, top = 14, bottom = 34;
+    if (!daily.length) { host.dataset.drawnWidth = ''; host.append(el('div', { class: 'empty', text: '这段时间、这些筛选条件下没有请求记录。' })); return; }
+    const measured = Math.round(host.clientWidth);
+    host.dataset.drawnWidth = String(measured);
+    const width = Math.max(360, measured || Math.round(host.parentElement?.clientWidth || 0) || 800), height = 260, left = 52, right = 38, top = 14, bottom = 34;
     const plotWidth = width - left - right, plotHeight = height - top - bottom;
     const slot = plotWidth / daily.length, bar = Math.max(3, Math.min(28, slot * 0.58));
     const maxInput = Math.max(1, ...daily.map(row => row.input));
@@ -132,6 +134,10 @@
     host.append(chart, el('div', { class: 'cc-legend' }, [
       legendItem('cc-fresh', '全新输入'), legendItem('cc-write', '缓存写入'), legendItem('cc-read', '缓存读取'), legendItem('cc-line-key', '命中率')
     ]));
+    window.watchChartHost?.(host, () => drawChart(host, daily));
+    if (!measured) requestAnimationFrame(() => {
+      if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) drawChart(host, daily);
+    });
   }
   function legendItem(cls, text) { return el('span', { class: 'cc-legend-item' }, [el('i', { class: cls }), el('span', { text })]); }
 

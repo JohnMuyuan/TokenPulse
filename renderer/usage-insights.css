@@ -70,7 +70,7 @@
 /* 全年活跃度（0.3.38）：一格一天、一列一周。格子固定大小，宽窗口不撑大，窄窗口横向滚动。 */
 .year-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .year-panel h2 { display: flex; align-items: center; gap: 10px; }
-.year-select { height: 30px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text-2); font: inherit; font-size: 13px; font-weight: 500; }
+.year-select { min-height: 30px; height: 30px; padding: 0 9px 0 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text-2); font: inherit; font-size: 13px; font-weight: 500; }
 .year-head-side { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-left: auto; }
 .year-count { display: grid; justify-items: end; gap: 2px; }
 .year-count b { font-size: 15px; font-weight: 650; }
@@ -135,7 +135,7 @@
 .speed-lines-bar { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; margin: 12px 0 10px; }
 .speed-lines-bar .muted { font-size: 12.5px; }
 .speed-lines-bar .text-btn { margin-left: auto; }
-.speed-lines-app { height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.speed-lines-app { min-height: 32px; height: 32px; padding: 0 10px 0 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
 .speed-toggle { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px 0 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 550; cursor: pointer; user-select: none; transition: border-color .15s, color .15s, background .15s; }
 .speed-toggle:hover { border-color: var(--line-strong); color: var(--text); }
 .speed-toggle.on { border-color: color-mix(in srgb, var(--accent, #2563eb) 55%, var(--line-strong)); color: var(--text); background: color-mix(in srgb, var(--accent, #2563eb) 8%, var(--surface)); }

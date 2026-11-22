@@ -106,7 +106,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     // 0.3.50：步数按标题找（分章节以后各步的序号会变）
     const titles = await evaluate('PulseIntro.titles()');
     const at = heading => { const i = titles.findIndex(title => heading.test(title)); assert.ok(i >= 0, 'no step ' + heading); return i + 1; };
-    checks.push([0, 'overview', '#tiles', /所选范围的四个数字/], [0, 'overview', '#overview-analysis .split-grid', /工具分布与模型排行/], [0, 'usage', '#usage-insights', /用量分析/], [0, 'providers', '#page-providers .pv-nav [data-section="router"]', /^本地路由$/], [0, 'egress', '#nav [data-page="concurrency"]', /并发监控/], [0, 'overview', '#layout-edit', /编辑布局/], [0, 'quota', '#quota-detail [data-layout="quota:account"]', /这个账号的请求/], [0, 'usage', '#page-usage [data-layout="usage:speed"]', /模型速度走势/]);
+    checks.push([0, 'overview', '#tiles', /所选范围的四个数字/], [0, 'overview', '#overview-analysis .split-grid', /工具分布与模型排行/], [0, 'usage', '#usage-insights', /用量分析/], [0, 'providers', '#page-providers .pv-nav [data-section="router"]', /^本地路由$/], [0, 'overview', '#layout-edit', /编辑布局/], [0, 'quota', '#quota-detail [data-layout="quota:account"]', /这个账号的请求/], [0, 'usage', '#page-usage [data-layout="usage:speed"]', /模型速度走势/]);
     for (const check of checks) check[0] = at(check[3]);
     for (const [n, page, sel, heading] of checks) {
       await go(n);

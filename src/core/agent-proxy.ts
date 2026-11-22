@@ -15,7 +15,6 @@ import { clientError, convertJsonResponse, convertRequest, StreamBridge } from "
 import { NATIVE_UPSTREAM, type AgentApp, type ProxyTarget, type Upstream } from "./agent-types";
 import { describeNetError, proxyFor, staleReuse, uncertainDelivery, upstreamRequest } from "./upstream-proxy";
 import { Grab } from "./ws-sniff";
-import { concurrencyMonitor, isInference, providerScopes, transparentScopes } from './concurrency';
 import WebSocket, { WebSocketServer } from 'ws';
 import { websocketAgent } from './upstream-proxy';
 import type { Socket } from 'net';
@@ -169,9 +168,11 @@ export function startAgentProxy(options: Options) {
       res.end(JSON.stringify({ error: { message: error instanceof Error ? error.message : "proxy failed" } }));
     });
   });
-  // Count physical client connections from accept, before a request body or
-  // WebSocket upgrade arrives. Later request attribution reuses this entry.
-  server.on('connection', socket => concurrencyMonitor.trackSocket(socket, 'clients', []));
+  const clientSockets = new Set<Socket>();
+  server.on('connection', socket => {
+    clientSockets.add(socket);
+    socket.once('close', () => clientSockets.delete(socket));
+  });
 
   async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -185,7 +186,6 @@ export function startAgentProxy(options: Options) {
     if (passed) {
       const app = passed[1] as AgentApp, base = options.pass?.(app, req.headers) ?? null;
       if (!base) { res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "TokenPulse pass-through is off for this tool" } })); return; }
-      concurrencyMonitor.trackSocket(req.socket, 'clients', transparentScopes(app, req.headers));
       stats.active += 1; stats.requests += 1;
       try {
         const entry = await forwardPass(req, res, app, (passed[2] || "/") + url.search, base, await readBody(req));
@@ -209,19 +209,12 @@ export function startAgentProxy(options: Options) {
       sendError(res, client, 503, "这一家还没有可转发的供应商");
       return;
     }
-    concurrencyMonitor.trackSocket(req.socket, 'clients', []);
     const body = await readBody(req);
     if (res.destroyed) return;
-    const inference = isInference(req.method, routed.rest);
-    const admission = inference ? concurrencyMonitor.admit([]) : null;
-    if (admission && 'error' in admission) { sendError(res, client, 429, `TokenPulse concurrency limit: ${admission.error.label} (${admission.error.limit})`); return; }
-    const releaseGlobal = () => admission && 'release' in admission && admission.release();
-    res.once('close', releaseGlobal);
     const started = Date.now();
     stats.active += 1;
     stats.requests += 1;
     let last = "上游没有响应";
-    let limiting: import('./concurrency').ConcurrencyAlert | undefined;
     // 转发记录里的细节：这一个请求里各次尝试共用的部分只算一次
     const facts = requestFacts(body);
     let attempt = 0;
@@ -234,17 +227,8 @@ export function startAgentProxy(options: Options) {
     try {
       for (const target of targets) {
         if (res.destroyed) return;
-        const scopes = providerScopes(routed.app, target);
-        const member = inference ? concurrencyMonitor.admit(scopes, false, false) : null;
-        if (member && 'error' in member) { limiting = member.error; last = `TokenPulse concurrency limit: ${member.error.label} (${member.error.limit})`; continue; }
-        limiting = undefined;
-        concurrencyMonitor.trackSocket(req.socket, 'clients', scopes);
-        const releaseMember = () => member && 'release' in member && member.release();
-        res.once('close', releaseMember);
         attempt += 1;
-        let outcome: Outcome;
-        try { outcome = await forward(req, res, routed.app, routed.rest + url.search, client, target, body); }
-        finally { res.off('close', releaseMember); releaseMember(); }
+        const outcome = await forward(req, res, routed.app, routed.rest + url.search, client, target, body);
         if (outcome.kind === "done") {
           options.succeed(target.id);
           stats.ok += 1;
@@ -259,9 +243,8 @@ export function startAgentProxy(options: Options) {
           return;
         }
       }
-      if (!res.headersSent && !res.destroyed) { if (limiting) concurrencyMonitor.recordRejectedRequest(limiting); sendError(res, client, limiting ? 429 : 502, last); }
+      if (!res.headersSent && !res.destroyed) sendError(res, client, 502, last);
     } finally {
-      res.off('close', releaseGlobal); releaseGlobal();
       stats.active = Math.max(0, stats.active - 1);
     }
   }
@@ -297,8 +280,9 @@ export function startAgentProxy(options: Options) {
     listen,
     stats: () => ({ ...stats }),
     close: () => new Promise<void>((resolve) => {
-      concurrencyMonitor.closeSockets();
-      server.close(() => { concurrencyMonitor.clear(); resolve(); });
+      for (const socket of clientSockets) socket.destroy();
+      clientSockets.clear();
+      server.close(() => resolve());
       server.closeAllConnections();
       for (const socket of tunnels) socket.destroy();
     }),
@@ -417,7 +401,6 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
     };
     const send = () => {
       const sent = upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers, timeout: 120_000 }, onResponse);
-      concurrencyMonitor.observeRequest(sent, providerScopes(app, target));
       sent.on("error", (error) => {
         // 复用的连接已经被关掉：换条新连接再发一次（见 staleReuse）
         if (!resent && !responded && !done && staleReuse(sent, error)) { resent = true; send(); return; }
@@ -520,20 +503,6 @@ function bodyObserver(encoding: string, look: (text: string) => void) {
   };
 }
 export async function forwardPass(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, base: string, body: Buffer): Promise<ProxyLog> {
-  const scopes = transparentScopes(app, req.headers);
-  concurrencyMonitor.trackSocket(req.socket, 'clients', scopes);
-  const admission = isInference(req.method, rest) ? concurrencyMonitor.admit(scopes) : null;
-  if (admission && 'error' in admission) {
-    const message = `TokenPulse concurrency limit: ${admission.error.label} (${admission.error.limit})`;
-    res.writeHead(429, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'concurrency_limit', message } }));
-    return { at: Date.now(), app, providerId: 'pass-' + app, provider: '透明转发', model: '', status: 429, ms: 0, pass: true, error: message };
-  }
-  const release = () => admission && 'release' in admission && admission.release();
-  res.once('close', release);
-  try { return await forwardPassBody(req, res, app, rest, base, body); }
-  finally { res.off('close', release); release(); }
-}
-async function forwardPassBody(req: http.IncomingMessage, res: http.ServerResponse, app: AgentApp, rest: string, base: string, body: Buffer): Promise<ProxyLog> {
   const started = Date.now();
   const facts = requestFacts(body);
   let host = "";
@@ -597,7 +566,6 @@ async function forwardPassBody(req: http.IncomingMessage, res: http.ServerRespon
     // 仅 GET / HEAD 的失效复用连接可重发；POST 的交付状态未知，照常返回错误。
     const send = () => {
       const sent = upstreamReq = upstreamRequest(upstream, proxy, { method: req.method || "POST", headers: headers as http.OutgoingHttpHeaders, timeout: 600_000 }, onResponse);
-      concurrencyMonitor.observeRequest(sent, transparentScopes(app, req.headers));
       sent.on("error", (error) => {
         if (!resent && !responded && !done && staleReuse(sent, error)) { resent = true; send(); return; }
         fail(502, describeNetError(error, Boolean(proxy)));
@@ -618,8 +586,6 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
   const refuse = (status: number, text: string) => { if (!socket.destroyed) socket.end('HTTP/1.1 ' + status + ' ' + text + '\r\nconnection: close\r\ncontent-length: 0\r\n\r\n'); };
   let upstream: URL;
   try { upstream = joinUpstream(base, rest); } catch { refuse(502, 'Bad Gateway'); return; }
-  const scopes = transparentScopes(app, req.headers);
-  concurrencyMonitor.trackSocket(socket as Socket, 'clients', scopes);
   const path = rest.split('?')[0].slice(0, 200);
   const entry = (extra: Partial<ProxyLog>): ProxyLog => ({ at: Date.now(), app, providerId: 'pass-' + app, provider: PASS_NAME, model: '', status: 0, ms: 0, pass: true, method: 'WS', path, attempt: 1, pool: false, host: upstream.host, stream: true, ...extra });
   const headers: Record<string, string | string[]> = {};
@@ -631,7 +597,6 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
   const protocols = String(req.headers['sec-websocket-protocol'] || '').split(',').map(value => value.trim()).filter(Boolean);
   const options: WebSocket.ClientOptions = { headers: Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : value])), perMessageDeflate: compressed, handshakeTimeout: 30_000, maxPayload: 100 * 1024 * 1024, followRedirects: false,
     finishRequest: request => {
-      concurrencyMonitor.observeRequest(request, scopes);
       if (proxy && upstream.protocol === 'http:') {
         request.path = upstream.href;
         request.setHeader('host', upstream.host);
@@ -646,7 +611,7 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
   let response: http.IncomingMessage | undefined;
   let local: WebSocket | undefined, server: WebSocketServer | undefined;
   let opened = false, ended = false;
-  type Turn = { lane: string; id: string; event: string; inference: boolean; model: string; effort: string; tier: string; started: number; firstAt: number; firstTokenAt: number; genAt: number; bytes: number; requestBytes: number; release: () => void; grab: Grab };
+  type Turn = { lane: string; id: string; event: string; inference: boolean; model: string; effort: string; tier: string; started: number; firstAt: number; firstTokenAt: number; genAt: number; bytes: number; requestBytes: number; grab: Grab };
   const lanes = new Map<string, Turn[]>(), byId = new Map<string, Turn>(), byEvent = new Map<string, Turn>();
   const closeTurn = (turn: Turn, status: number, extra: Partial<ProxyLog> = {}) => {
     const queue = lanes.get(turn.lane);
@@ -654,7 +619,6 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
     queue.splice(queue.indexOf(turn), 1); if (!queue.length) lanes.delete(turn.lane);
     if (turn.id) byId.delete(turn.id);
     if (turn.event) byEvent.delete(turn.event);
-    turn.release();
     if (!turn.inference) return;
     const endAt = Date.now(), usage = turn.grab.usage;
     log(entry({ at: endAt, model: turn.model, status, ms: endAt - turn.started, requestBytes: turn.requestBytes, responseBytes: turn.bytes,
@@ -714,15 +678,9 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
         if (!binary) { try { json = JSON.parse(data.toString()); } catch { /* non-inference application message */ } }
         if (json?.type === 'response.create') {
           const inference = json.generate !== false;
-          const admission = inference ? concurrencyMonitor.admit(scopes) : { release: () => {} };
-          if ('error' in admission) {
-            const message = 'TokenPulse concurrency limit: ' + admission.error.label + ' (' + admission.error.limit + ')';
-            peer.send(JSON.stringify({ type: 'error', status: 429, ...(typeof json.stream_id === 'string' ? { stream_id: json.stream_id } : {}), ...(typeof json.event_id === 'string' ? { event_id: json.event_id } : {}), error: { type: 'concurrency_limit', code: 'tokenpulse_concurrency_limit', message } }));
-            log(entry({ status: 429, error: message })); return;
-          }
           const lane = typeof json.stream_id === 'string' ? json.stream_id : '';
           const event = typeof json.event_id === 'string' ? json.event_id : '';
-          const turn: Turn = { lane, id: '', event, inference, model: String(json.model || '').slice(0, 120), effort: String(json.reasoning?.effort || '').slice(0, 20), tier: tierOf(json.service_tier), started: Date.now(), firstAt: 0, firstTokenAt: 0, genAt: 0, bytes: 0, requestBytes: Buffer.byteLength(data.toString()), release: admission.release, grab: new Grab() };
+          const turn: Turn = { lane, id: '', event, inference, model: String(json.model || '').slice(0, 120), effort: String(json.reasoning?.effort || '').slice(0, 20), tier: tierOf(json.service_tier), started: Date.now(), firstAt: 0, firstTokenAt: 0, genAt: 0, bytes: 0, requestBytes: Buffer.byteLength(data.toString()), grab: new Grab() };
           const queue = lanes.get(lane) || []; queue.push(turn); lanes.set(lane, queue);
           if (event) byEvent.set(event, turn);
         }

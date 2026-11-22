@@ -34,10 +34,6 @@ export const UPSTREAM_LABEL: Record<Upstream, string> = {
 };
 
 export type ProxyTarget = {
-  concurrencyProviderId?: string;
-  concurrencyProviderName?: string;
-  concurrencyPoolId?: string;
-  concurrencyPoolName?: string;
   id: string;
   name: string;
   upstream: Upstream;

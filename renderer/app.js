@@ -1329,10 +1329,35 @@ function dailyChart(animate) {
   $('chart-caption').textContent = `按${unit}汇总 · 本机时间`;
   chart($('daily-chart'), rows, state.metric, false, animate);
 }
+const chartWatchers = new WeakMap();
+function watchChartHost(host, draw) {
+  if (!host || typeof ResizeObserver !== 'function') return;
+  const existing = chartWatchers.get(host);
+  if (existing) { existing.draw = draw; return; }
+  const entry = { draw };
+  const ro = new ResizeObserver(() => {
+    if (!host.isConnected) { ro.disconnect(); chartWatchers.delete(host); return; }
+    const next = Math.round(host.clientWidth);
+    const drawn = Number(host.dataset.drawnWidth || 0);
+    if (next > 0 && Math.abs(next - drawn) > 2) entry.draw();
+  });
+  ro.observe(host);
+  chartWatchers.set(host, entry);
+}
+window.watchChartHost = watchChartHost;
+function syncDailyChartWidth(animate = false) {
+  const host = $('daily-chart');
+  if (!host || !analysis || state.page !== 'overview') return;
+  const next = Math.round(host.clientWidth);
+  const drawn = Number(host.dataset.drawnWidth || 0);
+  if (next > 0 && Math.abs(next - drawn) > 2) dailyChart(animate);
+}
 function chart(host, rows, metric = 'tokens', hourly = false, animate = entering()) {
   host.replaceChildren();
-  if (!rows.length) { host.append(empty('所选范围暂无记录')); return; }
-  const w = Math.max(280, host.clientWidth), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
+  if (!rows.length) { host.dataset.drawnWidth = ''; host.append(empty('所选范围暂无记录')); return; }
+  const measured = Math.round(host.clientWidth);
+  host.dataset.drawnWidth = String(measured);
+  const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 720), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
   const max = Math.max(1, ...rows.map(row => row[metric] || 0));
   const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': hourly ? (state.days === '24h' ? '最近24小时用量柱状图' : '按小时用量柱状图') : '每日用量柱状图' });
   const fmt = metric === 'costUsd' ? money : metric === 'requests' ? number : tokens;
@@ -1365,6 +1390,14 @@ function chart(host, rows, metric = 'tokens', hourly = false, animate = entering
   });
   host.append(node);
   playChart(host, animate);
+  const redraw = () => {
+    if (host.id === 'daily-chart') { if (analysis && state.page === 'overview') dailyChart(false); }
+    else chart(host, rows, metric, hourly, false);
+  };
+  watchChartHost(host, redraw);
+  if (!measured) requestAnimationFrame(() => {
+    if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) redraw();
+  });
 }
 
 /* ---------------- 总览 ---------------- */
@@ -1535,10 +1568,12 @@ function capacityChart(host, history, windowName, metric, animate) {
   host.replaceChildren();
   host.classList.toggle('week', windowName === 'week');
   const points = history?.points || [];
-  if (!points.length) { host.append(empty('还没有能折算的历史窗口：需要窗口已用 ≥ 2%，并且本机在这个窗口里有用量')); return; }
+  if (!points.length) { host.dataset.drawnWidth = ''; host.append(empty('还没有能折算的历史窗口：需要窗口已用 ≥ 2%，并且本机在这个窗口里有用量')); return; }
   const value = p => metric === 'costUsd' ? p.capacityCostUsd : p.capacityTokens;
   const fmt = metric === 'costUsd' ? money : tokens;
-  const w = Math.max(320, host.clientWidth), h = host.clientHeight || 240, left = 56, right = 24, top = 18, bottom = 30;
+  const measured = Math.round(host.clientWidth);
+  host.dataset.drawnWidth = String(measured);
+  const w = Math.max(320, measured || Math.round(host.parentElement?.clientWidth || 0) || 680), h = host.clientHeight || 240, left = 56, right = 24, top = 18, bottom = 30;
   const reference = points.filter(p => !p.current && p.confidence !== 'low').map(value).sort((a, b) => a - b);
   // 真正的中位数：偶数个时取中间两个的平均（以前取偏小的那个，只有两周时直接显示成较小的那周）
   const mid = reference.length >> 1;
@@ -1577,6 +1612,10 @@ function capacityChart(host, history, windowName, metric, animate) {
   });
   host.append(node);
   playChart(host, animate);
+  watchChartHost(host, () => capacityChart(host, history, windowName, metric, false));
+  if (!measured) requestAnimationFrame(() => {
+    if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) capacityChart(host, history, windowName, metric, false);
+  });
   const last = points.filter(p => !p.current).at(-1);
   return { median: median == null ? null : fmt(median), count: reference.length, last: last ? { text: fmt(value(last)), range: `${date(last.startAt)} → ${date(last.endAt ?? last.resetAt)}`, low: last.confidence === 'low' } : null };
 }
@@ -1627,21 +1666,32 @@ function capacityPanel(account) {
   return panel;
 }
 function trendChart(host, points, animate) {
-  if (points.length < 3 || points.at(-1).at - points[0].at < 3600000) { host.append(empty('采样跨度不足 1 小时，继续记录后显示趋势')); return; }
-  const w = 360, h = 172, from = points[0].at, span = points.at(-1).at - from;
+  host.replaceChildren();
+  if (points.length < 3 || points.at(-1).at - points[0].at < 3600000) { host.dataset.drawnWidth = ''; host.append(empty('采样跨度不足 1 小时，继续记录后显示趋势')); return; }
+  const measured = Math.round(host.clientWidth);
+  host.dataset.drawnWidth = String(measured);
+  const w = Math.max(320, measured || Math.round(host.parentElement?.clientWidth || 0) || 460), h = host.clientHeight || 190, left = 38, right = 12, top = 16, bottom = 28;
+  const from = points[0].at, span = points.at(-1).at - from;
+  const xAt = at => left + (at - from) / span * (w - left - right);
+  const yAt = pct => top + (1 - Math.min(100, pct) / 100) * (h - top - bottom);
   const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': '当前周窗口的额度已用百分比' });
   for (const pct of [0, 50, 100]) {
-    const y = 140 - pct * 1.2; node.append(svg('line', { class: 'grid', x1: 34, x2: 350, y1: y, y2: y }));
-    const text = svg('text', { class: 'axis', x: 28, y: y + 4, 'text-anchor': 'end' }); text.textContent = pct + '%'; node.append(text);
+    const y = yAt(pct); node.append(svg('line', { class: 'grid', x1: left, x2: w - right, y1: y, y2: y }));
+    const text = svg('text', { class: 'axis', x: left - 6, y: y + 4, 'text-anchor': 'end' }); text.textContent = pct + '%'; node.append(text);
   }
-  const xy = points.map(p => [34 + (p.at - from) / span * 316, 140 - Math.min(100, p.pct) * 1.2]);
+  const xy = points.map(p => [xAt(p.at), yAt(p.pct)]);
   const line = xy.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
-  node.append(svg('path', { class: 'trend-area', d: `${line} L${xy.at(-1)[0].toFixed(1)},140 L${xy[0][0].toFixed(1)},140 Z` }));
+  const baseY = yAt(0).toFixed(1);
+  node.append(svg('path', { class: 'trend-area', d: `${line} L${xy.at(-1)[0].toFixed(1)},${baseY} L${xy[0][0].toFixed(1)},${baseY} Z` }));
   node.append(svg('path', { class: 'trend-line', d: line, pathLength: 1, 'stroke-dasharray': 1 }));
   node.append(svg('circle', { class: 'trend-dot', cx: xy.at(-1)[0], cy: xy.at(-1)[1], r: 4 }));
-  for (const [at, x, anchor] of [[from, 34, 'start'], [points.at(-1).at, 350, 'end']]) { const text = svg('text', { class: 'axis', x, y: 164, 'text-anchor': anchor }); text.textContent = date(at); node.append(text); }
+  for (const [at, x, anchor] of [[from, left, 'start'], [points.at(-1).at, w - right, 'end']]) { const text = svg('text', { class: 'axis', x, y: h - 6, 'text-anchor': anchor }); text.textContent = date(at); node.append(text); }
   host.append(node);
   playChart(host, animate);
+  watchChartHost(host, () => trendChart(host, points, false));
+  if (!measured) requestAnimationFrame(() => {
+    if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) trendChart(host, points, false);
+  });
 }
 /** 额度页顶上的标签：一个账号一个。账号有变化（新登录、删除、调顺序）才重建，平时只切换选中。 */
 /*
@@ -1944,7 +1994,6 @@ function renderQuota() {
   // 这家没有 5 小时窗口（如 SuperGrok 只有周额度）：不放「接口未提供此窗口」的空卡，周额度单独占满一行
   const noFive = !account.five && Boolean(account.week);
   host.append(el('div', { class: 'quota-window-grid' + (noFive ? ' single' : '') }, [noFive ? null : markLayout(windowPanel('5 小时窗口', account.five, account), 'quota:five'), markLayout(windowPanel('周额度窗口', account.week, account), 'quota:week')]));
-  if (kind === 'chatgpt') host.append(markLayout(probePanel(account), 'quota:probe'));
   const capacity = capacityPanel(account);
   host.append(markLayout(capacity, 'quota:capacity'));
   const hourly = el('div', { class: 'chart' });
@@ -1962,61 +2011,6 @@ function renderQuota() {
   trendChart(trend, account.trend, animate);
   capacity.draw(animate);
   syncSegs();
-}
-
-/* ---------------- Codex 降智检测（额度详情，0.3.41） ---------------- */
-
-/*
- * ChatGPT 账号被官方降到更低的模型时，回复里报的型号名不变，型号核验查不出来。
- * 这里放一个手动的检测：点一下，用这个账号发两个极小的请求，看官方会不会换「门票」（判据见 src/core/codex-state-probe.ts）。
- * 只在点了的时候跑，不自动；说明里把代价和局限写清楚。上次的结论存在本机，重新打开还看得到。
- */
-const PROBE_LABEL = { healthy: '没有降智的迹象', degraded: '很可能已降智', inconclusive: '无法判断' };
-const PROBE_TONE = { healthy: 'good', degraded: 'critical', inconclusive: 'neutral' };
-let probeLast = null;
-const probeRunning = new Set();
-function probePanel(account) {
-  // 没有账号 id 的（只有 CLI 当前登录的那一个、还没登记）交给主进程用 CLI 的登录来测，结果记在 cli 名下
-  const target = account.accountId || '', id = target || 'cli';
-  const body = el('div', { class: 'probe-result', role: 'status' });
-  const run = el('button', { type: 'button', class: 'btn btn-accent', 'data-action': 'codex-probe' }, [icon('trace'), el('span', { text: '检测一次' })]);
-  const draw = () => {
-    const result = probeLast?.[id], running = probeRunning.has(id);
-    run.disabled = running;
-    run.lastChild.textContent = running ? '正在检测…' : result ? '再测一次' : '检测一次';
-    if (running) { body.replaceChildren(el('p', { class: 'muted', text: '正在发两个极小的请求，一般十几秒到一分钟…' })); return; }
-    if (!result) { body.replaceChildren(el('p', { class: 'muted', text: '还没有检测过。' })); return; }
-    const facts = [`${date(result.at, true)}`, `用 ${result.model} 测的`, result.reportedModel ? `官方报的型号 ${result.reportedModel}（不作判据）` : null, result.ticketLength ? `门票长度 ${result.ticketLength}` : null].filter(Boolean);
-    body.replaceChildren(
-      el('div', { class: 'probe-verdict' }, [el('span', { class: 'badge ' + PROBE_TONE[result.verdict], text: PROBE_LABEL[result.verdict] }), el('span', { class: 'probe-facts', translate: 'no', text: facts.join(' · ') })]),
-      el('p', { class: 'probe-reason', text: result.reason }),
-      result.verdict !== 'inconclusive' && result.ticketLength !== 780 ? el('p', { class: 'probe-note', text: '这次的门票长度不是 780：这个判据只在长度 780 的门票上验证过，结论要打折扣。' }) : null,
-    );
-  };
-  run.addEventListener('click', async () => {
-    if (probeRunning.has(id)) return;
-    probeRunning.add(id); draw();
-    try { const result = await api.codexProbe(target); probeLast = { ...(probeLast || {}), [id]: result }; }
-    catch (error) { toast(cleanRemoteError(error, '检测没有跑起来，请重试'), { kind: 'error' }); }
-    finally { probeRunning.delete(id); if (body.isConnected) keepScroll(draw); }
-  });
-  if (probeLast) draw();
-  else { draw(); Promise.resolve(api.codexProbeLast?.()).then(last => { probeLast = last || {}; if (body.isConnected) keepScroll(draw); }).catch(() => { probeLast = {}; }); }
-  return el('article', { class: 'panel probe-panel' }, [
-    el('div', { class: 'panel-heading capacity-heading' }, [
-      el('div', {}, [
-        el('h2', {}, ['降智检测 ', el('span', { class: 'section-tag', text: '手动' })]),
-        el('p', { text: '官方把账号降到更低的模型时，回复里报的型号名不会变，型号核验查不出来。这里换一个办法：用这个账号发两个极小的请求，看官方会不会给第二个请求换一张新的「门票」，换了就很可能是降智。' }),
-      ]),
-      run,
-    ]),
-    body,
-    el('ul', { class: 'probe-caveats' }, [
-      el('li', { text: '只在你点的时候测，不会自动跑。每测一次是两个「回复 OK」级别的真实请求，会用掉一点点额度。' }),
-      el('li', { text: '请求由 TokenPulse 用这个账号的登录凭据发出，网络特征和真的 Codex 不完全一样；不保证官方不在意，也可能影响结论。' }),
-      el('li', { text: '这是别人实测总结的经验规律，不是官方公开的规则，官方一改就可能失效。单次结果会受当时波动影响，拿不准就隔一会儿再测一次。' }),
-    ]),
-  ]);
 }
 
 /* ---------------- 模型速度（额度详情，0.3.35） ---------------- */
@@ -2596,6 +2590,7 @@ function render(snapshot) {
    * 清空那一刻页面变矮，浏览器把滚动位置夹到顶部附近，内容回来后也不会自己滚回去 ——
    * 看起来就是「一刷新就被拉回最上面」。重建期间锁住主区高度，重建完还原滚动位置。
    */
+  syncPageVisibility();
   keepScroll(() => renderPage(snapshot));
   // tokens.ci 状态栏：进出演示模式时跟着显示 / 隐藏
   window.PulseTokensCi?.refresh();
@@ -2711,7 +2706,6 @@ function renderPage(snapshot) {
   if (state.page === 'sessions') window.PulseSessions?.show();
   if (state.page === 'egress') window.PulseEgress?.show();
   if (state.page === 'providers') window.PulseProviders?.show();
-  if (state.page === 'concurrency') window.PulseConcurrency?.show();
   if (state.page === 'usage') loadRequests();
   renderRequestAlert(snapshot);
   syncSourceOptions(snapshot);
@@ -2754,15 +2748,15 @@ const overviewRange = { days: 30, from: '', to: '', fromTime: '00:00', toTime: '
  * 只记在这台电脑上（localStorage），不影响监控和通知。
  */
 const LAYOUT_KEY = 'tokenpulse-layout';
-const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'concurrency', 'sessions', 'providers', 'health', 'pet'];
-const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', concurrency: '并发监控', sessions: '会话管理', providers: '供应商', health: '体检', pet: '桌宠' };
+const NAV_PAGES = ['overview', 'quota', 'usage', 'egress', 'sessions', 'providers', 'health', 'pet'];
+const NAV_LABELS = { overview: '总览', quota: '额度详情', usage: '用量明细', egress: '出口监控', sessions: '会话管理', providers: '供应商', health: '体检', pet: '桌宠' };
 /** [key, 名字, 区域]。区域只给布局面板分组；数组顺序就是默认顺序。 */
 const LAYOUT = [
   ['overview:quota:claude', 'Claude', '官方额度'], ['overview:quota:chatgpt', 'ChatGPT', '官方额度'], ['overview:quota:grok', 'Grok', '官方额度'],
   ['overview:quota:deepseek', 'DeepSeek', '官方额度'], ['overview:quota:relay', '第三方 Key 余额', '官方额度'], ['overview:quota:antigravity', 'Antigravity', '官方额度'],
   ['overview:tokens', '总 Tokens', '统计小卡'], ['overview:cost', '参考费用', '统计小卡'], ['overview:requests', '请求次数', '统计小卡'], ['overview:cache', '缓存读取占比', '统计小卡'],
   ['overview:trend', '用量趋势', '图表'], ['overview:rhythm', '使用节奏', '图表'], ['overview:sources', '工具分布', '图表'], ['overview:ranking', '模型用量排行', '图表'],
-  ['quota:five', '5 小时窗口', '官方账号'], ['quota:week', '周额度窗口', '官方账号'], ['quota:probe', '降智检测', '官方账号'], ['quota:capacity', '额度容量趋势', '官方账号'],
+  ['quota:five', '5 小时窗口', '官方账号'], ['quota:week', '周额度窗口', '官方账号'], ['quota:capacity', '额度容量趋势', '官方账号'],
   ['quota:hourly', '最近 24 小时', '官方账号'], ['quota:samples', '本周额度采样', '官方账号'], ['quota:study', '模型容量排行', '官方账号'],
   ['quota:timeline', '模型与思考等级时间线', '各页通用'], ['quota:speed', '模型速度', '各页通用'], ['quota:account', '这个账号的请求', '官方账号'],
   ['quota:balance', '余额', 'DeepSeek 和第三方 Key'], ['quota:local', '本机用量', 'DeepSeek 和第三方 Key'], ['quota:spend', '消耗趋势', 'DeepSeek 和第三方 Key'],
@@ -2773,8 +2767,6 @@ const LAYOUT = [
   ['usage:breakdown', 'Token 构成', '卡片'], ['usage:year', '全年活跃度', '卡片'], ['usage:trend', '用量趋势 · 按工具', '卡片'], ['usage:tools', '工具排行', '卡片'], ['usage:hours', '使用时段分布', '卡片'],
   ['usage:models', '模型排行', '卡片'], ['usage:speed', '模型速度走势', '卡片'], ['usage:tokensci', 'tokens.ci 上传', '卡片'], ['usage:records', '用量明细', '卡片'],
   ['egress:chatgpt', 'ChatGPT 出口', '卡片'], ['egress:claude', 'Claude 出口', '卡片'], ['egress:grok', 'Grok 出口', '卡片'], ['egress:history', '变化与告警', '卡片'],
-  ['concurrency:coverage', '监控范围', '卡片'], ['concurrency:requests', '活跃 AI 请求', '卡片'], ['concurrency:clients', '客户端连接', '卡片'], ['concurrency:upstream', '上游连接', '卡片'],
-  ['concurrency:history', '并发历史', '卡片'], ['concurrency:breakdown', '供应商与账号', '卡片'], ['concurrency:settings', '上限与保存期限', '卡片'],
   ['sessions:list', '会话列表', '卡片'], ['sessions:detail', '会话内容', '卡片'],
   ['providers:status', '本地路由状态', '概览'], ['providers:claude', 'Claude Code', '概览'], ['providers:desktop', 'Claude 桌面端', '概览'], ['providers:codex', 'Codex', '概览'], ['providers:grok', 'Grok CLI', '概览'], ['providers:deepseek', 'DeepSeek Harness', '概览'],
 ];
@@ -2988,7 +2980,6 @@ function watchLayout() {
 function showLayoutEmpty() {
   state.page = '';
   document.body.dataset.page = 'empty';
-  window.PulseConcurrency?.hide();
   window.PulseProviders?.hide();
   for (const name of NAV_PAGES) { const node = $('page-' + name); if (node) node.hidden = true; }
   $('overview-analysis').hidden = true;
@@ -3002,6 +2993,21 @@ function showLayoutEmpty() {
   $('page-description').textContent = '用不到的页面已经收起来了。编辑布局后可以再加回来。';
   applyLayout();
 }
+function syncPageVisibility() {
+  if (state.page) document.body.dataset.page = state.page;
+  const onOverview = state.page === 'overview';
+  const onUsage = state.page === 'usage';
+  const shown = keys => layoutEdit || keys.some(key => !layoutHidden.has(key));
+  const overviewBlock = $('page-overview');
+  if (overviewBlock && (state.page === 'overview' || state.page === '')) overviewBlock.hidden = !onOverview || !shown(QUOTA_CARDS);
+  const analysisGrid = document.querySelector('#overview-analysis .analysis-grid');
+  const splitGrid = document.querySelector('#overview-analysis .split-grid');
+  if (analysisGrid) analysisGrid.hidden = !onOverview || !shown(['overview:trend', 'overview:rhythm']);
+  if (splitGrid) splitGrid.hidden = !onOverview || !shown(['overview:sources', 'overview:ranking']);
+  $('overview-analysis').hidden = state.page !== 'overview' || !shown(OVERVIEW_CHARTS);
+  $('usage-filters').hidden = !(onUsage || (onOverview && shown(OVERVIEW_RANGE)));
+  $('usage-summary').hidden = !(onUsage || (onOverview && shown(OVERVIEW_STATS)));
+}
 function applyLayout() {
   if (layoutEdit) document.documentElement.dataset.layoutEdit = 'on';
   else delete document.documentElement.dataset.layoutEdit;
@@ -3013,20 +3019,8 @@ function applyLayout() {
   editBtn.querySelector('.layout-edit-label').textContent = editLabel;
   editBtn.querySelector('use').setAttribute('href', layoutEdit ? '#i-check' : '#i-edit');
   syncNav();
-  if (state.page) document.body.dataset.page = state.page;
-  const onOverview = state.page === 'overview';
-  const onUsage = state.page === 'usage';
-  const shown = keys => layoutEdit || keys.some(key => !layoutHidden.has(key));
-  const overviewBlock = $('page-overview');
-  if (overviewBlock && (state.page === 'overview' || state.page === '')) overviewBlock.hidden = !onOverview || !shown(QUOTA_CARDS);
+  syncPageVisibility();
   syncCards();
-  const analysis = document.querySelector('#overview-analysis .analysis-grid');
-  const split = document.querySelector('#overview-analysis .split-grid');
-  if (analysis) analysis.hidden = !onOverview || !shown(['overview:trend', 'overview:rhythm']);
-  if (split) split.hidden = !onOverview || !shown(['overview:sources', 'overview:ranking']);
-  $('overview-analysis').hidden = state.page !== 'overview' || !shown(OVERVIEW_CHARTS);
-  $('usage-filters').hidden = !(onUsage || (onOverview && shown(OVERVIEW_RANGE)));
-  $('usage-summary').hidden = !(onUsage || (onOverview && shown(OVERVIEW_STATS)));
   const pageCards = LAYOUT.filter(([key]) => key.startsWith(state.page + ':'));
   $('overview-layout-empty').hidden = layoutEdit || !state.page || !pageCards.length || pageCards.some(([key]) => !layoutHidden.has(key));
   $('layout-hidden-note').hidden = !(state.page && navHidden(state.page));
@@ -3034,6 +3028,7 @@ function applyLayout() {
   for (const button of document.querySelectorAll('[data-go]')) button.hidden = navHidden(button.dataset.go);
   renderLayoutPanel();
   moveIndicator();
+  requestAnimationFrame(() => syncDailyChartWidth(false));
 }
 
 /* ---------- 拖动 ---------- */
@@ -3188,17 +3183,17 @@ function navigate(page, options = {}) {
   if (page === 'overview' && rangePage === 'usage') Object.assign(state, overviewRange, { tablePage: 0 });
   if (page === 'overview' || page === 'usage') state.rangePage = page;
   state.page = page;
-  if (page !== 'concurrency') window.PulseConcurrency?.hide();
   if (page !== 'providers') window.PulseProviders?.hide();
   if (page !== 'pet') window.PulseDeskPet?.hide();
   if (page !== 'sessions') window.PulseSessions?.hide?.();
-  const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '检查工具配置、本地路由、官方账号到期状态、网络和出口与数据目录（只读不改配置）。'], concurrency: ['并发监控', '看清正在进行的请求与连接', '监控本机转发的并发量，设置提醒或拒绝新请求。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
+  const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '检查工具配置、本地路由、官方账号到期状态、网络和出口与数据目录（只读不改配置）。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
   for (const name of NAV_PAGES) $('page-' + name).hidden = name !== page;
   // 会话页是占满屏幕的工作台：大标题、页脚在那一页收起来（sessions.css）
   document.body.dataset.page = page;
+  syncPageVisibility();
   $('tip').hidden = true;
   enter();
   if (current) render(current);
@@ -4378,12 +4373,11 @@ document.addEventListener('keydown', event => {
     else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
   }
 });
-let width = 0;
-new ResizeObserver(() => {
-  const next = $('daily-chart').clientWidth;
-  if (next && Math.abs(next - width) > 2 && analysis && state.page === 'overview') { width = next; dailyChart(entering()); }
-}).observe($('daily-chart'));
-window.addEventListener('resize', () => { moveIndicator(); syncSegs(); layoutAccountTabBar(); closeOptionMenu(); });
+watchChartHost($('daily-chart'), () => syncDailyChartWidth(false));
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) requestAnimationFrame(() => syncDailyChartWidth(false));
+});
+window.addEventListener('resize', () => { moveIndicator(); syncSegs(); layoutAccountTabBar(); closeOptionMenu(); syncDailyChartWidth(false); });
 /*
  * 启动页（0.3.38）：第一份能看的数据到之前，窗口里只有图标和「正在扫描中…」，不露出一片空白的界面。
  * 能看 = 扫过一轮（scannedAt）或者已经有统计；第一次用、或者账本重建时，要等这一轮扫描完。
@@ -4437,8 +4431,9 @@ api.onRefreshWarn?.(message => { toast(message, { kind: 'warning', key: 'refresh
 api.onWindowAway?.(away => {
   if (away) {
     window.PulseSessions?.hide?.();
-  } else if (state.page === 'sessions') {
-    window.PulseSessions?.show?.();
+  } else {
+    if (state.page === 'sessions') window.PulseSessions?.show?.();
+    requestAnimationFrame(() => syncDailyChartWidth(false));
   }
 });
 api.snapshot().then(receive).catch(() => { bootFailed(); showStatus('本地数据读取失败，请点击刷新重试。', true); });

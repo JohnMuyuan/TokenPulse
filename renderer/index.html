@@ -14,7 +14,6 @@
 <link rel="stylesheet" href="usage-projects.css">
 <link rel="stylesheet" href="usage-cache.css">
 <link rel="stylesheet" href="agent-switch.css">
-<link rel="stylesheet" href="concurrency.css">
 <link rel="stylesheet" href="health.css">
 <link rel="stylesheet" href="tokens-ci.css">
 <link rel="stylesheet" href="deepseek-balance.css">
@@ -118,7 +117,6 @@
     <div class="nav-slot"><button class="nav-item" data-page="quota" title="额度详情"><svg class="icon"><use href="#i-quota"/></svg><span class="nav-label">额度详情</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="usage" title="用量明细"><svg class="icon"><use href="#i-usage"/></svg><span class="nav-label">用量明细</span><span id="nav-request-alert" class="nav-alert" hidden></span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="egress" title="出口监控"><svg class="icon"><use href="#i-globe"/></svg><span class="nav-label">出口监控</span><span id="nav-egress-alert" class="nav-alert" hidden></span></button></div>
-    <div class="nav-slot"><button class="nav-item" data-page="concurrency" title="并发监控"><svg class="icon"><use href="#i-concurrency"/></svg><span class="nav-label">并发监控</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="sessions" title="会话管理"><svg class="icon"><use href="#i-sessions"/></svg><span class="nav-label">会话管理</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="providers" title="供应商"><svg class="icon"><use href="#i-route"/></svg><span class="nav-label">供应商</span></button></div>
     <div class="nav-slot"><button class="nav-item" data-page="health" title="体检"><svg class="icon"><use href="#i-health"/></svg><span class="nav-label">体检</span><span id="nav-health-alert" class="nav-alert" hidden></span></button></div>
@@ -403,7 +401,6 @@
 
     <section id="page-egress" class="page" hidden></section>
     <section id="page-sessions" class="page" hidden></section>
-    <section id="page-concurrency" class="page" hidden></section>
     <section id="page-health" class="page" hidden></section>
     <section id="page-pet" class="page" hidden></section>
     <section id="page-providers" class="page" hidden></section>
@@ -629,7 +626,6 @@
 <script src="usage-cache.js"></script>
 <script src="provider-avatars.js"></script>
 <script src="agent-switch.js"></script>
-<script src="concurrency.js"></script>
 <script src="health.js"></script>
 <script src="tokens-ci.js"></script>
 <script src="deepseek-balance.js"></script>

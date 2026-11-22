@@ -120,8 +120,10 @@
   function trendChart(host, data, order, metric, animate) {
     host.replaceChildren();
     const rows = data.rows;
-    if (!rows.length || rows.every(r => !r[metric])) { host.append(empty('这段时间没有用量。')); return; }
-    const w = Math.max(360, host.clientWidth || 800), h = 260, left = 58, right = 12, top = 14, bottom = 28;
+    if (!rows.length || rows.every(r => !r[metric])) { host.dataset.drawnWidth = ''; host.append(empty('这段时间没有用量。')); return; }
+    const measured = Math.round(host.clientWidth);
+    host.dataset.drawnWidth = String(measured);
+    const w = Math.max(360, measured || Math.round(host.parentElement?.clientWidth || 0) || 800), h = 260, left = 58, right = 12, top = 14, bottom = 28;
     const max = Math.max(...rows.map(r => r[metric])) * 1.1 || 1;
     const slot = (w - left - right) / rows.length, bar = Math.max(2, Math.min(34, slot * 0.68));
     const y = v => top + (1 - v / max) * (h - top - bottom);
@@ -157,6 +159,10 @@
     });
     host.append(node);
     playChart(host, animate);
+    window.watchChartHost?.(host, () => trendChart(host, data, order, metric, false));
+    if (!measured) requestAnimationFrame(() => {
+      if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) trendChart(host, data, order, metric, false);
+    });
   }
 
   /** 一天中的 24 个小时：这段时间里每个钟点合计用了多少。 */
@@ -164,8 +170,10 @@
     host.replaceChildren();
     const totals = Array.from({ length: 24 }, () => ({ tokens: 0, costUsd: 0, requests: 0 }));
     for (const row of hours) { const hr = new Date(row.hour).getHours(); totals[hr].tokens += row.tokens; totals[hr].costUsd += row.costUsd; totals[hr].requests += row.requests; }
-    if (totals.every(t => !t[metric])) { host.append(empty('这段时间没有逐条请求记录。')); return totals; }
-    const w = Math.max(320, host.clientWidth || 520), h = 170, left = 8, right = 8, top = 8, bottom = 22;
+    if (totals.every(t => !t[metric])) { host.dataset.drawnWidth = ''; host.append(empty('这段时间没有逐条请求记录。')); return totals; }
+    const measured = Math.round(host.clientWidth);
+    host.dataset.drawnWidth = String(measured);
+    const w = Math.max(320, measured || Math.round(host.parentElement?.clientWidth || 0) || 520), h = 170, left = 8, right = 8, top = 8, bottom = 22;
     const max = Math.max(...totals.map(t => t[metric])) || 1, slot = (w - left - right) / 24, bar = slot * 0.7;
     const peak = totals.reduce((best, t, i) => t[metric] > totals[best][metric] ? i : best, 0);
     const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': '一天中各时段的用量' });
@@ -181,6 +189,10 @@
       if (i % 3 === 0) { const tick = svg('text', { class: 'axis', x: left + i * slot + slot / 2, y: h - 6, 'text-anchor': 'middle' }); tick.textContent = `${i}`; node.append(tick); }
     });
     host.append(node);
+    window.watchChartHost?.(host, () => hourOfDayChart(host, hours, metric));
+    if (!measured) requestAnimationFrame(() => {
+      if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) hourOfDayChart(host, hours, metric);
+    });
     return totals;
   }
 

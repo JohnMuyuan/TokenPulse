@@ -66,12 +66,6 @@ const exportPath = path.join(temp, 'export.csv');
 dialog.showSaveDialog = async () => ({ canceled: false, filePath: exportPath });
 let finishQuota;
 let pendingQuota = true;
-// 降智检测换成假的：测试不能用真实账号向官方发请求
-const probeCalls = [];
-let probeVerdict = 'degraded';
-require(path.join(appRoot, 'build/main/codex-state-probe.js')).runProbe = async id => { probeCalls.push(id); await new Promise(r => setTimeout(r, 120));
-  return { at: Date.now(), ms: 120, model: 'QA-probe-model', verdict: probeVerdict, reason: probeVerdict === 'degraded' ? '带着第一张门票再发时，官方换了一张新门票：符合降智的特征，这个账号很可能被降到了更低的模型。' : '带着第一张门票再发时，官方没有换新门票：门票延续正常，这个账号目前没有降智的迹象。', mintStatus: 200, continueStatus: 200, ticketLength: probeVerdict === 'degraded' ? 780 : 332, continueTicketLength: 780, newTicket: probeVerdict === 'degraded', reportedModel: 'QA-probe-model' }; };
-require(path.join(appRoot, 'build/main/codex-state-probe.js')).lastProbes = () => ({});
 require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = () => new Promise(resolve => {
   finishQuota = () => { pendingQuota = false; resolve({}); };
 });
@@ -266,6 +260,21 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("document.getElementById('settings-close').click()");
       await evaluate("document.querySelector('[data-days=\"30\"]').click()");
       assert.equal(await evaluate("document.querySelectorAll('#daily-chart rect.col').length"), 30);
+      // 0.3.104：验证总览「用量趋势」首次打开、以及从其他页切回总览后，SVG viewBox 宽度与容器一致（不再卡在 280px）
+      const checkDailyWidth = async label => {
+        const info = await evaluate("(() => { const h = document.getElementById('daily-chart'), s = h?.querySelector('svg'), vb = s?.getAttribute('viewBox')?.split(' ').map(Number); return { cw: Math.round(h?.clientWidth || 0), vw: vb?.[2] || 0, drawn: Number(h?.dataset.drawnWidth || 0) }; })()");
+        assert.ok(info.cw > 400 && Math.abs(info.vw - info.cw) <= 2 && info.drawn === info.cw, `${label}: expected full width chart, got ${JSON.stringify(info)}`);
+      };
+      await checkDailyWidth('initial overview');
+      await evaluate("document.querySelector('[data-page=usage]').click()");
+      await until("document.body.dataset.page === 'usage' && document.getElementById('overview-analysis').hidden");
+      await evaluate("document.querySelector('[data-page=overview]').click()");
+      await until("document.body.dataset.page === 'overview' && !document.getElementById('overview-analysis').hidden");
+      await delay(80);
+      await checkDailyWidth('returning to overview from usage');
+      // 验证并发监控已移除、且全站 <select> 启用了自绘样式（appearance: base-select）
+      assert.equal(await evaluate("document.querySelector('#nav [data-page=concurrency]')"), null, '并发监控入口已移除');
+      assert.equal(await evaluate("getComputedStyle(document.getElementById('source-filter')).appearance"), 'base-select', '原生下拉框已升级为自绘样式');
       console.log('PASS settings and chart buttons respond while quota is pending');
       await evaluate("document.getElementById('refresh').click()");
       assert.equal(await evaluate("document.getElementById('refresh').disabled"), true);
@@ -310,20 +319,8 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("document.querySelector('.speed-panel [data-speed-range=\"1\"]').click()");
       await until("document.querySelector('.speed-panel .speed-name small')?.textContent.startsWith('2 次')");
       assert.match(await evaluate("document.querySelector('.speed-panel .sample-caption').textContent"), /一小时/);
-      // 降智检测（0.3.41）：只有 ChatGPT 账号有；点了才测，测的时候按钮不能再点，结论和说明都写出来
-      assert.equal(probeCalls.length, 0, '不点不测');
-      assert.match(await evaluate("document.querySelector('.probe-panel').textContent"), /降智检测.*手动.*还没有检测过.*只在你点的时候测.*会用掉一点点额度.*不是官方公开的规则/);
-      await evaluate("document.querySelector('.probe-panel [data-action=codex-probe]').click()");
-      await until("document.querySelector('.probe-panel [data-action=codex-probe]').disabled && /正在检测/.test(document.querySelector('.probe-panel').textContent)");
-      await until("document.querySelector('.probe-panel .badge.critical')?.textContent === '很可能已降智'");
-      assert.deepEqual(probeCalls, [''], '这个测试账号没有登记 id：交给主进程用 CLI 的登录');
-      assert.match(await evaluate("document.querySelector('.probe-panel .probe-result').textContent"), /用 QA-probe-model 测的.*门票长度 780.*换了一张新门票/);
-      assert.equal(await evaluate("document.querySelector('.probe-panel .probe-note')"), null);
-      probeVerdict = 'healthy';
-      await evaluate("document.querySelector('.probe-panel [data-action=codex-probe]').click()");
-      await until("document.querySelector('.probe-panel .badge.good')?.textContent === '没有降智的迹象'");
-      assert.match(await evaluate("document.querySelector('.probe-panel .probe-note').textContent"), /不是 780.*打折扣/);
-      console.log('PASS 0.3.41 downgrade probe: manual only, busy state, verdict with facts and caveats, ticket-length warning');
+      // 0.3.104：GPT 降智检测已移除
+      assert.equal(await evaluate("document.querySelector('.probe-panel')"), null, 'GPT 降智检测已移除');
       console.log('PASS quota detail: the timeline sits right under the two history charts; model speed draws one row per model on a shared time axis with a common-scale bar');
       // Token / 费用预测：剩余可用、重置时预计用量、整窗容量都换算成 Token 和费用
       assert.match(await evaluate("document.getElementById('quota-detail').textContent"), /剩余可用（估算）[\s\S]*整窗容量折算/);
@@ -348,12 +345,14 @@ app.on('web-contents-created', (_, contents) => {
       // 定时刷新（onSnapshot / 30 秒重绘）不能把页面拉回顶部
       // 滚动的是工作区，不是整个窗口
       assert.equal(await evaluate("getComputedStyle(document.body).overflow"), 'hidden');
+      await until("!/正在读取/.test(document.querySelector('#quota-detail .account-requests')?.textContent || '')");
       await evaluate("scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'instant' })");
       const scrolled = await evaluate("scroller.scrollTop");
       assert.ok(scrolled > 300, `test page should be scrollable, got ${scrolled}`);
       await evaluate("render({ ...current, now: Date.now() })");
+      const afterScroll = await evaluate("({ top: scroller.scrollTop, h: scroller.scrollHeight })");
       // 页面高度带小数时，还原的位置会差不到 1 像素（3466.67 → 3466），不算跳
-      assert.ok(Math.abs(await evaluate("scroller.scrollTop") - scrolled) <= 1, '刷新后滚动位置不变');
+      assert.ok(Math.abs(afterScroll.top - scrolled) <= 1, `刷新后滚动位置不变 (before=${scrolled}, after=${afterScroll.top}, h=${afterScroll.h})`);
       // 指标小卡片：三组、每组都有卡片
       assert.equal(await evaluate("document.querySelectorAll('.quota-window-grid .window-panel')[0].querySelectorAll('.metric-group').length"), 3);
       await evaluate("scroller.scrollTo({ top: 0, behavior: 'instant' })");

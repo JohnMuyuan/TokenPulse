@@ -172,7 +172,9 @@
   /** 每天一根柱子。rows：{ at, value, text }；没有数据的那天 value 为 null，不画。 */
   function barChart(host, rows, format, animate) {
     host.replaceChildren();
-    const w = Math.max(280, host.clientWidth), h = host.clientHeight || 220, left = 58, bottom = 28, top = 14;
+    const measured = Math.round(host.clientWidth);
+    host.dataset.drawnWidth = String(measured);
+    const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 680), h = host.clientHeight || 220, left = 58, bottom = 28, top = 14;
     const max = Math.max(0, ...rows.map(row => row.value || 0)) || 1;
     const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': '每天的消耗柱状图' });
     for (let i = 0; i <= 2; i++) {
@@ -198,12 +200,18 @@
     });
     host.append(node);
     playChart(host, animate);
+    window.watchChartHost?.(host, () => barChart(host, rows, format, false));
+    if (!measured) requestAnimationFrame(() => {
+      if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) barChart(host, rows, format, false);
+    });
   }
   /** 余额走势：余额是一段一段平的，画成阶梯。纵轴只取这段时间里的范围（从 0 画起的话花掉的那一点看不出来）。 */
   function balanceChart(host, points, currency, now, animate) {
     host.replaceChildren();
-    if (points.length < 2) { host.append(empty('余额记录还不够画走势。TokenPulse 开着的时候按设置里的间隔记一次。')); return; }
-    const w = Math.max(280, host.clientWidth), h = host.clientHeight || 190, left = 62, right = 12, top = 14, bottom = 28;
+    if (points.length < 2) { host.dataset.drawnWidth = ''; host.append(empty('余额记录还不够画走势。TokenPulse 开着的时候按设置里的间隔记一次。')); return; }
+    const measured = Math.round(host.clientWidth);
+    host.dataset.drawnWidth = String(measured);
+    const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 520), h = host.clientHeight || 190, left = 62, right = 12, top = 14, bottom = 28;
     const low = Math.min(...points.map(p => p.total)), high = Math.max(...points.map(p => p.total));
     const pad = Math.max((high - low) * .18, high * .002, .01), min = Math.max(0, low - pad), max = high + pad;
     const from = points[0].at, span = Math.max(1, now - from);
@@ -230,6 +238,10 @@
     node.append(hit);
     host.append(node);
     playChart(host, animate);
+    window.watchChartHost?.(host, () => balanceChart(host, points, currency, now, false));
+    if (!measured) requestAnimationFrame(() => {
+      if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) balanceChart(host, points, currency, now, false);
+    });
   }
 
   /** 还能用几天的提示，加上「花掉的」「预测」两组数字。 */

@@ -258,7 +258,7 @@
 
 /* Explicit model defaults and editor steps. */
 .pv-default-level { display: inline-flex; align-items: center; gap: 8px; color: var(--text); }
-.pv-default-level select { background: var(--surface); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 5px; }
+.pv-default-level select { min-height: 32px; background: var(--surface); color: inherit; border: 1px solid var(--line-strong); border-radius: 8px; padding: 4px 9px 4px 10px; }
 .pv-editor-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
 /* Local, persistent feedback; no decorative motion on data refresh. */
@@ -300,7 +300,7 @@
 .pv-check small { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .pv-advanced-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .pv-advanced textarea { min-height: 78px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.45; }
-.pv-advanced select { min-height: 36px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); font: inherit; }
+.pv-advanced select { min-height: 36px; padding: 6px 10px 6px 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-2); color: var(--text); font: inherit; }
 .pv-probe-result { display: block; margin-top: 3px; font-size: 11px; }
 @media (max-width: 760px) { .pv-advanced-checks, .pv-advanced-grid { grid-template-columns: 1fr; } }
 .pv-preset-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
@@ -320,7 +320,7 @@
 .pv-level-option span { flex: 1; }
 .pv-level-option small { color: var(--muted); font-size: 10px; }
 .pv-default-picker { display: grid; gap: 5px; padding: 9px 0 0; margin-top: 7px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
-.pv-default-select { min-height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); color: var(--text); font: inherit; }
+.pv-default-select { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-2); color: var(--text); font: inherit; }
 .pv-preview-section { display: grid; gap: 12px; }
 .pv-preview-head { display: flex; align-items: start; justify-content: space-between; gap: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
 .pv-preview-head > div { display: grid; gap: 4px; }

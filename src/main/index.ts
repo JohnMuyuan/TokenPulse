@@ -1,17 +1,13 @@
 // 必须第一个：之后注册的 IPC 都要被日志包上（见 app-log-setup.ts）
 import { logAppStart } from "./app-log-setup";
 import { ExitMonitor } from "./egress-monitor";
-import { ConcurrencyService } from './concurrency-monitor';
-import { concurrencyMonitor, providerScopes, type ConcurrencyLiveState, type ConcurrencyScope } from '../core/concurrency';
-import { antigravityCliDir, antigravityDir, prepareAntigravityCliConversation, readAntigravityLiveConcurrency } from '../core/antigravity';
-import { readOfficialAccountStore } from '../core/accounts';
+import { prepareAntigravityCliConversation } from '../core/antigravity';
 import { DOMAINS } from "../core/egress";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, powerMonitor, session, shell, Tray } from "electron";
 import { countRouteLog, passSpeed, readRouteLog, routeLogDir } from "../core/route-ledger";
 import { accountSpeed, speedSeries } from "../core/pass-speed";
 import { copyShareCard, renderShareCard, saveShareCard, shareMilestones, shareMonth, shareWeek } from "./share";
 import { maybeWeeklySummary } from "../core/weekly-summary";
-import { lastProbes, runProbe } from "./codex-state-probe";
 import { destroyTrayPanel, hideTrayPanel, pushTrayPanel, resizeTrayPanel, setupTrayPanel, toggleTrayPanel, trayPanelData, type TrayPanelAgent } from "./tray-panel";
 import { deskPetAskAction, deskPetAskData, deskPetBubbleAction, deskPetBubbleData, deskPetClick, deskPetDrag, deskPetHit, deskPetMenu, deskPetReady, deskPetSnapshotChanged, deskPetView, deskPetWindows, destroyDeskPet, resetDeskPetPosition, resizeDeskPetAsk, resizeDeskPetBubble, setupDeskPet, syncDeskPet } from "./desk-pet";
 import { importPetSound, listPetSounds, petSoundData, removePetSound } from "../core/pet-sound-file";
@@ -60,7 +56,7 @@ import { TokensUploader } from "./tokens-ci";
 import { DeepSeekBalance } from "./deepseek-balance";
 import { setDeepSeekMark } from "../core/deepseek-insight";
 import { AntigravityQuota, agyQuotaAccounts, type AgyQuotaState } from "./antigravity-quota";
-import { addLocalAgyAccount, agyDisplayNames, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts, resolveAgyLocalOwner, visibleAgyAccounts } from "../core/antigravity-accounts";
+import { addLocalAgyAccount, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts, resolveAgyLocalOwner } from "../core/antigravity-accounts";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 
@@ -108,7 +104,6 @@ let agyStateCache: AgyQuotaState | null = null;
 const antigravityQuota = new AntigravityQuota({
   publish: state => {
     agyStateCache = state;
-    concurrencyCatalogAt = 0;
     if (win && !win.isDestroyed()) win.webContents.send("antigravity-quota-state", state);
     if (lastSnapshot) updateTrayTip(lastSnapshot);
     pushTrayPanel();
@@ -140,84 +135,6 @@ function currentAgyLocalAccountId(): string {
 }
 /** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
 const tokensUploader = new TokensUploader({ publish: state => { if (win && !win.isDestroyed()) win.webContents.send("tokens-ci-state", state); } });
-let concurrencyCatalogAt = 0;
-let concurrencyAgyAt = 0;
-let concurrencyAgyScopes: { ide: ConcurrencyScope[]; cli: ConcurrencyScope[] } = {
-  ide: [{ id: 'provider:antigravity', label: 'Antigravity · 本机监控', kind: 'provider' }],
-  cli: [{ id: 'provider:antigravity-cli', label: 'Antigravity CLI · 本机监控', kind: 'provider' }],
-};
-let concurrencyCoverage: { app: string; monitored: boolean }[] = [];
-function concurrencyState(): ConcurrencyLiveState {
-  const now = Date.now();
-  if (now - concurrencyCatalogAt > 5000) {
-    concurrencyCatalogAt = now;
-    const view = coreAgentView();
-    const accounts = readOfficialAccountStore().accounts.filter(account => !account.hidden);
-    concurrencyMonitor.register(view.providers.map(provider => ({ id: 'provider:' + provider.id, label: provider.name, kind: 'provider' as const })));
-    concurrencyMonitor.register(accounts.map(account => ({ id: 'account:' + account.id, label: account.alias || account.label || account.id, kind: 'account' as const })));
-    concurrencyMonitor.register(['claude', 'codex', 'grok', 'deepseek', 'pi'].flatMap(app => providerScopes(app)));
-    const agyState = currentAgyState();
-    const agyVisible = visibleAgyAccounts();
-    const agyNames = agyDisplayNames(agyVisible);
-    const agyLast = agyState.last;
-    const tierSuffix = agyLast?.tier ? ` · ${agyLast.tier}` : agyLast?.plan ? ` · ${agyLast.plan}` : "";
-    const agyScopeLabel = (acc: (typeof agyVisible)[number], idx: number) => {
-      const stateAcc = agyState.accounts.find((item) => item.id === acc.id);
-      const shortName = agyNames[idx] || "";
-      if (shortName) return `Antigravity · ${shortName}`;
-      const tier = stateAcc?.last?.tier || stateAcc?.last?.plan || "";
-      return `Antigravity${tier ? ` · ${tier}` : ""}`;
-    };
-    const agyRegisteredScopes: ConcurrencyScope[] = agyVisible.map((acc, idx) => ({
-      id: `account:${acc.id}`,
-      label: agyScopeLabel(acc, idx),
-      kind: "account",
-    }));
-    if (agyRegisteredScopes.length) concurrencyMonitor.register(agyRegisteredScopes);
-    const agyIdeMonitored = antigravityQuota.installed() || fsSync.existsSync(path.join(antigravityDir(), 'conversation_summaries.db'));
-    const agyCliMonitored = Boolean(resolveCli('antigravity')) || fsSync.existsSync(path.join(antigravityCliDir(), 'conversation_summaries.db'));
-    let agyAccountScope: ConcurrencyScope[] = [];
-    if (agyIdeMonitored || agyCliMonitored) {
-      const activeId = currentAgyLocalAccountId();
-      const activeIdx = agyVisible.findIndex((acc) => acc.id === activeId);
-      if (activeIdx >= 0) {
-        agyAccountScope = [{ id: `account:${agyVisible[activeIdx].id}`, label: agyScopeLabel(agyVisible[activeIdx], activeIdx), kind: "account" }];
-      } else {
-        agyAccountScope = [{ id: 'account:antigravity', label: `Antigravity${tierSuffix}`, kind: 'account' }];
-      }
-    }
-    concurrencyAgyScopes = {
-      ide: [{ id: 'provider:antigravity', label: 'Antigravity · 本机监控', kind: 'provider' }, ...agyAccountScope],
-      cli: [{ id: 'provider:antigravity-cli', label: 'Antigravity CLI · 本机监控', kind: 'provider' }, ...agyAccountScope],
-    };
-    concurrencyMonitor.register([...concurrencyAgyScopes.ide, ...concurrencyAgyScopes.cli]);
-    concurrencyCoverage = [
-      ...Object.keys(view.proxy.apps).map(app => ({ app, monitored: view.proxy.running && (view.proxy.apps[app as keyof typeof view.proxy.apps] || (view.pass[app as keyof typeof view.pass]?.on && view.pass[app as keyof typeof view.pass]?.connected) || false) })),
-      { app: 'antigravity', monitored: agyIdeMonitored },
-      { app: 'antigravity-cli', monitored: agyCliMonitored },
-    ];
-    concurrencyMonitor.setAvailable(concurrencyCoverage.some(item => item.monitored));
-  }
-  if (now - concurrencyAgyAt > 2000) {
-    concurrencyAgyAt = now;
-    try {
-      const live = readAntigravityLiveConcurrency(now);
-      concurrencyMonitor.setExternal('antigravity', concurrencyAgyScopes.ide, live.ide);
-      concurrencyMonitor.setExternal('antigravity-cli', concurrencyAgyScopes.cli, live.cli);
-    } catch { /* ignore transient sqlite lock */ }
-  }
-  return { ...concurrencyService.state(), coverage: concurrencyCoverage };
-}
-const concurrencyService = new ConcurrencyService({
-  publish: () => { if (win && !win.isDestroyed()) win.webContents.send('concurrency-state', concurrencyState()); },
-  notify: alerts => {
-    if (!Notification.isSupported() || !alerts.length) return;
-    const names = { requests: '活跃 AI 请求', clients: '客户端连接', upstream: '上游连接' };
-    const body = alerts.map(alert => `${tr(alert.label)} · ${tr(names[alert.metric])}: ${alert.count} / ${alert.limit}${alert.rejected ? ' · ' + tr('已拒绝新请求') : ''}`).join('\n');
-    const note = new Notification({ title: tr('并发监控'), body, icon: windowIcon() });
-    note.on('click', () => { revealWindow(); win?.webContents.send('open-page', { page: 'concurrency' }); }); note.show();
-  }
-});
 /** 「账号:窗口」→ 已经提醒过的那个窗口的重置时间。同一个窗口只提醒一次。 */
 const notified = new Map<string, number>();
 /** 两次重置时间差不到这么多，就当是同一个窗口（接口返回的时间有抖动，见 maybeNotify）。 */
@@ -361,8 +278,6 @@ function agentTrayItems() {
 }
 
 function publishAgent() {
-  concurrencyCatalogAt = 0;
-  concurrencyState();
   setTrayMenu();
   pushTrayPanel();
   if (win && !win.isDestroyed()) win.webContents.send("agent-switch", agentView());
@@ -1269,11 +1184,6 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("egress:clear", () => exitMonitor.clearHistory());
     ipcMain.handle("egress:intel", (_event, ip: unknown) => exitMonitor.refreshIntel(ip));
     exitMonitor.start();
-    ipcMain.handle('concurrency:state', () => concurrencyState());
-    ipcMain.handle('concurrency:save', (_event, value: unknown) => concurrencyService.save(value));
-    ipcMain.handle('concurrency:history', (_event, query: unknown) => concurrencyService.history(query));
-    concurrencyState();
-    concurrencyService.start();
     ipcMain.handle("tokens-ci:state", () => tokensUploader.state());
     ipcMain.handle("tokens-ci:save", (_event, value: unknown) => tokensUploader.save(value));
     ipcMain.handle("tokens-ci:check", () => tokensUploader.check());
@@ -1537,9 +1447,6 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("share:render", (_event, kind: unknown, data: unknown, options: unknown) => renderShareCard(kind, data, options));
     ipcMain.handle("share:save", (_event, dataUrl: unknown, name: unknown) => saveShareCard(win, dataUrl, name));
     ipcMain.handle("share:copy", (_event, dataUrl: unknown) => copyShareCard(dataUrl));
-    // Codex 降智检测（0.3.41）：只在用户点了才跑，见 codex-state-probe.ts
-    ipcMain.handle("codex-probe:run", (_event, accountId: unknown) => runProbe(accountId));
-    ipcMain.handle("codex-probe:last", () => lastProbes());
     ipcMain.handle("agent:port", (_event, port: unknown) => agentWrite("修改本地路由端口", () => setProxyPort(Number(port))));
     ipcMain.handle("agent:failover", (_event, id: unknown, on: unknown) => agentWrite("修改备用队列", () => setFailover(String(id || ""), on === true)));
     ipcMain.handle("agent:reorder", (_event, app: unknown, ids: unknown) => agentWrite("调整供应商顺序", () => {
@@ -1710,7 +1617,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', event => {
     destroyTrayPanel();
     destroyDeskPet();
-    if (agentQuitReady) { quitting = true; concurrencyService.stop(); exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); antigravityQuota.stop(); stopAllReplies(); releasePrism(); return; }
+    if (agentQuitReady) { quitting = true; exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); antigravityQuota.stop(); stopAllReplies(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

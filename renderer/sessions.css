@@ -31,7 +31,7 @@ body[data-page="sessions"] .workspace { overflow-y: hidden; }
 .sw-kinds button { flex: 1 1 0; min-width: 0; display: inline-flex; justify-content: center; align-items: baseline; gap: 4px; padding: 0 4px; white-space: nowrap; overflow: hidden; }
 .sw-kinds small { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .sw-kinds button.on small { color: var(--muted); }
-.sw-project { margin: 0 16px 10px; height: 34px; font-size: 13px; }
+.sw-project { margin: 0 16px 10px; min-height: 34px; height: 34px; padding: 0 10px 0 11px; font-size: 13px; }
 .sw-items { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px 12px; border-top: 1px solid var(--line); }
 .sw-group { position: sticky; top: 0; z-index: 1; padding: 10px 10px 6px; background: var(--surface); font-size: 11.5px; font-weight: 650; letter-spacing: .04em; color: var(--faint); }
 .sw-item {
@@ -355,7 +355,7 @@ mark.sw-hl { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, 
 .sw-new-field { display: grid; gap: 8px; }
 .sw-new-label { color: var(--text-2); font-size: 12.5px; font-weight: 600; }
 .sw-new-folder-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-.sw-new-folder { height: 38px; min-width: 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.sw-new-folder { min-height: 38px; height: 38px; min-width: 0; padding: 0 10px 0 11px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
 .sw-new-folder:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .sw-new-folder-row .btn { height: 38px; }
 .sw-new-folder-row .btn .icon { width: 15px; height: 15px; }

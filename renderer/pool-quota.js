@@ -114,8 +114,10 @@
   /** 按成员叠起来的柱子。rows：{ at, tokens, requests, byMember, label, tick, current }。 */
   function stackChart(host, data, rows, animate) {
     host.replaceChildren();
-    if (!rows.some(row => row.tokens > 0)) { host.append(empty('这段时间号池没有转发过请求。')); return; }
-    const w = Math.max(280, host.clientWidth), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
+    if (!rows.some(row => row.tokens > 0)) { host.dataset.drawnWidth = ''; host.append(empty('这段时间号池没有转发过请求。')); return; }
+    const measured = Math.round(host.clientWidth);
+    host.dataset.drawnWidth = String(measured);
+    const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 680), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
     const max = Math.max(1, ...rows.map(row => row.tokens));
     const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': '号池用量柱状图，按成员分颜色' });
     for (let i = 0; i <= 2; i++) {
@@ -148,6 +150,10 @@
     });
     host.append(node);
     playChart(host, animate);
+    window.watchChartHost?.(host, () => stackChart(host, data, rows, false));
+    if (!measured) requestAnimationFrame(() => {
+      if (host.isConnected && Math.round(host.clientWidth) > 0 && Number(host.dataset.drawnWidth || 0) === 0) stackChart(host, data, rows, false);
+    });
   }
   const legend = data => el('div', { class: 'pq-legend' }, data.members.filter(member => member.tokens > 0).map(member => {
     const dot = el('i', { class: 'pq-dot', 'aria-hidden': 'true' }); dot.style.background = colorOf(data, member.key);

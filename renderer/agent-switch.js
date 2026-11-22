@@ -17,21 +17,7 @@
   const root = document.getElementById('page-providers');
   const api = window.tokenpulse;
   if (!root || !api?.agentState) return;
-  let stopConcurrency = null, concurrencyState = null;
-  function concurrencyLinkState(next) {
-    concurrencyState = next;
-    const link = root.querySelector('.cm-link'), t = text => window.PulseI18n?.lang?.() === 'en' ? window.PulseI18n.t(text) : text;
-    if (!link) return;
-    const global = next.rows.find(row => row.id === 'global');
-    link.textContent = t('并发监控') + ' · ' + (next.coverage?.some(item => item.monitored) ? t('活跃 AI 请求') + ': ' + (global?.requests || 0) : t('直连未监控')) + (next.alerts.length ? ' · ' + t('超限提醒') : '');
-  }
-  function watchConcurrency() {
-    if (document.body.dataset.page !== 'providers' || stopConcurrency || !api.concurrency) return;
-    stopConcurrency = api.concurrency.onState(concurrencyLinkState);
-    api.concurrency.state().then(next => { if (stopConcurrency) concurrencyLinkState(next); }).catch(() => {});
-  }
-  function hide() { stopConcurrency?.(); stopConcurrency = null; }
-  window.addEventListener('pagehide', hide);
+  function hide() {}
 
   const APPS = [
     { id: 'claude', name: 'Claude Code', kind: 'claude' },
@@ -216,13 +202,7 @@
       main.append(...[].concat(body));
     }
     const layout = el('div', { class: 'pv' }, [editor ? editorNav() : nav(), main]);
-    if (!editor && ['pass', 'router', 'logs'].includes(section)) {
-      const monitorLink = el('button', { class: 'btn cm-link', type: 'button', text: '并发监控' });
-      monitorLink.addEventListener('click', () => window.PulseConcurrency?.open());
-      main.prepend(monitorLink);
-    }
     root.replaceChildren(layout);
-    if (concurrencyState) concurrencyLinkState(concurrencyState);
     if (animate) playChart(main, true);
   }
   function go(next) {
@@ -1746,7 +1726,6 @@
 
   /** 数据每次推送都会调；只有内容变了才重画，抽屉开着或正在拖动时不重画（免得把正在填的表单清掉）。 */
   async function show() {
-    watchConcurrency();
     if (pending) return;
     const ticket = ++stateTicket;
     let state;

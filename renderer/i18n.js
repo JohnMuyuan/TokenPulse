@@ -662,7 +662,7 @@
     "「模型速度走势」以前把号池里每个账号各画一条线，同一个模型一下子冒出好几条。现在同一个号池的几个账号合成一条，按号池名显示；不同的第三方供应商、不同的思考等级仍然分开。供应商页透明转发里的速度汇总也一样。": "“Model speed over time” used to draw a separate line for every account in a pool, so one model showed up many times. Accounts in the same pool now share one line, labeled with the pool’s name; different third-party providers and reasoning efforts are still separate. The speed summary on the Providers pass-through page works the same way.",
     // 0.3.50：新手引导
     "TokenPulse 常驻托盘，记录本机 AI 工具（Claude Code、Codex、Grok、DeepSeek Harness）的用量，盯住官方订阅额度，还能切换供应商、管理会话。接下来用一个演示账号带你走一遍，分成几章：右上角的「目录」可以直接跳到想看的那一章。演示数据只在引导里出现，不会写进你的数据，结束后自动换回来。": "TokenPulse lives in the tray, records how much your local AI tools (Claude Code, Codex, Grok, DeepSeek Harness) use, watches official subscription quota, and can switch providers and manage sessions. A demo account will walk you through it in chapters — use “Contents” at the top right to jump to any chapter. Demo data only appears in this tour, never touches your data, and is swapped back when you finish.",
-    "总览、额度详情、用量明细、出口监控、并发监控、会话管理、供应商，都在这里。侧栏可以收起成只有图标；不常用的页面可以在「编辑布局」里藏起来。": "Overview, Quota details, Usage details, Egress monitor, Concurrency, Sessions and Providers are all here. The sidebar can collapse to icons, and pages you don’t use can be hidden in “Edit layout”.",
+    "总览、额度详情、用量明细、出口监控、会话管理、供应商，都在这里。侧栏可以收起成只有图标；不常用的页面可以在「编辑布局」里藏起来。": "Overview, Quota details, Usage details, Egress monitor, Sessions and Providers are all here. The sidebar can collapse to icons, and pages you don’t use can be hidden in “Edit layout”.",
     "后台会定时扫描本机日志，并按设置里的间隔（默认 1 分钟）查询官方额度和余额。想马上看最新数字就点「刷新数据」，右上角会告诉你哪个账号的哪项额度变了多少。": "Local logs are scanned in the background, and official quota and balances are checked at the interval set in Settings (1 minute by default). Click “Refresh data” for the latest numbers right away; the top right tells you which account’s quota changed and by how much.",
     "每家一张卡：5 小时窗口和周窗口还剩多少、什么时候重置、照现在的节奏大约什么时候用完。同一家登记了几个账号时，下面列出其他账号的剩余。DeepSeek 和第三方 Key 的余额也在这一排，显示还能用几天。": "One card per provider: how much of the 5-hour and weekly windows is left, when they reset, and roughly when they run out at your current pace. With several accounts from one provider, the others are listed below. DeepSeek and third-party key balances sit in the same row, showing how many days they last.",
     "所选范围的四个数字": "Four numbers for the selected range",
@@ -3232,7 +3232,13 @@
     'DeepSeek 兼容 pi 等本机工具并支持手动标注归属': 'DeepSeek recognizes pi locally & adds manual spend attribution',
     '自动识别 pi 等本机工具调用 DeepSeek 模型的请求，不再误判为本机以外消耗；「本机用量」新增扣费归属标注，每笔余额变动均可一键标为「本机使用」或「本机以外」并实时重算。': 'Automatically credits local DeepSeek requests from pi and other local tools; adds one-click “This PC” / “Off this PC” attribution controls on balance drops with live recalculation.',
     '并发监控列表重构 & 体检改为提前 1 天过期提醒': 'Compact concurrency table & 24h pre-expiry account reminders',
-    '并发监控默认折叠全为 0 且未设上限的空闲项，支持按活跃/供应商/账号分组与名称筛选；体检移除无用的官方账号续期记录项，改为凭据距过期不足 24 小时提前预警并推送系统通知。': 'Concurrency Monitor now collapses idle zero-activity scopes by default with group tabs and search; Health Check drops renewal logs and warns 24 hours before official credentials expire (with desktop notifications).'
+    '并发监控默认折叠全为 0 且未设上限的空闲项，支持按活跃/供应商/账号分组与名称筛选；体检移除无用的官方账号续期记录项，改为凭据距过期不足 24 小时提前预警并推送系统通知。': 'Concurrency Monitor now collapses idle zero-activity scopes by default with group tabs and search; Health Check drops renewal logs and warns 24 hours before official credentials expire (with desktop notifications).',
+    '修复总览用量趋势首次打开图表过窄': 'Fixed skinny Overview usage trend chart on initial open',
+    '修复总览首次显示或切回总览时用量趋势图按 280px 兜底宽度绘制的问题，并统一为各图表补充容器宽度同步与自动重绘。': 'Fixed the Overview trend chart drawing at a 280px fallback width on first open or when returning from another page, and added automatic width-sync redraws across charts.',
+    '全站下拉框统一为 TokenPulse 自绘风格': 'Unified custom-styled dropdowns across the entire app',
+    '将总览、用量明细、额度详情、出口监控、会话管理、供应商、分享卡片与设置页中的全部原生下拉选择框统一升级为与主题一致的圆角自绘下拉样式（明暗主题自适应）。': 'Replaced every native OS dropdown across Overview, Usage, Quota, Egress, Sessions, Providers, Share Card, and Settings with TokenPulse’s rounded theme-aware dropdown style.',
+    '精简界面：移除 GPT 降智检测与并发监控': 'Streamlined UI: removed GPT downgrade probe & Concurrency Monitor',
+    '移除额度详情中 ChatGPT 账号的手动「降智检测」模块，并整体移除侧栏与后端的「并发监控」页面及入口。': 'Removed the manual GPT downgrade probe panel from ChatGPT Quota Details and removed the Concurrency Monitor page and backend.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */

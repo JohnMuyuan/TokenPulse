@@ -97,7 +97,7 @@
 /* 总览多账号队列与设置页选择框 */
 .agy-queue-tag { justify-self: start; padding: 1px 6px; border-radius: 999px; font-size: 11px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; }
 .agy-official-list { margin-top: 8px; }
-.agy-share-select { max-width: 138px; }
+.agy-share-select { min-height: 30px; height: 30px; padding: 0 9px 0 10px; font-size: 12.5px; max-width: 164px; }
 
 /* 额度容量趋势 */
 .agy-capacity { margin-block-start: 18px; margin-block-end: 0; min-inline-size: 0; }
