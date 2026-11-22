@@ -994,6 +994,115 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("navigate('overview')");
       console.log('PASS exit monitor navigation, three providers, drafts, allowlists, alerts, deduplication, validation and safe pause');
 
+      // v0.3.106：用量明细 10 项增强（速度分位表、订阅等价 vs API 实付、上下文水位、思考占比、自动压缩与连续自动轮次、同会话筛选与定位会话、第 5 视图「按会话」、三种新排序）
+      {
+        const v106OffFile = path.join(temp, '11111111-2222-3333-4444-555555555555.jsonl');
+        const v106ApiFile = path.join(temp, '22222222-3333-4444-5555-666666666666.jsonl');
+        const s1Id = '11111111-2222-3333-4444-555555555555';
+        const projDir = path.join(temp, 'home', '.claude', 'projects', 'demo-v106');
+        fs.mkdirSync(projDir, { recursive: true });
+        const s1RealFile = path.join(projDir, `${s1Id}.jsonl`);
+        const base106 = new Date(2026, 5, 16, 10, 0, 0).getTime();
+        const sessDay107 = new Date(2026, 5, 17, 10, 0, 0).getTime();
+        fs.writeFileSync(s1RealFile, [
+          { type: 'ai-title', aiTitle: '重构缓存与额度面板' },
+          { type: 'user', timestamp: iso(sessDay107), cwd: 'D:\\qa\\v106-proj', message: { role: 'user', content: [{ type: 'text', text: '请帮我优化用量明细页面' }] } },
+          { type: 'assistant', timestamp: iso(sessDay107 + 5000), cwd: 'D:\\qa\\v106-proj', message: { id: 'msg_v106_1', model: 'claude-opus-5-5', content: [{ type: 'text', text: '好的，开始修改。' }], usage: { input_tokens: 100, output_tokens: 20 } } },
+        ].map(x => JSON.stringify(x)).join('\n') + '\n');
+        const rollFile = path.join(dataPath, 'usage-rollups.json');
+        const roll = JSON.parse(fs.readFileSync(rollFile, 'utf8'));
+        roll.files[v106OffFile] = { kind: 'claude-code', official: true, days: { '2026-06-16': { 'Claude Code': { 'claude-opus-5-5': { input: 350000, output: 2800, cacheRead: 324000, cacheWrite: 0, reasoning: 1200, costUsd: 1.2, requests: 2 } } } } };
+        roll.files[v106ApiFile] = { kind: 'claude-code', official: false, days: { '2026-06-16': { 'Claude Code': { 'claude-sonnet-4-6': { input: 50000, output: 1000, cacheRead: 2500, cacheWrite: 0, reasoning: 200, costUsd: 0.25, requests: 1 } } } } };
+        fs.writeFileSync(rollFile, JSON.stringify(roll));
+        const sessList = await evaluate('window.tokenpulse.sessions()');
+        assert.ok(sessList.some(s => s.key === `claude:${s1Id}`), 'synthetic session indexed');
+        // 同步将 v106OffFile / v106ApiFile 挂入 sessions-index.json，使 2026-06-16 请求行具备真实标题与可跳转 sessionKey
+        const idxPath = path.join(dataPath, 'sessions-index.json');
+        const idxData = fs.existsSync(idxPath) ? JSON.parse(fs.readFileSync(idxPath, 'utf8')) : { version: 1, files: {} };
+        idxData.files[v106OffFile] = { size: 1, mtimeMs: 1, summary: { key: `claude:${s1Id}`, kind: 'claude', id: s1Id, title: '重构缓存与额度面板', cwd: 'D:\\qa\\v106-proj', file: v106OffFile, startedAt: base106, updatedAt: base106 + 15000, turns: 1, messages: 2 } };
+        idxData.files[v106ApiFile] = { size: 1, mtimeMs: 1, summary: { key: 'claude:22222222-3333-4444-5555-666666666666', kind: 'claude', id: '22222222-3333-4444-5555-666666666666', title: '排查慢接口延迟问题', cwd: 'D:\\qa\\v106-proj', file: v106ApiFile, startedAt: base106 + 60000, updatedAt: base106 + 75000, turns: 1, messages: 2 } };
+        fs.writeFileSync(idxPath, JSON.stringify(idxData));
+        fs.appendFileSync(path.join(dataPath, 'requests', '2026-06.jsonl'), [
+          { id: 'v106-r1', at: base106 + 5000, kind: 'claude-code', file: v106OffFile, cwd: 'D:\\qa\\v106-proj', model: 'claude-opus-5-5', requested: 'claude-opus-5-5', returned: 'claude-opus-5-5', input: 160000, output: 2000, cacheRead: 144000, cacheWrite: 0, reasoning: 1200, costUsd: 0.8, calls: 1, autoStep: 10, timing: { stream: true, ms: 4200, firstTokenMs: 650, tokensPerSec: 55 } },
+          { id: 'v106-r2', at: base106 + 15000, kind: 'claude-code', file: v106OffFile, cwd: 'D:\\qa\\v106-proj', model: 'claude-opus-5-5', compaction: true, input: 190000, output: 800, cacheRead: 180000, cacheWrite: 0, reasoning: 0, costUsd: 0.4, calls: 1 },
+          { id: 'v106-r3', at: base106 + 75000, kind: 'claude-code', file: v106ApiFile, cwd: 'D:\\qa\\v106-proj', model: 'claude-sonnet-4-6', requested: 'claude-sonnet-4-6', returned: 'claude-sonnet-4-6', input: 50000, output: 1000, cacheRead: 2500, cacheWrite: 0, reasoning: 200, costUsd: 0.25, calls: 1, autoStep: 2, timing: { stream: true, ms: 18500, firstTokenMs: 6200, tokensPerSec: 28 } },
+        ].map(x => JSON.stringify(x)).join('\n') + '\n');
+        require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = async () => ({});
+        await evaluate('window.tokenpulse.refresh().then(snap => render(snap))');
+
+        // 1) 模型速度走势里的「供应商 / 模型速度分位」表 + 模型排行的「思考 xx%」
+        await evaluate("navigate('usage'); applyRange(30)");
+        await until("document.querySelector('#usage-insights .speed-pct-section tbody tr') !== null");
+        const pctInfo = await evaluate(`(() => {
+          const rows = [...document.querySelectorAll('#usage-insights .speed-pct-table tbody tr')].map(tr => tr.textContent);
+          const modelOut = document.querySelector('#usage-insights .insight-models tbody tr td:nth-child(5)')?.textContent || '';
+          return { rows, modelOut };
+        })()`);
+        assert.equal(pctInfo.rows.length, 2, 'QA-speed-a 与 QA-speed-b 两行速度分位');
+        assert.match(pctInfo.rows[0], /QA-speed-b.*0\.7 秒.*150 t\/s/);
+        assert.match(pctInfo.rows[1], /QA-speed-a.*2 秒.*2\.2 秒.*62 t\/s.*P50 62 · P90 63\.6/);
+        assert.match(pctInfo.modelOut, /思考 20\.0%/, '模型排行的输出列展示推理思考占比');
+        await evaluate("document.querySelector('#usage-insights [data-speed-pct-sort=count]').click()");
+        await until("document.querySelector('#usage-insights .speed-pct-table tbody tr')?.textContent.includes('QA-speed-a')");
+
+        // 2) 切到 2026-06-16：验证顶部卡片费用拆分、上下文水位、思考占比、自动压缩、连续自动轮次、同会话筛选与三种新排序
+        await evaluate("applyRange('custom', '2026-06-16', '2026-06-16', false, '00:00', '23:59')");
+        await until("!analysis.loading && requestPage && requestPage.total === 3 && document.querySelectorAll('#request-rows .request-row').length === 3");
+        // 5 个子视图保持单行不换行
+        const tabRects = await evaluate("[...document.querySelectorAll('#usage-view [data-view]')].map(b => ({ view: b.dataset.view, top: Math.round(b.getBoundingClientRect().top) }))");
+        assert.deepEqual(tabRects.map(t => t.view), ['requests', 'daily', 'projects', 'sessions', 'cache']);
+        assert.equal(new Set(tabRects.map(t => t.top)).size, 1, '#usage-view 5 个子视图按钮必须保持同一行');
+        // 顶部参考费用卡片区分订阅等价与 API 实付
+        const costSplit = await evaluate("document.querySelector('#tiles .stat-cost-split')?.textContent || ''");
+        assert.match(costSplit, /订阅等价 \$1\.20.*API 实付 \$0\.25/);
+        // 逐条请求行内的上下文水位、思考占比、自动压缩、连续自动暴走标签
+        const rowText = await evaluate("document.getElementById('request-rows').textContent");
+        assert.match(rowText, /水位 80%/);
+        assert.match(rowText, /思考 60\.0%|思考 60%/);
+        assert.match(rowText, /自动压缩/);
+        assert.match(rowText, /连续自动 #10/);
+        // 三种新排序：缓存命中率从低到高（大输入）、耗时从慢到快、额度占用从高到低
+        await evaluate("document.getElementById('request-sort').value='cache_low'; document.getElementById('request-sort').dispatchEvent(new Event('change'))");
+        await until("requestPage?.rows[0]?.model === 'claude-sonnet-4-6'");
+        await evaluate("document.getElementById('request-sort').value='latency'; document.getElementById('request-sort').dispatchEvent(new Event('change'))");
+        await until("requestPage?.rows[0]?.timing?.ms === 18500");
+        await evaluate("document.getElementById('request-sort').value='time'; document.getElementById('request-sort').dispatchEvent(new Event('change'))");
+        await until("requestPage?.rows.length === 3");
+        // 展开一条请求，点「只看同会话请求」，再清掉
+        await evaluate("[...document.querySelectorAll('#request-rows .request-row')].find(r => r.textContent.includes('连续自动 #10')).click()");
+        await until("document.querySelector('.request-detail .detail-session-actions')");
+        const detailText = await evaluate("document.querySelector('.request-detail').textContent");
+        assert.match(detailText, /上下文水位.*80(\.0)?%.*推理占比.*连续自动轮次.*第 10 步/);
+        await evaluate("[...document.querySelectorAll('.detail-session-actions button')].find(b => b.textContent.includes('只看同会话请求')).click()");
+        await until("state.reqSession && requestPage?.total === 2");
+        assert.equal(await evaluate("[...document.querySelectorAll('#detail-filter-chips button')].some(b => b.textContent.includes('会话：'))"), true);
+        await evaluate("document.getElementById('clear-detail-filters').click()");
+        await until("!state.reqSession && requestPage?.total === 3");
+
+        // 3) 切换到第 5 视图「按会话」（#view-sessions），校验汇总卡、响应式表格属性、标签、排序、深色模式与「定位会话」联动跳转
+        await evaluate("document.querySelector('#usage-view [data-view=sessions]').click()");
+        await until("!document.getElementById('view-sessions').hidden && !document.getElementById('view-sessions').hasAttribute('aria-busy') && document.querySelectorAll('#view-sessions .sr-row').length === 2");
+        assert.deepEqual(await evaluate("['view-requests','view-daily','view-projects','view-sessions','view-cache'].map(id => document.getElementById(id).hidden)"), [true, true, true, false, true]);
+        assert.equal(await evaluate("document.getElementById('session-rank-count').textContent"), '2 个会话');
+        assert.equal(await evaluate("document.querySelector('#view-sessions .sr-table-wrap').getAttribute('tabindex')"), '0');
+        assert.equal(await evaluate("document.querySelector('#view-sessions .sr-table-wrap').getAttribute('role')"), 'region');
+        const srText = await evaluate("document.getElementById('view-sessions').textContent");
+        assert.match(srText, /重构缓存与额度面板.*自动压缩 ×1.*连跑 10 步.*水位 95%/);
+        await evaluate("document.querySelector('#view-sessions [data-sort=recent]').click()");
+        assert.match(await evaluate("document.querySelector('#view-sessions .sr-row .sr-title').textContent"), /排查慢接口延迟问题/);
+        await evaluate("document.querySelector('#view-sessions [data-sort=tokens]').click()");
+        assert.match(await evaluate("document.querySelector('#view-sessions .sr-row .sr-title').textContent"), /重构缓存与额度面板/);
+        await evaluate("setThemeMode('dark')"); await delay(200);
+        const srBlack = await evaluate("[...document.querySelectorAll('#view-sessions *')].filter(n => n.childNodes.length && [...n.childNodes].some(c => c.nodeType === 3 && c.textContent.trim()) && getComputedStyle(n).color === 'rgb(0, 0, 0)').map(n => n.className)");
+        assert.deepEqual(srBlack, [], '按会话视图深色模式不能有默认黑字');
+        await evaluate("setThemeMode('light')"); await delay(150);
+        // 一键「定位会话」：跳到会话管理并选中该会话
+        await evaluate("document.querySelector('#view-sessions [data-open-session]').click()");
+        await until("state.page === 'sessions' && document.querySelector('.sw-item.active')?.dataset.key === 'claude:11111111-2222-3333-4444-555555555555'");
+        await evaluate("navigate('usage'); showUsageView('requests'); applyRange(1); navigate('overview')");
+        console.log('PASS v0.3.106 usage details 10 enhancements: speed percentiles, cost split, context watermark, reasoning ratio, auto-step & compaction badges, session rank view, new sorts and session jump');
+      }
+
       require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = async () => ({ issues: [{ kind: 'claude', who: 'Claude', reason: 'expired' }] });
       await evaluate("document.querySelectorAll('.tp-toast').forEach(node => node.remove()); document.getElementById('refresh').click()");
       await until("!document.getElementById('refresh').disabled && document.querySelector('.tp-toast.error')");

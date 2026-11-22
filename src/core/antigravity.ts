@@ -141,6 +141,8 @@ export type AgyGeneration = {
   tokensPerSec?: number;
   avgTokensPerSec?: number;
   thinkingMs?: number;
+  /** 同一条用户指令下无人工介入的第几次模型调用（>= 2 时记录）。 */
+  autoStep?: number;
 };
 
 /** 一条 gen_metadata 里的型号、档位标签、请求 ID 和流式耗时（首字 + 生成时长）。 */
@@ -382,9 +384,21 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
     const models: Record<string, AgyModel> = {};
     const genModel = prepareOptional(db, "select data from gen_metadata where idx = ?");
     const stepPayloadStmt = prepareOptional(db, "select step_payload from steps where idx = ?");
+    let autoStep = 0;
+    if (from > 0) {
+      try {
+        const lastUser = (db.prepare("select coalesce(max(idx), -1) as u from steps where step_type = 14 and idx < ?").get(from) as { u: number }).u;
+        autoStep = (db.prepare("select count(*) as c from steps where step_type = 15 and idx > ? and idx < ?").get(lastUser, from) as { c: number }).c;
+      } catch { /* 旧表结构缺失时从 0 起算 */ }
+    }
     let next = from;
     for (const rawStep of stepStmt.iterate(from)) {
       const step = rawStep as { idx: number; step_type: number; status: number; metadata: Uint8Array | null };
+      if (step.step_type === 14) {
+        autoStep = 0;
+        next = step.idx + 1;
+        continue;
+      }
       const meta = toBuf(step.metadata);
       if (step.step_type === MODEL_REPLY && STEP_OPEN.has(step.status)) {
         const startedAt = pbTime(pbMessage(meta, 1));
@@ -454,6 +468,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const messageId = pbString(usage, 7);
       const requestId = genParsed?.requestId || messageId;
       const returned = genParsed?.rawModel || (known[key] ?? models[key])?.model;
+      autoStep += 1;
       rows.push({
         step: step.idx, at, startAt, modelId,
         input: input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, reasoning,
@@ -465,6 +480,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
         ...(tokensPerSec > 0 ? { tokensPerSec } : {}),
         ...(avgTokensPerSec > 0 ? { avgTokensPerSec } : {}),
         ...(thinkingMs > 0 ? { thinkingMs } : {}),
+        ...(autoStep >= 2 ? { autoStep } : {}),
       });
     }
     return { rows, next, total, models };

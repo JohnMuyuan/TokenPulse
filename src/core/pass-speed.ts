@@ -129,7 +129,7 @@ export function measuredRequestRows(since: number, now = Date.now()): EstimateRo
 
 export type SpeedBucket = { at: number; median: number; low: number; high: number; count: number; firstTokenMs: number | null };
 /** fast：快速模式（Codex 的 priority / fast、Claude 的 fast）的请求单独一行，不和普通模式混着算。 */
-export type SpeedModel = { model: string; fast: boolean; /** 按日志时间戳估算的（0.3.53），界面上标「≈」。 */ estimated?: boolean; count: number; tokensPerSec: number; low: number; high: number; firstTokenMs: number | null; output: number; lastAt: number; buckets: SpeedBucket[] };
+export type SpeedModel = { model: string; fast: boolean; /** 按日志时间戳估算的（0.3.53），界面上标「≈」。 */ estimated?: boolean; count: number; tokensPerSec: number; avgTokensPerSec?: number; low: number; high: number; firstTokenMs: number | null; output: number; lastAt: number; buckets: SpeedBucket[] };
 export type SpeedSeries = { from: number; to: number; bucketMs: number; models: SpeedModel[]; max: number; total: number };
 
 /** 透明转发记录里的工具名 → 官方账号是哪一家。 */
@@ -146,8 +146,10 @@ function quantile(sorted: number[], q: number) {
 const round1 = (value: number) => Math.round(value * 10) / 10;
 function summary(speeds: number[], firsts: number[]) {
   const sorted = speeds.slice().sort((a, b) => a - b), delays = firsts.slice().sort((a, b) => a - b);
+  const avg = sorted.length ? round1(sorted.reduce((sum, v) => sum + v, 0) / sorted.length) : 0;
   return {
     median: round1(quantile(sorted, 0.5)),
+    avg,
     low: round1(quantile(sorted, 0.25)),
     high: round1(quantile(sorted, 0.75)),
     peak: round1(quantile(sorted, 0.9)),
@@ -237,7 +239,7 @@ export function speedSeriesOf(rows: { at: number; model: string; fast: boolean; 
     for (const row of list) { const start = bucketStart(row.at, bucketMs); const bucket = byBucket.get(start) ?? []; bucket.push(row); byBucket.set(start, bucket); }
     const buckets = [...byBucket.entries()].sort((a, b) => a[0] - b[0]).map(([at, bucket]) => ({ at, ...summary(bucket.map((row) => row.speed).filter(value => value > 0), bucket.map((row) => row.first).filter((value) => value > 0)) })).filter(bucket => bucket.count > 0);
     const all = summary(list.map((row) => row.speed).filter(value => value > 0), list.map((row) => row.first).filter((value) => value > 0));
-    return { model, fast, ...(estimated ? { estimated: true } : {}), count: all.count, tokensPerSec: all.median, low: all.low, high: all.high, firstTokenMs: all.firstTokenMs, output: list.reduce((sum, row) => sum + (row.speed > 0 ? row.output : 0), 0), lastAt: latest(list), buckets };
+    return { model, fast, ...(estimated ? { estimated: true } : {}), count: all.count, tokensPerSec: all.median, avgTokensPerSec: all.avg, low: all.low, high: all.high, firstTokenMs: all.firstTokenMs, output: list.reduce((sum, row) => sum + (row.speed > 0 ? row.output : 0), 0), lastAt: latest(list), buckets };
   }).filter(model => model.count > 0).sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
   const max = models.reduce((high, model) => model.buckets.reduce((value, bucket) => Math.max(value, bucket.high), Math.max(high, model.high)), 0);
   return { from: bucketStart(from, bucketMs), to: now, bucketMs, models, max, total: measured.length };
@@ -253,6 +255,7 @@ export function speedSeriesOf(rows: { at: number; model: string; fast: boolean; 
 export type SpeedLineBucket = {
   at: number;
   tokensPerSec: number | null;
+  avgTokensPerSec?: number | null;
   low: number | null;
   high: number | null;
   peak: number | null;
@@ -277,6 +280,7 @@ export type SpeedLine = {
   speedCount: number;
   firstCount: number;
   tokensPerSec: number | null;
+  avgTokensPerSec?: number | null;
   low: number | null;
   high: number | null;
   peak: number | null;
@@ -363,6 +367,7 @@ export function speedSeries(days: number, now = Date.now(), withEstimates = true
         return {
           at,
           tokensPerSec: s.count ? s.median : null,
+          avgTokensPerSec: s.count ? s.avg : null,
           low: s.count ? s.low : null,
           high: s.count ? s.high : null,
           peak: s.count ? s.peak : null,
@@ -384,6 +389,7 @@ export function speedSeries(days: number, now = Date.now(), withEstimates = true
         speedCount: all.count,
         firstCount: all.firstCount,
         tokensPerSec: all.count ? all.median : null,
+        avgTokensPerSec: all.count ? all.avg : null,
         low: all.count ? all.low : null,
         high: all.count ? all.high : null,
         peak: all.count ? all.peak : null,

@@ -51,7 +51,7 @@ try {
   assert.deepEqual([week.bucketMs, week.total, week.models.map((model) => model.model)], [DAY, 11, ["gpt-a", "gpt-a", "gpt-b"]], "按请求次数排，只有这个账号、这段时间、量到了速度的");
   assert.deepEqual(week.models.map((model) => [model.fast, model.count, model.tokensPerSec]), [[false, 8, 52.5], [true, 2, 190], [false, 1, 120]], "快速模式的请求单独一行，不把普通模式的数字带高");
   const a = week.models[0];
-  assert.deepEqual([a.count, a.tokensPerSec], [8, 52.5]);
+  assert.deepEqual([a.count, a.tokensPerSec, a.avgTokensPerSec], [8, 52.5, 67.4], "同时保留中位数吐字速度与算术平均吐字 t/s");
   assert.deepEqual([a.low, a.high, a.firstTokenMs, a.output], [38.5, 62.5, 2000, 2400], "中位数和四分位：个别特别快的不把数字带偏");
   assert.deepEqual(a.buckets.map((bucket) => [new Date(bucket.at).getDate(), bucket.median, bucket.count]), [[17, 32, 2], [20, 57.5, 6]], "一天一个点，取那天的中位数");
   assert.deepEqual([a.buckets[1].low, a.buckets[1].high], [51.3, 67.5]);
@@ -128,9 +128,9 @@ try {
       { id: "dsh:legacy-est", at: now - 1050, kind: "deepseek-harness", model: "DeepSeek-V4-Pro", effort: "high", output: 300, estimate: { ms: 5000, tokensPerSec: 60 } },
     ].map((r) => JSON.stringify(r)).join("\n") + "\n");
     const agyLines = speedSeries(7, now).lines.filter((line) => line.app === "antigravity");
-    assert.deepEqual(agyLines.map((line) => [line.model, line.effort, Boolean(line.estimated), line.count, line.tokensPerSec, line.firstTokenMs]), [
-      ["gemini-4-argon", "high", false, 2, 45, 1400],
-    ], "Antigravity 只保留本机实测速度与首字延迟，绝不为短工具调用或历史 estimate 刷出 ≈ 估算虚线");
+    assert.deepEqual(agyLines.map((line) => [line.model, line.effort, Boolean(line.estimated), line.count, line.tokensPerSec, line.avgTokensPerSec, line.firstTokenMs, line.firstPeak]), [
+      ["gemini-4-argon", "high", false, 2, 45, 45, 1400, 1560],
+    ], "Antigravity 只保留本机实测速度与首字延迟（含平均吐字与 P90 首字），绝不为短工具调用或历史 estimate 刷出 ≈ 估算虚线");
     const dshLines = speedSeries(7, now).lines.filter((line) => line.app === "deepseek");
     assert.deepEqual(dshLines.map((line) => [line.model, line.effort, Boolean(line.estimated), line.tokensPerSec, line.firstTokenMs]), [
       ["DeepSeek-V4.1-Flash", "high", false, null, 1500],

@@ -262,6 +262,35 @@
     return five || week ? { five, week } : null;
   }
 
+  /** 给用量明细「按额度占用排序」提供当前各分组窗口容量提示。 */
+  function quotaWindows() {
+    if (!visible()) return [];
+    const out = [];
+    const pushFrom = (accId, ins) => {
+      for (const g of ins?.groups || []) {
+        const fiveTokens = g.five?.capacity?.fullTokens;
+        const weekTokens = g.week?.capacity?.fullTokens;
+        if (!(fiveTokens > 0) && !(weekTokens > 0)) continue;
+        const models = [...new Set([...(g.models || []), ...(g.items || []).map(m => m.model).filter(Boolean)])];
+        out.push({
+          account: accId || 'antigravity',
+          models,
+          startAt: 0,
+          endAt: Number.MAX_SAFE_INTEGER,
+          ...(fiveTokens > 0 ? { fiveTokens } : {}),
+          ...(weekTokens > 0 ? { weekTokens } : {}),
+        });
+      }
+    };
+    const list = accountsList();
+    if (list.length) {
+      for (const acc of list) pushFrom(acc.id, acc.insight);
+    } else {
+      pushFrom('antigravity', insight());
+    }
+    return out;
+  }
+
   /* ---------------- 额度详情顶上的标签 ---------------- */
 
   function tabs() {
@@ -1706,7 +1735,7 @@
     return acc ? (acc.accountHint || displayNameOf(acc) || id) : '';
   }
 
-  window.AntigravityQuota = { render, cards, tabs, tabButton, owns, renderQuota, quotaShare, accountLabel, apply, state: () => quota };
+  window.AntigravityQuota = { render, cards, tabs, tabButton, owns, renderQuota, quotaShare, quotaWindows, accountLabel, apply, state: () => quota };
   api.onState(apply);
   api.state().then(apply).catch(() => {});
 })();

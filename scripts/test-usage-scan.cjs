@@ -286,6 +286,35 @@ try {
     for (const bySource of Object.values(claudeState.days)) for (const b of Object.values(bySource["Claude Code"] ?? {})) { claudeTokens += b.input + b.output; claudeRequests += b.requests; }
     const unique = new Set(records().map((r) => r.kind + "|" + r.id));
     check("v8 → v9 重算后 Claude 账本 = 两次请求 + 一次压缩，流水不重复", claudeRequests === 3 && claudeTokens === 900060 + 951004 + 12030 && unique.size === records().length, JSON.stringify({ claudeTokens, claudeRequests }));
+
+    // v0.3.106：连续自动工具轮次（autoStep）——仅真实人工输入重置计数，tool_result 回传累加
+    const autoDir = path.join(process.env.HOME, ".claude", "projects", "autostep-fixture");
+    fs.mkdirSync(autoDir, { recursive: true });
+    const ta = (s) => new Date(Date.UTC(2026, 8, 7, 2, 0, s)).toISOString();
+    fs.writeFileSync(
+      path.join(autoDir, "autostep.jsonl"),
+      [
+        { type: "user", timestamp: ta(0), message: { role: "user", content: [{ type: "text", text: "请自动排查并修复测试" }] } },
+        { type: "assistant", timestamp: ta(1), cwd: "D:\\Work\\Auto", requestId: "req_a1", message: { id: "msg_a1", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: {} }], usage: { input_tokens: 1000, output_tokens: 80 } } },
+        { type: "user", timestamp: ta(2), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] } },
+        { type: "assistant", timestamp: ta(3), cwd: "D:\\Work\\Auto", requestId: "req_a2", message: { id: "msg_a2", model: "claude-opus-5-5", content: [{ type: "tool_use", id: "tu2", name: "Edit", input: {} }], usage: { input_tokens: 1500, output_tokens: 90 } } },
+        { type: "user", timestamp: ta(4), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu2", content: "done" }] } },
+        { type: "assistant", timestamp: ta(5), cwd: "D:\\Work\\Auto", requestId: "req_a3", message: { id: "msg_a3", model: "claude-opus-5-5", content: [{ type: "text", text: "修好了" }], usage: { input_tokens: 1800, output_tokens: 60 } } },
+        { type: "user", timestamp: ta(6), message: { role: "user", content: "谢谢，再看一下样式" } },
+        { type: "assistant", timestamp: ta(7), cwd: "D:\\Work\\Auto", requestId: "req_a4", message: { id: "msg_a4", model: "claude-opus-5-5", content: [{ type: "text", text: "已检查" }], usage: { input_tokens: 2000, output_tokens: 50 } } },
+      ].map((l) => JSON.stringify(l)).join("\n") + "\n",
+    );
+    scanLocalUsage();
+    const autoRecs = records().filter((r) => r.cwd === "D:\\Work\\Auto").sort((a, b) => a.at - b.at);
+    check(
+      "连续自动轮次：首轮无标记，工具回传连续递记 autoStep=2/3，人工再次发言后归零",
+      autoRecs.length === 4 &&
+        autoRecs[0].autoStep === undefined &&
+        autoRecs[1].autoStep === 2 &&
+        autoRecs[2].autoStep === 3 &&
+        autoRecs[3].autoStep === undefined,
+      JSON.stringify(autoRecs.map((r) => [r.id, r.autoStep])),
+    );
   }
 
 } finally {

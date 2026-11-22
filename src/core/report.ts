@@ -25,7 +25,7 @@ import { readRollups, emptyBucket, addUsage, type DayBuckets, type UsageBucket }
 const HOUR_MS = 3_600_000;
 
 export type Totals = UsageBucket & { tokens: number };
-export type UsageDetail = Totals & { day: string; source: string; model: string; priced: boolean };
+export type UsageDetail = Totals & { day: string; source: string; model: string; priced: boolean; officialCostUsd?: number; apiCostUsd?: number };
 export type PoolWindow = { reporting: number; remainingPoints: number; projectedPoints?: number; earliestEtaAt?: number };
 export type AccountPool = {
   kind: AccountKind; accountCount: number; exhaustedCount: number; activeKey?: string; nextKey?: string;
@@ -207,12 +207,72 @@ export function buildSnapshot(now = Date.now()): Snapshot {
 
   /* ---- 1. 全量：按天 / 来源 / 型号 ---- */
   const days: DayBuckets = {};
-  for (const file of Object.values(rollups.files)) mergeDays(days, file.days);
+  const officialDays: DayBuckets = {};
+  const apiDays: DayBuckets = {};
+  const SOURCE_BY_KIND: Record<string, string> = {
+    "claude-code": "Claude Code",
+    codex: "Codex CLI",
+    "grok-build": "Grok Build",
+    "deepseek-harness": "DeepSeek Harness",
+    pi: "pi",
+    antigravity: "Antigravity",
+  };
+  for (const file of Object.values(rollups.files)) {
+    mergeDays(days, file.days);
+    const isOfficialFile = file.official === true || file.kind === "antigravity";
+    const isApiFile = file.official === false || file.kind === "deepseek-harness" || file.kind === "pi";
+    if (isOfficialFile) {
+      mergeDays(officialDays, file.days);
+    } else {
+      let routedFileDays: DayBuckets | null = null;
+      const srcName = file.kind ? SOURCE_BY_KIND[file.kind] : "";
+      if (srcName && file.routedHours) {
+        for (const hours of Object.values(file.routedHours)) {
+          for (const [hourStr, models] of Object.entries(hours)) {
+            const h = Number(hourStr);
+            if (!Number.isFinite(h)) continue;
+            const d = dayKey(h);
+            const target = (((routedFileDays ??= {})[d] ??= {})[srcName] ??= {});
+            for (const [m, b] of Object.entries(models)) addUsage((target[m] ??= emptyBucket()), b);
+          }
+        }
+      }
+      if (routedFileDays) mergeDays(officialDays, routedFileDays);
+      if (isApiFile) {
+        if (!routedFileDays) {
+          mergeDays(apiDays, file.days);
+        } else {
+          for (const [d, bySource] of Object.entries(file.days ?? {})) {
+            for (const [s, byModel] of Object.entries(bySource)) {
+              for (const [m, b] of Object.entries(byModel)) {
+                const r = routedFileDays[d]?.[s]?.[m];
+                const rem: UsageBucket = r
+                  ? {
+                      input: Math.max(0, b.input - r.input),
+                      output: Math.max(0, b.output - r.output),
+                      cacheRead: Math.max(0, b.cacheRead - r.cacheRead),
+                      cacheWrite: Math.max(0, b.cacheWrite - r.cacheWrite),
+                      reasoning: Math.max(0, b.reasoning - r.reasoning),
+                      costUsd: Math.max(0, b.costUsd - r.costUsd),
+                      requests: Math.max(0, b.requests - r.requests),
+                    }
+                  : b;
+                if (rem.input > 0 || rem.output > 0 || rem.requests > 0) {
+                  addUsage((((apiDays[d] ??= {})[s] ??= {})[m] ??= emptyBucket()), rem);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   // CC Switch 只补 TokenPulse 自己没有账的「天 × 工具」（CLI 已经清掉的老会话、OpenCode 这类不扫的工具）
   const ccEnabled = ccSwitchEnabled();
   const ccStore = ccEnabled ? readCcSwitch() : null;
   const cc = ccSwitchBuckets(ccStore, coveredDays(days));
   mergeDays(days, cc.days);
+  mergeDays(apiDays, cc.days);
   const ccSwitch: CcSwitchStatus = {
     enabled: ccEnabled,
     found: Boolean(ccStore?.found),
@@ -245,8 +305,12 @@ export function buildSnapshot(now = Date.now()): Snapshot {
       for (const [model, bucket] of Object.entries(models)) {
         // 估价一次，后面所有口径共用。
         const priced: UsageBucket = { ...bucket, costUsd: costOf(model, bucket) };
+        const offB = officialDays[day]?.[source]?.[model];
+        const apiB = apiDays[day]?.[source]?.[model];
+        const officialCostUsd = offB ? Math.min(priced.costUsd, costOf(model, offB)) : 0;
+        const apiCostUsd = apiB ? Math.min(Math.max(0, priced.costUsd - officialCostUsd), costOf(model, apiB)) : 0;
         const tokens = priced.input + priced.output;
-        usage.push({ day, source, model, ...toTotals(priced), priced: bucket.costUsd > 0 || priceOf(model) !== null });
+        usage.push({ day, source, model, ...toTotals(priced), officialCostUsd, apiCostUsd, priced: bucket.costUsd > 0 || priceOf(model) !== null });
 
         addUsage(totals.all, priced);
         if (day === today) addUsage(totals.today, priced);

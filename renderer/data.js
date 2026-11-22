@@ -1,6 +1,6 @@
 /* 与视图分离的筛选与统计：浏览器和 Node 回归测试共用同一实现。 */
 (function (root) {
-  const fields = ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokens', 'requests', 'costUsd'];
+  const fields = ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning', 'tokens', 'requests', 'costUsd', 'officialCostUsd', 'apiCostUsd'];
   const empty = () => Object.fromEntries(fields.map(key => [key, 0]));
   const add = (target, row) => { for (const key of fields) target[key] += Number(row[key]) || 0; return target; };
   function dayKey(at) {

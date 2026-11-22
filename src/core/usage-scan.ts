@@ -167,6 +167,8 @@ type FileState = {
   agyUnlabeled?: string[];
   /** Antigravity 单独的扫描结构版本（升级只重扫 Antigravity SQLite，不重扫其他 CLI）。 */
   agyV?: number;
+  /** 同一条真实用户指令下无人工介入已连续调用模型的次数（>= 2 时写入请求流水 autoStep）。 */
+  autoStep?: number;
 };
 
 export type UsageRollups = {
@@ -204,8 +206,9 @@ export type UsageRollups = {
  * 15：Claude 会话中途换了登录时按当前邮箱归账号（bridge-session 的 ownerAccountUuid 不随登录变），重算账号小时账。
  * 16：身份带上会话上下文时间；重算换号后误归到旧账号的请求及小时账。
  * 17：流水补记按日志时间戳估算的速度（estimate，0.3.53），Claude Code 和 Codex 重扫一遍。
+ * 18：流水补记同一轮用户指令下无人工介入连续自动调用步数（autoStep，0.3.106）。
  */
-const STATE_VERSION = 17;
+const STATE_VERSION = 18;
 const GROK_ROUTE_VERSION = 1;
 const HOUR_MS = 3_600_000;
 /** 常规批次大小。单个 JSONL 事件超出时，续读到该行结束。 */
@@ -811,6 +814,47 @@ function callBoundary(kind: Kind, obj: Record<string, unknown>) {
   const payload = obj.payload as Record<string, unknown> | undefined;
   return obj.type === "response_item" && typeof payload?.type === "string" && /_output$/.test(payload.type);
 }
+/** 识别真实的人类用户输入（排除 tool_result、系统提醒、自动压缩摘要与环境注入），用于统计无人工介入的连续自动工具轮次。 */
+function isHumanUserTurn(kind: Kind, obj: Record<string, unknown>): boolean {
+  if (kind === "claude-code") {
+    if (obj.type !== "user" || obj.isMeta || obj.isCompactSummary || obj.isSidechain) return false;
+    const msg = (obj.message ?? {}) as Record<string, unknown>;
+    const content = msg.content ?? obj.content;
+    if (typeof content === "string") {
+      const t = content.trim();
+      return Boolean(t) && !/^<(?:local-command-|command-name|system-reminder)/.test(t);
+    }
+    if (Array.isArray(content)) {
+      return content.some((b) => {
+        if (!b || typeof b !== "object") return false;
+        const block = b as Record<string, unknown>;
+        if (block.type === "image") return true;
+        if (block.type !== "text") return false;
+        const t = String(block.text || "").trim();
+        return Boolean(t) && !/^<(?:local-command-|command-name|system-reminder)/.test(t);
+      });
+    }
+    return false;
+  }
+  if (kind === "codex") {
+    const payload = obj.payload as Record<string, unknown> | undefined;
+    if (obj.type === "event_msg" && payload?.type === "user_message") return true;
+    if (obj.type === "response_item" && payload?.type === "message" && payload?.role === "user") {
+      const raw = textOf(payload.content).trim();
+      if (!raw || /^# AGENTS\.md instructions|^<turn_aborted>/i.test(raw)) return false;
+      const stripped = raw.replace(/^(\s*<([a-z_]+)(\s[^>]*)?>[\s\S]*?<\/\2>\s*)+/i, "").trim();
+      return Boolean(stripped);
+    }
+    return false;
+  }
+  if (kind === "grok-build") {
+    const update = (obj.params as Record<string, unknown> | undefined)?.update as Record<string, unknown> | undefined;
+    return update?.sessionUpdate === "user_message_chunk";
+  }
+  if (kind === "deepseek-harness") return obj.type === "user/message";
+  if (kind === "pi") return obj.type === "message" && (obj.message as Record<string, unknown> | undefined)?.role === "user";
+  return false;
+}
 /** 首字延迟 = 第一块回复的时间 − 这一步开始的时间；对不上（没记到开始、差了十分钟以上）就不记。 */
 function deepseekTiming(stream: NonNullable<Row["stream"]>, stepStartAt?: number) {
   const first = stepStartAt ? stream.firstAt - stepStartAt : -1;
@@ -875,6 +919,7 @@ function scanFile(
     state.lastTurnAt = undefined;
     state.callStartAt = undefined;
     state.piForkAt = undefined;
+    state.autoStep = undefined;
   };
   if (state.v !== STATE_VERSION || (kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION)) {
     state.v = STATE_VERSION;
@@ -1050,6 +1095,7 @@ function scanFile(
     const callStart = state.callStartAt;
     const lineAt = kind === "claude-code" || kind === "codex" ? Date.parse(String(obj.timestamp || "")) || 0 : 0;
     if (lineAt && callBoundary(kind, obj)) state.callStartAt = lineAt;
+    if (isHumanUserTurn(kind, obj)) state.autoStep = 0;
     let one = kind === "claude-code" ? claudeRow(obj) : kind === "codex" ? codexRow(obj) : kind === "deepseek-harness" ? deepseekRow(obj) : kind === "pi" ? piRow(obj, path.basename(file, ".jsonl"), state) : null;
     if (kind === "codex") {
       if (obj.type === "token_usage_record") state.codexRecords = true;
@@ -1175,34 +1221,42 @@ function scanFile(
       if (row.cwd) state.cwd = row.cwd;
       const effortMatchesModel = kind !== "grok-build" || Boolean(state.requested && normalizeModel(model) === normalizeModel(state.requested));
       const responseEffort = kind === "claude-code" && !row.compaction ? recordedEffort(obj) : undefined;
-      for (const piece of pieces) out.records.push({
-        id: piece.id,
-        at: piece.at,
-        kind,
-        file,
-        cwd: state.cwd ?? (kind === "grok-build" ? grokCwd(file) : undefined),
-        model,
-        effort: piece.effort ?? (kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined),
-        effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined),
-        requested: kind === "codex" || kind === "pi" ? state.model : state.requested,
-        returned: row.returned,
-        responseId: row.responseId,
-        requestId: row.requestId,
-        input: piece.usage.input,
-        output: piece.usage.output,
-        cacheRead: piece.usage.cacheRead,
-        cacheWrite: piece.usage.cacheWrite,
-        reasoning: piece.usage.reasoning,
-        costUsd: piece.usage.costUsd,
-        calls: piece.usage.requests,
-        ...(row.stream ? { timing: deepseekTiming(row.stream, state.turnStartAt) } : {}),
-        accountRef: state.accountRef,
-        accountEmail: state.accountEmail,
-        accountAt: state.accountAt,
-        ...(piece.account ? { routedAccount: piece.account, routedAccountBasis: piece.basis } : {}),
-        ...(piece.routeEventId ? { routeEventId: piece.routeEventId } : {}),
-        ...(row.compaction ? { compaction: true } : {}),
-      });
+      for (const piece of pieces) {
+        let pieceAutoStep: number | undefined;
+        if (!row.compaction) {
+          state.autoStep = (state.autoStep ?? 0) + Math.max(1, piece.usage.requests || 1);
+          if (state.autoStep >= 2) pieceAutoStep = state.autoStep;
+        }
+        out.records.push({
+          id: piece.id,
+          at: piece.at,
+          kind,
+          file,
+          cwd: state.cwd ?? (kind === "grok-build" ? grokCwd(file) : undefined),
+          model,
+          effort: piece.effort ?? (kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined),
+          effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined),
+          requested: kind === "codex" || kind === "pi" ? state.model : state.requested,
+          returned: row.returned,
+          responseId: row.responseId,
+          requestId: row.requestId,
+          input: piece.usage.input,
+          output: piece.usage.output,
+          cacheRead: piece.usage.cacheRead,
+          cacheWrite: piece.usage.cacheWrite,
+          reasoning: piece.usage.reasoning,
+          costUsd: piece.usage.costUsd,
+          calls: piece.usage.requests,
+          ...(pieceAutoStep ? { autoStep: pieceAutoStep } : {}),
+          ...(row.stream ? { timing: deepseekTiming(row.stream, state.turnStartAt) } : {}),
+          accountRef: state.accountRef,
+          accountEmail: state.accountEmail,
+          accountAt: state.accountAt,
+          ...(piece.account ? { routedAccount: piece.account, routedAccountBasis: piece.basis } : {}),
+          ...(piece.routeEventId ? { routeEventId: piece.routeEventId } : {}),
+          ...(row.compaction ? { compaction: true } : {}),
+        });
+      }
       // 估算速度（0.3.53）：只给一条一次调用的（号池拆开的、压缩估算的不算）
       if (!row.compaction && pieces.length === 1 && callStart && (kind === "claude-code" || kind === "codex")) {
         const record = out.records[out.records.length - 1];
@@ -1232,7 +1286,7 @@ function scanFile(
  * 费用交给统计时按型号估；不归任何官方账号（Antigravity 的额度按模型分组单独看，见 quota.ts）。
  * 型号就是请求的型号，没有上游返回的型号，核验显示无法核对。
  */
-const ANTIGRAVITY_STATE_VERSION = 8;
+const ANTIGRAVITY_STATE_VERSION = 9;
 
 /** 之前没对上显示名的型号，现在有标签了：这个对话要整份重算一遍，型号和档位才对。 */
 export function antigravityNeedsRelabel(state: FileState, labels: Record<string, string>) {
@@ -1294,6 +1348,7 @@ function scanAntigravity(file: string, state: FileState, out: ScanOutput, worksp
         },
       } : {}),
       input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, reasoning: usage.reasoning, costUsd: 0, calls: 1,
+      ...(row.autoStep && row.autoStep >= 2 ? { autoStep: row.autoStep } : {}),
     };
     // 只有缺少 gen_metadata 流式计时（老版本对话）时才保留基础耗时估算；已带 native timing（含故意留空 tokensPerSec 的短工具包）绝不写 estimate
     if (!hasStreamTiming && row.startAt) {

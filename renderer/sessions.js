@@ -527,8 +527,8 @@
       S.loaded = true; S.listAt = Date.now();
       drawList();
       if (S.openKey) {
-        const key = S.openKey; S.openKey = '';
-        if (S.items.some(item => item.key === key)) select(key);
+        const target = findOpenTarget(S.openKey); S.openKey = '';
+        if (target) revealAndSelect(target);
         else showStatus('找不到这个会话', true);
       } else if (!S.key && S.items.length) select(visibleItems()[0]?.key || S.items[0].key);
       else if (S.key && force) select(S.key, true);
@@ -1082,6 +1082,23 @@
 
   /* ---------------- 对外 ---------------- */
 
+  function findOpenTarget(value) {
+    const exact = S.items.find(item => item.key === value);
+    if (exact) return exact.key;
+    const split = value.indexOf(':');
+    if (split <= 0) return '';
+    const kind = value.slice(0, split), id = value.slice(split + 1);
+    const fuzzy = S.items.find(item => item.kind === kind && (item.id === id || item.id.startsWith(id) || id.startsWith(item.id)));
+    return fuzzy ? fuzzy.key : '';
+  }
+  function revealAndSelect(targetKey) {
+    const vis = visibleItems();
+    const idx = vis.findIndex(item => item.key === targetKey);
+    if (idx >= S.listLimit) { S.listLimit = idx + LIST_CHUNK; drawList(); }
+    select(targetKey);
+    requestAnimationFrame(() => N.list?.querySelector(`[data-key="${CSS.escape(targetKey)}"]`)?.scrollIntoView({ block: 'nearest' }));
+  }
+
   window.PulseSessions = {
     count() {
       return S.items?.length || 0;
@@ -1097,7 +1114,8 @@
       build();
       if (S.loaded) {
         drawList();
-        if (S.items.some(item => item.key === value)) { S.openKey = ''; select(value); }
+        const target = findOpenTarget(value);
+        if (target) { S.openKey = ''; revealAndSelect(target); }
         else loadList(true);
       } else loadList();
     },

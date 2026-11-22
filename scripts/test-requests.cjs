@@ -347,6 +347,108 @@ try {
     );
   }
 
+  /* ---------------- v0.3.106：上下文水位、自动连跑、按会话排行、费用拆分与三种新排序 ---------------- */
+  {
+    const { appendRequests } = require(path.join(build, "request-log.js"));
+    const { contextWindowOf } = require(path.join(build, "model-pricing.js"));
+    check(
+      "上下文窗口推断：显式 [1m]、Claude 超 200K 自动升 1M、GPT-6 400K、Gemini 1M、DeepSeek 128K、未知型号返回 null",
+      contextWindowOf("claude-sonnet-4-6", "claude-sonnet-4-6[1m]", 50_000) === 1_000_000 &&
+        contextWindowOf("claude-opus-5-5", "claude-opus-5-5", 120_000) === 200_000 &&
+        contextWindowOf("claude-opus-5-5", "claude-opus-5-5", 250_000) === 1_000_000 &&
+        contextWindowOf("gpt-6-astra", "gpt-6-astra", 80_000) === 400_000 &&
+        contextWindowOf("gemini-4-argon", "gemini-4-argon", 40_000) === 1_000_000 &&
+        contextWindowOf("deepseek-chat", "deepseek-chat", 20_000) === 128_000 &&
+        contextWindowOf("custom-unknown-xyz", "custom-unknown-xyz", 10_000) === null,
+    );
+
+    const sDay = new Date(2026, 6, 20, 10, 0).getTime();
+    const sessAFile = path.join(root, "sess-alpha.jsonl");
+    const sessBFile = path.join(root, "sess-beta.jsonl");
+    const rollupFile = path.join(process.env.TOKENPULSE_DATA_DIR, "usage-rollups.json");
+    const rollups = JSON.parse(fs.readFileSync(rollupFile, "utf8"));
+    rollups.files[sessAFile] = { size: 0, mtimeMs: 0, offset: 0, days: {}, kind: "claude-code", official: true };
+    rollups.files[sessBFile] = { size: 0, mtimeMs: 0, offset: 0, days: {}, kind: "claude-code", official: false };
+    fs.writeFileSync(rollupFile, JSON.stringify(rollups));
+    fs.writeFileSync(
+      path.join(process.env.TOKENPULSE_DATA_DIR, "sessions-index.json"),
+      JSON.stringify({
+        version: 1,
+        files: {
+          [sessAFile]: {
+            size: 100,
+            mtimeMs: 1,
+            summary: { key: "claude:sess-alpha", kind: "claude", id: "sess-alpha", title: "重构缓存分析面板", cwd: "D:\\Work\\Pulse", file: sessAFile, startedAt: sDay, updatedAt: sDay + 180_000, turns: 2, messages: 8 },
+          },
+          [sessBFile]: {
+            size: 100,
+            mtimeMs: 1,
+            summary: { key: "claude:sess-beta", kind: "claude", id: "sess-beta", title: "排查慢接口首字延迟", cwd: "D:\\Work\\Pulse", file: sessBFile, startedAt: sDay, updatedAt: sDay + 240_000, turns: 1, messages: 3 },
+          },
+        },
+      }),
+    );
+
+    appendRequests([
+      { id: "v106-1", at: sDay + 10_000, kind: "claude-code", file: sessAFile, accountRef: "qa", cwd: "D:\\Work\\Pulse", model: "claude-opus-5-5", requested: "claude-opus-5-5", returned: "claude-opus-5-5", input: 160_000, output: 2000, cacheRead: 144_000, cacheWrite: 0, reasoning: 1200, costUsd: 0.8, calls: 1, autoStep: 9, timing: { stream: true, ms: 4200, firstTokenMs: 600, tokensPerSec: 55 } },
+      { id: "v106-2", at: sDay + 20_000, kind: "claude-code", file: sessAFile, accountRef: "qa", cwd: "D:\\Work\\Pulse", model: "claude-opus-5-5", compaction: true, input: 190_000, output: 800, cacheRead: 180_000, cacheWrite: 0, reasoning: 0, costUsd: 0.4, calls: 1 },
+      { id: "v106-3", at: sDay + 30_000, kind: "claude-code", file: sessBFile, cwd: "D:\\Work\\Pulse", model: "claude-sonnet-4-6", requested: "claude-sonnet-4-6", returned: "claude-sonnet-4-6", input: 220_000, output: 1000, cacheRead: 11_000, cacheWrite: 0, reasoning: 200, costUsd: 0.75, calls: 1, autoStep: 2, timing: { stream: true, ms: 18_500, firstTokenMs: 6200, tokensPerSec: 28 } },
+      { id: "v106-4", at: sDay + 40_000, kind: "claude-code", file: sessBFile, cwd: "D:\\Work\\Pulse", model: "claude-sonnet-4-6", requested: "claude-sonnet-4-6", returned: "claude-sonnet-4-6", input: 1200, output: 200, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0.01, calls: 1 },
+    ]);
+
+    const baseQ = { from: "2026-07-20", to: "2026-07-20", source: "all", status: "all", search: "", page: 0, pageSize: 20 };
+    const overview106 = queryRequests({ ...baseQ, sort: "time", aggregate: true, sessions: true });
+    const row1 = overview106.rows.find((r) => r.key.endsWith("v106-1"));
+    check(
+      "请求行附带 sessionKey / sessionTitle / contextLimit / autoStep",
+      row1?.sessionKey === "claude:sess-alpha" && row1?.sessionTitle === "重构缓存分析面板" && row1?.contextLimit === 200_000 && row1?.autoStep === 9,
+      JSON.stringify(row1 && { sessionKey: row1.sessionKey, sessionTitle: row1.sessionTitle, contextLimit: row1.contextLimit, autoStep: row1.autoStep }),
+    );
+    const sumField = (rows, k) => rows.reduce((n, r) => n + (r[k] || 0), 0);
+    check(
+      "汇总拆分官方订阅等价与 API 按量实付费用",
+      Math.abs(sumField(overview106.aggregate.rows, "officialCostUsd") - 1.2) < 1e-8 &&
+        Math.abs(sumField(overview106.aggregate.rows, "apiCostUsd") - 0.76) < 1e-8,
+      JSON.stringify(overview106.aggregate.rows),
+    );
+    const alphaSess = overview106.sessions?.find((s) => s.sessionKey === "claude:sess-alpha");
+    check(
+      "按会话排行：聚合峰值上下文、窗口上限、压缩次数与最长连续自动轮次",
+      overview106.sessions?.length === 2 &&
+        alphaSess?.peakInput === 190_000 &&
+        alphaSess?.contextLimit === 200_000 &&
+        alphaSess?.compactions === 1 &&
+        alphaSess?.maxAutoStep === 9,
+      JSON.stringify(overview106.sessions),
+    );
+    const filteredSess = queryRequests({ ...baseQ, sort: "time", session: "claude:sess-beta" });
+    const filteredSessShort = queryRequests({ ...baseQ, sort: "time", session: "sess-beta" });
+    check("同会话筛选支持 sessionKey 与原始 session ID", filteredSess.total === 2 && filteredSessShort.total === 2 && filteredSess.rows.every((r) => r.sessionKey === "claude:sess-beta"), String(filteredSess.total));
+
+    const cacheLow = queryRequests({ ...baseQ, sort: "cache_low" });
+    check(
+      "按缓存命中率从低到高（仅看 >= 4096 大输入）：排除小输入，5% 排第一",
+      cacheLow.total === 3 && cacheLow.rows[0].key.endsWith("v106-3") && cacheLow.rows.every((r) => r.input >= 4096),
+      JSON.stringify(cacheLow.rows.map((r) => [r.key, r.input, r.cacheRead])),
+    );
+    const latencySorted = queryRequests({ ...baseQ, sort: "latency" });
+    check(
+      "按耗时 / 首字延迟从慢到快：最慢排第一，无测速记录排最后",
+      latencySorted.rows[0].key.endsWith("v106-3") && latencySorted.rows[1].key.endsWith("v106-1") && !latencySorted.rows.at(-1).timing,
+      JSON.stringify(latencySorted.rows.map((r) => [r.key, r.timing?.ms ?? null])),
+    );
+    const quotaSorted = queryRequests({
+      ...baseQ,
+      sort: "quota",
+      quotaWindows: [{ account: "claude:qa", startAt: sDay, endAt: sDay + 60_000, fiveTokens: 1_000_000, weekTokens: 5_000_000 }],
+    });
+    check(
+      "按额度占用从高到低：尽管 API 请求 v106-3 Token 更大（221K），官方有额度占用的 v106-2 / v106-1 仍排最前",
+      quotaSorted.rows[0].key.endsWith("v106-2") && quotaSorted.rows[1].key.endsWith("v106-1") && quotaSorted.rows[2].key.endsWith("v106-3"),
+      JSON.stringify(quotaSorted.rows.map((r) => [r.key, r.quotaPct ?? null])),
+    );
+  }
+
   /* ---------------- 额度归属 ---------------- */
   const { buildSnapshot } = require(path.join(build, "report.js"));
   const claude = buildSnapshot(now);

@@ -80,3 +80,43 @@ export function estimateCost(modelId: string, tokens: TokenCounts): number {
     1_000_000
   );
 }
+
+/**
+ * 常见模型的最大输入上下文窗口（Token 数），用于计算单次请求的上下文水位百分比与自动压缩预警。
+ * - 若客户端请求型号明确带有 `[1m]` / `[2m]` 标记（如 Claude Code 1M 模式），直接采用该窗口；
+ * - 若实际观测输入已超过基础档位（如未带 `[1m]` 后缀但已运行在 1M 上下文的会话），自动上调到对应长窗口档位，避免出现 >100% 假溢出；
+ * - 完全未知的第三方自定义型号返回 null，界面不强行编造百分比。
+ */
+export function contextWindowOf(modelId: string, requestedId?: string, observedInput = 0): number | null {
+  const combined = `${requestedId || ""} ${modelId || ""}`.toLowerCase();
+  const id = (modelId || requestedId || "").trim().toLowerCase();
+  if (!id || id === "未知模型" || id === "unknown") return null;
+
+  let base: number | null = null;
+  if (/\[2m\]|(?:^|[-_:/])2m(?:$|[-_[\]])/.test(combined)) base = 2_000_000;
+  else if (/\[1m\]|(?:^|[-_:/])1m(?:$|[-_[\]])/.test(combined)) base = 1_000_000;
+  else if (/gemini-[234]|orchestrator/.test(id)) base = 1_000_000;
+  else if (/claude-/.test(id)) base = 200_000;
+  else if (/gpt-4\.1/.test(id)) base = 1_000_000;
+  else if (/gpt-[56]|codex/.test(id)) base = 400_000;
+  else if (/(?:^|\/)o[134](?:[-_]|$)/.test(id)) base = 200_000;
+  else if (/gpt-4o|gpt-oss/.test(id)) base = 128_000;
+  else if (/grok-4[\w.-]*fast/.test(id)) base = 2_000_000;
+  else if (/grok-4/.test(id)) base = 256_000;
+  else if (/grok-[23]/.test(id)) base = 131_072;
+  else if (/deepseek/.test(id)) base = 128_000;
+  else if (/kimi-k2/.test(id)) base = 256_000;
+  else if (/minimax/.test(id)) base = 1_000_000;
+  else if (/qwen3|glm-4|glm-5/.test(id)) base = 128_000;
+
+  if (base == null) return null;
+  if (observedInput > base) {
+    // Claude 长上下文只有 1M 档（没有 256K / 400K 中间档），超过 200K 直接升到 1M
+    if (/claude-/.test(id) && observedInput <= 1_000_000) return 1_000_000;
+    for (const tier of [200_000, 256_000, 400_000, 1_000_000, 2_000_000]) {
+      if (tier >= observedInput) return tier;
+    }
+    return Math.ceil(observedInput / 100_000) * 100_000;
+  }
+  return base;
+}

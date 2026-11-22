@@ -20,7 +20,7 @@ const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok 
   // CC Switch 导入的工具（core/cc-switch.ts 的 CC_SOURCES），图标来自 lobe-icons；认不出的还是首字母
   'Gemini CLI': 'geminicli', OpenCode: 'opencode', Hermes: 'hermes', 'Copilot CLI': 'githubcopilot' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
-const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', fromTime: '00:00', toTime: '23:59', since: undefined, until: undefined, search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', models: [], project: '', channel: 'all', usageView: 'requests' };
+const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', fromTime: '00:00', toTime: '23:59', since: undefined, until: undefined, search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', reqSession: '', reqSessionLabel: '', models: [], project: '', channel: 'all', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
 const INNER_RING = 2 * Math.PI * 34;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -1255,6 +1255,9 @@ function renderStats() {
   }
   const t = analysis.total, p = analysis.previous;
   const cache = t.input ? t.cacheRead / t.input * 100 : null;
+  const offCost = Number(t.officialCostUsd) || 0;
+  const apiCost = Number(t.apiCostUsd) || 0;
+  const showCostSplit = state.page === 'usage' || offCost > 0 || apiCost > 0;
   const stats = [
     ['tokens', '总 Tokens', t.tokens, amount, delta(t.tokens, p.tokens), '输入 + 输出'],
     ['cost', '参考费用', t.costUsd, money, analysis.unpriced ? [`${number(analysis.unpriced)} 次请求未定价`] : delta(t.costUsd, p.costUsd), 'USD'],
@@ -1265,11 +1268,21 @@ function renderStats() {
     const valueNode = el('span', { class: 'num' });
     countTo(valueNode, 'stat:' + name, value, format);
     const approx = format === amount ? cnApprox(value) : '';
+    const costSplit = name === 'cost' && showCostSplit
+      ? el('div', {
+          class: 'stat-cost-split num',
+          title: `官方订阅等价：走 Claude / ChatGPT / Grok / Antigravity 官方登录账号的 API 标价折算（${money(offCost)}）\nAPI 按量实付：走 API Key、中转站、DeepSeek 或 pi 按量计费的估算花费（${money(apiCost)}）`,
+        }, [
+          el('span', { class: 'cost-pill sub-eq', text: `订阅等价 ${money(offCost)}` }),
+          el('span', { class: 'cost-pill api-pay', text: `API 实付 ${money(apiCost)}` }),
+        ])
+      : null;
     const card = el('article', { class: 'stat' }, [
       el('div', { class: 'stat-label' }, [el('span', { class: 'stat-icon' }, [icon(name)]), el('span', { text: label }), el('span', { class: 'stat-unit', text: unit })]),
       el('div', { class: 'stat-value' + (format === amount && numberMode === 'exact' && value >= 1e9 ? ' long' : ''), title: format === amount ? number(value) : '' }, [valueNode, approx ? el('small', { class: 'cn-approx', text: approx }) : null]),
+      costSplit,
       el('div', { class: 'stat-sub' }, sub)
-    ]);
+    ].filter(Boolean));
     if (name === 'cache' && state.page === 'overview') {
       card.classList.add('stat-clickable');
       card.setAttribute('role', 'button');
@@ -2153,6 +2166,49 @@ function cacheHitText(row) {
   if (pct === 0) return '0%';
   return pct >= 99.95 ? '100%' : pct >= 10 ? pct.toFixed(1) + '%' : pct >= 0.1 ? pct.toFixed(1) + '%' : '<0.1%';
 }
+function contextFillPct(row) {
+  const input = Number(row?.input) || 0, limit = Number(row?.contextLimit) || 0;
+  if (!(input > 0) || !(limit > 0)) return null;
+  return Math.min(100, (input / limit) * 100);
+}
+function contextFillText(row) {
+  const pct = contextFillPct(row);
+  if (pct == null) return '';
+  return pct >= 10 ? Math.round(pct) + '%' : pct >= 0.1 ? pct.toFixed(1) + '%' : '<0.1%';
+}
+function inputCell(row) {
+  const pct = contextFillPct(row);
+  const pctText = contextFillText(row);
+  const tone = pct == null ? '' : pct >= 85 ? 'is-high' : pct >= 65 ? 'is-warn' : 'is-ok';
+  const title = pct == null
+    ? `${number(row.input)}${row.compaction ? ' · 自动压缩调用' : ''}`
+    : `输入 ${number(row.input)} / 上下文窗口 ${tokens(row.contextLimit)}（水位 ${pct.toFixed(1)}%）${row.compaction ? ' · 自动压缩调用' : ''}`;
+  return el('td', { class: 'n cache-cell', title }, [
+    el('span', { class: 'cache-read-val' }, qty(row.input)),
+    pct != null ? el('small', { class: `ctx-rate ${tone}`, text: `水位 ${pctText}` }) : null,
+  ].filter(Boolean));
+}
+function reasoningPct(row) {
+  const out = Number(row?.output) || 0, rea = Number(row?.reasoning) || 0;
+  if (!(out > 0) || !(rea > 0)) return null;
+  return Math.min(100, (rea / out) * 100);
+}
+function reasoningText(row) {
+  const pct = reasoningPct(row);
+  if (pct == null) return '';
+  return pct >= 10 ? Math.round(pct) + '%' : pct >= 0.1 ? pct.toFixed(1) + '%' : '<0.1%';
+}
+function outputCell(row) {
+  const pct = reasoningPct(row);
+  const pctText = reasoningText(row);
+  const title = pct == null
+    ? number(row.output)
+    : `输出 ${number(row.output)}（含推理思考 ${number(row.reasoning)}，占输出 ${pct.toFixed(1)}%）`;
+  return el('td', { class: 'n cache-cell', title }, [
+    el('span', { class: 'cache-read-val' }, qty(row.output)),
+    pct != null ? el('small', { class: 'reason-rate' + (pct >= 70 ? ' is-heavy' : ''), text: `思考 ${pctText}` }) : null,
+  ].filter(Boolean));
+}
 function cacheReadCell(row) {
   const pct = cacheHitPct(row);
   const hitText = cacheHitText(row);
@@ -2196,6 +2252,7 @@ function renderUsage() {
   }));
   window.PulseInsights?.render(analysis, entering());
   window.PulseProjects?.render();
+  window.PulseUsageSessions?.render();
   window.PulseCache?.render();
   renderRecords();
   revealDetailResults();
@@ -2291,7 +2348,7 @@ function drawAccountRequests(panel, account, meta, data) {
 /* ---------------- 请求记录与型号核验 ---------------- */
 
 const VERIFY_TONE = { match: 'good', mismatch: 'critical', suspect: 'warning', unverified: 'neutral' };
-const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['output', '输出 tokens'], ['cacheRead', '缓存读取'], ['cacheHitRate', '缓存命中率'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话'], ['firstTokenMs', '首字延迟（毫秒）'], ['totalMs', '总耗时（毫秒）'], ['tokensPerSec', '输出速度（Token/秒）'], ['routeVia', '经由']];
+const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['contextRate', '上下文水位'], ['output', '输出 tokens'], ['reasoningRate', '推理占比'], ['cacheRead', '缓存读取'], ['cacheHitRate', '缓存命中率'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['autoStepText', '连续自动轮次'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话'], ['firstTokenMs', '首字延迟（毫秒）'], ['totalMs', '总耗时（毫秒）'], ['tokensPerSec', '输出速度（Token/秒）'], ['routeVia', '经由']];
 let requestPage = null, requestSeq = 0, requestKey = '', requestError = false;
 const openRequests = new Set();
 function projectOf(cwd) { return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd : '—'; }
@@ -2299,7 +2356,13 @@ function clock(at) {
   const d = new Date(at), pad = n => String(n).padStart(2, '0');
   return { day: `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`, full: d.toLocaleString(dateLocale(), { hour12: false }) };
 }
-function hasDetailFilters() { return state.models.length || state.project || state.channel !== 'all' || state.reqAccount || state.reqStatus !== 'all' || state.reqSearch.trim(); }
+function hasDetailFilters() { return state.models.length || state.project || state.channel !== 'all' || state.reqAccount || state.reqSession || state.reqStatus !== 'all' || state.reqSearch.trim(); }
+window.filterRequestsBySession = function filterRequestsBySession(session, label = '') {
+  state.reqSession = session || '';
+  state.reqSessionLabel = session ? (label || session) : '';
+  showUsageView('requests');
+  requeryRequests();
+};
 const detailCache = new Map();
 function detailAnalysis() {
   const query = requestQuery({ page: 0, pageSize: 1, sort: 'time', aggregate: true, filteredAggregate: true });
@@ -2340,8 +2403,25 @@ function detailAnalysis() {
   result.error = Boolean(data?.error);
   return result;
 }
+function buildQuotaWindowHints() {
+  const out = [];
+  for (const acc of current?.accounts || []) {
+    if (!acc.accountId) continue;
+    for (const p of acc.capacityHistory?.five?.points || []) {
+      if (p.capacityTokens > 0) out.push({ account: acc.accountId, startAt: p.startAt, endAt: p.endAt ?? p.resetAt, fiveTokens: p.capacityTokens });
+    }
+    for (const p of acc.capacityHistory?.week?.points || []) {
+      if (p.capacityTokens > 0) out.push({ account: acc.accountId, startAt: p.startAt, endAt: p.endAt ?? p.resetAt, weekTokens: p.capacityTokens });
+    }
+  }
+  const agy = window.AntigravityQuota?.quotaWindows?.();
+  if (Array.isArray(agy) && agy.length) out.push(...agy);
+  return out;
+}
 function requestQuery(extra = {}) {
-  return { from: state.from, to: state.to, since: state.since, until: state.until, source: state.source, status: state.reqStatus, search: state.reqSearch.trim(), sort: state.reqSort, page: state.reqPage, pageSize: 20, account: state.reqAccount || undefined, models: state.models, project: state.project || undefined, channel: state.channel, ...extra };
+  const effectiveSort = extra.sort || state.reqSort;
+  const quotaWindows = effectiveSort === 'quota' ? buildQuotaWindowHints() : undefined;
+  return { from: state.from, to: state.to, since: state.since, until: state.until, source: state.source, status: state.reqStatus, search: state.reqSearch.trim(), sort: state.reqSort, page: state.reqPage, pageSize: 20, account: state.reqAccount || undefined, session: state.reqSession || undefined, models: state.models, project: state.project || undefined, channel: state.channel, ...(quotaWindows?.length ? { quotaWindows } : {}), ...extra };
 }
 /** 流水在主进程的 worker 里查；同样的条件、账本也没更新时直接用上一次的结果重画。 */
 async function loadRequests() {
@@ -2417,7 +2497,17 @@ function modelCell(row) {
   else if (!row.requested) sub = ['请求型号未记录'];
   // [1m] 只是 Claude Code 标的 1M 上下文，响应里本来就没有，不值得单独写一行
   else if (row.requested.replace(/\[[^\]]*\]$/, '') !== row.returned) sub = [`请求 ${row.requested}`];
-  const tags = [row.effort ? el('span', { class: 'request-tag', translate: 'no', title: '思考等级', text: row.effort }) : null, row.timing?.fast ? el('span', { class: 'request-tag', title: '快速模式', text: '快速' }) : null].filter(Boolean);
+  const auto = row.autoStep || (row.calls >= 2 ? row.calls : 0);
+  const tags = [
+    row.effort ? el('span', { class: 'request-tag', translate: 'no', title: '思考等级', text: row.effort }) : null,
+    row.timing?.fast ? el('span', { class: 'request-tag', title: '快速模式', text: '快速' }) : null,
+    row.compaction ? el('span', { class: 'request-tag compact-tag', title: '上下文快满时触发的自动压缩调用', text: '自动压缩' }) : null,
+    auto >= 3 ? el('span', {
+      class: 'request-tag ' + (auto >= 8 ? 'auto-runaway' : 'auto-step-tag'),
+      title: auto >= 8 ? `无人工介入连续第 ${number(auto)} 步自动调用（注意后台持续消耗额度）` : `同一条用户指令下 Agent 连续第 ${number(auto)} 步自动调用`,
+      text: auto >= 8 ? `连续自动 #${number(auto)}` : `自动 #${number(auto)}`,
+    }) : null,
+  ].filter(Boolean);
   return el('td', { class: 'request-model' }, [el('b', { text: main, title: main }), sub ? el('small', {}, sub) : null, tags.length ? el('div', { class: 'request-tags' }, tags) : null].filter(Boolean));
 }
 /* 账号 */
@@ -2486,6 +2576,9 @@ function syncAccountOptions(page) {
 const NOTE_PREFIX = /^(这段会话|Codex 会话|这一轮|这次请求接的是|走的是|经 |grok-|来自 CC Switch)/;
 function requestDetail(row) {
   const t = clock(row.at);
+  const ctxPct = contextFillPct(row);
+  const reaPct = reasoningPct(row);
+  const auto = row.autoStep || (row.calls >= 2 ? row.calls : 0);
   const fields = [
     ['时间', t.full], ['请求型号', row.requested || '未记录'], ['返回型号', row.returned || '未记录'], ['响应格式', row.channel],
     ['账号', row.account ? row.account.label : row.official === false ? 'API Key / 中转站' : '对不上'],
@@ -2493,8 +2586,11 @@ function requestDetail(row) {
     ['账号类型', row.official === true ? '官方登录账号' : row.official === false ? 'API Key / 中转站' : '未知'],
     ['额度占用（估算）', (share => share ? [share.five ? `5 小时 ${sharePct(share.five.pct)}` : '', share.week ? `周 ${sharePct(share.week.pct)}` : ''].filter(Boolean).join(' · ') : '—')(quotaShare(row))],
     ['Tokens', number(row.tokens)], ['缓存命中率', cacheHitText(row)],
-    ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.session, true],
-    ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)], ['推理 Tokens', number(row.reasoning)],
+    ['上下文水位', ctxPct != null ? `${number(row.input)} / ${tokens(row.contextLimit)}（${ctxPct.toFixed(1)}%）${row.compaction ? ' · 自动压缩' : ''}` : `${number(row.input)}${row.compaction ? '（自动压缩）' : '（窗口未知）'}`],
+    ['推理占比', reaPct != null ? `${number(row.reasoning)} / ${number(row.output)}（占输出 ${reaPct.toFixed(1)}%）` : number(row.reasoning)],
+    ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.sessionTitle ? `${row.sessionTitle} (${row.session})` : row.session, true],
+    ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)],
+    ...(auto >= 2 ? [['连续自动轮次', `第 ${number(auto)} 步${auto >= 8 ? '（无人工介入长连跑）' : ''}`]] : []),
     ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : []),
     ...(row.effort ? [['思考等级', row.effort]] : []),
     ...(row.timing ? [['经由', row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发（原样转给官方）' : `本地路由 · ${row.timing.provider || '供应商'}`], ['接口', row.timing.path || '—', true], ['类型', row.timing.stream === false ? (row.timing.provider === 'Antigravity' ? '整包返回' : '非流式') : '流式'],
@@ -2505,7 +2601,22 @@ function requestDetail(row) {
       ['输出速度', row.timing.tokensPerSec != null ? `${row.timing.tokensPerSec} Token/秒` : row.timing.avgTokensPerSec != null ? `≈ ${row.timing.avgTokensPerSec} Token/秒（按总耗时估算，不计入速度走势）` : '—（输出太少，不算）']] : []),
     ...(!row.timing && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' && row.estimate ? [['估算用时', '≈ ' + secs(row.estimate.ms)], ['估算速度', `≈ ${row.estimate.tokensPerSec} Token/秒（按日志时间戳，偏慢）`]] : [])
   ];
+  const canFilterSession = Boolean(row.session && row.source !== 'CC Switch');
+  const isSameSession = canFilterSession && state.reqSession === row.session;
+  const sessionActions = (row.sessionKey || canFilterSession) ? el('div', { class: 'detail-session-actions' }, [
+    row.sessionKey ? (() => {
+      const btn = el('button', { type: 'button', class: 'btn detail-jump-btn', 'data-action': 'jump-session' }, [icon('sessions'), '定位到会话']);
+      btn.addEventListener('click', event => { event.stopPropagation(); window.PulseSessions?.open(row.sessionKey); });
+      return btn;
+    })() : null,
+    canFilterSession ? (() => {
+      const btn = el('button', { type: 'button', class: 'btn detail-jump-btn' + (isSameSession ? ' active' : ''), 'data-action': 'filter-session' }, [icon('search'), isSameSession ? '取消同会话筛选' : '只看同会话请求']);
+      btn.addEventListener('click', event => { event.stopPropagation(); window.filterRequestsBySession(isSameSession ? '' : row.session, row.sessionTitle || ''); });
+      return btn;
+    })() : null,
+  ].filter(Boolean)) : null;
   return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 10 }, [
+    sessionActions,
     el('div', { class: 'detail-grid' }, fields.map(([label, value, mono]) => el('div', {}, [el('small', { text: label }), el('span', { class: mono ? 'mono' : '', text: value, title: value })]))),
     row.reasons.length ? el('div', { class: 'detail-reasons' }, row.reasons.map(reason => {
       const problem = (row.status === 'mismatch' || row.status === 'suspect') && !NOTE_PREFIX.test(reason);
@@ -2535,8 +2646,8 @@ function drawRequests() {
       el('td', { class: 'request-time', title: t.full }, [el('b', { text: `${t.day} ${t.time}` }), el('small', {}, [miniLogo(row.source), row.source])]),
       projectAccountCell(row),
       modelCell(row),
-      el('td', { class: 'n', title: number(row.input) }, qty(row.input)),
-      el('td', { class: 'n', title: number(row.output) }, qty(row.output)),
+      inputCell(row),
+      outputCell(row),
       cacheReadCell(row),
       quotaCell(row),
       el('td', { class: 'n', text: row.priced ? money(row.costUsd) : '未定价' }),
@@ -2545,7 +2656,7 @@ function drawRequests() {
     ]), i));
     if (open) rows.push(requestDetail(row));
   });
-  if (!rows.length) rows.push(el('tr', {}, [el('td', { colspan: 10, class: 'empty', text: c.all ? '这个核验结论下没有请求，换一个试试。' : '所选时间和工具下没有请求记录。' })]));
+  if (!rows.length) rows.push(el('tr', {}, [el('td', { colspan: 10, class: 'empty', text: state.reqSort === 'cache_low' && c.all ? '当前范围内没有大输入请求（输入 ≥ 4,096 Tokens），切换其他排序可查看短请求。' : c.all ? '这个核验结论下没有请求，换一个试试。' : '所选时间和工具下没有请求记录。' })]));
   $('request-rows').replaceChildren(...rows);
   $('request-pagination').textContent = `第 ${page.page + 1} / ${page.pages} 页 · 共 ${number(page.total)} 次请求`;
   $('request-prev').disabled = page.page === 0; $('request-next').disabled = page.page >= page.pages - 1;
@@ -2720,17 +2831,23 @@ const USAGE_VIEWS = {
   requests: '每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情',
   daily: '按日期、工具、模型聚合；费用为参考估算',
   projects: '按项目文件夹汇总：多少个 Agent 对话、多少 Token 和额度，由哪些模型和思考等级组成。点开看构成',
+  sessions: '按单次 Agent 会话汇总：总消耗、峰值上下文水位、压缩次数与最长连续自动轮次，支持一键定位会话或筛选请求',
   cache: '缓存读取 ÷ 输入（输入含缓存读写）；查看净省下、命中率和缓存断档原因。'
 };
 function showUsageView(view) {
   state.usageView = USAGE_VIEWS[view] ? view : 'requests';
-  const requests = state.usageView === 'requests', daily = state.usageView === 'daily', projects = state.usageView === 'projects', cache = state.usageView === 'cache';
-  $('view-requests').hidden = !requests; $('view-daily').hidden = !daily; $('view-projects').hidden = !projects; $('view-cache').hidden = !cache;
-  $('request-count').hidden = !requests; $('record-count').hidden = !daily; $('project-count').hidden = !projects; $('cache-count').hidden = !cache;
+  const requests = state.usageView === 'requests', daily = state.usageView === 'daily', projects = state.usageView === 'projects', sessions = state.usageView === 'sessions', cache = state.usageView === 'cache';
+  $('view-requests').hidden = !requests; $('view-daily').hidden = !daily; $('view-projects').hidden = !projects; if ($('view-sessions')) $('view-sessions').hidden = !sessions; $('view-cache').hidden = !cache;
+  $('request-count').hidden = !requests; $('record-count').hidden = !daily; $('project-count').hidden = !projects; if ($('session-rank-count')) $('session-rank-count').hidden = !sessions; $('cache-count').hidden = !cache;
   // 标题栏上的按钮跟着视图换：说明和逐条导出只属于逐条请求，按日导出只属于按日汇总
   $('verify-help').hidden = $('export-requests').hidden = !requests; $('export-csv').hidden = !daily;
   $('detail-caption').textContent = USAGE_VIEWS[state.usageView];
-  for (const button of $('usage-view').querySelectorAll('[data-view]')) { const on = button.dataset.view === state.usageView; button.classList.toggle('on', on); button.setAttribute('aria-pressed', String(on)); }
+  for (const button of $('usage-view').querySelectorAll('[data-view]')) {
+    const on = button.dataset.view === state.usageView;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-pressed', String(on));
+    if (on) button.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
   syncSeg($('usage-view'));
 }
 /**
@@ -3978,6 +4095,7 @@ function renderDetailChips() {
   if (state.project) chip('project', state.project === '__missing__' ? '项目未知' : state.project, () => { state.project = ''; $('request-project').value = ''; });
   if (state.channel !== 'all') chip('channel', { official: '官方订阅', api: 'API Key / 中转站', unknown: '归属未知' }[state.channel], () => { state.channel = 'all'; $('request-channel').value = 'all'; });
   if (state.reqAccount) chip('account', $('request-account').selectedOptions[0]?.textContent || state.reqAccount, () => { state.reqAccount = ''; $('request-account').value = ''; });
+  if (state.reqSession) chip('session', `会话：${state.reqSessionLabel || state.reqSession}`, () => { state.reqSession = ''; state.reqSessionLabel = ''; });
   if (state.reqStatus !== 'all') chip('status', $('request-status').selectedOptions[0]?.textContent || state.reqStatus, () => { state.reqStatus = 'all'; $('request-status').value = 'all'; });
   if (state.reqSearch.trim()) chip('search', state.reqSearch.trim(), () => { state.reqSearch = ''; $('request-search').value = ''; });
   for (const node of chips) if (!node.isConnected) {
@@ -4003,7 +4121,7 @@ function renderDetailChips() {
   $('export-csv').disabled = Boolean(analysis?.loading) || !filteredRecords.length;
 }
 $('clear-detail-filters').addEventListener('click', () => {
-  Object.assign(state, { models: [], project: '', channel: 'all', reqAccount: '', reqStatus: 'all', reqSearch: '' });
+  Object.assign(state, { models: [], project: '', channel: 'all', reqAccount: '', reqSession: '', reqSessionLabel: '', reqStatus: 'all', reqSearch: '' });
   $('request-project').value = $('request-account').value = $('request-search').value = $('model-option-search').value = '';
   filterModelOptions();
   $('request-channel').value = $('request-status').value = 'all';
@@ -4059,7 +4177,7 @@ $('export-requests').addEventListener('click', async () => {
   const button = $('export-requests'); button.disabled = true;
   try {
     const page = await api.requests(requestQuery({ all: true }));
-    const rows = page.rows.map(row => ({ ...row, cacheHitRate: cacheHitText(row), firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? (row.timing.avgTokensPerSec != null ? '≈' + row.timing.avgTokensPerSec : '')) : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
+    const rows = page.rows.map(row => ({ ...row, contextRate: contextFillText(row), reasoningRate: reasoningText(row), autoStepText: (row.autoStep || row.calls) >= 2 ? String(row.autoStep || row.calls) : '', cacheHitRate: cacheHitText(row), firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? (row.timing.avgTokensPerSec != null ? '≈' + row.timing.avgTokensPerSec : '')) : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
     if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
   } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
   finally { button.disabled = !requestPage?.total; }

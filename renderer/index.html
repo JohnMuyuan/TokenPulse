@@ -318,14 +318,14 @@
         
         <div class="panel-heading">
           <div>
-            <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span><span id="project-count" class="section-tag" hidden></span><span id="cache-count" class="section-tag" hidden></span></h2>
+            <h2>用量明细 <span id="request-count" class="section-tag"></span><span id="record-count" class="section-tag" hidden></span><span id="project-count" class="section-tag" hidden></span><span id="session-rank-count" class="section-tag" hidden></span><span id="cache-count" class="section-tag" hidden></span></h2>
             <p id="detail-caption">每一行是一次 API 请求：用了多少 Token、占了多少额度、谁发的、型号对不对。点开看详情</p>
           </div>
           <div class="panel-actions">
             <button id="verify-help" class="btn" aria-expanded="false" aria-controls="verify-method"><svg class="icon"><use href="#i-info"/></svg>说明</button>
             <button id="export-requests" class="btn"><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
             <button id="export-csv" class="btn" hidden><svg class="icon"><use href="#i-download"/></svg>导出 CSV</button>
-            <div id="usage-view" class="seg compact" role="tablist" aria-label="明细视图"><span class="seg-thumb" aria-hidden="true"></span><button data-view="requests" class="on" aria-pressed="true">逐条请求</button><button data-view="daily" aria-pressed="false">按日汇总</button><button data-view="projects" aria-pressed="false">按项目</button><button data-view="cache" aria-pressed="false">缓存</button></div>
+            <div id="usage-view" class="seg compact" role="tablist" aria-label="明细视图"><span class="seg-thumb" aria-hidden="true"></span><button type="button" data-view="requests" class="on" aria-pressed="true">逐条请求</button><button type="button" data-view="daily" aria-pressed="false">按日汇总</button><button type="button" data-view="projects" aria-pressed="false">按项目</button><button type="button" data-view="sessions" aria-pressed="false">按会话</button><button type="button" data-view="cache" aria-pressed="false">缓存</button></div>
           </div>
         </div>
 
@@ -348,7 +348,7 @@
                 <select id="request-status"><option value="all">全部</option><option value="mismatch">型号不一致</option><option value="suspect">响应存疑</option><option value="match">型号一致</option><option value="unverified">无法核验</option></select>
               </label>
               <label class="sort-field">排序
-                <select id="request-sort"><option value="time">时间：最近优先</option><option value="tokens">Tokens：从多到少</option><option value="cost">费用：从高到低</option></select>
+                <select id="request-sort"><option value="time">时间：最近优先</option><option value="tokens">Tokens：从多到少</option><option value="cost">费用：从高到低</option><option value="quota">额度占用：从高到低</option><option value="cache_low">缓存命中率：从低到高（仅大输入）</option><option value="latency">耗时 / 首字延迟：从慢到快</option></select>
               </label>
             </div>
           </div>
@@ -369,6 +369,8 @@
         </div>
 
         <div id="view-projects" hidden></div>
+
+        <div id="view-sessions" hidden></div>
 
         <div id="view-cache" hidden></div>
 
@@ -623,6 +625,7 @@
 <script src="egress.js"></script>
 <script src="usage-insights.js"></script>
 <script src="usage-projects.js"></script>
+<script src="usage-sessions.js"></script>
 <script src="usage-cache.js"></script>
 <script src="provider-avatars.js"></script>
 <script src="agent-switch.js"></script>

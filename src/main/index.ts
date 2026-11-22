@@ -648,7 +648,28 @@ function parseRequestQuery(value: unknown): RequestQuery {
   const to = day(input.to);
   if (!from || !to) throw new Error("查询日期无效");
   const status = ["all", "match", "mismatch", "suspect", "unverified"].includes(String(input.status)) ? (input.status as RequestQuery["status"]) : "all";
-  const sort = ["time", "tokens", "cost"].includes(String(input.sort)) ? (input.sort as RequestQuery["sort"]) : "time";
+  const sort = ["time", "tokens", "cost", "quota", "cache_low", "latency"].includes(String(input.sort)) ? (input.sort as RequestQuery["sort"]) : "time";
+  const quotaWindows = Array.isArray(input.quotaWindows)
+    ? input.quotaWindows.slice(0, 120).flatMap((raw) => {
+        if (!raw || typeof raw !== "object") return [];
+        const w = raw as Record<string, unknown>;
+        const account = typeof w.account === "string" ? w.account.slice(0, 200) : "";
+        const startAt = Number(w.startAt);
+        const endAt = Number(w.endAt);
+        if (!account || !Number.isFinite(startAt) || !Number.isFinite(endAt)) return [];
+        const fiveTokens = Number(w.fiveTokens);
+        const weekTokens = Number(w.weekTokens);
+        const models = Array.isArray(w.models) ? w.models.filter((m): m is string => typeof m === "string" && m.length <= 160).slice(0, 40) : undefined;
+        return [{
+          account,
+          startAt,
+          endAt,
+          ...(models?.length ? { models } : {}),
+          ...(Number.isFinite(fiveTokens) && fiveTokens > 0 ? { fiveTokens } : {}),
+          ...(Number.isFinite(weekTokens) && weekTokens > 0 ? { weekTokens } : {}),
+        }];
+      })
+    : undefined;
   return {
     from,
     to,
@@ -660,6 +681,7 @@ function parseRequestQuery(value: unknown): RequestQuery {
     pageSize: Math.min(200, Math.max(1, Math.floor(Number(input.pageSize) || 20))),
     all: input.all === true,
     account: typeof input.account === "string" && input.account ? input.account.slice(0, 300) : undefined,
+    session: typeof input.session === "string" && input.session ? input.session.slice(0, 300) : undefined,
     since: Number.isFinite(input.since) ? Number(input.since) : undefined,
     aggregate: input.aggregate === true,
     filteredAggregate: input.filteredAggregate === true,
@@ -668,7 +690,9 @@ function parseRequestQuery(value: unknown): RequestQuery {
     channel: ["official", "api", "unknown"].includes(String(input.channel)) ? input.channel as RequestQuery["channel"] : "all",
     until: Number.isFinite(input.until) ? Number(input.until) : undefined,
     projects: input.projects === true,
+    sessions: input.sessions === true,
     cache: input.cache === true,
+    ...(quotaWindows?.length ? { quotaWindows } : {}),
   };
 }
 

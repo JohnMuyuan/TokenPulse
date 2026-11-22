@@ -265,7 +265,7 @@
         el('td', {}, [el('div', { class: 'insight-model' }, [miniLogo(m.source), el('div', {}, [el('b', { text: m.model, title: m.model, translate: 'no' }), el('small', { text: `${m.source} · ${number(m.days.size)} 天有用量` })])])]),
         el('td', { class: 'n', title: number(m.requests), text: number(m.requests) }),
         el('td', { class: 'n', title: number(m.input) }, qty(m.input)),
-        el('td', { class: 'n', title: number(m.output) }, qty(m.output)),
+        el('td', { class: 'n', title: m.reasoning ? `输出 ${number(m.output)}（含思考 ${number(m.reasoning)}）` : number(m.output) }, [...qty(m.output), m.reasoning > 0 && m.output > 0 ? el('small', { class: 'insight-sub', text: `思考 ${pct(Math.min(100, m.reasoning / m.output * 100))}` }) : null]),
         el('td', { class: 'n', title: number(m.cacheRead) }, [...qty(m.cacheRead), m.input ? el('small', { class: 'insight-sub', text: `占输入 ${pct(m.cacheRead / m.input * 100)}` }) : null]),
         el('td', { class: 'n token-strong', title: number(m.tokens) }, qty(m.tokens)),
         el('td', { class: 'n', text: m.unpriced === m.requests && m.requests ? '未定价' : money(m.costUsd) }),
@@ -395,6 +395,8 @@
     splitEffort: null,
     peakMode: false,
     app: 'all',
+    pctSort: 'avg',
+    pctExpanded: false,
     hidden: new Set(),
     picked: new Set(),
     moreOpen: false,
@@ -442,12 +444,17 @@
         const prevFirst = g.firstCount || 0, addFirst = line.firstCount || 0;
         if (line.tokensPerSec != null && addSpeed > 0) {
           g.tokensPerSec = g.tokensPerSec == null || !prevSpeed ? line.tokensPerSec : Math.round(((g.tokensPerSec * prevSpeed + line.tokensPerSec * addSpeed) / (prevSpeed + addSpeed)) * 10) / 10;
+          const prevAvg = g.avgTokensPerSec ?? g.tokensPerSec ?? 0;
+          const addAvg = line.avgTokensPerSec ?? line.tokensPerSec ?? 0;
+          g.avgTokensPerSec = prevSpeed ? Math.round(((prevAvg * prevSpeed + addAvg * addSpeed) / (prevSpeed + addSpeed)) * 10) / 10 : addAvg;
           g.peak = Math.max(g.peak ?? g.tokensPerSec ?? 0, line.peak ?? line.tokensPerSec ?? 0);
           g.high = Math.max(g.high ?? g.tokensPerSec ?? 0, line.high ?? line.tokensPerSec ?? 0);
           g.low = g.low == null ? (line.low ?? line.tokensPerSec) : Math.min(g.low, line.low ?? line.tokensPerSec);
         }
         if (line.firstTokenMs != null && addFirst > 0) {
           g.firstTokenMs = g.firstTokenMs == null || !prevFirst ? line.firstTokenMs : Math.round((g.firstTokenMs * prevFirst + line.firstTokenMs * addFirst) / (prevFirst + addFirst));
+          const p90 = line.firstPeak ?? line.firstHigh ?? line.firstTokenMs;
+          if (p90 != null) g.firstPeak = g.firstPeak == null ? p90 : Math.max(g.firstPeak, p90);
         }
         g.count = (g.count || 0) + (line.count || 0);
         g.speedCount = prevSpeed + addSpeed;
@@ -945,6 +952,7 @@
 
     const unitLabel = bucketUnitLabel(data.bucketMs);
     const statLabel = peakOn ? 'P90 峰值' : '中位数';
+    const pctSection = speedPercentileSection(sourceLines.filter(line => speedView.app === 'all' || line.app === speedView.app), splitOn, colorOfLine);
     body.replaceChildren(
       chartHost,
       el('div', { class: 'speed-lines-bar' }, [
@@ -956,8 +964,109 @@
       ]),
       legendNode,
       ...(moreNode ? [moreNode] : []),
+      ...(pctSection ? [pctSection] : []),
       el('p', { class: 'sample-caption', text: `${first ? '首字 = 从请求发出到回复里第一段内容出现。' : '速度 = 流式输出 Token ÷ 纯出字耗时（扣掉首包排队等待；虚线「≈」为日志时间戳估算）。'}每个点是那段时间（${unitLabel}）的${statLabel}，悬停图例可查看 P25–P90 波动区间带。` }),
     );
+  }
+
+  /** 供应商 / 模型的速度分位榜：并列对比各渠道与模型的 P50 / P90 首字延迟与平均吐字速度（t/s）。 */
+  const PCT_SORTS = [['avg', '平均吐字'], ['p50_ttft', 'P50 首字'], ['p90_ttft', 'P90 首字'], ['count', '样本数']];
+  function speedPercentileSection(lines, splitOn, colorOfLine) {
+    const valid = (lines || []).filter(l => (l.avgTokensPerSec ?? l.tokensPerSec) != null || l.firstTokenMs != null);
+    if (!valid.length) return null;
+    const avgOf = l => l.avgTokensPerSec ?? l.tokensPerSec ?? null;
+    const p50Of = l => l.firstTokenMs ?? null;
+    const p90Of = l => l.firstPeak ?? l.firstHigh ?? l.firstTokenMs ?? null;
+    const sorted = [...valid].sort((a, b) => {
+      if (speedView.pctSort === 'p50_ttft') {
+        const va = p50Of(a), vb = p50Of(b);
+        if ((va != null) !== (vb != null)) return va != null ? -1 : 1;
+        if (va !== vb) return (va || 0) - (vb || 0);
+      } else if (speedView.pctSort === 'p90_ttft') {
+        const va = p90Of(a), vb = p90Of(b);
+        if ((va != null) !== (vb != null)) return va != null ? -1 : 1;
+        if (va !== vb) return (va || 0) - (vb || 0);
+      } else if (speedView.pctSort === 'count') {
+        if (b.count !== a.count) return b.count - a.count;
+      }
+      return (avgOf(b) ?? -1) - (avgOf(a) ?? -1) || b.count - a.count;
+    });
+    const maxAvg = Math.max(...sorted.map(l => avgOf(l) || 0), 1);
+    const MAX_DEFAULT = 8;
+    const shown = speedView.pctExpanded ? sorted : sorted.slice(0, MAX_DEFAULT);
+    const sortSeg = seg(PCT_SORTS, speedView.pctSort, 'speed-pct-sort', val => {
+      speedView.pctSort = val;
+      fillSpeed();
+    });
+    const ttftTone = ms => ms == null ? 'is-empty' : ms < 3500 ? 'is-fast' : ms < 10000 ? 'is-mid' : 'is-slow';
+    const tbody = el('tbody', {}, shown.map(line => {
+      const key = lineKey(line, splitOn);
+      const swatch = colorOfLine.get(key) || 'var(--accent)';
+      const avg = avgOf(line);
+      const p50 = p50Of(line);
+      const p90 = p90Of(line);
+      const via = lineVia(line);
+      const effText = splitOn ? line.effort : (Array.isArray(line.efforts) && line.efforts.length ? line.efforts.join('/') : line.effort);
+      return el('tr', {}, [
+        el('td', { class: 'sp-via-cell' }, [
+          el('span', { class: 'sp-via-badge' + (line.estimated ? ' is-est' : ''), translate: line.via ? 'no' : null, text: via, title: via }),
+        ]),
+        el('td', { class: 'sp-model-cell' }, [
+          el('div', { class: 'sp-model-wrap' }, [
+            paint(el('i', { class: 'speed-lines-swatch' }), { background: swatch }),
+            miniLogo(APP_SOURCE[line.app] || line.app),
+            el('b', { translate: 'no', text: line.model, title: line.model }),
+            line.fast ? el('span', { class: 'request-tag', text: '快速' }) : null,
+            effText ? el('span', { class: 'request-tag', translate: 'no', text: effText }) : null,
+          ].filter(Boolean)),
+        ]),
+        el('td', { class: 'n', text: `${number(line.count)} 次` }),
+        el('td', { class: 'n' }, [
+          el('span', { class: `sp-ttft ${ttftTone(p50)}`, translate: 'no', text: p50 != null ? secondsText(p50) : '—' }),
+        ]),
+        el('td', { class: 'n' }, [
+          el('span', { class: `sp-ttft ${ttftTone(p90)}`, translate: 'no', text: p90 != null ? secondsText(p90) : '—' }),
+        ]),
+        el('td', { class: 'n sp-tps-cell' }, avg != null ? [
+          el('div', { class: 'sp-tps-top' }, [
+            el('strong', { translate: 'no', text: unitOf(line, `${avg} t/s`) }),
+            line.tokensPerSec != null ? el('small', { translate: 'no', text: `P50 ${line.tokensPerSec}${line.peak != null ? ` · P90 ${line.peak}` : ''}` }) : null,
+          ].filter(Boolean)),
+          el('div', { class: 'insight-bar small' }, [paint(el('i'), { width: `${Math.max(2, avg / maxAvg * 100).toFixed(1)}%`, background: swatch })]),
+        ] : [el('span', { class: 'muted', text: '—' })]),
+      ]);
+    }));
+
+    const head = ['供应商 / 渠道', '模型', '样本数', 'P50 首字延迟', 'P90 首字延迟', '平均吐字速度'];
+    const wrap = el('div', { class: 'table-scroll speed-pct-wrap', tabindex: '0', role: 'region', 'aria-label': '供应商与模型速度分位对比' }, [
+      el('table', { class: 'speed-pct-table' }, [
+        el('thead', {}, [el('tr', {}, head.map((text, i) => el('th', { class: i >= 2 ? 'n' : '', text })))]),
+        tbody,
+      ]),
+    ]);
+
+    const toggle = sorted.length > MAX_DEFAULT
+      ? el('button', {
+          type: 'button',
+          class: 'text-btn sp-toggle-btn',
+          text: speedView.pctExpanded ? `收起部分行（共 ${number(sorted.length)} 条）` : `展开全部 ${number(sorted.length)} 条测速分位`,
+        })
+      : null;
+    toggle?.addEventListener('click', () => { speedView.pctExpanded = !speedView.pctExpanded; fillSpeed(); });
+
+    const sec = el('section', { class: 'speed-pct-section' }, [
+      el('div', { class: 'speed-pct-head' }, [
+        el('div', {}, [
+          el('h3', { text: '供应商 / 模型速度分位' }),
+          el('small', { class: 'muted', text: '对比不同渠道与模型的 P50 / P90 首字响应延迟与平均流式吐字速度（Token/秒）' }),
+        ]),
+        sortSeg,
+      ]),
+      wrap,
+      ...(toggle ? [toggle] : []),
+    ]);
+    syncSeg(sortSeg);
+    return sec;
   }
   /** 纵轴上限取个整：37 → 40，140 → 150。 */
   function niceCeil(value) {

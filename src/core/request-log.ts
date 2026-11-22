@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { StringDecoder } from "node:string_decoder";
-import { estimateCost, priceOf } from "./model-pricing";
+import { contextWindowOf, estimateCost, priceOf } from "./model-pricing";
 import { analyzeCache, type CacheAnalysis } from "./cache-analysis";
 import { dataFile, readJson } from "./paths";
 import { STATUS_LABELS, verifyRequest, type VerifyStatus } from "./request-verify";
@@ -56,6 +56,8 @@ export type RequestRecord = {
   costUsd: number;
   /** 这一条里含几次模型调用。Claude / Codex 一条就是一次；Grok 一轮会调好几次。 */
   calls: number;
+  /** 同一条用户指令下无人工介入的第几次自动模型调用（>= 2 时记录）。 */
+  autoStep?: number;
   /** cc-switch 的来源名（OpenCode、Claude Code…）。 */
   source?: string;
   /** cc-switch：是不是走它本地代理的请求（型号是从上游响应里读的）。 */
@@ -250,6 +252,15 @@ export function compactRequests(replayed: RequestRecord[] = []) {
 
 export type HourAggregate = { hour: number; tokens: number; costUsd: number; requests: number; sources: Record<string, { tokens: number; costUsd: number; requests: number }> };
 
+export type QuotaWindowHint = {
+  account: string;
+  models?: string[];
+  startAt: number;
+  endAt: number;
+  fiveTokens?: number;
+  weekTokens?: number;
+};
+
 export type RequestQuery = {
   /** 本地日期 YYYY-MM-DD，含两端。 */
   from: string;
@@ -258,13 +269,15 @@ export type RequestQuery = {
   source: string;
   status: "all" | VerifyStatus;
   search: string;
-  sort: "time" | "tokens" | "cost";
+  sort: "time" | "tokens" | "cost" | "quota" | "cache_low" | "latency";
   page: number;
   pageSize: number;
   /** 导出用：不分页，返回全部匹配。 */
   all?: boolean;
   /** 只看某个账号的（账号 id；"none" = 没对上账号的，比如走中转的）。 */
   account?: string;
+  /** 只看某个会话 ID 的请求（一键「只看同会话请求」）。 */
+  session?: string;
   /** 精确到毫秒的时间范围（额度详情里按窗口看、「一天」= 过去 24 小时），和 from / to 同时生效。 */
   since?: number;
   until?: number;
@@ -280,8 +293,12 @@ export type RequestQuery = {
   channel?: "all" | "official" | "api" | "unknown";
   /** 顺便按项目文件夹汇总（跟随全部筛选），给用量明细的「按项目」视图用。 */
   projects?: boolean;
+  /** 顺便按会话汇总（跟随全部筛选），给用量明细的「按会话排行」视图用。 */
+  sessions?: boolean;
   /** 缓存命中和断档分析（跟随全部查询筛选，不受分页影响）。 */
   cache?: boolean;
+  /** 前端传入的窗口折算容量提示（用于按「额度占用」排序时与表格显示保持完全一致）。 */
+  quotaWindows?: QuotaWindowHint[];
   /** 内部容量折算快速通道：只读取 Claude / Codex / Grok 的官方账号请求，跳过代理核验与全量分面统计。 */
   capacityOnly?: boolean;
 };
@@ -368,6 +385,33 @@ export function projectKey(cwd?: string) {
   return /^[a-z]:|\\/i.test(trimmed) ? trimmed.replace(/\//g, "\\").toLowerCase() : trimmed;
 }
 
+export type SessionAggregate = {
+  key: string;
+  source: string;
+  session: string;
+  sessionKey?: string;
+  title?: string;
+  cwd?: string;
+  tokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  costUsd: number;
+  priced: boolean;
+  requests: number;
+  records: number;
+  peakInput: number;
+  contextLimit?: number;
+  compactions: number;
+  maxAutoStep: number;
+  firstAt: number;
+  lastAt: number;
+  models: string[];
+  quota: { week: number; officialTokens: number; attributedTokens: number };
+};
+
 export type RequestRow = {
   effort?: string;
   effortSource?: string;
@@ -380,6 +424,10 @@ export type RequestRow = {
   cwd?: string;
   /** 会话 ID（从文件名来）。 */
   session: string;
+  /** 供会话管理一键打开的键（如 claude:uuid）。 */
+  sessionKey?: string;
+  /** 会话索引里已提取的标题（若有）。 */
+  sessionTitle?: string;
   responseId?: string;
   requestId?: string;
   input: number;
@@ -388,9 +436,15 @@ export type RequestRow = {
   cacheWrite: number;
   reasoning: number;
   tokens: number;
+  /** 模型最大输入上下文窗口（已知型号时返回，用于算上下文水位）。 */
+  contextLimit?: number;
   costUsd: number;
   priced: boolean;
   calls: number;
+  /** 同一轮无人工介入连续自动调用步数（>= 2 时返回）。 */
+  autoStep?: number;
+  /** 按额度占用排序时的最大窗口占用百分比（5h 或周窗口取较大者）。 */
+  quotaPct?: number;
   /** true = 走官方账号，false = API Key / 中转，undefined = 判断不出来。 */
   official?: boolean;
   /** 发出这次请求的账号。走中转 / API Key 的、或者对不上的为 null。 */
@@ -424,7 +478,7 @@ export type RequestPage = {
   firstAt?: number;
   /** aggregate 为 true 时才有。rows 的形状和快照里的 usage 一样，界面上可以直接复用同一套统计。 */
   aggregate?: {
-    rows: { day: string; source: string; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; tokens: number; costUsd: number; requests: number; priced: boolean }[];
+    rows: { day: string; source: string; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; tokens: number; costUsd: number; officialCostUsd: number; apiCostUsd: number; requests: number; priced: boolean }[];
     /** 每个整点小时；sources 是这一小时里各工具各占多少（用量明细的分工具趋势图用）。 */
     hours: HourAggregate[];
   };
@@ -432,6 +486,8 @@ export type RequestPage = {
   accounts: { id: string; label: string; source: string; requests: number; tokens: number; costUsd: number; lastAt: number; inferred: number }[];
   /** projects 为 true 时才有，按 Token 从多到少。 */
   projects?: ProjectAggregate[];
+  /** sessions 为 true 时才有，按 Token 从多到少。 */
+  sessions?: SessionAggregate[];
   /** cache 为 true 时才有，基于全部匹配行计算，不受分页影响。 */
   cache?: CacheAnalysis;
 };
@@ -449,10 +505,47 @@ function sessionOf(record: RequestRecord) {
   return record.kind === "grok-build" ? path.basename(path.dirname(record.file)) : base.replace(/^rollout-[\dT:-]+-/, "");
 }
 
+const AGENT_KIND_OF_REQUEST: Partial<Record<RequestKind, string>> = {
+  "claude-code": "claude",
+  codex: "codex",
+  "grok-build": "grok",
+  "deepseek-harness": "deepseek",
+  pi: "pi",
+  antigravity: "antigravity",
+};
+
+type SessionMetaEntry = { key: string; title: string };
+let sessionMetaCache: { size: number; mtimeMs: number; byFile: Map<string, SessionMetaEntry>; byKey: Map<string, SessionMetaEntry> } | null = null;
+function sessionMetaIndex() {
+  const file = dataFile("sessions-index.json");
+  let size = -1;
+  let mtimeMs = -1;
+  try {
+    const st = fs.statSync(file);
+    size = st.size;
+    mtimeMs = st.mtimeMs;
+    if (sessionMetaCache && sessionMetaCache.size === size && sessionMetaCache.mtimeMs === mtimeMs) return sessionMetaCache;
+  } catch {
+    return { size: -1, mtimeMs: -1, byFile: new Map<string, SessionMetaEntry>(), byKey: new Map<string, SessionMetaEntry>() };
+  }
+  const byFile = new Map<string, SessionMetaEntry>();
+  const byKey = new Map<string, SessionMetaEntry>();
+  const parsed = readJson<{ files?: Record<string, { summary?: { key?: string; title?: string } | null }> } | null>(file, null);
+  for (const [f, entry] of Object.entries(parsed?.files ?? {})) {
+    const s = entry?.summary;
+    if (!s?.key) continue;
+    const item = { key: s.key, title: typeof s.title === "string" ? s.title : "" };
+    byFile.set(projectKey(f), item);
+    byKey.set(s.key, item);
+  }
+  sessionMetaCache = { size, mtimeMs, byFile, byKey };
+  return sessionMetaCache;
+}
+
 /** 对账号要用到的：登录时间线和账号名，一次查询读一次。 */
-type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; labels: AccountLabels };
+type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; labels: AccountLabels; sessions?: ReturnType<typeof sessionMetaIndex> };
 function accountContext(): AccountContext {
-  return { timeline: readLoginTimeline(), agyTimeline: readAgyLoginTimeline(), labels: accountLabels() };
+  return { timeline: readLoginTimeline(), agyTimeline: readAgyLoginTimeline(), labels: accountLabels(), sessions: sessionMetaIndex() };
 }
 
 const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，按压缩前的上下文大小和摘要长度估算";
@@ -520,6 +613,17 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     proxy: record.proxy,
   });
   const usage = { input: record.input, output: record.output, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite };
+  const session = sessionOf(record);
+  const agentKind = AGENT_KIND_OF_REQUEST[record.kind];
+  const sMeta = record.kind === "cc-switch"
+    ? undefined
+    : accounts.sessions?.byFile.get(projectKey(record.file)) ?? (agentKind ? accounts.sessions?.byKey.get(`${agentKind}:${session}`) : undefined);
+  const sessionKey = sMeta?.key ?? (agentKind ? `${agentKind}:${session}` : undefined);
+  const sessionTitle = sMeta?.title || undefined;
+  const requestedModel = record.requested ?? record.proxy?.requested;
+  const contextLimit = contextWindowOf(record.model, requestedModel, record.input) ?? undefined;
+  const effectiveCalls = record.calls ?? 1;
+  const autoStep = record.autoStep && record.autoStep >= 2 ? record.autoStep : effectiveCalls >= 2 ? effectiveCalls : undefined;
   return {
     key: keyOf(record),
     at: record.at,
@@ -527,18 +631,22 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     model: record.model,
     effort: record.effort,
     effortSource: record.effortSource,
-    requested: record.requested ?? record.proxy?.requested,
+    requested: requestedModel,
     returned: record.returned ?? record.proxy?.returned,
     cwd: record.cwd,
-    session: sessionOf(record),
+    session,
+    ...(sessionKey ? { sessionKey } : {}),
+    ...(sessionTitle ? { sessionTitle } : {}),
     responseId: record.responseId,
     requestId: record.requestId,
     ...usage,
     reasoning: record.reasoning,
     tokens: record.input + record.output,
+    ...(contextLimit ? { contextLimit } : {}),
     costUsd: record.costUsd || estimateCost(record.model, usage),
     priced: record.costUsd > 0 || priceOf(record.model) !== null,
-    calls: record.calls ?? 1,
+    calls: effectiveCalls,
+    ...(autoStep ? { autoStep } : {}),
     official,
     account,
     status: verdict.status,
@@ -704,7 +812,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const hours = new Map<number, HourAggregate>();
   const aggregateRow = (row: RequestRow, day: string, at: number) => {
     const groupKey = `${day}\u0000${row.source}\u0000${row.model}`;
-    const group = groups.get(groupKey) ?? { day, source: row.source, model: row.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, tokens: 0, costUsd: 0, requests: 0, priced: true };
+    const group = groups.get(groupKey) ?? { day, source: row.source, model: row.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, tokens: 0, costUsd: 0, officialCostUsd: 0, apiCostUsd: 0, requests: 0, priced: true };
     group.input += row.input;
     group.output += row.output;
     group.cacheRead += row.cacheRead;
@@ -712,6 +820,8 @@ export function queryRequests(query: RequestQuery): RequestPage {
     group.reasoning += row.reasoning;
     group.tokens += row.tokens;
     group.costUsd += row.costUsd;
+    if (row.official === true) group.officialCostUsd += row.costUsd;
+    else if (row.official === false || row.source === "DeepSeek Harness" || row.source === "pi") group.apiCostUsd += row.costUsd;
     // 和统计页一个口径：请求数算模型调用次数（Grok 一轮会调好几次）
     group.requests += row.calls;
     group.priced &&= row.priced;
@@ -728,8 +838,71 @@ export function queryRequests(query: RequestQuery): RequestPage {
     hours.set(hourAt, hour);
   };
   const projects = new Map<string, Omit<ProjectAggregate, "quota"> & { sessionSet: Set<string>; agentMap: Map<string, { source: string; sessionSet: Set<string>; tokens: number; requests: number }>; comboMap: Map<string, ProjectCombo> }>();
+  const sessions = new Map<string, Omit<SessionAggregate, "quota" | "models"> & { modelSet: Set<string> }>();
   const officialParts = new Map<string, OfficialPart[]>();
+  const sessionOfficialParts = new Map<string, OfficialPart[]>();
   const accountRows = new Map<string, RequestRow[]>();
+  const sessionRow = (row: RequestRow) => {
+    const key = `${row.source}\u0000${row.session}`;
+    let sess = sessions.get(key);
+    if (!sess) {
+      sess = {
+        key,
+        source: row.source,
+        session: row.session,
+        ...(row.sessionKey ? { sessionKey: row.sessionKey } : {}),
+        ...(row.sessionTitle ? { title: row.sessionTitle } : {}),
+        ...(row.cwd ? { cwd: row.cwd } : {}),
+        tokens: 0,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+        costUsd: 0,
+        priced: true,
+        requests: 0,
+        records: 0,
+        peakInput: 0,
+        compactions: 0,
+        maxAutoStep: 1,
+        firstAt: row.at,
+        lastAt: row.at,
+        modelSet: new Set<string>(),
+      };
+      sessions.set(key, sess);
+    }
+    if (!sess.sessionKey && row.sessionKey) sess.sessionKey = row.sessionKey;
+    if (!sess.title && row.sessionTitle) sess.title = row.sessionTitle;
+    if (!sess.cwd && row.cwd) sess.cwd = row.cwd;
+    sess.tokens += row.tokens;
+    sess.input += row.input;
+    sess.output += row.output;
+    sess.cacheRead += row.cacheRead;
+    sess.cacheWrite += row.cacheWrite;
+    sess.reasoning += row.reasoning;
+    sess.costUsd += row.costUsd;
+    sess.priced &&= row.priced;
+    sess.requests += row.calls;
+    sess.records += 1;
+    if (row.input > sess.peakInput) {
+      sess.peakInput = row.input;
+      if (row.contextLimit) sess.contextLimit = row.contextLimit;
+    } else if (!sess.contextLimit && row.contextLimit) {
+      sess.contextLimit = row.contextLimit;
+    }
+    if (row.compaction) sess.compactions += 1;
+    const step = row.autoStep ?? row.calls ?? 1;
+    if (step > sess.maxAutoStep) sess.maxAutoStep = step;
+    sess.firstAt = Math.min(sess.firstAt, row.at);
+    sess.lastAt = Math.max(sess.lastAt, row.at);
+    if (row.model && row.model !== "未知模型") sess.modelSet.add(row.model);
+    if (row.official === true && row.account) {
+      const list = sessionOfficialParts.get(key) ?? [];
+      list.push({ account: row.account.id, at: row.at, tokens: row.tokens, costUsd: row.costUsd });
+      sessionOfficialParts.set(key, list);
+    }
+  };
   const projectRow = (row: RequestRow) => {
     const key = projectKey(row.cwd);
     let project = projects.get(key);
@@ -793,10 +966,62 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (firstAt !== undefined) break;
     }
   }
-  const cmp = (a: RequestRow, b: RequestRow) =>
-    query.sort === "tokens" ? b.tokens - a.tokens || b.at - a.at : query.sort === "cost" ? b.costUsd - a.costUsd || b.at - a.at : b.at - a.at;
+  const LARGE_INPUT_MIN = 4096;
+  const quotaHintPct = (row: RequestRow): number => {
+    const hints = query.quotaWindows;
+    if (!hints?.length) return row.quotaPct ?? -1;
+    let best = -1;
+    for (const w of hints) {
+      if (row.at < w.startAt || row.at >= w.endAt) continue;
+      if (row.source === "Antigravity") {
+        if (!w.account.startsWith("antigravity")) continue;
+        if (row.account?.id && w.account !== "antigravity" && w.account !== row.account.id) continue;
+      } else {
+        if (!row.account || w.account !== row.account.id) continue;
+      }
+      if (w.models?.length) {
+        const lower = row.model.toLowerCase();
+        if (!w.models.some((m) => lower.includes(m.toLowerCase().replace(/\s+/g, "-")) || lower.includes(m.toLowerCase()))) continue;
+      }
+      if (w.fiveTokens && w.fiveTokens > 0) best = Math.max(best, (row.tokens / w.fiveTokens) * 100);
+      if (w.weekTokens && w.weekTokens > 0) best = Math.max(best, (row.tokens / w.weekTokens) * 100);
+    }
+    return best;
+  };
+  const latencyScore = (row: RequestRow): number => {
+    const t = row.timing;
+    const ms = Math.max(t?.ms ?? -1, t?.firstTokenMs ?? -1, t?.firstByteMs ?? -1, row.estimate?.ms ?? -1);
+    return ms > 0 ? ms : -1;
+  };
+  const cmp = (a: RequestRow, b: RequestRow) => {
+    if (query.sort === "tokens") return b.tokens - a.tokens || b.at - a.at;
+    if (query.sort === "cost") return b.costUsd - a.costUsd || b.at - a.at;
+    if (query.sort === "quota") {
+      const qa = a.quotaPct ?? -1, qb = b.quotaPct ?? -1;
+      if ((qa > 0) !== (qb > 0)) return qb > 0 ? 1 : -1;
+      if (qa !== qb) return qb - qa;
+      return b.tokens - a.tokens || b.at - a.at;
+    }
+    if (query.sort === "cache_low") {
+      const ha = a.input > 0 ? Math.min(1, Math.max(0, a.cacheRead / a.input)) : 1;
+      const hb = b.input > 0 ? Math.min(1, Math.max(0, b.cacheRead / b.input)) : 1;
+      const diff = ha - hb;
+      return (Math.abs(diff) > 1e-4 ? diff : 0) || b.input - a.input || b.at - a.at;
+    }
+    if (query.sort === "latency") {
+      const la = latencyScore(a), lb = latencyScore(b);
+      if ((la >= 0) !== (lb >= 0)) return lb >= 0 ? 1 : -1;
+      if (la !== lb) return lb - la;
+      const fa = a.timing?.firstTokenMs ?? a.timing?.firstByteMs ?? -1;
+      const fb = b.timing?.firstTokenMs ?? b.timing?.firstByteMs ?? -1;
+      return fb - fa || b.at - a.at;
+    }
+    return b.at - a.at;
+  };
   const pageSize = Math.max(1, query.pageSize || 20);
-  const keepLimit = query.all || query.cache ? Infinity : Math.max(64, (Math.max(0, query.page || 0) + 1) * pageSize);
+  const needStandaloneQuota = query.sort === "quota" && !query.quotaWindows?.length;
+  const needAccountRows = Boolean(query.projects || query.sessions || needStandaloneQuota);
+  const keepLimit = query.all || query.cache || needStandaloneQuota ? Infinity : Math.max(64, (Math.max(0, query.page || 0) + 1) * pageSize);
   let totalMatched = 0;
   const hint = query.source === "Antigravity" ? '"antigravity"' : undefined;
 
@@ -833,19 +1058,20 @@ export function queryRequests(query: RequestQuery): RequestPage {
       facets.models.add(row.model);
       facets.projects.add(row.cwd || "");
       // 分摊周额度涨幅的分母：同一账号同期的全部官方请求，不受下面的模型 / 项目 / 搜索筛选影响
-      if (query.projects && row.official === true && row.account) {
+      if (needAccountRows && row.official === true && row.account) {
         const list = accountRows.get(row.account.id) ?? [];
         list.push(row);
         accountRows.set(row.account.id, list);
       }
       if (query.aggregate && !query.filteredAggregate) aggregateRow(row, day, raw.at);
+      if (query.session && row.session !== query.session && row.sessionKey !== query.session) return;
       if (query.models?.length && !query.models.includes(row.model)) return;
       if (query.project && (query.project === "__missing__" ? Boolean(row.cwd) : projectKey(row.cwd) !== projectKey(query.project))) return;
       if (query.channel === "official" && row.official !== true) return;
       if (query.channel === "api" && row.official !== false) return;
       if (query.channel === "unknown" && row.official !== undefined) return;
       if (q) {
-        const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.cwd, row.session, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
+        const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.cwd, row.session, row.sessionTitle, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
@@ -868,6 +1094,12 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.status !== "all" && row.status !== query.status) return;
       if (query.aggregate && query.filteredAggregate) aggregateRow(row, day, raw.at);
       if (query.projects) projectRow(row);
+      if (query.sessions) sessionRow(row);
+      if (query.sort === "cache_low" && row.input < LARGE_INPUT_MIN) return;
+      if (query.sort === "quota" && query.quotaWindows?.length) {
+        const qp = quotaHintPct(row);
+        if (qp > 0) row.quotaPct = qp;
+      }
       totalMatched += 1;
       matched.push(row);
       if (matched.length >= keepLimit * 2) {
@@ -878,9 +1110,45 @@ export function queryRequests(query: RequestQuery): RequestPage {
   for (const raw of inMonths()) take(raw);
   for (const raw of pendingGrokPool(seenRouteEvents, query)) take(raw);
 
+  if (needStandaloneQuota && matched.length) {
+    const nowMs = Date.now();
+    const history = readQuotaHistory();
+    const capIntervals = new Map<string, { from: number; to: number; capTokens: number }[]>();
+    for (const [account, rows] of accountRows) {
+      const kind = account.split(":")[0];
+      const samples = (history.accounts[kind] ?? []).filter((s) => s.account === account).sort((a, b) => a.at - b.at);
+      if (!samples.length) continue;
+      const sorted = rows.slice().sort((a, b) => a.at - b.at);
+      const upper = (at: number) => { let low = 0, high = sorted.length; while (low < high) { const mid = (low + high) >>> 1; if (sorted[mid].at <= at) low = mid + 1; else high = mid; } return low; };
+      const list: { from: number; to: number; capTokens: number }[] = [];
+      for (const win of ["five", "week"] as const) {
+        const segs = windowSegments(samples, win, kind === "chatgpt" ? "moves" : "keeps");
+        for (const iv of quotaAttribution(segs, sorted, nowMs)) {
+          if (iv.kind !== "local_present" || !(iv.points > 0)) continue;
+          const inside = sorted.slice(upper(iv.from), upper(iv.to));
+          const tok = inside.reduce((n, r) => n + r.tokens, 0);
+          if (tok > 0) list.push({ from: iv.from, to: iv.to, capTokens: tok / (iv.points / 100) });
+        }
+      }
+      if (list.length) capIntervals.set(account, list);
+    }
+    for (const row of matched) {
+      if (row.official !== true || !row.account) continue;
+      const list = capIntervals.get(row.account.id);
+      if (!list) continue;
+      let best = -1;
+      for (const iv of list) {
+        if (row.at > iv.from && row.at <= iv.to && iv.capTokens > 0) best = Math.max(best, (row.tokens / iv.capTokens) * 100);
+      }
+      if (best > 0) row.quotaPct = best;
+    }
+  }
+
   matched.sort(cmp);
   if (matched.length > keepLimit) matched.length = keepLimit;
-  const projectQuotas = query.projects ? projectQuota(officialParts, accountRows, Date.now()) : null;
+  const nowForQuota = Date.now();
+  const projectQuotas = query.projects ? projectQuota(officialParts, accountRows, nowForQuota) : null;
+  const sessionQuotas = query.sessions ? projectQuota(sessionOfficialParts, accountRows, nowForQuota) : null;
   const cache = query.cache ? analyzeCache(matched) : undefined;
   const pages = Math.max(1, Math.ceil(totalMatched / pageSize));
   const page = Math.min(Math.max(0, query.page || 0), pages - 1);
@@ -907,6 +1175,17 @@ export function queryRequests(query: RequestQuery): RequestPage {
               agents: [...agentMap.values()].map(({ sessionSet: set, ...agent }) => ({ ...agent, sessions: set.size })).sort((a, b) => b.tokens - a.tokens),
               combos: [...comboMap.values()].sort((a, b) => b.tokens - a.tokens),
               quota: projectQuotas?.get(project.key) ?? { week: 0, officialTokens: 0, attributedTokens: 0 },
+            }))
+            .sort((a, b) => b.tokens - a.tokens || b.lastAt - a.lastAt),
+        }
+      : {}),
+    ...(query.sessions
+      ? {
+          sessions: [...sessions.values()]
+            .map(({ modelSet, ...sess }) => ({
+              ...sess,
+              models: [...modelSet].slice(0, 8),
+              quota: sessionQuotas?.get(sess.key) ?? { week: 0, officialTokens: 0, attributedTokens: 0 },
             }))
             .sort((a, b) => b.tokens - a.tokens || b.lastAt - a.lastAt),
         }
