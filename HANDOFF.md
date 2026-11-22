@@ -1,6 +1,36 @@
-# 当前接手入口 · TokenPulse `v0.3.105` 发布（2026-11-21）
+# 当前接手入口 · TokenPulse `v0.3.106` 已正式发布（2026-11-22）
 
-## 最新已发布版本 · `v0.3.105` · 2026-11-21
+## 最新已发布版本 · `v0.3.106` · 2026-11-22
+
+- **Git 与发布**。[TokenPulse v0.3.106](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.106) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454356550`）。发布提交 `c5eff6e01771e3978ebfb652e3f1ad3cce48af8b` 与签注标签 `v0.3.106`（`13054876c51e1eae0d0ae9cb4767c86115814f68`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（「用量明细」10 项诊断、排行与联动增强）**：
+  1. **一键联动「定位到会话 / 只看同会话请求」**：[src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts) 接入 `sessions-index.json` 元数据缓存，为每条请求补齐 `sessionKey` 与 `sessionTitle` 并支持 `query.session`（兼容 `sessionKey` 与原始 `session` ID）；[renderer/sessions.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/sessions.js) 增强 `PulseSessions.open(key)`（支持精确/前缀回退匹配、自动扩充列表上限并滚动定位）；[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 新增 `window.filterRequestsBySession`、顶部可移除筛选胶囊与展开详情一键操作栏。
+  2. **上下文水位与「自动压缩」标记**：[src/core/model-pricing.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/model-pricing.ts) 新增 `contextWindowOf(modelId, requestedId, observedInput)`（识别 `[1m]`/`[2m]`、Claude 200K→1M 自动升档、GPT-5/6/Codex 400K、GPT-4.1 1M、Gemini 2/3/4 1M、Grok-4 256K/2M、DeepSeek 128K 等，未知型号返回 `null`）；[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 在请求「输入」列渲染分级着色 `水位 xx%` 标签，在「型号」列渲染 `自动压缩` 标签，并在详情面板展示精确窗口比值。
+  3. **新增第 5 个子视图「按会话排行」**：新增 [renderer/usage-sessions.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-sessions.js) 并在 [renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html) / [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) / [renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 接入 `#view-sessions`（保持 5 个子视图单行切换不折行）；按单次对话聚合总 Tokens、参考费用、折合周额度、最高上下文峰值与最高水位、自动压缩次数及最长连续自动轮次，内置搜索框、6 种排序维度（`Tokens | 费用 | 额度 | 上下文 | 连跑 | 最近`）、吸顶表头可聚焦滚动区及一键 `定位会话` / `看请求` 按钮。
+  4. **顶部卡片区分「官方订阅等价」与「API 按量实付」**：[src/core/report.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/report.ts)、[src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts) 与 [renderer/data.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/data.js) 全链路聚合 `officialCostUsd` 与 `apiCostUsd`；[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 在「参考费用」统计卡底部展示 `订阅等价` 与 `API 实付` 双胶囊拆分。
+  5. **推理 / 思考占比提示**：[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 与 [renderer/usage-insights.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-insights.js) 在 `reasoning > 0` 时于逐条请求「输出」列、展开详情及「模型排行」表直接标注 `思考 xx%`。
+  6. **Agent 连续自动工具轮次（无人工介入暴走）监测**：[src/core/usage-scan.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/usage-scan.ts)（`STATE_VERSION` 升至 `18`）与 [src/core/antigravity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity.ts)（`ANTIGRAVITY_STATE_VERSION` 升至 `9`）区分真实人工输入与工具结果自动回传，记录单轮连续自动调用步数 `autoStep`；[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 标注 `自动 #N` 并在 `>= 8` 步时标橙预警 `连续自动 #N`。
+  7. **新增排序「额度占用：从高到低」**：[src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts)、[src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)、[renderer/antigravity-quota.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity-quota.js) 与 [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 支持 `sort: "quota"` 与 `quotaWindows` 采样窗口分摊排序。
+  8. **新增排序「缓存命中率：从低到高（仅看大输入）」**：[src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts) 支持 `sort: "cache_low"`，过滤 `input >= 4096` 的大输入请求并按命中率升序、输入 Token 降序排列。
+  9. **新增排序「耗时 / 首字延迟：从慢到快」**：[src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts) 支持 `sort: "latency"`，按实测总耗时 / 首字延迟降序排列并将无测速记录置于末尾。
+  10. **供应商 / 模型速度分位对比表（P50 / P90 首字延迟 & 平均吐字 t/s）**：[src/core/pass-speed.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/pass-speed.ts) 为 `SpeedModel`、`SpeedLineBucket`、`SpeedLine` 补充算术平均 `avgTokensPerSec`；[renderer/usage-insights.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-insights.js) 与 [renderer/usage-insights.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-insights.css) 在「模型速度走势」面板内新增 `供应商 / 模型速度分位` 表，支持按 `平均吐字 | P50 首字 | P90 首字 | 样本数` 排序并展示 `P50 / P90` 分位。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.106.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_OK=true`（含 `version=0.3.106` 与 `renderer/usage-sessions.js`）；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.106.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.106.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.106-Setup.exe`，`112,899,180` B，SHA256 `f165cffe08a2525195e85f1a4c24faf55f950eb1b2e2a0c5279a502b88b3e1ba`
+  - `dist/TokenPulse-0.3.106-Portable.exe`，`112,641,965` B，SHA256 `327fedbb839d539e9b07527e59ad9732ea2da42799706e4a0c4c514399dd3717`
+  - `dist/TokenPulse-0.3.106-Setup.exe.blockmap`，`119,962` B，SHA256 `74b7a763d44c6ed68e0b0b73f4c52eef946ce02d955a06d55ae9a9f20cef2b6a`
+  - `dist/latest.yml`，`355` B，SHA256 `6e601e97a6c49c43a2cd4b28c6ad9967cac863c4c2b14bde11c547ae59e2f2ac`
+- **正式验证**：
+  - TypeScript 编译与全部 **67** 个 Node 单测脚本（含扩展后的 `test-requests.cjs` 86/86、`test-usage-scan.cjs`、`test-pass-speed.cjs`、`test-routing-regressions.cjs`、`test-features.cjs` 46/46 英文零漏翻校验）：**全部 PASS**。
+  - Electron 自动化 UI 测试：`test-ui.cjs`（含速度分位表、订阅等价 vs API 实付、上下文水位、思考占比、自动压缩与连续自动轮次、同会话筛选、第 5 视图「按会话」深色/排序/键盘容器与「定位会话」端到端跳转断言）、`test-intro-ui.cjs`、`test-usage-projects-ui.cjs`、`test-cache-ui.cjs`、`test-layout-ui.cjs`、`test-antigravity-ui.cjs`（8/8 含全英文无中文残余断言）**全部 PASS**。
+  - 隔离合成数据视觉截图自查（浅色 + 深色主题）：逐张核验顶部费用拆分卡、逐条请求表格与展开详情、第 5 视图「按会话排行」以及「供应商 / 模型速度分位」表，修复了 10 列表格右侧核验徽标紧凑度与跨会话最高水位百分比口径；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/index.js`、`build/core/request-log.js`、`build/core/pass-speed.js`、`build/core/model-pricing.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.106` 发行产物共 10 项非破坏性独占打开检查 `LOCKED_COUNT=0`，检查句柄均已立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.106` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.105` · 2026-11-21
 
 - **Git 与发布**。[TokenPulse v0.3.105](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.105) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454240125`）。发布提交 `46bd9ca26e57b1435477e490f37d1787a9d490fc` 与签注标签 `v0.3.105`（`beb1426c947eb3e3c1e6c904a33609d18d47c9a5`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（6 项修复与体验优化）**：
