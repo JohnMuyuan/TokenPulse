@@ -1,6 +1,33 @@
-# 当前接手入口 · TokenPulse `v0.3.103` 发布（2026-11-21）
+# 当前接手入口 · TokenPulse `v0.3.104` 发布（2026-11-21）
 
-## 最新已发布版本 · `v0.3.103` · 2026-11-21
+## 最新已发布版本 · `v0.3.104` · 2026-11-21
+
+- **Git 与发布**。[TokenPulse v0.3.104](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.104) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454210866`）。发布提交 `d751d25d68444ce2f7d4aba0e191253bfac1a996` 与签注标签 `v0.3.104`（`abce92d737be54d12f831b8e5f019d39aaea1400`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（4 项修复与界面精简）**：
+  1. **修复总览「用量趋势」首次打开图表过窄及全站图表宽度自适应**：
+     - 根因定位：`navigate('overview')` 与 `render()` 先执行 `renderOverview()` → `dailyChart()`，后执行 `applyLayout()` 才解除 `#overview-analysis` 隐藏；且旧 `ResizeObserver` 仅与闭包变量 `width` 比对而非与上次实际绘制宽度比对，导致隐藏/托盘/切页期间按 `280px` 兜底绘制后永不重绘。
+     - 修复方案：在 [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 抽出 `syncPageVisibility()` 在渲染前同步容器可见性，新增通用 `watchChartHost(host, draw)` 与 `host.dataset.drawnWidth` 真实宽度追踪，在 `chart()`、`capacityChart()`、`trendChart()` 以及 `applyLayout()`、`visibilitychange`、`onWindowAway(false)` 中自动检测重绘，并在 [renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 补充 `.analysis-grid:has(> .layout-card[hidden])` 使隐藏「使用节奏」时趋势卡自动撑满整行。同步加固 [renderer/deepseek-balance.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/deepseek-balance.js)、[renderer/pool-quota.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pool-quota.js)、[renderer/usage-cache.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-cache.js) 与 [renderer/usage-insights.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-insights.js)。
+  2. **移除额度详情中的 GPT 降智检测**：移除 [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 中 ChatGPT 账号的 `probePanel` 及 `quota:probe` 布局项、[renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) `.probe-*` 样式、[src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts) `codex-probe:*` IPC、[src/main/preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts) 暴露接口，并删除 `src/core/codex-state-probe.ts`、`src/main/codex-state-probe.ts`、`scripts/test-codex-state-probe.cjs`（保留无关的 Codex 目录兼容性检测 `src/core/codex-probe.ts`）。
+  3. **移除并发监控**：移除侧栏与供应商页入口（[renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)、[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)、[renderer/agent-switch.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/agent-switch.js)、[renderer/intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js)、[renderer/i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js)）及主进程/代理层监控服务（[src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)、[src/main/preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts)、[src/core/agent-proxy.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/agent-proxy.ts)、[src/core/agent-switch.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/agent-switch.ts)、[src/core/agent-types.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/agent-types.ts)），在 `agent-proxy.ts` 改为本地 `clientSockets` 集合确保代理关闭时可靠销毁长连接；删除 `src/core/concurrency.ts`、`src/main/concurrency-monitor.ts`、`renderer/concurrency.js`、`renderer/concurrency.css`、`scripts/test-concurrency.cjs`、`scripts/test-concurrency-ui.cjs`。
+  4. **全站原生 `<select>` 下拉框统一改为 TokenPulse 自绘风格**：利用 Electron 44（Chromium 152）原生支持的 `appearance: base-select`，在 [renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 全局定义 `select`、`select::picker-icon`、`select::picker(select)`、`select option`、`select option::checkmark` 品牌样式，并逐一排查对齐 [renderer/agent-switch.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/agent-switch.css)、[renderer/antigravity.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity.css)、[renderer/sessions.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/sessions.css)、[renderer/tokens-ci.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/tokens-ci.css)、[renderer/usage-insights.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-insights.css) 中全部 22 处 `<select>`，无漏网之鱼，明暗主题均保持高对比度与视口自适应翻转。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.104.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_OK=True`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.104.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.104.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.104-Setup.exe`，`112,879,999` B，SHA256 `b412f2fad5855b12fa774c17c66c48b16f4b6969ac806464d291d411c866f17e`
+  - `dist/TokenPulse-0.3.104-Portable.exe`，`112,622,798` B，SHA256 `3b015f5794c6a2ac10bbd2c2e20205e9d9625cfe06db37b31db1df3ec13d9ee1`
+  - `dist/TokenPulse-0.3.104-Setup.exe.blockmap`，`119,964` B，SHA256 `1cc3a84aa6af9fb1fab3a24c9e74c0baa3222717d6354cc6040311df9014d298`
+  - `dist/latest.yml`，`355` B，SHA256 `34af2885cae39fcadd4652c0b617ead483581ea006daa7d28d8bfa5bb41dc84a`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67** 个 Node 单测脚本）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`test-ui.cjs`（含总览首次打开与切回宽度回归断言、并发监控移除断言、GPT 降智检测移除断言、`appearance: base-select` 样式断言）、`test-layout-ui.cjs`（更新为 8 页面顺序）、`test-intro-ui.cjs`、`test-agent-switch-ui.cjs`、`test-deepseek-balance-ui.cjs`、`test-health-ui.cjs`、`test-usage-projects-ui.cjs`、`test-cache-ui.cjs`、`test-share-ui.cjs`、`test-pool-quota-ui.cjs`、`test-model-study-ui.cjs` **全部 PASS**。
+  - 隔离演示数据视觉截图与隐藏/托盘启动恢复自查：验证总览首次打开 `cw=671/vw=671`、隐藏「使用节奏」后自动撑满 `cw=1003/vw=1003`、模拟 0 宽隐藏重绘后解除隐藏自动恢复 `1003`，以及明暗主题展开自定义 `<select>` 下拉卡片的视觉效果；`git diff --check` 通过。
+- **未执行的验证与已知限制**：
+  - `scripts/test-antigravity-ui.cjs` 第 303 行存在历史文案断言漂移（期望 `/Antigravity 现在没有开着/`，实际提示为多账号本机登录文案，与本轮改动无关）；未重跑其余与本轮无关的独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：`REPO_PROCS=0`；`build/main/index.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.104` 发行产物均 `UNLOCKED`，检查句柄均已关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.104` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.103` · 2026-11-21
 
 - **Git 与发布**。[TokenPulse v0.3.103](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.103) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `453824381`）。发布提交 `2c0240fc9ed4ccae60c7decab9f322f739fceabb` 与签注标签 `v0.3.103`（`1542cf38598486ccb35c7002f38ccf45dde9d1fd`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异与发布说明凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（7 项体验与功能优化）**：
