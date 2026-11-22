@@ -114,12 +114,59 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     assert.equal(details[3], `${coldTokens.toLocaleString('en-US')} 缓存写入 Tokens`);
     assert.equal(await evaluate("document.querySelector('#view-cache .cc-stat:nth-child(4)').title"), `写入花费 ≈ ${await evaluate(`money(${coldCost})`)}`);
 
+    // 实测缓存持续时长矩阵：初始只有 2 次同模型续接 -> 样本不足；补充 Gemini / Claude / GPT 多档间隔后验证分桶、标签、吸顶头与英文全翻译
+    assert.equal(await evaluate("document.querySelector('#view-cache .cc-ttl-wrap')?.getAttribute('role')"), 'region');
+    assert.equal(await evaluate("document.querySelector('#view-cache .cc-ttl-wrap')?.getAttribute('tabindex')"), '0');
+    assert.match(await evaluate("document.querySelector('#view-cache .cc-ttl-table tbody')?.textContent || ''"), /gpt-6-astra.*样本不足/);
+
+    {
+      const extraRows = [];
+      const seriesStart = Math.min(Math.max(midnight.getTime() + minute, now - 60 * minute), midnight.getTime() + 22 * 60 * minute);
+      const addSeries = (kind, session, model, steps) => {
+        let cursor = seriesStart;
+        const file = kind === 'antigravity'
+          ? path.join(root, `${session}.db`)
+          : kind === 'claude-code'
+            ? path.join(root, `${session}.jsonl`)
+            : path.join(root, `rollout-2026-10-15T00-00-00-${session}.jsonl`);
+        extraRows.push({ id: `ttl-${nextId++}`, at: cursor, kind, file, cwd: 'D:\\Demo\\CacheProject', model, returned: model, input: 12_000, output: 120, cacheRead: 0, cacheWrite: 12_000, reasoning: 0, costUsd: 0, calls: 1 });
+        for (const [gapMin, kept] of steps) {
+          cursor += Math.round(gapMin * minute);
+          extraRows.push({ id: `ttl-${nextId++}`, at: cursor, kind, file, cwd: 'D:\\Demo\\CacheProject', model, returned: model, input: 12_000, output: 120, cacheRead: kept ? 10_800 : 0, cacheWrite: kept ? 0 : 12_000, reasoning: 0, costUsd: 0, calls: 1 });
+        }
+      };
+      addSeries('antigravity', 'ttl-gem', 'gemini-4-carbon', [[0.4, true], [0.8, true], [1.8, true], [2.2, false], [3.4, false], [4.2, false], [6.5, false]]);
+      addSeries('claude-code', 'ttl-claude', 'claude-opus-4-6', [[0.5, true], [2.1, true], [3.6, true], [4.7, true], [5.3, false], [7.5, false]]);
+      addSeries('codex', 'ttl-gpt', 'gpt-5.4', [[0.6, true], [4, true], [12, true], [22, true]]);
+      const byM = new Map();
+      for (const r of extraRows) {
+        const d = new Date(r.at), m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        if (!byM.has(m)) byM.set(m, []);
+        byM.get(m).push(JSON.stringify(r));
+      }
+      for (const [m, lines] of byM) fs.appendFileSync(path.join(root, 'data', 'requests', `${m}.jsonl`), lines.join('\n') + '\n');
+      await evaluate("current.scannedAt = Date.now(); window.PulseCache.render()");
+      await until("document.querySelectorAll('#view-cache .cc-ttl-table tbody tr').length === 4 && !document.querySelector('#view-cache').hasAttribute('aria-busy')");
+      const ttlText = await evaluate("document.querySelector('#view-cache .cc-ttl-table').textContent");
+      assert.match(ttlText, /gemini-4-carbon.*≈ 2–3 分钟.*短效易掉/);
+      assert.match(ttlText, /claude-opus-4-6.*≈ 5 分钟/);
+      assert.match(ttlText, /gpt-5\.4.*≥ 22 分钟/);
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('#view-cache .cc-ttl-rowhead')).position"), 'sticky');
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('#view-cache .cc-ttl-table thead th')).position"), 'sticky');
+    }
+
     if (process.env.TP_SHOTS) {
       fs.mkdirSync(process.env.TP_SHOTS, { recursive: true });
-      await evaluate("document.querySelector('.panel-heading:has(#usage-view)')?.scrollIntoView({ block: 'start' })");
-      await delay(400);
-      const image = await contents.capturePage();
-      fs.writeFileSync(path.join(process.env.TP_SHOTS, 'cache-analysis.png'), image.toPNG());
+      await evaluate("setThemeMode('light')");
+      await delay(650);
+      await evaluate("document.querySelector('#view-cache .cc-ttl-wrap')?.scrollIntoView({ block: 'center', behavior: 'instant' })");
+      await delay(250);
+      fs.writeFileSync(path.join(process.env.TP_SHOTS, 'cache-ttl-light.png'), (await contents.capturePage()).toPNG());
+      await evaluate("setThemeMode('dark')");
+      await delay(650);
+      fs.writeFileSync(path.join(process.env.TP_SHOTS, 'cache-ttl-dark.png'), (await contents.capturePage()).toPNG());
+      await evaluate("setThemeMode('light')");
+      await delay(650);
     }
 
     const loaded = new Promise(resolve => contents.once('did-finish-load', resolve));

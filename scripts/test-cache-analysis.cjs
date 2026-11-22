@@ -144,6 +144,66 @@ try {
     assert.equal(result.cache.breaks.byCause.idle.count, 0);
   });
 
+  check('empirical model cache retention estimates Gemini short/volatile, Claude ~5m cliff, GPT >=22m, short-gaps-only and exclusions', () => {
+    const min = 60_000;
+    const buildSeries = (session, source, model, gapsAndHits) => {
+      let cursor = at;
+      const out = [row(session, { at: cursor, source, model, input: 12_000, cacheRead: 0, cacheWrite: 12_000 })];
+      for (const [gapMs, kept] of gapsAndHits) {
+        cursor += gapMs;
+        out.push(row(session, { at: cursor, source, model, input: 12_000, cacheRead: kept ? 10_800 : 0, cacheWrite: kept ? 0 : 12_000 }));
+      }
+      return out;
+    };
+    const rows = [
+      // Gemini 隐式缓存：短间隔能命中，但 2–4 分钟就开始高比例掉光 -> estimated ≈ 2–3 分钟 + opportunistic
+      ...buildSeries('gem-1', 'Antigravity', 'gemini-4-carbon', [
+        [25_000, true], [45_000, true], [1.8 * min, true], [2.2 * min, false], [3.2 * min, false], [4.1 * min, false], [6.5 * min, false],
+      ]),
+      // Claude 默认 5 分钟：4.7 分钟仍保住，5.3 分钟起全掉 -> estimated ≈ 5 分钟，opportunistic = false
+      ...buildSeries('claude-1', 'Claude Code', 'claude-opus-4-6', [
+        [30_000, true], [2.1 * min, true], [3.6 * min, true], [4.7 * min, true], [5.3 * min, false], [7.8 * min, false],
+      ]),
+      // Codex 长效前缀缓存：停 22 分钟仍命中，尚未测到断崖 -> at-least 22 分钟
+      ...buildSeries('gpt-1', 'Codex CLI', 'gpt-5.4', [
+        [40_000, true], [4 * min, true], [12 * min, true], [22 * min, true],
+      ]),
+      // 只有 1 分钟内密集调用 -> short-gaps-only
+      ...buildSeries('short-1', 'Claude Code', 'claude-haiku-4-5', [
+        [12_000, true], [20_000, true], [38_000, true],
+      ]),
+      // 始终无缓存命中 -> no-cache
+      ...buildSeries('nocache-1', 'pi', 'relay-raw-model', [
+        [20_000, false], [90_000, false], [240_000, false],
+      ]),
+      // 样本不足 (<3) -> insufficient
+      ...buildSeries('few-1', 'Grok Build', 'grok-4.7-build', [
+        [30_000, true], [120_000, true],
+      ]),
+    ];
+    const res = analyzeCache(rows);
+    const byModel = new Map(res.retention.map(r => [r.model, r]));
+
+    const gem = byModel.get('gemini-4-carbon');
+    assert.equal(gem.status, 'estimated');
+    assert.equal(gem.opportunistic, true, 'Gemini short-gap misses flag opportunistic implicit caching');
+    assert.deepEqual([gem.ttlMinMs, gem.ttlMaxMs], [2 * min, 3 * min]);
+
+    const claude = byModel.get('claude-opus-4-6');
+    assert.equal(claude.status, 'estimated');
+    assert.equal(claude.opportunistic, false);
+    assert.deepEqual([claude.ttlMinMs, claude.ttlMaxMs], [5 * min, 5 * min]);
+
+    const gpt = byModel.get('gpt-5.4');
+    assert.equal(gpt.status, 'at-least');
+    assert.equal(gpt.ttlMinMs, 22 * min);
+    assert.equal(gpt.ttlMaxMs, null);
+
+    assert.equal(byModel.get('claude-haiku-4-5').status, 'short-gaps-only');
+    assert.equal(byModel.get('relay-raw-model').status, 'no-cache');
+    assert.equal(byModel.get('grok-4.7-build').status, 'insufficient');
+  });
+
   console.log(`PASS ${passed} cache analysis checks`);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

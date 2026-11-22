@@ -3318,7 +3318,30 @@
     'P50 首字延迟': 'P50 TTFT',
     'P90 首字延迟': 'P90 TTFT',
     '平均吐字速度': 'Avg output speed',
-    '官方登录（本机日志）': 'Official sign-in (local log)'
+    '官方登录（本机日志）': 'Official sign-in (local log)',
+    '各模型实测缓存持续时长': 'Measured Cache Retention by Model',
+    '统计同一会话、同一型号、未压缩且未换号的相邻大输入请求（≥4,096 Tokens），按两次请求的停顿间隔分桶计算缓存保住率（缓存读取 ≥ 上轮输入 50%），据此推算实测有效保活时长。': 'Tracks consecutive requests (>=4,096 input tokens) in the same session, model, and account without compaction, grouping by idle gap to measure cache survival (cache read >= 50% of base input) and estimate empirical TTL.',
+    '暂时没有满足同会话连续大输入条件（≥4,096 Tokens）的样本，继续正常使用后会自动生成各模型的实测保活曲线。': 'No consecutive large-input requests (>=4,096 tokens) in the same session yet. Keep using your tools to populate empirical cache retention curves.',
+    '实测保活': 'Est. TTL',
+    '续接样本': 'Pairs',
+    '<1 分钟': '<1m',
+    '1–3 分钟': '1–3m',
+    '3–5 分钟': '3–5m',
+    '5–10 分钟': '5–10m',
+    '10–30 分钟': '10–30m',
+    '>30 分钟': '>30m',
+    '样本不足': 'Few samples',
+    '未见缓存': 'No cache hits',
+    '仅短间隔': 'Short gaps only',
+    '< 1 分钟': '< 1m',
+    '短效易掉': 'Short / volatile',
+    '样本少于 3 次，暂不推断保活上限': 'Fewer than 3 consecutive pairs; not enough data to estimate TTL',
+    '所有连续请求均未观测到缓存命中': 'No cache reads observed across consecutive requests',
+    '目前只有 1 分钟内的密集调用（均已命中），尚缺更长停顿样本来探测过期边界': 'Only sub-minute intervals observed so far (retained); longer pauses are needed to bound expiry',
+    '1 分钟内的连续请求已过半掉缓存，缓存极不稳定': 'Over half of sub-minute consecutive requests lost cache; retention is unstable',
+    '5 分钟内短停顿已出现较高掉缓存比例，属于机会性隐式缓存': 'Noticeable cache drops within 5 minutes of inactivity, typical of opportunistic implicit caching',
+    '缓存分析新增「各模型实测缓存持续时长」与短效波动识别': 'Empirical Cache Retention Duration & Short-TTL Detection by Model',
+    '在「用量明细 → 缓存」中按同一会话、同一型号且无压缩/换号的连续大输入请求，统计 <1 分钟至 >30 分钟共 6 档停顿间隔的缓存保住率，自动推算每个模型的实测有效保活时长并标记短停顿易掉缓存的隐式缓存型号。': 'In Usage -> Cache, consecutive same-session large-input requests are bucketed across 6 idle intervals (<1m to >30m) to measure cache survival rate, estimate empirical TTL per model, and flag opportunistic short-lived implicit caches.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */
@@ -4159,6 +4182,15 @@
     P('≈ 周 (\\S+)', m => `≈ Wk ${m[1]}`),
     P('展开全部 ([\\d,]+) 条测速分位', m => `Show all ${m[1]} speed rows`),
     P('收起部分行（共 ([\\d,]+) 条）', m => `Collapse (${m[1]} rows total)`),
+    P('≈ (\\d+)–(\\d+) 分钟', m => `~${m[1]}–${m[2]}m`),
+    P('≈ (\\d+) 分钟', m => `~${m[1]}m`),
+    P('≥ ([\\d.]+) (秒|分钟|小时)', m => `>= ${m[1]}${m[2] === '秒' ? 's' : m[2] === '分钟' ? 'm' : 'h'}`),
+    P('最长保活 ([\\d.]+) (秒|分钟|小时)', m => `Max hold ${m[1]}${m[2] === '秒' ? 's' : m[2] === '分钟' ? 'm' : 'h'}`),
+    P('实测停顿至 ([\\d.]+) (秒|分钟|小时) 仍可保住缓存，尚未测到失效上限', m => `Cache survived pauses up to ${m[1]}${m[2] === '秒' ? 's' : m[2] === '分钟' ? 'm' : 'h'}; upper expiry cliff not yet reached`),
+    P('实测在 (\\d+(?:–\\d+)?) 分钟 附近开始明显过期失效', m => `Cache begins expiring noticeably around ${m[1]}m`),
+    P('间隔 (.+)：保住 ([\\d,]+) / ([\\d,]+) 次（(\\d+%)）', m => `Gap ${v(m[1])}: kept ${m[2]}/${m[3]} (${m[4]})`),
+    P('展开全部 ([\\d,]+) 个型号', m => `Show all ${m[1]} models`),
+    P('收起（共 ([\\d,]+) 个型号）', m => `Show less (${m[1]} models)`),
     P('([^：。·\\n]{1,20})：([^。·\\n]+)', m => `${v(m[1])}: ${v(m[2])}`)
   ];
 

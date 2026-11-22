@@ -9,7 +9,15 @@
     unknown: ['原因不明', '日志里没有足够线索判断缓存为什么失效。']
   };
   const KIND = { 'Claude Code': 'claude', 'Codex CLI': 'codex', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi', Antigravity: 'antigravity' };
-  const cacheView = { key: '', page: null, loading: false, error: false, seq: 0, built: false };
+  const BUCKET_COLS = [
+    ['lt1m', '<1 分钟'],
+    ['1to3m', '1–3 分钟'],
+    ['3to5m', '3–5 分钟'],
+    ['5to10m', '5–10 分钟'],
+    ['10to30m', '10–30 分钟'],
+    ['gt30m', '>30 分钟'],
+  ];
+  const cacheView = { key: '', page: null, loading: false, error: false, seq: 0, built: false, ttlExpanded: false };
   const nodes = {};
   const paint = (node, props) => { for (const [key, value] of Object.entries(props)) key.startsWith('--') ? node.style.setProperty(key, value) : (node.style[key] = value); return node; };
   const pct = value => value == null ? '—' : `${(value * 100).toFixed(1)}%`;
@@ -43,6 +51,8 @@
     nodes.summary = el('div', { class: 'cc-summary' });
     const chart = section('每天的缓存命中', '缓存读取 ÷ 输入（输入含缓存读写）。\nClaude 日志不区分 5 分钟/1 小时缓存；Grok 按轮记录；费用按参考标价估算，未知型号不计金额。', 'cc-chart');
     nodes.chart = chart.body;
+    const ttl = section('各模型实测缓存持续时长', '统计同一会话、同一型号、未压缩且未换号的相邻大输入请求（≥4,096 Tokens），按两次请求的停顿间隔分桶计算缓存保住率（缓存读取 ≥ 上轮输入 50%），据此推算实测有效保活时长。', 'cc-ttl-host');
+    nodes.ttl = ttl.body;
     const causes = section('断档原因', '每次断档按一条最可能的原因归类。', 'cc-causes');
     nodes.causes = causes.body;
     const split = el('div', { class: 'cc-split' });
@@ -55,7 +65,7 @@
     const recent = section('最近的断档', '最近 20 次。项目只显示文件夹名，会话 ID 不显示。', 'cc-table-host');
     nodes.recent = recent.body;
     nodes.unpriced = el('p', { class: 'cc-note', hidden: true });
-    host.replaceChildren(nodes.summary, chart.node, causes.node, split, sessions.node, recent.node, nodes.unpriced);
+    host.replaceChildren(nodes.summary, chart.node, ttl.node, causes.node, split, sessions.node, recent.node, nodes.unpriced);
     cacheView.built = true;
   }
 
@@ -161,6 +171,94 @@
     return el('span', {}, [el('b', { text: usd ? money(value) : number(value) }), el('small', { text: label })]);
   }
 
+  function ttlDurationText(ms) {
+    if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))} 秒`;
+    if (ms < 10 * 60_000) return `${(ms / 60_000).toFixed(1).replace(/\.0$/, '')} 分钟`;
+    if (ms < 120 * 60_000) return `${Math.round(ms / 60_000)} 分钟`;
+    return `${(ms / 3_600_000).toFixed(1).replace(/\.0$/, '')} 小时`;
+  }
+  function ttlBadgeInfo(row) {
+    if (row.status === 'insufficient') return { text: '样本不足', tone: 'is-muted', tip: '样本少于 3 次，暂不推断保活上限' };
+    if (row.status === 'no-cache') return { text: '未见缓存', tone: 'is-muted', tip: '所有连续请求均未观测到缓存命中' };
+    if (row.status === 'short-gaps-only') return { text: '仅短间隔', tone: 'is-mid', tip: '目前只有 1 分钟内的密集调用（均已命中），尚缺更长停顿样本来探测过期边界' };
+    if (row.status === 'volatile') return { text: '< 1 分钟', tone: 'is-short', tip: '1 分钟内的连续请求已过半掉缓存，缓存极不稳定' };
+    if (row.status === 'at-least') {
+      const dur = ttlDurationText(row.ttlMinMs || row.maxHitGapMs || 60_000);
+      return { text: `≥ ${dur}`, tone: 'is-long', tip: `实测停顿至 ${dur} 仍可保住缓存，尚未测到失效上限` };
+    }
+    const lo = Math.max(1, Math.round((row.ttlMinMs || 60_000) / 60_000));
+    const hi = Math.max(lo, Math.round((row.ttlMaxMs || row.ttlMinMs || 60_000) / 60_000));
+    const span = lo === hi ? `${lo} 分钟` : `${lo}–${hi} 分钟`;
+    const tone = hi <= 4 ? 'is-short' : lo >= 12 ? 'is-long' : 'is-mid';
+    return { text: `≈ ${span}`, tone, tip: `实测在 ${span} 附近开始明显过期失效` };
+  }
+  function drawRetention(host, list) {
+    host.replaceChildren();
+    const rows = Array.isArray(list) ? list : [];
+    if (!rows.length) {
+      host.append(el('div', { class: 'empty', text: '暂时没有满足同会话连续大输入条件（≥4,096 Tokens）的样本，继续正常使用后会自动生成各模型的实测保活曲线。' }));
+      return;
+    }
+    const MAX_DEFAULT = 8;
+    const shown = cacheView.ttlExpanded ? rows : rows.slice(0, MAX_DEFAULT);
+    const head = el('thead', {}, [el('tr', {}, [
+      el('th', { text: '型号' }),
+      el('th', { class: 'n', text: '实测保活' }),
+      el('th', { class: 'n', text: '续接样本' }),
+      ...BUCKET_COLS.map(([, label]) => el('th', { class: 'n', text: label })),
+    ])]);
+    const body = el('tbody', {}, shown.map(row => {
+      const badge = ttlBadgeInfo(row);
+      const byId = new Map((row.buckets || []).map(b => [b.id, b]));
+      const srcNote = (row.sources || []).join(' · ') || row.source;
+      return el('tr', {}, [
+        el('th', { scope: 'row', class: 'cc-ttl-rowhead' }, [
+          el('div', { class: 'cc-ttl-model' }, [
+            typeof miniLogo === 'function' ? miniLogo(row.source) : null,
+            el('div', { class: 'cc-ttl-model-copy' }, [
+              el('b', { translate: 'no', text: row.model, title: row.model }),
+              srcNote ? el('small', { text: srcNote }) : null,
+            ].filter(Boolean)),
+          ].filter(Boolean)),
+        ]),
+        el('td', { class: 'n cc-ttl-est' }, [
+          el('div', { class: 'cc-ttl-badges' }, [
+            el('span', { class: `cc-ttl-badge ${badge.tone}`, title: badge.tip, text: badge.text }),
+            row.opportunistic ? el('span', { class: 'cc-ttl-flag', title: '5 分钟内短停顿已出现较高掉缓存比例，属于机会性隐式缓存', text: '短效易掉' }) : null,
+          ].filter(Boolean)),
+        ]),
+        el('td', { class: 'n cc-ttl-samples' }, [
+          el('span', { text: `${number(row.samples)} 次` }),
+          row.maxHitGapMs != null ? el('small', { class: 'cc-ttl-sub', text: `最长保活 ${ttlDurationText(row.maxHitGapMs)}` }) : null,
+        ].filter(Boolean)),
+        ...BUCKET_COLS.map(([id, label]) => {
+          const b = byId.get(id);
+          if (!b || !b.total) return el('td', { class: 'n cc-ttl-cell is-empty', text: '—' });
+          const ratePct = Math.round((b.keepRate || 0) * 100);
+          const tone = ratePct >= 75 ? 'is-high' : ratePct >= 40 ? 'is-mid' : 'is-low';
+          const tip = `间隔 ${label}：保住 ${number(b.hits)} / ${number(b.total)} 次（${ratePct}%）`;
+          return el('td', { class: 'n cc-ttl-cell', title: tip }, [
+            el('span', { class: `cc-ttl-pill ${tone}`, translate: 'no', text: `${ratePct}%` }),
+            el('small', { class: 'cc-ttl-count', translate: 'no', text: `${b.hits}/${b.total}` }),
+          ]);
+        }),
+      ]);
+    }));
+    const wrap = el('div', { class: 'table-scroll cc-ttl-wrap', tabindex: '0', role: 'region', 'aria-label': '各模型实测缓存持续时长' }, [
+      el('table', { class: 'cc-ttl-table' }, [head, body]),
+    ]);
+    host.append(wrap);
+    if (rows.length > MAX_DEFAULT) {
+      const toggle = el('button', {
+        type: 'button',
+        class: 'text-btn cc-ttl-toggle',
+        text: cacheView.ttlExpanded ? `收起（共 ${number(rows.length)} 个型号）` : `展开全部 ${number(rows.length)} 个型号`,
+      });
+      toggle.addEventListener('click', () => { cacheView.ttlExpanded = !cacheView.ttlExpanded; drawRetention(nodes.ttl, rows); });
+      host.append(toggle);
+    }
+  }
+
   function table(host, headers, rows, emptyText) {
     host.replaceChildren();
     if (!rows.length) { host.append(el('div', { class: 'empty', text: emptyText })); return; }
@@ -214,7 +312,7 @@
         children.push(retry);
       }
       nodes.chart.replaceChildren(...children);
-      nodes.causes.replaceChildren(); nodes.tools.replaceChildren(); nodes.models.replaceChildren(); nodes.sessions.replaceChildren(); nodes.recent.replaceChildren();
+      nodes.ttl?.replaceChildren(); nodes.causes.replaceChildren(); nodes.tools.replaceChildren(); nodes.models.replaceChildren(); nodes.sessions.replaceChildren(); nodes.recent.replaceChildren();
       $('cache-count').textContent = '';
       return;
     }
@@ -222,6 +320,7 @@
     if (!data) return;
     drawSummary(data);
     drawChart(nodes.chart, data.daily);
+    drawRetention(nodes.ttl, data.retention);
     drawCauses(nodes.causes, data);
     drawTables(data);
     nodes.unpriced.hidden = !data.totals.unpricedTokens;

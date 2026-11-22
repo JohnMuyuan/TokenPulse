@@ -51,6 +51,38 @@
 .cc-open-session { padding: 0; font-size: inherit; text-align: left; }
 .cc-note { margin: 12px 3px 0; color: var(--faint); font-size: 11.5px; line-height: 1.6; }
 
+/* 各模型实测缓存持续时长（TTL 衰减矩阵） */
+.cc-ttl-wrap { max-block-size: min(440px, 72vh); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); container-type: inline-size; }
+.cc-ttl-table { width: 100%; min-width: 780px; border-collapse: separate; border-spacing: 0; }
+.cc-ttl-table th, .cc-ttl-table td { padding: 9px 10px; border-bottom: 1px solid var(--line); }
+.cc-ttl-table tbody tr:last-child th, .cc-ttl-table tbody tr:last-child td { border-bottom: 0; }
+.cc-ttl-table thead th { position: sticky; inset-block-start: 0; z-index: 2; border-top: 0; background: var(--surface-2); white-space: nowrap; }
+.cc-ttl-table thead th:first-child { inset-inline-start: 0; z-index: 3; }
+.cc-ttl-rowhead { position: sticky; inset-inline-start: 0; z-index: 1; max-width: 240px; background: var(--surface); font-weight: 500; text-align: left; }
+.cc-ttl-table tbody tr:hover .cc-ttl-rowhead { background: var(--surface-2); }
+.cc-ttl-model { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cc-ttl-model-copy { display: grid; gap: 1px; min-width: 0; }
+.cc-ttl-model-copy b { overflow: hidden; color: var(--text); font: 600 12px/1.35 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.cc-ttl-model-copy small { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.cc-ttl-badges { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px; }
+.cc-ttl-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cc-ttl-badge.is-long { background: var(--accent-soft); color: var(--accent-strong); }
+.cc-ttl-badge.is-mid { background: color-mix(in srgb, var(--ring-five) 15%, transparent); color: var(--ring-five); }
+.cc-ttl-badge.is-short { background: var(--warn-soft); color: var(--warn); }
+.cc-ttl-badge.is-muted { background: var(--tile-neutral); color: var(--muted); font-weight: 550; }
+.cc-ttl-flag { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 6px; background: var(--danger-soft); color: var(--danger); font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+.cc-ttl-samples { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cc-ttl-samples > span { display: block; color: var(--text-2); font-size: 12.5px; font-weight: 600; }
+.cc-ttl-sub { display: block; margin-top: 2px; color: var(--faint); font-size: 10.5px; }
+.cc-ttl-cell { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cc-ttl-cell.is-empty { color: var(--faint); }
+.cc-ttl-pill { display: inline-block; min-width: 42px; padding: 1px 6px; border-radius: 6px; font-size: 11.5px; font-weight: 650; text-align: center; }
+.cc-ttl-pill.is-high { background: var(--accent-soft); color: var(--accent-strong); }
+.cc-ttl-pill.is-mid { background: var(--warn-soft); color: var(--warn); }
+.cc-ttl-pill.is-low { background: var(--danger-soft); color: var(--danger); }
+.cc-ttl-count { display: block; margin-top: 2px; color: var(--faint); font-size: 10px; }
+.cc-ttl-toggle { margin-top: 8px; }
+
 @media (max-width: 1100px) {
   .cc-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cc-split { grid-template-columns: minmax(0, 1fr); gap: 0; }
