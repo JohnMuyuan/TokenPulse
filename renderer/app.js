@@ -3186,7 +3186,7 @@ function navigate(page, options = {}) {
   if (page !== 'providers') window.PulseProviders?.hide();
   if (page !== 'pet') window.PulseDeskPet?.hide();
   if (page !== 'sessions') window.PulseSessions?.hide?.();
-  const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '检查工具配置、本地路由、官方账号到期状态、网络和出口与数据目录（只读不改配置）。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看、复制项目地址，或者直接接着回复。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
+  const labels = { pet: ['桌宠', '额度和任务，看一眼桌面就知道', '在桌面上放一只像素小动物：它表现剩余额度，也表现本机的 Agent 有没有在干活；点一下冒出对话气泡，告诉你正在用的账号还剩多少额度。默认关闭。'], health:['体检', '一键检查哪里不对', '检查工具配置、本地路由、官方账号到期状态、网络和出口与数据目录（只读不改配置）。'], overview: ['总览', '今天的用量与额度', '看看还剩多少额度，再安排接下来的工作。'], quota: ['额度详情', '把使用节奏，放在时间里看', '剩余额度、重置时间与达到上限的参考时间，集中在这里。'], usage: ['用量明细', '每一笔用量，每一次请求', '逐条看每一次请求用了多少 Token、占了多少额度、是哪个账号发的、型号对不对；也能按日汇总看整体。'], egress: ['出口监控', '确认连接从哪里出发', '分别检测三家供应商的出口 IP；偏离白名单或地区规则时提醒。'], sessions: ['会话管理', '本机 Agent 的对话历史', '查看对话、复制项目地址，或在终端里继续。'], providers: ['供应商', '一键切换模型供应商', '为 Claude Code、Claude 桌面端、Codex、Grok CLI、DeepSeek Harness 和 pi 切换供应商。每家的模型候选和思考等级分开设置。'] }[page];
   ['page-label', 'page-title', 'page-description'].forEach((id, i) => { $(id).textContent = labels[i]; });
   for (const button of document.querySelectorAll('#nav [data-page]')) { button.classList.toggle('active', button.dataset.page === page); button.setAttribute('aria-current', button.dataset.page === page ? 'page' : 'false'); }
   moveIndicator();
@@ -3867,6 +3867,28 @@ $('usage-view').addEventListener('click', event => {
 // 两种视图共用筛选，不让账号/核验在切到按日汇总后变成隐藏条件。
 $('detail-search').append($('request-search').closest('label'));
 $('detail-more').append($('request-account').closest('label'), $('request-status').closest('label'));
+// 筛选浮层：点击外部 / 按 Esc 自动收起，打开其中一个时收起另一个避免重叠
+$('model-picker')?.addEventListener('toggle', () => { if ($('model-picker').open && $('more-filters')?.open) $('more-filters').open = false; });
+$('more-filters')?.addEventListener('toggle', () => {
+  const more = $('more-filters');
+  if (!more?.open) return;
+  if ($('model-picker')?.open) $('model-picker').open = false;
+  const panel = more.querySelector('.more-filters-panel');
+  if (panel) panel.classList.toggle('align-left', more.getBoundingClientRect().right < 380);
+});
+document.addEventListener('pointerdown', event => {
+  const picker = $('model-picker');
+  if (picker?.open && !event.target.closest('#model-picker')) picker.open = false;
+  const more = $('more-filters');
+  if (more?.open && !event.target.closest('#more-filters')) more.open = false;
+});
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  const more = $('more-filters');
+  if (more?.open) { more.open = false; more.querySelector('summary')?.focus(); }
+  const picker = $('model-picker');
+  if (picker?.open) { picker.open = false; picker.querySelector('summary')?.focus(); }
+});
 $('retry-detail-query').addEventListener('click', () => {
   for (const [key, value] of detailCache) if (value?.error) detailCache.delete(key);
   for (const [key, value] of windowCache) if (value?.error) windowCache.delete(key);
@@ -3974,6 +3996,10 @@ function renderDetailChips() {
     if (animation) animation.finished.then(remove, () => {}); else remove();
   }
   $('clear-detail-filters').disabled = !hasDetailFilters();
+  const moreCount = Number(Boolean(state.project)) + Number(state.channel !== 'all') + Number(Boolean(state.reqAccount)) + Number(state.reqStatus !== 'all');
+  const moreBadge = $('more-filters-count');
+  if (moreBadge) { moreBadge.hidden = !moreCount; moreBadge.textContent = moreCount ? String(moreCount) : ''; }
+  $('more-filters')?.querySelector('summary')?.classList.toggle('has-active', moreCount > 0);
   $('export-csv').disabled = Boolean(analysis?.loading) || !filteredRecords.length;
 }
 $('clear-detail-filters').addEventListener('click', () => {

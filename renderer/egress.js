@@ -34,6 +34,13 @@
   /** 成功（已保存、已复制）走右上角提示；失败原因留在页面里，方便对着改。 */
   function message(text, error = false, inline = false) {
     const n = document.getElementById('egress-message');
+    const openDialog = root.querySelector('dialog.egress-dialog[open]');
+    const dlgMsg = openDialog?.querySelector('.egress-dialog-status');
+    if (dlgMsg) {
+      dlgMsg.textContent = error || inline ? t(text) : '';
+      dlgMsg.classList.toggle('error', Boolean(error));
+      dlgMsg.setAttribute('role', error ? 'alert' : 'status');
+    }
     if (!error && !inline && typeof showStatus === 'function') { if (n) { n.textContent = ''; n.classList.remove('error'); } showStatus(text); return; }
     if (n) { n.textContent = t(text); n.classList.toggle('error', error); n.setAttribute('role', error ? 'alert' : 'status'); }
   }
@@ -119,11 +126,40 @@
 
       const reason = node('p', 'egress-reason'); reason.setAttribute('role', 'status');
 
-      // 设置（折叠）
-      const settings = node('details', 'egress-settings');
-      const summary = node('summary'); const summaryText = node('span', '', '白名单与检测设置'), summaryState = node('span', 'egress-settings-state muted');
-      summary.append(iconNode('chevron'), summaryText, summaryState); settings.append(summary);
-      const body = node('div', 'egress-settings-body');
+      // 设置入口按钮（点击弹出模态框，不撑高卡片）
+      const settingsRow = node('div', 'egress-settings-row');
+      const settingsBtn = button('', () => openSettingsDialog(provider.provider), 'egress-settings-btn');
+      settingsBtn.dataset.action = 'egress-settings';
+      settingsBtn.dataset.provider = provider.provider;
+      const summaryText = node('span', 'egress-settings-label', '白名单与检测设置');
+      const summaryState = node('span', 'egress-settings-state muted');
+      settingsBtn.append(iconNode('settings'), summaryText, summaryState, iconNode('chevron'));
+      settingsRow.append(settingsBtn);
+
+      // 独立弹窗：原生 <dialog closedby="any"> + showModal()
+      const dialog = node('dialog', 'egress-dialog');
+      dialog.id = `egress-dialog-${provider.provider}`;
+      dialog.dataset.provider = provider.provider;
+      dialog.setAttribute('closedby', 'any');
+      dialog.setAttribute('aria-labelledby', `egress-dialog-title-${provider.provider}`);
+      if (!('closedBy' in HTMLDialogElement.prototype)) {
+        dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+      }
+
+      const dlgHead = node('div', 'egress-dialog-head');
+      const dlgLogo = typeof avatar === 'function' ? avatar(provider.provider) : node('span');
+      const dlgTitleWrap = node('div', 'egress-dialog-titles');
+      const dlgTitle = node('h2', '', `${provider.name} · ${t('白名单与检测设置')}`);
+      dlgTitle.id = `egress-dialog-title-${provider.provider}`;
+      const dlgSub = node('p', 'muted', '修改检测域名、允许出口 IP 或地区白名单，保存后立即生效。');
+      dlgTitleWrap.append(dlgTitle, dlgSub);
+      const dlgClose = button('', () => dialog.close(), 'icon-circle egress-dialog-close');
+      dlgClose.append(iconNode('close'));
+      dlgClose.setAttribute('aria-label', t('关闭'));
+      dlgClose.title = t('关闭');
+      dlgHead.append(dlgLogo, dlgTitleWrap, dlgClose);
+
+      const body = node('div', 'egress-dialog-body');
       const host = node('select'); host.id = `egress-host-${provider.provider}`; for (const h of provider.hosts) { const opt = node('option', '', h); opt.value = h; host.append(opt); } host.addEventListener('change', () => { markDirty(); render(); });
       const ips = node('textarea'); ips.id = `egress-ips-${provider.provider}`; ips.rows = 3; ips.maxLength = 4096; ips.placeholder = t('允许的 IPv4 / IPv6，每行一个'); ips.spellcheck = false; ips.addEventListener('input', markDirty);
       const regions = node('input'); regions.id = `egress-regions-${provider.provider}`; regions.type = 'text'; regions.maxLength = 256; regions.placeholder = 'US, JP'; regions.spellcheck = false; regions.addEventListener('input', markDirty);
@@ -136,11 +172,23 @@
       const content = node('div', 'egress-rules-content'); content.append(node('p', 'muted', provider.provider === 'grok' ? 'Grok 为已验证官方域名的最小集合，不是完整分流清单。' : '用户提供的分流规则；部分共享域名也服务于其他网站。'));
       const pre = node('pre', '', provider.rules.join('\n')); const copy = button('复制分流规则', async () => { try { await api.copyText(provider.rules.join('\n')); message('分流规则已复制。'); } catch { message('复制失败。', true); } }); content.append(pre, copy); rules.append(content);
       body.append(field('检测域名', host), ipField, field('自定义允许地区（可选）', regions), node('p', 'muted egress-hint', '地区使用两位代码；留空时仅使用已核实的官方规则。'), official, source, rules);
-      settings.append(body);
+
+      const dlgFoot = node('div', 'egress-dialog-foot');
+      const dlgStatus = node('p', 'egress-dialog-status');
+      dlgStatus.id = `egress-dialog-status-${provider.provider}`;
+      dlgStatus.setAttribute('role', 'status');
+      const dlgCancel = button('关闭', () => dialog.close(), 'btn');
+      const dlgSave = button('保存设置', async () => {
+        const ok = await save();
+        if (ok && dialog.open) dialog.close();
+      }, 'btn btn-accent');
+      dlgSave.dataset.action = 'egress-dialog-save';
+      dlgFoot.append(dlgStatus, dlgCancel, dlgSave);
+      dialog.append(dlgHead, body, dlgFoot);
 
       const stamp = node('p', 'egress-stamp');
-      card.append(head, hero, chips, reason, facts, intelBox, settings, stamp);
-      controls.set(provider.provider, { card, badge, hostLine, flag, ip, copyIp, place, chips, facts, sources, refresh, reason, summaryState, official, stamp, host, ips, regions, useIp });
+      card.append(head, hero, chips, reason, facts, intelBox, settingsRow, stamp);
+      controls.set(provider.provider, { card, badge, hostLine, flag, ip, copyIp, place, chips, facts, sources, refresh, reason, settingsBtn, summaryState, official, stamp, host, ips, regions, useIp, dialog, dlgStatus });
       grid.append(markLayout(card, 'egress:' + provider.provider));
     }
 
@@ -149,7 +197,15 @@
     const historyTitle = node('div'); historyTitle.append(node('h2', '', '变化与告警'), node('p', 'muted', '仅保留最近 50 条变化记录和告警，不保存每轮采样。'));
     historyHead.append(historyTitle, button('清空记录', async () => { try { receive(await api.clearEgressHistory()); message('监控历史已清空。'); } catch { message('清空记录失败。', true); } }));
     const list = node('ol'); list.id = 'egress-events'; history.append(historyHead, list);
-    root.replaceChildren(toolbar, note, grid, saveBar, markLayout(history, 'egress:history')); built = true; syncInputs();
+    const dialogs = keys.map(p => controls.get(p).dialog);
+    root.replaceChildren(toolbar, note, grid, saveBar, markLayout(history, 'egress:history'), ...dialogs); built = true; syncInputs();
+  }
+
+  function openSettingsDialog(providerKey) {
+    const c = controls.get(providerKey);
+    if (!c?.dialog) return;
+    if (c.dlgStatus) { c.dlgStatus.textContent = ''; c.dlgStatus.classList.remove('error'); c.dlgStatus.setAttribute('role', 'status'); }
+    if (!c.dialog.open) c.dialog.showModal();
   }
 
   function syncInputs() {
@@ -161,12 +217,14 @@
     dirty = false;
   }
   async function save(enabled = snapshot?.config.enabled) {
-    if (saving || !snapshot) return;
+    if (saving || !snapshot) return false;
     const next = { enabled, notifications: document.getElementById('egress-notifications').checked, ipIntel: document.getElementById('egress-intel').checked, intervalSeconds: Number(document.getElementById('egress-interval').value.trim() || NaN), providers: {} };
     for (const p of keys) { const c = controls.get(p); next.providers[p] = { host: c.host.value, allowedIps: split(c.ips.value), allowedRegions: split(c.regions.value) }; }
     saving = true; root.querySelectorAll('input,select,textarea,button').forEach(n => n.disabled = true);
-    try { snapshot = await api.saveEgress(next); syncInputs(); message('设置已保存。'); } catch (e) { message(String(e.message || '保存失败。').replace(/^Error invoking remote method '[^']+': Error: /, ''), true); }
+    let ok = false;
+    try { snapshot = await api.saveEgress(next); syncInputs(); message('设置已保存。'); ok = true; } catch (e) { message(String(e.message || '保存失败。').replace(/^Error invoking remote method '[^']+': Error: /, ''), true); }
     finally { saving = false; root.querySelectorAll('input,select,textarea,button').forEach(n => n.disabled = false); render(); }
+    return ok;
   }
   function receive(data) { snapshot = data; updateBadge(); if (!root.hidden) { if (!built) make(data); render(); } }
   function updateBadge() {
@@ -270,7 +328,11 @@
       c.refresh.disabled = loading.has(ipForIntel);
 
       const allowed = snapshot.config.providers[p.provider].allowedIps.length;
-      c.summaryState.textContent = allowed ? `${allowed} ${t('个允许的 IP')}` : t('未设置');
+      const customRegions = snapshot.config.providers[p.provider].allowedRegions || [];
+      const parts = [];
+      if (allowed) parts.push(`${allowed} ${t('个允许的 IP')}`);
+      if (customRegions.length) parts.push(`${t('地区')} ${customRegions.slice(0, 3).join(', ')}${customRegions.length > 3 ? '…' : ''}`);
+      c.summaryState.textContent = parts.length ? parts.join(' · ') : t('未设置');
       c.useIp.disabled = saving || !row?.ip || Boolean(row.error) || row.host !== c.host.value || Date.now() - row.checkedAt > 15000;
       c.official.textContent = t(row?.regionStatus === 'supported' ? '国家在已核实的官方清单内，不保证具体账号可用。' : row?.regionStatus === 'unsupported' ? '国家不在已核实的官方清单内。' : row?.regionStatus === 'partial' ? '国家内存在地区限制，IP 国家代码不足以判断。' : '官方地区规则未核实、已过期或地区未知；不会据此判定支持。') + (p.policy.checkedAt ? ` ${t('核实日期')}：${p.policy.checkedAt}` : '') + (!p.allowedRegions.length && p.policy.status !== 'verified' ? ' ' + t('可先设置自定义允许地区。') : '');
       c.stamp.textContent = `${t('检测时间')}：${time(row?.checkedAt)}`;

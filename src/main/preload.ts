@@ -210,14 +210,6 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   sessionDetail: (kind: string, id: string) => ipcRenderer.invoke("sessions:detail", kind, id),
   copySessionProject: (kind: string, id: string) => ipcRenderer.invoke("sessions:copy-project", kind, id),
   copyText: (text: string) => ipcRenderer.invoke("sessions:copy-text", text),
-  /** 在 TokenPulse 里直接回复：返回 runId，过程通过 onSessionReply 推回来。 */
-  replySession: (kind: string, id: string, prompt: string, mode: "readonly" | "edit") => ipcRenderer.invoke("sessions:reply", kind, id, prompt, mode),
-  stopSessionReply: (runId: string) => ipcRenderer.invoke("sessions:reply-stop", runId),
-  onSessionReply: (handler: (event: unknown) => void) => {
-    const listener = (_event: unknown, event: unknown) => handler(event);
-    ipcRenderer.on("session-reply", listener);
-    return () => ipcRenderer.off("session-reply", listener);
-  },
   openSessionTerminal: (kind: string, id: string) => ipcRenderer.invoke("sessions:terminal", kind, id),
   /** 复制继续命令前的准备（Antigravity 桌面端对话导入 CLI）。 */
   prepareSessionResume: (kind: string, id: string) => ipcRenderer.invoke("sessions:prepare-resume", kind, id),

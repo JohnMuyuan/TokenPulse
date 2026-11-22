@@ -69,9 +69,9 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     await e("navigate('sessions')");
     await until("document.querySelector('#page-sessions .sw-item')");
     await e("document.querySelector('#page-sessions .sw-item').click()");
-    await until("document.querySelector('.sw-composer')");
+    await until("document.querySelector('.sw-messages')");
+    assert.equal(await e("document.querySelector('.sw-composer')"), null, '会话页不再显示应用内回复框');
     assert.ok(await e("[...document.querySelector('.sw-main').childNodes].every(n => n.nodeType !== Node.TEXT_NODE || !n.textContent.trim())"));
-    assert.equal(await e("/[\u3400-\u9fff]/.test(document.querySelector('.sw-composer').textContent)"), false);
     const win = BrowserWindow.fromWebContents(wc); win.setSize(940, 760);
     await pause(200);
     assert.ok(await e("[...document.querySelectorAll('.sw-kinds button')].every(n => n.scrollWidth <= n.clientWidth + 2)"));

@@ -98,16 +98,37 @@ a.egress-source-name:hover, a.egress-source-name:focus-visible { color: var(--ac
 .egress-sources-note { margin: 6px 0 0; font-size: 11.5px; }
 .egress-loading::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 7px; vertical-align: -1px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 
-/* 设置（折叠） */
-.egress-settings { border-top: 1px solid var(--line); padding-top: 10px; interpolate-size: allow-keywords; }
-.egress-settings > summary { display: flex; align-items: center; gap: 7px; padding: 4px 0; color: var(--text-2); font-size: 13px; font-weight: 600; list-style: none; cursor: pointer; }
-.egress-settings > summary::-webkit-details-marker { display: none; }
-.egress-settings > summary .icon { width: 14px; height: 14px; transform: rotate(-90deg); transition: transform .2s var(--ease); }
-.egress-settings[open] > summary .icon { transform: none; }
-.egress-settings-state { margin-left: auto; font-size: 12px; font-weight: 500; }
-.egress-settings::details-content { height: 0; overflow: clip; opacity: 0; transition: height 220ms var(--ease), opacity 160ms var(--ease), content-visibility 220ms allow-discrete; }
-.egress-settings[open]::details-content { height: auto; opacity: 1; }
-.egress-settings-body { padding: 6px 0 4px; }
+/* 白名单与检测设置入口按钮（弹窗编辑，不撑高卡片） */
+.egress-settings-row { border-top: 1px solid var(--line); padding-top: 10px; }
+.egress-settings-btn { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--text-2); font: inherit; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; transition: border-color 150ms ease, background 150ms ease, color 150ms ease; }
+.egress-settings-btn:hover, .egress-settings-btn:focus-visible { border-color: var(--accent); background: var(--surface); color: var(--text); outline: none; }
+.egress-settings-btn:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 26%, transparent); }
+.egress-settings-btn .icon:first-child { flex: none; width: 15px; height: 15px; color: var(--muted); }
+.egress-settings-btn:hover .icon:first-child { color: var(--accent); }
+.egress-settings-btn .icon:last-child { flex: none; width: 13px; height: 13px; color: var(--faint); transform: rotate(-90deg); }
+.egress-settings-label { white-space: nowrap; }
+.egress-settings-state { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
+
+/* 白名单与检测设置弹窗（原生 <dialog closedby="any"> + showModal()） */
+dialog.egress-dialog { padding: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-lg, 0 24px 60px rgba(0, 0, 0, .24)); width: min(540px, calc(100vw - 32px)); max-height: min(84vh, 720px); margin: auto; overflow: hidden; opacity: 0; transform: translateY(8px) scale(.98); transition: opacity 180ms var(--ease), transform 180ms var(--ease), overlay 180ms allow-discrete, display 180ms allow-discrete; }
+dialog.egress-dialog[open] { display: flex; flex-direction: column; opacity: 1; transform: none; }
+@starting-style { dialog.egress-dialog[open] { opacity: 0; transform: translateY(8px) scale(.98); } }
+dialog.egress-dialog:modal { overscroll-behavior: contain; }
+dialog.egress-dialog::backdrop { background: rgba(15, 23, 42, .45); backdrop-filter: blur(3px); overflow: hidden; overscroll-behavior: contain; opacity: 0; transition: opacity 180ms var(--ease), overlay 180ms allow-discrete, display 180ms allow-discrete; }
+dialog.egress-dialog[open]::backdrop { opacity: 1; }
+@starting-style { dialog.egress-dialog[open]::backdrop { opacity: 0; } }
+.egress-dialog-head { display: flex; align-items: center; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); flex: none; }
+.egress-dialog-head .account-avatar { flex: none; width: 36px; height: 36px; border-radius: 11px; }
+.egress-dialog-head .account-avatar .brand-svg { width: 20px; height: 20px; }
+.egress-dialog-titles { flex: 1; min-width: 0; }
+.egress-dialog-titles h2 { margin: 0; font-size: 16px; font-weight: 650; color: var(--text); }
+.egress-dialog-titles p { margin: 3px 0 0; font-size: 12px; }
+.egress-dialog-close { flex: none; }
+.egress-dialog-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 20px 18px; }
+.egress-dialog-foot { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--surface-2); flex: none; }
+.egress-dialog-status { flex: 1; min-width: 0; margin: 0; font-size: 12.5px; color: var(--muted); }
+.egress-dialog-status.error { color: var(--danger); }
+
 .egress-field { display: flex; flex-direction: column; gap: 7px; margin: 12px 0 0; color: var(--text-2); font-size: 12.5px; }
 .egress-field input:not([type=checkbox]), .egress-field select, .egress-field textarea { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); font: inherit; font-size: 13px; transition: border-color 160ms ease, box-shadow 160ms ease; }
 .egress-field textarea { min-height: 76px; resize: vertical; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
@@ -148,7 +169,7 @@ a.egress-source-name:hover, a.egress-source-name:focus-visible { color: var(--ac
 @media (max-width: 860px) { .egress-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) {
   .egress-pulse::after { animation: none !important; }
-  .egress-settings::details-content, .egress-rules::details-content, .egress-meter i, .egress-field input, .egress-field select, .egress-field textarea { transition: none !important; }
+  dialog.egress-dialog, dialog.egress-dialog::backdrop, .egress-settings-btn, .egress-rules::details-content, .egress-meter i, .egress-field input, .egress-field select, .egress-field textarea { transition: none !important; }
 }
 
 body[data-page="egress"] #refresh, body[data-page="egress"] #stamp, body[data-page="egress"] #main > footer { display: none; }

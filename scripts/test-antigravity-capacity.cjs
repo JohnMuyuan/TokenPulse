@@ -332,10 +332,96 @@ try {
     assert.ok(robust >= 780 && robust <= 900, `稳健近期加权剔除 10 倍离群旧周（实际 ${robust}）`);
     pass('monotonic peakUsed + row cursor prevent jitter double-counting and weekly capacity updates smoothly');
   }
+
+  // 9. 同档位本地 Ultra 目录自动补齐云端旧版模型列表 + 整窗换算单调性、不跨池混比、防 2 次冷启动调用数爆炸
+  {
+    const uRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-agy-ultra-'));
+    const prevDir = process.env.TOKENPULSE_DATA_DIR;
+    process.env.TOKENPULSE_DATA_DIR = uRoot;
+    try {
+      const accMod = require('../build/core/antigravity-accounts');
+      const uNow = Date.UTC(2026, 10, 21, 12, 0, 0);
+      const idCloud = accMod.rememberAgyAccount({ email: 'ultra-cloud@example.com', credential: { token: 't1', refreshToken: 'r1', expiresAt: uNow + 3600_000 } }, true, uNow);
+      const idLocal = accMod.rememberAgyAccount({ email: 'ultra-local@example.com', credential: { token: 't2', refreshToken: 'r2', expiresAt: uNow + 3600_000 } }, true, uNow);
+      const localModels = [
+        { label: 'Gemini 4 Neon (High)', family: 'Gemini 4 Neon', model: 'gemini-4-neon', effort: 'high', used: 20, resetAt: iso(uNow + 3 * H) },
+        { label: 'Gemini 4 Neon (XHigh)', family: 'Gemini 4 Neon', model: 'gemini-4-neon', effort: 'xhigh', used: 20, resetAt: iso(uNow + 3 * H) },
+        { label: 'Gemini 4 Neon (Medium)', family: 'Gemini 4 Neon', model: 'gemini-4-neon', effort: 'medium', used: 20, resetAt: iso(uNow + 3 * H) },
+        { label: 'Gemini 4 Neon (Low)', family: 'Gemini 4 Neon', model: 'gemini-4-neon', effort: 'low', used: 20, resetAt: iso(uNow + 3 * H) },
+        { label: 'Orchestrator (Neon)', family: 'Orchestrator (Neon)', model: 'orchestrator-neon', used: 20, resetAt: iso(uNow + 3 * H) },
+        { label: 'Gemini 3.8 Flash (High)', family: 'Gemini 3.8 Flash', model: 'gemini-3.8-flash', effort: 'high', used: 20, resetAt: iso(uNow + 3 * H) },
+        { label: 'Claude Opus 5.5 (Low)', family: 'Claude Opus 5.5', model: 'claude-opus-5-5', effort: 'low', used: 0, resetAt: iso(uNow + 4 * H) },
+        { label: 'Claude Opus 5.5 (Medium)', family: 'Claude Opus 5.5', model: 'claude-opus-5-5', effort: 'medium', used: 0, resetAt: iso(uNow + 4 * H) },
+        { label: 'Claude Opus 5.5 (High)', family: 'Claude Opus 5.5', model: 'claude-opus-5-5', effort: 'high', used: 0, resetAt: iso(uNow + 4 * H) },
+      ];
+      fs.writeFileSync(path.join(uRoot, 'antigravity-quota.json'), JSON.stringify({
+        accounts: {
+          [idCloud]: {
+            last: {
+              at: uNow - 10_000, ok: true, plan: 'Ultra', tier: 'Google AI Ultra',
+              groups: [
+                { key: 'Gemini 2.5 Pro|Gemini 3 Flash|Gemini 3.8 Flash', title: 'Gemini Models', models: ['Gemini 3.8 Flash', 'Gemini 2.5 Pro', 'Gemini 3 Flash'], used: 12.5, resetAt: iso(uNow + 2 * H), week: { used: 4, resetAt: iso(uNow + 5 * 24 * H) } },
+                { key: 'Claude Opus 5.5', title: 'Claude and GPT models', models: ['Claude Opus 5.5'], used: 0, resetAt: iso(uNow + 4 * H) },
+              ],
+              models: [
+                { label: 'Gemini 3.8 Flash (High)', family: 'Gemini 3.8 Flash', model: 'gemini-3.8-flash', effort: 'high', used: 12.5, resetAt: iso(uNow + 2 * H) },
+                { label: 'Gemini 2.5 Pro', family: 'Gemini 2.5 Pro', model: 'gemini-2.5-pro', used: 12.5, resetAt: iso(uNow + 2 * H) },
+                { label: 'Claude Opus 5.5 (Low)', family: 'Claude Opus 5.5', model: 'claude-opus-5-5', effort: 'low', used: 0, resetAt: iso(uNow + 4 * H) },
+                { label: 'Claude Opus 5.5 (Medium)', family: 'Claude Opus 5.5', model: 'claude-opus-5-5', effort: 'medium', used: 0, resetAt: iso(uNow + 4 * H) },
+                { label: 'Claude Opus 5.5 (High)', family: 'Claude Opus 5.5', model: 'claude-opus-5-5', effort: 'high', used: 0, resetAt: iso(uNow + 4 * H) },
+              ],
+            },
+            history: [
+              { at: uNow - 2 * H, groups: [{ key: 'Gemini 3.8 Flash', used: 0, resetAt: iso(uNow + 2 * H) }] },
+              { at: uNow - 10_000, groups: [{ key: 'Gemini 3.8 Flash', used: 12.5, resetAt: iso(uNow + 2 * H) }] },
+            ],
+            notified: {},
+          },
+          [idLocal]: {
+            last: {
+              at: uNow - 5_000, ok: true, plan: 'Ultra Lite', tier: 'Google AI Ultra',
+              groups: [
+                { key: 'Gemini 3.8 Flash|Gemini 4 Neon|Orchestrator', title: 'Gemini Models', models: ['Gemini 4 Neon', 'Orchestrator', 'Gemini 3.8 Flash'], used: 20, resetAt: iso(uNow + 3 * H) },
+                { key: 'Claude Opus 5.5', title: 'Claude and GPT models', models: ['Claude Opus 5.5'], used: 0, resetAt: iso(uNow + 4 * H) },
+              ],
+              models: localModels,
+            },
+            history: [],
+            notified: {},
+          },
+        },
+      }));
+      fs.writeFileSync(path.join(uRoot, 'antigravity-logins.json'), JSON.stringify({ version: 1, spans: [{ from: uNow - 5 * 24 * H, id: idCloud }] }));
+      const qU = new mod.AntigravityQuota({ now: () => uNow, fetcher: async () => null });
+      const mkAgy = (at, model, effort, inp, out, cr, usd) => ({ at, model, effort, tokens: inp + out, input: inp, output: out, cacheRead: cr, cacheWrite: 0, reasoning: 0, costUsd: usd, calls: 1, requests: 1, source: 'Antigravity', kind: 'antigravity' });
+      const uRows = [];
+      for (let i = 0; i < 40; i++) uRows.push(mkAgy(uNow - H + i * 60_000, 'gemini-4-neon', 'high', 200_000, 2_000, 170_000, 0.11));
+      // 2 条极短冷启动 low 请求：绝不能把 low 档调用数拉爆
+      uRows.push(mkAgy(uNow - 30 * 60_000, 'gemini-4-neon', 'low', 10_000, 200, 0, 0.015));
+      uRows.push(mkAgy(uNow - 29 * 60_000, 'gemini-4-neon', 'low', 10_000, 200, 0, 0.015));
+      qU.recentRows = () => uRows;
+      const uSt = qU.state();
+      const cloudAcc = uSt.accounts.find((a) => a.id === idCloud);
+      assert.ok(cloudAcc.last.groups[0].models.includes('Gemini 4 Neon') && !cloudAcc.last.groups[0].models.includes('Gemini 2.5 Pro'), '云端 Ultra 账号自动同步本机最新 Ultra 型号目录，剔除旧版 2.5 Pro');
+      assert.equal(cloudAcc.last.groups[0].used, 12.5, '同步型号目录绝不覆盖该账号自己的已用百分比');
+      const caps = cloudAcc.insight.modelCapacities;
+      const by = (m, ef) => caps.find((r) => r.model === m && r.effort === ef);
+      assert.ok(by('gemini-4-neon', 'low').fiveTokens > by('gemini-4-neon', 'medium').fiveTokens);
+      assert.ok(by('gemini-4-neon', 'medium').fiveTokens > by('gemini-4-neon', 'high').fiveTokens);
+      assert.ok(by('gemini-4-neon', 'high').fiveTokens > by('gemini-4-neon', 'xhigh').fiveTokens);
+      assert.ok(by('gemini-4-neon', 'low').fiveCalls < by('gemini-4-neon', 'high').fiveCalls * 1.5, '2 次冷启动请求不再把 low 档调用次数拉爆到几十倍');
+      const opusMed = by('claude-opus-5-5', 'medium');
+      assert.equal(opusMed.relative, 1, 'Claude 池相对比例在池内独立归一化，不与 Gemini 池混比');
+      pass('same-tier Ultra catalog enrichment, monotonic capacity estimates, cold-start guard, and per-pool relative scaling');
+    } finally {
+      process.env.TOKENPULSE_DATA_DIR = prevDir;
+      try { fs.rmSync(uRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
 } finally {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 忽略 */ }
 }
-console.log(`\n${checks}/8 antigravity capacity & family-group checks`);
+console.log(`\n${checks}/9 antigravity capacity & family-group checks`);

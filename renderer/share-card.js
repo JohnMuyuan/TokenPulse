@@ -102,18 +102,38 @@
   }
   function weekDaysPanel(r) {
     const max = Math.max(1, ...r.daily.map(item => item.tokens));
+    const dowNames = english ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] : ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const shortDate = key => {
+      const [, m, d] = key.split('-').map(Number);
+      return english ? `${m}/${d}` : `${m}/${d}`;
+    };
     const days = el('div', { class: 'week-days' }, r.daily.map(item => {
-      const bar = el('i', { class: 'week-bar' });
-      bar.style.height = `${Math.max(item.tokens > 0 ? 5 : 0, item.tokens / max * 76)}px`;
-      return el('div', { class: `week-day${r.best?.day === item.day ? ' best' : ''}` }, [
-        el('span', { class: 'week-date', text: day(item.day) }),
+      const dt = new Date(item.day + 'T12:00:00');
+      const dow = dowNames[dt.getDay()] || '';
+      const isBest = Boolean(r.best?.day === item.day && item.tokens > 0);
+      const bar = el('i', { class: 'week-bar' + (item.tokens <= 0 ? ' empty' : '') });
+      bar.style.height = item.tokens > 0 ? `${Math.max(5, (item.tokens / max) * 100).toFixed(1)}%` : '0%';
+      return el('div', { class: `week-day${isBest ? ' best' : ''}` }, [
+        el('b', { class: 'week-val num', text: item.tokens ? bigText(item.tokens) : '—' }),
         el('div', { class: 'week-track' }, [bar]),
-        el('b', { class: 'num', text: item.tokens ? bigText(item.tokens) : '—' }),
+        el('div', { class: 'week-label' }, [
+          el('span', { class: 'week-dow', text: dow }),
+          el('span', { class: 'week-date num', text: shortDate(item.day) }),
+        ]),
       ]);
     }));
+    const avgTokens = r.tokens > 0 ? r.tokens / 7 : 0;
+    const bestText = r.best && r.best.tokens > 0
+      ? (english ? `🏆 Peak day ${day(r.best.day)} · ${bigText(r.best.tokens)} Tokens` : `🏆 最拼的一天 ${day(r.best.day)} · ${bigText(r.best.tokens)} Tokens`)
+      : (english ? 'No usage recorded this week' : '这周还没有用量记录');
+    const avgText = english ? `Daily avg ${bigText(avgTokens)} Tokens` : `日均 ${bigText(avgTokens)} Tokens`;
     return el('div', { class: 'panel week-panel' }, [
       el('div', { class: 'section-head' }, [el('h2', { text: english ? 'Seven-day usage' : '七天用量' }), el('span', { text: english ? 'Tokens by day' : '每天 Tokens' })]),
       days,
+      el('div', { class: 'week-foot' }, [
+        el('span', { text: bestText }),
+        el('span', { class: 'week-avg num', text: avgText }),
+      ]),
     ]);
   }
   function calendarPanel(r) {

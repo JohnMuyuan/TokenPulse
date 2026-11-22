@@ -2915,6 +2915,24 @@
     // 主进程：托盘菜单、通知、对话框
     '打开 TokenPulse': 'Open TokenPulse', '立即刷新': 'Refresh now', '退出': 'Quit', '导出请求记录': 'Export requests', '导出用量明细': 'Export usage', '注意节奏': 'Pace yourself',
     '导出内容无效或过大': 'Export content is invalid or too large', '查询日期无效': 'Invalid query dates', '官方账号参数无效': 'Invalid account parameters', '官方账号类型无效': 'Invalid account type',
+    // 0.3.105 Antigravity Ultra 模型档位与容量换算、出口设置弹窗、会话精简、周报柱图与更多筛选浮层
+    '更新 Antigravity Ultra 组内模型档位并优化多模型折叠与整窗换算': 'Updated Antigravity Ultra model tiers, compact folding & capacity estimates',
+    '过滤 Cloud Code 未列出的旧版/内部模型并同步本机最新 Ultra 型号目录；「组内模型档位」按型号家族聚合各思考档位并支持折叠展开，避免长列表撑高卡片；修复「换一种模型，整窗能用多少」进度条全灰显示与单次调用/档位换算偏差，按额度池分别归一化展示。': 'Filters legacy/internal Cloud Code models outside agentModelSorts and syncs the latest local Ultra model catalog; groups model tiers by family with collapsible rows; fixes gray capacity bars and skewed effort/call-count estimates in “Switch models”, normalized independently per quota pool.',
+    '出口监控「白名单与检测设置」改为弹窗编辑': 'Egress monitor allowlist & check settings moved to a modal dialog',
+    '点击三家出口卡片底部的「白名单与检测设置」改为弹出独立居中对话框修改，不再把单张卡片向下撑长。': 'Clicking “Allowlist & check settings” on any provider card now opens a centered modal dialog instead of stretching the card inline.',
+    '会话管理移除应用内回复，优化周报竖柱图与用量「更多筛选」': 'Removed in-app session reply, improved weekly share chart & Usage “More filters”',
+    '移除会话详情页的应用内直接回复入口与底部输入框（保留查看、检索、复制路径与终端继续）；重做周报分享卡片七天竖柱图消除下方大块空白；将用量明细「更多筛选」改为浮层下拉菜单，展开不再挤压顶栏布局。': 'Removed in-app reply actions and composer from Sessions (keeping browsing, search, copy path, and terminal resume); redesigned the weekly share card bar chart to eliminate empty bottom whitespace; turned Usage “More filters” into a floating dropdown popover with zero toolbar reflow.',
+    '未调用': 'Unused',
+    '收起档位列表': 'Collapse model list',
+    '收起部分档位': 'Show fewer tiers',
+    '近期常用': 'Used recently',
+    '等待池内额度变化 · 暂按 API 标价相对比': 'Waiting for pool quota movement · showing API list-price ratio',
+    '综合单价 = 按模型公开标价和该额度池近期的 Token 结构（新输入、缓存读取、输出比例）估算的每百万 Tokens 参考费用；进度条浅色为整窗 100% 容量，实色为当前剩余可用。各额度池分开归一化对比。': 'Blended price = estimated USD per million tokens from public list prices and this pool’s recent token mix (fresh input, cache read, output); light bar = 100% full window capacity, solid bar = remaining now. Normalized per quota pool.',
+    '修改检测域名、允许出口 IP 或地区白名单，保存后立即生效。': 'Edit the probe host, allowed exit IPs, or region allowlist. Changes take effect after saving.',
+    '查看对话、复制项目地址，或在终端里继续。': 'Browse conversations, copy project paths, or resume in a terminal.',
+    '查看本机 Agent 的对话历史，支持全文检索、复制项目地址，或在终端里继续会话。': 'Browse local Agent conversation history with full-text search, copy project paths, or resume in a terminal.',
+    '左边是本机 Claude Code、Codex CLI、Grok Build、DeepSeek Harness、pi 和 Antigravity 的对话历史。选中后可以查看完整对话、复制项目地址或在终端里继续。': 'Your local Claude Code, Codex CLI, Grok Build, DeepSeek Harness, pi, and Antigravity conversations appear on the left. Pick one to read, copy its project path, or resume in a terminal.',
+    '按项目、渠道、账号与核验状态筛选': 'Filter by project, channel, account, and verification',
     // 0.3.102 自定义日期范围支持精确到小时和分钟
     '自定义时间范围支持精确到小时和分钟': 'Custom date ranges now support hour and minute precision',
     '总览与用量明细的时间选择器现可在开始、结束日期旁指定小时和分钟（默认 00:00 至 23:59，并支持「结束时间跟随当前」）。总览趋势、用量分析、逐条请求、按日汇总、按项目、缓存分析与 CSV 导出均按精确时分过滤，48 小时以内自动按小时绘柱。': 'The range picker in Overview and Usage Details now lets you set start and end hours and minutes alongside dates (defaulting to 00:00–23:59, with “End time follows now”). Overview trends, usage insights, per-request logs, daily summaries, projects, cache analysis, and CSV exports all filter to the exact minute, and ranges up to 48 hours chart hourly automatically.',
@@ -4042,6 +4060,11 @@
     P('每 (\\d+) 秒自动查询', m => `checked every ${m[1]} seconds`),
     P('每 (\\d+) 分 (\\d+) 秒', m => `Every ${m[1]} min ${m[2]} sec`),
     P('每 (\\d+) 秒', m => `Every ${m[1]} seconds`),
+    P('展开全部 (\\d+) 个型号（共 (\\d+) 个档位）', m => `Show all ${m[1]} models (${m[2]} tiers)`),
+    P('展开全部 (\\d+) 个模型档位', m => `Show all ${m[1]} model tiers`),
+    P('(\\d+) 个型号 · 7 天使用', m => `${m[1]} models · 7d usage`),
+    P('(整周|5 小时)整窗约 (\\S+) Tokens(?:（(\\S+)）)?', m => `${m[1] === '整周' ? 'Weekly' : '5h'} full window ≈ ${m[2]} tokens${m[3] ? ` (${m[3]})` : ''}`),
+    P('地区 (.+)', m => `Region ${m[1]}`),
     P('([^：。·\\n]{1,20})：([^。·\\n]+)', m => `${v(m[1])}: ${v(m[2])}`)
   ];
 

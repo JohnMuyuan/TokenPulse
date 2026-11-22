@@ -14,6 +14,11 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.105': [
+      ['quota', '更新 Antigravity Ultra 组内模型档位并优化多模型折叠与整窗换算', '过滤 Cloud Code 未列出的旧版/内部模型并同步本机最新 Ultra 型号目录；「组内模型档位」按型号家族聚合各思考档位并支持折叠展开，避免长列表撑高卡片；修复「换一种模型，整窗能用多少」进度条全灰显示与单次调用/档位换算偏差，按额度池分别归一化展示。'],
+      ['egress', '出口监控「白名单与检测设置」改为弹窗编辑', '点击三家出口卡片底部的「白名单与检测设置」改为弹出独立居中对话框修改，不再把单张卡片向下撑长。'],
+      ['sessions', '会话管理移除应用内回复，优化周报竖柱图与用量「更多筛选」', '移除会话详情页的应用内直接回复入口与底部输入框（保留查看、检索、复制路径与终端继续）；重做周报分享卡片七天竖柱图消除下方大块空白；将用量明细「更多筛选」改为浮层下拉菜单，展开不再挤压顶栏布局。'],
+    ],
     '0.3.104': [
       ['trend', '修复总览用量趋势首次打开图表过窄', '修复总览首次显示或切回总览时用量趋势图按 280px 兜底宽度绘制的问题，并统一为各图表补充容器宽度同步与自动重绘。'],
       ['settings', '全站下拉框统一为 TokenPulse 自绘风格', '将总览、用量明细、额度详情、出口监控、会话管理、供应商、分享卡片与设置页中的全部原生下拉选择框统一升级为与主题一致的圆角自绘下拉样式（明暗主题自适应）。'],
@@ -489,7 +494,7 @@
     { chapter: '供应商', page: 'providers', before: providers('logs'), target: '#page-providers .pv-nav [data-section="logs"]', title: '转发记录', text: '每一次经过本地路由或透明转发的请求都记下来，永久保存：交给了谁、状态、耗时、首字、速度。号池换了哪个账号、哪次失败换了下一个，都能在这里看到。' },
     { chapter: '供应商', page: 'providers', before: providers('safety'), target: '#page-providers .pv-nav [data-section="safety"]', title: '配置保护和导入', text: '「配置保护」里能看每次改动前后的备份、一键还原，担心改坏可以打开只读保护。「导入供应商」能把 CC Switch 里已有的供应商一次导进来。' },
 
-    { chapter: '会话与监控', page: 'sessions', target: '#nav [data-page="sessions"]', title: '会话管理', text: '查看本机 Agent 的对话历史，复制项目地址，或者直接在 TokenPulse 里接着回复。' },
+    { chapter: '会话与监控', page: 'sessions', target: '#nav [data-page="sessions"]', title: '会话管理', text: '查看本机 Agent 的对话历史，支持全文检索、复制项目地址，或在终端里继续会话。' },
     { chapter: '会话与监控', page: 'sessions', target: '#page-sessions .sw-new-row', title: '新对话、新项目', text: '「新对话」在已有的项目里开一段新对话，「新项目」先选或新建一个文件夹；选好工具后，TokenPulse 在那个文件夹里打开终端启动它。会话的「更多」里还能在终端里接着聊。' },
     { chapter: '会话与监控', page: 'egress', target: '#nav [data-page="egress"]', title: '出口监控', text: '分别检测三家的出口 IP，偏离白名单或地区规则时提醒，还能在出口不对时暂停查询额度。' },
     { chapter: '会话与监控', page: 'egress', target: '#page-egress .egress-toolbar', title: '检测间隔，和启动前核对出口', text: '「检测间隔」可以填 5 到 60 秒。开着监控、并给某一家设了白名单时，凡是 TokenPulse 启动的这一家的 CLI 都会先核对出口：设了 IP 白名单就看 IP，只设了地区白名单就看地区。监控关着，或者两个白名单都没设，就直接启动。' },

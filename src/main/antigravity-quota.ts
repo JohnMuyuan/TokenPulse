@@ -224,6 +224,8 @@ export type AgyModelCapacityRow = {
   weekCalls: number | null;
   weekRemainingTokens: number | null;
   relative: number | null;
+  /** 是否属于当前官方额度列表中的活跃型号（false 表示仅从历史记录扫到的旧型号或后台内部型号）。 */
+  inCatalog?: boolean;
 };
 
 export type AgyRecentRequest = {
@@ -316,8 +318,16 @@ export type AgyQuotaState = {
   accounts: AgyAccountQuotaState[];
 };
 
+type LocalTierCatalog = {
+  at: number;
+  groups: { pool: string; title?: string; models: string[] }[];
+  models: AgyModelQuotaItem[];
+};
 type AccountSlot = { last?: AgyLast; history: AgySample[]; notified: Record<string, number> };
-type Stored = AccountSlot & { accounts?: Record<string, AccountSlot> };
+type Stored = AccountSlot & {
+  accounts?: Record<string, AccountSlot>;
+  localCatalogs?: Record<string, LocalTierCatalog>;
+};
 
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -484,6 +494,109 @@ function reconcileLegacyHistory(base: AccountSlot, accounts: Record<string, Acco
   ownerSlot.history = mergeSampleLists([rescued, ownerSlot.history]);
 }
 
+const LEGACY_CLOUD_MODEL_RE = /^(?:gemini 2\.5 pro|gemini 3 flash|gemini 3\.1 flash (?:image|lite)|gemini 3\.5 flash lite)$/i;
+
+function tierCatalogKey(tier?: string, plan?: string): string {
+  const rawTier = (tier || "").trim().toLowerCase();
+  if (rawTier) return rawTier;
+  const rawPlan = (plan || "").trim().toLowerCase();
+  if (/ultra/.test(rawPlan)) return "google ai ultra";
+  if (/pro/.test(rawPlan)) return "google ai pro";
+  return rawPlan;
+}
+
+function hasModernGeminiRoster(models: { family?: string; label?: string; model?: string }[] | string[]): boolean {
+  for (const item of models) {
+    const text = typeof item === "string" ? item : `${item.family || ""} ${item.label || ""} ${item.model || ""}`;
+    if (/gemini[- ]?4|orchestrator/i.test(text)) return true;
+  }
+  return false;
+}
+
+function hasLegacyCloudModels(models: { family?: string; label?: string }[] | string[]): boolean {
+  for (const item of models) {
+    const text = typeof item === "string" ? item : modelFamily(item.label || item.family || "");
+    if (LEGACY_CLOUD_MODEL_RE.test(text.trim())) return true;
+  }
+  return false;
+}
+
+function extractTierCatalog(
+  source: { groups: { title?: string; models: string[] }[]; models?: AgyModelQuotaItem[] },
+  at: number,
+): LocalTierCatalog | null {
+  if (!source.groups.length || !source.models?.length) return null;
+  const groups = source.groups.map((g) => ({
+    pool: quotaPoolId(g.models, g.title),
+    ...(g.title ? { title: g.title } : {}),
+    models: [...g.models],
+  }));
+  const models = source.models.map((m) => ({
+    label: m.label,
+    family: m.family,
+    model: m.model,
+    ...(m.effort ? { effort: m.effort } : {}),
+    ...(m.modelEnum ? { modelEnum: m.modelEnum } : {}),
+    used: 0,
+  }));
+  return { at, groups, models };
+}
+
+function enrichGroupsAndModelsWithCatalog<G extends { title?: string; models: string[]; used: number; resetAt?: string; week?: AgyWindowQuota }>(
+  groups: G[],
+  models: AgyModelQuotaItem[] | undefined,
+  catalog: LocalTierCatalog | undefined,
+  withKey: boolean,
+): { groups: G[]; models: AgyModelQuotaItem[] | undefined; changed: boolean } {
+  if (!catalog || !groups.length) return { groups, models, changed: false };
+  const currentModels = models ? [...models] : [];
+  let changed = false;
+  const nextModels: AgyModelQuotaItem[] = [];
+  const replacedPools = new Set<string>();
+
+  const nextGroups = groups.map((g) => {
+    const pool = quotaPoolId(g.models, g.title);
+    const catGroup = catalog.groups.find((cg) => cg.pool === pool);
+    if (!catGroup || !catGroup.models.length) return g;
+    const catPoolModels = catalog.models.filter((m) => quotaPoolId(m.family || m.label, g.title) === pool);
+    if (!catPoolModels.length) return g;
+
+    const shouldUpgradeGemini =
+      pool === "pool:gemini" &&
+      hasModernGeminiRoster(catGroup.models) &&
+      (!hasModernGeminiRoster(g.models) || hasLegacyCloudModels(g.models));
+    const shouldUpgrade3p =
+      pool === "pool:3p" &&
+      g.models.every((m) => /^claude and gpt models$/i.test(m.trim())) &&
+      catGroup.models.some((m) => !/^claude and gpt models$/i.test(m.trim()));
+
+    if (!shouldUpgradeGemini && !shouldUpgrade3p) return g;
+    changed = true;
+    replacedPools.add(pool);
+    for (const cm of catPoolModels) {
+      nextModels.push({
+        ...cm,
+        used: g.used,
+        ...(g.resetAt ? { resetAt: g.resetAt } : {}),
+        ...(g.week ? { weekUsed: g.week.used, ...(g.week.resetAt ? { weekResetAt: g.week.resetAt } : {}) } : {}),
+      });
+    }
+    return {
+      ...g,
+      models: [...catGroup.models],
+      ...(withKey ? { key: groupKey(catGroup.models) } : {}),
+    };
+  });
+
+  if (!changed) return { groups, models, changed: false };
+
+  for (const m of currentModels) {
+    const pool = quotaPoolId(m.family || m.label);
+    if (!replacedPools.has(pool)) nextModels.push(m);
+  }
+  return { groups: nextGroups, models: nextModels, changed: true };
+}
+
 function sanitizeStored(raw: Partial<Stored> | null): Stored {
   const base = sanitizeSlotHistoryAndNotified(raw);
   const accounts: Record<string, AccountSlot> = {};
@@ -501,7 +614,15 @@ function sanitizeStored(raw: Partial<Stored> | null): Stored {
     }
   }
   const cleanBase = sanitizeSlotLast(base);
-  return { ...cleanBase, ...(Object.keys(accounts).length ? { accounts } : {}) };
+  const localCatalogs =
+    raw?.localCatalogs && typeof raw.localCatalogs === "object"
+      ? (raw.localCatalogs as Record<string, LocalTierCatalog>)
+      : undefined;
+  return {
+    ...cleanBase,
+    ...(Object.keys(accounts).length ? { accounts } : {}),
+    ...(localCatalogs ? { localCatalogs } : {}),
+  };
 }
 
 function dayStr(at: number) {
@@ -1360,12 +1481,22 @@ function buildWindowInsight(
   };
 }
 
+function dominantEffortOf(rows: RequestRow[]): string | null {
+  const weights = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.effort || !EFFORT_SCALE[r.effort]) continue;
+    weights.set(r.effort, (weights.get(r.effort) ?? 0) + (r.output || 0) + 1);
+  }
+  return [...weights.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+}
+
 function buildModelCapacities(
   groupInsights: AgyGroupInsight[],
   lastModels: AgyModelQuotaItem[] | undefined,
   rows30: RequestRow[],
+  now = Date.now(),
 ): AgyModelCapacityRow[] {
-  type Candidate = { model: string; family: string; effort: string; group: AgyGroupInsight };
+  type Candidate = { model: string; family: string; effort: string; group: AgyGroupInsight; inCatalog: boolean };
   const candidates = new Map<string, Candidate>();
 
   const defaultGroup = groupInsights[0];
@@ -1379,7 +1510,7 @@ function buildModelCapacities(
     if (!g) continue;
     const key = comboKey(item.model, effort || "default");
     if (!candidates.has(key)) {
-      candidates.set(key, { model: item.model, family: item.family, effort, group: g });
+      candidates.set(key, { model: item.model, family: item.family, effort, group: g, inCatalog: true });
     }
   }
 
@@ -1399,7 +1530,7 @@ function buildModelCapacities(
                 : ["medium"];
         for (const effort of defaultEfforts) {
           const key = comboKey(model, effort || "default");
-          if (!candidates.has(key)) candidates.set(key, { model, family, effort, group: g });
+          if (!candidates.has(key)) candidates.set(key, { model, family, effort, group: g, inCatalog: true });
         }
       }
     }
@@ -1412,31 +1543,75 @@ function buildModelCapacities(
     const key = comboKey(row.model, effort || "default");
     if (!candidates.has(key)) {
       const g = findGroup(row.model, row.model);
-      if (g) candidates.set(key, { model: row.model, family: row.model, effort, group: g });
+      if (g) candidates.set(key, { model: row.model, family: row.model, effort, group: g, inCatalog: false });
     }
   }
 
+  // 按额度池构建统一的基线 Token 结构：优先用近期（7 天）带思考档位的交互请求，
+  // 排除无档位后台内部模型（如 gemini-3.8-flash-tiered）与极少次冷启动请求的干扰，确保各型号 / 思考档位横向可比且与整窗实测一致。
+  type PoolBaseline = {
+    anchorEffort: string;
+    mix: AgyUsageSummary;
+    hasOwn: boolean;
+    totalCalls: number;
+  };
+  const d7Start = now - 7 * DAY;
+  const poolBaselines = new Map<string, PoolBaseline>();
+  for (const g of groupInsights) {
+    const gRows = rows30.filter((r) => groupMatchesModel(g, r.model));
+    const interactive = gRows.filter((r) => Boolean(r.effort && EFFORT_SCALE[r.effort]));
+    const recentInteractive = interactive.filter((r) => r.at >= d7Start);
+    const poolSource = recentInteractive.length >= 15
+      ? recentInteractive
+      : interactive.length >= 3
+        ? interactive
+        : gRows;
+    const hasOwnPool = poolSource.length >= 3;
+    const anchorEffort = hasOwnPool ? (dominantEffortOf(poolSource) ?? "medium") : "medium";
+    const anchorRows = hasOwnPool ? poolSource.filter((r) => (r.effort || "medium") === anchorEffort) : [];
+    const effectiveRows = anchorRows.length >= 5 ? anchorRows : poolSource;
+    const hasOwn = effectiveRows.length >= 3;
+    const mix = hasOwn
+      ? summarizeRows(effectiveRows)
+      : { ...DEFAULT_MIX, tokens: DEFAULT_MIX.input + DEFAULT_MIX.output, reasoning: 0, costUsd: 0, requests: 22 };
+    const totalCalls = gRows.reduce((s, r) => s + (r.calls || 1), 0);
+    poolBaselines.set(g.key, { anchorEffort, mix, hasOwn, totalCalls });
+  }
+
+  const MIN_OWN_COMBO_CALLS = 30;
   const out: AgyModelCapacityRow[] = [];
   for (const [key, cand] of candidates) {
     const modelRows = rows30.filter((r) => r.model === cand.model);
     const comboRows = cand.effort
       ? modelRows.filter((r) => (r.effort || "medium") === cand.effort)
       : modelRows.filter((r) => !r.effort || r.effort === "unknown");
-    const groupRows = rows30.filter((r) => groupMatchesModel(cand.group, r.model));
 
     const rule = priceOf(cand.model) as PriceRule | null;
     const listPrice = rule
       ? { input: rule.input, output: rule.output, cacheRead: rule.cacheRead, cacheWrite: rule.cacheWrite, note: rule.note || "" }
       : null;
 
-    const basePool = modelRows.length >= 3 ? modelRows : groupRows.length >= 3 ? groupRows : [];
-    const mixBasis: AgyModelCapacityRow["mixBasis"] = modelRows.length >= 3 ? "model" : groupRows.length >= 3 ? "group" : "default";
-    const baseSummary = basePool.length
-      ? summarizeRows(basePool)
-      : { ...DEFAULT_MIX, tokens: DEFAULT_MIX.input + DEFAULT_MIX.output, reasoning: 0, costUsd: 0, requests: 22 };
+    const baseline = poolBaselines.get(cand.group.key) ?? {
+      anchorEffort: "medium",
+      mix: { ...DEFAULT_MIX, tokens: DEFAULT_MIX.input + DEFAULT_MIX.output, reasoning: 0, costUsd: 0, requests: 22 },
+      hasOwn: false,
+      totalCalls: 0,
+    };
 
-    const anchorEffort = modelRows[0]?.effort && EFFORT_SCALE[modelRows[0].effort] ? modelRows[0].effort : "medium";
-    const ratio = (EFFORT_SCALE[cand.effort] ?? 1) / (EFFORT_SCALE[anchorEffort] ?? 1);
+    const comboSum = summarizeRows(comboRows);
+    const modelSum = summarizeRows(modelRows);
+    const modelCalls = modelSum.requests;
+    const isOwnEffortless = !cand.effort && comboSum.requests >= MIN_OWN_COMBO_CALLS;
+    const baseSummary = isOwnEffortless ? comboSum : baseline.mix;
+    const mixBasis: AgyModelCapacityRow["mixBasis"] = isOwnEffortless
+      ? "model"
+      : baseline.hasOwn
+        ? (modelCalls >= MIN_OWN_COMBO_CALLS ? "model" : "group")
+        : "default";
+
+    const ratio = isOwnEffortless || !cand.effort || !EFFORT_SCALE[cand.effort]
+      ? 1
+      : EFFORT_SCALE[cand.effort] / (EFFORT_SCALE[baseline.anchorEffort] ?? 1);
     const scaledMix = {
       input: baseSummary.input,
       output: Math.round(baseSummary.output * ratio),
@@ -1447,18 +1622,27 @@ function buildModelCapacities(
     const costForMix = scaledTotal > 0 ? estimateCost(cand.model, scaledMix) : 0;
     const usdPerMTokens = costForMix > 0 && scaledTotal > 0 ? Math.round(((costForMix / scaledTotal) * 1e6) * 1000) / 1000 : null;
 
-    const comboSum = summarizeRows(comboRows);
-    const tokensPerCall = comboSum.requests >= 2
-      ? Math.round(comboSum.tokens / comboSum.requests)
-      : baseSummary.requests > 0
-        ? Math.round(scaledTotal / baseSummary.requests)
-        : 45_000;
+    // 单次调用大小：优先同一型号自身的代表性基线（按思考档位等比折算，确保同型号不同档位单调一致），否则回退到同池基线
+    let tokensPerCall: number;
+    if (isOwnEffortless && comboSum.tokens > 0) {
+      tokensPerCall = Math.round(comboSum.tokens / comboSum.requests);
+    } else if (modelCalls >= MIN_OWN_COMBO_CALLS && modelSum.tokens > 0) {
+      const mAnchor = dominantEffortOf(modelRows) ?? "medium";
+      const mAnchorRows = modelRows.filter((r) => (r.effort || "medium") === mAnchor);
+      const mBase = mAnchorRows.length >= 10 ? summarizeRows(mAnchorRows) : modelSum;
+      const mRatio = cand.effort && EFFORT_SCALE[cand.effort]
+        ? EFFORT_SCALE[cand.effort] / (EFFORT_SCALE[mAnchor] ?? 1)
+        : 1;
+      tokensPerCall = Math.round((mBase.input + mBase.output * mRatio) / Math.max(1, mBase.requests));
+    } else {
+      tokensPerCall = baseSummary.requests > 0 ? Math.round(scaledTotal / baseSummary.requests) : 45_000;
+    }
 
     const fiveBudgetUsd = cand.group.five.capacity.fullCostUsd;
     const fiveDirectTokens = cand.group.five.capacity.fullTokens;
     const fiveTokens = fiveBudgetUsd != null && usdPerMTokens
       ? Math.round((fiveBudgetUsd / usdPerMTokens) * 1e6)
-      : fiveDirectTokens != null && cand.model === modelRows[0]?.model
+      : fiveDirectTokens != null && modelRows.length > 0
         ? Math.round(fiveDirectTokens / ratio)
         : null;
     const fiveCalls = fiveTokens != null && tokensPerCall > 0 ? Math.max(1, Math.round(fiveTokens / tokensPerCall)) : null;
@@ -1469,7 +1653,7 @@ function buildModelCapacities(
     const weekDirectTokens = weekCap?.fullTokens ?? null;
     const weekTokens = weekBudgetUsd != null && usdPerMTokens
       ? Math.round((weekBudgetUsd / usdPerMTokens) * 1e6)
-      : weekDirectTokens != null && cand.model === modelRows[0]?.model
+      : weekDirectTokens != null && modelRows.length > 0
         ? Math.round(weekDirectTokens / ratio)
         : null;
     const weekCalls = weekTokens != null && tokensPerCall > 0 ? Math.max(1, Math.round(weekTokens / tokensPerCall)) : null;
@@ -1496,16 +1680,23 @@ function buildModelCapacities(
       weekCalls,
       weekRemainingTokens,
       relative: null,
+      inCatalog: cand.inCatalog,
     });
   }
 
-  const ref = [...out]
-    .filter((r) => r.usdPerMTokens && r.usdPerMTokens > 0)
-    .sort((a, b) => b.recentTokens - a.recentTokens || a.usdPerMTokens! - b.usdPerMTokens!)[0];
-  if (ref?.usdPerMTokens) {
-    for (const row of out) {
-      if (row.usdPerMTokens && row.usdPerMTokens > 0) {
-        row.relative = Math.round((ref.usdPerMTokens / row.usdPerMTokens) * 100) / 100;
+  // 相对比例按各自额度池单独计算（优先以池内目录型号为 1.00× 基准），不跨池混比
+  for (const g of groupInsights) {
+    const poolRows = out.filter((r) => r.groupKey === g.key && r.usdPerMTokens && r.usdPerMTokens > 0);
+    const catalogPoolRows = poolRows.filter((r) => r.inCatalog !== false);
+    const refPool = catalogPoolRows.length ? catalogPoolRows : poolRows;
+    // 相对比例按各自额度池单独计算（有本地用量时以最常用目录型号为 1.00×，无用量时以首个目录主力型号为 1.00×），不跨池混比
+    const hasRecent = refPool.some((r) => r.recentTokens > 0);
+    const ref = hasRecent
+      ? [...refPool].sort((a, b) => b.recentTokens - a.recentTokens || a.usdPerMTokens! - b.usdPerMTokens!)[0]
+      : refPool.find((r) => r.effort === "medium" || r.effort === "high") ?? refPool[0];
+    if (ref?.usdPerMTokens) {
+      for (const row of poolRows) {
+        row.relative = Math.round((ref.usdPerMTokens / row.usdPerMTokens!) * 100) / 100;
       }
     }
   }
@@ -1873,6 +2064,49 @@ export class AntigravityQuota {
     });
   }
 
+  private recordLocalCatalog(status: AgyStatus, at: number) {
+    const key = tierCatalogKey(status.tier, status.plan);
+    if (!key) return;
+    const cat = extractTierCatalog(status, at);
+    if (!cat) return;
+    this.stored.localCatalogs ??= {};
+    this.stored.localCatalogs[key] = cat;
+  }
+
+  private findLocalCatalogForTier(tier?: string, plan?: string): LocalTierCatalog | undefined {
+    const key = tierCatalogKey(tier, plan);
+    if (!key) return undefined;
+    const cached = this.stored.localCatalogs?.[key];
+    if (cached && cached.models.length) return cached;
+    // 若尚无持久化目录（刚升级首次打开），从已保存的其他同档位本地槽位提取最新 Cascade 型号目录
+    const slots: AccountSlot[] = [
+      ...Object.values(this.stored.accounts ?? {}),
+      this.stored,
+    ];
+    let best: LocalTierCatalog | undefined;
+    for (const s of slots) {
+      if (!s.last?.models?.length) continue;
+      if (tierCatalogKey(s.last.tier, s.last.plan) !== key) continue;
+      if (!hasModernGeminiRoster(s.last.models)) continue;
+      const candidate = extractTierCatalog(s.last, s.last.at || 0);
+      if (candidate && (!best || candidate.at >= best.at)) best = candidate;
+    }
+    return best;
+  }
+
+  private effectiveLastOf(last: AgyLast | undefined): AgyLast | undefined {
+    if (!last || !last.groups?.length) return last;
+    const catalog = this.findLocalCatalogForTier(last.tier, last.plan);
+    if (!catalog) return last;
+    const enriched = enrichGroupsAndModelsWithCatalog(last.groups, last.models, catalog, true);
+    if (!enriched.changed) return last;
+    return {
+      ...last,
+      groups: enriched.groups,
+      ...(enriched.models?.length ? { models: enriched.models } : {}),
+    };
+  }
+
   buildInsight(
     now = this.now(),
     accountId = "antigravity",
@@ -1884,18 +2118,20 @@ export class AntigravityQuota {
     try {
       rollupMtime = fs.statSync(dataFile("usage-rollups.json")).mtimeMs;
     } catch { /* 还没生成账本 */ }
+    const effLast = this.effectiveLastOf(slot.last);
     const rows30 = scopedRows ?? this.recentRows(now);
     const stamp = [
       accountId,
       rollupMtime,
       rows30.length,
       rows30.at(-1)?.at ?? 0,
-      slot.last?.at ?? 0,
+      effLast?.at ?? 0,
       slot.history.length,
       shareCtx.mode,
       shareCtx.familyShared ? 1 : 0,
       shareCtx.familyPeers.join(","),
-      (slot.last?.groups ?? []).map((g) => `${g.key}:${g.used}:${g.week?.used ?? ""}`).join(","),
+      (effLast?.groups ?? []).map((g) => `${g.key}:${g.used}:${g.week?.used ?? ""}`).join(","),
+      (effLast?.models ?? []).length,
     ].join("|");
 
     const cached = this.insightCache.get(accountId);
@@ -1979,8 +2215,8 @@ export class AntigravityQuota {
         ...(r.timing ? { timing: r.timing } : {}),
       }));
 
-    const lastGroups = slot.last?.groups ?? [];
-    const lastModels = (slot.last?.models ?? []).map((m) => {
+    const lastGroups = effLast?.groups ?? [];
+    const lastModels = (effLast?.models ?? []).map((m) => {
       if (!m.label) return m;
       const split = splitModelLabel(m.label);
       const { effort: _oldEffort, ...rest } = m;
@@ -2074,7 +2310,7 @@ export class AntigravityQuota {
     });
 
     const kb = loadKnowledge();
-    const modelCapacities = buildModelCapacities(groups, lastModels, rows30);
+    const modelCapacities = buildModelCapacities(groups, lastModels, rows30, now);
 
     const insight: AgyInsight = {
       now,
@@ -2105,13 +2341,14 @@ export class AntigravityQuota {
     const visible = visibleAgyAccounts();
 
     if (!visible.length) {
+      const effLast = this.effectiveLastOf(this.stored.last);
       const insight = this.buildInsight(now, "antigravity", this.stored, allRows, DEFAULT_SHARE_CONTEXT);
       return {
         installed: this.installed(),
         running: this.running,
         loading: this.loading,
         conversations: insight.conversations,
-        ...(this.stored.last ? { last: this.stored.last } : {}),
+        ...(effLast ? { last: effLast } : {}),
         history: this.stored.history.filter((sample) => sample.at >= since),
         insight,
         registeredCount: 0,
@@ -2154,6 +2391,7 @@ export class AntigravityQuota {
         familyShared,
         familyPeers: peerNames,
       };
+      const effLast = this.effectiveLastOf(slot.last);
       const insight = this.buildInsight(now, acc.id, slot, scopedRows, shareCtx);
       const displayName = names[index] || "";
       const accountHint = acc.alias || (visible.length > 1 ? acc.email || acc.label : "");
@@ -2172,7 +2410,7 @@ export class AntigravityQuota {
         familyShared,
         familyPeers: peerNames,
         loading: this.loading || this.loadingAccounts.has(acc.id),
-        ...(slot.last ? { last: slot.last } : {}),
+        ...(effLast ? { last: effLast } : {}),
         history: slot.history.filter((sample) => sample.at >= since),
         insight,
       };
@@ -2431,6 +2669,7 @@ export class AntigravityQuota {
             };
           }
         } else {
+          this.recordLocalCatalog(status, at);
           this.applyStatusToSlot(this.stored, status, at);
         }
       } else {
@@ -2458,6 +2697,10 @@ export class AntigravityQuota {
           }
         }
 
+        if (localSession?.status) {
+          this.recordLocalCatalog(localSession.status, at);
+        }
+
         const targets = targetAccountId
           ? refreshedVisible.filter((a) => a.id === targetAccountId)
           : refreshedVisible;
@@ -2481,6 +2724,17 @@ export class AntigravityQuota {
                   let finalStatus = res.status;
                   if (inLocal && localSession?.status) {
                     finalStatus = mergeLocalAndCloudStatus(localSession.status, res.status);
+                    this.recordLocalCatalog(finalStatus, at);
+                  } else {
+                    const cat = this.findLocalCatalogForTier(res.status.tier, res.status.plan);
+                    const enriched = enrichGroupsAndModelsWithCatalog(res.status.groups, res.status.models, cat, false);
+                    if (enriched.changed) {
+                      finalStatus = {
+                        ...res.status,
+                        groups: enriched.groups,
+                        ...(enriched.models?.length ? { models: enriched.models } : {}),
+                      };
+                    }
                   }
                   this.applyStatusToSlot(slot, finalStatus, at, label);
                   return;

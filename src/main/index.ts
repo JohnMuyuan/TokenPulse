@@ -27,7 +27,7 @@ import { modelCandidates, parseStudyModels } from "../core/model-catalog";
 import { FAMILY as STUDY_FAMILY } from "../core/quota-offmachine";
 import { loadDeepSeek, loadModelStudy, loadPool, loadRequests, loadSessionDetail, loadSessions, loadSnapshot, searchSessionText } from "./snapshot";
 import { sessionCommand, type AgentKind } from "../core/sessions";
-import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerminal, resolveCli, startReply, stopAllReplies, stopReply, type ReplyMode } from "./session-reply";
+import { cleanAgentEnv, deleteSession as deleteAgentSession, guardMode, openTerminal, resolveCli } from "./session-reply";
 import { checkKnowledge, knowledgeState, scheduleKnowledgeChecks } from "./knowledge-update";
 import type { RequestQuery } from "../core/request-log";
 import { prefsExist, quotaEverySeconds, readPrefs, writePrefs, type Prefs } from "./prefs";
@@ -980,27 +980,6 @@ async function sessionOf(kind: unknown, id: unknown) {
   return { kind, id, session };
 }
 
-/** 在 TokenPulse 里直接回复（见 session-reply.ts）。必须在原项目目录里跑：Agent 读写的是这个目录。 */
-async function replyInApp(kind: unknown, id: unknown, prompt: unknown, mode: unknown) {
-  if (kind === "pi") throw new Error("pi 会话请在终端里继续。");
-  const hit = await sessionOf(kind, id);
-  if (typeof prompt !== "string" || !prompt.trim()) throw new Error("回复内容是空的");
-  if (prompt.length > 100_000) throw new Error("回复内容太长");
-  const cwd = hit.session.cwd;
-  if (!cwd || !fsSync.existsSync(cwd)) throw new Error("这个会话的项目目录已经不在了，没法在原目录里继续");
-  // 0.3.16：凡是 TokenPulse 启动的 CLI，设了出口 IP 白名单就先测出口，不在白名单不启动。Harness 这版不做出口监控。
-  if (hit.kind !== "deepseek" && hit.kind !== "pi" && hit.kind !== "antigravity") {
-    const gate = await exitMonitor.gateLaunch(CLI_PROVIDER[hit.kind], CLI_NAME[hit.kind]);
-    if (!gate.ok) throw new Error(gate.message);
-  }
-  // Antigravity CLI 只读自己目录里的对话：桌面端的对话先导入，否则 CLI 看不到前面的历史
-  if (hit.kind === "antigravity") await prepareAntigravityCliConversation(hit.id);
-  const runId = startReply({ kind: hit.kind, id: hit.id, cwd, prompt, mode: (mode === "edit" ? "edit" : "readonly") as ReplyMode }, (event) => {
-    if (win && !win.isDestroyed()) win.webContents.send("session-reply", event);
-  });
-  return { runId };
-}
-
 /** 在终端里接着这段会话（交互模式，能看到 CLI 自己的界面）。 */
 async function openInTerminal(kind: unknown, id: unknown) {
   const hit = await sessionOf(kind, id);
@@ -1566,8 +1545,6 @@ if (!app.requestSingleInstanceLock()) {
       clipboard.writeText(text);
       return true;
     });
-    ipcMain.handle("sessions:reply", (_event, kind: unknown, id: unknown, prompt: unknown, mode: unknown) => replyInApp(kind, id, prompt, mode));
-    ipcMain.handle("sessions:reply-stop", (_event, runId: unknown) => typeof runId === "string" && stopReply(runId));
     ipcMain.handle("sessions:terminal", (_event, kind: unknown, id: unknown) => openInTerminal(kind, id));
     ipcMain.handle("sessions:prepare-resume", (_event, kind: unknown, id: unknown) => prepareResume(kind, id));
     ipcMain.handle("sessions:clis", () => installedClis());
@@ -1617,7 +1594,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', event => {
     destroyTrayPanel();
     destroyDeskPet();
-    if (agentQuitReady) { quitting = true; exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); antigravityQuota.stop(); stopAllReplies(); releasePrism(); return; }
+    if (agentQuitReady) { quitting = true; exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); antigravityQuota.stop(); releasePrism(); return; }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

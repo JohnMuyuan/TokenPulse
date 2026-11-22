@@ -42,13 +42,23 @@
 .agy-week-pred { margin-top: 10px; margin-bottom: 0; }
 .agy-week-box .reset-card-note { margin: 10px 0 0; }
 
-/* 组内模型档位列表 */
+/* 组内模型档位列表（按型号家族折叠档位，超出时默认收起保持卡片紧凑） */
 .agy-tier-list { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
 .agy-tier-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; font-size: 12px; color: var(--muted); }
 .agy-tier-head b { color: var(--text-2); font-weight: 600; }
-.agy-tier-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; min-width: 0; }
-.agy-tier-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agy-tier-usage { flex: none; color: var(--muted); font-size: 12px; }
+.agy-tier-rows { display: grid; gap: 6px; }
+.agy-tier-rows.is-expanded { max-height: 260px; overflow-y: auto; padding-right: 2px; }
+.agy-tier-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; min-width: 0; }
+.agy-tier-row.has-usage { background: color-mix(in srgb, var(--agy-color, var(--antigravity)) 6%, var(--surface-2)); }
+.agy-tier-name { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 6px; min-width: 0; }
+.agy-tier-family { font-weight: 550; color: var(--text); white-space: nowrap; }
+.agy-tier-pills { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.agy-tier-pill { display: inline-flex; align-items: center; height: 19px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 11px; line-height: 1; white-space: nowrap; }
+.agy-tier-pill.used { border-color: color-mix(in srgb, var(--agy-color, var(--antigravity)) 42%, var(--line)); background: color-mix(in srgb, var(--agy-color, var(--antigravity)) 14%, var(--surface)); color: var(--agy-color, var(--antigravity)); font-weight: 600; }
+.agy-tier-usage { flex: none; color: var(--faint); font-size: 12px; white-space: nowrap; }
+.agy-tier-usage.has-usage { color: var(--text-2); font-weight: 550; }
+.agy-tier-toggle { justify-self: start; display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2); color: var(--text-2); font-size: 12px; font-weight: 550; cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
+.agy-tier-toggle:hover, .agy-tier-toggle:focus-visible { border-color: var(--agy-color, var(--antigravity)); background: var(--surface); color: var(--text); outline: none; }
 
 .agy-card-actions { display: inline-flex; align-items: center; gap: 10px; }
 .agy-context-body { min-width: 0; }
@@ -152,6 +162,19 @@
 
 /* 模型换算与最近请求 */
 .agy-model-study, .agy-requests { margin-top: 18px; min-width: 0; }
+.agy-study-pool { margin-top: 14px; }
+.agy-study-pool + .agy-study-pool { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.agy-study-pool-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.agy-study-pool-title { display: inline-flex; align-items: center; font-size: 13.5px; font-weight: 650; color: var(--text); }
+.agy-study-pool-meta { font-size: 12px; color: var(--muted); }
+.agy-study-toggle { margin-top: 8px; }
+.agy-model-study .agy-study-pool .ms-meter { height: 6px; background: var(--tile-neutral); }
+.agy-model-study .agy-study-pool .five .ms-meter .full { background: color-mix(in srgb, var(--agy-color, var(--accent)) 32%, transparent); }
+.agy-model-study .agy-study-pool .five .ms-meter .left { background: var(--agy-color, var(--accent)); }
+.agy-model-study .agy-study-pool .week .ms-meter .full { background: color-mix(in srgb, var(--agy-color, var(--brand-claude)) 32%, transparent); }
+.agy-model-study .agy-study-pool .week .ms-meter .left { background: var(--agy-color, var(--brand-claude)); }
+.agy-model-study .agy-study-pool .ms-meter .full:only-child { background: color-mix(in srgb, var(--agy-color, var(--accent)) 72%, transparent); }
+.agy-model-study .agy-study-pool .ms-meter .full.relative { background: color-mix(in srgb, var(--agy-color, var(--accent)) 56%, transparent); }
 .agy-requests .table-scroll {
   overflow: auto;
   max-inline-size: 100%;

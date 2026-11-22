@@ -142,6 +142,7 @@ app.on('web-contents-created', (_event, wc) => {
     assert.match(await text('#quota-detail .agy-context'), /Google Antigravity[\s\S]*Google AI Ultra · Pro/);
     assert.match(await text(`#quota-detail .agy-group[data-group="${KEY_A}"]`), /剩余额度[\s\S]*已用 30\.0%[\s\S]*按最近的速度，重置时大约用到 60\.0%[\s\S]*周额度窗口[\s\S]*80\.0%[\s\S]*周已用 20\.0%[\s\S]*Token 与费用[\s\S]*10\.00/);
     assert.match(await text(`#quota-detail .agy-group[data-group="${KEY_B}"]`), /100\.0%[\s\S]*这个窗口里还没有新增用量[\s\S]*周额度窗口[\s\S]*90\.0%/);
+    assert.equal(await e("[...document.querySelectorAll('#quota-detail .agy-tier-list')].every(n => !/\\bnull\\b/.test(n.textContent || ''))"), true, '组内模型档位不应渲染出 null 文本节点');
     assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line').length"), 2, '走势图每组一条线');
     assert.equal(await e("document.querySelectorAll('#quota-detail .agy-chart .agy-line-week').length"), 2, '周额度走势虚线每组一条');
     assert.ok(await e("!!document.querySelector('#quota-detail .agy-capacity') && !!document.querySelector('#quota-detail .agy-model-study') && !!document.querySelector('#quota-detail .agy-requests')"), '容量趋势、模型换算与账号请求面板齐全');
@@ -190,6 +191,23 @@ app.on('web-contents-created', (_event, wc) => {
     assert.notEqual(chartFacts.groupDots[0], chartFacts.groupDots[1], '详情分组卡片圆点颜色经 CSSOM 生效区分');
     assert.ok(chartFacts.capStroke !== 'none' && chartFacts.capWidth > 40 && chartFacts.capDotCount >= 2, '额度容量趋势绘制出真实 SVG 历史容量折线与采样点: ' + JSON.stringify(chartFacts));
     assert.notEqual(chartFacts.capCardDots[0], chartFacts.capCardDots[1], '容量趋势双池卡片各自保持池主题色');
+    // 核验「换一种模型，整窗能用多少」进度条为彩色实条（不再是透明/纯灰槽），且「组内模型档位」按型号家族紧凑聚合
+    const studyBarCheck = await e(`(() => {
+      const fills = [...document.querySelectorAll('#quota-detail .agy-model-study .ms-meter .full')];
+      const lefts = [...document.querySelectorAll('#quota-detail .agy-model-study .ms-meter .left')];
+      const tiers = [...document.querySelectorAll('#quota-detail .agy-tier-row .agy-tier-family')].map(n => n.textContent);
+      return {
+        fillCount: fills.length,
+        leftCount: lefts.length,
+        fillBgs: fills.map(f => getComputedStyle(f).backgroundColor),
+        leftBgs: lefts.map(l => getComputedStyle(l).backgroundColor),
+        tiers,
+      };
+    })()`);
+    assert.ok(studyBarCheck.fillCount >= 3, '模型换算表渲染进度条: ' + JSON.stringify(studyBarCheck));
+    assert.ok(studyBarCheck.fillBgs.every(bg => bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent'), '模型换算进度条不再透明成纯灰槽: ' + JSON.stringify(studyBarCheck.fillBgs));
+    assert.ok(studyBarCheck.leftCount >= 1 && studyBarCheck.leftBgs.every(bg => bg && bg !== 'rgba(0, 0, 0, 0)'), '存在剩余可用彩色实条: ' + JSON.stringify(studyBarCheck.leftBgs));
+    assert.equal(studyBarCheck.tiers.filter(t => t === 'Gemini 4 Argon').length, 1, '同型号多思考档位聚合为一行，不刷屏重复: ' + JSON.stringify(studyBarCheck.tiers));
     assert.deepEqual(cspErrors, [], '页面全程无 CSP 违规报错');
     await e("document.querySelector('#quota-detail .agy-capacity').scrollIntoView({ block: 'start' })");
     await shot('agy-capacity-and-history-light');
@@ -273,8 +291,8 @@ app.on('web-contents-created', (_event, wc) => {
     await e("document.querySelector('.sw-usage-toggle').click()");
     assert.equal(await e("document.querySelector('.sw-usage-panel').hidden"), false, '点击展开会话用量详情');
     assert.match(await text('.sw-usage-panel'), /总 Token 消耗[\s\S]*缓存命中率[\s\S]*API 等价花费[\s\S]*模型占比分布[\s\S]*gemini-4-argon/);
-    assert.equal(await e("[...document.querySelectorAll('.sw-actions button')].some(b => b.textContent.includes('回复对话'))"), true, '支持在 TokenPulse 里通过 Antigravity CLI 回复');
-    assert.ok(await e("!!document.querySelector('.sw-composer textarea')"), '展示 Antigravity 回复输入框');
+    assert.equal(await e("[...document.querySelectorAll('.sw-actions button')].some(b => b.textContent.includes('回复对话'))"), false, '已移除应用内回复对话按钮');
+    assert.equal(await e("document.querySelector('.sw-composer')"), null, '已移除底部回复输入框');
     await e("document.querySelector('.sw-actions button[aria-haspopup=menu]').click()");
     await until("!document.getElementById('option-menu').hidden");
     const menu = await text('#option-menu');
@@ -300,8 +318,9 @@ app.on('web-contents-created', (_event, wc) => {
     assert.equal(await e(`document.querySelectorAll('${card} .agy-mini').length`), 2, '上一次的额度还在');
     await e("navigate('quota')");
     await until("document.querySelector('#quota-detail .agy-note')");
-    assert.match(await text('#quota-detail .agy-note'), /Antigravity 现在没有开着/);
-    assert.equal(await e(`document.documentElement.outerHTML.includes(${JSON.stringify(CSRF)}) || document.documentElement.outerHTML.includes('qa-agy@example.com')`), false, '界面里没有令牌和邮箱');
+    assert.match(await text('#quota-detail .agy-note'), /Antigravity 现在没有开着|没有打开/);
+    assert.equal(await e(`document.documentElement.outerHTML.includes(${JSON.stringify(CSRF)})`), false, '界面里没有 CSRF 令牌');
+    assert.equal(await e(`(document.getElementById('quota-cards').outerHTML + document.getElementById('quota-detail').outerHTML).includes('qa-agy@example.com')`), false, '单账号额度卡片与详情不暴露原始邮箱');
     pass('antigravity UI: when Antigravity is closed the last quota stays with a note; no token or email reaches the page');
 
     // 夜间没有默认黑字；900px 不横向溢出；英文
@@ -338,6 +357,7 @@ app.on('web-contents-created', (_event, wc) => {
     // 8. 多账号登录管理 + Google One 家庭组共享额度防偏移归因（中英双语 + 深色 + 900px 不溢出 + 无凭据泄漏）
     const accMod = require('../build/core/antigravity-accounts');
     const quotaMod = require('../build/main/antigravity-quota');
+    accMod.writeAgyAccountStore({ version: 1, accounts: [] });
     const idAlpha = accMod.rememberAgyAccount(
       { email: 'fam-alpha@example.com', credential: { token: 'tp_mock_secret_alpha_tok', refreshToken: 'tp_mock_secret_alpha_ref', expiresAt: NOW + 2 * H } },
       true,

@@ -410,6 +410,25 @@ function httpGet(url) {
     assert.equal(isolatedRes.status.groups.length, 2, '缺少 Gemini 摘要桶时仍保留独立的 Gemini 与 Claude 两个分组');
     assert.equal(isolatedRes.status.groups[0].models.some((m) => /Claude/i.test(m)), false);
     assert.equal(isolatedRes.status.groups[1].models.some((m) => /Gemini/i.test(m)), false);
+
+    // 存在 agentModelSorts 时，只展示活跃列表中的非内部模型；未列出的旧版/内部模型仅保留 labels 供历史回查，不污染分组档位
+    const sortedRes = mod.parseAntigravityCloudQuota(
+      { paidTier: { id: 'g1-ultra-tier', name: 'Google AI Ultra' } },
+      {
+        agentModelSorts: [
+          { groups: [{ modelIds: ['gemini-3.8-flash-high', 'claude-opus-5-5-high'] }] },
+        ],
+        models: {
+          'gemini-3.8-flash-high': { displayName: 'Gemini 3.8 Flash (High)', model: 'MODEL_PLACEHOLDER_M318', quotaInfo: { remainingFraction: 0.9, resetTime: '2026-11-18T12:00:00Z' } },
+          'claude-opus-5-5-high': { displayName: 'Claude Opus 5.5 (High)', model: 'MODEL_PLACEHOLDER_M402', quotaInfo: { remainingFraction: 1, resetTime: '2026-11-18T14:00:00Z' } },
+          'gemini-2.5-pro': { displayName: 'Gemini 2.5 Pro', model: 'MODEL_GOOGLE_GEMINI_2_5_PRO', quotaInfo: { remainingFraction: 0.9, resetTime: '2026-11-18T12:00:00Z' } },
+          'gemini-3.1-flash-image': { displayName: 'Gemini 3.1 Flash Image', model: 'MODEL_PLACEHOLDER_M21', isInternal: true, quotaInfo: { remainingFraction: 0.9, resetTime: '2026-11-18T12:00:00Z' } },
+        },
+      },
+    );
+    assert.deepEqual(sortedRes.status.groups[0].models, ['Gemini 3.8 Flash'], '未列入 agentModelSorts 的旧模型不混入组内档位');
+    assert.equal(sortedRes.status.models.some((m) => /2\.5 Pro|Image/i.test(m.label)), false);
+    assert.equal(sortedRes.status.labels.MODEL_GOOGLE_GEMINI_2_5_PRO, 'Gemini 2.5 Pro', '旧模型标签仍保留供历史对话解析');
     pass('Cloud Code direct quota parsing, dual-window merge, incomplete-group failover, and cross-pool isolation');
 
     // 6. 账号排序、重命名、共享模式切换、隐藏/恢复与完全删除

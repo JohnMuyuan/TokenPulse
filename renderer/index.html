@@ -230,10 +230,10 @@
           <div class="model-options"><p>按统计型号筛选，可多选</p><label class="search-field"><span class="sr-only">搜索候选模型</span><input id="model-option-search" type="search" placeholder="搜索候选模型…" autocomplete="off"></label><div id="model-options"></div><p id="model-options-empty" hidden>没有匹配的候选模型</p></div>
         </details>
         <div id="detail-search"></div>
-        <details class="more-filters"><summary>更多筛选</summary><div id="detail-more" class="toolbar-group">
+        <details id="more-filters" class="more-filters"><summary><span>更多筛选</span><span id="more-filters-count" class="filter-badge" hidden></span></summary><div class="more-filters-panel"><p class="more-filters-title">按项目、渠道、账号与核验状态筛选</p><div id="detail-more" class="more-filters-grid">
           <label class="sort-field">项目<select id="request-project"><option value="">全部项目</option></select></label>
           <label class="sort-field">渠道<select id="request-channel"><option value="all">全部渠道</option><option value="official">官方订阅</option><option value="api">API Key / 中转站</option><option value="unknown">归属未知</option></select></label>
-        </div></details>
+        </div></div></details>
         <button id="retry-detail-query" class="btn" type="button" hidden>重试查询</button>
         <button id="clear-detail-filters" class="btn" type="button">清空筛选</button>
       </div>

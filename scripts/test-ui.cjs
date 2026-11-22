@@ -546,12 +546,17 @@ app.on('web-contents-created', (_, contents) => {
       await evaluate("document.querySelector('#model-picker summary').click()");
       await delay(220);
       assert.equal(await evaluate("getComputedStyle(document.getElementById('model-picker'), '::details-content').contentVisibility"), 'hidden');
+      const barHeightBefore = await evaluate("Math.round(document.querySelector('.detail-filter-main').getBoundingClientRect().height)");
       await evaluate("document.querySelector('.more-filters summary').click()");
       await delay(220);
-      assert.equal(await evaluate("parseFloat(getComputedStyle(document.querySelector('.more-filters'), '::details-content').height) > 0"), true);
+      const moreOpen = await evaluate("(() => { const bar = document.querySelector('.detail-filter-main').getBoundingClientRect(); const summary = document.querySelector('.more-filters > summary').getBoundingClientRect(); const panel = document.querySelector('.more-filters-panel'); const rect = panel.getBoundingClientRect(); return { barH: Math.round(bar.height), op: getComputedStyle(panel).opacity, top: rect.top, summaryBottom: summary.bottom, w: rect.width, h: rect.height, left: rect.left, right: rect.right, bottom: rect.bottom, vw: innerWidth, vh: innerHeight }; })()");
+      assert.equal(moreOpen.barH, barHeightBefore, '展开更多筛选浮层不得撑高或挤压工具栏');
+      assert.equal(moreOpen.op, '1');
+      assert.ok(moreOpen.top >= moreOpen.summaryBottom + 4, '更多筛选浮层必须展开在按钮下方，不能遮挡按钮: ' + JSON.stringify(moreOpen));
+      assert.ok(moreOpen.w > 200 && moreOpen.h > 100 && moreOpen.left >= 0 && moreOpen.right <= moreOpen.vw + 1, JSON.stringify(moreOpen));
       await evaluate("document.querySelector('.more-filters summary').click()");
       await delay(220);
-      assert.equal(await evaluate("getComputedStyle(document.querySelector('.more-filters'), '::details-content').height"), '0px');
+      assert.equal(await evaluate("getComputedStyle(document.querySelector('.more-filters'), '::details-content').contentVisibility"), 'hidden');
       await until("[...document.querySelectorAll('#model-options input')].some(i => i.value === 'claude-QA-opus')");
       await evaluate("document.querySelector('#model-options input[value=claude-QA-opus]').click()");
       await until("!analysis.loading && requestPage?.total === 1");
@@ -845,50 +850,26 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(tabResize.narrow, true, 'scrollbar shows while the row is squeezed');
       if (tabResize.fits) assert.deepEqual([tabResize.hidden, tabResize.edges], [true, false], 'scrollbar and fade go away once the row widens again, without a redraw');
       console.log('PASS quota account click stays a click, drag reorders, scrollbar scrolls');
-      // 会话管理：左边列表、右边对话；复制项目地址；回复走主进程的 sessions:reply。
-      // 这里把 sessions:reply 换成假的：不真的调 CLI（会花订阅额度、改会话文件），只验证界面的流式显示和结束后的状态。
+      // 会话管理：左边列表、右边对话；复制项目地址；不提供应用内回复入口与回复框（终端继续和新对话保留）。
       await evaluate("document.querySelector('[data-page=sessions]').click()");
       await until("document.querySelector('.sw-items') && !document.querySelector('.sw-items').textContent.includes('正在读取')");
       assert.equal(await evaluate("document.getElementById('page-sessions').hidden"), false);
       assert.equal(await evaluate("document.body.dataset.page"), 'sessions');
       assert.equal(await evaluate("document.documentElement.scrollHeight <= window.innerHeight + 1"), true, '会话页是固定高度的双栏，整页不滚');
       if (await evaluate("document.querySelectorAll('.sw-item').length > 0")) {
-        await until("document.querySelector('.sw-head') && document.querySelector('.sw-composer textarea')");
+        await until("document.querySelector('.sw-head') && document.querySelector('.sw-messages')");
         assert.equal(await evaluate("[...document.querySelectorAll('.sw-actions .btn')].some(b => b.textContent.includes('复制项目地址'))"), true);
-        assert.equal(await evaluate("[...document.querySelectorAll('.sw-actions .btn')].some(b => b.textContent.includes('回复对话'))"), true);
+        assert.equal(await evaluate("[...document.querySelectorAll('.sw-actions .btn')].some(b => b.textContent.includes('回复对话'))"), false, '已移除应用内回复对话按钮');
+        assert.equal(await evaluate("document.querySelector('.sw-composer')"), null, '已移除应用内底部回复框');
         // 筛选：搜不到的词列表清空，清掉恢复
         await evaluate("(() => { const s = document.querySelector('.sw-search input'); s.value = 'zz-no-such-session-qq'; s.dispatchEvent(new Event('input')); })()");
         assert.equal(await evaluate("document.querySelectorAll('.sw-item').length"), 0);
         await evaluate("(() => { const s = document.querySelector('.sw-search input'); s.value = ''; s.dispatchEvent(new Event('input')); })()");
-        // 挑一个项目目录还在的会话来回复
         const target = await evaluate("(async () => { for (const item of await window.tokenpulse.sessions()) { if (item.cwd) return item.key; } return ''; })()");
         if (target) {
           await evaluate(`document.querySelector('.sw-item[data-key="${target}"]').click()`);
           await until(`document.querySelector('.sw-item.active')?.dataset.key === ${JSON.stringify(target)} && !document.querySelector('.sw-main .sw-spinner')`);
-          // 不真的点复制：测试不该改掉用户的剪贴板
           assert.equal(await evaluate("document.querySelector('.sw-actions .btn').disabled"), false);
-          let sent = null;
-          ipcMain.removeHandler('sessions:reply');
-          ipcMain.handle('sessions:reply', (event, kind, id, prompt, mode) => {
-            sent = { kind, id, prompt, mode };
-            const runId = 'ui-test-run';
-            setTimeout(() => event.sender.send('session-reply', { runId, type: 'delta', text: 'QA 回复' }), 50);
-            setTimeout(() => event.sender.send('session-reply', { runId, type: 'tool', text: 'Read' }), 80);
-            setTimeout(() => event.sender.send('session-reply', { runId, type: 'delta', text: '第二段' }), 400);
-            setTimeout(() => event.sender.send('session-reply', { runId, type: 'done', ok: true }), 700);
-            return { runId };
-          });
-          await evaluate("document.querySelector('.sw-mode [data-mode=edit]').click()");
-          await evaluate("(() => { const t = document.querySelector('.sw-composer textarea'); t.value = 'QA 提问'; t.dispatchEvent(new Event('input')); t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
-          await until("document.querySelector('.sw-row.pending .sw-rich')?.textContent.includes('QA 回复')");
-          assert.equal(await evaluate("document.querySelector('.sw-send').textContent.includes('停止')"), true, '回复中按钮变成停止');
-          await until("document.querySelector('.sw-live-tools')?.textContent.includes('Read')");
-          assert.equal(await evaluate("document.querySelector('.sw-live-tools')?.textContent.includes('Read')"), true);
-          assert.equal(await evaluate("document.querySelector('.sw-composer textarea').value"), '');
-          await until("!document.querySelector('.sw-row.pending') && document.querySelector('.sw-send').textContent.includes('发送')");
-          assert.deepEqual({ ...sent, id: undefined, kind: undefined }, { kind: undefined, id: undefined, prompt: 'QA 提问', mode: 'edit' });
-          assert.equal(`${sent.kind}:${sent.id}`, target);
-          ipcMain.removeHandler('sessions:reply');
         }
       }
       // 0.3.16：新对话 / 新项目。主进程的三个通道换成假的：不真的弹选文件夹对话框、不真的开终端
@@ -969,7 +950,15 @@ app.on('web-contents-created', (_, contents) => {
       assert.equal(intelUi.flag, '\u{1F1FA}\u{1F1F8}', '美国的国旗（区域指示符 U + S）');
       assert.ok(intelUi.facts.includes('Example ISP') && intelUi.meter === '66' && intelUi.link.startsWith('https://proxycheck.io/'), JSON.stringify(intelUi));
       assert.equal(await evaluate("getComputedStyle(document.querySelector('.egress-flag')).fontFamily.includes('Twemoji Country Flags')"), true, 'Windows 上国旗要靠随包的字体');
-      await evaluate("document.querySelectorAll('[data-action=allow-current]').forEach(b => b.click()); document.getElementById('egress-regions-grok').value='US'; document.getElementById('egress-regions-grok').dispatchEvent(new Event('input'))");
+      // 白名单与检测设置改为弹窗编辑：点卡片底部按钮弹出模态框，不拉高卡片
+      assert.equal(await evaluate("document.querySelectorAll('#page-egress details.egress-settings').length"), 0, '卡片内不再使用内联折叠表单');
+      await evaluate("document.querySelector('.egress-card[data-provider=chatgpt] .egress-settings-btn').click()");
+      await until("document.getElementById('egress-dialog-chatgpt').open");
+      assert.equal(await evaluate("document.getElementById('egress-dialog-chatgpt').matches(':modal')"), true, '使用原生模态 <dialog> 弹出');
+      await evaluate("document.querySelector('#egress-dialog-chatgpt [data-action=allow-current]').click()");
+      await evaluate("document.querySelector('#egress-dialog-chatgpt .egress-dialog-close').click()");
+      await until("!document.getElementById('egress-dialog-chatgpt').open");
+      await evaluate("document.querySelectorAll('#page-egress [data-action=allow-current]').forEach(b => b.click()); document.getElementById('egress-regions-grok').value='US'; document.getElementById('egress-regions-grok').dispatchEvent(new Event('input'))");
       egressNow += 5000;
       await evaluate("document.getElementById('egress-check').click()");
       await until("!document.getElementById('egress-check').disabled");

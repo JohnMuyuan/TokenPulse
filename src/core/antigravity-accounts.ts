@@ -11,6 +11,7 @@ import {
   modelFamily,
   parseSummaryGroups,
   poolCategory,
+  readModelLabels,
   rememberModelLabels,
   splitModelLabel,
   summaryPoolCategory,
@@ -1275,7 +1276,8 @@ export function parseAntigravityCloudQuota(
   const modelBySignature = new Map<string, { item: AgyModelQuotaItem; exactKeyMatch: boolean }>();
 
   if (modelsMap) {
-    const orderedKeys: string[] = [];
+    const knownLabels = readModelLabels();
+    const sortedKeys: string[] = [];
     const seen = new Set<string>();
     const sorts = Array.isArray(mRoot?.agentModelSorts) ? (mRoot!.agentModelSorts as Record<string, unknown>[]) : [];
     for (const sort of sorts) {
@@ -1286,23 +1288,32 @@ export function parseAntigravityCloudQuota(
           const k = str(rawId);
           if (k && modelsMap[k] && !seen.has(k)) {
             seen.add(k);
-            orderedKeys.push(k);
+            sortedKeys.push(k);
           }
         }
       }
     }
-    for (const k of Object.keys(modelsMap)) {
-      if (!seen.has(k)) orderedKeys.push(k);
-    }
 
-    for (const mapKey of orderedKeys) {
+    // 先收集全量标签（含旧型号 / 内部型号），保证历史对话扫描依旧能识别旧 model_enum
+    for (const mapKey of Object.keys(modelsMap)) {
       const detail = modelsMap[mapKey];
       if (!detail || typeof detail !== "object") continue;
-      if (detail.disabled === true) continue;
-      const label = str(detail.displayName ?? detail.display_name ?? detail.label);
+      const rawLabel = str(detail.displayName ?? detail.display_name ?? detail.label);
       const modelEnum = str(detail.model) || mapKey;
+      if (rawLabel && modelEnum) labels[modelEnum] = rawLabel;
+    }
+
+    // 服务端返回了 agentModelSorts 时，只按活跃选择器列表展示，避免把未列出的旧版/内部模型（Gemini 2.5 Pro / 3 Flash / Image 等）塞进组内档位
+    const displayKeys = sortedKeys.length > 0 ? sortedKeys : Object.keys(modelsMap);
+
+    for (const mapKey of displayKeys) {
+      const detail = modelsMap[mapKey];
+      if (!detail || typeof detail !== "object") continue;
+      if (detail.disabled === true || detail.isInternal === true || detail.deprecated === true) continue;
+      const modelEnum = str(detail.model) || mapKey;
+      const rawLabel = str(detail.displayName ?? detail.display_name ?? detail.label);
+      const label = rawLabel || (sortedKeys.length > 0 ? knownLabels[modelEnum] || knownLabels[mapKey] || "" : "");
       if (label && modelEnum) labels[modelEnum] = label;
-      if (detail.isInternal === true && !label) continue;
       const quota = (detail.quotaInfo ?? detail.quota_info) as Record<string, unknown> | undefined;
       if (!label || !quota || typeof quota !== "object") continue;
 
@@ -1392,7 +1403,7 @@ export function parseAntigravityCloudQuota(
   };
 }
 
-const DEFAULT_AGY_IDE_VERSION = "2.32.2";
+const DEFAULT_AGY_IDE_VERSION = "2.34.0";
 
 function detectAntigravityIdeVersion(): string {
   let best = DEFAULT_AGY_IDE_VERSION;

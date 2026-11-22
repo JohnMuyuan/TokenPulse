@@ -1,9 +1,8 @@
 /*
- * 会话管理：左边会话列表，右边对话内容和回复框。
+ * 会话管理：左边会话列表，右边对话内容。
  *
- * 数据来自主进程（src/core/sessions.ts 读各家 CLI 的会话文件），这里只管展示；
- * 回复走 src/main/session-reply.ts：CLI 无界面模式接着原会话跑一轮，过程通过 onSessionReply 推回来，
- * 跑完重新读一遍会话文件，新的一问一答就出现在对话里。
+ * 数据来自主进程（src/core/sessions.ts 读各家 CLI / IDE 的会话文件），这里只管查看、搜索、复制地址、在终端里继续或删除；
+ * 不在软件内直接向 Agent 发送回复，避免后台无头调用引发异常。
  *
  * 用到 app.js 里的公共函数（el / icon / brandSvg / $ / api / number / showStatus / dateLocale），所以要在它后面加载。
  * 所有文字都用 textContent 放进去，会话内容里的 HTML / 脚本不会被执行。
@@ -19,10 +18,6 @@
     listLimit: LIST_CHUNK,
     /** 从最后往前显示多少个「块」（一段工具调用算一块，初始 40 块）。 */
     visible: MSG_CHUNK,
-    /** 正在进行的回复：{ runId, key, prompt, text, tools, error } */
-    run: null,
-    mode: 'readonly',
-    drafts: {},
     openGroups: new Set(),
     usageOpen: false,
     usageBasis: 'tokens',
@@ -259,7 +254,6 @@
       const next = keys[Math.max(0, Math.min(keys.length - 1, at + (event.key === 'ArrowDown' ? 1 : -1)))];
       if (next && next !== S.key) { event.preventDefault(); select(next); N.list.querySelector(`[data-key="${CSS.escape(next)}"]`)?.focus(); }
     });
-    api.onSessionReply?.(onReplyEvent);
   }
 
   /* ---------------- 新对话 / 新项目（0.3.16） ---------------- */
@@ -471,7 +465,6 @@
       const g = groupOf(item.updatedAt);
       if (g !== group) { group = g; nodes.push(el('div', { class: 'sw-group', text: g })); }
       const active = item.key === S.key;
-      const running = S.run && S.run.key === item.key;
       const hit = S.search.trim() ? S.hits?.get(item.key) : null;
       const snippet = hit?.snippets?.[0];
 
@@ -504,8 +497,7 @@
             el('span', { class: 'sw-item-turns', text: `${number(item.turns)} 轮` }),
             usageBadge,
             latencyBadge,
-            hit ? el('span', { class: 'sw-hit-count', text: `${number(hit.count)} 处` }) : null,
-            running ? el('span', { class: 'sw-live', text: '回复中' }) : null
+            hit ? el('span', { class: 'sw-hit-count', text: `${number(hit.count)} 处` }) : null
           ]),
           snippet ? el('span', { class: 'sw-item-snippet', translate: 'no', title: snippet.text }, [el('small', { text: snippet.role === 'user' ? '你：' : snippet.role === 'tool' ? '工具：' : 'AI：' }), ...highlight(snippet.text)]) : null
         ])
@@ -557,7 +549,7 @@
     // 搜索结果里点的正好是现在开着的这段：直接跳到第一处
     if (!changed && S.jump?.key === key && S.jump.index < 0 && S.detail?.key === key) { S.jump.index = 0; drawMain(false); return; }
     if (changed) {
-      saveDraft(); S.key = key; S.visible = MSG_CHUNK; S.openGroups.clear();
+      S.key = key; S.visible = MSG_CHUNK; S.openGroups.clear();
       // 从搜索结果点进来：打开后直接跳到第一处命中
       setJump(key);
       if (S.jump && S.search.trim()) S.jump.index = 0;
@@ -574,14 +566,6 @@
       if (S.key === key) showStatus('这个会话读取失败，请重试。', true);
     } finally {
       if (S.key === key) { S.detailLoading = false; drawMain(!keepScroll); }
-    }
-  }
-
-  function saveDraft() {
-    if (S.key && N.input) {
-      const keys = Object.keys(S.drafts);
-      if (keys.length >= 50 && !S.drafts[S.key]) delete S.drafts[keys[0]];
-      S.drafts[S.key] = N.input.value;
     }
   }
 
@@ -789,8 +773,6 @@
     const copyPath = button('复制项目地址', 'copy', 'btn', { title: d.cwd || '这个会话没有记录项目地址' });
     copyPath.disabled = !d.cwd;
     copyPath.addEventListener('click', () => copy(d.cwd, '项目地址已复制'));
-    const reply = button('回复对话', 'reply', 'btn btn-accent');
-    reply.addEventListener('click', () => { N.input?.focus(); N.input?.scrollIntoView({ block: 'nearest' }); });
     const more = button('', 'more', 'btn icon-only', { title: '更多', 'aria-label': '更多操作', 'aria-haspopup': 'menu' });
     more.addEventListener('click', () => openMore(more, d));
     return el('div', { class: 'sw-head' }, [
@@ -798,7 +780,7 @@
         mark(d.kind, 'sw-mark lg'),
         el('div', { class: 'sw-head-text' }, [el('h2', { text: d.title, title: d.title, translate: 'no' }), el('div', { class: 'sw-chips' }, chips)])
       ]),
-      el('div', { class: 'sw-actions' }, [copyPath, d.kind === 'pi' || IDE_ONLY.has(d.kind) ? null : reply, more]),
+      el('div', { class: 'sw-actions' }, [copyPath, more]),
       ...usageBox(merged)
     ]);
   }
@@ -839,7 +821,6 @@
     try {
       const result = await api.deleteSession(d.kind, d.id);
       if (!result?.ok) return;
-      delete S.drafts[d.key];
       S.items = await api.sessions();
       S.loaded = true; S.listAt = Date.now();
       S.key = ''; S.detail = null; S.detailLoading = false; S.visible = MSG_CHUNK; S.openGroups.clear();
@@ -1006,58 +987,7 @@
       else if (block.role === 'event') nodes.push(el('div', { class: 'sw-row event' }, [el('span', { text: block.text })]));
       else nodes.push(bubble(block, d.kind));
     }
-    // 正在进行的回复：先把自己刚发的那句和流式回来的文字接在后面
-    if (S.run && S.run.key === d.key) {
-      nodes.push(bubble({ role: 'user', text: S.run.prompt, at: S.run.startedAt }, d.kind, 'pending'));
-      const reply = { role: 'assistant', text: S.run.text || '', at: undefined };
-      const row = bubble(reply, d.kind, 'pending');
-      const bubbleNode = row.querySelector('.sw-bubble');
-      if (!S.run.text) bubbleNode.prepend(el('div', { class: 'sw-typing' }, [el('i'), el('i'), el('i')]));
-      if (S.run.tools.length) bubbleNode.append(el('div', { class: 'sw-live-tools' }, [icon('terminal'), `正在调用：${S.run.tools.at(-1)}`, S.run.tools.length > 1 ? el('small', { text: `（共 ${S.run.tools.length} 次）` }) : null]));
-      if (S.run.error) bubbleNode.append(el('div', { class: 'sw-reply-error' }, [icon('alert'), S.run.error]));
-      nodes.push(row);
-    }
     host.replaceChildren(...nodes);
-  }
-
-  function composer(d) {
-    if (d.kind === 'pi') { N.input = null; return el('div', { class: 'sw-composer' }, [el('small', { text: 'pi 会话请在终端里继续。' })]); }
-    if (IDE_ONLY.has(d.kind)) { N.input = null; return el('div', { class: 'sw-composer' }, [el('small', { text: 'Antigravity 的对话请在 Antigravity 里继续。删除时会请开着的 Antigravity 自己删。' })]); }
-    const running = S.run && S.run.key === d.key;
-    const otherRunning = S.run && !running && !S.run.done;
-    N.input = el('textarea', { rows: '1', placeholder: `回复 ${AGENTS[d.kind].short}…（Enter 发送，Shift + Enter 换行）`, 'aria-label': '回复内容' });
-    N.input.value = S.drafts[d.key] || '';
-    // 高度跟着内容长，超过 200px 才出滚动条
-    const grow = () => { N.input.style.height = 'auto'; N.input.style.height = `${Math.min(200, N.input.scrollHeight)}px`; N.input.style.overflowY = N.input.scrollHeight > 200 ? 'auto' : 'hidden'; };
-    N.input.addEventListener('input', () => { grow(); send.disabled = !N.input.value.trim() || Boolean(running); });
-    N.input.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!send.disabled) sendReply(); }
-    });
-    const mode = el('div', { class: 'seg compact sw-mode', role: 'group', 'aria-label': '回复权限' }, [
-      el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }),
-      ...[['readonly', '只读', '只让 Agent 看和回答，不改任何文件'], ['edit', '可改文件', '允许 Agent 修改这个项目里的文件；运行命令等其他操作仍会自动拒绝']].map(([value, label, hint]) =>
-        el('button', { type: 'button', 'data-mode': value, class: S.mode === value ? 'on' : '', 'aria-pressed': String(S.mode === value), title: hint, text: label }))
-    ]);
-    mode.addEventListener('click', event => {
-      const hit = event.target.closest('[data-mode]'); if (!hit) return;
-      S.mode = hit.dataset.mode;
-      for (const item of mode.querySelectorAll('[data-mode]')) { const on = item.dataset.mode === S.mode; item.classList.toggle('on', on); item.setAttribute('aria-pressed', String(on)); }
-      syncSeg(mode);
-    });
-    const send = button(running ? '' : '发送', running ? '' : 'send', 'btn btn-accent sw-send');
-    if (running) { send.replaceChildren(icon('stop'), el('span', { text: '停止' })); send.classList.remove('btn-accent'); send.disabled = false; }
-    else send.disabled = !N.input.value.trim() || Boolean(otherRunning);
-    send.addEventListener('click', () => (S.run && S.run.key === d.key && !S.run.done ? stopReply() : sendReply()));
-    const note = el('small', { class: 'sw-composer-note', text: running
-      ? `${AGENTS[d.kind].short} 正在回复…`
-      : otherRunning ? '另一段会话正在回复，等它结束再发'
-      : !d.cwd ? '这个会话没有记录项目目录，没法在原目录里继续' : `在 ${d.project} 里继续这段会话 · 会用掉对应账号的订阅额度` });
-    if (!d.cwd) { N.input.disabled = true; send.disabled = true; }
-    requestAnimationFrame(() => { grow(); syncSeg(mode); });
-    return el('div', { class: 'sw-composer' }, [
-      el('div', { class: 'sw-input' }, [N.input, send]),
-      el('div', { class: 'sw-composer-bar' }, [mode, note])
-    ]);
   }
 
   function drawMain(toBottom = true) {
@@ -1067,7 +997,7 @@
       N.main.replaceChildren(el('div', { class: 'sw-empty' }, [
         el('span', { class: 'sw-empty-icon' }, [icon('sessions')]),
         el('h2', { text: S.loaded ? '选择一个会话' : '正在读取会话…' }),
-        el('p', { text: '左边是本机 Claude Code、Codex CLI、Grok Build、DeepSeek Harness 和 pi 的对话历史。选中后可以查看完整对话、复制项目地址或继续会话。' })
+        el('p', { text: '左边是本机 Claude Code、Codex CLI、Grok Build、DeepSeek Harness、pi 和 Antigravity 的对话历史。选中后可以查看完整对话、复制项目地址或在终端里继续。' })
       ]));
       return;
     }
@@ -1078,7 +1008,6 @@
     }
     const previous = N.scroller;
     const offsetFromBottom = previous ? previous.scrollHeight - previous.scrollTop : 0;
-    saveDraft();
     const jump = S.jump && S.jump.key === d.key ? S.jump : null;
     if (jump && jump.index >= 0) revealHit(d, jump.ids[jump.index]);
     N.scroller = el('div', { class: 'sw-scroll' });
@@ -1109,9 +1038,7 @@
     }, { passive: true });
     drawMessages(d, inner);
     highlightIn(inner);
-    const focused = document.activeElement === N.input;
-    N.main.replaceChildren(...[header(d), jump ? jumpBar(d, jump) : null, N.scroller, composer(d)].filter(Boolean));
-    if (focused) N.input?.focus();
+    N.main.replaceChildren(...[header(d), jump ? jumpBar(d, jump) : null, N.scroller].filter(Boolean));
     requestAnimationFrame(() => {
       if (jump && jump.index >= 0 && scrollToHit(jump.ids[jump.index])) return;
       N.scroller.scrollTop = toBottom ? N.scroller.scrollHeight : N.scroller.scrollHeight - offsetFromBottom;
@@ -1153,69 +1080,6 @@
     return el('div', { class: 'sw-jump', role: 'toolbar', 'aria-label': '搜索结果定位' }, [icon('search'), label, prev, next, close]);
   }
 
-  /* ---------------- 回复 ---------------- */
-
-  async function sendReply() {
-    const d = S.detail;
-    const prompt = N.input?.value.trim();
-    if (!d || !prompt || (S.run && !S.run.done)) return;
-    S.run = { runId: '', key: d.key, prompt, text: '', tools: [], startedAt: Date.now(), done: false };
-    S.drafts[d.key] = '';
-    N.input.value = '';
-    drawMain(true); drawList();
-    try {
-      const { runId } = await api.replySession(d.kind, d.id, prompt, S.mode);
-      if (S.run) S.run.runId = runId;
-    } catch (error) {
-      S.drafts[d.key] = prompt;
-      S.run = null;
-      showStatus(cleanError(error, '回复没发出去，请重试。'), true);
-      drawMain(true); drawList();
-    }
-  }
-
-  function stopReply() {
-    if (S.run?.runId) api.stopSessionReply(S.run.runId);
-  }
-
-  function onReplyEvent(event) {
-    const run = S.run;
-    if (!run || !event || (run.runId && event.runId !== run.runId)) return;
-    if (!run.runId) run.runId = event.runId;
-    if (event.type === 'delta') run.text += event.text;
-    if (event.type === 'tool') run.tools.push(event.text);
-    if (event.type === 'done') {
-      run.done = true;
-      if (!event.ok) {
-        run.error = event.error === '已停止' ? '已停止' : `回复失败：${event.error || '未知原因'}`;
-        if (event.error !== '已停止') S.drafts[run.key] = S.drafts[run.key] || run.prompt;
-      }
-      // 不管成败都重新读一遍：CLI 可能已经把这一轮写进会话文件了
-      finishRun(run, event.ok);
-      return;
-    }
-    if (S.key === run.key && S.detail) {
-      const inner = N.scroller?.querySelector('.sw-messages');
-      const nearBottom = N.scroller && N.scroller.scrollHeight - N.scroller.scrollTop - N.scroller.clientHeight < 120;
-      if (inner) drawMessages(S.detail, inner);
-      if (nearBottom) N.scroller.scrollTop = N.scroller.scrollHeight;
-    }
-  }
-
-  async function finishRun(run, ok) {
-    const item = S.items.find(entry => entry.key === run.key);
-    try {
-      const [list, detail] = await Promise.all([api.sessions(), item ? api.sessionDetail(item.kind, item.id) : null]);
-      S.items = list;
-      if (S.key === run.key && detail) S.detail = detail;
-    } catch { /* 读不到就保留原来的 */ }
-    // 成功就收起临时气泡（新消息已经在会话文件里了）；失败保留，好让人看到原因
-    if (ok || run.error === '已停止') S.run = null;
-    drawList();
-    if (S.key === run.key) drawMain(true);
-    if (ok) showStatus('已回复，新的对话已写回会话记录。');
-  }
-
   /* ---------------- 对外 ---------------- */
 
   window.PulseSessions = {
@@ -1238,7 +1102,6 @@
       } else loadList();
     },
     hide() {
-      saveDraft();
       if (N.scroller) N.scroller.replaceChildren();
       S.detail = null;
       N.drawn = false;
@@ -1247,8 +1110,8 @@
       build();
       drawList();
       if (!S.loaded) loadList();
-      // 列表放了半分钟以上再悄悄刷新一遍（有索引缓存，几十毫秒）；对话区不跟着重画，免得打断阅读和输入
-      else if (Date.now() - S.listAt > 30000 && !S.run) loadList(false, true);
+      // 列表放了半分钟以上再悄悄刷新一遍（有索引缓存，几十毫秒）；对话区不跟着重画，免得打断阅读
+      else if (Date.now() - S.listAt > 30000) loadList(false, true);
       if (!N.drawn) {
         N.drawn = true;
         if (S.key && !S.detail) {

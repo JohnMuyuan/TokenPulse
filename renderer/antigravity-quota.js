@@ -32,6 +32,9 @@
   let capWindow = 'five';
   let capMetric = 'tokens';
   let detailResizeObs = null;
+  const tierExpanded = new Map();
+  const studyExpanded = new Map();
+  const EFFORT_ORDER = { minimal: 0, low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
 
   const demo = () => Boolean(window.tokenpulse?.isDemo?.());
   const visible = () => Boolean(quota?.installed) && !demo();
@@ -471,22 +474,103 @@
       }),
     ], 'two'));
 
-    // 组内各模型档位明细
+    // 组内各模型档位明细（按型号家族聚合各思考档位，超出时默认折叠以保持卡片紧凑）
     const items = gInsight?.items || [];
     if (items.length) {
-      panel.append(el('div', { class: 'agy-tier-list' }, [
-        el('div', { class: 'agy-tier-head' }, [
-          el('b', { text: '组内模型档位' }),
-          el('small', { text: '最近 7 天本机使用' }),
-        ]),
-        ...items.map(item => el('div', { class: 'agy-tier-row' }, [
-          el('div', { class: 'agy-tier-name' }, [
-            el('span', { translate: 'no', text: item.family }),
-            item.effort ? el('span', { class: 'ms-level' + (item.effort === 'medium' ? ' plain' : ''), text: EFFORT_LABEL[item.effort] || item.effort }) : null,
+      const famMap = new Map();
+      for (const item of items) {
+        const rawLabel = item.label || item.family || item.model || '';
+        const baseName = rawLabel.replace(/\s*\([^)]*\)\s*$/, '').trim() || item.family || item.model;
+        const parenMatch = rawLabel.match(/\(([^)]+)\)\s*$/);
+        const subTag = item.effort
+          ? (EFFORT_LABEL[item.effort] || item.effort)
+          : (parenMatch ? parenMatch[1].trim() : '');
+        const entry = famMap.get(baseName) || { name: baseName, tiers: [], d7Tokens: 0, d7Requests: 0 };
+        entry.tiers.push({
+          effort: item.effort || '',
+          tag: subTag,
+          order: item.effort && item.effort in EFFORT_ORDER ? EFFORT_ORDER[item.effort] : 99,
+          d7Tokens: item.d7?.tokens || 0,
+          d7Requests: item.d7?.requests || 0,
+        });
+        entry.d7Tokens += item.d7?.tokens || 0;
+        entry.d7Requests += item.d7?.requests || 0;
+        famMap.set(baseName, entry);
+      }
+      const families = [...famMap.values()].map(f => ({
+        ...f,
+        tiers: f.tiers.sort((a, b) => a.order - b.order),
+      }));
+
+      const MAX_COMPACT = 4;
+      const expandKey = `${activeId}|${poolIdOf(group.models || group.key, group.title)}`;
+      const tierBox = el('div', { class: 'agy-tier-list' });
+      const drawTiers = () => {
+        const isExpanded = Boolean(tierExpanded.get(expandKey));
+        let shown = families;
+        if (!isExpanded && families.length > MAX_COMPACT) {
+          const picked = new Set();
+          for (const f of families) {
+            if (f.d7Requests > 0 && picked.size < MAX_COMPACT) picked.add(f);
+          }
+          for (const f of families) {
+            if (picked.size >= MAX_COMPACT) break;
+            picked.add(f);
+          }
+          shown = families.filter(f => picked.has(f));
+        }
+        const rowsEl = el('div', { class: 'agy-tier-rows' + (isExpanded ? ' is-expanded' : '') }, shown.map(fam => {
+          const pills = fam.tiers.filter(t => t.tag).map(t => {
+            const used = t.d7Requests > 0;
+            const title = used
+              ? `${fam.name} (${t.tag})：${tokens(t.d7Tokens)} Tokens · ${number(t.d7Requests)} 次`
+              : `${fam.name} (${t.tag})：7 天未调用`;
+            return el('span', {
+              class: 'agy-tier-pill' + (used ? ' used' : '') + (t.effort === 'medium' ? ' plain' : ''),
+              text: t.tag,
+              title,
+              translate: t.effort ? undefined : 'no',
+            });
+          });
+          return el('div', { class: 'agy-tier-row' + (fam.d7Requests > 0 ? ' has-usage' : '') }, [
+            el('div', { class: 'agy-tier-name' }, [
+              el('span', { class: 'agy-tier-family', translate: 'no', text: fam.name, title: fam.name }),
+              pills.length ? el('span', { class: 'agy-tier-pills' }, pills) : null,
+            ]),
+            el('span', {
+              class: 'num agy-tier-usage' + (fam.d7Requests > 0 ? ' has-usage' : ''),
+              text: fam.d7Requests > 0 ? `${tokens(fam.d7Tokens)} · ${number(fam.d7Requests)} 次` : '未调用',
+              title: fam.d7Requests > 0 ? `最近 7 天：${tokens(fam.d7Tokens)} Tokens · ${number(fam.d7Requests)} 次` : '最近 7 天未调用',
+            }),
+          ]);
+        }));
+
+        const toggleBtn = families.length > MAX_COMPACT
+          ? el('button', {
+              type: 'button',
+              class: 'agy-tier-toggle',
+              'aria-expanded': String(isExpanded),
+              text: isExpanded ? '收起档位列表' : `展开全部 ${families.length} 个型号（共 ${items.length} 个档位）`,
+            })
+          : null;
+        if (toggleBtn) {
+          toggleBtn.addEventListener('click', () => {
+            tierExpanded.set(expandKey, !isExpanded);
+            drawTiers();
+          });
+        }
+
+        tierBox.replaceChildren(...[
+          el('div', { class: 'agy-tier-head' }, [
+            el('b', { text: '组内模型档位' }),
+            el('small', { text: `${families.length} 个型号 · 7 天使用` }),
           ]),
-          el('span', { class: 'num agy-tier-usage', text: item.d7?.requests > 0 ? `${tokens(item.d7.tokens)} Tokens · ${number(item.d7.requests)} 次` : '7 天未调用' }),
-        ])),
-      ]));
+          rowsEl,
+          toggleBtn,
+        ].filter(Boolean));
+      };
+      drawTiers();
+      panel.append(tierBox);
     }
     return panel;
   }
@@ -979,74 +1063,148 @@
       const tokenField = isWeek ? 'weekTokens' : 'fiveTokens';
       const callField = isWeek ? 'weekCalls' : 'fiveCalls';
       const remField = isWeek ? 'weekRemainingTokens' : 'fiveRemainingTokens';
-      const sorted = [...rows].sort((a, b) => (b[tokenField] ?? -1) - (a[tokenField] ?? -1) || (b.relative ?? -1) - (a.relative ?? -1) || a.family.localeCompare(b.family));
-      const maxTokens = Math.max(1, ...sorted.map(r => r[tokenField] || 0));
-      const maxRel = Math.max(1, ...sorted.map(r => r.relative || 0));
       const price = value => '$' + (value >= 10 ? value.toFixed(1) : value >= 1 ? value.toFixed(2) : value.toFixed(3).replace(/0$/, ''));
+      const catalogRows = rows.filter(r => r.inCatalog !== false);
+      const displayPoolRows = catalogRows.length ? catalogRows : rows;
+      const MAX_STUDY_ROWS = 6;
 
-      const rankList = el('div', { class: 'ms-rank', role: 'list' }, sorted.map((row, i) => {
-        const capTokens = row[tokenField];
-        const capCalls = row[callField];
-        const remTokens = row[remField];
-        const cell = el('div', { class: 'ms-cap' });
-        const fill = el('i', { class: 'full' + (capTokens == null ? ' relative' : '') });
-        if (capTokens != null) {
-          cell.append(el('div', { class: 'ms-cap-num' }, [
-            el('b', { text: tokens(capTokens) }),
-            el('small', { text: 'Tokens' }),
-          ]));
-          fill.style.width = Math.max(2, capTokens / maxTokens * 100).toFixed(1) + '%';
-          cell.append(el('div', { class: 'ms-meter' }, [fill]));
-          const subs = [];
-          if (capCalls) subs.push(`≈ ${number(capCalls)} 次调用`);
-          if (remTokens != null) subs.push(`当前剩 ${tokens(remTokens)}`);
-          if (subs.length) cell.append(el('small', { class: 'ms-cap-sub', text: subs.join(' · ') }));
-        } else if (row.relative != null) {
-          cell.append(el('div', { class: 'ms-cap-num' }, [
-            el('b', { text: `×${row.relative.toFixed(2)}` }),
-            el('small', { text: 'API 价格参考比' }),
-          ]));
-          fill.style.width = Math.max(2, row.relative / maxRel * 100).toFixed(1) + '%';
-          cell.append(el('div', { class: 'ms-meter' }, [fill]));
-        } else {
-          cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { class: 'muted', text: '—' }), el('small', { text: '暂无标价' })]));
+      const buildPoolSection = (g, gIdx) => {
+        const poolRows = displayPoolRows.filter(r => r.groupKey === g.key || poolIdOf(r.groupKey, r.groupTitle) === poolIdOf(g.key, g.title));
+        if (!poolRows.length) return null;
+        const poolColor = COLORS[gIdx % COLORS.length];
+        const sorted = [...poolRows].sort((a, b) => (b[tokenField] ?? -1) - (a[tokenField] ?? -1) || (b.relative ?? -1) - (a.relative ?? -1) || a.family.localeCompare(b.family));
+        const maxTokens = Math.max(1, ...sorted.map(r => r[tokenField] || 0));
+        const maxRel = Math.max(1, ...sorted.map(r => r.relative || 0));
+        const expandKey = `${activeId}|${studyWindow}|${poolIdOf(g.key, g.title)}`;
+        const isExpanded = Boolean(studyExpanded.get(expandKey));
+
+        let shown = sorted;
+        if (!isExpanded && sorted.length > MAX_STUDY_ROWS) {
+          const picked = new Set();
+          const byRecent = [...sorted].filter(r => r.recentTokens > 0).sort((a, b) => b.recentTokens - a.recentTokens);
+          for (const r of byRecent.slice(0, 4)) picked.add(r);
+          for (const r of sorted) {
+            if (picked.size >= MAX_STUDY_ROWS) break;
+            picked.add(r);
+          }
+          shown = sorted.filter(r => picked.has(r));
         }
 
-        const lp = row.listPrice;
-        return stagger(el('div', { class: 'ms-row ds-row' + (i < 3 ? ' top' : ''), role: 'listitem', 'data-model': row.model, 'data-effort': row.effort }, [
-          el('span', { class: 'ms-no', text: String(i + 1).padStart(2, '0') }),
-          el('div', { class: 'ms-name' }, [
-            avatar('antigravity', 'ms-row-logo'),
-            el('div', { class: 'ms-name-text' }, [
-              el('div', { class: 'ms-name-top' }, [
-                el('b', { text: row.family, title: row.model, translate: 'no' }),
-                row.effort ? el('span', { class: 'ms-level' + (row.effort === 'medium' ? ' plain' : ''), text: EFFORT_LABEL[row.effort] || row.effort }) : null,
-                row.mixBasis === 'model' ? el('span', { class: 'ms-basis measured', text: '按你用它的结构' }) : null,
+        const winClass = isWeek ? 'week' : 'five';
+        const rankList = el('div', { class: `ms-rank agy-study-rank ${winClass}`, role: 'list' }, shown.map((row, i) => {
+          const capTokens = row[tokenField];
+          const capCalls = row[callField];
+          const remTokens = row[remField];
+          const cell = el('div', { class: `ms-cap ${winClass}` });
+          if (capTokens != null) {
+            const fullPct = Math.max(3, Math.min(100, capTokens / maxTokens * 100));
+            const leftPct = remTokens != null && remTokens > 0 ? Math.max(2, Math.min(fullPct, remTokens / maxTokens * 100)) : 0;
+            const fillFull = el('i', { class: 'full' });
+            paint(fillFull, { width: fullPct.toFixed(1) + '%' });
+            const meterBars = [fillFull];
+            if (leftPct > 0) {
+              const fillLeft = el('i', { class: 'left' });
+              paint(fillLeft, { width: leftPct.toFixed(1) + '%' });
+              meterBars.push(fillLeft);
+            }
+            cell.append(
+              el('div', { class: 'ms-cap-num' }, [
+                el('b', { text: tokens(capTokens) }),
+                el('small', { text: 'Tokens' }),
               ]),
-              el('small', {}, [
-                lp ? el('span', { class: 'num', text: `输入 ${price(lp.input)} · 输出 ${price(lp.output)} · 缓存读 ${price(lp.cacheRead)} / 百万` }) : el('span', { text: '没有标价' }),
-                row.recentTokens > 0 ? el('span', { class: 'num', text: ` · 30 天用了 ${tokens(row.recentTokens)}（${number(row.recentCalls)} 次）` }) : null,
+              el('div', { class: 'ms-meter' }, meterBars),
+            );
+            const subs = [];
+            if (capCalls) subs.push(`≈ ${number(capCalls)} 次调用`);
+            if (remTokens != null) subs.push(`当前剩 ${tokens(remTokens)}`);
+            if (subs.length) cell.append(el('small', { class: 'ms-cap-sub', text: subs.join(' · ') }));
+          } else if (row.relative != null) {
+            const relPct = Math.max(4, Math.min(100, row.relative / maxRel * 100));
+            const fillRel = el('i', { class: 'full relative' });
+            paint(fillRel, { width: relPct.toFixed(1) + '%' });
+            cell.append(
+              el('div', { class: 'ms-cap-num' }, [
+                el('b', { text: `×${row.relative.toFixed(2)}` }),
+                el('small', { text: 'API 价格参考比' }),
+              ]),
+              el('div', { class: 'ms-meter' }, [fillRel]),
+            );
+          } else {
+            cell.append(el('div', { class: 'ms-cap-num' }, [el('b', { class: 'muted', text: '—' }), el('small', { text: '暂无标价' })]));
+          }
+
+          const lp = row.listPrice;
+          return stagger(el('div', { class: 'ms-row ds-row' + (i < 3 ? ' top' : ''), role: 'listitem', 'data-model': row.model, 'data-effort': row.effort }, [
+            el('span', { class: 'ms-no', text: String(i + 1).padStart(2, '0') }),
+            el('div', { class: 'ms-name' }, [
+              avatar('antigravity', 'ms-row-logo'),
+              el('div', { class: 'ms-name-text' }, [
+                el('div', { class: 'ms-name-top' }, [
+                  el('b', { text: row.family, title: row.model, translate: 'no' }),
+                  row.effort ? el('span', { class: 'ms-level' + (row.effort === 'medium' ? ' plain' : ''), text: EFFORT_LABEL[row.effort] || row.effort }) : null,
+                  row.recentTokens > 0 ? el('span', { class: 'ms-basis measured', text: '近期常用' }) : null,
+                ]),
+                el('small', {}, [
+                  lp ? el('span', { class: 'num', text: `输入 ${price(lp.input)} · 输出 ${price(lp.output)} · 缓存读 ${price(lp.cacheRead)} / 百万` }) : el('span', { text: '没有标价' }),
+                  row.recentTokens > 0 ? el('span', { class: 'num', text: ` · 30 天用了 ${tokens(row.recentTokens)}（${number(row.recentCalls)} 次）` }) : null,
+                ]),
               ]),
             ]),
-          ]),
-          cell,
-          el('div', { class: 'ms-cap ds-unit' }, row.usdPerMTokens == null ? [el('div', { class: 'ms-cap-num' }, [el('b', { class: 'muted', text: '—' })])] : [
-            el('div', { class: 'ms-cap-num' }, [el('b', { text: price(row.usdPerMTokens) }), el('small', { text: '/ 百万 Tokens' })]),
-            row.tokensPerCall ? el('small', { class: 'ms-cap-sub', text: `平均每次 ${tokens(row.tokensPerCall)} Tokens` }) : null,
-          ]),
-        ]), i);
-      }));
+            cell,
+            el('div', { class: 'ms-cap ds-unit' }, row.usdPerMTokens == null ? [el('div', { class: 'ms-cap-num' }, [el('b', { class: 'muted', text: '—' })])] : [
+              el('div', { class: 'ms-cap-num' }, [el('b', { text: price(row.usdPerMTokens) }), el('small', { text: '/ 百万 Tokens' })]),
+              row.tokensPerCall ? el('small', { class: 'ms-cap-sub', text: `平均每次 ${tokens(row.tokensPerCall)} Tokens` }) : null,
+            ]),
+          ]), i);
+        }));
 
+        const poolToggle = sorted.length > MAX_STUDY_ROWS
+          ? el('button', {
+              type: 'button',
+              class: 'agy-tier-toggle agy-study-toggle',
+              'aria-expanded': String(isExpanded),
+              text: isExpanded ? '收起部分档位' : `展开全部 ${sorted.length} 个模型档位`,
+            })
+          : null;
+        if (poolToggle) {
+          poolToggle.addEventListener('click', () => {
+            studyExpanded.set(expandKey, !isExpanded);
+            draw();
+          });
+        }
+
+        const w = isWeek ? g.week : g.five;
+        const poolCap = w?.capacity;
+        const sectionHead = gList.length > 1
+          ? el('div', { class: 'agy-study-pool-head' }, [
+              el('span', { class: 'agy-study-pool-title' }, [el('i', { class: 'agy-dot', 'aria-hidden': 'true' }), groupName(g)]),
+              el('span', {
+                class: 'agy-study-pool-meta num',
+                text: poolCap?.fullTokens
+                  ? `${isWeek ? '整周' : '5 小时'}整窗约 ${tokens(poolCap.fullTokens)} Tokens${poolCap.fullCostUsd != null ? `（${money(poolCap.fullCostUsd)}）` : ''}`
+                  : '等待池内额度变化 · 暂按 API 标价相对比',
+              }),
+            ])
+          : null;
+
+        return paint(el('div', { class: 'agy-study-pool' }, [
+          sectionHead,
+          el('div', { class: 'ms-rank-head ds-rank-head', 'aria-hidden': 'true' }, [
+            el('span'),
+            el('span', { text: '模型 · 思考等级' }),
+            el('span', { text: isWeek ? '整周 100% 额度能用' : '5 小时 100% 额度能用' }),
+            el('span', { text: '综合单价' }),
+          ]),
+          rankList,
+          poolToggle,
+        ]), { '--agy-color': poolColor });
+      };
+
+      const poolSections = gList.map((g, idx) => buildPoolSection(g, idx)).filter(Boolean);
       body.replaceChildren(
         budgets,
-        el('div', { class: 'ms-rank-head ds-rank-head', 'aria-hidden': 'true' }, [
-          el('span'),
-          el('span', { text: '模型 · 思考等级' }),
-          el('span', { text: isWeek ? '整周 100% 额度能用' : '5 小时 100% 额度能用' }),
-          el('span', { text: '综合单价' }),
-        ]),
-        rankList,
-        el('p', { class: 'ms-note', text: '综合单价 = 按模型公开标价和你的 Token 结构（新输入、缓存读取、输出各占多少）算出来的每百万 Tokens 参考费用。同一组内的模型共用同一份额度池。' }),
+        ...poolSections,
+        el('p', { class: 'ms-note', text: '综合单价 = 按模型公开标价和该额度池近期的 Token 结构（新输入、缓存读取、输出比例）估算的每百万 Tokens 参考费用；进度条浅色为整窗 100% 容量，实色为当前剩余可用。各额度池分开归一化对比。' }),
       );
     };
 
