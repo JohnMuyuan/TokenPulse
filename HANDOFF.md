@@ -1,6 +1,30 @@
-# 当前接手入口 · TokenPulse `v0.3.106` 已正式发布（2026-11-22）
+# 当前接手入口 · TokenPulse `v0.3.107` 已正式发布（2026-11-22）
 
-## 最新已发布版本 · `v0.3.106` · 2026-11-22
+## 最新已发布版本 · `v0.3.107` · 2026-11-22
+
+- **Git 与发布**。[TokenPulse v0.3.107](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.107) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454410313`）。发布提交 `92d151d47dd51ed1062ec5871ffdfebcf4771e9b` 与签注标签 `v0.3.107`（`e57f5f189e6b58140440d5d3added092f250b2da`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（用量明细 → 缓存新增「各模型实测缓存持续时长」与短效波动识别）**：
+  - [src/core/cache-analysis.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/cache-analysis.ts)：在 `CacheAnalysis` 新增 `retention: ModelCacheRetention[]`；对同一会话、同一型号、未压缩且未换号的相邻大输入请求（`base >= 4096` Tokens）按 6 档空闲间隔（`<1m`、`1–3m`、`3–5m`、`5–10m`、`10–30m`、`>30m`）统计缓存保住率（`cacheRead >= 50% base`），通过单调桶扫描（含单样本噪声保护）自动推断 `estimated`（如 `≈ 2–3 分钟`、`≈ 5 分钟`）、`at-least`（如 `≥ 22 分钟`）、`short-gaps-only`、`volatile`（`< 1 分钟`）、`no-cache`、`insufficient` 六种状态，并识别 5 分钟内高频掉缓存的 `opportunistic` 机会性隐式缓存特征（如 Gemini 隐式缓存）。
+  - [renderer/usage-cache.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-cache.js) & [renderer/usage-cache.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-cache.css)：在 `#view-cache`「每天的缓存命中」下方新增「各模型实测缓存持续时长」卡片与响应式矩阵表（`role="region"`、`tabindex="0"`、吸顶列头 `thead th` 与吸顶行头 `th[scope="row"].cc-ttl-rowhead`），展示型号与来源工具、实测保活时长胶囊、`短效易掉` 警示标、续接样本数与最长保活时长、6 档间隔着色存活率及多型号展开/收起按钮，方法说明收纳进标题旁 `?` 悬停提示。
+  - [renderer/intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js) & [renderer/i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js)：补齐 `0.3.107` 更新引导文案及全部新增状态标签、提示文案与分桶悬停模板的英文翻译。
+  - [scripts/test-cache-analysis.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-cache-analysis.cjs) & [scripts/test-cache-ui.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-cache-ui.cjs)：新增 Gemini 短效波动、Claude ~5 分钟断崖、GPT 长保活、仅短间隔、无缓存与样本不足 6 类单测，以及 UI 吸顶表头、徽标文案与全英文零中文残留断言。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.107.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_OK=true`（`version=0.3.107`）；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.107.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.107.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.107-Setup.exe`，`112,903,327` B，SHA256 `be1aac9386b8711f33f03f3339ec5733efbe46d059ce115e6399870d73cc574f`
+  - `dist/TokenPulse-0.3.107-Portable.exe`，`112,646,152` B，SHA256 `754da83f9269b100022b1fc6e32e348af10cf6cfd742220b642c2e81df047de2`
+  - `dist/TokenPulse-0.3.107-Setup.exe.blockmap`，`119,983` B，SHA256 `68c3302bdd19c3dcc5e72d82072559721e807244ca4f287107cfc57a8be14e1c`
+  - `dist/latest.yml`，`355` B，SHA256 `76fa090e367c9aaea8e4eb0f29833304296173d26dc82bd5d253796fb820a1b7`
+- **正式验证**：
+  - `npm run compile`、`node scripts/test-cache-analysis.cjs`（11/11）、`node scripts/test-features.cjs`（46/46 含英文词典零中文残留与正则编译）：退出 0，全部 PASS。
+  - Electron 自动化 UI 测试：`test-cache-ui.cjs`、`test-intro-ui.cjs`、`test-ui.cjs` 退出 0，全部 PASS。
+  - 隔离合成数据浅色 + 深色主题截图自查及 `git diff --check` 均通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/index.js`、`build/core/cache-analysis.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.107` 发行产物共 8 项非破坏性独占打开检查 `LOCKED_COUNT=0`，检查句柄均已立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.107` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.106` · 2026-11-22
 
 - **Git 与发布**。[TokenPulse v0.3.106](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.106) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454356550`）。发布提交 `c5eff6e01771e3978ebfb652e3f1ad3cce48af8b` 与签注标签 `v0.3.106`（`13054876c51e1eae0d0ae9cb4767c86115814f68`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（「用量明细」10 项诊断、排行与联动增强）**：
