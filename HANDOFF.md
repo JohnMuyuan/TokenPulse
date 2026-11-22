@@ -1,6 +1,37 @@
-# 当前接手入口 · TokenPulse `v0.3.104` 发布（2026-11-21）
+# 当前接手入口 · TokenPulse `v0.3.105` 发布（2026-11-21）
 
-## 最新已发布版本 · `v0.3.104` · 2026-11-21
+## 最新已发布版本 · `v0.3.105` · 2026-11-21
+
+- **Git 与发布**。[TokenPulse v0.3.105](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.105) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454240125`）。发布提交 `46bd9ca26e57b1435477e490f37d1787a9d490fc` 与签注标签 `v0.3.105`（`beb1426c947eb3e3c1e6c904a33609d18d47c9a5`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（6 项修复与体验优化）**：
+  1. **Antigravity Ultra 组内模型档位更新与多模型紧凑分组**：
+     - [src/core/antigravity-accounts.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity-accounts.ts)：将 `DEFAULT_AGY_IDE_VERSION` 升至 `"2.34.0"`；`parseAntigravityCloudQuota` 完整保留全量模型 `labels` 供历史回查，同时展示列表仅收编 `agentModelSorts` 排序项并过滤 `disabled`/`isInternal`/`deprecated` 模型。
+     - [src/main/antigravity-quota.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/antigravity-quota.ts)：新增同档位本地模型目录同步（`stored.localCatalogs`、`enrichGroupsAndModelsWithCatalog`），让同为 Ultra 等档位的云端 OAuth 账号同步展示最新本地 Cascade 模型档位（`Gemini 4 Neon / Carbon / Argon / Hydrogen`、`Orchestrator`、`Gemini 3.8 Flash`），同时严格保留各自独立的 `used`/`resetAt`/`week`/`plan`/`tier`/`credits`。
+     - [renderer/antigravity-quota.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity-quota.js) & [renderer/antigravity.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity.css)：「组内模型档位」改为按型号家族聚合并以胶囊展示思考档位（近期有调用的高亮），默认最多展示 4 个型号（优先近期有调用），支持持久化展开/收起按钮与 260px 有界滚动，并修复原生 `replaceChildren` 在无展开按钮时输出 `null` 文本的问题。
+  2. **Antigravity「换一种模型，整窗能用多少」修复灰条与估算偏差**：
+     - [src/main/antigravity-quota.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/antigravity-quota.ts)（`buildModelCapacities`）：新增 `inCatalog` 标记排除内部后台模型干扰；改用各额度池最近 7 天交互记录构建统一池基准（`poolBaselines`）并以主思考等级作锚点修正输出比例缩放；提高独立单次均值门槛至 `>= 30` 次（`MIN_OWN_COMBO_CALLS`）避免极少冷启动调用把调用次数估算拉爆；按额度池独立计算相对倍率。
+     - [renderer/antigravity-quota.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity-quota.js) & [renderer/antigravity.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity.css)：为 `.ms-cap` 补齐 `five`/`week` 与池色 `--agy-color`，同时渲染浅色整窗 `.full` 与实色剩余 `.left` 彩色条（修复全部渲染为灰条的问题）；按额度池独立分段归一化，每池默认展示 6 档（优先近期常用）并支持展开/收起。
+  3. **出口监控「白名单与检测设置」改为模态弹窗**：[renderer/egress.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/egress.js) & [renderer/egress.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/egress.css) 将卡片内联折叠 `<details>` 改为居中原生 `<dialog closedby="any">`（`showModal()` + 无 `closedBy` 环境回退 + `overscroll-behavior: contain` 阻断穿透滚动），卡片只留紧凑摘要入口按钮。
+  4. **会话管理移除软件内回复功能**：移除 [renderer/sessions.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/sessions.js) / [renderer/sessions.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/sessions.css) 中的「在这里回复」按钮、底部输入框与流式回复状态，及 [src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts) / [src/main/preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts) 的 `sessions:reply` / `sessions:reply-stop` / `session-reply` IPC；保留会话浏览、搜索、复制路径、终端继续与删除。同步在 [renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 补充明暗主题 `--pi` 变量修复 `test-pi-ui.cjs` 历史明暗同色断言。
+  5. **分享卡片周报竖柱图消除下方空白**：[renderer/share-card.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/share-card.js) & [renderer/share-card.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/share-card.css) 将 `.week-panel` 改为满高弹性列布局，百分比高度渐变竖柱配顶部数值、中位参考虚线、星期 + 短日期横轴、峰值日高亮及底部「最拼的一天 / 日均」汇总行。
+  6. **用量明细「更多筛选」下拉交互重构**：[renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)、[renderer/app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css)、[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 将原内联撑开工具栏的「更多筛选」改为按钮正下方 6px 浮动面板（`position: absolute; top: calc(100% + 6px); right: 0` + 窄屏 `.align-left` 翻转），支持已生效条件数量角标、与「筛选模型」互斥展开及点击外部/`Esc` 关闭。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.105.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_OK=true`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.105.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.105.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.105-Setup.exe`，`112,885,852` B，SHA256 `1cabd61dba07fd2ff7167552def6a7fe881f105633a3e608d39d0f258a0334ac`
+  - `dist/TokenPulse-0.3.105-Portable.exe`，`112,628,640` B，SHA256 `d6e4178b937b19613ba2ffcdeaf9fb5144861a69c29a7ef42a4b64dd1197e185`
+  - `dist/TokenPulse-0.3.105-Setup.exe.blockmap`，`119,955` B，SHA256 `93908ee893029212c7819ff1657c34434a07254c43ecd5dfcd7dac1c32b80d49`
+  - `dist/latest.yml`，`355` B，SHA256 `9378f826a4bd6edeea0b0b745f49e1bb0be9671b783eb2261ecbe8f8a57552c7`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67** 个 Node 单测脚本，含扩展后的 `test-antigravity-accounts.cjs` 与 `test-antigravity-capacity.cjs`）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`test-ui.cjs`（含「更多筛选」浮层不遮挡按钮且不撑高工具栏断言、出口监控弹窗断言、会话无回复按钮断言）、`test-antigravity-ui.cjs`（8/8 含零 `null` 与全英文无中文残余断言）、`test-share-card.cjs`（7/7）、`test-share-ui.cjs`、`test-pi-ui.cjs`、`test-intro-ui.cjs`、`test-layout-ui.cjs`、`test-health-ui.cjs`、`test-usage-projects-ui.cjs`、`test-cache-ui.cjs` **全部 PASS**。
+  - 隔离合成数据视觉截图自查（浅色 + 深色主题）：逐张核验 Antigravity Ultra 组内模型档位、换一种模型彩色条、用量明细「更多筛选」浮层、出口监控模态弹窗、会话管理无回复区以及分享卡片中英文周报竖柱图；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查为 0；`build/main/index.js`、`build/main/antigravity-quota.js`、`build/core/antigravity-accounts.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.105` 发行产物共 9 项非破坏性独占打开检查 `LOCKED_COUNT=0`，检查句柄均已立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.105` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.104` · 2026-11-21
 
 - **Git 与发布**。[TokenPulse v0.3.104](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.104) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454210866`）。发布提交 `d751d25d68444ce2f7d4aba0e191253bfac1a996` 与签注标签 `v0.3.104`（`abce92d737be54d12f831b8e5f019d39aaea1400`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（4 项修复与界面精简）**：
