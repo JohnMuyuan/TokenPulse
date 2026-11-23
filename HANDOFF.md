@@ -1,6 +1,31 @@
-# 当前接手入口 · TokenPulse `v0.3.108` 已正式发布（2026-11-22）
+# 当前接手入口 · TokenPulse `v0.3.109` 已正式发布（2026-11-23）
 
-## 最新已发布版本 · `v0.3.108` · 2026-11-22
+## 最新已发布版本 · `v0.3.109` · 2026-11-23
+
+- **Git 与发布**。[TokenPulse v0.3.109](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.109) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `455611725`）。发布提交 `a67bc22e8d27a397cffb1eb54300950159f1b3f4` 与签注标签 `v0.3.109`（`848dfffe6a4106f103181c277c6f1743636b4291`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **问题核实与发布内容（修复 Antigravity 子代理 / 动态分档模型误报「型号不一致」及补齐 Orchestrator Neon 别名）**：
+  - **根因求证**：排查用户本机 90 天用量明细中 `status: "mismatch"` 记录共 33 条，其中 **31 条**为 Antigravity `browser` 子代理发起的 `gemini-4-hydrogen`（`effort: "high"`）请求，上游动态分档返回 `gemini-4-hydrogen-tiered-high`（其余 2 条为 `Grok Build` 请求 `grok-4.7`、返回 `grok-4.6-build` 的真实跨型号差异）。缺陷位于 [src/core/request-verify.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-verify.ts) 的 `normalizeModel()`：先前先剥离行尾 `-(?:b|n|tiered|worker(?:-agy)?)`，再剥离 `MODEL_EFFORT_SUFFIX`；对于 `-tiered-high` 这类「分档/内部后缀 + 思考等级」复合后缀，第一步因以 `-high` 结尾不匹配，第二步仅剥离 `-high` 后残留 `-tiered`，导致误判为不同型号。
+  - [src/core/request-verify.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-verify.ts)：扩展 `MODEL_EFFORT_SUFFIX` 兼容 `orchestrator` 前缀、可选 `tiered-` 复合前缀及 `adaptive|auto|dynamic` 动态思考等级词；将 `normalizeModel()` 改为最多 3 轮收敛剥离 `-build`、思考等级后缀、Antigravity 内部/分档后缀与 `orchestrator`（同步补齐本机发现的 `Orchestrator (Neon)`），并严格保留非 Antigravity 型号（如 `gpt-5.4-high`）与跨型号差异拦截。由于 `verifyRequest()` 在查询时纯函数计算，无需提升 `STATE_VERSION` 或重扫，历史误报立即归零。
+  - [knowledge/manual.json](file:///d:/CodePorject/Tools/TokenPulse/knowledge/manual.json) & [knowledge/models.json](file:///d:/CodePorject/Tools/TokenPulse/knowledge/models.json)：同步更新两条 Antigravity 型号等价正则（允许内部/分档后缀后再挂思考等级，并补入 `neon`），并将内置知识库版本由 `2026.11.20` 升至 `2026.11.23`。
+  - [scripts/test-requests.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-requests.cjs)：新增 `gemini-4-hydrogen-tiered-high`、`gemini-3.8-flash-tiered-medium`、`gemini-4-argon-b-xhigh`、`gemini-flash-worker-agy-low`、`orchestrator-neon`/`orchestrator-argon` → `gemini-pro-orchestrator(-high)` 回归断言及跨型号反向断言（共 `90/90` PASS）。
+  - [renderer/intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js) & [renderer/i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js)：补充 `0.3.109` 更新说明与英文翻译（`test-features.cjs` 英文零漏翻校验 `46/46` PASS）。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.109.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_HAS_03109=true`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.109.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.109.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.109-Setup.exe`，`112,920,996` B，SHA256 `54b44daa5bf67caa345dd703a895635a074efcdb7d6eeaa4f071d6b1bc4ec187`
+  - `dist/TokenPulse-0.3.109-Portable.exe`，`112,663,837` B，SHA256 `1d03c9730ccc845b2b16be4bfca5bf0b6da9d6bea9da387a0853a62352ce1b10`
+  - `dist/TokenPulse-0.3.109-Setup.exe.blockmap`，`119,883` B，SHA256 `3990866845630d53c8f2732e90de7799d968bdd516f02f8aeea78db927bd57b8`
+  - `dist/latest.yml`，`355` B，SHA256 `384f70537c30a7af0d53d6c0caa578a6bb70ee22f80f2344e431e2f563bdc283`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测脚本，含 `test-requests.cjs` 90/90、`test-features.cjs` 46/46、`test-knowledge-update.cjs`）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-intro-ui.cjs` 与 `scripts/test-ui.cjs` **退出 0，全部 PASS**；`git diff --check` 通过。
+  - 本机真实用量明细只读回归核对：Antigravity 误报条数由 `31` 降至 `0`（`LOCAL_AGY_MISMATCH_AFTER_FIX=0`），仅余 2 条真实的 `Grok Build`（`grok-4.7` → `grok-4.6-build`）跨型号差异。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/index.js`、`build/core/request-verify.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.109` 发行产物共 8 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.109` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.108` · 2026-11-22
 
 - **Git 与发布**。[TokenPulse v0.3.108](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.108) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `455129875`）。发布提交 `46ac1bce3dac40a75ba96583f9e1f0d901954dfb`（合入 `44858fd`、`fc94d09`、`4589f50`、`46ac1bc`）与签注标签 `v0.3.108`（`87234f0f40ad173ab030a6315b6ca131e45fea34`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（全工具子代理与 Antigravity Swarm 蜂群会话树、桌宠实时感知与用量跨页联动）**：
