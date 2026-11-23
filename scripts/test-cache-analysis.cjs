@@ -204,6 +204,51 @@ try {
     assert.equal(byModel.get('grok-4.7-build').status, 'insufficient');
   });
 
+  check('subagent and swarm metadata plus sessionKey propagate to cache sessions and recentBreaks', () => {
+    const result = analyzeCache([
+      row('worker-1', {
+        at,
+        source: 'Antigravity',
+        sessionKey: 'antigravity:worker-1',
+        sessionTitle: 'audit-worker · 检查缓存',
+        isSubagent: true,
+        parentKey: 'antigravity:coord-1',
+        agentName: 'audit-worker',
+        subagentKind: 'swarm',
+        swarmTitle: '缓存审计蜂群',
+        input: 12_000,
+        cacheRead: 10_000,
+      }),
+      row('worker-1', {
+        at: at + 60_000,
+        source: 'Antigravity',
+        sessionKey: 'antigravity:worker-1',
+        sessionTitle: 'audit-worker · 检查缓存',
+        isSubagent: true,
+        parentKey: 'antigravity:coord-1',
+        agentName: 'audit-worker',
+        subagentKind: 'swarm',
+        swarmTitle: '缓存审计蜂群',
+        input: 12_000,
+        cacheRead: 0,
+      }),
+    ]);
+    assert.equal(result.sessions.length, 1);
+    assert.deepEqual(
+      [
+        result.sessions[0].sessionKey,
+        result.sessions[0].title,
+        result.sessions[0].isSubagent,
+        result.sessions[0].parentKey,
+        result.sessions[0].agentName,
+        result.sessions[0].subagentKind,
+        result.sessions[0].swarmTitle,
+      ],
+      ['antigravity:worker-1', 'audit-worker · 检查缓存', true, 'antigravity:coord-1', 'audit-worker', 'swarm', '缓存审计蜂群'],
+    );
+    assert.equal(result.recentBreaks[0].sessionKey, 'antigravity:worker-1');
+  });
+
   console.log(`PASS ${passed} cache analysis checks`);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

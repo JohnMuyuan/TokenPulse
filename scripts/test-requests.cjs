@@ -447,6 +447,92 @@ try {
       quotaSorted.rows[0].key.endsWith("v106-2") && quotaSorted.rows[1].key.endsWith("v106-1") && quotaSorted.rows[2].key.endsWith("v106-3"),
       JSON.stringify(quotaSorted.rows.map((r) => [r.key, r.quotaPct ?? null])),
     );
+
+    // v0.3.108：子代理 / Swarm 元信息透传至请求行与按会话排行，并支持按 agentName / swarmTitle 搜索及 DeepSeek session- 前缀兼容
+    const subDay = new Date(2026, 6, 21, 10, 0).getTime();
+    const agyWorkerFile = path.join(root, "antigravity", "conversations", "12345678-1111-4000-8000-000000000099.db");
+    const claudeSubFile = path.join(root, "claude", "projects", "D--Pulse", "parent-1", "subagents", "agent-sub9.jsonl");
+    const dshFile = path.join(root, "dsh", "sessions", "Pulse", "session-dsh-1", "session.v4.jsonl.zstd");
+    fs.writeFileSync(
+      path.join(process.env.TOKENPULSE_DATA_DIR, "sessions-index.json"),
+      JSON.stringify({
+        version: 10,
+        files: {
+          [agyWorkerFile]: {
+            size: 100,
+            mtimeMs: 2,
+            summary: {
+              key: "antigravity:12345678-1111-4000-8000-000000000099",
+              kind: "antigravity",
+              id: "12345678-1111-4000-8000-000000000099",
+              title: "audit-worker · 核验缓存",
+              isSubagent: true,
+              parentKey: "antigravity:12345678-1111-4000-8000-000000000000",
+              agentName: "audit-worker",
+              subagentKind: "swarm",
+              swarmTitle: "架构审查蜂群",
+            },
+          },
+          [claudeSubFile]: {
+            size: 100,
+            mtimeMs: 2,
+            summary: {
+              key: "claude:agent-sub9",
+              kind: "claude",
+              id: "agent-sub9",
+              title: "搜索依赖图",
+              isSubagent: true,
+              parentKey: "claude:parent-1",
+              agentName: "Explore",
+              subagentKind: "subagent",
+            },
+          },
+          [dshFile]: {
+            size: 100,
+            mtimeMs: 2,
+            summary: {
+              key: "deepseek:session-dsh-1",
+              kind: "deepseek",
+              id: "session-dsh-1",
+              title: "DeepSeek 审查",
+            },
+          },
+        },
+      }),
+    );
+    appendRequests([
+      { id: "v108-agy", at: subDay + 1000, kind: "antigravity", file: agyWorkerFile, cwd: "D:\\Work\\Pulse", model: "gemini-4-argon", input: 5000, output: 400, cacheRead: 3000, cacheWrite: 0, reasoning: 100, costUsd: 0.02, calls: 1 },
+      { id: "v108-claude", at: subDay + 2000, kind: "claude-code", file: claudeSubFile, cwd: "D:\\Work\\Pulse", model: "claude-opus-5-5", input: 4000, output: 300, cacheRead: 2000, cacheWrite: 0, reasoning: 0, costUsd: 0.03, calls: 1 },
+      { id: "v108-dsh", at: subDay + 3000, kind: "deepseek-harness", file: dshFile, cwd: "D:\\Work\\Pulse", model: "DeepSeek-V4.1-Flash", input: 3000, output: 200, cacheRead: 1000, cacheWrite: 0, reasoning: 0, costUsd: 0.01, calls: 1 },
+    ]);
+    const subPage = queryRequests({ from: "2026-07-21", to: "2026-07-21", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 20, sessions: true });
+    const agyRow = subPage.rows.find((r) => r.key.endsWith("v108-agy"));
+    const agySess = subPage.sessions.find((s) => s.sessionKey === "antigravity:12345678-1111-4000-8000-000000000099");
+    check(
+      "子代理/Swarm 请求行与按会话排行透传 isSubagent / parentKey / agentName / subagentKind / swarmTitle",
+      agyRow?.isSubagent === true &&
+        agyRow?.parentKey === "antigravity:12345678-1111-4000-8000-000000000000" &&
+        agyRow?.agentName === "audit-worker" &&
+        agyRow?.subagentKind === "swarm" &&
+        agyRow?.swarmTitle === "架构审查蜂群" &&
+        agySess?.isSubagent === true &&
+        agySess?.subagentKind === "swarm" &&
+        agySess?.agentName === "audit-worker" &&
+        agySess?.swarmTitle === "架构审查蜂群",
+      JSON.stringify({ agyRow, agySess }),
+    );
+    const byAgentName = queryRequests({ from: "2026-07-21", to: "2026-07-21", source: "all", status: "all", search: "audit-worker", sort: "time", page: 0, pageSize: 20 });
+    const bySwarmTitle = queryRequests({ from: "2026-07-21", to: "2026-07-21", source: "all", status: "all", search: "架构审查蜂群", sort: "time", page: 0, pageSize: 20 });
+    check("请求搜索支持按 agentName 与 swarmTitle 命中", byAgentName.total === 1 && bySwarmTitle.total === 1);
+    const dshRow = subPage.rows.find((r) => r.key.endsWith("v108-dsh"));
+    const dshByShort = queryRequests({ from: "2026-07-21", to: "2026-07-21", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 20, session: "dsh-1" });
+    const dshByFullKey = queryRequests({ from: "2026-07-21", to: "2026-07-21", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 20, session: "deepseek:session-dsh-1" });
+    const dshByPrefix = queryRequests({ from: "2026-07-21", to: "2026-07-21", source: "all", status: "all", search: "", sort: "time", page: 0, pageSize: 20, session: "session-dsh-1" });
+    check(
+      "DeepSeek 会话键保留 session- 前缀并兼容短 ID / 完整 key 筛选",
+      dshRow?.session === "dsh-1" && dshRow?.sessionKey === "deepseek:session-dsh-1" && dshByShort.total === 1 && dshByFullKey.total === 1 && dshByPrefix.total === 1,
+      JSON.stringify({ session: dshRow?.session, sessionKey: dshRow?.sessionKey, totals: [dshByShort.total, dshByFullKey.total, dshByPrefix.total] }),
+    );
   }
 
   /* ---------------- 额度归属 ---------------- */

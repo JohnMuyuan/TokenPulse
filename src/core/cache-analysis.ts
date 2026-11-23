@@ -36,7 +36,7 @@ export type ModelCacheRetention = {
 type CacheTotals = { input: number; cacheRead: number; cacheWrite: number; fresh: number; hitRate: number | null; savingsUsd: number; unpricedTokens: number };
 type CacheGroup = { input: number; cacheRead: number; cacheWrite: number; savingsUsd: number };
 type BreakCauseTotal = { count: number; lostTokens: number; extraUsd: number };
-type CacheBreak = { at: number; source: string; session: string; project: string; model: string; cause: CacheCause; gapMs: number; lostTokens: number; extraUsd: number };
+type CacheBreak = { at: number; source: string; session: string; sessionKey?: string; project: string; model: string; cause: CacheCause; gapMs: number; lostTokens: number; extraUsd: number };
 
 export type CacheAnalysis = {
   totals: CacheTotals;
@@ -46,7 +46,25 @@ export type CacheAnalysis = {
   retention: ModelCacheRetention[];
   coldStarts: { count: number; tokens: number; costUsd: number };
   breaks: { count: number; lostTokens: number; extraUsd: number; byCause: Record<CacheCause, BreakCauseTotal> };
-  sessions: { source: string; session: string; project: string; firstAt: number; lastAt: number; requests: number; hitRate: number | null; breaks: number; lostTokens: number; extraUsd: number }[];
+  sessions: {
+    source: string;
+    session: string;
+    sessionKey?: string;
+    title?: string;
+    isSubagent?: boolean;
+    parentKey?: string;
+    agentName?: string;
+    subagentKind?: "swarm" | "subagent" | "review";
+    swarmTitle?: string;
+    project: string;
+    firstAt: number;
+    lastAt: number;
+    requests: number;
+    hitRate: number | null;
+    breaks: number;
+    lostTokens: number;
+    extraUsd: number;
+  }[];
   recentBreaks: CacheBreak[];
 };
 
@@ -176,7 +194,18 @@ export function analyzeCache(rows: RequestRow[]): CacheAnalysis {
           const extraUsd = price
             ? lostTokens * ((price.cacheWrite > 0 ? price.cacheWrite : price.input) - price.cacheRead) / 1_000_000
             : 0;
-          const detail: CacheBreak = { at: row.at, source, session, project: projectOf(row.cwd), model: row.returned || row.model, cause, gapMs: row.at - prev.at, lostTokens, extraUsd };
+          const detail: CacheBreak = {
+            at: row.at,
+            source,
+            session,
+            ...(row.sessionKey ? { sessionKey: row.sessionKey } : {}),
+            project: projectOf(row.cwd),
+            model: row.returned || row.model,
+            cause,
+            gapMs: row.at - prev.at,
+            lostTokens,
+            extraUsd,
+          };
           breaks.count++;
           breaks.lostTokens += lostTokens;
           breaks.extraUsd += extraUsd;
@@ -192,7 +221,35 @@ export function analyzeCache(rows: RequestRow[]): CacheAnalysis {
       prev = row;
       compactionSincePrev = false;
     }
-    if (requestCount) sessions.push({ source, session, project: projectOf(sessionRows.find(row => !row.compaction)?.cwd), firstAt, lastAt, requests: requestCount, hitRate: hitRate(sessionInput, sessionRead), breaks: sessionBreaks, lostTokens: sessionLost, extraUsd: sessionExtra });
+    if (requestCount) {
+      const metaRow = sessionRows.find(row => !row.compaction) ?? sessionRows[0];
+      const sessionKey = sessionRows.find(row => row.sessionKey)?.sessionKey;
+      const title = sessionRows.find(row => row.sessionTitle)?.sessionTitle;
+      const isSubagent = sessionRows.some(row => row.isSubagent);
+      const parentKey = sessionRows.find(row => row.parentKey)?.parentKey;
+      const agentName = sessionRows.find(row => row.agentName)?.agentName;
+      const subagentKind = sessionRows.find(row => row.subagentKind)?.subagentKind;
+      const swarmTitle = sessionRows.find(row => row.swarmTitle)?.swarmTitle;
+      sessions.push({
+        source,
+        session,
+        ...(sessionKey ? { sessionKey } : {}),
+        ...(title ? { title } : {}),
+        ...(isSubagent ? { isSubagent: true } : {}),
+        ...(parentKey ? { parentKey } : {}),
+        ...(agentName ? { agentName } : {}),
+        ...(subagentKind ? { subagentKind } : {}),
+        ...(swarmTitle ? { swarmTitle } : {}),
+        project: projectOf(metaRow?.cwd),
+        firstAt,
+        lastAt,
+        requests: requestCount,
+        hitRate: hitRate(sessionInput, sessionRead),
+        breaks: sessionBreaks,
+        lostTokens: sessionLost,
+        extraUsd: sessionExtra,
+      });
+    }
   }
 
   const retention: ModelCacheRetention[] = [...modelTrials.entries()]

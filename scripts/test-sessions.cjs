@@ -35,11 +35,15 @@ write(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1.jsonl'), [
   { type: 'ai-title', aiTitle: '检查 Demo 项目' },
   'not json {',
 ]);
-// 子代理的记录：属于主会话，不单独列
+// 子代理的记录：带 isSidechain: true 且 sessionId 是主会话 ID，不能覆盖文件名 ID，需带父子关系和 .meta.json 角色
 write(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1', 'subagents', 'agent-x.jsonl'), [
-  { type: 'user', uuid: 's1', timestamp: '2026-09-24T10:00:00Z', sessionId: 'agent-x', cwd: project, message: { content: '子代理任务' } },
-  { type: 'assistant', uuid: 's2', timestamp: '2026-09-24T10:00:01Z', message: { id: 'x', content: [{ type: 'text', text: '好' }] } },
+  { type: 'user', uuid: 's1', isSidechain: true, timestamp: '2026-09-24T10:00:00Z', sessionId: 'claude-1', agentId: 'x', cwd: project, message: { content: '子代理任务' } },
+  { type: 'assistant', uuid: 's2', isSidechain: true, timestamp: '2026-09-24T10:00:01Z', sessionId: 'claude-1', agentId: 'x', message: { id: 'msg_sub_1', model: 'claude-opus-5', usage: { input_tokens: 1000, cache_read_input_tokens: 2000, cache_creation_input_tokens: 0, output_tokens: 200 }, content: [{ type: 'text', text: '好' }] } },
 ]);
+fs.writeFileSync(
+  path.join(claudeDir, 'projects', 'D--Demo', 'claude-1', 'subagents', 'agent-x.meta.json'),
+  JSON.stringify({ agentType: 'Explore', description: '探索代码结构', spawnDepth: 1, finished: true }),
+);
 // 只有 CLI 自己加的内容、没有真正对话的会话：不列
 write(path.join(claudeDir, 'projects', 'D--Demo', 'claude-empty.jsonl'), [
   { type: 'user', uuid: 'e1', timestamp: '2026-09-24T08:00:00Z', sessionId: 'claude-empty', cwd: project, message: { content: '<local-command-stdout>ok</local-command-stdout>' } },
@@ -64,12 +68,27 @@ write(codexFile, [
   { type: 'event_msg', timestamp: '2026-09-24T11:00:04Z', payload: { type: 'agent_message', message: '已完成。' } },
   { type: 'response_item', timestamp: '2026-09-24T11:00:05Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<turn_aborted>\nThe user interrupted.\n</turn_aborted>' }] } },
 ]);
-write(path.join(codexDir, 'session_index.jsonl'), [{ id: 'codex-1', thread_name: '列出 Demo 文件' }]);
-// Codex 自己派的审查子会话：不列
+write(path.join(codexDir, 'session_index.jsonl'), [
+  { id: 'codex-1', thread_name: '列出 Demo 文件' },
+  { id: 'codex-guardian', thread_name: '安全审查' },
+]);
+// Codex 派出的子会话：review、thread_spawn 与 guardian_review 均保留并挂回父会话
 write(path.join(codexDir, 'sessions', '2026', '09', '24', 'rollout-2026-09-24T11-05-00-codex-sub.jsonl'), [
   { type: 'session_meta', timestamp: '2026-09-24T11:05:00Z', payload: { id: 'codex-sub', cwd: project, parent_thread_id: 'codex-1', source: { subagent: 'review' } } },
+  { type: 'turn_context', timestamp: '2026-09-24T11:05:00Z', payload: { model: 'gpt-6' } },
   { type: 'response_item', timestamp: '2026-09-24T11:05:01Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'The following is the Codex agent history' }] } },
   { type: 'response_item', timestamp: '2026-09-24T11:05:02Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] } },
+  { type: 'token_usage_record', timestamp: '2026-09-24T11:05:02Z', payload: { response_id: 'resp_sub_1', usage: { input_tokens: 2000, cached_input_tokens: 1000, output_tokens: 100 } } },
+]);
+write(path.join(codexDir, 'sessions', '2026', '09', '24', 'rollout-2026-09-24T11-06-00-codex-spawn.jsonl'), [
+  { type: 'session_meta', timestamp: '2026-09-24T11:06:00Z', payload: { id: 'codex-spawn', cwd: project, source: { subagent: { thread_spawn: { parent_thread_id: 'codex-1', depth: 1, agent_nickname: 'worker-a', agent_role: 'explorer' } } } } },
+  { type: 'response_item', timestamp: '2026-09-24T11:06:01Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '分析模块依赖' }] } },
+  { type: 'response_item', timestamp: '2026-09-24T11:06:02Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已分析完成' }] } },
+]);
+write(path.join(codexDir, 'sessions', '2026', '09', '24', 'rollout-2026-09-24T11-07-00-codex-guardian.jsonl'), [
+  { type: 'session_meta', timestamp: '2026-09-24T11:07:00Z', payload: { id: 'codex-guardian', cwd: project, parent_thread_id: 'codex-1', thread_source: 'guardian_review', source: { subagent: { other: 'guardian' } } } },
+  { type: 'response_item', timestamp: '2026-09-24T11:07:01Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '检查高危命令' }] } },
+  { type: 'response_item', timestamp: '2026-09-24T11:07:02Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '低风险' }] } },
 ]);
 
 /* ---------------- Grok Build ---------------- */
@@ -77,6 +96,7 @@ const grokSession = path.join(grokDir, 'sessions', encodeURIComponent(project), 
 write(path.join(grokSession, 'updates.jsonl'), [
   { timestamp: '2026-09-24T12:00:00Z', params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '你' } } } },
   { params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '好' } } } },
+  { params: { update: { sessionUpdate: 'subagent_spawned', parent_session_id: 'grok-1', child_session_id: 'grok-sub', subagent_type: 'general-purpose', description: '检查日志' } } },
   { params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '你好，' } } } },
   { params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '需要我做什么？' } } } },
   { params: { update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'read_file', rawInput: { path: 'a.txt' } } } },
@@ -84,6 +104,19 @@ write(path.join(grokSession, 'updates.jsonl'), [
   { params: { update: { sessionUpdate: 'turn_completed', usage: { modelUsage: { 'grok-4.6': { inputTokens: 8000, cachedReadTokens: 4000, outputTokens: 1000, reasoningTokens: 300, costUsdTicks: 15000000, modelCalls: 2 } } } } } },
 ]);
 fs.writeFileSync(path.join(grokSession, 'summary.json'), JSON.stringify({ generated_title: '打个招呼', current_model_id: 'grok-4.6' }));
+const grokSubSession = path.join(grokDir, 'sessions', encodeURIComponent(project), 'grok-sub');
+write(path.join(grokSubSession, 'updates.jsonl'), [
+  { timestamp: '2026-09-24T12:01:00Z', params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '检查日志目录' } } } },
+  { params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '没有报错。' } } } },
+  { params: { update: { sessionUpdate: 'turn_completed', usage: { modelUsage: { 'grok-4.6': { inputTokens: 1000, cachedReadTokens: 500, outputTokens: 200, reasoningTokens: 0, costUsdTicks: 2000000, modelCalls: 1 } } } } } },
+]);
+fs.writeFileSync(path.join(grokSubSession, 'summary.json'), JSON.stringify({ session_kind: 'subagent', agent_name: 'general-purpose', generated_title: '检查日志', current_model_id: 'grok-4.6' }));
+const grokOrphan = path.join(grokDir, 'sessions', encodeURIComponent(project), 'grok-orphan');
+write(path.join(grokOrphan, 'updates.jsonl'), [
+  { timestamp: '2026-09-24T12:02:00Z', params: { update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '孤儿任务' } } } },
+  { params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '完成。' } } } },
+]);
+fs.writeFileSync(path.join(grokOrphan, 'summary.json'), JSON.stringify({ session_kind: 'subagent', agent_name: 'helper', current_model_id: 'grok-4.6' }));
 
 const zlib = require('zlib');
 const deepseekLines = [
@@ -100,15 +133,19 @@ fs.writeFileSync(deepseekFile, zlib.zstdCompressSync(Buffer.from(deepseekLines))
 
 const sessions = require('../build/core/sessions.js');
 const list = sessions.listSessions();
-assert.deepStrictEqual(list.map(item => item.key).sort(), ['claude:claude-1', 'codex:codex-1', 'deepseek:session-demo', 'grok:grok-1'], '子代理、子会话、空会话都不该出现在列表里');
+const roots = list.filter(item => !item.isSubagent);
+const subs = list.filter(item => item.isSubagent);
+assert.deepStrictEqual(roots.map(item => item.key).sort(), ['claude:claude-1', 'codex:codex-1', 'deepseek:session-demo', 'grok:grok-1'], '主会话全部保留，空会话不列');
+assert.deepStrictEqual(subs.map(item => item.key).sort(), ['claude:agent-x', 'codex:codex-guardian', 'codex:codex-spawn', 'codex:codex-sub', 'grok:grok-orphan', 'grok:grok-sub'], '各家子代理均按非碰撞键建入索引');
 
-const byKind = Object.fromEntries(list.map(item => [item.kind, item]));
+const byKind = Object.fromEntries(roots.map(item => [item.kind, item]));
+const byKey = Object.fromEntries(list.map(item => [item.key, item]));
 assert.strictEqual(byKind.claude.title, '检查 Demo 项目', 'Claude 用 CLI 生成的标题');
 assert.strictEqual(byKind.codex.title, '列出 Demo 文件', 'Codex 用 session_index 里的标题');
 assert.strictEqual(byKind.grok.title, '打个招呼', 'Grok 用 summary.json 的标题');
 assert.strictEqual(byKind.deepseek.title, '看看 Demo', 'DeepSeek 用 session/title');
 assert.strictEqual(byKind.deepseek.resumeCommand, '');
-for (const item of list) {
+for (const item of roots) {
   assert.strictEqual(item.cwd, project);
   assert.strictEqual(item.project, 'Demo');
   assert.strictEqual(item.turns, 1, `${item.kind} 只有一轮用户提问`);
@@ -116,6 +153,49 @@ for (const item of list) {
   assert(!('messages' in item), '列表里不带整段对话');
   assert(item.usage && item.usage.tokens > 0, `${item.kind} 列表摘要带会话级用量统计`);
 }
+for (const sub of subs) {
+  assert.strictEqual(sub.isSubagent, true);
+  assert.strictEqual(sub.resumable, false, `${sub.key} 子代理不可直接恢复`);
+  assert.strictEqual(sub.resumeCommand, '', `${sub.key} 子代理无恢复命令`);
+  assert.strictEqual(sub.canDelete, false, `${sub.key} 子代理不允许单独删除`);
+}
+// Claude 子代理：非碰撞 key、.meta.json 角色与描述、父会话计数与子树用量
+assert.strictEqual(byKey['claude:agent-x'].parentKey, 'claude:claude-1');
+assert.strictEqual(byKey['claude:agent-x'].rootKey, 'claude:claude-1');
+assert.strictEqual(byKey['claude:agent-x'].depth, 1);
+assert.strictEqual(byKey['claude:agent-x'].agentName, 'Explore');
+assert.strictEqual(byKey['claude:agent-x'].subagentRole, 'Explore');
+assert.strictEqual(byKey['claude:agent-x'].subagentKind, 'subagent');
+assert.strictEqual(byKey['claude:agent-x'].title, '探索代码结构');
+assert.strictEqual(byKey['claude:agent-x'].usage.tokens, 3200);
+assert.strictEqual(byKind.claude.subagentCount, 1);
+assert.strictEqual(byKind.claude.subtreeUsage.tokens, 20600 + 3200);
+assert.strictEqual(byKind.claude.subtreeUsage.requests, 3);
+const claudeSubDetail = sessions.getSession('claude', 'agent-x');
+assert.strictEqual(claudeSubDetail.parentKey, 'claude:claude-1');
+assert.strictEqual(claudeSubDetail.messages.filter(m => m.role === 'user').length, 1);
+// Codex 子代理：review / thread_spawn / guardian_review
+assert.strictEqual(byKey['codex:codex-sub'].parentKey, 'codex:codex-1');
+assert.strictEqual(byKey['codex:codex-sub'].subagentKind, 'review');
+assert.strictEqual(byKey['codex:codex-spawn'].parentKey, 'codex:codex-1');
+assert.strictEqual(byKey['codex:codex-spawn'].subagentKind, 'subagent');
+assert.strictEqual(byKey['codex:codex-spawn'].agentName, 'worker-a');
+assert.strictEqual(byKey['codex:codex-spawn'].subagentRole, 'explorer');
+assert.strictEqual(byKey['codex:codex-guardian'].parentKey, 'codex:codex-1');
+assert.strictEqual(byKey['codex:codex-guardian'].subagentKind, 'review');
+assert.strictEqual(byKey['codex:codex-guardian'].agentName, 'guardian');
+assert.strictEqual(byKey['codex:codex-guardian'].title, '安全审查');
+assert.strictEqual(byKind.codex.subagentCount, 3);
+assert.strictEqual(byKind.codex.subtreeUsage.tokens, 10500 + 2100);
+// Grok 子代理（经 subagent_spawned 关联父会话 + 孤儿子代理兜底）
+assert.strictEqual(byKey['grok:grok-sub'].parentKey, 'grok:grok-1');
+assert.strictEqual(byKey['grok:grok-sub'].rootKey, 'grok:grok-1');
+assert.strictEqual(byKey['grok:grok-sub'].agentName, 'general-purpose');
+assert.strictEqual(byKey['grok:grok-orphan'].parentKey, undefined);
+assert.strictEqual(byKey['grok:grok-orphan'].agentName, 'helper');
+assert.strictEqual(byKind.grok.subagentCount, 1);
+assert.strictEqual(byKind.grok.subtreeUsage.tokens, 9000 + 1200);
+assert.strictEqual(sessions.getSession('grok', 'grok-sub').parentKey, 'grok:grok-1', 'Grok 子代理详情也能补齐父会话键');
 assert.deepStrictEqual(byKind.claude.models, ['claude-opus-5']);
 assert.deepStrictEqual(byKind.codex.models, ['gpt-6']);
 assert.deepStrictEqual(byKind.grok.models, ['grok-4.6']);
@@ -221,14 +301,15 @@ const before = fs.statSync(indexFile).mtimeMs;
 sessions.listSessions();
 assert.strictEqual(fs.statSync(indexFile).mtimeMs, before, '什么都没变时不重写索引');
 fs.appendFileSync(codexFile, JSON.stringify({ type: 'response_item', timestamp: '2026-09-24T11:10:00Z', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '再来一次' }] } }) + '\n');
-const again = sessions.listSessions().find(item => item.kind === 'codex');
+const again = sessions.listSessions().find(item => item.key === 'codex:codex-1');
 assert.strictEqual(again.turns, 2, '会话文件变了要重新解析');
 
-// Claude 普通会话没有官方删除命令：删主记录和同名 sidecar 目录，并立即从索引消失
+// Claude 子代理不允许单独删除；删主会话连同名 sidecar 目录（含 subagents/）及索引一并清掉
+assert.strictEqual(sessions.deleteLocalSessionFiles('claude', 'agent-x'), false, '不允许单独删 Claude 子代理');
 assert.strictEqual(sessions.deleteLocalSessionFiles('claude', 'claude-1'), true);
 assert(!fs.existsSync(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1.jsonl')));
 assert(!fs.existsSync(path.join(claudeDir, 'projects', 'D--Demo', 'claude-1')));
-assert(!sessions.listSessions().some(item => item.key === 'claude:claude-1'));
+assert(!sessions.listSessions().some(item => item.key === 'claude:claude-1' || item.key === 'claude:agent-x'));
 
 // pi：和它自己在 /resume 里删除一样，只删这段对话的 .jsonl；以文件里的会话 id 为准，索引过期时不删错
 const piDir = path.join(process.env.PI_CODING_AGENT_DIR, 'sessions', '--D--Demo--');
@@ -304,7 +385,20 @@ fs.writeFileSync(workspaceFile, JSON.stringify({
   global: { initialized: true, defaultWorkspaceId: 'w1', workspaceIds: ['w1'], archivedSessionIds: ['session-sub', 'session-other'], pinnedSessionIds: ['session-demo'] },
   tables: { workspaces: { w1: { path: project, title: 'Demo', sessionIds: ['session-demo', 'session-other', 'session-sub2'], createdAt: 'x', updatedAt: 'y' } } },
 }));
-sessions.listSessions();
+const dshBefore = sessions.listSessions().filter(item => item.kind === 'deepseek');
+const dshById = Object.fromEntries(dshBefore.map(item => [item.id, item]));
+assert.strictEqual(dshById['session-demo'].subagentCount, 2, 'DeepSeek 主会话归集 2 层子代理');
+assert.strictEqual(dshById['session-sub'].isSubagent, true);
+assert.strictEqual(dshById['session-sub'].parentKey, 'deepseek:session-demo');
+assert.strictEqual(dshById['session-sub'].rootKey, 'deepseek:session-demo');
+assert.strictEqual(dshById['session-sub'].depth, 1);
+assert.strictEqual(dshById['session-sub'].canDelete, false);
+assert.strictEqual(dshById['session-sub2'].isSubagent, true);
+assert.strictEqual(dshById['session-sub2'].parentKey, 'deepseek:session-sub');
+assert.strictEqual(dshById['session-sub2'].rootKey, 'deepseek:session-demo');
+assert.strictEqual(dshById['session-sub2'].depth, 2);
+assert.strictEqual(dshById['session-fork'].isSubagent, undefined, 'DeepSeek 分叉会话带 parentSession + isSeeded 但不算子代理');
+assert.strictEqual(sessions.deleteLocalSessionFiles('deepseek', 'session-sub'), false, '不允许单独删 DeepSeek 子代理');
 assert.strictEqual(sessions.deleteLocalSessionFiles('deepseek', 'session-demo'), true);
 const dshDirs = fs.readdirSync(path.join(dshHome, 'sessions', 'Demo')).sort();
 assert.deepStrictEqual(dshDirs, ['session-fork', 'session-other'], '主会话和两层子代理的目录都删掉，分叉和别的会话不动');

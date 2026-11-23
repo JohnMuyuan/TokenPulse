@@ -8,16 +8,14 @@ import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
 import {
   antigravityConversationFiles,
-  antigravityDirs,
   antigravityStamp,
-  antigravitySubagentFilesByRoot,
   antigravitySummaries,
+  antigravitySwarmMeta,
   readAntigravityConversation,
-  readAntigravitySubagentUsage,
   readModelLabels,
   resolveModel,
-  type AgyModel,
   type AgySummary,
+  type AgySwarmMeta,
 } from "./antigravity";
 import { routeReturned } from "./route-ledger";
 
@@ -118,6 +116,8 @@ export type SessionUsage = {
   avgTokensPerSec?: number;
 };
 
+export type SubagentKind = "swarm" | "subagent" | "review";
+
 export type SessionSummary = {
   key: string;
   id: string;
@@ -137,6 +137,18 @@ export type SessionSummary = {
   resumable?: boolean;
   usage?: SessionUsage;
   avgRoundDurationMs?: number;
+  isSubagent?: boolean;
+  parentKey?: string;
+  rootKey?: string;
+  depth?: number;
+  subagentKind?: SubagentKind;
+  agentName?: string;
+  subagentRole?: string;
+  swarmTitle?: string;
+  hasSwarm?: boolean;
+  subagentCount?: number;
+  canDelete?: boolean;
+  subtreeUsage?: SessionUsage;
 };
 
 export type SessionDetail = SessionSummary & { messages: SessionMessage[]; truncated: number };
@@ -186,10 +198,23 @@ const MAX_TEXT = 40_000;
 const MAX_TOOL_TEXT = 6_000;
 /** 详情最多带回这么多条（超长会话只给最后这些，前面标出省略了多少）。 */
 const MAX_MESSAGES = 4_000;
-const INDEX_VERSION = 9;
+const INDEX_VERSION = 10;
 
-type Parsed = Omit<SessionDetail, "truncated"> & { file: string };
-type IndexEntry = { size: number; mtimeMs: number; summary: SessionSummary | null };
+type SpawnedChildMeta = { id: string; role?: string; description?: string };
+type SessionMetaInput = {
+  isSubagent?: boolean;
+  parentKey?: string;
+  rootKey?: string;
+  depth?: number;
+  subagentKind?: SubagentKind;
+  agentName?: string;
+  subagentRole?: string;
+  swarmTitle?: string;
+  hasSwarm?: boolean;
+  spawnedChildren?: SpawnedChildMeta[];
+};
+type Parsed = Omit<SessionDetail, "truncated"> & { file: string; spawnedChildren?: SpawnedChildMeta[] };
+type IndexEntry = { size: number; mtimeMs: number; summary: SessionSummary | null; spawnedChildren?: SpawnedChildMeta[] };
 type SessionIndex = { version: number; files: Record<string, IndexEntry> };
 
 /* ---------------- 小工具 ---------------- */
@@ -703,18 +728,33 @@ export function claudeUserText(raw: string): { text: string; event?: string } {
 
 function parseClaude(file: string): Parsed | null {
   const b = new Builder();
+  const isSubagentFile = path.basename(path.dirname(file)) === "subagents";
+  const fileId = path.basename(file, ".jsonl");
+  const parentDirId = isSubagentFile ? path.basename(path.dirname(path.dirname(file))) : "";
+  const subMeta = isSubagentFile
+    ? readJson<Record<string, unknown> | null>(file.replace(/\.jsonl$/i, ".meta.json"), null)
+    : null;
   let cwd: string | undefined;
-  let id = path.basename(file, ".jsonl");
-  let title = "";
+  let id = fileId;
+  let parentSessionId = parentDirId;
+  let title = isSubagentFile ? str(subMeta?.description) : "";
+  let agentId = "";
   let lastUsageKey = "";
   for (const line of readLines(file)) {
     const row = parseLine(line);
     if (!row) continue;
     if (row.type === "ai-title" && typeof row.aiTitle === "string") title = row.aiTitle;
     if (row.type !== "user" && row.type !== "assistant") continue;
-    if (row.isSidechain || row.isMeta) continue;
+    if ((!isSubagentFile && row.isSidechain) || row.isMeta) continue;
     const at = timestamp(row.timestamp);
-    if (typeof row.sessionId === "string" && row.sessionId) id = row.sessionId;
+    if (typeof row.sessionId === "string" && row.sessionId) {
+      if (isSubagentFile) {
+        if (!parentSessionId && row.sessionId !== fileId) parentSessionId = row.sessionId;
+      } else {
+        id = row.sessionId;
+      }
+    }
+    if (isSubagentFile && typeof row.agentId === "string" && row.agentId && !agentId) agentId = row.agentId;
     if (typeof row.cwd === "string" && row.cwd) cwd = row.cwd;
     const message = (row.message ?? {}) as Record<string, unknown>;
     const content = message.content ?? row.content;
@@ -767,6 +807,18 @@ function parseClaude(file: string): Parsed | null {
       }
     }
   }
+  if (isSubagentFile) {
+    const agentType = str(subMeta?.agentType).trim();
+    const spawnDepth = num(subMeta?.spawnDepth);
+    return summarize("claude", id, b, cwd, title, file, {
+      isSubagent: true,
+      parentKey: parentSessionId ? `claude:${parentSessionId}` : undefined,
+      depth: spawnDepth || 1,
+      subagentKind: "subagent",
+      agentName: agentType || agentId || id,
+      subagentRole: agentType || undefined,
+    });
+  }
   return summarize("claude", id, b, cwd, title, file);
 }
 
@@ -792,16 +844,27 @@ export function codexUserText(raw: string): { text: string; event?: string } {
   return { text };
 }
 
-let codexTitles: Map<string, string> | null = null;
+let codexTitlesCache: { file: string; mtimeMs: number; size: number; map: Map<string, string> } | null = null;
 function codexTitle(id: string) {
-  if (!codexTitles) {
-    codexTitles = new Map();
-    for (const line of readLines(path.join(cliDir("chatgpt"), "session_index.jsonl"))) {
-      const row = parseLine(line);
-      if (row && typeof row.id === "string" && typeof row.thread_name === "string") codexTitles.set(row.id, row.thread_name);
-    }
+  const idxFile = path.join(cliDir("chatgpt"), "session_index.jsonl");
+  let mtimeMs = -1;
+  let size = -1;
+  try {
+    const st = fs.statSync(idxFile);
+    mtimeMs = st.mtimeMs;
+    size = st.size;
+  } catch {
+    return "";
   }
-  return codexTitles.get(id) ?? "";
+  if (!codexTitlesCache || codexTitlesCache.file !== idxFile || codexTitlesCache.mtimeMs !== mtimeMs || codexTitlesCache.size !== size) {
+    const map = new Map<string, string>();
+    for (const line of readLines(idxFile)) {
+      const row = parseLine(line);
+      if (row && typeof row.id === "string" && typeof row.thread_name === "string") map.set(row.id, row.thread_name);
+    }
+    codexTitlesCache = { file: idxFile, mtimeMs, size, map };
+  }
+  return codexTitlesCache.map.get(id) ?? "";
 }
 
 function parseCodex(file: string): Parsed | null {
@@ -812,17 +875,39 @@ function parseCodex(file: string): Parsed | null {
   let lastResponseId = "";
   let hasTokenRecords = false;
   let lastTokenCount = "";
+  let subMeta: SessionMetaInput | undefined;
   for (const line of readLines(file)) {
     const row = parseLine(line);
     if (!row) continue;
     const at = timestamp(row.timestamp);
     const payload = (row.payload ?? {}) as Record<string, any>;
     if (row.type === "session_meta") {
-      // Codex 自己派出去的子会话（审查 guardian_review、子任务）：带 parent_thread_id / source.subagent，
-      // 第一句是「The following is the Codex agent history…」。和 Claude 的 subagents 一样，不单独列。
-      if (payload.parent_thread_id || (payload.source && typeof payload.source === "object" && "subagent" in payload.source)) return null;
       id = str(payload.id) || str(payload.session_id) || id;
       if (typeof payload.cwd === "string") cwd = payload.cwd;
+      const sourceSub = payload.source && typeof payload.source === "object" && "subagent" in payload.source
+        ? payload.source.subagent
+        : undefined;
+      const threadSpawn = sourceSub && typeof sourceSub === "object" && !Array.isArray(sourceSub)
+        ? (sourceSub.thread_spawn as Record<string, unknown> | undefined)
+        : undefined;
+      const otherSub = sourceSub && typeof sourceSub === "object" && !Array.isArray(sourceSub)
+        ? str(sourceSub.other)
+        : "";
+      const parentThreadId = str(payload.parent_thread_id) || str(threadSpawn?.parent_thread_id);
+      if (parentThreadId || sourceSub !== undefined) {
+        const threadSource = str(payload.thread_source);
+        const rawRole = str(payload.agent_role) || str(threadSpawn?.agent_role) || (typeof sourceSub === "string" ? sourceSub : otherSub) || threadSource;
+        const nickname = str(payload.agent_nickname) || str(threadSpawn?.agent_nickname);
+        const subagentKind: SubagentKind = /review|guardian/i.test(`${rawRole} ${threadSource}`) ? "review" : "subagent";
+        subMeta = {
+          isSubagent: true,
+          parentKey: parentThreadId ? `codex:${parentThreadId}` : undefined,
+          depth: num(threadSpawn?.depth) || 1,
+          subagentKind,
+          agentName: nickname || rawRole || "subagent",
+          subagentRole: rawRole || undefined,
+        };
+      }
       continue;
     }
     if (row.type === "turn_context" && typeof payload.model === "string" && payload.model) {
@@ -894,7 +979,7 @@ function parseCodex(file: string): Parsed | null {
     }
   }
   if (!id) id = path.basename(file, ".jsonl").replace(/^rollout-[\dT:-]+-/, "");
-  return summarize("codex", id, b, cwd, codexTitle(id), file);
+  return summarize("codex", id, b, cwd, codexTitle(id), file, subMeta);
 }
 
 /* ---------------- Grok Build ---------------- */
@@ -910,6 +995,9 @@ function parseGrok(file: string): Parsed | null {
     cwd = undefined;
   }
   const summary = readJson<Record<string, unknown> | null>(path.join(sessionDir, "summary.json"), null);
+  const isSub = summary?.session_kind === "subagent";
+  const agentName = isSub ? (str(summary?.agent_name).trim() || undefined) : undefined;
+  const spawnedMap = new Map<string, SpawnedChildMeta>();
   let currentModel = typeof summary?.current_model_id === "string" ? summary.current_model_id : "";
   if (currentModel) b.models.add(currentModel);
   let at: number | undefined;
@@ -919,7 +1007,14 @@ function parseGrok(file: string): Parsed | null {
     at = timestamp(row.timestamp) ?? at;
     const update = (row.params?.update ?? {}) as Record<string, any>;
     const kind = str(update.sessionUpdate);
-    if (kind === "user_message_chunk") {
+    if (kind === "subagent_spawned") {
+      const childId = str(update.child_session_id).trim();
+      if (childId && childId !== id) {
+        const role = str(update.subagent_type).trim() || undefined;
+        const description = str(update.description).trim() || undefined;
+        spawnedMap.set(childId, { id: childId, ...(role ? { role } : {}), ...(description ? { description } : {}) });
+      }
+    } else if (kind === "user_message_chunk") {
       if (typeof update._meta?.modelId === "string" && update._meta.modelId) {
         currentModel = update._meta.modelId;
         b.models.add(currentModel);
@@ -955,7 +1050,21 @@ function parseGrok(file: string): Parsed | null {
       }
     }
   }
-  return summarize("grok", id, b, cwd, str(summary?.generated_title), file);
+  const spawnedChildren = spawnedMap.size ? [...spawnedMap.values()] : undefined;
+  const meta: SessionMetaInput | undefined = isSub || spawnedChildren
+    ? {
+        ...(isSub
+          ? {
+              isSubagent: true,
+              depth: 1,
+              subagentKind: "subagent" as const,
+              ...(agentName ? { agentName, subagentRole: agentName } : { agentName: "subagent" }),
+            }
+          : {}),
+        ...(spawnedChildren ? { spawnedChildren } : {}),
+      }
+    : undefined;
+  return summarize("grok", id, b, cwd, str(summary?.generated_title), file, meta);
 }
 
 /* ---------------- DeepSeek Harness ---------------- */
@@ -980,6 +1089,7 @@ function parseDeepseek(file: string): Parsed | null {
   let createdAt: number | undefined;
   let title = "";
   let model = "";
+  let subMeta: SessionMetaInput | undefined;
   for (const line of zstdFrames(raw).text.split(/\n/)) {
     const row = parseLine(line);
     if (!row) continue;
@@ -989,6 +1099,21 @@ function parseDeepseek(file: string): Parsed | null {
       if (typeof row.id === "string" && row.id) id = row.id;
       if (typeof row.cwd === "string" && row.cwd) cwd = row.cwd;
       createdAt = timestamp(row.createdAt) ?? createdAt;
+      const origin = str(row.origin);
+      const delegationDepth = num(row.delegationDepth);
+      const parentSession = str(row.parentSession);
+      // 分叉会话带 parentSession + isSeeded: true 但 origin !== "subagent" 且 delegationDepth === 0，不算子代理
+      if (origin === "subagent" || delegationDepth > 0) {
+        const preset = str(row.agentPreset).trim();
+        subMeta = {
+          isSubagent: true,
+          parentKey: parentSession ? `deepseek:${parentSession}` : undefined,
+          depth: delegationDepth || 1,
+          subagentKind: "subagent",
+          agentName: preset && preset !== "standard" ? preset : "subagent",
+          ...(preset ? { subagentRole: preset } : {}),
+        };
+      }
     } else if (row.type === "session/title" && typeof data.title === "string") title = data.title;
     else if (row.type === "model/selection" && typeof data.model === "string") { model = data.model; b.models.add(data.model); }
     else if (row.type === "user/message") b.text("user", blockText(data.content, (type) => type === "text"), at);
@@ -1025,7 +1150,7 @@ function parseDeepseek(file: string): Parsed | null {
     else if (row.type === "command/run") b.event(`命令 ${str(data.name)}`.trim(), at);
   }
   if (model) b.models.add(model);
-  const parsed = summarize("deepseek", id, b, cwd, title, file);
+  const parsed = summarize("deepseek", id, b, cwd, title, file, subMeta);
   if (parsed && createdAt && !parsed.createdAt) parsed.createdAt = createdAt;
   return parsed;
 }
@@ -1102,51 +1227,60 @@ function parsePi(file: string): Parsed | null {
 
 /*
  * 每个对话一个 SQLite（~/.gemini/antigravity/conversations/<id>.db），步骤怎么读见 antigravity.ts 的 readAntigravityConversation。
- * 标题和工作区在对话列表库里；那里没有的（Antigravity 已经删掉的、还没写进列表的子代理）不列出来。
+ * 标题和工作区在对话列表库里；已删对话不列出来，子代理与 Swarm worker 按父子关系归入索引。
  * 型号用额度接口的显示名（gemini-4-argon 之类），和用量明细一致。
  */
 function readModelLabelsMtime() {
   try { return fs.statSync(dataFile("antigravity-models.json")).mtimeMs; } catch { return 0; }
 }
 
-/** 对话库 + 子代对话库 + -wal + 型号标签文件的大小和时间：不混入公共 conversation_summaries.db，避免任一对话状态更新时全量失效重扫 600MB+ SQLite。 */
-function antigravityListStamp(file: string, labelsMtime = readModelLabelsMtime(), subFiles: string[] = []) {
+/** 对话库 + -wal + 型号标签文件的大小和时间：不混入公共 conversation_summaries.db 或子代库，避免无关对话更新时失效。 */
+function antigravityListStamp(file: string, labelsMtime = readModelLabelsMtime()) {
   const own = antigravityStamp(file);
   if (!own) throw new Error("gone");
-  let size = own.size;
-  let mtimeMs = Math.max(own.mtimeMs, labelsMtime);
-  for (const subFile of subFiles) {
-    const sub = antigravityStamp(subFile);
-    if (sub) {
-      size += sub.size;
-      mtimeMs = Math.max(mtimeMs, sub.mtimeMs);
-    }
-  }
-  return { size, mtimeMs };
+  return { size: own.size, mtimeMs: Math.max(own.mtimeMs, labelsMtime) };
 }
 
-function findConvDbFile(convId: string, preferConvDir: string): string | null {
-  const local = path.join(preferConvDir, `${convId}.db`);
-  if (fs.existsSync(local)) return local;
-  for (const root of antigravityDirs()) {
-    const candidate = path.join(root, "conversations", `${convId}.db`);
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
+function cleanAgyBriefTitle(raw: string): string {
+  return raw
+    .replace(/^You have just started\.\s*Your assignment(?:\s*\([^)]*\))?:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function parseAntigravity(
   file: string,
   preloadedSummary?: AgySummary | null,
   preloadedLabels?: Record<string, string>,
-  preloadedSubFiles?: string[],
+  preloadedSwarmMeta?: AgySwarmMeta | null,
 ): Parsed | null {
   const id = path.basename(file, ".db");
-  const allSummaries = preloadedSummary !== undefined && preloadedSubFiles !== undefined ? null : antigravitySummaries();
-  const summary = preloadedSummary !== undefined ? preloadedSummary : allSummaries?.get(id);
-  if (!summary || summary.nested) return null;
+  const idLower = id.toLowerCase();
+  const swarmMeta = preloadedSwarmMeta !== undefined ? preloadedSwarmMeta : antigravitySwarmMeta();
+  const allSummaries = preloadedSummary !== undefined ? null : antigravitySummaries();
+  let summary = preloadedSummary !== undefined ? preloadedSummary : allSummaries?.get(id);
+  const swarmWorker = swarmMeta?.workerById.get(idLower);
+  const swarmCoord = swarmMeta?.swarmsByCoordinator.get(idLower);
+  const descriptor = swarmMeta?.descriptorsById.get(idLower);
+  if (!summary && swarmWorker && allSummaries) {
+    const coordSummary = allSummaries.get(swarmWorker.coordinatorId);
+    if (coordSummary) {
+      summary = {
+        id,
+        title: "",
+        workspace: coordSummary.workspace,
+        nested: true,
+        parentId: swarmWorker.coordinatorId,
+        nestingDepth: 1,
+        agentName: swarmWorker.member.name,
+        at: 0,
+      };
+    }
+  }
+  if (!summary) return null;
+  const isSub = Boolean(summary.nested || swarmWorker);
   let read: ReturnType<typeof readAntigravityConversation>;
-  try { read = readAntigravityConversation(file); } catch { return null; }
+  try { read = readAntigravityConversation(file, { includeIncoming: isSub }); } catch { return null; }
   const labels = preloadedLabels ?? readModelLabels();
   const b = new Builder();
 
@@ -1156,10 +1290,7 @@ function parseAntigravity(
   let turnStreamWeightedRate = 0;
   let turnStreamTokens = 0;
   let turnHasMeasured = false;
-  const subFileSet = new Set<string>(
-    preloadedSubFiles ?? (allSummaries ? antigravitySubagentFilesByRoot(allSummaries).get(id) ?? [] : []),
-  );
-  const convDir = path.dirname(file);
+  let firstBriefText = "";
 
   for (const step of read.steps) {
     if (step.kind === "user") {
@@ -1170,6 +1301,19 @@ function parseAntigravity(
       turnStreamWeightedRate = 0;
       turnStreamTokens = 0;
       turnHasMeasured = false;
+    } else if (step.kind === "incoming") {
+      if (/^\s*\[swarm\]/i.test(step.text)) {
+        b.event(step.text, step.at);
+      } else {
+        if (!firstBriefText) firstBriefText = cleanAgyBriefTitle(step.text);
+        b.text("user", step.text, step.at);
+        turnActiveMs = 0;
+        turnFirstTokenMs = undefined;
+        turnOutputTokens = 0;
+        turnStreamWeightedRate = 0;
+        turnStreamTokens = 0;
+        turnHasMeasured = false;
+      }
     } else if (step.kind === "reply") {
       const model = resolveModel(read.models[step.modelId], labels);
       const modelName = model.model !== "未知模型" ? model.model : "";
@@ -1212,52 +1356,211 @@ function parseAntigravity(
       for (const tool of step.tools) b.tool(tool.id, tool.name, tool.args, step.at);
     } else {
       b.toolResult(step.id, step.output, step.error);
-      if (step.name === "invoke_subagent" && step.output) {
-        for (const match of step.output.matchAll(/"conversationId"\s*:\s*"([0-9a-f-]{36})"/gi)) {
-          const subDb = findConvDbFile(match[1], convDir);
-          if (subDb && path.resolve(subDb).toLowerCase() !== path.resolve(file).toLowerCase()) {
-            subFileSet.add(subDb);
-          }
-        }
-      }
     }
   }
 
-  if (subFileSet.size) {
-    const knownModels: Record<string, AgyModel> = { ...read.models };
-    for (const subFile of subFileSet) {
-      let subRows: ReturnType<typeof readAntigravitySubagentUsage> = [];
-      try { subRows = readAntigravitySubagentUsage(subFile, knownModels); } catch { continue; }
-      for (const row of subRows) {
-        const model = resolveModel(knownModels[row.modelId], labels);
-        const modelName = model.model !== "未知模型" ? model.model : "";
-        if (modelName) b.models.add(modelName);
-        b.addUsage(modelName || "未知模型", {
-          input: row.input,
-          output: row.output,
-          cacheRead: row.cacheRead,
-          cacheWrite: row.cacheWrite,
-          reasoning: row.reasoning,
-        });
-        if (row.durationMs) b.addDuration(modelName || "未知模型", row.durationMs);
-        if (row.at) b.touchAt(row.at);
-      }
+  let meta: SessionMetaInput | undefined;
+  let resolvedTitle = summary.title;
+  if (isSub) {
+    const parentId = summary.parentId || swarmWorker?.coordinatorId || descriptor?.parentId;
+    const isSwarmWorker = Boolean(swarmWorker);
+    const agentName = summary.agentName || swarmWorker?.member.name || descriptor?.typeName || undefined;
+    const subagentRole = (isSwarmWorker ? swarmWorker?.member.role : descriptor?.typeName) || undefined;
+    const swarmTitle = swarmWorker?.swarmTitle || undefined;
+    meta = {
+      isSubagent: true,
+      parentKey: parentId ? `antigravity:${parentId}` : undefined,
+      depth: summary.nestingDepth || 1,
+      subagentKind: isSwarmWorker ? "swarm" : "subagent",
+      ...(agentName ? { agentName } : {}),
+      ...(subagentRole ? { subagentRole } : {}),
+      ...(swarmTitle ? { swarmTitle } : {}),
+    };
+    if (!resolvedTitle.trim()) {
+      const briefPart = firstBriefText.slice(0, 64);
+      resolvedTitle = agentName && briefPart
+        ? `${agentName} · ${briefPart}`
+        : agentName && swarmTitle
+          ? `${agentName} · ${swarmTitle}`
+          : agentName || briefPart || "";
     }
+  } else if (swarmCoord) {
+    meta = {
+      hasSwarm: true,
+      ...(swarmCoord.title ? { swarmTitle: swarmCoord.title } : {}),
+    };
   }
 
-  return summarize("antigravity", id, b, summary.workspace, summary.title, file);
+  return summarize("antigravity", id, b, summary.workspace, resolvedTitle, file, meta);
 }
 
 /* ---------------- 汇总 ---------------- */
 
-function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefined, cliTitle: string, file: string): Parsed | null {
+function mergeSessionUsages(usages: (SessionUsage | undefined)[]): SessionUsage | undefined {
+  const valid = usages.filter((u): u is SessionUsage => Boolean(u && u.requests > 0));
+  if (!valid.length) return undefined;
+  const pct1 = (part: number, total: number) => (total > 0 ? Math.round((part / total) * 1000) / 10 : 0);
+  const round4 = (n: number) => Math.round(n * 10000) / 10000;
+
+  const byModel = new Map<string, {
+    requests: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    reasoning: number;
+    rawCost: number;
+    rawUncachedCost: number;
+    durWeighted: number;
+    durWeight: number;
+  }>();
+
+  let totalActiveDurationMs = 0;
+  let totalRoundWeighted = 0;
+  let totalRoundCount = 0;
+
+  for (const u of valid) {
+    if (u.totalActiveDurationMs && u.totalActiveDurationMs > 0) {
+      totalActiveDurationMs += u.totalActiveDurationMs;
+      if (u.avgRoundDurationMs && u.avgRoundDurationMs > 0) {
+        const rounds = Math.max(1, Math.round(u.totalActiveDurationMs / u.avgRoundDurationMs));
+        totalRoundWeighted += u.totalActiveDurationMs;
+        totalRoundCount += rounds;
+      }
+    }
+    for (const m of u.models) {
+      const entry = byModel.get(m.model) ?? {
+        requests: 0,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        reasoning: 0,
+        rawCost: 0,
+        rawUncachedCost: 0,
+        durWeighted: 0,
+        durWeight: 0,
+      };
+      entry.requests += m.requests;
+      entry.input += m.input;
+      entry.output += m.output;
+      entry.cacheRead += m.cacheRead;
+      entry.cacheWrite += m.cacheWrite;
+      entry.reasoning += m.reasoning;
+      entry.rawCost += m.costUsd;
+      entry.rawUncachedCost += m.uncachedCostUsd;
+      if (m.avgRoundDurationMs && m.avgRoundDurationMs > 0) {
+        entry.durWeighted += m.avgRoundDurationMs * m.requests;
+        entry.durWeight += m.requests;
+      }
+      byModel.set(m.model, entry);
+    }
+  }
+
+  const computed = [...byModel.entries()]
+    .map(([model, m]) => {
+      const tokens = m.input + m.output;
+      const rawUncached = Math.max(m.rawCost, m.rawUncachedCost);
+      const rawSaved = Math.max(0, rawUncached - m.rawCost);
+      return {
+        model,
+        requests: m.requests,
+        input: m.input,
+        output: m.output,
+        cacheRead: m.cacheRead,
+        cacheWrite: m.cacheWrite,
+        reasoning: m.reasoning,
+        tokens,
+        cacheHitRate: pct1(m.cacheRead, m.input),
+        rawCost: m.rawCost,
+        rawUncached,
+        costUsd: round4(m.rawCost),
+        uncachedCostUsd: round4(rawUncached),
+        cacheSavedUsd: round4(rawSaved),
+        avgRoundDurationMs: m.durWeight > 0 ? Math.round(m.durWeighted / m.durWeight) : undefined,
+      };
+    })
+    .sort((a, b) => b.tokens - a.tokens || b.requests - a.requests || a.model.localeCompare(b.model));
+
+  const totalRequests = computed.reduce((s, m) => s + m.requests, 0);
+  const totalInput = computed.reduce((s, m) => s + m.input, 0);
+  const totalOutput = computed.reduce((s, m) => s + m.output, 0);
+  if (totalRequests <= 0 || (totalInput <= 0 && totalOutput <= 0)) return undefined;
+  const totalCacheRead = computed.reduce((s, m) => s + m.cacheRead, 0);
+  const totalCacheWrite = computed.reduce((s, m) => s + m.cacheWrite, 0);
+  const totalReasoning = computed.reduce((s, m) => s + m.reasoning, 0);
+  const totalTokens = totalInput + totalOutput;
+  const totalRawCost = computed.reduce((s, m) => s + m.rawCost, 0);
+  const totalRawUncached = computed.reduce((s, m) => s + m.rawUncached, 0);
+  const totalRawSaved = Math.max(0, totalRawUncached - totalRawCost);
+  const avgRoundDurationMs = totalRoundCount > 0 ? Math.round(totalRoundWeighted / totalRoundCount) : undefined;
+  const activeMs = totalActiveDurationMs > 0 ? Math.round(totalActiveDurationMs) : undefined;
+  const avgTokensPerSec = activeMs && activeMs >= 200 && totalOutput > 0
+    ? Math.round((totalOutput / (activeMs / 1000)) * 10) / 10
+    : undefined;
+
+  return {
+    requests: totalRequests,
+    input: totalInput,
+    output: totalOutput,
+    cacheRead: totalCacheRead,
+    cacheWrite: totalCacheWrite,
+    reasoning: totalReasoning,
+    tokens: totalTokens,
+    cacheHitRate: pct1(totalCacheRead, totalInput),
+    costUsd: round4(totalRawCost),
+    uncachedCostUsd: round4(totalRawUncached),
+    cacheSavedUsd: round4(totalRawSaved),
+    models: computed.map((m) => ({
+      model: m.model,
+      requests: m.requests,
+      input: m.input,
+      output: m.output,
+      cacheRead: m.cacheRead,
+      cacheWrite: m.cacheWrite,
+      reasoning: m.reasoning,
+      tokens: m.tokens,
+      cacheHitRate: m.cacheHitRate,
+      costUsd: m.costUsd,
+      uncachedCostUsd: m.uncachedCostUsd,
+      cacheSavedUsd: m.cacheSavedUsd,
+      tokenShare: pct1(m.tokens, totalTokens),
+      requestShare: pct1(m.requests, totalRequests),
+      costShare: pct1(m.rawCost, totalRawCost),
+      ...(m.avgRoundDurationMs != null ? { avgRoundDurationMs: m.avgRoundDurationMs } : {}),
+    })),
+    ...(avgRoundDurationMs != null ? { avgRoundDurationMs } : {}),
+    ...(activeMs != null ? { totalActiveDurationMs: activeMs } : {}),
+    ...(avgTokensPerSec != null ? { avgTokensPerSec } : {}),
+  };
+}
+
+function summarize(
+  kind: AgentKind,
+  id: string,
+  b: Builder,
+  cwd: string | undefined,
+  cliTitle: string,
+  file: string,
+  meta?: SessionMetaInput,
+): Parsed | null {
   const messages = b.finish();
   const talk = messages.filter((message) => message.role === "user" || message.role === "assistant");
-  if (!talk.length) return null;
+  const toolCount = messages.filter((message) => message.role === "tool").length;
+  const usage = b.buildUsage();
+  const isSubagent = Boolean(meta?.isSubagent);
+  if (!talk.length && !(isSubagent && (toolCount > 0 || Boolean(usage)))) return null;
   const firstUser = messages.find((message) => message.role === "user") as { text: string } | undefined;
+  const firstTool = messages.find((message) => message.role === "tool") as Extract<SessionMessage, { role: "tool" }> | undefined;
+  const firstEvent = messages.find((message) => message.role === "event") as { text: string } | undefined;
   const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
   const project = projectName(cwd, AGENT_NAMES[kind]);
-  const title = oneLine(cliTitle) || (firstUser ? oneLine(firstUser.text).slice(0, 80) : `${project} · ${AGENT_NAMES[kind]}`);
+  const fallbackTitle = firstUser
+    ? oneLine(firstUser.text).slice(0, 80)
+    : isSubagent && meta?.agentName
+      ? meta.agentName
+      : `${project} · ${AGENT_NAMES[kind]}`;
+  const title = oneLine(cliTitle) || fallbackTitle;
   const times = messages.map((message) => message.at).filter((at): at is number => typeof at === "number");
   let updatedAt = times.length ? Math.max(...times) : undefined;
   if (b.extraUpdatedAt > 0) updatedAt = Math.max(updatedAt ?? 0, b.extraUpdatedAt);
@@ -1268,7 +1571,9 @@ function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefi
     // 用消息时间
   }
   const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant") as { text: string } | undefined;
-  const usage = b.buildUsage();
+  const previewRaw = (lastAssistant ?? firstUser)?.text
+    ?? (firstTool ? `${firstTool.name}: ${firstTool.summary}` : firstEvent?.text ?? "");
+  const resumeCommand = isSubagent ? "" : commandOf(kind, id);
   return {
     key: `${kind}:${id}`,
     id,
@@ -1280,15 +1585,25 @@ function summarize(kind: AgentKind, id: string, b: Builder, cwd: string | undefi
     updatedAt,
     turns: messages.filter((message) => message.role === "user").length,
     messageCount: talk.length,
-    toolCount: messages.filter((message) => message.role === "tool").length,
+    toolCount,
     models: [...b.models].slice(0, 6),
-    preview: oneLine((lastAssistant ?? firstUser)?.text ?? "").slice(0, 140),
-    resumeCommand: commandOf(kind, id),
-    resumable: Boolean(commandOf(kind, id)),
+    preview: oneLine(previewRaw).slice(0, 140),
+    resumeCommand,
+    resumable: isSubagent ? false : Boolean(resumeCommand),
+    ...(isSubagent ? { isSubagent: true, canDelete: false } : {}),
+    ...(meta?.parentKey ? { parentKey: meta.parentKey } : {}),
+    ...(meta?.rootKey ? { rootKey: meta.rootKey } : {}),
+    ...(meta?.depth && meta.depth > 0 ? { depth: meta.depth } : {}),
+    ...(meta?.subagentKind ? { subagentKind: meta.subagentKind } : {}),
+    ...(meta?.agentName ? { agentName: meta.agentName } : {}),
+    ...(meta?.subagentRole ? { subagentRole: meta.subagentRole } : {}),
+    ...(meta?.swarmTitle ? { swarmTitle: meta.swarmTitle } : {}),
+    ...(meta?.hasSwarm ? { hasSwarm: true } : {}),
     ...(usage ? { usage } : {}),
     ...(usage?.avgRoundDurationMs != null ? { avgRoundDurationMs: usage.avgRoundDurationMs } : {}),
     messages,
     file,
+    ...(meta?.spawnedChildren?.length ? { spawnedChildren: meta.spawnedChildren } : {}),
   };
 }
 
@@ -1304,9 +1619,8 @@ function walk(dir: string, match: (file: string) => boolean, out: string[] = [],
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    // Claude 子代理的记录：属于主会话的一部分，不单独列
     if (entry.isDirectory()) {
-      if (entry.name !== "subagents") walk(full, match, out, depth + 1);
+      walk(full, match, out, depth + 1);
     } else if (entry.isFile() && match(full)) out.push(full);
   }
   return out;
@@ -1348,8 +1662,29 @@ export function sessionFiles(): { file: string; size: number; mtimeMs: number; s
 }
 
 function stripFile(parsed: Parsed): SessionSummary {
-  const { file: _file, messages: _messages, ...summary } = parsed;
+  const { file: _file, messages: _messages, spawnedChildren: _spawned, ...summary } = parsed;
   return summary;
+}
+
+function fileStamp(kind: AgentKind, file: string, agyLabelsMtime: number): { size: number; mtimeMs: number } {
+  if (kind === "antigravity") return antigravityListStamp(file, agyLabelsMtime);
+  const st = fs.statSync(file);
+  let size = st.size;
+  let mtimeMs = st.mtimeMs;
+  if (kind === "claude" && path.basename(path.dirname(file)) === "subagents") {
+    try {
+      const ms = fs.statSync(file.replace(/\.jsonl$/i, ".meta.json"));
+      size += ms.size;
+      mtimeMs = Math.max(mtimeMs, ms.mtimeMs);
+    } catch { /* 没有 .meta.json */ }
+  } else if (kind === "grok") {
+    try {
+      const ss = fs.statSync(path.join(path.dirname(file), "summary.json"));
+      size += ss.size;
+      mtimeMs = Math.max(mtimeMs, ss.mtimeMs);
+    } catch { /* 没有 summary.json */ }
+  }
+  return { size, mtimeMs };
 }
 
 function indexFile() {
@@ -1362,61 +1697,128 @@ export function hasCurrentSessionIndex(): boolean {
   return stored?.version === INDEX_VERSION;
 }
 
-/** 列表。只重读大小或修改时间变了的会话文件。 */
+/** 列表。只重读大小或修改时间变了的会话文件，并统一做父子层级、Swarm 关联与子树用量归集。 */
 export function listSessions(): SessionSummary[] {
   const stored = readJson<SessionIndex | null>(indexFile(), null);
   const previous = stored?.version === INDEX_VERSION ? stored.files : {};
   const next: SessionIndex = { version: INDEX_VERSION, files: {} };
   let changed = !stored || stored.version !== INDEX_VERSION;
   const agySummaries = antigravitySummaries();
+  const agySwarmMeta = antigravitySwarmMeta();
   const agyLabelsMtime = readModelLabelsMtime();
   const allSources = sources();
-  const agyFiles = allSources.find((s) => s.kind === "antigravity")?.files ?? [];
-  const agySubFilesByRoot = agySummaries ? antigravitySubagentFilesByRoot(agySummaries, agyFiles) : new Map<string, string[]>();
   let agyLabels: Record<string, string> | undefined;
+
   for (const { kind, files } of allSources) {
     for (const file of files) {
       let agySummary: AgySummary | null | undefined;
-      let agySubFiles: string[] | undefined;
       if (kind === "antigravity") {
         const id = path.basename(file, ".db");
         agySummary = agySummaries ? agySummaries.get(id) ?? null : undefined;
-        if (agySummary !== undefined && (!agySummary || agySummary.nested)) continue;
-        agySubFiles = agySubFilesByRoot.get(id) ?? [];
+        if (agySummary === null) {
+          const worker = agySwarmMeta.workerById.get(id.toLowerCase());
+          const coordSummary = worker && agySummaries ? agySummaries.get(worker.coordinatorId) : undefined;
+          if (worker && coordSummary) {
+            agySummary = {
+              id,
+              title: "",
+              workspace: coordSummary.workspace,
+              nested: true,
+              parentId: worker.coordinatorId,
+              nestingDepth: 1,
+              agentName: worker.member.name,
+              at: 0,
+            };
+          } else {
+            continue;
+          }
+        }
       }
       let stat: { size: number; mtimeMs: number };
       try {
-        stat = kind === "antigravity" ? antigravityListStamp(file, agyLabelsMtime, agySubFiles) : fs.statSync(file);
+        stat = fileStamp(kind, file, agyLabelsMtime);
       } catch {
         continue;
       }
       const hit = previous[file];
       if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) {
-        if (kind === "antigravity" && hit.summary && agySummary) {
+        const entry: IndexEntry = {
+          size: hit.size,
+          mtimeMs: hit.mtimeMs,
+          summary: hit.summary ? { ...hit.summary } : null,
+          ...(hit.spawnedChildren?.length ? { spawnedChildren: hit.spawnedChildren } : {}),
+        };
+        if (kind === "antigravity" && entry.summary && agySummary) {
+          const idLower = entry.summary.id.toLowerCase();
+          const swarmWorker = agySwarmMeta.workerById.get(idLower);
+          const swarmCoord = agySwarmMeta.swarmsByCoordinator.get(idLower);
           const nextTitle = agySummary.title.replace(/\s+/g, " ").trim();
           const nextCwd = agySummary.workspace;
           const nextProject = projectName(nextCwd, AGENT_NAMES.antigravity);
-          if ((nextTitle && hit.summary.title !== nextTitle) || hit.summary.cwd !== nextCwd || hit.summary.project !== nextProject) {
-            hit.summary = {
-              ...hit.summary,
-              ...(nextTitle ? { title: nextTitle } : {}),
-              cwd: nextCwd,
-              project: nextProject,
-            };
-            changed = true;
+          if (nextTitle) entry.summary.title = nextTitle;
+          entry.summary.cwd = nextCwd;
+          entry.summary.project = nextProject;
+          if (swarmCoord) {
+            entry.summary.hasSwarm = true;
+            if (swarmCoord.title) entry.summary.swarmTitle = swarmCoord.title;
+          }
+          if (swarmWorker) {
+            entry.summary.isSubagent = true;
+            entry.summary.subagentKind = "swarm";
+            entry.summary.resumable = false;
+            entry.summary.resumeCommand = "";
+            entry.summary.canDelete = false;
+            if (!entry.summary.parentKey) entry.summary.parentKey = `antigravity:${swarmWorker.coordinatorId}`;
+            if (swarmWorker.member.name) entry.summary.agentName = swarmWorker.member.name;
+            if (swarmWorker.swarmTitle) entry.summary.swarmTitle = swarmWorker.swarmTitle;
           }
         }
-        next.files[file] = hit;
+        next.files[file] = entry;
         continue;
       }
       if (kind === "antigravity" && !agyLabels) agyLabels = readModelLabels();
-      const parsed = kind === "antigravity" ? parseAntigravity(file, agySummary, agyLabels, agySubFiles) : parseFile(kind, file);
-      next.files[file] = { size: stat.size, mtimeMs: stat.mtimeMs, summary: parsed ? stripFile(parsed) : null };
+      const parsed = kind === "antigravity" ? parseAntigravity(file, agySummary, agyLabels, agySwarmMeta) : parseFile(kind, file);
+      next.files[file] = {
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        summary: parsed ? stripFile(parsed) : null,
+        ...(parsed?.spawnedChildren?.length ? { spawnedChildren: parsed.spawnedChildren } : {}),
+      };
       changed = true;
     }
   }
-  if (Object.keys(previous).some((file) => !(file in next.files))) changed = true;
-  if (changed) writeJson(indexFile(), next);
+
+  // 后处理：归并重复会话键（保留最新文件），统一补齐 Grok 父子链接、rootKey、depth、hasSwarm、subagentCount 与 subtreeUsage。
+  const grokParentByChild = new Map<string, { parentKey: string; role?: string; description?: string }>();
+  for (const entry of Object.values(next.files)) {
+    if (entry.summary?.kind === "grok" && entry.spawnedChildren?.length) {
+      for (const child of entry.spawnedChildren) {
+        if (!grokParentByChild.has(child.id)) {
+          grokParentByChild.set(child.id, { parentKey: entry.summary.key, role: child.role, description: child.description });
+        }
+      }
+    }
+  }
+
+  // 先重置派生的后处理汇总字段，确保索引完全幂等
+  for (const entry of Object.values(next.files)) {
+    const s = entry.summary;
+    if (!s) continue;
+    delete s.subagentCount;
+    delete s.subtreeUsage;
+    delete s.rootKey;
+    if (s.kind === "grok" && s.isSubagent) {
+      const link = grokParentByChild.get(s.id);
+      if (link) {
+        s.parentKey = link.parentKey;
+        if (link.role && !s.subagentRole) s.subagentRole = link.role;
+        if (link.role && (!s.agentName || s.agentName === "subagent")) s.agentName = link.role;
+      } else {
+        delete s.parentKey;
+      }
+    }
+  }
+
   // 同一个会话被拆到多个文件里（Codex 续过的会话）：留最近那份
   const byKey = new Map<string, SessionSummary>();
   for (const entry of Object.values(next.files)) {
@@ -1425,6 +1827,69 @@ export function listSessions(): SessionSummary[] {
     const other = byKey.get(summary.key);
     if (!other || (summary.updatedAt ?? 0) > (other.updatedAt ?? 0)) byKey.set(summary.key, summary);
   }
+
+  const resolveChain = (start: SessionSummary): { rootKey?: string; depth: number } => {
+    if (!start.parentKey) return { depth: start.depth || 1 };
+    let curKey = start.parentKey;
+    const seen = new Set<string>([start.key]);
+    let hops = 1;
+    for (let i = 0; i < 8; i++) {
+      if (seen.has(curKey)) break;
+      seen.add(curKey);
+      const parent = byKey.get(curKey);
+      if (!parent || !parent.parentKey || seen.has(parent.parentKey)) break;
+      curKey = parent.parentKey;
+      hops += 1;
+    }
+    return { rootKey: curKey, depth: Math.max(start.depth || 0, hops) };
+  };
+
+  const descendantsByRoot = new Map<string, SessionSummary[]>();
+  for (const s of byKey.values()) {
+    if (!s.isSubagent) continue;
+    const { rootKey, depth } = resolveChain(s);
+    s.depth = depth;
+    if (rootKey) {
+      s.rootKey = rootKey;
+      const list = descendantsByRoot.get(rootKey) ?? [];
+      list.push(s);
+      descendantsByRoot.set(rootKey, list);
+      const root = byKey.get(rootKey);
+      if (root?.swarmTitle && s.subagentKind === "swarm" && !s.swarmTitle) s.swarmTitle = root.swarmTitle;
+    }
+  }
+
+  for (const [rootKey, children] of descendantsByRoot) {
+    const root = byKey.get(rootKey);
+    if (!root) continue;
+    root.subagentCount = children.length;
+    if (children.some((c) => c.subagentKind === "swarm")) root.hasSwarm = true;
+    const merged = mergeSessionUsages([root.usage, ...children.map((c) => c.usage)]);
+    if (merged) root.subtreeUsage = merged;
+  }
+
+  // 把最新会话键的后处理字段回写给同 key 的索引条目，保证 sessions-index.json 与 listSessions() 一致
+  for (const [file, entry] of Object.entries(next.files)) {
+    if (entry.summary) {
+      const canonical = byKey.get(entry.summary.key);
+      if (canonical && canonical !== entry.summary) {
+        entry.summary = {
+          ...entry.summary,
+          ...(canonical.parentKey ? { parentKey: canonical.parentKey } : {}),
+          ...(canonical.rootKey ? { rootKey: canonical.rootKey } : {}),
+          ...(canonical.depth ? { depth: canonical.depth } : {}),
+          ...(canonical.swarmTitle ? { swarmTitle: canonical.swarmTitle } : {}),
+          ...(canonical.hasSwarm ? { hasSwarm: true } : {}),
+          ...(canonical.subagentCount ? { subagentCount: canonical.subagentCount } : {}),
+          ...(canonical.subtreeUsage ? { subtreeUsage: canonical.subtreeUsage } : {}),
+        };
+      }
+    }
+    if (!changed && JSON.stringify(entry) !== JSON.stringify(previous[file])) changed = true;
+  }
+  if (!changed && Object.keys(previous).some((file) => !(file in next.files))) changed = true;
+  if (changed) writeJson(indexFile(), next);
+
   return [...byKey.values()].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
@@ -1451,6 +1916,7 @@ function removalPaths(kind: AgentKind, id: string, file: string): string[] {
   if (kind === "claude") {
     const root = path.resolve(path.join(cliDir("claude"), "projects"));
     if (!isInside(root, target) || path.basename(target) !== `${id}.jsonl`) return [];
+    if (path.basename(path.dirname(target)) === "subagents") return [];
     const sidecar = path.resolve(path.dirname(target), id);
     return isInside(root, sidecar) ? [target, sidecar] : [target];
   }
@@ -1520,7 +1986,7 @@ function forgetDeepseekSessions(ids: string[]) {
 
 /**
  * Claude Code、pi、DeepSeek Harness 没有能在后台调用的删除命令：直接删本机的会话记录，并同步移出索引和全文搜索缓存。
- * Claude 连同名附属目录，DeepSeek 连整个会话目录和它派出的子代理。
+ * Claude 连同名附属目录（含 subagents/），DeepSeek 连整个会话目录和它派出的子代理；不允许单独删子代理。
  */
 export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
   if (!id || id.length > 200 || !/^[A-Za-z0-9._-]+$/.test(id)) return false;
@@ -1529,6 +1995,8 @@ export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
     listSessions();
     files = filesOf(kind, id);
   }
+  const indexBefore = readJson<SessionIndex | null>(indexFile(), null);
+  if (files.some((file) => indexBefore?.files?.[file]?.summary?.isSubagent)) return false;
   const targets = files.map((file) => ({ file, paths: removalPaths(kind, id, file) })).filter((target) => target.paths.length);
   if (!targets.length) return false;
   const ids = [id];
@@ -1547,24 +2015,39 @@ export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
   if (kind === "deepseek") forgetDeepseekSessions(ids);
   const index = readJson<SessionIndex | null>(indexFile(), null);
   if (index?.version === INDEX_VERSION) {
+    const rootKey = `${kind}:${id}`;
     for (const { file } of targets) delete index.files[file];
+    for (const [file, entry] of Object.entries(index.files)) {
+      const s = entry.summary;
+      if (s && (s.rootKey === rootKey || s.parentKey === rootKey)) {
+        fs.rmSync(sessionTextFile(file), { force: true });
+        delete index.files[file];
+      }
+    }
     writeJson(indexFile(), index);
   }
   return true;
 }
 
-/** 工具自己删掉了这段对话（Antigravity）：只把 TokenPulse 的索引和全文搜索缓存清掉，不碰工具的文件。 */
+/** 工具自己删掉了这段对话（Antigravity）：只把 TokenPulse 的索引和全文搜索缓存（含子代）清掉，不碰工具的文件。 */
 export function forgetSession(kind: AgentKind, id: string) {
-  const files = filesOf(kind, id);
-  for (const file of files) fs.rmSync(sessionTextFile(file), { force: true });
+  const rootKey = `${kind}:${id}`;
   const index = readJson<SessionIndex | null>(indexFile(), null);
-  if (index?.version === INDEX_VERSION && files.length) {
+  const files = new Set<string>(filesOf(kind, id));
+  if (index?.version === INDEX_VERSION) {
+    for (const [file, entry] of Object.entries(index.files)) {
+      const s = entry.summary;
+      if (s && (s.rootKey === rootKey || s.parentKey === rootKey)) files.add(file);
+    }
+  }
+  for (const file of files) fs.rmSync(sessionTextFile(file), { force: true });
+  if (index?.version === INDEX_VERSION && files.size) {
     for (const file of files) delete index.files[file];
     writeJson(indexFile(), index);
   }
 }
 
-/** 详情：只读这一个会话文件。索引里没有（新会话）就先刷新一遍列表。 */
+/** 详情：只读这一个会话文件，并合入索引中的父子层级与子树用量。索引里没有（新会话）就先刷新一遍列表。 */
 export function getSession(kind: unknown, id: unknown): SessionDetail | null {
   if ((kind !== "claude" && kind !== "codex" && kind !== "grok" && kind !== "deepseek" && kind !== "pi" && kind !== "antigravity") || typeof id !== "string" || !id || id.length > 200) return null;
   let file = fileOf(kind, id);
@@ -1575,7 +2058,35 @@ export function getSession(kind: unknown, id: unknown): SessionDetail | null {
   if (!file) return null;
   const parsed = parseFile(kind, file);
   if (!parsed) return null;
-  const { file: _file, ...detail } = parsed;
+  const { file: _file, spawnedChildren: _spawned, ...detail } = parsed;
+  const index = readJson<SessionIndex | null>(indexFile(), null);
+  const indexed = index?.version === INDEX_VERSION ? index.files?.[file]?.summary : null;
+  if (indexed) {
+    if (!detail.parentKey && indexed.parentKey) detail.parentKey = indexed.parentKey;
+    if (!detail.rootKey && indexed.rootKey) detail.rootKey = indexed.rootKey;
+    if (indexed.depth && (!detail.depth || indexed.depth > detail.depth)) detail.depth = indexed.depth;
+    if (!detail.swarmTitle && indexed.swarmTitle) detail.swarmTitle = indexed.swarmTitle;
+    if (indexed.hasSwarm) detail.hasSwarm = true;
+    if (indexed.subagentCount) detail.subagentCount = indexed.subagentCount;
+    if (indexed.subagentRole && !detail.subagentRole) detail.subagentRole = indexed.subagentRole;
+    if (indexed.agentName && (!detail.agentName || detail.agentName === "subagent")) detail.agentName = indexed.agentName;
+    if (indexed.subagentKind && !detail.subagentKind) detail.subagentKind = indexed.subagentKind;
+    if (indexed.subagentCount && indexed.subagentCount > 0) {
+      const childUsages: (SessionUsage | undefined)[] = [];
+      const seenKeys = new Set<string>();
+      for (const entry of Object.values(index?.files ?? {})) {
+        const s = entry.summary;
+        if (!s || !s.isSubagent || s.rootKey !== detail.key || seenKeys.has(s.key)) continue;
+        seenKeys.add(s.key);
+        childUsages.push(s.usage);
+      }
+      const merged = mergeSessionUsages([detail.usage, ...childUsages]);
+      if (merged) detail.subtreeUsage = merged;
+      else if (indexed.subtreeUsage) detail.subtreeUsage = indexed.subtreeUsage;
+    } else if (indexed.subtreeUsage) {
+      detail.subtreeUsage = indexed.subtreeUsage;
+    }
+  }
   const truncated = Math.max(0, detail.messages.length - MAX_MESSAGES);
   return { ...detail, messages: truncated ? detail.messages.slice(-MAX_MESSAGES) : detail.messages, truncated };
 }

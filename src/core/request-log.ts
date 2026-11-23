@@ -392,6 +392,11 @@ export type SessionAggregate = {
   sessionKey?: string;
   title?: string;
   cwd?: string;
+  isSubagent?: boolean;
+  parentKey?: string;
+  agentName?: string;
+  subagentKind?: "swarm" | "subagent" | "review";
+  swarmTitle?: string;
   tokens: number;
   input: number;
   output: number;
@@ -428,6 +433,11 @@ export type RequestRow = {
   sessionKey?: string;
   /** 会话索引里已提取的标题（若有）。 */
   sessionTitle?: string;
+  isSubagent?: boolean;
+  parentKey?: string;
+  agentName?: string;
+  subagentKind?: "swarm" | "subagent" | "review";
+  swarmTitle?: string;
   responseId?: string;
   requestId?: string;
   input: number;
@@ -501,7 +511,7 @@ function sessionOf(record: RequestRecord) {
   // pi 的文件名是 <时间>_<会话 ID>.jsonl
   if (record.kind === "pi") return base.replace(/^.*_/, "");
   // Antigravity 的对话库是 <对话 ID>.db
-  if (record.kind === "antigravity") return base.replace(/.db$/, "");
+  if (record.kind === "antigravity") return base.replace(/\.db$/i, "");
   return record.kind === "grok-build" ? path.basename(path.dirname(record.file)) : base.replace(/^rollout-[\dT:-]+-/, "");
 }
 
@@ -514,7 +524,15 @@ const AGENT_KIND_OF_REQUEST: Partial<Record<RequestKind, string>> = {
   antigravity: "antigravity",
 };
 
-type SessionMetaEntry = { key: string; title: string };
+type SessionMetaEntry = {
+  key: string;
+  title: string;
+  isSubagent?: boolean;
+  parentKey?: string;
+  agentName?: string;
+  subagentKind?: "swarm" | "subagent" | "review";
+  swarmTitle?: string;
+};
 let sessionMetaCache: { size: number; mtimeMs: number; byFile: Map<string, SessionMetaEntry>; byKey: Map<string, SessionMetaEntry> } | null = null;
 function sessionMetaIndex() {
   const file = dataFile("sessions-index.json");
@@ -530,13 +548,39 @@ function sessionMetaIndex() {
   }
   const byFile = new Map<string, SessionMetaEntry>();
   const byKey = new Map<string, SessionMetaEntry>();
-  const parsed = readJson<{ files?: Record<string, { summary?: { key?: string; title?: string } | null }> } | null>(file, null);
+  const parsed = readJson<{
+    files?: Record<
+      string,
+      {
+        summary?: {
+          key?: string;
+          title?: string;
+          isSubagent?: boolean;
+          parentKey?: string;
+          agentName?: string;
+          subagentKind?: "swarm" | "subagent" | "review";
+          swarmTitle?: string;
+        } | null;
+      }
+    >;
+  } | null>(file, null);
   for (const [f, entry] of Object.entries(parsed?.files ?? {})) {
     const s = entry?.summary;
     if (!s?.key) continue;
-    const item = { key: s.key, title: typeof s.title === "string" ? s.title : "" };
+    const item: SessionMetaEntry = {
+      key: s.key,
+      title: typeof s.title === "string" ? s.title : "",
+      ...(s.isSubagent ? { isSubagent: true } : {}),
+      ...(typeof s.parentKey === "string" && s.parentKey ? { parentKey: s.parentKey } : {}),
+      ...(typeof s.agentName === "string" && s.agentName ? { agentName: s.agentName } : {}),
+      ...(s.subagentKind === "swarm" || s.subagentKind === "subagent" || s.subagentKind === "review" ? { subagentKind: s.subagentKind } : {}),
+      ...(typeof s.swarmTitle === "string" && s.swarmTitle ? { swarmTitle: s.swarmTitle } : {}),
+    };
     byFile.set(projectKey(f), item);
     byKey.set(s.key, item);
+    if (s.key.startsWith("deepseek:session-")) {
+      byKey.set(`deepseek:${s.key.slice("deepseek:session-".length)}`, item);
+    }
   }
   sessionMetaCache = { size, mtimeMs, byFile, byKey };
   return sessionMetaCache;
@@ -615,10 +659,14 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
   const usage = { input: record.input, output: record.output, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite };
   const session = sessionOf(record);
   const agentKind = AGENT_KIND_OF_REQUEST[record.kind];
+  const dshDirName = record.kind === "deepseek-harness" ? path.basename(path.dirname(record.file)) : "";
   const sMeta = record.kind === "cc-switch"
     ? undefined
-    : accounts.sessions?.byFile.get(projectKey(record.file)) ?? (agentKind ? accounts.sessions?.byKey.get(`${agentKind}:${session}`) : undefined);
-  const sessionKey = sMeta?.key ?? (agentKind ? `${agentKind}:${session}` : undefined);
+    : accounts.sessions?.byFile.get(projectKey(record.file))
+      ?? (agentKind ? accounts.sessions?.byKey.get(`${agentKind}:${session}`) : undefined)
+      ?? (dshDirName ? accounts.sessions?.byKey.get(`deepseek:${dshDirName}`) : undefined);
+  const fallbackSession = record.kind === "deepseek-harness" && dshDirName ? dshDirName : session;
+  const sessionKey = sMeta?.key ?? (agentKind ? `${agentKind}:${fallbackSession}` : undefined);
   const sessionTitle = sMeta?.title || undefined;
   const requestedModel = record.requested ?? record.proxy?.requested;
   const contextLimit = contextWindowOf(record.model, requestedModel, record.input) ?? undefined;
@@ -637,6 +685,11 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     session,
     ...(sessionKey ? { sessionKey } : {}),
     ...(sessionTitle ? { sessionTitle } : {}),
+    ...(sMeta?.isSubagent ? { isSubagent: true } : {}),
+    ...(sMeta?.parentKey ? { parentKey: sMeta.parentKey } : {}),
+    ...(sMeta?.agentName ? { agentName: sMeta.agentName } : {}),
+    ...(sMeta?.subagentKind ? { subagentKind: sMeta.subagentKind } : {}),
+    ...(sMeta?.swarmTitle ? { swarmTitle: sMeta.swarmTitle } : {}),
     responseId: record.responseId,
     requestId: record.requestId,
     ...usage,
@@ -853,6 +906,11 @@ export function queryRequests(query: RequestQuery): RequestPage {
         ...(row.sessionKey ? { sessionKey: row.sessionKey } : {}),
         ...(row.sessionTitle ? { title: row.sessionTitle } : {}),
         ...(row.cwd ? { cwd: row.cwd } : {}),
+        ...(row.isSubagent ? { isSubagent: true } : {}),
+        ...(row.parentKey ? { parentKey: row.parentKey } : {}),
+        ...(row.agentName ? { agentName: row.agentName } : {}),
+        ...(row.subagentKind ? { subagentKind: row.subagentKind } : {}),
+        ...(row.swarmTitle ? { swarmTitle: row.swarmTitle } : {}),
         tokens: 0,
         input: 0,
         output: 0,
@@ -875,6 +933,11 @@ export function queryRequests(query: RequestQuery): RequestPage {
     if (!sess.sessionKey && row.sessionKey) sess.sessionKey = row.sessionKey;
     if (!sess.title && row.sessionTitle) sess.title = row.sessionTitle;
     if (!sess.cwd && row.cwd) sess.cwd = row.cwd;
+    if (!sess.isSubagent && row.isSubagent) sess.isSubagent = true;
+    if (!sess.parentKey && row.parentKey) sess.parentKey = row.parentKey;
+    if (!sess.agentName && row.agentName) sess.agentName = row.agentName;
+    if (!sess.subagentKind && row.subagentKind) sess.subagentKind = row.subagentKind;
+    if (!sess.swarmTitle && row.swarmTitle) sess.swarmTitle = row.swarmTitle;
     sess.tokens += row.tokens;
     sess.input += row.input;
     sess.output += row.output;
@@ -1064,14 +1127,17 @@ export function queryRequests(query: RequestQuery): RequestPage {
         accountRows.set(row.account.id, list);
       }
       if (query.aggregate && !query.filteredAggregate) aggregateRow(row, day, raw.at);
-      if (query.session && row.session !== query.session && row.sessionKey !== query.session) return;
+      if (query.session) {
+        const dshNorm = row.source === "DeepSeek Harness" ? query.session.replace(/^(?:deepseek:)?session-/, "") : "";
+        if (row.session !== query.session && row.sessionKey !== query.session && (!dshNorm || row.session !== dshNorm)) return;
+      }
       if (query.models?.length && !query.models.includes(row.model)) return;
       if (query.project && (query.project === "__missing__" ? Boolean(row.cwd) : projectKey(row.cwd) !== projectKey(query.project))) return;
       if (query.channel === "official" && row.official !== true) return;
       if (query.channel === "api" && row.official !== false) return;
       if (query.channel === "unknown" && row.official !== undefined) return;
       if (q) {
-        const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.cwd, row.session, row.sessionTitle, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
+        const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.cwd, row.session, row.sessionTitle, row.agentName, row.swarmTitle, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();

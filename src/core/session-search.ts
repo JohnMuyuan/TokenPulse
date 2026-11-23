@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { dataFile, readJson, writeJson } from "./paths";
-import { parseSessionFile, sessionFiles, sessionTextFile, type AgentKind } from "./sessions";
+import { parseSessionFile, sessionFiles, sessionTextFile, type AgentKind, type SubagentKind } from "./sessions";
 
 /**
  * 会话全文搜索（0.3.55）：在 Claude Code / Codex / Grok Build / DeepSeek Harness 的所有会话里搜对话内容。
@@ -25,6 +25,10 @@ export type SearchHit = {
   snippets: SearchSnippet[];
   /** 命中的消息 id（按对话顺序，最多 MAX_IDS 个），详情里「上一处 / 下一处」用。 */
   ids: string[];
+  isSubagent?: boolean;
+  parentKey?: string;
+  agentName?: string;
+  subagentKind?: SubagentKind;
 };
 export type SearchResult = { query: string; terms: string[]; hits: SearchHit[]; ms: number; /** 这次新抽了多少个文件的文字。 */ indexed: number };
 
@@ -133,7 +137,19 @@ export function searchSessions(query: unknown, kind?: unknown): SearchResult {
     if (matchedTerms.size !== terms.length) continue;
     const snippets = scored.sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 3).sort((a, b) => a.order - b.order).map((entry) => entry.snippet);
     const updatedAt = item.summary.updatedAt ?? 0;
-    byKey.set(item.summary.key, { key: item.summary.key, kind: item.summary.kind, id: item.summary.id, count, snippets, ids, updatedAt });
+    byKey.set(item.summary.key, {
+      key: item.summary.key,
+      kind: item.summary.kind,
+      id: item.summary.id,
+      count,
+      snippets,
+      ids,
+      ...(item.summary.isSubagent ? { isSubagent: true } : {}),
+      ...(item.summary.parentKey ? { parentKey: item.summary.parentKey } : {}),
+      ...(item.summary.agentName ? { agentName: item.summary.agentName } : {}),
+      ...(item.summary.subagentKind ? { subagentKind: item.summary.subagentKind } : {}),
+      updatedAt,
+    });
   }
   const hits = [...byKey.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_HITS).map(({ updatedAt: _updatedAt, ...hit }) => hit);
   return { query: text, terms, hits, ms: Date.now() - started, indexed };

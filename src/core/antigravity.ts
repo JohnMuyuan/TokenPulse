@@ -493,6 +493,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
  * steps.step_payload（protobuf）：1 步骤类型、4 状态、5 同 metadata 列，再加按类型不同的一段：
  * - 14 用户输入：19.2 是用户说的话；
  * - 15 模型回复：20.1 回复正文（只在给文字时有）、20.3 思考过程（不展示）、20.7 工具调用（可重复：1 调用 id、2 工具名、3 参数 JSON）；
+ * - 101 系统/子代理消息（子代理与 Swarm worker 的任务分配与消息板通知，无 14）：114.4.4 净正文（回退 114.1），114.4.3 发送方 ID，114.3 消息类型；
  * - 132 工具执行：5.4.1 调用 id、5.4.2 工具名、5.4.3 参数；140.2.1 是交给模型的工具输出。
  * 其他类型（检查点、摘要之类）不展示。
  */
@@ -506,6 +507,7 @@ export type AgyStepUsage = {
 
 export type AgyStep =
   | { kind: "user"; at: number; text: string }
+  | { kind: "incoming"; at: number; text: string; senderId?: string; messageKind?: string }
   | {
       kind: "reply";
       at: number;
@@ -522,15 +524,21 @@ export type AgyStep =
     }
   | { kind: "result"; at: number; id: string; name: string; args: string; output: string; error: boolean };
 
-export const USER_INPUT = 14, TOOL_STEP = 132;
+export const USER_INPUT = 14, INCOMING_MSG = 101, TOOL_STEP = 132;
 
 /** models：回复里用到的型号（数字 id → 型号名和 model_enum，从 gen_metadata 读，每个型号读一条）。 */
-export function readAntigravityConversation(file: string): { steps: AgyStep[]; models: Record<string, AgyModel> } {
+export function readAntigravityConversation(
+  file: string,
+  opts?: { includeIncoming?: boolean },
+): { steps: AgyStep[]; models: Record<string, AgyModel> } {
   return withDb(file, (db) => {
     const out: AgyStep[] = [];
     const models: Record<string, AgyModel> = {};
     const genModel = prepareOptional(db, "select data from gen_metadata where idx = ?");
-    const stepStmt = db.prepare("select idx, step_type, status, metadata, step_payload from steps where step_type in (14, 15, 132) order by idx");
+    const sql = opts?.includeIncoming
+      ? "select idx, step_type, status, metadata, step_payload from steps where step_type in (14, 15, 101, 132) order by idx"
+      : "select idx, step_type, status, metadata, step_payload from steps where step_type in (14, 15, 132) order by idx";
+    const stepStmt = db.prepare(sql);
     for (const rawRow of stepStmt.iterate()) {
       const row = rawRow as { idx: number; step_type: number; status: number; metadata: Uint8Array | null; step_payload: Uint8Array | null };
       if (!row.step_payload && !row.metadata) continue;
@@ -543,6 +551,22 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
         if (!payload) continue;
         const text = pbString(pbMessage(payload, 19), 2);
         if (text.trim()) out.push({ kind: "user", at, text });
+      } else if (row.step_type === INCOMING_MSG) {
+        if (!payload) continue;
+        const body = pbMessage(payload, 114);
+        const structured = pbMessage(body, 4);
+        const text = pbString(structured, 4) || pbString(body, 1);
+        const senderId = pbString(structured, 3) || undefined;
+        const messageKind = pbString(body, 3) || undefined;
+        if (text.trim()) {
+          out.push({
+            kind: "incoming",
+            at,
+            text,
+            ...(senderId ? { senderId } : {}),
+            ...(messageKind ? { messageKind } : {}),
+          });
+        }
       } else if (row.step_type === MODEL_REPLY) {
         const body = pbMessage(payload, 20);
         const tools = (pbFields(body ?? Buffer.alloc(0)) ?? []).filter((field) => field.no === 7 && field.bytes).map((field) => ({ id: pbString(field.bytes, 1), name: pbString(field.bytes, 2), args: pbString(field.bytes, 3) }));
@@ -632,7 +656,160 @@ export function readAntigravityConversation(file: string): { steps: AgyStep[]; m
   });
 }
 
-export type AgySummary = { id: string; title: string; workspace?: string; nested: boolean; parentId?: string; at: number };
+export type AgySummary = {
+  id: string;
+  title: string;
+  workspace?: string;
+  nested: boolean;
+  parentId?: string;
+  nestingDepth?: number;
+  agentName?: string;
+  status?: string;
+  killed?: boolean;
+  at: number;
+};
+
+export type AgySwarmMember = {
+  name: string;
+  conversationId: string;
+  coordinatorId: string;
+  role: string;
+  phase?: string;
+  wakeMode?: string;
+  desiredState?: string;
+  workspaceMode?: string;
+  killed?: boolean;
+  model?: string;
+  updatedAt?: number;
+};
+
+export type AgySubagentDescriptor = {
+  conversationId: string;
+  parentId: string;
+  typeName?: string;
+  role?: string;
+  state?: string;
+  spawnStepIndex?: number;
+};
+
+export type AgySwarmMeta = {
+  swarmsByCoordinator: Map<string, { id: string; title: string; members: AgySwarmMember[]; updatedAt: number }>;
+  workerById: Map<string, { coordinatorId: string; swarmTitle: string; member: AgySwarmMember }>;
+  descriptorsById: Map<string, AgySubagentDescriptor>;
+};
+
+const jsonStatCache = new Map<string, { size: number; mtimeMs: number; value: unknown }>();
+function readJsonCached(file: string): { value: unknown; mtimeMs: number } | null {
+  let stat: fs.Stats;
+  try { stat = fs.statSync(file); } catch { return null; }
+  const hit = jsonStatCache.get(file);
+  if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return { value: hit.value, mtimeMs: stat.mtimeMs };
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (jsonStatCache.size > 1024) jsonStatCache.clear();
+    jsonStatCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, value });
+    return { value, mtimeMs: stat.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 读取 Antigravity 的 Swarm 成员清单（`brain/<coord>/.system_generated/swarm/members.json`）
+ * 与子代理描述（`brain/<parent>/.system_generated/subagents/<id>.json`）。按文件 size + mtime 缓存。
+ */
+export function antigravitySwarmMeta(dir: string | string[] = antigravityDirs(), filterRoots?: Set<string>): AgySwarmMeta {
+  const dirs = Array.isArray(dir) ? dir : [dir];
+  const swarmsByCoordinator = new Map<string, { id: string; title: string; members: AgySwarmMember[]; updatedAt: number }>();
+  const workerById = new Map<string, { coordinatorId: string; swarmTitle: string; member: AgySwarmMember }>();
+  const descriptorsById = new Map<string, AgySubagentDescriptor>();
+
+  for (const root of dirs) {
+    const brainDir = path.join(root, "brain");
+    let entries: string[];
+    try { entries = fs.readdirSync(brainDir); } catch { continue; }
+    for (const bid of entries) {
+      const bidLower = bid.toLowerCase();
+      if (filterRoots && !filterRoots.has(bidLower)) continue;
+      const sysDir = path.join(brainDir, bid, ".system_generated");
+      const membersFile = path.join(sysDir, "swarm", "members.json");
+      const parsedMembers = readJsonCached(membersFile);
+      if (parsedMembers && parsedMembers.value && typeof parsedMembers.value === "object") {
+        const obj = parsedMembers.value as Record<string, unknown>;
+        const title = typeof obj.title === "string" ? obj.title.trim() : "";
+        const rawMembers = obj.members;
+        const memberEntries: [string, Record<string, unknown>][] = Array.isArray(rawMembers)
+          ? rawMembers.flatMap((item, idx) => (item && typeof item === "object" ? [[String((item as Record<string, unknown>).name || idx), item as Record<string, unknown>]] : []))
+          : rawMembers && typeof rawMembers === "object"
+            ? Object.entries(rawMembers as Record<string, unknown>).flatMap(([k, v]) => (v && typeof v === "object" ? [[k, v as Record<string, unknown>]] : []))
+            : [];
+        const members: AgySwarmMember[] = [];
+        for (const [nameKey, m] of memberEntries) {
+          const cid = typeof m.conversation_id === "string" && m.conversation_id.trim()
+            ? m.conversation_id.trim()
+            : typeof m.conversationId === "string" && m.conversationId.trim()
+              ? m.conversationId.trim()
+              : "";
+          if (!cid) continue;
+          const name = typeof m.name === "string" && m.name.trim() ? m.name.trim() : nameKey;
+          const role = typeof m.role === "string" && m.role.trim() ? m.role.trim() : (cid.toLowerCase() === bidLower ? "coordinator" : "worker");
+          const member: AgySwarmMember = {
+            name,
+            conversationId: cid,
+            coordinatorId: bid,
+            role,
+            ...(typeof m.phase === "string" && m.phase ? { phase: m.phase } : {}),
+            ...(typeof m.wake_mode === "string" && m.wake_mode ? { wakeMode: m.wake_mode } : {}),
+            ...(typeof m.desired_state === "string" && m.desired_state ? { desiredState: m.desired_state } : {}),
+            ...(typeof m.workspace_mode === "string" && m.workspace_mode ? { workspaceMode: m.workspace_mode } : {}),
+            ...(m.killed === true ? { killed: true } : {}),
+            ...(typeof m.model === "string" && m.model ? { model: m.model } : {}),
+            updatedAt: parsedMembers.mtimeMs,
+          };
+          members.push(member);
+          if (cid.toLowerCase() !== bidLower) {
+            const prevWorker = workerById.get(cid.toLowerCase());
+            if (!prevWorker || parsedMembers.mtimeMs >= (prevWorker.member.updatedAt ?? 0)) {
+              workerById.set(cid.toLowerCase(), { coordinatorId: bid, swarmTitle: title, member });
+            }
+          }
+        }
+        const prevSwarm = swarmsByCoordinator.get(bidLower);
+        if (!prevSwarm || parsedMembers.mtimeMs >= prevSwarm.updatedAt) {
+          swarmsByCoordinator.set(bidLower, { id: bid, title, members, updatedAt: parsedMembers.mtimeMs });
+        }
+      }
+
+      const subDir = path.join(sysDir, "subagents");
+      let subNames: string[];
+      try { subNames = fs.readdirSync(subDir); } catch { continue; }
+      for (const name of subNames) {
+        if (!name.endsWith(".json")) continue;
+        const parsedSub = readJsonCached(path.join(subDir, name));
+        if (!parsedSub || !parsedSub.value || typeof parsedSub.value !== "object") continue;
+        const sObj = parsedSub.value as Record<string, unknown>;
+        const cid = typeof sObj.conversationId === "string" && sObj.conversationId.trim()
+          ? sObj.conversationId.trim()
+          : name.slice(0, -".json".length);
+        if (!cid) continue;
+        const desc = (sObj.subagentDescriptor && typeof sObj.subagentDescriptor === "object"
+          ? sObj.subagentDescriptor
+          : null) as Record<string, unknown> | null;
+        descriptorsById.set(cid.toLowerCase(), {
+          conversationId: cid,
+          parentId: bid,
+          ...(typeof desc?.typeName === "string" && desc.typeName.trim() ? { typeName: desc.typeName.trim() } : {}),
+          ...(typeof desc?.role === "string" && desc.role.trim() ? { role: desc.role.trim() } : {}),
+          ...(typeof sObj.state === "string" && sObj.state.trim() ? { state: sObj.state.trim() } : {}),
+          ...(typeof sObj.spawnStepIndex === "number" ? { spawnStepIndex: sObj.spawnStepIndex } : {}),
+        });
+      }
+    }
+  }
+
+  return { swarmsByCoordinator, workerById, descriptorsById };
+}
+
 /** 对话列表库里的标题、工作区（合并 Antigravity IDE 与 Antigravity CLI 两个目录的摘要库）。删掉的对话不在这里。读不到返回 null。 */
 export function antigravitySummaries(dir: string | string[] = antigravityDirs()): Map<string, AgySummary> | null {
   const dirs = Array.isArray(dir) ? dir : [dir];
@@ -644,18 +821,36 @@ export function antigravitySummaries(dir: string | string[] = antigravityDirs())
     try {
       withDb(file, (db) => {
         anyLoaded = true;
+        const parentLinks = new Map<string, string>();
+        const parentStmt = prepareOptional(db, "select conversation_id, parent_id from conversation_parents");
+        if (parentStmt) {
+          for (const pRow of parentStmt.all() as { conversation_id?: string; parent_id?: string }[]) {
+            const cid = typeof pRow.conversation_id === "string" ? pRow.conversation_id.trim() : "";
+            const pid = typeof pRow.parent_id === "string" ? pRow.parent_id.trim() : "";
+            if (cid && pid) parentLinks.set(cid.toLowerCase(), pid);
+          }
+        }
         for (const row of db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[]) {
           const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
           if (!id) continue;
-          const parentId = typeof row.parent_conversation_id === "string" && row.parent_conversation_id.trim()
+          const rawParent = typeof row.parent_conversation_id === "string" && row.parent_conversation_id.trim()
             ? row.parent_conversation_id.trim()
-            : undefined;
+            : parentLinks.get(id.toLowerCase());
+          const parentId = rawParent || undefined;
+          const nestingDepth = Number(row.nesting_depth || 0);
+          const agentName = typeof row.agent_name === "string" && row.agent_name.trim() ? row.agent_name.trim() : undefined;
+          const status = typeof row.status === "string" && row.status.trim() ? row.status.trim() : undefined;
+          const killed = Number(row.killed || 0) !== 0;
           const item: AgySummary = {
             id,
             title: typeof row.title === "string" ? row.title : "",
             workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null),
-            nested: Number(row.nesting_depth || 0) > 0 || Boolean(parentId),
+            nested: nestingDepth > 0 || Boolean(parentId),
             ...(parentId ? { parentId } : {}),
+            ...(nestingDepth > 0 ? { nestingDepth } : {}),
+            ...(agentName ? { agentName } : {}),
+            ...(status ? { status } : {}),
+            ...(killed ? { killed: true } : {}),
             at: sqliteTime(row.last_modified_time),
           };
           const prev = merged.get(id);
@@ -664,12 +859,20 @@ export function antigravitySummaries(dir: string | string[] = antigravityDirs())
           } else {
             const newer = item.at >= prev.at;
             const nextParent = newer ? (item.parentId || prev.parentId) : (prev.parentId || item.parentId);
+            const nextDepth = Math.max(prev.nestingDepth ?? 0, item.nestingDepth ?? 0);
+            const nextAgent = newer ? (item.agentName || prev.agentName) : (prev.agentName || item.agentName);
+            const nextStatus = newer ? (item.status || prev.status) : (prev.status || item.status);
+            const nextKilled = newer ? (item.killed ?? prev.killed) : (prev.killed ?? item.killed);
             merged.set(id, {
               id,
               title: newer ? (item.title || prev.title) : (prev.title || item.title),
               workspace: newer ? (item.workspace || prev.workspace) : (prev.workspace || item.workspace),
               nested: prev.nested || item.nested,
               ...(nextParent ? { parentId: nextParent } : {}),
+              ...(nextDepth > 0 ? { nestingDepth: nextDepth } : {}),
+              ...(nextAgent ? { agentName: nextAgent } : {}),
+              ...(nextStatus ? { status: nextStatus } : {}),
+              ...(nextKilled ? { killed: true } : {}),
               at: Math.max(prev.at, item.at),
             });
           }
@@ -1028,11 +1231,27 @@ async function importCliConversation(id: string): Promise<CliImportResult> {
  * 在跑的对话再看最后几步：有一步在等批准（WAITING）就是在等你；最后一步是别的步骤（工具、命令）在跑就是在跑工具；否则在想。
  * 空闲了看最后一次模型回复的状态：出错（ERROR）、被停（CANCELED / INTERRUPTED）、正常。
  */
+export type AgyChildActivity = {
+  id: string;
+  name: string;
+  status: string;
+  running: boolean;
+  phase?: "thinking" | "tool" | "waiting";
+  tool?: string;
+  ask?: string;
+  updatedAt: number;
+  swarm?: boolean;
+};
+
 export type AgyActivity = {
   id: string; title: string; workspace?: string;
   running: boolean; nested: boolean;
   /** 这个主对话下正在跑的子代理个数。 */
   subagents?: number;
+  agentName?: string;
+  swarm?: boolean;
+  swarmTitle?: string;
+  children?: AgyChildActivity[];
   /** 最后改动的时间（毫秒）；since：最后一次用户输入。 */
   at: number; since: number;
   phase?: "thinking" | "tool" | "waiting";
@@ -1096,24 +1315,53 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
   const file = path.join(dir, "conversation_summaries.db");
   if (!fs.existsSync(file)) return [];
   let rows: Record<string, unknown>[] = [];
+  let parentRows: { conversation_id?: string; parent_id?: string }[] = [];
   try {
-    rows = withDb(file, (db) => db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[]);
+    withDb(file, (db) => {
+      rows = db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[];
+      const pStmt = prepareOptional(db, "select conversation_id, parent_id from conversation_parents");
+      if (pStmt) parentRows = pStmt.all() as { conversation_id?: string; parent_id?: string }[];
+    });
   } catch { return []; }
+
+  const swarmMeta = antigravitySwarmMeta(dir);
   const parentOf = new Map<string, string>();
+  const canonicalId = new Map<string, string>();
   const rawById = new Map<string, Record<string, unknown>>();
   for (const row of rows) {
     const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
     if (!id) continue;
-    rawById.set(id, row);
+    const lower = id.toLowerCase();
+    canonicalId.set(lower, id);
+    rawById.set(lower, row);
     const parentId = typeof row.parent_conversation_id === "string" ? row.parent_conversation_id.trim() : "";
-    if (parentId) parentOf.set(id, parentId);
+    if (parentId) parentOf.set(lower, parentId);
   }
+  for (const pRow of parentRows) {
+    const cid = typeof pRow.conversation_id === "string" ? pRow.conversation_id.trim() : "";
+    const pid = typeof pRow.parent_id === "string" ? pRow.parent_id.trim() : "";
+    if (!cid || !pid) continue;
+    const lower = cid.toLowerCase();
+    if (!canonicalId.has(lower)) canonicalId.set(lower, cid);
+    if (!parentOf.has(lower)) parentOf.set(lower, pid);
+  }
+  for (const [wid, info] of swarmMeta.workerById) {
+    if (!canonicalId.has(wid)) canonicalId.set(wid, info.member.conversationId);
+    if (!parentOf.has(wid)) parentOf.set(wid, info.coordinatorId);
+  }
+  for (const [sid, desc] of swarmMeta.descriptorsById) {
+    if (!canonicalId.has(sid)) canonicalId.set(sid, desc.conversationId);
+    if (!parentOf.has(sid)) parentOf.set(sid, desc.parentId);
+  }
+
   const rootOf = (id: string) => {
     let cur = id;
+    const seen = new Set<string>([cur.toLowerCase()]);
     for (let depth = 0; depth < 8; depth++) {
-      const next = parentOf.get(cur);
-      if (!next || next === cur) break;
-      cur = next;
+      const next = parentOf.get(cur.toLowerCase());
+      if (!next || seen.has(next.toLowerCase())) break;
+      seen.add(next.toLowerCase());
+      cur = canonicalId.get(next.toLowerCase()) ?? next;
     }
     return cur;
   };
@@ -1127,28 +1375,124 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     }
     return local;
   };
+
+  // Synthesize rows for active/recent nested DBs present in conversation_parents or swarm/members.json but not yet in conversation_summaries.
+  const allRows: Record<string, unknown>[] = [...rows];
+  for (const [lower, parentId] of parentOf) {
+    if (rawById.has(lower)) continue;
+    const cid = canonicalId.get(lower) ?? lower;
+    const swarmWorker = swarmMeta.workerById.get(lower);
+    const desc = swarmMeta.descriptorsById.get(lower);
+    const db = resolveConvDb(cid);
+    const stamp = antigravityStamp(db);
+    const swarmWorking = Boolean(
+      swarmWorker &&
+      !swarmWorker.member.killed &&
+      swarmWorker.member.wakeMode === "working" &&
+      swarmWorker.member.phase !== "STOPPED" &&
+      now - (swarmWorker.member.updatedAt ?? 0) <= 5 * 60_000,
+    );
+    if (!swarmWorking && (!stamp || stamp.mtimeMs < since)) continue;
+    const synthetic: Record<string, unknown> = {
+      conversation_id: cid,
+      parent_conversation_id: parentId,
+      nesting_depth: 1,
+      agent_name: swarmWorker?.member.name || desc?.typeName || "",
+      status: "",
+      killed: swarmWorker?.member.killed ? 1 : 0,
+      last_modified_time: "",
+      last_user_input_time: "",
+    };
+    rawById.set(lower, synthetic);
+    allRows.push(synthetic);
+  }
+
+  // Count known children per root so IDLE coordinators with not_fully_idle=1 only stay running when children are actually active.
+  const knownChildrenByRoot = new Map<string, number>();
+  for (const [lower] of parentOf) {
+    const rootId = rootOf(canonicalId.get(lower) ?? lower).toLowerCase();
+    if (rootId && rootId !== lower) {
+      knownChildrenByRoot.set(rootId, (knownChildrenByRoot.get(rootId) ?? 0) + 1);
+    }
+  }
+
   const byId = new Map<string, AgyActivity>();
-  const activeSubs = new Map<string, { count: number; at: number }>();
+  const ownActiveById = new Map<string, boolean>();
+  const activeSubs = new Map<string, { items: AgyActivity[]; at: number }>();
+
   const buildItem = (row: Record<string, unknown>, forceKeep = false): AgyActivity | null => {
     const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
     if (!id) return null;
+    const lower = id.toLowerCase();
     const sumAt = sqliteTime(row.last_modified_time);
     const status = String(row.status ?? "");
-    const killed = Number(row.killed || 0) !== 0;
+    const parentId = parentOf.get(lower) || "";
+    const nested = Number(row.nesting_depth || 0) > 0 || Boolean(parentId);
+    const swarmWorker = swarmMeta.workerById.get(lower);
+    const swarmCoord = !nested ? swarmMeta.swarmsByCoordinator.get(lower) : undefined;
+    const desc = swarmMeta.descriptorsById.get(lower);
+    const killed = Number(row.killed || 0) !== 0 || swarmWorker?.member.killed === true;
     const notFullyIdle = Number(row.not_fully_idle || 0) !== 0;
-    const sumRunning = !killed && (/RUNNING|BUSY|CANCELING/.test(status) || notFullyIdle);
-    const nested = Number(row.nesting_depth || 0) > 0;
-    if (!forceKeep && !sumRunning && sumAt < since) return null;
+    const statusRunning = !killed && /RUNNING|BUSY|CANCELING/.test(status);
+    const swarmParked = Boolean(swarmWorker && !killed && (swarmWorker.member.wakeMode === "mentions" || swarmWorker.member.wakeMode === "all"));
+    const swarmWorking = Boolean(
+      swarmWorker &&
+      !killed &&
+      swarmWorker.member.wakeMode === "working" &&
+      swarmWorker.member.phase !== "STOPPED",
+    );
+    const sumRunning = !killed && (statusRunning || (notFullyIdle && !swarmParked));
+
     const db = resolveConvDb(id);
-    const stamp = (!nested || sumRunning) ? antigravityStamp(db) : null;
-    const info = !nested && stamp ? conversationPhase(db, stamp) : {};
-    const dbOpen = !nested && !killed && !!info.open && !!stamp && stamp.mtimeMs > sumAt + 1000 && now - stamp.mtimeMs < 60_000;
-    const running = sumRunning || dbOpen;
-    // 正在跑的对话，步骤实时写进 conversations/<id>.db-wal，而摘要库的 last_modified_time 往往要等这一轮结束或检查点才更新；
-    // 取两边较新的时间，避免超过 90 秒误判成「可能在等你」或超过 10 分钟被当成僵尸任务丢掉。已空闲的对话仍以摘要库为准。
-    const at = running ? Math.max(sumAt, stamp?.mtimeMs ?? 0) : sumAt;
-    if (!forceKeep && !running && at < since) return null;
+    const needStamp =
+      forceKeep ||
+      sumRunning ||
+      swarmWorking ||
+      sumAt >= since ||
+      (!killed && sumAt === 0) ||
+      Boolean(swarmWorker) ||
+      Boolean(swarmCoord);
+    const stamp = needStamp ? antigravityStamp(db) : null;
+    if (!forceKeep && !sumRunning && !swarmWorking && sumAt < since && (!stamp || stamp.mtimeMs < since)) return null;
+
+    const shouldReadPhase = Boolean(
+      stamp && (
+        !nested ||
+        statusRunning ||
+        sumRunning ||
+        swarmWorking ||
+        (!killed && now - stamp.mtimeMs <= 5 * 60_000)
+      ),
+    );
+    const info = shouldReadPhase ? conversationPhase(db, stamp) : {};
+    const dbOpen = !killed && !!info.open && !!stamp && (sumAt === 0 || stamp.mtimeMs > sumAt + 1000) && now - stamp.mtimeMs < 60_000;
+
+    let running: boolean;
+    let ownActive = false;
+    if (!nested) {
+      ownActive = statusRunning || dbOpen || (!killed && notFullyIdle && Boolean(info.open));
+      const hasManagedChildren = Boolean(swarmCoord) || (knownChildrenByRoot.get(lower) ?? 0) > 0;
+      if (!statusRunning && !killed && notFullyIdle && !info.open && hasManagedChildren) {
+        // IDLE coordinator with not_fully_idle=1: stays idle unless an active child/worker wakes it below.
+        running = false;
+      } else {
+        running = sumRunning || dbOpen;
+      }
+    } else {
+      const swarmAt = Math.max(sumAt, stamp?.mtimeMs ?? 0, swarmWorker?.member.updatedAt ?? 0);
+      const swarmActive = swarmWorking && swarmAt > 0 && now - swarmAt <= 5 * 60_000;
+      running = statusRunning || dbOpen || swarmActive || (!swarmParked && sumRunning);
+      ownActive = running;
+    }
+
+    const at = running
+      ? Math.max(sumAt, stamp?.mtimeMs ?? 0, swarmWorker && swarmWorking ? (swarmWorker.member.updatedAt ?? 0) : 0)
+      : (sumAt || stamp?.mtimeMs || 0);
+    if (!forceKeep && !running && at < since && !swarmCoord) return null;
+
+    const agentName = (typeof row.agent_name === "string" && row.agent_name.trim()) || swarmWorker?.member.name || desc?.typeName || undefined;
     const { open: _open, ...phase } = info;
+    ownActiveById.set(lower, ownActive);
     return {
       id,
       at,
@@ -1157,41 +1501,92 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       title: typeof row.title === "string" ? row.title : "",
       workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null),
       nested,
+      ...(agentName ? { agentName } : {}),
+      ...(swarmCoord || swarmWorker ? { swarm: true } : {}),
+      ...(swarmCoord?.title ? { swarmTitle: swarmCoord.title } : swarmWorker?.swarmTitle ? { swarmTitle: swarmWorker.swarmTitle } : {}),
       ...phase,
     };
   };
-  for (const row of rows) {
+
+  for (const row of allRows) {
     const item = buildItem(row);
     if (!item) continue;
-    byId.set(item.id, item);
+    byId.set(item.id.toLowerCase(), item);
     if (item.nested && item.running && now - item.at <= 5 * 60_000) {
       const rootId = rootOf(item.id);
-      if (rootId && rootId !== item.id) {
-        const prev = activeSubs.get(rootId) ?? { count: 0, at: 0 };
-        activeSubs.set(rootId, { count: prev.count + 1, at: Math.max(prev.at, item.at) });
+      const rootLower = rootId.toLowerCase();
+      if (rootId && rootLower !== item.id.toLowerCase()) {
+        const prev = activeSubs.get(rootLower) ?? { items: [], at: 0 };
+        prev.items.push(item);
+        prev.at = Math.max(prev.at, item.at);
+        activeSubs.set(rootLower, prev);
       }
     }
   }
-  for (const [rootId, sub] of activeSubs) {
-    let root = byId.get(rootId);
+
+  for (const [rootLower, sub] of activeSubs) {
+    let root = byId.get(rootLower);
     if (!root) {
-      const rawRoot = rawById.get(rootId);
+      const rawRoot = rawById.get(rootLower);
       if (rawRoot) {
         root = buildItem(rawRoot, true) ?? undefined;
-        if (root) byId.set(rootId, root);
+        if (root) byId.set(rootLower, root);
       }
     }
     if (root && !root.nested) {
-      root.subagents = sub.count;
+      const sortedSubs = [...sub.items].sort((a, b) => {
+        const aw = a.phase === "waiting" || a.ask ? 1 : 0;
+        const bw = b.phase === "waiting" || b.ask ? 1 : 0;
+        return bw - aw || b.at - a.at;
+      });
+      const children: AgyChildActivity[] = sortedSubs.map((child) => ({
+        id: child.id,
+        name: child.agentName || child.title || child.id.slice(0, 8),
+        status: child.phase === "waiting" || child.ask ? "waiting" : child.running ? "working" : "idle",
+        running: child.running,
+        ...(child.phase ? { phase: child.phase } : {}),
+        ...(child.tool ? { tool: child.tool } : {}),
+        ...(child.ask ? { ask: child.ask.name } : {}),
+        updatedAt: child.at,
+        ...(child.swarm ? { swarm: true } : {}),
+      }));
+      root.subagents = children.length;
+      root.children = children;
       root.at = Math.max(root.at, sub.at);
-      if (!root.running) {
+      if (!root.swarm && children.some((c) => c.swarm)) root.swarm = true;
+      if (!root.swarmTitle) {
+        const swarmTitle = sortedSubs.find((c) => c.swarmTitle)?.swarmTitle;
+        if (swarmTitle) root.swarmTitle = swarmTitle;
+      }
+
+      const waitingChild = sortedSubs.find((c) => c.phase === "waiting" || c.ask);
+      const toolChild = sortedSubs.find((c) => c.phase === "tool");
+      const rootOwnActive = ownActiveById.get(rootLower) === true;
+
+      if (!rootOwnActive) {
         root.running = true;
-        root.phase = "tool";
         root.ended = undefined;
+        if (waitingChild) {
+          root.phase = "waiting";
+          if (waitingChild.tool) root.tool = waitingChild.tool;
+          if (!root.ask && waitingChild.ask) root.ask = waitingChild.ask;
+        } else if (toolChild) {
+          root.phase = "tool";
+          if (toolChild.tool) root.tool = toolChild.tool;
+        } else {
+          // Idle Swarm coordinator propagates worker thinking; non-swarm root waiting on a background subagent reports tool.
+          root.phase = root.swarm ? "thinking" : "tool";
+        }
+      } else if (waitingChild?.ask && !root.ask) {
+        root.ask = waitingChild.ask;
+        root.phase = "waiting";
+        if (waitingChild.tool) root.tool = waitingChild.tool;
       }
     }
   }
-  return [...byId.values()];
+
+  // Drop idle swarm coordinators whose last update is older than `since` when no workers are active.
+  return [...byId.values()].filter((item) => item.running || item.at >= since);
 }
 
 /** 最近 since 之后动过的对话（支持同时扫描 Antigravity IDE 与 Antigravity CLI 目录并按会话合并）。读不到返回空的。 */
@@ -1209,7 +1604,16 @@ export function readAntigravityActivity(since: number, dir: string | string[] = 
       const preferItem = item.running !== prev.running ? item.running : item.at >= prev.at;
       const pri = preferItem ? item : prev;
       const sec = preferItem ? prev : item;
-      const subagents = Math.max(prev.subagents ?? 0, item.subagents ?? 0) || undefined;
+      const childMap = new Map<string, AgyChildActivity>();
+      for (const c of [...(sec.children ?? []), ...(pri.children ?? [])]) {
+        const old = childMap.get(c.id);
+        if (!old || c.updatedAt >= old.updatedAt || (c.running && !old.running)) childMap.set(c.id, c);
+      }
+      const children = childMap.size ? [...childMap.values()].sort((a, b) => (b.status === "waiting" ? 1 : 0) - (a.status === "waiting" ? 1 : 0) || b.updatedAt - a.updatedAt) : undefined;
+      const subagents = Math.max(prev.subagents ?? 0, item.subagents ?? 0, children?.length ?? 0) || undefined;
+      const agentName = pri.agentName || sec.agentName;
+      const swarm = prev.swarm || item.swarm || undefined;
+      const swarmTitle = pri.swarmTitle || sec.swarmTitle;
       merged.set(item.id, {
         ...pri,
         running: prev.running || item.running,
@@ -1218,6 +1622,10 @@ export function readAntigravityActivity(since: number, dir: string | string[] = 
         since: Math.max(prev.since, item.since),
         title: pri.title || sec.title,
         workspace: pri.workspace || sec.workspace,
+        ...(agentName ? { agentName } : {}),
+        ...(swarm ? { swarm } : {}),
+        ...(swarmTitle ? { swarmTitle } : {}),
+        ...(children ? { children } : {}),
         ...(subagents ? { subagents } : {}),
       });
     }

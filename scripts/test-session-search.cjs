@@ -104,6 +104,47 @@ write(codexFile, [
     fs.rmSync(codexFile);
     searchSessions("migration");
     check("会话在 CLI 里被删掉：下次搜索时清掉缓存", !fs.existsSync(codexText));
+
+    // 子代理全文搜索：Claude subagents/ 与 Codex subagent 均被索引并返回父子元信息
+    const claudeSubFile = path.join(claudeDir, "projects", "D--Demo", "claude-parent", "subagents", "agent-sub1.jsonl");
+    write(path.join(claudeDir, "projects", "D--Demo", "claude-parent.jsonl"), [
+      { type: "user", uuid: "pu1", timestamp: "2026-09-24T12:00:00Z", sessionId: "claude-parent", cwd: project, message: { content: "主会话任务" } },
+      { type: "assistant", uuid: "pa1", timestamp: "2026-09-24T12:00:02Z", message: { id: "pm1", content: [{ type: "text", text: "已派发子代理" }] } },
+    ]);
+    write(claudeSubFile, [
+      { type: "user", uuid: "su1", isSidechain: true, timestamp: "2026-09-24T12:00:03Z", sessionId: "claude-parent", agentId: "sub1", cwd: project, message: { content: "排查 subagentOnlyKeyword 异常" } },
+      { type: "assistant", uuid: "sa1", isSidechain: true, timestamp: "2026-09-24T12:00:05Z", sessionId: "claude-parent", agentId: "sub1", message: { id: "sm1", content: [{ type: "text", text: "已定位 subagentOnlyKeyword 根因。" }] } },
+    ]);
+    fs.writeFileSync(claudeSubFile.replace(/\.jsonl$/, ".meta.json"), JSON.stringify({ agentType: "Explore", description: "排查子代理问题" }));
+    const codexSubFile = path.join(codexDir, "sessions", "2026", "09", "25", "rollout-2026-09-25T12-00-00-codex-rev.jsonl");
+    write(codexSubFile, [
+      { type: "session_meta", timestamp: "2026-09-25T12:00:00Z", payload: { id: "codex-rev", cwd: project, parent_thread_id: "codex-root", source: { subagent: "review" } } },
+      { type: "response_item", timestamp: "2026-09-25T12:00:01Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "执行 guardianReviewHit 安全检查" }] } },
+      { type: "response_item", timestamp: "2026-09-25T12:00:02Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "无高危问题" }] } },
+    ]);
+    const subHit = searchSessions("subagentOnlyKeyword").hits[0];
+    const subDetail = sessions.getSession("claude", "agent-sub1");
+    check(
+      "全文搜索命中 Claude 子代理，附带 isSubagent / parentKey / agentName 且消息 ID 可跳转",
+      Boolean(subHit) &&
+        subHit.key === "claude:agent-sub1" &&
+        subHit.isSubagent === true &&
+        subHit.parentKey === "claude:claude-parent" &&
+        subHit.agentName === "Explore" &&
+        subHit.subagentKind === "subagent" &&
+        subHit.ids.every((id) => subDetail.messages.some((m) => m.id === id)),
+      JSON.stringify(subHit),
+    );
+    const revHit = searchSessions("guardianReviewHit").hits[0];
+    check(
+      "全文搜索命中 Codex 审查子会话并标记 subagentKind=review",
+      Boolean(revHit) &&
+        revHit.key === "codex:codex-rev" &&
+        revHit.isSubagent === true &&
+        revHit.parentKey === "codex:codex-root" &&
+        revHit.subagentKind === "review",
+      JSON.stringify(revHit),
+    );
   } catch (error) {
     console.error(error);
     results.push(false);
