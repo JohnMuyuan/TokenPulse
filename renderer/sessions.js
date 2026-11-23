@@ -412,6 +412,7 @@
     const byKey = new Map();
     for (const item of S.items) byKey.set(item.key, item);
     const anchorOf = new Map();
+    const descendantsByRoot = new Map();
     const childrenByRoot = new Map();
     const directChildren = new Map();
     let subagentTotal = 0;
@@ -447,10 +448,37 @@
       const anchor = resolveAnchor(item);
       if (anchor) {
         anchorOf.set(item.key, anchor);
-        const list = childrenByRoot.get(anchor) || [];
+        const list = descendantsByRoot.get(anchor) || [];
         list.push(item);
-        childrenByRoot.set(anchor, list);
+        descendantsByRoot.set(anchor, list);
       }
+    }
+    const byRecent = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
+    for (const list of directChildren.values()) list.sort(byRecent);
+    for (const [anchor, rawList] of descendantsByRoot) {
+      const ordered = [];
+      const visited = new Set([anchor]);
+      const walk = parentKey => {
+        const kids = directChildren.get(parentKey);
+        if (!kids) return;
+        for (const child of kids) {
+          if (visited.has(child.key) || anchorOf.get(child.key) !== anchor) continue;
+          visited.add(child.key);
+          ordered.push(child);
+          walk(child.key);
+        }
+      };
+      walk(anchor);
+      if (ordered.length < rawList.length) {
+        const rest = rawList.filter(item => !visited.has(item.key)).sort(byRecent);
+        for (const item of rest) {
+          if (visited.has(item.key)) continue;
+          visited.add(item.key);
+          ordered.push(item);
+          walk(item.key);
+        }
+      }
+      childrenByRoot.set(anchor, ordered);
     }
     const data = { byKey, anchorOf, childrenByRoot, directChildren, subagentTotal };
     treeCache = { items: S.items, data };

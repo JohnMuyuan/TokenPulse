@@ -1119,14 +1119,16 @@ app.on('web-contents-created', (_, contents) => {
           ...['audit-pet', 'core-sessions', 'desk-pet', 'ui-sessions', 'verifier'].map((name, idx) => ({
             key: `antigravity:worker-${idx + 1}`, kind: 'antigravity', id: `worker-${idx + 1}`,
             title: `Worker task ${name}`, project: 'demo-swarm', cwd: 'D:\\qa\\demo-swarm',
-            createdAt: now108 - 500000 + idx * 10000, updatedAt: now108 - 20000 - idx * 1000, turns: 2 + idx, toolCount: 1,
+            createdAt: now108 - 500000 + idx * 10000,
+            // depth=2 子代理 worker-5 故意设得比所有 depth=1 节点更新，验证 DFS 前序不会浮到父节点上方
+            updatedAt: idx === 4 ? now108 - 15000 : now108 - 20000 - idx * 1000, turns: 2 + idx, toolCount: 1,
             models: ['gemini-4-carbon'], isSubagent: true,
             parentKey: idx === 4 ? 'antigravity:worker-4' : 'antigravity:root-swarm-1',
             rootKey: 'antigravity:root-swarm-1', depth: idx === 4 ? 2 : 1,
             subagentKind: 'swarm', agentName: name, swarmTitle: 'Subagent UI Swarm',
             usage: { tokens: 12000 + idx * 1000, input: 10000, output: 2000, cacheRead: 6000, cacheWrite: 0, reasoning: 400, costUsd: 0.06, requests: 3, models: [{ model: 'gemini-4-carbon', tokens: 12000 + idx * 1000, costUsd: 0.06, requests: 3 }] },
             resumable: false, canDelete: false,
-          })),
+          })).sort((a, b) => b.updatedAt - a.updatedAt),
           {
             key: 'claude:root-cl-1', kind: 'claude', id: 'root-cl-1',
             title: 'Claude parent chat', project: 'demo-cl', cwd: 'D:\\qa\\demo-cl',
@@ -1213,10 +1215,15 @@ app.on('web-contents-created', (_, contents) => {
         assert.match(await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"] .sw-sub-pill-toggle').textContent"), /Swarm.*5/);
         assert.match(await evaluate("document.querySelector('.sw-item[data-key=\"claude:root-cl-1\"] .sw-sub-pill-toggle').textContent"), /子代理.*1/);
 
-        // 2) 点击 Swarm 折叠胶囊展开 5 个子代理（含 depth=2 嵌套）
+        // 2) 点击 Swarm 折叠胶囊展开 5 个子代理（含 depth=2 嵌套，且按 DFS 前序紧跟在父节点 worker-4 之后）
         await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"] .sw-sub-pill-toggle').click()");
         await until("document.querySelectorAll('.sw-item.is-subagent').length === 5");
         assert.equal(await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:worker-5\"]')?.dataset.depth"), '2');
+        assert.deepEqual(
+          await evaluate("[...document.querySelectorAll('.sw-item.is-subagent')].map(n => n.dataset.key)"),
+          ['antigravity:worker-1', 'antigravity:worker-2', 'antigravity:worker-3', 'antigravity:worker-4', 'antigravity:worker-5'],
+          'depth=2 子代理即使 updatedAt 更新，也必须紧跟在 depth=1 父节点 worker-4 之后（DFS 前序）',
+        );
 
         // 3) 主会话详情头 .sw-sub-bar：展示成员列表、含子代理总 Token 与折叠/展开
         await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"]').click()");
