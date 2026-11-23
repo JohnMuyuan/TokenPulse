@@ -236,14 +236,14 @@
       "note": "Grok Build 用的是同一型号的 -build 变体"
     },
     {
-      "match": "^(gemini-[\\w.-]+?)-(?:b|n|tiered|worker(?:-agy)?)$",
+      "match": "^(gemini-[\\w.-]+?)-(?:b|n|tiered|worker(?:-agy)?)(?:-(?:thinking|minimal|low|medium|high|xhigh|max|ultra|adaptive|auto|dynamic))*$",
       "replace": "$1",
-      "note": "Antigravity 内部 Gemini 型号后缀（如 gemini-4-argon-b、gemini-3.8-flash-n、gemini-3.8-flash-tiered、gemini-flash-worker-agy）"
+      "note": "Antigravity 内部 Gemini 型号及动态分档后缀（如 gemini-4-argon-b、gemini-3.8-flash-n、gemini-3.8-flash-tiered、gemini-4-hydrogen-tiered-high、gemini-flash-worker-agy）"
     },
     {
-      "match": "^(?:gemini-(?:[\\w.-]+-)?)?orchestrator(?:-\\(?(?:carbon|argon|hydrogen|pro)\\)?)?$",
+      "match": "^(?:gemini-(?:[\\w.-]+-)?)?orchestrator(?:-\\(?(?:neon|carbon|argon|hydrogen|pro)\\)?)?$",
       "replace": "orchestrator",
-      "note": "Antigravity Orchestrator 规划器与选项名（如 Orchestrator (Carbon) → gemini-pro-orchestrator）"
+      "note": "Antigravity Orchestrator 规划器与选项名（如 Orchestrator (Neon / Carbon / Argon) → gemini-pro-orchestrator）"
     }
   ],
   "capabilities": {

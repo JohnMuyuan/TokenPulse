@@ -3370,7 +3370,9 @@
     '桌宠补齐 Antigravity Swarm 与多 Agent 子代理识别及点击跳转': 'Desk Pet Recognition & Click-to-Open for Antigravity Swarm and Subagents',
     '桌宠现可实时识别 Antigravity /swarm 工作代理及各工具子代理的活跃状态与气泡摘要，点击正在执行的会话或子代理可直接跳转至会话管理定位对应对话。': 'Desk Pet now detects live Antigravity /swarm workers and multi-agent subagents with bubble summaries, and clicking an active session or subagent jumps straight to it in Sessions.',
     '用量明细、按会话排行与缓存分析打通子代理标识和一键跳转': 'Subagent Badges & One-Click Cross-Links Across Usage, Sessions & Cache',
-    '逐条请求详情、按会话排行与缓存断档会话表新增紧凑 Swarm / 子代理标签；支持从任意子代理请求直达子代理对话或一键跳回所属主会话。': 'Request details, Session ranking, and Cache break tables now show compact Swarm / Subagent badges with one-click jumps to either the subagent conversation or its parent session.'
+    '逐条请求详情、按会话排行与缓存断档会话表新增紧凑 Swarm / 子代理标签；支持从任意子代理请求直达子代理对话或一键跳回所属主会话。': 'Request details, Session ranking, and Cache break tables now show compact Swarm / Subagent badges with one-click jumps to either the subagent conversation or its parent session.',
+    '修复 Antigravity 动态分档 / 思考等级复合后缀误报「型号不一致」': 'Fix False “Model Mismatch” on Antigravity Dynamic Tiered-Effort Suffixes',
+    '修复请求 gemini-4-hydrogen 等模型时，子代理或动态思考分档返回 gemini-4-hydrogen-tiered-high 等复合后缀被误判为「型号不一致」的问题（同步兼容 -b/-n/-tiered/-worker-agy 与思考等级叠加以及 Orchestrator (Neon)），历史记录立即生效。': 'Fixes false “Model mismatch” alerts when Antigravity subagents or dynamic thinking tiers return compound suffixes like gemini-4-hydrogen-tiered-high for gemini-4-hydrogen (also covers -b/-n/-tiered/-worker-agy combined with effort levels and Orchestrator (Neon)); historical records update immediately.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */

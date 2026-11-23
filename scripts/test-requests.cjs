@@ -70,6 +70,16 @@ try {
     agGeminiEffort.status === "match" && agGptOssEffort.status === "match" &&
     agGeminiEffort.reasons.some((r) => /思考等级/.test(r) && /xhigh/.test(r)),
     JSON.stringify([agGeminiEffort, agGptOssEffort]));
+  const agTieredHigh = verifyRequest({ kind: "antigravity", requested: "gemini-4-hydrogen", returned: "gemini-4-hydrogen-tiered-high" });
+  const agTieredFlash = verifyRequest({ kind: "antigravity", requested: "gemini-3.8-flash-tiered", returned: "gemini-3.8-flash-tiered-medium" });
+  const agSuffixEffort = verifyRequest({ kind: "antigravity", requested: "gemini-4-argon", returned: "gemini-4-argon-b-xhigh" });
+  const agWorkerEffort = verifyRequest({ kind: "antigravity", requested: "gemini-flash", returned: "gemini-flash-worker-agy-low" });
+  const agTieredWrong = verifyRequest({ kind: "antigravity", requested: "gemini-4-hydrogen", returned: "gemini-4-carbon-tiered-high" });
+  check("Antigravity：动态分档叠加思考等级（如 gemini-4-hydrogen-tiered-high / -b-xhigh / -worker-agy-low）算一致，跨型号仍判不一致",
+    agTieredHigh.status === "match" && agTieredHigh.reasons.some((r) => /思考等级/.test(r) && /tiered-high/.test(r)) &&
+    agTieredFlash.status === "match" && agSuffixEffort.status === "match" && agWorkerEffort.status === "match" &&
+    agTieredWrong.status === "mismatch",
+    JSON.stringify([agTieredHigh, agTieredFlash, agSuffixEffort, agWorkerEffort, agTieredWrong]));
   check("Claude 思考等级后缀（含 thinking、叠加）都去掉，但不会把 opus 和 sonnet 混为一谈",
     normalizeModel("claude-sonnet-5-thinking") === "claude-sonnet-5" &&
     normalizeModel("claude-opus-5-5-thinking-high") === "claude-opus-5-5" &&
@@ -78,13 +88,14 @@ try {
   check("别家型号不去等级后缀", normalizeModel("gpt-5.4-high") === "gpt-5.4-high");
   const agWrong = verifyRequest({ kind: "antigravity", requested: "claude-opus-5-5", returned: "claude-sonnet-5-medium" });
   check("Antigravity：请求 opus、返回 sonnet（带等级）仍判不一致", agWrong.status === "mismatch");
+  const agOrchNeon = verifyRequest({ kind: "antigravity", requested: "orchestrator-neon", returned: "gemini-pro-orchestrator" });
   const agOrchCarbon = verifyRequest({ kind: "antigravity", requested: "orchestrator-carbon", returned: "gemini-pro-orchestrator" });
-  const agOrchArgon = verifyRequest({ kind: "antigravity", requested: "orchestrator-argon", returned: "gemini-pro-orchestrator" });
+  const agOrchArgon = verifyRequest({ kind: "antigravity", requested: "orchestrator-argon", returned: "gemini-pro-orchestrator-high" });
   const agOrchLegacy = verifyRequest({ kind: "antigravity", requested: "orchestrator", returned: "gemini-pro-orchestrator" });
-  check("Antigravity：Orchestrator (Carbon / Argon / 旧 orchestrator) → gemini-pro-orchestrator 算一致并注明内部型号名",
-    agOrchCarbon.status === "match" && agOrchArgon.status === "match" && agOrchLegacy.status === "match" &&
+  check("Antigravity：Orchestrator (Neon / Carbon / Argon / 旧 orchestrator) → gemini-pro-orchestrator(-high) 算一致并注明内部型号名",
+    agOrchNeon.status === "match" && agOrchCarbon.status === "match" && agOrchArgon.status === "match" && agOrchLegacy.status === "match" &&
     agOrchCarbon.reasons.some((r) => /内部型号名/.test(r) && /gemini-pro-orchestrator/.test(r)),
-    JSON.stringify(agOrchCarbon));
+    JSON.stringify([agOrchNeon, agOrchCarbon, agOrchArgon]));
   const agWorker = verifyRequest({ kind: "antigravity", requested: "gemini-flash", returned: "gemini-flash-worker-agy" });
   check("Antigravity：gemini-flash → gemini-flash-worker-agy 算一致并注明内部型号名",
     agWorker.status === "match" && agWorker.reasons.some((r) => /内部型号名/.test(r) && /gemini-flash-worker-agy/.test(r)),

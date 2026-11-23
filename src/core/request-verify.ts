@@ -58,20 +58,26 @@ export function normalizeModel(model: string) {
   let out = model.trim().toLowerCase();
   // 规则在 knowledge/models.json 的 aliases 里，能在线更新
   for (const rule of aliasRules()) out = out.replace(rule.test, rule.replace);
-  // 空格、以及缀在型号后面的路由名，先收成同一种写法，再认 Grok Build 的 -build 和 Antigravity 内部后缀
+  // 空格、以及缀在型号后面的路由名，先收成同一种写法，再认 Grok Build 的 -build、思考等级与 Antigravity 内部/动态分档后缀
   out = out.replace(/\s*·\s*tokenpulse$/i, "").replace(/\s+/g, "-");
-  return out
-    .replace(/^(grok-[\d.]+)-build$/, "$1")
-    .replace(/^(gemini-[\w.-]+?)-(?:b|n|tiered|worker(?:-agy)?)$/, "$1")
-    .replace(/^(?:gemini-(?:[\w.-]+-)?)?orchestrator(?:-\(?(?:carbon|argon|hydrogen|pro)\)?)?$/, "orchestrator")
-    .replace(MODEL_EFFORT_SUFFIX, "$1");
+  for (let i = 0; i < 3; i++) {
+    const next = out
+      .replace(/^(grok-[\d.]+)-build$/, "$1")
+      .replace(MODEL_EFFORT_SUFFIX, "$1")
+      .replace(/^(gemini-[\w.-]+?)-(?:b|n|tiered|worker(?:-agy)?)$/, "$1")
+      .replace(/^(?:gemini-(?:[\w.-]+-)?)?orchestrator(?:-\(?(?:neon|carbon|argon|hydrogen|pro)\)?)?$/, "orchestrator");
+    if (next === out) break;
+    out = next;
+  }
+  return out;
 }
 
 /**
- * Antigravity 给模型 ID 附带思考等级后缀：如 `claude-opus-5-5-medium`、`gemini-4-hydrogen-xhigh`、`gpt-oss-120b-medium`。
+ * Antigravity 给模型 ID 附带思考等级 / 动态分档后缀：如 `claude-opus-5-5-medium`、`gemini-4-hydrogen-xhigh`、
+ * `gemini-4-hydrogen-tiered-high`、`gpt-oss-120b-medium`。
  * 各家基础型号名不会以这些词结尾，按已知前缀剥除，不影响其他渠道型号。
  */
-const MODEL_EFFORT_SUFFIX = /^(claude-[\w.-]+?|gemini-[\w.-]+?|gpt-oss-[\w.-]+?)(?:-(?:thinking|minimal|low|medium|high|xhigh|max|ultra))+$/;
+const MODEL_EFFORT_SUFFIX = /^(claude-[\w.-]+?|gemini-[\w.-]+?|gpt-oss-[\w.-]+?|orchestrator(?:-[\w.-]+?)?)(?:-(?:tiered-)?(?:thinking|minimal|low|medium|high|xhigh|max|ultra|adaptive|auto|dynamic))+$/;
 
 /** 返回型号里带的思考等级后缀，没有就是 undefined。 */
 function modelEffortOf(model: string) {

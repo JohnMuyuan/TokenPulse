@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.109': [
+      ['check', '修复 Antigravity 动态分档 / 思考等级复合后缀误报「型号不一致」', '修复请求 gemini-4-hydrogen 等模型时，子代理或动态思考分档返回 gemini-4-hydrogen-tiered-high 等复合后缀被误判为「型号不一致」的问题（同步兼容 -b/-n/-tiered/-worker-agy 与思考等级叠加以及 Orchestrator (Neon)），历史记录立即生效。'],
+    ],
     '0.3.108': [
       ['sessions', '会话管理与全文检索支持查看各 Agent 子代理与 Antigravity Swarm 对话', 'Claude Code、Codex CLI、Grok Build、DeepSeek Harness 与 Antigravity（含 /swarm 协同成员）派出的子代理对话现均可在会话管理中按主会话折叠展开或平铺浏览，支持全文检索直达、顶部成员快速跳转与一键返回主会话。'],
       ['pet', '桌宠补齐 Antigravity Swarm 与多 Agent 子代理识别及点击跳转', '桌宠现可实时识别 Antigravity /swarm 工作代理及各工具子代理的活跃状态与气泡摘要，点击正在执行的会话或子代理可直接跳转至会话管理定位对应对话。'],
