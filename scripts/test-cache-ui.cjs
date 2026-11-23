@@ -2,7 +2,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
+let decorateSubagentCache = false;
+const registerHandler = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, handler) => registerHandler(channel, channel === 'requests:query' ? async (event, query) => {
+  const res = await handler(event, query);
+  if (decorateSubagentCache && res?.cache?.sessions?.length) {
+    res.cache.sessions = res.cache.sessions.map((row, idx) => idx === 0
+      ? { ...row, sessionKey: 'antigravity:sub-cache-1', title: 'Swarm cache worker', isSubagent: true, subagentKind: 'swarm', agentName: 'worker-1' }
+      : idx === 1
+        ? { ...row, sessionKey: 'claude:sub-cache-2', title: 'Explore worker', isSubagent: true, subagentKind: 'subagent', agentName: 'Explore' }
+        : row);
+  }
+  return res;
+} : handler);
 const { priceOf } = require('../build/core/model-pricing.js');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-cache-ui-'));
@@ -153,6 +166,16 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
       assert.match(ttlText, /gpt-5\.4.*≥ 22 分钟/);
       assert.equal(await evaluate("getComputedStyle(document.querySelector('#view-cache .cc-ttl-rowhead')).position"), 'sticky');
       assert.equal(await evaluate("getComputedStyle(document.querySelector('#view-cache .cc-ttl-table thead th')).position"), 'sticky');
+    }
+
+    // v0.3.108：缓存断档会话表优先使用 row.sessionKey，并为子代理行展示紧凑标签（不改列数，同时纳入后续 EN 零中文检查）
+    {
+      decorateSubagentCache = true;
+      await evaluate("current.scannedAt = Date.now() + 1; window.PulseCache.render()");
+      await until("document.querySelector('#view-cache .cc-open-session[data-session-key=\"antigravity:sub-cache-1\"]') && document.querySelectorAll('#view-cache .cc-sub-tag').length === 2");
+      assert.equal(await evaluate("document.querySelector('#view-cache .cc-open-session[data-session-key=\"antigravity:sub-cache-1\"]').closest('tr').querySelectorAll('td').length"), 7, '子代理标签不改变断档会话表 7 列结构');
+      assert.match(await evaluate("document.querySelectorAll('#view-cache .cc-sub-tag')[0].textContent"), /Swarm/);
+      assert.match(await evaluate("document.querySelectorAll('#view-cache .cc-sub-tag')[1].textContent"), /子代理/);
     }
 
     if (process.env.TP_SHOTS) {

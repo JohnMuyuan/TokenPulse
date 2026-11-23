@@ -286,8 +286,12 @@
       [{ label: '工具' }, { label: '项目' }, { label: '会话请求', right: true }, { label: '命中率', right: true }, { label: '断档', right: true }, { label: '丢掉的 Tokens', right: true }, { label: '多花', right: true }],
       data.sessions.map(row => {
         const kind = KIND[row.source];
-        const source = kind ? el('button', { type: 'button', class: 'text-btn cc-open-session', text: row.source, 'data-session-key': `${kind}:${row.session}` }) : el('span', { text: row.source });
-        return el('tr', {}, [el('td', {}, [source]), projectCell(row.project), cell(number(row.requests)), cell(pct(row.hitRate)), cell(number(row.breaks)), cell(number(row.lostTokens)), cell(money(row.extraUsd))]);
+        const sessionKey = row.sessionKey || (kind && row.session ? `${kind}:${row.session}` : '');
+        const source = sessionKey
+          ? el('button', { type: 'button', class: 'text-btn cc-open-session', text: row.source, title: row.title || null, 'data-session-key': sessionKey })
+          : el('span', { text: row.source });
+        const subTag = row.isSubagent && typeof subagentTagNode === 'function' ? subagentTagNode(row, 'cc-sub-tag', true) : null;
+        return el('tr', {}, [el('td', {}, subTag ? [source, subTag] : [source]), projectCell(row.project), cell(number(row.requests)), cell(pct(row.hitRate)), cell(number(row.breaks)), cell(number(row.lostTokens)), cell(money(row.extraUsd))]);
       }), '还没有检测到缓存断档的会话。');
     table(nodes.recent,
       [{ label: '时间' }, { label: '工具' }, { label: '项目' }, { label: '型号' }, { label: '原因' }, { label: '间隔', right: true }, { label: '丢掉的 Tokens', right: true }, { label: '多花', right: true }],

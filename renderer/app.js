@@ -2572,6 +2572,27 @@ function syncAccountOptions(page) {
   select.value = state.reqAccount;
 }
 
+/** 子代理 / Swarm 紧凑徽章（供逐条请求、按会话排行、缓存分析共用；拆分 span 避免 EN 翻译吞掉动态名）。 */
+function subagentTagNode(item, extraClass = '', compact = false) {
+  if (!item?.isSubagent) return null;
+  const kind = item.subagentKind === 'swarm' ? 'swarm' : item.subagentKind === 'review' ? 'review' : 'subagent';
+  const kindLabel = kind === 'swarm' ? 'Swarm' : kind === 'review' ? '审查' : '子代理';
+  const parts = [el('span', { text: kindLabel, translate: kind === 'swarm' ? 'no' : null })];
+  if (!compact && item.agentName) {
+    parts.push(el('span', { class: 'subagent-tag-sep', 'aria-hidden': 'true', text: '·' }));
+    parts.push(el('span', { text: item.agentName, translate: 'no' }));
+  }
+  const tipParts = [
+    kind === 'swarm' ? 'Swarm 子代理会话' : '子代理会话',
+    item.agentName || '',
+    item.swarmTitle || '',
+  ].filter(Boolean);
+  return el('span', {
+    class: `request-tag subagent-tag${kind === 'swarm' ? ' swarm-tag' : ''}${extraClass ? ` ${extraClass}` : ''}`,
+    title: tipParts.join(' · '),
+  }, parts);
+}
+
 /** request-verify.ts 里「问题」排在「说明」前面；说明都以这些开头。 */
 const NOTE_PREFIX = /^(这段会话|Codex 会话|这一轮|这次请求接的是|走的是|经 |grok-|来自 CC Switch)/;
 function requestDetail(row) {
@@ -2588,7 +2609,7 @@ function requestDetail(row) {
     ['Tokens', number(row.tokens)], ['缓存命中率', cacheHitText(row)],
     ['上下文水位', ctxPct != null ? `${number(row.input)} / ${tokens(row.contextLimit)}（${ctxPct.toFixed(1)}%）${row.compaction ? ' · 自动压缩' : ''}` : `${number(row.input)}${row.compaction ? '（自动压缩）' : '（窗口未知）'}`],
     ['推理占比', reaPct != null ? `${number(row.reasoning)} / ${number(row.output)}（占输出 ${reaPct.toFixed(1)}%）` : number(row.reasoning)],
-    ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.sessionTitle ? `${row.sessionTitle} (${row.session})` : row.session, true],
+    ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.sessionTitle ? `${row.sessionTitle} (${row.session})` : row.session, true, subagentTagNode(row, 'detail-sub-tag')],
     ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)],
     ...(auto >= 2 ? [['连续自动轮次', `第 ${number(auto)} 步${auto >= 8 ? '（无人工介入长连跑）' : ''}`]] : []),
     ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : []),
@@ -2603,10 +2624,15 @@ function requestDetail(row) {
   ];
   const canFilterSession = Boolean(row.session && row.source !== 'CC Switch');
   const isSameSession = canFilterSession && state.reqSession === row.session;
-  const sessionActions = (row.sessionKey || canFilterSession) ? el('div', { class: 'detail-session-actions' }, [
+  const sessionActions = (row.sessionKey || row.parentKey || canFilterSession) ? el('div', { class: 'detail-session-actions' }, [
     row.sessionKey ? (() => {
       const btn = el('button', { type: 'button', class: 'btn detail-jump-btn', 'data-action': 'jump-session' }, [icon('sessions'), '定位到会话']);
       btn.addEventListener('click', event => { event.stopPropagation(); window.PulseSessions?.open(row.sessionKey); });
+      return btn;
+    })() : null,
+    row.parentKey ? (() => {
+      const btn = el('button', { type: 'button', class: 'btn detail-jump-btn', 'data-action': 'jump-parent-session', title: '在会话管理中打开主会话' }, [icon('sessions'), '主会话']);
+      btn.addEventListener('click', event => { event.stopPropagation(); window.PulseSessions?.open(row.parentKey); });
       return btn;
     })() : null,
     canFilterSession ? (() => {
@@ -2617,7 +2643,10 @@ function requestDetail(row) {
   ].filter(Boolean)) : null;
   return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 10 }, [
     sessionActions,
-    el('div', { class: 'detail-grid' }, fields.map(([label, value, mono]) => el('div', {}, [el('small', { text: label }), el('span', { class: mono ? 'mono' : '', text: value, title: value })]))),
+    el('div', { class: 'detail-grid' }, fields.map(([label, value, mono, badge]) => el('div', {}, [
+      badge ? el('small', { class: 'detail-label-row' }, [el('span', { text: label }), badge]) : el('small', { text: label }),
+      el('span', { class: mono ? 'mono' : '', text: value, title: value })
+    ]))),
     row.reasons.length ? el('div', { class: 'detail-reasons' }, row.reasons.map(reason => {
       const problem = (row.status === 'mismatch' || row.status === 'suspect') && !NOTE_PREFIX.test(reason);
       return el('p', { class: problem ? 'problem' : '' }, [icon(problem ? 'alert' : 'info'), reason]);
@@ -4566,6 +4595,7 @@ api.onOpenPage?.(target => {
   // 0.3.55：自动切换 CLI 登录的通知点开是设置里的官方账号
   if (target?.page === 'settings') { openSettings(target.tab || 'general'); return; }
   if (target?.page === 'share') { window.PulseShare?.open(target.tab || 'month', target.pick || ''); return; }
+  if (target?.page === 'sessions' && target?.pick) { window.PulseSessions?.open(target.pick); return; }
   if (target?.status) { state.reqStatus = target.status; $('request-status').value = target.status; state.reqPage = 0; }
   navigate(target?.page || 'overview', { force: true });
 });

@@ -3341,7 +3341,36 @@
     '1 分钟内的连续请求已过半掉缓存，缓存极不稳定': 'Over half of sub-minute consecutive requests lost cache; retention is unstable',
     '5 分钟内短停顿已出现较高掉缓存比例，属于机会性隐式缓存': 'Noticeable cache drops within 5 minutes of inactivity, typical of opportunistic implicit caching',
     '缓存分析新增「各模型实测缓存持续时长」与短效波动识别': 'Empirical Cache Retention Duration & Short-TTL Detection by Model',
-    '在「用量明细 → 缓存」中按同一会话、同一型号且无压缩/换号的连续大输入请求，统计 <1 分钟至 >30 分钟共 6 档停顿间隔的缓存保住率，自动推算每个模型的实测有效保活时长并标记短停顿易掉缓存的隐式缓存型号。': 'In Usage -> Cache, consecutive same-session large-input requests are bucketed across 6 idle intervals (<1m to >30m) to measure cache survival rate, estimate empirical TTL per model, and flag opportunistic short-lived implicit caches.'
+    '在「用量明细 → 缓存」中按同一会话、同一型号且无压缩/换号的连续大输入请求，统计 <1 分钟至 >30 分钟共 6 档停顿间隔的缓存保住率，自动推算每个模型的实测有效保活时长并标记短停顿易掉缓存的隐式缓存型号。': 'In Usage -> Cache, consecutive same-session large-input requests are bucketed across 6 idle intervals (<1m to >30m) to measure cache survival rate, estimate empirical TTL per model, and flag opportunistic short-lived implicit caches.',
+    // 0.3.108 子代理 / Swarm 会话层级、联动与更新说明
+    '显示子代理': 'Show subagents',
+    '在列表中展开所有子代理与 Swarm 会话': 'Show all subagent and Swarm sessions in the list',
+    '开启后按时间平铺显示，关闭时折叠在主会话下': 'Lists chronologically when on; nests under parent sessions when off',
+    '开启后按时间平铺显示所有子代理与 Swarm 对话；关闭时折叠在主会话下': 'Lists all subagent and Swarm sessions chronologically when on; nests them under parent sessions when off',
+    '开启后按时间平铺显示所有子代理与 Swarm 对话': 'Lists all subagent and Swarm sessions chronologically when on',
+    '关闭时折叠在主会话下': 'Nests them under parent sessions when off',
+    '审查': 'Review',
+    '展开查看子代理会话': 'Expand subagent sessions',
+    '收起子代理会话': 'Collapse subagent sessions',
+    '上级': 'Parent',
+    '主会话': 'Parent session',
+    '未命名会话': 'Untitled session',
+    '返回主会话': 'Back to parent',
+    '同组子代理': 'Sibling subagents',
+    '切换同组子代理': 'Switch sibling subagent',
+    '含子代理共': 'With subagents',
+    'Swarm 成员': 'Swarm workers',
+    '子代理会话': 'Subagent sessions',
+    'Swarm 子代理会话': 'Swarm subagent session',
+    '收起': 'Collapse',
+    '会话内容': 'Session content',
+    '在会话管理中打开主会话': 'Open parent session in Sessions',
+    '会话管理与全文检索支持查看各 Agent 子代理与 Antigravity Swarm 对话': 'View & Search Subagent and Antigravity Swarm Conversations Across Agents',
+    'Claude Code、Codex CLI、Grok Build、DeepSeek Harness 与 Antigravity（含 /swarm 协同成员）派出的子代理对话现均可在会话管理中按主会话折叠展开或平铺浏览，支持全文检索直达、顶部成员快速跳转与一键返回主会话。': 'Subagent conversations from Claude Code, Codex CLI, Grok Build, DeepSeek Harness, and Antigravity (including /swarm workers) now appear in Sessions as collapsible trees under parent chats or in a flat view, with full-text search, worker pills, and one-click return to parent.',
+    '桌宠补齐 Antigravity Swarm 与多 Agent 子代理识别及点击跳转': 'Desk Pet Recognition & Click-to-Open for Antigravity Swarm and Subagents',
+    '桌宠现可实时识别 Antigravity /swarm 工作代理及各工具子代理的活跃状态与气泡摘要，点击正在执行的会话或子代理可直接跳转至会话管理定位对应对话。': 'Desk Pet now detects live Antigravity /swarm workers and multi-agent subagents with bubble summaries, and clicking an active session or subagent jumps straight to it in Sessions.',
+    '用量明细、按会话排行与缓存分析打通子代理标识和一键跳转': 'Subagent Badges & One-Click Cross-Links Across Usage, Sessions & Cache',
+    '逐条请求详情、按会话排行与缓存断档会话表新增紧凑 Swarm / 子代理标签；支持从任意子代理请求直达子代理对话或一键跳回所属主会话。': 'Request details, Session ranking, and Cache break tables now show compact Swarm / Subagent badges with one-click jumps to either the subagent conversation or its parent session.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */
@@ -4191,6 +4220,13 @@
     P('间隔 (.+)：保住 ([\\d,]+) / ([\\d,]+) 次（(\\d+%)）', m => `Gap ${v(m[1])}: kept ${m[2]}/${m[3]} (${m[4]})`),
     P('展开全部 ([\\d,]+) 个型号', m => `Show all ${m[1]} models`),
     P('收起（共 ([\\d,]+) 个型号）', m => `Show less (${m[1]} models)`),
+    P('当前共 ([\\d,]+) 个子代理会话', m => `${m[1]} subagent session${m[1] === '1' ? '' : 's'} total`),
+    P('展开全部 ([\\d,]+) 个', m => `Show all ${m[1]}`),
+    P('同组子代理（([\\d,]+)）', m => `Siblings (${m[1]})`),
+    P('主会话 ([^+]+) \\+ 子代理 ([^·]+) · API 等价 ≈ (.+)', m => `Parent ${m[1].trim()} + subagents ${m[2].trim()} · API equiv ≈ ${m[3]}`),
+    P('返回主会话：(.+)', m => `Back to parent: ${m[1]}`),
+    P('上级：(.+)', m => `Parent: ${m[1]}`),
+    P('主会话：(.+)', m => `Parent session: ${m[1]}`),
     P('([^：。·\\n]{1,20})：([^。·\\n]+)', m => `${v(m[1])}: ${v(m[2])}`)
   ];
 

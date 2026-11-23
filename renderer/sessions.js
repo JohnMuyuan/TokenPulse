@@ -13,6 +13,7 @@
   const S = {
     items: [], loaded: false, loading: false, listAt: 0,
     search: '', kind: 'all', project: 'all',
+    showSubagents: false, expandedParents: new Set(), subBarOpen: false,
     key: '', detail: null, detailLoading: false, openKey: '',
     /** 会话列表当前渲染数量（分批分块渲染，初始 40 项）。 */
     listLimit: LIST_CHUNK,
@@ -27,6 +28,7 @@
      */
     hits: null, terms: [], searching: false, searchSeq: 0, searchNote: '', jump: null
   };
+  let treeCache = { items: null, data: null };
   let searchTimer = 0;
   const AGENTS = {
     claude: { name: 'Claude Code', short: 'Claude', brand: 'claude' },
@@ -190,6 +192,7 @@
     N.refresh = button('', 'refresh', 'btn icon-only sw-refresh', { title: '重新读取会话', 'aria-label': '重新读取会话' });
     N.kinds = el('div', { class: 'seg compact sw-kinds', role: 'group', 'aria-label': '按 Agent 筛选' }, [el('span', { class: 'seg-thumb', 'aria-hidden': 'true' })]);
     N.project = el('select', { class: 'sw-project', 'aria-label': '按项目筛选' });
+    N.subToggle = el('button', { type: 'button', class: 'btn sw-sub-toggle', 'data-action': 'toggle-subagents', 'aria-pressed': 'false', title: '开启后按时间平铺显示所有子代理与 Swarm 对话；关闭时折叠在主会话下' }, [el('span', { text: '显示子代理' })]);
     N.list = el('div', { class: 'sw-items', role: 'listbox', 'aria-label': '会话列表' });
     N.count = el('span', { class: 'section-tag' });
     // 0.3.16：新对话（在已有项目里）/ 新项目（选或新建一个文件夹）
@@ -206,7 +209,7 @@
       el('label', { class: 'search-field sw-search' }, [icon('search'), N.search]),
       N.searchNote,
       N.kinds,
-      N.project,
+      el('div', { class: 'sw-filter-row' }, [N.project, N.subToggle]),
       N.list
     ]);
     N.main = el('section', { class: 'panel sw-main', 'aria-live': 'polite' });
@@ -234,10 +237,15 @@
       S.listLimit = LIST_CHUNK;
       drawList();
     });
+    N.subToggle.addEventListener('click', () => {
+      S.showSubagents = !S.showSubagents;
+      S.listLimit = LIST_CHUNK;
+      drawList();
+    });
     // 列表向下滚动时自动追加下一批数据（每次追加 40 项）
     N.list.addEventListener('scroll', () => {
       if (N.list.scrollTop + N.list.clientHeight >= N.list.scrollHeight - 160) {
-        const total = visibleItems().length;
+        const total = visibleRows().length;
         if (S.listLimit < total) {
           S.listLimit = Math.min(total, S.listLimit + LIST_CHUNK);
           drawList();
@@ -245,11 +253,37 @@
       }
     }, { passive: true });
     N.list.addEventListener('click', event => {
+      const toggle = event.target.closest('[data-toggle-parent]');
+      if (toggle) {
+        event.stopPropagation();
+        const pk = toggle.dataset.toggleParent;
+        if (S.expandedParents.has(pk)) S.expandedParents.delete(pk);
+        else S.expandedParents.add(pk);
+        drawList();
+        return;
+      }
       const hit = event.target.closest('[data-key]'); if (hit) select(hit.dataset.key);
     });
     N.list.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        if (event.target.closest('[data-toggle-parent]')) return;
+        const hit = event.target.closest('[data-key]');
+        if (hit) { event.preventDefault(); select(hit.dataset.key); }
+        return;
+      }
+      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+        const hit = event.target.closest('[data-key]');
+        const key = hit?.dataset.key;
+        if (!key || S.showSubagents) return;
+        const kids = buildTree().childrenByRoot.get(key) || [];
+        if (!kids.length) return;
+        const expand = event.key === 'ArrowRight';
+        if (expand && !S.expandedParents.has(key)) { event.preventDefault(); S.expandedParents.add(key); drawList(); N.list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus(); }
+        else if (!expand && S.expandedParents.has(key)) { event.preventDefault(); S.expandedParents.delete(key); drawList(); N.list.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus(); }
+        return;
+      }
       if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
-      const keys = visibleItems().map(item => item.key);
+      const keys = visibleRows().map(row => row.item.key);
       const at = keys.indexOf(S.key);
       const next = keys[Math.max(0, Math.min(keys.length - 1, at + (event.key === 'ArrowDown' ? 1 : -1)))];
       if (next && next !== S.key) { event.preventDefault(); select(next); N.list.querySelector(`[data-key="${CSS.escape(next)}"]`)?.focus(); }
@@ -348,7 +382,80 @@
     (start.disabled ? browse : start).focus();
   }
 
-  /* ---------------- 列表 ---------------- */
+  /* ---------------- 列表与子代理树 ---------------- */
+
+  function subagentKindText(kind) {
+    return kind === 'swarm' ? 'Swarm' : kind === 'review' ? '审查' : '子代理';
+  }
+  function subagentDisplayName(item) {
+    if (!item) return '';
+    return String(item.agentName || item.subagentRole || '').trim();
+  }
+  function subRoleBadge(item, extraCls = '') {
+    if (!item?.isSubagent) return null;
+    const isSwarm = item.subagentKind === 'swarm';
+    const isReview = item.subagentKind === 'review';
+    const kindText = subagentKindText(item.subagentKind);
+    const name = subagentDisplayName(item);
+    const cls = `sw-role-tag ${isSwarm ? 'is-swarm' : isReview ? 'is-review' : 'is-sub'} ${extraCls}`.trim();
+    const tip = [item.subagentRole && item.subagentRole !== name ? item.subagentRole : '', item.swarmTitle ? `Swarm: ${item.swarmTitle}` : ''].filter(Boolean).join(' · ');
+    return el('span', { class: cls, title: tip || null }, [
+      el('span', { class: 'sw-role-kind', text: kindText, translate: isSwarm ? 'no' : null }),
+      name ? el('span', { class: 'sw-role-sep', text: '·', translate: 'no' }) : null,
+      name ? el('span', { class: 'sw-role-name', text: name, translate: 'no' }) : null,
+    ].filter(Boolean));
+  }
+
+  /** 构建根会话 → 后代子代理索引（按 S.items 引用缓存，避免重绘重复遍历）。 */
+  function buildTree() {
+    if (treeCache.items === S.items && treeCache.data) return treeCache.data;
+    const byKey = new Map();
+    for (const item of S.items) byKey.set(item.key, item);
+    const anchorOf = new Map();
+    const childrenByRoot = new Map();
+    const directChildren = new Map();
+    let subagentTotal = 0;
+
+    const resolveAnchor = item => {
+      if (!item?.isSubagent) return '';
+      if (item.rootKey && item.rootKey !== item.key && byKey.has(item.rootKey) && !byKey.get(item.rootKey).isSubagent) {
+        return item.rootKey;
+      }
+      let cur = item;
+      const seen = new Set([item.key]);
+      let top = '';
+      for (let hop = 0; hop < 8; hop++) {
+        const pk = cur.parentKey;
+        if (!pk || seen.has(pk) || !byKey.has(pk)) break;
+        seen.add(pk);
+        top = pk;
+        cur = byKey.get(pk);
+        if (!cur.isSubagent) break;
+      }
+      if (!top && item.rootKey && item.rootKey !== item.key && byKey.has(item.rootKey)) top = item.rootKey;
+      return top;
+    };
+
+    for (const item of S.items) {
+      if (!item.isSubagent) continue;
+      subagentTotal += 1;
+      if (item.parentKey && byKey.has(item.parentKey)) {
+        const list = directChildren.get(item.parentKey) || [];
+        list.push(item);
+        directChildren.set(item.parentKey, list);
+      }
+      const anchor = resolveAnchor(item);
+      if (anchor) {
+        anchorOf.set(item.key, anchor);
+        const list = childrenByRoot.get(anchor) || [];
+        list.push(item);
+        childrenByRoot.set(anchor, list);
+      }
+    }
+    const data = { byKey, anchorOf, childrenByRoot, directChildren, subagentTotal };
+    treeCache = { items: S.items, data };
+    return data;
+  }
 
   function matches(item) {
     if (S.kind !== 'all' && item.kind !== S.kind) return false;
@@ -356,9 +463,50 @@
     const q = S.search.trim().toLowerCase();
     if (!q) return true;
     if (S.hits?.has(item.key)) return true;
-    return [item.title, item.project, item.cwd, item.preview, AGENTS[item.kind]?.name, ...(item.models || [])].filter(Boolean).join(' ').toLowerCase().includes(q);
+    return [
+      item.title, item.project, item.cwd, item.preview,
+      item.agentName, item.subagentRole, item.swarmTitle,
+      item.isSubagent ? subagentKindText(item.subagentKind) : '',
+      AGENTS[item.kind]?.name, ...(item.models || []),
+    ].filter(Boolean).join(' ').toLowerCase().includes(q);
   }
-  function visibleItems() { return S.items.filter(matches); }
+
+  function visibleRows() {
+    const tree = buildTree();
+    const searching = Boolean(S.search.trim());
+    if (S.showSubagents) {
+      return S.items.filter(matches).map(item => ({
+        item, isTreeChild: false, isFlatSub: Boolean(item.isSubagent), depth: 0, kids: tree.childrenByRoot.get(item.key) || [], matchedKids: [],
+      }));
+    }
+    const rows = [];
+    for (const item of S.items) {
+      if (tree.anchorOf.has(item.key)) continue;
+      const allKids = tree.childrenByRoot.get(item.key) || [];
+      const kids = allKids.filter(child => (S.kind === 'all' || child.kind === S.kind) && (S.project === 'all' || child.project === S.project || item.project === S.project));
+      if (searching) {
+        const selfMatch = matches(item);
+        const matchedKids = kids.filter(matches);
+        if (!selfMatch && !matchedKids.length) continue;
+        rows.push({ item, isTreeChild: false, isFlatSub: Boolean(item.isSubagent), depth: 0, kids, matchedKids });
+        const toShow = matchedKids.length ? matchedKids : (S.expandedParents.has(item.key) ? kids : []);
+        for (const child of toShow) {
+          rows.push({ item: child, isTreeChild: true, isFlatSub: false, parentKey: item.key, depth: Math.min(3, Math.max(1, child.depth || 1)), kids: [], matchedKids: [] });
+        }
+      } else {
+        if (!matches(item)) continue;
+        rows.push({ item, isTreeChild: false, isFlatSub: Boolean(item.isSubagent), depth: 0, kids, matchedKids: [] });
+        if (S.expandedParents.has(item.key) && kids.length) {
+          for (const child of kids) {
+            rows.push({ item: child, isTreeChild: true, isFlatSub: false, parentKey: item.key, depth: Math.min(3, Math.max(1, child.depth || 1)), kids: [], matchedKids: [] });
+          }
+        }
+      }
+    }
+    return rows;
+  }
+
+  function visibleItems() { return visibleRows().map(row => row.item); }
 
   /* ---------------- 全文搜索（0.3.55） ---------------- */
 
@@ -428,8 +576,10 @@
   }
 
   function drawList() {
-    const counts = { all: S.items.length, claude: 0, codex: 0, grok: 0, deepseek: 0, pi: 0, antigravity: 0 };
-    for (const item of S.items) counts[item.kind] = (counts[item.kind] || 0) + 1;
+    const tree = buildTree();
+    const basePool = S.showSubagents ? S.items : S.items.filter(item => !tree.anchorOf.has(item.key));
+    const counts = { all: basePool.length, claude: 0, codex: 0, grok: 0, deepseek: 0, pi: 0, antigravity: 0 };
+    for (const item of basePool) counts[item.kind] = (counts[item.kind] || 0) + 1;
     N.kinds.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...['all', 'claude', 'codex', 'grok', 'deepseek', 'pi', 'antigravity'].filter(kind => kind !== 'antigravity' || counts.antigravity > 0 || S.kind === kind).map(kind =>
       el('button', { type: 'button', 'data-kind': kind, class: S.kind === kind ? 'on' : '', 'aria-pressed': String(S.kind === kind), title: `${kind === 'all' ? '全部' : AGENTS[kind].short} · ${number(counts[kind] || 0)} 个会话` }, [
         kind === 'all' ? '全部' : AGENTS[kind].short, el('small', { text: number(counts[kind] || 0) })
@@ -437,35 +587,47 @@
     syncSeg(N.kinds);
     // 项目下拉：按会话数排序
     const projects = new Map();
-    for (const item of S.items) if (S.kind === 'all' || item.kind === S.kind) projects.set(item.project, (projects.get(item.project) || 0) + 1);
+    for (const item of basePool) if (S.kind === 'all' || item.kind === S.kind) projects.set(item.project, (projects.get(item.project) || 0) + 1);
     if (S.project !== 'all' && !projects.has(S.project)) S.project = 'all';
     N.project.replaceChildren(el('option', { value: 'all', text: `全部项目（${number(projects.size)}）` }),
       ...[...projects].sort((a, b) => b[1] - a[1]).map(([name, n]) => el('option', { value: name, text: `${name}（${number(n)}）`, translate: 'no' })));
     N.project.value = S.project;
+    if (N.subToggle) {
+      N.subToggle.classList.toggle('on', S.showSubagents);
+      N.subToggle.setAttribute('aria-pressed', String(S.showSubagents));
+      N.subToggle.title = tree.subagentTotal > 0
+        ? `当前共 ${number(tree.subagentTotal)} 个子代理会话；开启后按时间平铺显示，关闭时折叠在主会话下`
+        : '开启后按时间平铺显示所有子代理与 Swarm 对话；关闭时折叠在主会话下';
+    }
 
-    const items = visibleItems();
-    N.count.textContent = number(items.length);
+    const rows = visibleRows();
+    const topCount = rows.filter(row => !row.isTreeChild).length;
+    N.count.textContent = number(S.showSubagents ? rows.length : topCount);
     N.searchNote.textContent = S.search.trim() ? S.searchNote : '';
     N.searchNote.classList.toggle('busy', S.searching);
     if (S.loading && !S.items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note' }, [el('span', { class: 'sw-spinner' }), '正在读取本机会话…'])); return; }
     if (!S.items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note', text: S.loaded ? '还没有找到本机 Agent 的会话。' : '' })); return; }
-    if (!items.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note', text: '没有符合条件的会话。' })); return; }
+    if (!rows.length) { N.list.replaceChildren(el('div', { class: 'sw-list-note', text: '没有符合条件的会话。' })); return; }
     // 若当前选中项在更靠后的位置，自适应扩展 listLimit 保证选中项立即可见
     if (S.key) {
-      const activeIdx = items.findIndex(item => item.key === S.key);
+      const activeIdx = rows.findIndex(row => row.item.key === S.key);
       if (activeIdx >= S.listLimit) {
-        S.listLimit = Math.min(items.length, Math.ceil((activeIdx + 1) / LIST_CHUNK) * LIST_CHUNK);
+        S.listLimit = Math.min(rows.length, Math.ceil((activeIdx + 1) / LIST_CHUNK) * LIST_CHUNK);
       }
     }
-    const renderLimit = Math.min(items.length, Math.max(LIST_CHUNK, S.listLimit));
+    const renderLimit = Math.min(rows.length, Math.max(LIST_CHUNK, S.listLimit));
+    const searching = Boolean(S.search.trim());
     const nodes = [];
     let group = '';
     for (let i = 0; i < renderLimit; i++) {
-      const item = items[i];
-      const g = groupOf(item.updatedAt);
-      if (g !== group) { group = g; nodes.push(el('div', { class: 'sw-group', text: g })); }
+      const row = rows[i];
+      const item = row.item;
+      if (!row.isTreeChild) {
+        const g = groupOf(item.updatedAt);
+        if (g !== group) { group = g; nodes.push(el('div', { class: 'sw-group', text: g })); }
+      }
       const active = item.key === S.key;
-      const hit = S.search.trim() ? S.hits?.get(item.key) : null;
+      const hit = searching ? S.hits?.get(item.key) : null;
       const snippet = hit?.snippets?.[0];
 
       const hasUsage = item.usage && item.usage.tokens > 0;
@@ -475,7 +637,7 @@
 
       const avgLat = item.avgRoundDurationMs || item.usage?.avgRoundDurationMs;
       const isEstLat = item.kind === 'claude' || item.kind === 'codex' || item.kind === 'grok';
-      const latencyBadge = avgLat > 0
+      const latencyBadge = !row.isTreeChild && avgLat > 0
         ? el('span', { class: 'sw-item-latency', title: isEstLat ? '均轮耗时（估算值）' : '均轮耗时' }, [
             el('span', { class: 'sw-item-latency-icon', text: '⏱️' }),
             formatLatency(avgLat, isEstLat)
@@ -487,27 +649,82 @@
         ? el('span', { class: 'sw-item-model mono', translate: 'no', text: primaryModel, title: item.models.join(', ') })
         : null;
 
-      nodes.push(el('button', { type: 'button', class: `sw-item${active ? ' active' : ''}${hit ? ' has-hit' : ''}`, role: 'option', 'aria-selected': String(active), 'data-key': item.key }, [
-        mark(item.kind),
+      const kids = row.kids || [];
+      const subCount = Math.max(item.subagentCount || 0, kids.length);
+      const isSwarmRoot = Boolean(item.hasSwarm || kids.some(c => c.subagentKind === 'swarm'));
+      const isExpanded = (!searching && S.expandedParents.has(item.key)) || (searching && (row.matchedKids?.length > 0 || S.expandedParents.has(item.key)));
+      const subBadge = !row.isTreeChild && subCount > 0
+        ? (!S.showSubagents && kids.length > 0
+            ? el('button', {
+                type: 'button',
+                class: `sw-sub-pill-toggle${isSwarmRoot ? ' is-swarm' : ''}${isExpanded ? ' open' : ''}`,
+                'data-toggle-parent': item.key,
+                'aria-expanded': String(isExpanded),
+                title: isExpanded ? '收起子代理会话' : '展开查看子代理会话',
+              }, [
+                el('span', { text: isSwarmRoot ? 'Swarm' : '子代理', translate: isSwarmRoot ? 'no' : null }),
+                el('span', { class: 'sw-sub-pill-dot', text: '·', translate: 'no' }),
+                el('span', { text: number(subCount), translate: 'no' }),
+                icon('chevron', 'icon sw-sub-caret'),
+              ])
+            : el('span', { class: `sw-sub-pill-static${isSwarmRoot ? ' is-swarm' : ''}` }, [
+                el('span', { text: isSwarmRoot ? 'Swarm' : '子代理', translate: isSwarmRoot ? 'no' : null }),
+                el('span', { class: 'sw-sub-pill-dot', text: '·', translate: 'no' }),
+                el('span', { text: number(subCount), translate: 'no' }),
+              ]))
+        : null;
+
+      const parentHint = (row.isTreeChild && row.depth >= 2 && item.parentKey && tree.byKey.get(item.parentKey))
+        ? `上级：${subagentDisplayName(tree.byKey.get(item.parentKey)) || tree.byKey.get(item.parentKey).title}`
+        : (row.isFlatSub && item.parentKey && tree.byKey.get(item.parentKey))
+          ? `主会话：${tree.byKey.get(item.parentKey).title}`
+          : '';
+      const roleTag = (row.isTreeChild || row.isFlatSub) ? subRoleBadge(item) : null;
+      if (roleTag && parentHint) roleTag.title = parentHint;
+      const rowTitle = item.title || subagentDisplayName(item) || '未命名会话';
+
+      const itemCls = [
+        'sw-item',
+        active ? 'active' : '',
+        hit ? 'has-hit' : '',
+        row.isTreeChild ? 'is-subagent' : '',
+        row.isFlatSub ? 'is-subagent-flat' : '',
+      ].filter(Boolean).join(' ');
+
+      nodes.push(el('div', {
+        class: itemCls,
+        role: 'option',
+        tabindex: '0',
+        'aria-selected': String(active),
+        'data-key': item.key,
+        'data-depth': row.isTreeChild ? String(row.depth) : null,
+        'data-parent': row.parentKey || item.parentKey || null,
+      }, [
+        mark(item.kind, row.isTreeChild ? 'sw-mark sm' : 'sw-mark'),
         el('span', { class: 'sw-item-body' }, [
-          el('span', { class: 'sw-item-top' }, [el('b', { text: item.title, title: item.title, translate: 'no' }), el('time', { text: shortTime(item.updatedAt) })]),
+          el('span', { class: 'sw-item-top' }, [
+            roleTag,
+            el('b', { text: rowTitle, title: rowTitle, translate: 'no' }),
+            el('time', { text: shortTime(item.updatedAt) }),
+          ].filter(Boolean)),
           el('span', { class: 'sw-item-meta' }, [
-            el('span', { class: 'sw-item-project', text: item.project, translate: 'no' }),
+            !row.isTreeChild ? el('span', { class: 'sw-item-project', text: item.project, translate: 'no' }) : null,
+            subBadge,
             modelBadge,
             el('span', { class: 'sw-item-turns', text: `${number(item.turns)} 轮` }),
             usageBadge,
             latencyBadge,
             hit ? el('span', { class: 'sw-hit-count', text: `${number(hit.count)} 处` }) : null
-          ]),
+          ].filter(Boolean)),
           snippet ? el('span', { class: 'sw-item-snippet', translate: 'no', title: snippet.text }, [el('small', { text: snippet.role === 'user' ? '你：' : snippet.role === 'tool' ? '工具：' : 'AI：' }), ...highlight(snippet.text)]) : null
         ])
       ]));
     }
-    if (renderLimit < items.length) {
-      const remaining = items.length - renderLimit;
+    if (renderLimit < rows.length) {
+      const remaining = rows.length - renderLimit;
       const moreBtn = el('button', { type: 'button', class: 'btn sw-list-more', text: `加载更多（剩余 ${number(remaining)} 项）` });
       moreBtn.addEventListener('click', () => {
-        S.listLimit = Math.min(items.length, S.listLimit + LIST_CHUNK);
+        S.listLimit = Math.min(rows.length, S.listLimit + LIST_CHUNK);
         drawList();
       });
       nodes.push(el('div', { class: 'sw-list-more-wrap' }, [moreBtn]));
@@ -549,7 +766,7 @@
     // 搜索结果里点的正好是现在开着的这段：直接跳到第一处
     if (!changed && S.jump?.key === key && S.jump.index < 0 && S.detail?.key === key) { S.jump.index = 0; drawMain(false); return; }
     if (changed) {
-      S.key = key; S.visible = MSG_CHUNK; S.openGroups.clear();
+      S.key = key; S.visible = MSG_CHUNK; S.openGroups.clear(); S.subBarOpen = false;
       // 从搜索结果点进来：打开后直接跳到第一处命中
       setJump(key);
       if (S.jump && S.search.trim()) S.jump.index = 0;
@@ -727,12 +944,159 @@
     return [bar, panel];
   }
 
+  function parentBar(d) {
+    if (!d.isSubagent) return null;
+    const tree = buildTree();
+    const parentItem = (d.parentKey && tree.byKey.get(d.parentKey)) || (d.rootKey && tree.byKey.get(d.rootKey)) || null;
+    const targetParentKey = parentItem?.key || d.parentKey || d.rootKey || '';
+    const anchorKey = tree.anchorOf.get(d.key) || targetParentKey;
+    const siblings = anchorKey ? (tree.childrenByRoot.get(anchorKey) || []) : [];
+
+    const nodes = [subRoleBadge(d, 'lg')];
+    if (d.swarmTitle) {
+      nodes.push(el('span', { class: 'sw-sub-swarm-title', text: d.swarmTitle, title: d.swarmTitle, translate: 'no' }));
+    }
+    if (targetParentKey) {
+      const backBtn = el('button', {
+        type: 'button',
+        class: 'btn sw-parent-btn',
+        'data-action': 'open-parent',
+        'data-parent-key': targetParentKey,
+        title: parentItem?.title ? `返回主会话：${parentItem.title}` : '返回主会话',
+      }, [
+        el('span', { text: '↑', 'aria-hidden': 'true' }),
+        el('span', { text: '返回主会话' }),
+      ]);
+      backBtn.addEventListener('click', () => {
+        if (tree.byKey.has(targetParentKey)) revealAndSelect(targetParentKey);
+        else window.PulseSessions?.open(targetParentKey);
+      });
+      nodes.push(backBtn);
+    }
+    if (siblings.length > 1) {
+      const MAX_SIB = 4;
+      if (siblings.length <= MAX_SIB) {
+        const sibWrap = el('div', { class: 'sw-sib-pills', role: 'group', 'aria-label': '同组子代理' }, siblings.map(sib => {
+          const isCur = sib.key === d.key;
+          const label = subagentDisplayName(sib) || sib.title || sib.id.slice(0, 8);
+          const btn = el('button', {
+            type: 'button',
+            class: `sw-sib-pill${isCur ? ' on' : ''}`,
+            'aria-current': isCur ? 'true' : null,
+            'data-open-sibling': sib.key,
+            title: sib.title || label,
+          }, [el('span', { text: label, translate: 'no' })]);
+          if (!isCur) btn.addEventListener('click', () => revealAndSelect(sib.key));
+          return btn;
+        }));
+        nodes.push(sibWrap);
+      } else {
+        const sibBtn = el('button', {
+          type: 'button',
+          class: 'btn sw-sib-menu-btn',
+          'data-action': 'sibling-menu',
+          'aria-haspopup': 'menu',
+        }, [
+          el('span', { text: `同组子代理（${number(siblings.length)}）` }),
+          icon('chevron', 'icon sw-caret'),
+        ]);
+        sibBtn.addEventListener('click', () => {
+          openOptionMenu(
+            sibBtn,
+            '切换同组子代理',
+            siblings.map(sib => ({
+              value: sib.key,
+              label: subagentDisplayName(sib) || sib.title || sib.id.slice(0, 8),
+              hint: sib.title && sib.title !== subagentDisplayName(sib) ? sib.title : `${number(sib.turns)} 轮`,
+            })),
+            d.key,
+            key => { if (key && key !== d.key) revealAndSelect(key); },
+          );
+        });
+        nodes.push(sibBtn);
+      }
+    }
+    return el('div', { class: 'sw-parent-bar' }, nodes.filter(Boolean));
+  }
+
+  function subagentBar(d) {
+    const tree = buildTree();
+    const kids = tree.childrenByRoot.get(d.key) || tree.directChildren.get(d.key) || [];
+    if (!kids.length && !(d.subagentCount > 0)) return null;
+    const isSwarm = Boolean(d.hasSwarm || kids.some(c => c.subagentKind === 'swarm'));
+    const total = Math.max(d.subagentCount || 0, kids.length);
+    const MAX_COLLAPSED = 4;
+    const shown = S.subBarOpen ? kids : kids.slice(0, MAX_COLLAPSED);
+
+    const sub = d.subtreeUsage;
+    const ownTokens = d.usage?.tokens || 0;
+    const subtreePill = sub && sub.tokens > ownTokens
+      ? el('span', {
+          class: 'sw-sub-total',
+          title: `主会话 ${compact(ownTokens)} + 子代理 ${compact(Math.max(0, sub.tokens - ownTokens))} · API 等价 ≈ ${usd(sub.costUsd)}`,
+        }, [
+          el('span', { text: '含子代理共' }),
+          el('b', { text: compact(sub.tokens), translate: 'no' }),
+        ])
+      : null;
+
+    const headLeft = el('div', { class: 'sw-sub-bar-left' }, [
+      el('span', { class: `sw-sub-bar-title${isSwarm ? ' is-swarm' : ''}` }, [
+        el('span', { text: isSwarm ? 'Swarm 成员' : '子代理会话' }),
+        el('small', { text: number(total), translate: 'no' }),
+      ]),
+      d.swarmTitle ? el('span', { class: 'sw-sub-swarm-title', text: d.swarmTitle, title: d.swarmTitle, translate: 'no' }) : null,
+      subtreePill,
+    ].filter(Boolean));
+
+    let moreBtn = null;
+    if (kids.length > MAX_COLLAPSED) {
+      moreBtn = el('button', {
+        type: 'button',
+        class: 'sw-usage-toggle sw-sub-more-btn',
+        'aria-expanded': String(S.subBarOpen),
+        'data-action': 'toggle-subbar',
+      }, [
+        el('span', { text: S.subBarOpen ? '收起' : `展开全部 ${number(kids.length)} 个` }),
+        icon('chevron', 'icon sw-caret'),
+      ]);
+      moreBtn.addEventListener('click', () => {
+        S.subBarOpen = !S.subBarOpen;
+        drawMain(false);
+      });
+    }
+
+    const pills = shown.map(child => {
+      const label = subagentDisplayName(child) || child.title || child.id.slice(0, 8);
+      const tok = child.usage?.tokens > 0 ? compact(child.usage.tokens) : '';
+      const childSwarm = child.subagentKind === 'swarm';
+      const btn = el('button', {
+        type: 'button',
+        class: `sw-sub-pill${childSwarm ? ' is-swarm' : ''}`,
+        'data-open-child': child.key,
+        title: `${child.title || label}${tok ? ` · ${tok} Tokens` : ''} · ${number(child.turns)} 轮`,
+      }, [
+        el('i', { class: 'sw-sub-dot', 'aria-hidden': 'true' }),
+        el('b', { text: label, translate: 'no' }),
+        tok ? el('small', { text: tok, translate: 'no' }) : null,
+        el('small', { text: `${number(child.turns)} 轮` }),
+      ].filter(Boolean));
+      btn.addEventListener('click', () => revealAndSelect(child.key));
+      return btn;
+    });
+
+    return el('div', { class: 'sw-sub-bar' }, [
+      el('div', { class: 'sw-sub-bar-head' }, [headLeft, moreBtn].filter(Boolean)),
+      pills.length ? el('div', { class: 'sw-sub-pills' }, pills) : null,
+    ].filter(Boolean));
+  }
+
   function header(d) {
     const item = S.items.find(entry => entry.key === d.key);
-    const merged = item && !d.usage ? { ...d, usage: item.usage } : d;
-    const agent = AGENTS[d.kind];
+    const merged = item ? { ...item, ...d, usage: d.usage || item.usage, subtreeUsage: d.subtreeUsage || item.subtreeUsage } : d;
+    const agent = AGENTS[merged.kind];
 
-    const allModels = d.models || [];
+    const allModels = merged.models || [];
     const modelChips = allModels.slice(0, 2).map(model => el('span', { class: 'sw-chip mono', text: model }));
     if (allModels.length > 2) {
       const remainingModels = allModels.slice(2);
@@ -746,7 +1110,7 @@
     }
 
     const avgLat = merged.usage?.avgRoundDurationMs || merged.avgRoundDurationMs || item?.avgRoundDurationMs;
-    const isEstLat = d.kind === 'claude' || d.kind === 'codex' || d.kind === 'grok';
+    const isEstLat = merged.kind === 'claude' || merged.kind === 'codex' || merged.kind === 'grok';
     const latencyChip = avgLat > 0
       ? el('span', { class: 'sw-chip sw-chip-latency', title: isEstLat ? '均轮耗时（估算值）' : '均轮耗时' }, [
           el('span', { class: 'sw-chip-icon', text: '⏱️' }),
@@ -760,38 +1124,41 @@
       : null;
 
     const chips = [
-      el('span', { class: 'sw-chip', title: d.cwd || '', translate: 'no' }, [icon('folder'), d.project]),
-      el('span', { class: 'sw-chip' }, [mark(d.kind, 'sw-chip-mark'), agent.name]),
-      d.createdAt ? el('span', { class: 'sw-chip', title: `${fullTime(d.createdAt)} → ${fullTime(d.updatedAt)}` }, [icon('clock'), `${shortTime(d.createdAt)} → ${shortTime(d.updatedAt)}`]) : null,
-      el('span', { class: 'sw-chip' }, [icon('sessions'), `${number(d.turns)} 轮对话`]),
-      d.toolCount ? el('span', { class: 'sw-chip' }, [icon('terminal'), `${number(d.toolCount)} 次工具调用`]) : null,
+      el('span', { class: 'sw-chip', title: merged.cwd || '', translate: 'no' }, [icon('folder'), merged.project]),
+      el('span', { class: 'sw-chip' }, [mark(merged.kind, 'sw-chip-mark'), agent.name]),
+      merged.createdAt ? el('span', { class: 'sw-chip', title: `${fullTime(merged.createdAt)} → ${fullTime(merged.updatedAt)}` }, [icon('clock'), `${shortTime(merged.createdAt)} → ${shortTime(merged.updatedAt)}`]) : null,
+      el('span', { class: 'sw-chip' }, [icon('sessions'), `${number(merged.turns)} 轮对话`]),
+      merged.toolCount ? el('span', { class: 'sw-chip' }, [icon('terminal'), `${number(merged.toolCount)} 次工具调用`]) : null,
       ...modelChips,
       activeChip,
       latencyChip
     ].filter(Boolean);
 
-    const copyPath = button('复制项目地址', 'copy', 'btn', { title: d.cwd || '这个会话没有记录项目地址' });
-    copyPath.disabled = !d.cwd;
-    copyPath.addEventListener('click', () => copy(d.cwd, '项目地址已复制'));
+    const copyPath = button('复制项目地址', 'copy', 'btn', { title: merged.cwd || '这个会话没有记录项目地址' });
+    copyPath.disabled = !merged.cwd;
+    copyPath.addEventListener('click', () => copy(merged.cwd, '项目地址已复制'));
     const more = button('', 'more', 'btn icon-only', { title: '更多', 'aria-label': '更多操作', 'aria-haspopup': 'menu' });
-    more.addEventListener('click', () => openMore(more, d));
+    more.addEventListener('click', () => openMore(more, merged));
     return el('div', { class: 'sw-head' }, [
+      parentBar(merged),
       el('div', { class: 'sw-head-top' }, [
-        mark(d.kind, 'sw-mark lg'),
-        el('div', { class: 'sw-head-text' }, [el('h2', { text: d.title, title: d.title, translate: 'no' }), el('div', { class: 'sw-chips' }, chips)])
+        mark(merged.kind, 'sw-mark lg'),
+        el('div', { class: 'sw-head-text' }, [el('h2', { text: merged.title, title: merged.title, translate: 'no' }), el('div', { class: 'sw-chips' }, chips)])
       ]),
       el('div', { class: 'sw-actions' }, [copyPath, more]),
-      ...usageBox(merged)
-    ]);
+      ...usageBox(merged),
+      subagentBar(merged),
+    ].filter(Boolean));
   }
 
   /** 「更多」菜单：终端、复制信息和永久删除。借用设置里的选项菜单样式。 */
   function openMore(anchor, d) {
+    const canResume = d.resumable !== false && Boolean(d.resumeCommand) && d.kind !== 'deepseek' && !IDE_ONLY.has(d.kind);
     const menu = [
-      d.kind === 'deepseek' || IDE_ONLY.has(d.kind) ? null : { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' },
-      d.resumeCommand ? { value: 'command', label: '复制继续命令', hint: d.resumeCommand } : null,
+      canResume ? { value: 'terminal', label: '在终端里继续', hint: '打开 PowerShell，用 CLI 的交互界面接着这段会话' } : null,
+      d.resumable !== false && d.resumeCommand ? { value: 'command', label: '复制继续命令', hint: d.resumeCommand } : null,
       { value: 'id', label: '复制会话 ID', hint: d.id },
-      { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true },
+      d.canDelete !== false ? { value: 'delete', label: '删除对话', hint: '永久删除这段会话，无法撤销', danger: true } : null,
     ].filter(Boolean);
     openOptionMenu(anchor, '更多操作', menu, null, async value => {
       if (value === 'command') {
@@ -1092,8 +1459,26 @@
     return fuzzy ? fuzzy.key : '';
   }
   function revealAndSelect(targetKey) {
-    const vis = visibleItems();
-    const idx = vis.findIndex(item => item.key === targetKey);
+    const tree = buildTree();
+    const item = tree.byKey.get(targetKey);
+    if (item) {
+      if (S.kind !== 'all' && item.kind !== S.kind) S.kind = item.kind;
+      if (S.project !== 'all' && item.project !== S.project) S.project = 'all';
+      if (item.isSubagent) {
+        const anchor = tree.anchorOf.get(item.key);
+        if (anchor) S.expandedParents.add(anchor);
+        else if (!S.showSubagents) S.showSubagents = true;
+      }
+      drawList();
+    }
+    let vis = visibleItems();
+    let idx = vis.findIndex(entry => entry.key === targetKey);
+    if (idx < 0 && item?.isSubagent && !S.showSubagents) {
+      S.showSubagents = true;
+      drawList();
+      vis = visibleItems();
+      idx = vis.findIndex(entry => entry.key === targetKey);
+    }
     if (idx >= S.listLimit) { S.listLimit = idx + LIST_CHUNK; drawList(); }
     select(targetKey);
     requestAnimationFrame(() => N.list?.querySelector(`[data-key="${CSS.escape(targetKey)}"]`)?.scrollIntoView({ block: 'nearest' }));

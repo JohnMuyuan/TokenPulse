@@ -1103,6 +1103,208 @@ app.on('web-contents-created', (_, contents) => {
         console.log('PASS v0.3.106 usage details 10 enhancements: speed percentiles, cost split, context watermark, reasoning ratio, auto-step & compaction badges, session rank view, new sorts and session jump');
       }
 
+      // v0.3.108：子代理与 Antigravity Swarm 会话层级树、显示子代理平铺切换、详情头跳转、open-page 联动、用量/按会话子代理标签与 EN 零残留
+      {
+        const now108 = Date.now();
+        const swarmItems = [
+          {
+            key: 'antigravity:root-swarm-1', kind: 'antigravity', id: 'root-swarm-1',
+            title: 'Swarm refactor plan', project: 'demo-swarm', cwd: 'D:\\qa\\demo-swarm',
+            createdAt: now108 - 600000, updatedAt: now108 - 10000, turns: 4, toolCount: 2,
+            models: ['gemini-4-carbon'], hasSwarm: true, subagentCount: 5, swarmTitle: 'Subagent UI Swarm',
+            usage: { tokens: 20000, input: 15000, output: 5000, cacheRead: 10000, cacheWrite: 0, reasoning: 1000, costUsd: 0.12, requests: 4, models: [{ model: 'gemini-4-carbon', tokens: 20000, costUsd: 0.12, requests: 4 }] },
+            subtreeUsage: { tokens: 85000, input: 70000, output: 15000, cacheRead: 40000, cacheWrite: 0, reasoning: 3000, costUsd: 0.45, requests: 18, models: [] },
+            resumable: true, resumeCommand: 'agy.exe --conversation root-swarm-1', canDelete: true,
+          },
+          ...['audit-pet', 'core-sessions', 'desk-pet', 'ui-sessions', 'verifier'].map((name, idx) => ({
+            key: `antigravity:worker-${idx + 1}`, kind: 'antigravity', id: `worker-${idx + 1}`,
+            title: `Worker task ${name}`, project: 'demo-swarm', cwd: 'D:\\qa\\demo-swarm',
+            createdAt: now108 - 500000 + idx * 10000, updatedAt: now108 - 20000 - idx * 1000, turns: 2 + idx, toolCount: 1,
+            models: ['gemini-4-carbon'], isSubagent: true,
+            parentKey: idx === 4 ? 'antigravity:worker-4' : 'antigravity:root-swarm-1',
+            rootKey: 'antigravity:root-swarm-1', depth: idx === 4 ? 2 : 1,
+            subagentKind: 'swarm', agentName: name, swarmTitle: 'Subagent UI Swarm',
+            usage: { tokens: 12000 + idx * 1000, input: 10000, output: 2000, cacheRead: 6000, cacheWrite: 0, reasoning: 400, costUsd: 0.06, requests: 3, models: [{ model: 'gemini-4-carbon', tokens: 12000 + idx * 1000, costUsd: 0.06, requests: 3 }] },
+            resumable: false, canDelete: false,
+          })),
+          {
+            key: 'claude:root-cl-1', kind: 'claude', id: 'root-cl-1',
+            title: 'Claude parent chat', project: 'demo-cl', cwd: 'D:\\qa\\demo-cl',
+            createdAt: now108 - 400000, updatedAt: now108 - 30000, turns: 3, toolCount: 1,
+            models: ['claude-opus-4-6'], subagentCount: 1,
+            resumable: true, resumeCommand: 'claude --resume root-cl-1', canDelete: true,
+          },
+          {
+            key: 'claude:sub-cl-1', kind: 'claude', id: 'sub-cl-1',
+            title: 'Explore codebase', project: 'demo-cl', cwd: 'D:\\qa\\demo-cl',
+            createdAt: now108 - 390000, updatedAt: now108 - 35000, turns: 2, toolCount: 1,
+            models: ['claude-sonnet-4-6'], isSubagent: true, parentKey: 'claude:root-cl-1', rootKey: 'claude:root-cl-1',
+            depth: 1, subagentKind: 'subagent', agentName: 'Explore',
+            resumable: false, canDelete: false,
+          },
+          {
+            key: 'codex:orphan-sub-1', kind: 'codex', id: 'orphan-sub-1',
+            title: 'Orphan review worker', project: 'demo-codex', cwd: 'D:\\qa\\demo-codex',
+            createdAt: now108 - 300000, updatedAt: now108 - 40000, turns: 1, toolCount: 0,
+            models: ['gpt-5.4'], isSubagent: true, parentKey: 'codex:missing-parent',
+            depth: 1, subagentKind: 'review', agentName: 'reviewer',
+            resumable: false, canDelete: false,
+          },
+        ];
+        const byKey108 = new Map(swarmItems.map(item => [item.key, item]));
+        for (const ch of ['sessions:list', 'sessions:detail', 'sessions:search', 'requests:query']) ipcMain.removeHandler(ch);
+        ipcMain.handle('sessions:list', () => swarmItems);
+        ipcMain.handle('sessions:detail', (_e, key) => {
+          const item = byKey108.get(key);
+          if (!item) return null;
+          return {
+            ...item,
+            messages: [
+              { role: 'user', text: `Prompt for ${item.title}`, at: item.createdAt },
+              { role: 'assistant', text: `Reply from ${item.agentName || item.title}`, at: item.updatedAt, tools: [] },
+            ],
+            hasMore: false,
+          };
+        });
+        ipcMain.handle('sessions:search', (_e, q) => {
+          const needle = String(q || '').toLowerCase();
+          return swarmItems.filter(s => (s.title + ' ' + (s.agentName || '')).toLowerCase().includes(needle)).map(s => ({
+            key: s.key, count: 1, isSubagent: s.isSubagent, parentKey: s.parentKey, agentName: s.agentName, subagentKind: s.subagentKind,
+            snippets: [{ role: 'assistant', text: `Reply from ${s.agentName || s.title}` }],
+          }));
+        });
+        ipcMain.handle('requests:query', (_e, q) => {
+          if (q?.sessions) {
+            return {
+              sessions: [{
+                session: 'worker-4', sessionKey: 'antigravity:worker-4', title: 'Worker task ui-sessions', source: 'Antigravity',
+                cwd: 'D:\\qa\\demo-swarm', models: ['gemini-4-carbon'], requests: 3, tokens: 15000, input: 10000, output: 2000,
+                cacheRead: 6000, cacheWrite: 0, reasoning: 400, peakInput: 10000, contextLimit: 200000, compactions: 0, maxAutoStep: 2,
+                costUsd: 0.06, priced: true, firstAt: now108 - 500000, lastAt: now108 - 20000,
+                isSubagent: true, parentKey: 'antigravity:root-swarm-1', agentName: 'ui-sessions', subagentKind: 'swarm', swarmTitle: 'Subagent UI Swarm',
+              }],
+            };
+          }
+          return {
+            total: 1, page: 0, pages: 1,
+            counts: { all: 1, match: 1, mismatch: 0, suspect: 0, unverified: 0 },
+            accounts: [],
+            models: ['gemini-4-carbon'],
+            projects: ['D:\\qa\\demo-swarm'],
+            rows: [{
+              key: 'req-sub-108', at: now108 - 20000, source: 'Antigravity', cwd: 'D:\\qa\\demo-swarm',
+              model: 'gemini-4-carbon', requested: 'gemini-4-carbon', returned: 'gemini-4-carbon', channel: 'Cloud Code',
+              input: 10000, output: 2000, cacheRead: 6000, cacheWrite: 0, reasoning: 400, tokens: 12000, costUsd: 0.06, priced: true,
+              status: 'match', statusLabel: '型号一致', reasons: [], calls: 1,
+              session: 'worker-4', sessionKey: 'antigravity:worker-4', sessionTitle: 'Worker task ui-sessions',
+              isSubagent: true, parentKey: 'antigravity:root-swarm-1', agentName: 'ui-sessions', subagentKind: 'swarm', swarmTitle: 'Subagent UI Swarm',
+            }],
+          };
+        });
+
+        await evaluate("navigate('sessions'); document.querySelector('.sw-kinds button[data-kind=all]')?.click(); document.querySelector('.sw-refresh')?.click()");
+        await until("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"] .sw-sub-pill-toggle')");
+
+        // 1) 默认按主会话分组：只展示 2 个根会话 + 1 个孤儿子代理，不展开 6 个已挂接子代理
+        assert.deepEqual(
+          await evaluate("[...document.querySelectorAll('.sw-item')].map(n => n.dataset.key)"),
+          ['antigravity:root-swarm-1', 'claude:root-cl-1', 'codex:orphan-sub-1'],
+        );
+        assert.match(await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"] .sw-sub-pill-toggle').textContent"), /Swarm.*5/);
+        assert.match(await evaluate("document.querySelector('.sw-item[data-key=\"claude:root-cl-1\"] .sw-sub-pill-toggle').textContent"), /子代理.*1/);
+
+        // 2) 点击 Swarm 折叠胶囊展开 5 个子代理（含 depth=2 嵌套）
+        await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"] .sw-sub-pill-toggle').click()");
+        await until("document.querySelectorAll('.sw-item.is-subagent').length === 5");
+        assert.equal(await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:worker-5\"]')?.dataset.depth"), '2');
+
+        // 3) 主会话详情头 .sw-sub-bar：展示成员列表、含子代理总 Token 与折叠/展开
+        await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"]').click()");
+        await until("document.querySelector('.sw-sub-bar .sw-sub-pill')");
+        assert.match(await evaluate("document.querySelector('.sw-sub-bar').textContent"), /Swarm 成员.*5.*含子代理共.*85\.0K/);
+        assert.equal(await evaluate("document.querySelectorAll('.sw-sub-bar .sw-sub-pill').length"), 4, '超过 4 个成员默认先展示 4 个');
+        await evaluate("document.querySelector('.sw-sub-bar [data-action=toggle-subbar]').click()");
+        await until("document.querySelectorAll('.sw-sub-bar .sw-sub-pill').length === 5");
+
+        // 4) 点成员胶囊跳入子代理 -> 显示角色徽标、↑ 返回主会话、同组子代理菜单，且「更多」隐藏继续与删除
+        await evaluate("document.querySelector('.sw-sub-bar [data-open-child=\"antigravity:worker-4\"]').click()");
+        await until("document.querySelector('.sw-item.active')?.dataset.key === 'antigravity:worker-4' && document.querySelector('.sw-parent-bar [data-action=open-parent]')");
+        assert.match(await evaluate("document.querySelector('.sw-parent-bar').textContent"), /Swarm.*ui-sessions.*返回主会话.*同组子代理（5）/);
+        await evaluate("document.querySelector('.sw-actions button[aria-haspopup=menu]').click()");
+        await until("!document.getElementById('option-menu').hidden");
+        const subMenu = await evaluate("document.getElementById('option-menu').textContent");
+        assert.equal(subMenu.includes('在终端里继续'), false, 'resumable=false 时隐藏在终端里继续');
+        assert.equal(subMenu.includes('复制继续命令'), false, 'resumable=false 时隐藏复制继续命令');
+        assert.equal(subMenu.includes('删除对话'), false, 'canDelete=false 时隐藏删除对话');
+        await evaluate("closeOptionMenu()");
+        await until("document.getElementById('option-menu').hidden");
+        await evaluate("document.querySelector('.sw-parent-bar [data-action=open-parent]').click()");
+        await until("document.querySelector('.sw-item.active')?.dataset.key === 'antigravity:root-swarm-1'");
+
+        // 5) 「显示子代理」平铺切换 + 搜索自动浮出折叠子代理
+        await evaluate("document.querySelector('.sw-sub-toggle').click()");
+        await until("document.querySelector('.sw-sub-toggle').getAttribute('aria-pressed') === 'true' && document.querySelectorAll('.sw-item').length === 9");
+        await evaluate("document.querySelector('.sw-sub-toggle').click()");
+        await until("document.querySelector('.sw-sub-toggle').getAttribute('aria-pressed') === 'false'");
+        await evaluate("document.querySelector('.sw-item[data-key=\"antigravity:root-swarm-1\"] .sw-sub-pill-toggle').click()");
+        await until("document.querySelectorAll('.sw-item.is-subagent').length === 0");
+        await evaluate("(() => { const s = document.querySelector('.sw-search input'); s.value = 'ui-sessions'; s.dispatchEvent(new Event('input')); })()");
+        await until("document.querySelector('.sw-item[data-key=\"antigravity:worker-4\"]') !== null");
+        await evaluate("(() => { const s = document.querySelector('.sw-search input'); s.value = ''; s.dispatchEvent(new Event('input')); })()");
+        await until("document.querySelectorAll('.sw-item.is-subagent').length === 0");
+
+        // 6) PulseSessions.open(subagentKey) 与桌宠 open-page IPC 均自动展开父级并选中子代理
+        await evaluate("window.PulseSessions.open('claude:sub-cl-1')");
+        await until("document.querySelector('.sw-item.active')?.dataset.key === 'claude:sub-cl-1' && document.querySelector('.sw-parent-bar [data-action=open-parent]')");
+        contents.send('open-page', { page: 'sessions', pick: 'antigravity:worker-2' });
+        await until("document.querySelector('.sw-item.active')?.dataset.key === 'antigravity:worker-2'");
+
+        // 7) 夜间模式零黑字 + EN 零中文残留（核对所有非 translate=no 节点文本与 title/aria-label）
+        await evaluate("setThemeMode('dark')"); await delay(150);
+        const swBlack = await evaluate("[...document.querySelectorAll('#page-sessions *')].filter(n => [...n.childNodes].some(c => c.nodeType === 3 && c.nodeValue.trim()) && getComputedStyle(n).color === 'rgb(0, 0, 0)').map(n => n.className)");
+        assert.deepEqual(swBlack, [], '会话页子代理层级在夜间模式不能有默认黑字');
+        await evaluate("setThemeMode('light')"); await delay(100);
+        const enCheck = await evaluate(`(() => {
+          const miss = [];
+          const check = root => {
+            const w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+              acceptNode: n => (n.nodeType === 1 && n.getAttribute('translate') === 'no' ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+            });
+            for (let n = w.nextNode(); n; n = w.nextNode()) {
+              if (n.nodeType === 3) {
+                const raw = n.nodeValue.trim();
+                if (raw && /[\\u4e00-\\u9fff]/.test(raw) && /[\\u4e00-\\u9fff]/.test(window.PulseI18n.t(raw))) miss.push(raw);
+              } else {
+                for (const a of ['title', 'placeholder', 'aria-label']) {
+                  const raw = n.getAttribute(a);
+                  if (raw && /[\\u4e00-\\u9fff]/.test(raw) && /[\\u4e00-\\u9fff]/.test(window.PulseI18n.t(raw))) miss.push(a + ':' + raw);
+                }
+              }
+            }
+          };
+          check(document.querySelector('#page-sessions'));
+          return miss;
+        })()`);
+        assert.deepEqual(enCheck, [], '子代理/Swarm 会话界面的 EN 翻译无遗漏中文');
+
+        // 8) 逐条请求详情与「按会话」中的 Swarm 标签及主会话一键跳转
+        await evaluate("current.scannedAt = Date.now() + 1; navigate('usage'); showUsageView('requests'); requeryRequests(true)");
+        await until("document.querySelector('#request-rows .request-row[data-key=\"req-sub-108\"]')");
+        await evaluate("document.querySelector('#request-rows .request-row[data-key=\"req-sub-108\"]').click()");
+        await until("document.querySelector('.request-detail .detail-sub-tag') && document.querySelector('.request-detail [data-action=jump-parent-session]')");
+        assert.match(await evaluate("document.querySelector('.request-detail .detail-sub-tag').textContent"), /Swarm.*ui-sessions/);
+        await evaluate("document.querySelector('.request-detail [data-action=jump-parent-session]').click()");
+        await until("state.page === 'sessions' && document.querySelector('.sw-item.active')?.dataset.key === 'antigravity:root-swarm-1'");
+
+        await evaluate("current.scannedAt = Date.now() + 2; navigate('usage'); showUsageView('sessions'); window.PulseUsageSessions.render()");
+        await until("document.querySelector('#view-sessions .sr-title-row .subagent-tag.swarm-tag')");
+        assert.match(await evaluate("document.querySelector('#view-sessions .sr-title-row .subagent-tag.swarm-tag').textContent"), /Swarm.*ui-sessions/);
+        await evaluate("document.querySelector('#view-sessions [data-open-session=\"antigravity:worker-4\"]').click()");
+        await until("state.page === 'sessions' && document.querySelector('.sw-item.active')?.dataset.key === 'antigravity:worker-4'");
+        await evaluate("navigate('overview')");
+        console.log('PASS v0.3.108 subagent & Swarm UI: collapsible tree, flat toggle, search reveal, parent/subagent headers, openMore guards, open-page jump, Usage/Session badges, dark mode & EN i18n');
+      }
+
       require(path.join(appRoot, 'build/core/quota.js')).fetchOfficialQuota = async () => ({ issues: [{ kind: 'claude', who: 'Claude', reason: 'expired' }] });
       await evaluate("document.querySelectorAll('.tp-toast').forEach(node => node.remove()); document.getElementById('refresh').click()");
       await until("!document.getElementById('refresh').disabled && document.querySelector('.tp-toast.error')");

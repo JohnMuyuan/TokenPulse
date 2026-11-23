@@ -47,7 +47,7 @@
     const q = view.filter.trim().toLowerCase();
     const list = sessions.filter(s => {
       if (!q) return true;
-      const hay = [s.title, s.session, s.cwd, s.source, ...(s.models || [])].filter(Boolean).join(' ').toLowerCase();
+      const hay = [s.title, s.session, s.cwd, s.source, s.agentName, s.swarmTitle, s.subagentKind, ...(s.models || [])].filter(Boolean).join(' ').toLowerCase();
       return hay.includes(q);
     });
     const by = {
@@ -170,6 +170,7 @@
       const ctxTone = ctxPct == null ? '' : ctxPct >= 85 ? 'is-high' : ctxPct >= 65 ? 'is-warn' : 'is-ok';
       const auto = s.maxAutoStep || 1;
       const badges = [
+        typeof subagentTagNode === 'function' ? subagentTagNode(s) : null,
         s.compactions > 0 ? el('span', { class: 'request-tag compact-tag', title: `该会话触发过 ${number(s.compactions)} 次上下文自动压缩`, text: `自动压缩 ×${number(s.compactions)}` }) : null,
       ].filter(Boolean);
       const modelBrief = (s.models || []).slice(0, 2).join(', ') + ((s.models?.length || 0) > 2 ? ` +${s.models.length - 2}` : '');

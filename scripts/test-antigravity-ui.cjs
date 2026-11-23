@@ -352,6 +352,8 @@ app.on('web-contents-created', (_event, wc) => {
     await pause(300);
     const enUsage = (await text('.sw-usage-bar')) + ' ' + (await text('.sw-usage-panel'));
     assert.ok(!/[一-鿿]/.test(enUsage), enUsage);
+    const enSubToggle = await e("(() => { const b = document.querySelector('.sw-sub-toggle'); return b ? [b.textContent, b.title, b.getAttribute('aria-label')].filter(Boolean).join(' ') : ''; })()");
+    assert.ok(enSubToggle && !/[一-鿿]/.test(enSubToggle), 'Sessions subagent toggle translated in EN: ' + enSubToggle);
     pass('antigravity UI: dark mode has no default black text, 900px does not overflow, English is fully translated');
 
     // 8. 多账号登录管理 + Google One 家庭组共享额度防偏移归因（中英双语 + 深色 + 900px 不溢出 + 无凭据泄漏）
