@@ -62,8 +62,9 @@ app.whenReady().then(async () => {
     // 鼠标在宠物身上才算悬停（透明的地方不接鼠标）
     const hover = (x, y) => js(`document.dispatchEvent(new MouseEvent('mousemove', { clientX: ${x}, clientY: ${y}, bubbles: true })), document.body.classList.contains('hover')`);
     // 找一个真的画了东西的像素（干活时松鼠侧着身来回跑，不在正中间）
-    const box = await js(`(() => { const c = document.getElementById('dp-canvas'), r = c.getBoundingClientRect(), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const petPixel = () => js(`(() => { const c = document.getElementById('dp-canvas'), r = c.getBoundingClientRect(), d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
       for (let i = Math.floor(d.length / 8) * 4 + 3; i < d.length; i += 4) if (d[i]) { const p = (i - 3) / 4; return { x: r.left + (p % c.width + 0.5) * r.width / c.width, y: r.top + (Math.floor(p / c.width) + 0.5) * r.height / c.height }; } })()`);
+    const box = await petPixel();
     assert.equal(await hover(box.x, box.y), true, '宠物身上');
     assert.equal(await hover(2, 2), false, '透明的角落');
     console.log('PASS desk pet UI: hover only counts on the pet itself, not the transparent corners');
@@ -77,11 +78,13 @@ app.whenReady().then(async () => {
       try {
         const hovering = () => js("document.body.classList.contains('hover')");
         await until(async () => !(await hovering()), '透明角落：穿透');
-        at = { x: Math.round(b.x + box.x), y: Math.round(b.y + box.y) };
+        const hit1 = await petPixel();
+        at = { x: Math.round(b.x + hit1.x), y: Math.round(b.y + hit1.y) };
         await until(hovering, '轮询到光标在宠物身上：接鼠标');
         at = { x: b.x + 2, y: b.y + 3 };
         await until(async () => !(await hovering()), '回到透明角落：穿透');
-        at = { x: Math.round(b.x + box.x), y: Math.round(b.y + box.y) };
+        const hit2 = await petPixel();
+        at = { x: Math.round(b.x + hit2.x), y: Math.round(b.y + hit2.y) };
         await until(hovering, '又回到宠物身上');
         at = { x: b.x - 400, y: b.y - 400 };
         await until(async () => !(await hovering()), '光标出了窗口：补上漏掉的离开');
@@ -147,13 +150,14 @@ app.whenReady().then(async () => {
     assert.equal(await bjs("document.querySelector('.bb-say').textContent"), '2 个任务在跑～');
     assert.equal(await bjs("document.getElementById('bb').classList.contains('tasks')"), true, '任务列表宽一些');
     asked = new Promise(resolve => { const contents = mainOf().webContents, send = contents.send.bind(contents); contents.send = (channel, ...args) => { if (channel === 'open-page') { contents.send = send; resolve(args[0]); } return send(channel, ...args); }; });
+    const firstTaskKey = await bjs("document.querySelector('.bb-task').dataset.key");
     await bjs("document.querySelector('.bb-task').click()");
-    assert.deepEqual(await asked, { page: 'sessions' });
+    assert.deepEqual(await asked, { page: 'sessions', pick: firstTaskKey });
     await until(() => !bubble.isVisible(), '点任务后收起');
     mainOf().hide();
     // 主窗口藏起来以后 Windows 还会把焦点挪一下：等它落定再开气泡，免得气泡一出来就失焦收起
     await delay(500);
-    console.log('PASS desk pet UI: "Show tasks" turns the bubble into the running task list; picking a task opens Sessions');
+    console.log('PASS desk pet UI: "Show tasks" turns the bubble into the running task list; picking a task opens Sessions with pick');
 
     // 有额度时怎么画：主进程送来的数据直接喂给气泡（挑哪个账号在 test-desk-pet.cjs 里测）
     deskPetMain.openDeskPetBubble('quota');
@@ -181,11 +185,48 @@ app.whenReady().then(async () => {
     send({ quota: 75, mood: 'ok', opened: 1003, place: { side: 'down', at: 120 }, account: { kind: 'antigravity', name: 'Antigravity · QA', plan: 'Pro', checkedAt: Date.now(), five: { used: 25, resetAt: 0, high: false }, week: { used: 10, resetAt: 0, high: false } } });
     await until(() => bjs("document.querySelector('.bb-kind.antigravity') && document.querySelector('.bb-acc b')?.textContent === 'Antigravity · QA'"), 'Antigravity 气泡');
     assert.equal(await bjs("getComputedStyle(document.querySelector('.bb-kind.antigravity')).backgroundColor"), 'rgb(49, 134, 255)');
-    // Esc 收起
+    // Antigravity Swarm + 多子代理气泡（quota 摘要 + dark 模式任务列表 + 超过 4 个折叠 + 点击子代理定位到会话）
+    const swarmChildren = [
+      { key: 'antigravity:sw-1', name: 'audit-pet', status: 'waiting', asking: true, swarm: true },
+      { key: 'antigravity:sw-2', name: 'core-sessions', status: 'working', tool: 'grep_search', swarm: true },
+      { key: 'antigravity:sw-3', name: 'ui-sessions', status: 'working', tool: 'edit_file', swarm: true },
+      { key: 'antigravity:sw-4', name: 'verifier', status: 'working', tool: 'run_command', swarm: true },
+      { key: 'antigravity:sw-5', name: 'monitor', status: 'working', swarm: true },
+    ];
+    const swarmTasks = {
+      running: [
+        { key: 'antigravity:sw-root', kind: 'antigravity', agent: 'Antigravity', title: 'Swarm 改造', project: 'TokenPulse', status: 'waiting', since: Date.now() - 120_000, asking: true, subagents: 5, swarm: true, children: swarmChildren },
+        { key: 'claude:c-solo', kind: 'claude', agent: 'Claude Code', title: '单任务无子代理', project: 'demo', status: 'thinking', since: Date.now() - 60_000 },
+      ],
+      recent: [],
+    };
+    send({ view: 'quota', theme: 'light', opened: 1004, quota: 75, mood: 'ok', tasks: swarmTasks, account: { kind: 'antigravity', name: 'Antigravity · QA', plan: 'Pro', checkedAt: Date.now(), five: { used: 25, resetAt: 0, high: false }, week: null } });
+    await until(() => bjs("document.querySelector('.bb-line')?.textContent === '2 个任务在跑 · 5 个子代理 · 1 个可能在等你›'"), '额度气泡显示子代理数');
+    send({ view: 'tasks', theme: 'dark', opened: 1005, tasks: swarmTasks });
+    await until(() => bjs("document.documentElement.dataset.theme === 'dark' && document.querySelectorAll('.bb-subtask').length === 4"), '深色任务列表与 4 条子代理行');
+    assert.equal(await bjs("document.querySelector('.bb-say').textContent"), '2 个任务在跑（含 5 个子代理）～');
+    assert.equal(await bjs("document.querySelector('.bb-task[data-key=\"antigravity:sw-root\"] .bb-sub-tag.swarm')?.textContent"), 'Swarm · 5');
+    assert.equal(await bjs("document.querySelector('.bb-task[data-key=\"claude:c-solo\"] .bb-sub-tag')"), null, '无子代理任务不显示子代理标签');
+    assert.deepEqual(await bjs("[...document.querySelectorAll('.bb-sublist[data-parent=\"antigravity:sw-root\"] .bb-subtask')].map(r => [r.dataset.key, r.querySelector('.bb-sub-name').textContent, r.querySelector('.bb-sub-chip').textContent])"), [
+      ['antigravity:sw-1', 'audit-pet', '在问你'],
+      ['antigravity:sw-2', 'core-sessions', 'grep_search'],
+      ['antigravity:sw-3', 'ui-sessions', 'edit_file'],
+      ['antigravity:sw-4', 'verifier', 'run_command'],
+    ]);
+    assert.equal(await bjs("document.querySelector('.bb-sub-more')?.textContent"), '+1 更多');
+    asked = new Promise(resolve => { const contents = mainOf().webContents, sendFn = contents.send.bind(contents); contents.send = (channel, ...args) => { if (channel === 'open-page') { contents.send = sendFn; resolve(args[0]); } return sendFn(channel, ...args); }; });
+    await bjs("document.querySelector('.bb-subtask[data-key=\"antigravity:sw-1\"]').click()");
+    assert.deepEqual(await asked, { page: 'sessions', pick: 'antigravity:sw-1' }, '点子代理行直接定位到子代理会话');
+    await until(() => !bubble.isVisible(), '点子代理后气泡收起');
+    mainOf().hide();
+    await delay(500);
+    // 重新打开气泡并测 Esc 收起
+    deskPetMain.openDeskPetBubble('quota');
+    await until(() => bubble.isVisible(), '气泡再出来');
     assert.equal(bubble.isVisible(), true, 'Esc 之前气泡还开着');
     await bjs("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))");
     await until(() => !bubble.isVisible(), 'Esc 收起');
-    console.log('PASS desk pet UI: the bubble draws 10-cell meters per window, says when used-up quota comes back, flags stale quota, moves the tail aside and closes on Esc');
+    console.log('PASS desk pet UI: the bubble draws 10-cell meters per window, Antigravity Swarm subagent rows (light & dark, +M overflow, child pick), flags stale quota, moves the tail aside and closes on Esc');
 
     // 鼠标不在上面：8 秒后自己收起
     await js('window.tokenpulse.deskPet.click()');
@@ -202,6 +243,13 @@ app.whenReady().then(async () => {
     await until(() => js("document.getElementById('dp-stage').dataset.mode === 'idle'"), '空闲');
     assert.equal(await js("document.getElementById('dp-hint').textContent"), '额度用完了 · Claude · A');
     assert.equal(await js('document.documentElement.dataset.theme'), 'dark');
+    // 活跃子代理提示（仅 subagents > 0 时出现，subagents = 0 保持原文案）
+    pet.webContents.send('desk-pet-state', { pet: 'squirrel', scale: 2, theme: 'dark', fidget: true, badge: true, quota: 60, mood: 'ok', account: 'Antigravity', mode: 'work', tasks: 1, waiting: 0, subagents: 2 });
+    await until(() => js("document.getElementById('dp-stage').dataset.subagents === '2'"), '子代理数同步到 stage');
+    assert.equal(await js("document.getElementById('dp-hint').textContent"), '1 个任务进行中（含 2 个子代理） · Antigravity 剩余 60%');
+    pet.webContents.send('desk-pet-state', { pet: 'squirrel', scale: 2, theme: 'dark', fidget: true, badge: true, quota: 60, mood: 'ok', account: 'Antigravity', mode: 'work', tasks: 1, waiting: 0, subagents: 0 });
+    await until(() => js("document.getElementById('dp-stage').dataset.subagents === '0'"), '无子代理同步到 stage');
+    assert.equal(await js("document.getElementById('dp-hint').textContent"), '1 个任务进行中 · Antigravity 剩余 60%');
     pet.webContents.send('desk-pet-state', { pet: 'squirrel', scale: 2, theme: 'light', fidget: true, badge: true, quota: 40, mood: 'ok', account: '', mode: 'sleep', tasks: 0, waiting: 0 });
     await until(() => js("document.getElementById('dp-stage').dataset.action === 'yawn'"), '睡前打哈欠');
     console.log('PASS desk pet UI: celebrate event, quota-empty hint, theme and the yawn before sleeping');
@@ -311,6 +359,24 @@ app.whenReady().then(async () => {
     const pjs = code => planWin.webContents.executeJavaScript(code);
     await until(() => pjs("document.querySelector('.ak-card')?.dataset.tool === 'ExitPlanMode'"), '计划卡片画出来');
     assert.deepEqual(await pjs("[document.querySelector('.ak-say').textContent, document.querySelector('.ak-plan').textContent, document.querySelector('.ak-foot small').textContent]"), ['计划写好了，等你批准', '# 计划\n1. 改额度卡片\n2. 补测试', '回到终端里批准或修改']);
+    // Antigravity Swarm 子代理提问卡片（深色模式、品牌色、超长 worker 名不撑破 320px）
+    planWin.webContents.send('desk-pet-ask', {
+      now: Date.now(), theme: 'dark', more: 0,
+      cards: [{
+        key: 'antigravity:sw-root', kind: 'antigravity', agent: 'Antigravity', title: 'Swarm 改造', project: 'TokenPulse',
+        ask: { id: 'sub-ask-1', tool: 'AskUserQuestion', at: Date.now(), from: 'audit-pet-very-long-worker-name-check', swarm: true, questions: [{ header: '确认', question: '是否合入分支？', multi: false, options: [{ label: '合入', description: '' }] }] },
+      }],
+    });
+    await until(() => pjs("document.documentElement.dataset.theme === 'dark' && !!document.querySelector('.ak-head .bb-sub-tag.swarm')"), 'Swarm 子代理提问卡片');
+    assert.deepEqual(await pjs(`(() => {
+      const card = document.querySelector('.ak-card'), x = document.querySelector('.ak-x').getBoundingClientRect();
+      return [
+        getComputedStyle(document.querySelector('.bb-kind.antigravity')).backgroundColor,
+        document.querySelector('.ak-head .bb-sub-tag.swarm').textContent,
+        card.offsetWidth,
+        Math.round(x.right) <= 320,
+      ];
+    })()`), ['rgb(122, 174, 255)', 'Swarm · audit-pet-very-long-worker-name-check', 320, true]);
     // 在终端里批准了（有了结果）：卡片自己收起
     fs.appendFileSync(c1, line({ type: 'user', timestamp: ago(0), message: { content: [{ type: 'tool_result', tool_use_id: 'plan-1', content: 'approved' }] } }) + '\n');
     await until(() => !askOf(), '回答了：卡片自己收起', 15000);
@@ -501,6 +567,10 @@ app.whenReady().then(async () => {
     await until(() => js("document.getElementById('dp-badge').hidden === false && document.getElementById('dp-canvas').hidden"), '自定义宠物有额度标签');
     // 额度紧张：自定义宠物和内置的一样，平时用 idle 图，隔一阵紧张一下才换 tight 图（以前一直放 tight 图，看着一直在冒汗）
     const custom = await js("document.getElementById('dp-stage').dataset.pet");
+    pet.webContents.send('desk-pet-state', { pet: custom, scale: 3, theme: 'light', fidget: false, badge: true, sound: false, quota: 60, mood: 'ok', account: '', mode: 'work', tasks: 1, waiting: 0, subagents: 2, mini: null });
+    await until(() => js("document.getElementById('dp-badge').textContent === '60% · 1+2'"), '自定义宠物徽章显示活跃子代理数');
+    pet.webContents.send('desk-pet-state', { pet: custom, scale: 3, theme: 'light', fidget: false, badge: true, sound: false, quota: 60, mood: 'ok', account: '', mode: 'work', tasks: 1, waiting: 0, subagents: 0, mini: null });
+    await until(() => js("document.getElementById('dp-badge').textContent === '60% · 1'"), '无子代理时自定义宠物徽章保持原文案');
     pet.webContents.send('desk-pet-state', { pet: custom, scale: 3, theme: 'light', fidget: false, badge: true, sound: false, quota: 12, mood: 'tight', account: '', mode: 'idle', tasks: 0, waiting: 0, mini: null });
     await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle'"), '紧张时平时照常待着');
     await until(() => js("document.getElementById('dp-stage').dataset.image === 'tight'"), '隔一阵紧张一下', 5000);
@@ -665,6 +735,29 @@ app.whenReady().then(async () => {
     await mjs("document.querySelector('.dps-remove').click()"); await mjs("document.querySelector('.dps-remove').click()");
     await until(() => js("document.getElementById('dp-stage').dataset.pet === 'squirrel' && document.getElementById('dp-svg').hidden && !document.getElementById('dp-canvas').hidden"), '删掉后回到松鼠');
     screen.getCursorScreenPoint = realCursor;
+
+    // 英文模式自查：桌宠提示、对话气泡（quota + tasks + Swarm 子代理行与折叠）均无中文残留
+    deskPetMain.openDeskPetBubble('tasks');
+    await until(() => bubble.isVisible(), '英文模式测试打开气泡');
+    const waitLoad = wc => new Promise(resolve => wc.once('did-finish-load', resolve));
+    await bjs("localStorage.setItem('tokenpulse-lang', 'en')");
+    const bLoaded = waitLoad(bubble.webContents), pLoaded = waitLoad(pet.webContents);
+    bubble.webContents.reload();
+    pet.webContents.reload();
+    await Promise.all([bLoaded, pLoaded]);
+    pet.webContents.send('desk-pet-state', { pet: 'squirrel', scale: 2, theme: 'light', fidget: false, badge: false, sound: false, quota: 75, mood: 'ok', account: 'Antigravity', mode: 'work', tasks: 1, waiting: 0, subagents: 2, mini: null });
+    await until(() => js("document.getElementById('dp-hint').textContent === '1 task running (+2 subagents) · Antigravity 75% left'"), '英文模式桌宠提示');
+    send({ view: 'quota', theme: 'light', opened: 2001, quota: 75, mood: 'ok', tasks: swarmTasks, account: { kind: 'antigravity', name: 'Antigravity · QA', plan: 'Pro', checkedAt: Date.now(), five: { used: 25, resetAt: 0, high: false }, week: null } });
+    await until(() => bjs("document.querySelector('.bb-line')?.textContent === '2 tasks running · 5 subagents · 1 may need you›'"), '英文模式额度气泡任务摘要');
+    send({ view: 'tasks', theme: 'dark', opened: 2002, tasks: { running: [{ key: 'antigravity:sw-root', kind: 'antigravity', agent: 'Antigravity', title: 'Swarm Upgrade', project: 'TokenPulse', status: 'waiting', since: Date.now() - 120_000, asking: true, subagents: 5, swarm: true, children: swarmChildren }, { key: 'claude:c-sub', kind: 'claude', agent: 'Claude Code', title: 'Audit', project: 'demo', status: 'tool', since: Date.now() - 60_000, subagents: 1, children: [{ key: 'claude:agent-1', name: 'Explore', status: 'working' }] }], recent: [] } });
+    await until(() => bjs("document.querySelector('.bb-say')?.textContent === '2 tasks running (+6 subagents)~'"), '英文模式任务气泡标题');
+    const enBubbleText = await bjs("document.getElementById('bb').textContent");
+    assert.equal(/[\u4e00-\u9fff]/.test(enBubbleText), false, `英文模式气泡不应出现中文：${enBubbleText}`);
+    assert.equal(await bjs("document.querySelector('.bb-sub-more')?.textContent"), '+1 more');
+    assert.equal(await bjs("document.querySelector('.bb-task[data-key=\"claude:c-sub\"] .bb-sub-tag')?.textContent"), '+1 sub');
+    assert.equal(await bjs("document.querySelector('.bb-sublist[data-parent=\"claude:c-sub\"] .bb-sub-chip')?.textContent"), 'Working');
+    await bjs("localStorage.removeItem('tokenpulse-lang')");
+    console.log('PASS desk pet UI: English mode renders subagent counts, Swarm tags, child rows and tooltip with no Chinese fallback');
 
     // 关掉：宠物窗口没了
     await mjs("document.getElementById('dps-toggle').click()");

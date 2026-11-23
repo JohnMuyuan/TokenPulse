@@ -352,9 +352,10 @@
     if (p.fx.includes('crumbs')) for (let k = 0; k < 3; k++) put(g, F - 2 + k * 2, ny + 9 + ((at + k * 3) % 9), P.acornL);
     poseFx(g, p, c, { sweat: [A + 13, hy - 9], dots: [3, 21], exclaim: [A + 13, hy - 18], zzz: [cx + 10, hy - 12], dust: [cx], halo: [A, hy - 18] }, P);
   }
-  // Side view while working: hops between the pile and a stash, carrying one acorn per running task.
+  const busyCount = c => clamp((c.tasks || 0) + (c.subagents || 0), 1, 3);
+  // Side view while working: hops between the pile and a stash, carrying one acorn per running task / subagent.
   function squirrelSide(g, c, mood) {
-    const P = SQ, t = c.t, n = clamp(c.tasks, 1, 3);
+    const P = SQ, t = c.t, n = busyCount(c);
     const hf = [8, 6, 4][n - 1], L = 42, R = 53, seg = 3 * hf, total = 2 * seg + 12, u = t % total;
     let sx, face, act = null, k;
     if (u < seg) { face = -1; k = u; sx = R - (R - L) * k / seg; }
@@ -475,7 +476,7 @@
     poseFx(g, p, c, { sweat: [A + 16, top + 2], dots: [A + 9, top - 8], exclaim: [A + 16, top - 8], zzz: [A + 15, top - 2], dust: [cx], halo: [A, top - 7] }, P);
   }
   function hamsterRun(g, c, mood) {
-    const P = HAM, t = c.t, n = clamp(c.tasks, 1, 3), q = c.quota;
+    const P = HAM, t = c.t, n = busyCount(c), q = c.quota;
     const wx = 36, wy = 27, a0 = -t * [0.12, 0.2, 0.3][n - 1];
     layer(g, P.ringD, null, l => {
       for (const s of [-1, 1]) { line(l, wx, wy, wx + s * 13, 54, P.ringD); line(l, wx + s, wy, wx + s * 14, 54, P.ringD); }
@@ -550,7 +551,7 @@
     if (a === 'restock') palKey = 'ok';
     const P = Object.assign({}, OCT, OCT_PAL[palKey]);
     const work = c.state === 'work' && !OVERRIDE.has(a), sleep = c.state === 'sleep' && !a;
-    const n = work ? clamp(c.tasks, 1, 3) : 0, breath = Math.floor(t / 10) % 2 ? 0.5 : 0;
+    const n = work ? busyCount(c) : 0, breath = Math.floor(t / 10) % 2 ? 0.5 : 0;
     let dy = Math.floor(t / 8) % 2, sq = breath, eyes = t % 41 === 0 ? 'blink' : 'open', brow = null, mouth = 'small', yawn = 0;
     let lx = look.x, ly = look.y, spread = 1, wave = 0.45, hang = false, fx = [];
     const raise = [];

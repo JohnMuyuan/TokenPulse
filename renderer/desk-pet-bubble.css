@@ -18,6 +18,7 @@
   --bb-chatgpt: #10a37f;
   --bb-deepseek: #4d6bfe;
   --bb-antigravity: #3186ff;
+  --bb-pi: #8b5cf6;
   --bb-grok: #6f7782;
   font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
 }
@@ -34,6 +35,7 @@
   --bb-warn: #efb24f;
   --bb-danger: #f2766c;
   --bb-antigravity: #7aaeff;
+  --bb-pi: #a78bfa;
 }
 [hidden] { display: none !important; }
 html.bb-html, body.bb-body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; -webkit-user-select: none; user-select: none; }
@@ -66,6 +68,8 @@ body.bb-body { position: relative; color: var(--bb-text); font-size: 12px; line-
 .bb-kind.chatgpt { background: var(--bb-chatgpt); }
 .bb-kind.deepseek { background: var(--bb-deepseek); }
 .bb-kind.antigravity { background: var(--bb-antigravity); }
+.bb-kind.pi { background: var(--bb-pi); }
+.bb-kind.grok { background: var(--bb-grok); }
 .bb-plan { flex: none; padding: 0 4px; border: 1px solid var(--bb-muted); color: var(--bb-muted); font-size: 10.5px; line-height: 14px; }
 
 /* 一个窗口：名字、10 格（剩多少亮多少）、剩余百分比；下面一行写什么时候重置 */
@@ -91,15 +95,29 @@ button.bb-line:hover, button.bb-line:focus-visible { background: var(--bb-hover)
 .bb-dot.waiting { background: var(--bb-warn); }
 .bb-dot.done { background: var(--bb-off); }
 
-.bb-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.bb-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; max-height: 360px; overflow-y: auto; }
 .bb-task { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; align-items: center; gap: 7px; min-width: 0; width: 100%; box-sizing: border-box; padding: 4px 5px; border: 0; background: transparent; color: var(--bb-text); font: inherit; text-align: left; cursor: pointer; }
 .bb-task:hover, .bb-task:focus-visible { background: var(--bb-hover); outline: none; }
 .bb-task-main { display: grid; min-width: 0; }
+.bb-task-title { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.bb-task-title b { flex: 0 1 auto; min-width: 0; }
 .bb-task-main b { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .bb-task-main small { overflow: hidden; color: var(--bb-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bb-sub-tag { flex: none; max-width: 132px; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; border: 1px solid var(--bb-muted); color: var(--bb-muted); font-size: 10px; font-style: normal; font-weight: 600; line-height: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bb-sub-tag.swarm { border-color: var(--bb-antigravity); color: var(--bb-antigravity); }
 .bb-chip { padding: 0 5px; border: 1px solid currentColor; color: var(--bb-ok); font-size: 10.5px; font-style: normal; line-height: 15px; white-space: nowrap; }
 .bb-task.waiting .bb-chip { color: var(--bb-warn); }
 .bb-task.done { opacity: .8; }
 .bb-task.done .bb-chip { color: var(--bb-muted); }
+
+/* 活跃子代理 / Swarm worker 子行 */
+.bb-sublist { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; margin: 0 0 3px 9px; padding-left: 8px; border-left: 2px solid var(--bb-off); }
+.bb-subtask { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-width: 0; width: 100%; box-sizing: border-box; padding: 2px 5px; border: 0; background: transparent; color: var(--bb-text); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+.bb-subtask:hover, .bb-subtask:focus-visible { background: var(--bb-hover); outline: none; }
+.bb-sub-name { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.bb-sub-chip { color: var(--bb-muted); font-size: 10.5px; font-style: normal; white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+.bb-subtask.waiting .bb-sub-chip { color: var(--bb-warn); font-weight: 600; }
+.bb-sub-more { width: 100%; box-sizing: border-box; padding: 1px 5px; border: 0; background: transparent; color: var(--bb-muted); font: inherit; font-size: 10.5px; text-align: left; cursor: pointer; }
+.bb-sub-more:hover, .bb-sub-more:focus-visible { background: var(--bb-hover); color: var(--bb-text); outline: none; }
 
 @media (prefers-reduced-motion: reduce) { .bb.pop { animation: none; } }

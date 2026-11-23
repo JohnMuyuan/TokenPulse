@@ -31,7 +31,8 @@ import { tr } from "./i18n";
 type Account = PetAccount;
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 
-type TaskBrief = Pick<AgentTask, "key" | "kind" | "agent" | "title" | "project" | "status" | "tool" | "since" | "doneAt"> & { asking: boolean };
+type TaskChildBrief = { key: string; name: string; status: string; tool?: string; asking?: boolean; swarm?: boolean };
+type TaskBrief = Pick<AgentTask, "key" | "kind" | "agent" | "title" | "project" | "status" | "tool" | "since" | "doneAt" | "subagents" | "swarm" | "swarmTitle"> & { asking: boolean; children?: TaskChildBrief[] };
 export type AskCard = Pick<AgentTask, "key" | "kind" | "agent" | "title" | "project"> & { ask: AgentAsk };
 export type DeskPetAskData = { now: number; theme: "light" | "dark"; cards: AskCard[]; more: number };
 type BubbleWindow = { used: number; resetAt: number; high: boolean };
@@ -57,7 +58,7 @@ type Options = {
   extraAccounts?: () => PetAccount[];
   antigravityLogin?: () => string;
   title: (account: Account) => string;
-  openMain: (target?: { page: string }) => void;
+  openMain: (target?: { page: string; pick?: string }) => void;
   openSettings: () => void;
   refresh: () => void;
 };
@@ -227,10 +228,10 @@ function startTimers() {
   for (const dir of scanner.watchRoots()) {
     try {
       const watcher = fs.watch(dir, { recursive: true, persistent: false }, (event, name) => {
-        // Antigravity 的对话状态在 conversation_summaries.db 和 conversations/<id>.db（WAL 模式，先写 -wal）
+        // Antigravity 的对话状态在 conversation_summaries.db、conversations/<id>.db（WAL 模式，先写 -wal）及 swarm/members.json
         const rel = String(name || "");
-        if (!rel || !/\.jsonl(\.zstd)?$|\.db(-wal)?$/.test(rel)) return;
-        if (event === "rename" || (!rel.endsWith(".db") && !rel.endsWith(".db-wal") && !scanner?.knows(path.join(dir, rel)))) scanner?.poke();
+        if (!rel || !/\.jsonl(\.zstd)?$|\.db(-wal)?$|members\.json$/.test(rel)) return;
+        if (event === "rename" || (!rel.endsWith(".db") && !rel.endsWith(".db-wal") && !rel.endsWith("members.json") && !scanner?.knows(path.join(dir, rel)))) scanner?.poke();
         soon();
       });
       watcher.on("error", () => { watcher.close(); watchers = watchers.filter((item) => item !== watcher); });
@@ -518,8 +519,27 @@ function placeBubble() {
   if (moved) pushBubble();
 }
 
+const BUBBLE_CHILDREN_MAX = 16;
 function brief(task: AgentTask): TaskBrief {
-  return { key: task.key, kind: task.kind, agent: task.agent, title: task.title, project: task.project, status: task.status, tool: task.tool, since: task.since, doneAt: task.doneAt, asking: !!task.ask };
+  const children = (task.children ?? [])
+    .filter((child) => child.status !== "idle")
+    .slice(0, BUBBLE_CHILDREN_MAX)
+    .map((child): TaskChildBrief => ({
+      key: child.key,
+      name: child.name,
+      status: child.status,
+      ...(child.tool ? { tool: child.tool } : {}),
+      ...(child.ask ? { asking: true } : {}),
+      ...(child.swarm ? { swarm: true } : {}),
+    }));
+  return {
+    key: task.key, kind: task.kind, agent: task.agent, title: task.title, project: task.project,
+    status: task.status, tool: task.tool, since: task.since, doneAt: task.doneAt, asking: !!task.ask,
+    ...(task.subagents ? { subagents: task.subagents } : {}),
+    ...(task.swarm ? { swarm: true } : {}),
+    ...(task.swarmTitle ? { swarmTitle: task.swarmTitle } : {}),
+    ...(children.length ? { children } : {}),
+  };
 }
 function bubbleWindow(window: Account["five"]): BubbleWindow | null {
   return window ? { used: clamp(window.used, 0, 100), resetAt: window.resetAt ?? 0, high: window.pressure === "high" } : null;
@@ -612,7 +632,11 @@ export function resizeDeskPetBubble(width: number, height: number) {
 export function deskPetBubbleAction(action: unknown, value?: unknown) {
   if (!options) return;
   if (action === "close") hideBubble();
-  else if (action === "sessions" && (value == null || (typeof value === "string" && value.length < 300))) { hideBubble(); options.openMain({ page: "sessions" }); }
+  else if (action === "sessions" && (value == null || (typeof value === "string" && value.length < 300))) {
+    hideBubble();
+    const pick = typeof value === "string" && value.trim() ? value.trim() : "";
+    options.openMain(pick ? { page: "sessions", pick } : { page: "sessions" });
+  }
 }
 
 /** 快照更新时：宠物和开着的气泡都跟着更新。 */

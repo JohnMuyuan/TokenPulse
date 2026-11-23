@@ -39,7 +39,7 @@
 
   function ctx() {
     const v = S.view;
-    return { state: v?.mode || 'idle', quota: v?.quota ?? 72, mood: v?.mood || 'ok', tasks: v?.tasks || 0, fidget: S.prefs?.deskPetFidget !== false };
+    return { state: v?.mode || 'idle', quota: v?.quota ?? 72, mood: v?.mood || 'ok', tasks: v?.tasks || 0, subagents: v?.subagents || 0, fidget: S.prefs?.deskPetFidget !== false };
   }
 
   /** 一块会动的预览。内置宠物画在 canvas 上；自定义宠物显示它的 idle 图。 */
@@ -66,7 +66,10 @@
     if (!S.prefs.deskPet) return L('桌宠没有打开。打开后它会出现在屏幕右下角，可以拖到任何地方。', 'The desk pet is off. Turn it on and it appears in the bottom-right corner; drag it anywhere.');
     const v = S.view;
     if (!v) return L('桌宠已打开。', 'The desk pet is on.');
-    const doing = v.mode === 'work' ? L(`${v.tasks} 个任务进行中`, `${v.tasks} task${v.tasks === 1 ? '' : 's'} running`) : v.mode === 'sleep' ? L('在睡觉', 'Sleeping') : L('没有任务在跑', 'No tasks running');
+    const sub = v.subagents || 0;
+    const doing = v.mode === 'work'
+      ? L(`${v.tasks} 个任务进行中`, `${v.tasks} task${v.tasks === 1 ? '' : 's'} running`) + (sub ? L(`（含 ${sub} 个子代理）`, ` (+${sub} subagent${sub === 1 ? '' : 's'})`) : '')
+      : v.mode === 'sleep' ? L('在睡觉', 'Sleeping') : L('没有任务在跑', 'No tasks running');
     const quota = v.quota == null ? L('还没有额度数据', 'No quota data yet') : `${v.account ? v.account + ' ' : ''}${L(`剩余 ${v.quota}%`, `${v.quota}% left`)}`;
     return `${doing} · ${quota}`;
   }

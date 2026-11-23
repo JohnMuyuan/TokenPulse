@@ -17,7 +17,7 @@
     node.append(...children.filter(Boolean));
     return node;
   };
-  const KIND = { claude: 'claude', codex: 'chatgpt', deepseek: 'deepseek' };
+  const KIND = { claude: 'claude', codex: 'chatgpt', grok: 'grok', deepseek: 'deepseek', pi: 'pi', antigravity: 'antigravity' };
   /** 弹过的提问：只有新来的才播弹出来的动画。 */
   const seen = new Set();
 
@@ -45,6 +45,7 @@
       el('div', { class: 'ak-head' }, [
         el('i', { class: 'bb-kind ' + (KIND[item.kind] || '') }),
         el('b', { text: item.agent }),
+        ask.from ? el('i', { class: 'bb-sub-tag' + (ask.swarm ? ' swarm' : ''), text: ask.swarm ? `Swarm · ${ask.from}` : L(`子代理 · ${ask.from}`, `Subagent · ${ask.from}`) }) : null,
         el('span', { text: [item.project, item.title].filter(Boolean).join(' · '), title: item.title }),
         close,
       ]),

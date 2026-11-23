@@ -33,7 +33,7 @@
   function ctx() {
     // 主题包的随机待机：鼠标 mouseIdleTimeout 没动、没悬停没拖着才放
     const theme = themed() ? themeView.theme : null, idleAnims = !!theme?.idleAnimations.length && !hovering && !dragging && !press;
-    return { state: view.mode, phase: view.phase || null, quota: view.quota ?? 100, mood: view.mood, tasks: view.tasks, mini: !!view.mini, fidget: view.fidget && !reduced.matches && (BUILT_IN.includes(view.pet) || idleAnims), fidgetAfter: theme ? theme.timings.mouseIdleTimeout : 0 };
+    return { state: view.mode, phase: view.phase || null, quota: view.quota ?? 100, mood: view.mood, tasks: view.tasks, subagents: view.subagents || 0, mini: !!view.mini, fidget: view.fidget && !reduced.matches && (BUILT_IN.includes(view.pet) || idleAnims), fidgetAfter: theme ? theme.timings.mouseIdleTimeout : 0 };
   }
 
   function size() {
@@ -185,7 +185,7 @@
   function draw() {
     if (!view || !ctl) return;
     // 现在画的是哪只、在做什么：写在节点上，方便检查
-    stage.dataset.pet = view.pet; stage.dataset.mode = view.mode; stage.dataset.phase = view.phase || ''; stage.dataset.action = ctl.action || ''; stage.dataset.state = ctl.stateOf(ctx());
+    stage.dataset.pet = view.pet; stage.dataset.mode = view.mode; stage.dataset.phase = view.phase || ''; stage.dataset.action = ctl.action || ''; stage.dataset.state = ctl.stateOf(ctx()); stage.dataset.subagents = String(view.subagents || 0);
     // 打盹、睡着是宠物自己走到的，不一定有新的状态送来：提示跟着画面变
     const text = hintText();
     if (hint.textContent !== text) hint.textContent = text;
@@ -209,7 +209,8 @@
       }
       badge.hidden = !view.badge;
       if (view.badge) {
-        badge.textContent = (view.quota == null ? '—' : `${view.quota}%`) + (view.tasks ? ` · ${view.tasks}` : '');
+        const sub = view.subagents || 0;
+        badge.textContent = (view.quota == null ? '—' : `${view.quota}%`) + (view.tasks ? ` · ${view.tasks}${sub ? `+${sub}` : ''}` : '');
         badge.className = 'dp-badge' + (view.mood === 'ok' ? '' : ' ' + view.mood);
       }
       return;
@@ -223,8 +224,13 @@
     const left = view.quota == null ? L('还没有额度数据', 'No quota data yet') : L(`剩余 ${view.quota}%`, `${view.quota}% left`);
     const quota = (view.account ? view.account + ' ' : '') + left;
     if (view.mode === 'work') {
+      const sub = view.subagents || 0;
       const asking = view.asking || 0, waiting = Math.max(0, (view.waiting || 0) - asking);
-      const notes = [asking ? L(`${asking} 个在问你`, `${asking} asking you`) : '', waiting ? L(`${waiting} 个可能在等你`, `${waiting} may need you`) : ''].filter(Boolean);
+      const notes = [
+        sub ? L(`含 ${sub} 个子代理`, `+${sub} subagent${sub === 1 ? '' : 's'}`) : '',
+        asking ? L(`${asking} 个在问你`, `${asking} asking you`) : '',
+        waiting ? L(`${waiting} 个可能在等你`, `${waiting} may need you`) : '',
+      ].filter(Boolean);
       return L(`${view.tasks} 个任务进行中`, `${view.tasks} task${view.tasks === 1 ? '' : 's'} running`) + (notes.length ? L(`（${notes.join('，')}）`, ` (${notes.join(', ')})`) : '') + ' · ' + quota;
     }
     if (view.mood === 'empty') return L('额度用完了', 'Quota used up') + (view.account ? ' · ' + view.account : '');

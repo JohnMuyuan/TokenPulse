@@ -33,11 +33,27 @@ import { zstdFrames } from "./zstd-frames";
 
 export type TaskStatus = "thinking" | "tool" | "waiting" | "done";
 export type TaskKind = "claude" | "codex" | "grok" | "deepseek" | "pi" | "antigravity";
+export type SubagentStatus = "working" | "waiting" | "idle";
+export type SubagentBrief = {
+  key: string;
+  id: string;
+  name: string;
+  status: SubagentStatus;
+  tool?: string;
+  since: number;
+  updatedAt: number;
+  ask?: string;
+  swarm?: boolean;
+};
 export type AskQuestion = { header: string; question: string; options: { label: string; description: string }[]; multi: boolean };
-/** 一个等你回答的提问。id 是那次工具调用的 id，回答了（有了结果）就没了。 */
-export type AgentAsk = { id: string; tool: string; at: number; questions: AskQuestion[]; plan?: string };
-/** subagents：这个会话下正在跑的子代理个数（没有就不写）。 */
-export type AgentTask = { key: string; kind: TaskKind; agent: string; id: string; title: string; project: string; status: TaskStatus; tool?: string; since: number; updatedAt: number; doneAt?: number; ask?: AgentAsk; subagents?: number };
+/** 一个等你回答的提问。id 是那次工具调用的 id，回答了（有了结果）就没了。from：来自子代理时的角色名。 */
+export type AgentAsk = { id: string; tool: string; at: number; questions: AskQuestion[]; plan?: string; from?: string; swarm?: boolean };
+/** subagents：这个会话下正在跑的子代理个数（没有就不写）；children：活跃（及 swarm）子代理明细。 */
+export type AgentTask = {
+  key: string; kind: TaskKind; agent: string; id: string; title: string; project: string;
+  status: TaskStatus; tool?: string; since: number; updatedAt: number; doneAt?: number;
+  ask?: AgentAsk; subagents?: number; children?: SubagentBrief[]; swarm?: boolean; swarmTitle?: string;
+};
 /** 一轮是怎么结束的：正常做完、用户自己中断、出错（API 报错之类）。 */
 export type TurnEnd = "ok" | "interrupted" | "error";
 /**
@@ -419,11 +435,20 @@ export function claudeHead(lines: string[]) {
 }
 
 export function codexHead(lines: string[]) {
-  let id = "", cwd = "", prompt = "", side = false;
+  let id = "", cwd = "", prompt = "", side = false, parentId = "", agentName = "";
   for (const row of rows(lines)) {
     const payload = (row.payload ?? {}) as Row;
     if (row.type === "session_meta") {
-      if (payload.parent_thread_id || (payload.source && typeof payload.source === "object" && "subagent" in payload.source)) side = true;
+      const sub = payload.source && typeof payload.source === "object" ? (payload.source as Row).subagent : undefined;
+      if (payload.parent_thread_id || sub !== undefined) {
+        side = true;
+        const spawn = sub && typeof sub === "object" ? (sub as Row).thread_spawn as Row | undefined : undefined;
+        parentId ||= str(payload.parent_thread_id) || str(spawn?.parent_thread_id);
+        agentName ||= str(spawn?.agent_nickname) || str(payload.agent_nickname)
+          || str(spawn?.agent_role) || str(payload.agent_role)
+          || str(payload.thread_source)
+          || (typeof sub === "string" ? sub : str((sub as Row | undefined)?.other));
+      }
       id ||= str(payload.id) || str(payload.session_id);
       cwd ||= str(payload.cwd);
     }
@@ -432,7 +457,7 @@ export function codexHead(lines: string[]) {
       if (item?.type === "input_text" && !prompt) prompt = codexUserText(str(item.text)).text;
     }
   }
-  return { id, cwd, prompt, side };
+  return { id, cwd, prompt, side, ...(parentId ? { parentId } : {}), ...(agentName ? { agentName } : {}) };
 }
 
 const textOf = (content: unknown) => typeof content === "string" ? content
@@ -450,15 +475,24 @@ export function grokHead(lines: string[]) {
   return { prompt: prompt.trim() };
 }
 
-/** DeepSeek：session 行里的 id、工作目录、是不是委派出去的子会话；session/title 取最后一个。 */
+/** DeepSeek：session 行里的 id、工作目录、是不是委派出去的子会话；session/title 取最后一个。用户 fork（isSeeded=true 且 delegationDepth=0）不算子会话。 */
 export function deepseekHead(lines: string[]) {
-  let id = "", cwd = "", title = "", prompt = "", side = false;
+  let id = "", cwd = "", title = "", prompt = "", side = false, parentId = "", agentName = "";
   for (const row of rows(lines)) {
-    if (row.type === "session") { id ||= str(row.id); cwd ||= str(row.cwd); if (Number(row.delegationDepth) > 0) side = true; }
-    else if (row.type === "session/title" && typeof row.data?.title === "string") title = row.data.title;
+    if (row.type === "session") {
+      id ||= str(row.id);
+      cwd ||= str(row.cwd);
+      const depth = Number(row.delegationDepth);
+      const isSub = row.origin === "subagent" || (Number.isFinite(depth) && depth > 0);
+      if (isSub) {
+        side = true;
+        parentId ||= str(row.parentSession);
+        agentName ||= str(row.agentPreset) || str(row.agentName);
+      }
+    } else if (row.type === "session/title" && typeof row.data?.title === "string") title = row.data.title;
     else if (row.type === "user/message" && !prompt) prompt = textOf(row.data?.content);
   }
-  return { id, cwd, title, prompt, side };
+  return { id, cwd, title, prompt, side, ...(parentId ? { parentId } : {}), ...(agentName ? { agentName } : {}) };
 }
 
 /** pi：session 行里的 id、工作目录；session_info 里的名字取最后一个。 */
@@ -472,9 +506,55 @@ export function piHead(lines: string[]) {
   return { id, cwd, title, prompt };
 }
 
-type Entry = { file: string; kind: TaskKind; size: number; mtimeMs: number; auxSize?: number; auxMtimeMs?: number; task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string };
-/** 子代理的会话文件（Claude 的 subagents/、Grok 的子会话）；parent 是主会话文件。 */
-type SubEntry = { file: string; kind: "claude" | "grok"; parent: string; size: number; mtimeMs: number; inferred: Inferred | null; read: boolean };
+type Entry = {
+  file: string; kind: TaskKind; size: number; mtimeMs: number; auxSize?: number; auxMtimeMs?: number;
+  task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string;
+  knownChildren?: Set<string>; childNames?: Map<string, string>;
+};
+/** 子代理的会话文件（Claude / Codex / Grok / DeepSeek）；parent 为主会话文件路径，parentKey 为主会话 key。 */
+type SubEntry = {
+  file: string; kind: "claude" | "codex" | "grok" | "deepseek"; id: string; key: string;
+  parent?: string; parentKey?: string; name: string;
+  size: number; mtimeMs: number; auxSize?: number; auxMtimeMs?: number; inferred: Inferred | null; read: boolean;
+};
+type SubBucket = { count: number; at: number; children: SubagentBrief[]; ask?: AgentAsk };
+type AgyChildLike = {
+  id: string; name?: string; status?: string; running?: boolean;
+  phase?: "thinking" | "tool" | "waiting"; tool?: string;
+  ask?: string | { id: string; name: string; args: string; at: number };
+  updatedAt?: number; since?: number; swarm?: boolean;
+};
+type AgyActivityLike = Omit<ReturnType<typeof readAntigravityActivity>[number], "children"> & {
+  agentName?: string; parentId?: string; swarm?: boolean; swarmTitle?: string; children?: AgyChildLike[];
+};
+const SUB_ORDER: Record<SubagentStatus, number> = { waiting: 0, working: 1, idle: 2 };
+function sortChildren(list: SubagentBrief[]): SubagentBrief[] {
+  return [...list].sort((a, b) => SUB_ORDER[a.status] - SUB_ORDER[b.status] || b.updatedAt - a.updatedAt);
+}
+function askSummary(ask: AgentAsk | undefined): string | undefined {
+  if (!ask) return undefined;
+  const text = ask.questions[0]?.question || (ask.tool === "ExitPlanMode" ? "等待批准计划" : ask.tool);
+  return text ? clip(text, 120) : undefined;
+}
+function grokChildEvents(lines: string[]) {
+  const spawned = new Map<string, string>();
+  const finished = new Set<string>();
+  for (const row of rows(lines)) {
+    const update = (row.params?.update ?? {}) as Row;
+    const kind = str(update.sessionUpdate);
+    const child = str(update.child_session_id);
+    if (!child) continue;
+    if (kind === "subagent_spawned") {
+      finished.delete(child);
+      const label = str(update.description) || str(update.subagent_type) || str(update.agent_name);
+      if (label || !spawned.has(child)) spawned.set(child, label);
+    } else if (kind === "subagent_finished") {
+      spawned.delete(child);
+      finished.add(child);
+    }
+  }
+  return { spawned, finished };
+}
 /** grok / deepseek / pi / antigravity 不给就不扫（测试只给前三个）。antigravity 是 ~/.gemini/antigravity 本身。 */
 export type ActivityRoots = { claude: string; codex: string; codexIndex: string; grok?: string; deepseek?: string; pi?: string; antigravity?: string; antigravityCli?: string };
 export function defaultRoots(): ActivityRoots {
@@ -560,7 +640,7 @@ export class ActivityScanner {
         if (now - stat.mtimeMs <= KEEP_MS) this.entries.set(file, { file, kind, size: -1, mtimeMs: stat.mtimeMs, task: null, inferred: null, read: false });
       } catch { /* 刚好被删了 */ }
     }
-    // 子代理：主会话旁边的 <会话 id>/subagents/，只收最近还在动的
+    // 子代理：Claude 主会话旁边的 <会话 id>/subagents/，只收最近还在动的
     for (const entry of this.entries.values()) {
       if (entry.kind !== "claude") continue;
       const dir = path.join(entry.file.slice(0, -".jsonl".length), "subagents");
@@ -570,7 +650,10 @@ export class ActivityScanner {
         if (this.subs.has(file)) continue;
         try {
           const stat = await fs.stat(file);
-          if (now - stat.mtimeMs <= SUB_STALE_MS) this.subs.set(file, { file, kind: "claude", parent: entry.file, size: -1, mtimeMs: stat.mtimeMs, inferred: null, read: false });
+          if (now - stat.mtimeMs <= SUB_STALE_MS) {
+            const id = path.basename(file, ".jsonl");
+            this.subs.set(file, { file, kind: "claude", id, key: `claude:${id}`, parent: entry.file, name: "", size: -1, mtimeMs: stat.mtimeMs, inferred: null, read: false });
+          }
         } catch { /* 刚好被删了 */ }
       }
     }
@@ -581,32 +664,119 @@ export class ActivityScanner {
   /** 这个文件是不是已经在跟踪列表里了（不在的话说明是新会话或旧会话刚恢复，需要 poke 重扫目录）。 */
   knows(file: string) {
     if (this.entries.has(file) || this.subs.has(file)) return true;
-    if (file.endsWith("events.jsonl")) return this.entries.has(path.join(path.dirname(file), "updates.jsonl"));
+    if (file.endsWith("events.jsonl")) {
+      const updates = path.join(path.dirname(file), "updates.jsonl");
+      return this.entries.has(updates) || this.subs.has(updates);
+    }
     return false;
   }
   /** 值得盯着的目录（里面的 .jsonl 变了就该看一次）。 */
   watchRoots() { return [this.roots.claude, this.roots.codex, this.roots.grok, this.roots.deepseek, this.roots.pi, this.roots.antigravity, this.roots.antigravityCli].filter((dir): dir is string => !!dir); }
 
-  /** 各主会话下正在跑的子代理：个数、最近一次动静。 */
+  private async readClaudeSubMeta(file: string): Promise<string> {
+    try {
+      const metaFile = file.slice(0, -".jsonl".length) + ".meta.json";
+      const meta = JSON.parse(await fs.readFile(metaFile, "utf8")) as Row;
+      return str(meta?.description) || str(meta?.agentType) || "";
+    } catch { return ""; }
+  }
+
+  /** 各主会话下正在跑的子代理：按主会话文件路径和主会话 key 分别归集（支持 Claude / Codex / Grok / DeepSeek）。 */
   private async scanSubs(now: number) {
-    const out = new Map<string, { count: number; at: number }>();
+    const byFile = new Map<string, SubBucket>();
+    const byKey = new Map<string, SubBucket>();
+    const pushBucket = (map: Map<string, SubBucket>, k: string, brief: SubagentBrief, ask?: AgentAsk) => {
+      const hit = map.get(k) ?? { count: 0, at: 0, children: [] };
+      if (!hit.children.some((c) => c.key === brief.key)) {
+        hit.children.push(brief);
+        if (brief.status !== "idle") hit.count += 1;
+      }
+      hit.at = Math.max(hit.at, brief.updatedAt);
+      if (ask && (!hit.ask || ask.at >= hit.ask.at)) hit.ask = ask;
+      map.set(k, hit);
+    };
     for (const sub of [...this.subs.values()]) {
       let stat;
       try { stat = await fs.stat(sub.file); } catch { this.subs.delete(sub.file); continue; }
-      if (!sub.read || stat.size !== sub.size || stat.mtimeMs !== sub.mtimeMs) {
-        sub.size = stat.size; sub.mtimeMs = stat.mtimeMs; sub.read = true;
+      let auxSize = sub.auxSize, auxMtimeMs = sub.auxMtimeMs;
+      if (sub.kind === "grok") {
         try {
-          const infer = sub.kind === "grok" ? inferGrok : (lines: string[]) => inferClaude(lines, { sidechain: true });
-          const { tail } = await readEnds(sub.file, sub.size, infer);
-          sub.inferred = infer(tail);
+          const evStat = await fs.stat(path.join(path.dirname(sub.file), "events.jsonl"));
+          auxSize = evStat.size; auxMtimeMs = evStat.mtimeMs;
+        } catch { auxSize = undefined; auxMtimeMs = undefined; }
+      }
+      const mtimeMs = Math.max(stat.mtimeMs, auxMtimeMs ?? 0);
+      if (!sub.read || stat.size !== sub.size || mtimeMs !== sub.mtimeMs || auxSize !== sub.auxSize) {
+        sub.size = stat.size; sub.mtimeMs = mtimeMs; sub.auxSize = auxSize; sub.auxMtimeMs = auxMtimeMs; sub.read = true;
+        try {
+          if (sub.kind === "deepseek") {
+            const lines = zstdFrames(await fs.readFile(sub.file)).text.split("\n");
+            const top = deepseekHead(lines);
+            sub.name ||= clip(top.agentName || top.title || top.prompt || sub.id.slice(0, 12), 36);
+            sub.inferred = inferDeepseek(lines);
+          } else if (sub.kind === "claude") {
+            const infer = (lines: string[]) => inferClaude(lines, { sidechain: true });
+            const { head, tail } = await readEnds(sub.file, sub.size, infer);
+            sub.inferred = infer(tail);
+            if (!sub.name) {
+              const metaName = await this.readClaudeSubMeta(sub.file);
+              const top = claudeHead(head);
+              sub.name = clip(metaName || top.title || top.prompt || sub.id.replace(/^agent-/, ""), 36);
+            }
+          } else if (sub.kind === "codex") {
+            const { head, tail } = await readEnds(sub.file, sub.size, inferCodex);
+            sub.inferred = inferCodex(tail);
+            if (!sub.name) {
+              const top = codexHead(head);
+              sub.name = clip(top.agentName || (await this.codexTitle(sub.id)) || top.prompt || sub.id.slice(0, 12), 36);
+            }
+          } else {
+            const { head, tail } = await readEnds(sub.file, sub.size, inferGrok);
+            let inferred = inferGrok(tail);
+            const dir = path.dirname(sub.file);
+            try {
+              const summary = JSON.parse(await fs.readFile(path.join(dir, "summary.json"), "utf8")) as Row;
+              const label = str(summary?.generated_title) || str(summary?.agent_name);
+              if (label) sub.name = clip(label, 36);
+              if (!sub.parentKey && str(summary?.parent_session_id)) sub.parentKey = `grok:${str(summary.parent_session_id)}`;
+            } catch { /* summary.json 可能尚未生成 */ }
+            if (!sub.name) sub.name = clip(grokHead(head).prompt || sub.id.slice(0, 12), 36);
+            try {
+              const evFile = path.join(dir, "events.jsonl");
+              const evStat = await fs.stat(evFile);
+              if (!inferred || evStat.mtimeMs >= sub.mtimeMs - 2000) {
+                const evInferred = inferGrokEvents((await readEnds(evFile, evStat.size, inferGrokEvents)).tail);
+                if (!inferred) inferred = evInferred;
+                else if (evInferred && inferred.status !== "done" && evInferred.status === "waiting") {
+                  inferred = { ...inferred, status: "waiting", tool: evInferred.tool ?? inferred.tool };
+                }
+              }
+            } catch { /* 没有 events.jsonl */ }
+            sub.inferred = inferred;
+          }
         } catch { sub.inferred = null; }
       }
-      if (now - sub.mtimeMs > SUB_STALE_MS) { this.subs.delete(sub.file); continue; }
-      if (!sub.inferred || sub.inferred.status === "done") continue;
-      const hit = out.get(sub.parent) ?? { count: 0, at: 0 };
-      out.set(sub.parent, { count: hit.count + 1, at: Math.max(hit.at, sub.mtimeMs) });
+      const staleLimit = sub.inferred?.ask ? ASK_STALE_MS : SUB_STALE_MS;
+      if (now - sub.mtimeMs > staleLimit) { this.subs.delete(sub.file); continue; }
+      const subLive = sub.inferred ? liveStatus(sub.inferred, sub.mtimeMs, now) : null;
+      if (!subLive || subLive === "done") continue;
+      const displayName = clip(sub.name || sub.id.slice(0, 12), 36);
+      const subAsk = sub.inferred?.ask ? { ...sub.inferred.ask, from: displayName } : undefined;
+      const askText = askSummary(subAsk);
+      const brief: SubagentBrief = {
+        key: sub.key,
+        id: sub.id,
+        name: displayName,
+        status: subLive === "waiting" ? "waiting" : "working",
+        ...(sub.inferred?.tool ? { tool: sub.inferred.tool } : {}),
+        since: sub.inferred?.since || sub.mtimeMs,
+        updatedAt: sub.mtimeMs,
+        ...(askText ? { ask: askText } : {}),
+      };
+      if (sub.parent) pushBucket(byFile, sub.parent, brief, subAsk);
+      if (sub.parentKey) pushBucket(byKey, sub.parentKey, brief, subAsk);
     }
-    return out;
+    return { byFile, byKey };
   }
 
   private async codexTitle(id: string) {
@@ -626,8 +796,17 @@ export class ActivityScanner {
       const lines = zstdFrames(await fs.readFile(entry.file)).text.split("\n");
       entry.read = true;
       const top = deepseekHead(lines);
-      if (top.side) { entry.inferred = null; entry.task = null; return; }
       const id = top.id || path.basename(path.dirname(entry.file)).replace(/^session-/, "");
+      if (top.side) {
+        entry.inferred = null; entry.task = null;
+        if (top.parentId) {
+          const name = clip(top.agentName || top.title || top.prompt || id.slice(0, 12), 36);
+          const existing = this.subs.get(entry.file);
+          if (existing) { existing.parentKey = `deepseek:${top.parentId}`; existing.name ||= name; }
+          else this.subs.set(entry.file, { file: entry.file, kind: "deepseek", id, key: `deepseek:${id}`, parentKey: `deepseek:${top.parentId}`, name, size: -1, mtimeMs: entry.mtimeMs, inferred: null, read: false });
+        }
+        return;
+      }
       entry.inferred = inferDeepseek(lines);
       entry.task = { key: `deepseek:${id}`, kind: "deepseek", agent: AGENT.deepseek, id, title: clip(top.title || top.prompt || "未命名会话"), project: path.basename(top.cwd), status: "thinking", since: 0, updatedAt: 0 };
       return;
@@ -639,10 +818,22 @@ export class ActivityScanner {
       const dir = path.dirname(entry.file);
       let summary: Row = {};
       try { summary = JSON.parse(await fs.readFile(path.join(dir, "summary.json"), "utf8")) ?? {}; } catch { /* 刚建的会话还没有 */ }
-      if (summary.session_kind === "subagent") { entry.inferred = null; entry.task = null; return; }
+      const id = path.basename(dir);
+      if (summary.session_kind === "subagent") {
+        entry.inferred = null; entry.task = null;
+        const name = clip(str(summary.generated_title) || str(summary.agent_name) || grokHead(head).prompt || id.slice(0, 12), 36);
+        const parentId = str(summary.parent_session_id);
+        const existing = this.subs.get(entry.file);
+        if (existing) {
+          if (name) existing.name = name;
+          if (parentId && !existing.parentKey) existing.parentKey = `grok:${parentId}`;
+        } else if (parentId) {
+          this.subs.set(entry.file, { file: entry.file, kind: "grok", id, key: `grok:${id}`, parentKey: `grok:${parentId}`, name, size: -1, mtimeMs: entry.mtimeMs, inferred: null, read: false });
+        }
+        return;
+      }
       let cwd = str(summary.info?.cwd);
       try { cwd ||= decodeURIComponent(path.basename(path.dirname(dir))); } catch { /* 目录名不是编码过的路径 */ }
-      const id = path.basename(dir);
       let inferred = inferGrok(tail);
       try {
         const evFile = path.join(dir, "events.jsonl");
@@ -657,10 +848,26 @@ export class ActivityScanner {
       } catch { /* 没有 events.jsonl 时只看 updates.jsonl */ }
       entry.inferred = inferred;
       entry.task = { key: `grok:${id}`, kind: "grok", agent: AGENT.grok, id, title: clip(str(summary.generated_title) || grokHead(head).prompt || "未命名会话"), project: path.basename(cwd), status: "thinking", since: 0, updatedAt: 0 };
-      // 子代理是同一工作目录下的另一个会话
-      for (const child of entry.inferred?.children ?? []) {
+      // 子代理是同一工作目录下的另一个会话（保留已见过的子代理直到 subagent_finished，避免父尾巴滚出 64 KB 后丢跟踪）
+      entry.knownChildren ??= new Set();
+      entry.childNames ??= new Map();
+      const ev = grokChildEvents(tail);
+      for (const doneChild of ev.finished) entry.knownChildren.delete(doneChild);
+      for (const [child, label] of ev.spawned) {
+        entry.knownChildren.add(child);
+        if (label) entry.childNames.set(child, clip(label, 36));
+      }
+      for (const child of entry.inferred?.children ?? []) entry.knownChildren.add(child);
+      for (const child of entry.knownChildren) {
         const file = path.join(path.dirname(dir), child, "updates.jsonl");
-        if (!this.subs.has(file)) this.subs.set(file, { file, kind: "grok", parent: entry.file, size: -1, mtimeMs: 0, inferred: null, read: false });
+        const label = entry.childNames.get(child) || "";
+        const existing = this.subs.get(file);
+        if (existing) {
+          existing.parent = entry.file;
+          if (label && !existing.name) existing.name = label;
+        } else {
+          this.subs.set(file, { file, kind: "grok", id: child, key: `grok:${child}`, parent: entry.file, name: label, size: -1, mtimeMs: 0, inferred: null, read: false });
+        }
       }
       return;
     }
@@ -679,8 +886,17 @@ export class ActivityScanner {
       entry.task = { key: `claude:${id}`, kind: "claude", agent: AGENT.claude, id, title: clip(end.title || top.title || top.prompt || end.prompt || "未命名会话"), project: path.basename(top.cwd || end.cwd || ""), status: "thinking", since: 0, updatedAt: 0 };
     } else {
       const top = codexHead(head);
-      if (top.side) { entry.inferred = null; entry.task = null; return; }
       const id = top.id || path.basename(entry.file, ".jsonl").replace(/^rollout-[\dT:-]+-/, "");
+      if (top.side) {
+        entry.inferred = null; entry.task = null;
+        if (top.parentId) {
+          const name = clip(top.agentName || (await this.codexTitle(id)) || top.prompt || id.slice(0, 12), 36);
+          const existing = this.subs.get(entry.file);
+          if (existing) { existing.parentKey = `codex:${top.parentId}`; existing.name ||= name; }
+          else this.subs.set(entry.file, { file: entry.file, kind: "codex", id, key: `codex:${id}`, parentKey: `codex:${top.parentId}`, name, size: -1, mtimeMs: entry.mtimeMs, inferred: null, read: false });
+        }
+        return;
+      }
       entry.inferred = inferCodex(tail);
       entry.task = { key: `codex:${id}`, kind: "codex", agent: AGENT.codex, id, title: clip((await this.codexTitle(id)) || top.prompt || "未命名会话"), project: path.basename(top.cwd || ""), status: "thinking", since: 0, updatedAt: 0 };
     }
@@ -690,13 +906,24 @@ export class ActivityScanner {
     const now = this.now();
     if (now - this.lastFull >= FULL_SCAN_MS) { this.lastFull = now; await this.discover(now); }
     const running: AgentTask[] = [], recent: AgentTask[] = [], finished: string[] = [], failed: string[] = [], needsYou: string[] = [], asked: string[] = [];
-    const subs = await this.scanSubs(now);
     /** 一个会话这一次的状态：放进在跑 / 刚完成，和上一次比出做完了、出错了、问了你、在等你（holder 记着上一次）。 */
-    const consider = (holder: { last?: TaskStatus | null; lastAsk?: string }, base: AgentTask | null, inferred: Inferred | null, seen: number, sub?: { count: number }) => {
+    const consider = (holder: { last?: TaskStatus | null; lastAsk?: string }, base: AgentTask | null, inferred: Inferred | null, seen: number, sub?: { count: number; children?: SubagentBrief[] }) => {
       const status = inferred ? liveStatus(inferred, seen, now) : null;
       if (base && inferred && status) {
         const ask = status === "done" ? undefined : inferred.ask;
-        const task: AgentTask = { ...base, status, tool: status === "done" ? undefined : inferred.tool, since: inferred.since, updatedAt: seen, doneAt: inferred.doneAt, ...(ask ? { ask } : {}), ...(sub && status !== "done" ? { subagents: sub.count } : {}) };
+        const kids = status !== "done" && sub?.children?.length ? sortChildren(sub.children) : undefined;
+        const count = status !== "done" ? (sub?.count || 0) : 0;
+        const task: AgentTask = {
+          ...base,
+          status,
+          tool: status === "done" ? undefined : inferred.tool,
+          since: inferred.since,
+          updatedAt: seen,
+          doneAt: inferred.doneAt,
+          ...(ask ? { ask } : {}),
+          ...(count > 0 ? { subagents: count } : {}),
+          ...(kids ? { children: kids } : {}),
+        };
         if (status !== "done") running.push(task);
         else if (task.doneAt && now - task.doneAt <= RECENT_MS) recent.push(task);
         if (status === "done" && holder.last && holder.last !== "done") {
@@ -710,6 +937,7 @@ export class ActivityScanner {
       holder.last = status;
       holder.lastAsk = status && status !== "done" ? inferred?.ask?.id : undefined;
     };
+    // 先加载变动的主/子会话文件（Codex / DeepSeek / Grok 子会话在 load 里挂进 this.subs），再统一扫子代理状态
     for (const entry of [...this.entries.values()]) {
       let stat;
       try { stat = await fs.stat(entry.file); } catch { this.entries.delete(entry.file); continue; }
@@ -725,28 +953,133 @@ export class ActivityScanner {
         entry.size = stat.size; entry.mtimeMs = mtimeMs; entry.auxSize = auxSize; entry.auxMtimeMs = auxMtimeMs;
         try { await this.load(entry); } catch { entry.inferred = null; entry.task = null; }
       }
-      // 有子代理在跑：按两边最近的动静算；这一轮已经结束的（后台子代理还在跑）当作在跑子代理
-      const sub = entry.task ? subs.get(entry.file) : undefined, seen = Math.max(entry.mtimeMs, sub?.at ?? 0);
-      const inferred = sub && entry.inferred?.status === "done" ? { ...entry.inferred, status: "tool" as const, tool: "Agent", doneAt: undefined, ended: undefined } : entry.inferred;
+    }
+    const { byFile, byKey } = await this.scanSubs(now);
+    const mergeSub = (a?: SubBucket, b?: SubBucket): SubBucket | undefined => {
+      if (!a && !b) return undefined;
+      if (!a) return b;
+      if (!b) return a;
+      const children = [...a.children];
+      for (const c of b.children) if (!children.some((x) => x.key === c.key)) children.push(c);
+      const ask = a.ask && b.ask ? (a.ask.at >= b.ask.at ? a.ask : b.ask) : (a.ask ?? b.ask);
+      return { count: children.filter((c) => c.status !== "idle").length, at: Math.max(a.at, b.at), children, ...(ask ? { ask } : {}) };
+    };
+    for (const entry of [...this.entries.values()]) {
+      const sub = entry.task ? mergeSub(byFile.get(entry.file), byKey.get(entry.task.key)) : undefined;
+      const seen = Math.max(entry.mtimeMs, sub?.at ?? 0);
+      let inferred = entry.inferred;
+      // 有子代理在跑：正常结束这一轮的后台子代理算在跑；出错或用户中断的不被子代理掩盖
+      if (sub && sub.count > 0 && inferred?.status === "done" && inferred.ended !== "error" && inferred.ended !== "interrupted") {
+        const toolName = sub.children.find((c) => c.tool)?.tool || "Agent";
+        inferred = { ...inferred, status: sub.ask ? "waiting" : "tool", tool: toolName, doneAt: undefined, ended: undefined, ...(sub.ask ? { ask: sub.ask } : {}) };
+      } else if (sub?.ask && inferred && inferred.status !== "done" && !inferred.ask) {
+        inferred = { ...inferred, ask: sub.ask };
+      }
       consider(entry, entry.task, inferred, seen, sub);
       if (now - entry.mtimeMs > KEEP_MS) this.entries.delete(entry.file);
     }
-    // Antigravity：对话状态在它自己的对话列表库里（见 antigravity.ts 的 readAntigravityActivity），子代理不单独算（归入主对话的 subagents）
+    // Antigravity：对话状态在它自己的对话列表库里（见 antigravity.ts 的 readAntigravityActivity），子代理 / Swarm worker 归入主对话的 subagents 与 children
     const agyDirs = [this.roots.antigravity, this.roots.antigravityCli].filter((dir): dir is string => !!dir);
     if (agyDirs.length) {
       const alive = new Set<string>();
-      for (const item of readAntigravityActivity(now - KEEP_MS, agyDirs, now)) {
+      const rawItems = readAntigravityActivity(now - KEEP_MS, agyDirs, now) as AgyActivityLike[];
+      // 兜底：若有带 parentId 的活跃嵌套项未归入父项的 children，也一并挂到父对话下
+      const fallbackKids = new Map<string, AgyActivityLike[]>();
+      for (const item of rawItems) {
+        if (item.nested && item.running && item.parentId) {
+          const listForParent = fallbackKids.get(item.parentId) ?? [];
+          listForParent.push(item);
+          fallbackKids.set(item.parentId, listForParent);
+        }
+      }
+      for (const item of rawItems) {
         if (item.nested) continue;
         alive.add(item.id);
         const holder = this.agy.get(item.id) ?? {};
         this.agy.set(item.id, holder);
-        const ask = item.running && item.ask ? askOf(item.ask.name, item.ask.args, item.ask.id, item.at) ?? undefined : undefined;
-        const toolName = item.tool || (item.phase === "tool" && item.subagents ? "Agent" : undefined);
-        const inferred: Inferred = item.running
-          ? { status: item.phase === "waiting" ? "waiting" : item.phase === "tool" ? "tool" : "thinking", since: item.since, at: item.at, ...(toolName ? { tool: toolName } : {}), ...(ask ? { ask } : {}) }
-          : { status: "done", since: item.since, at: item.at, doneAt: item.at, ...(item.ended ? { ended: item.ended } : {}) };
-        const task: AgentTask = { key: `antigravity:${item.id}`, kind: "antigravity", agent: AGENT.antigravity, id: item.id, title: clip(item.title || "未命名会话"), project: path.basename(item.workspace || ""), status: "thinking", since: 0, updatedAt: 0 };
-        consider(holder, task, inferred, item.at, item.subagents ? { count: item.subagents } : undefined);
+        const children: SubagentBrief[] = [];
+        const seenChildIds = new Set<string>();
+        let childAsk: AgentAsk | undefined;
+        let childAt = 0;
+        const addChild = (ch: AgyChildLike) => {
+          if (!ch?.id || seenChildIds.has(ch.id)) return;
+          seenChildIds.add(ch.id);
+          const chUpdated = ch.updatedAt || item.at;
+          const chSince = ch.since || chUpdated;
+          const chName = clip(ch.name || ch.id.slice(0, 8), 36);
+          const chRunning = ch.running !== false && ch.status !== "idle" && ch.status !== "done";
+          let chAskText: string | undefined;
+          if (chRunning && ch.ask) {
+            if (typeof ch.ask === "string") {
+              chAskText = clip(ch.ask, 120);
+              const bareToolName = /^[a-z0-9_.-]+$/i.test(ch.ask.trim());
+              if (!childAsk && !bareToolName) {
+                childAsk = {
+                  id: `sub:${ch.id}:${ch.ask.slice(0, 24)}`,
+                  tool: "AskUserQuestion",
+                  at: chUpdated,
+                  questions: [{ header: chName, question: clip(ch.ask, ASK_LIMITS.question), options: [], multi: false }],
+                  from: chName,
+                  ...(ch.swarm ? { swarm: true } : {}),
+                };
+              }
+            } else {
+              const parsedAsk = askOf(ch.ask.name, ch.ask.args, ch.ask.id, ch.ask.at || chUpdated);
+              if (parsedAsk) {
+                chAskText = askSummary(parsedAsk);
+                if (!childAsk) childAsk = { ...parsedAsk, from: chName, ...(ch.swarm ? { swarm: true } : {}) };
+              }
+            }
+          }
+          const chStatus: SubagentStatus = !chRunning
+            ? "idle"
+            : (ch.phase === "waiting" || ch.status === "waiting" || !!chAskText)
+              ? "waiting"
+              : "working";
+          if (chStatus !== "idle") childAt = Math.max(childAt, chUpdated);
+          children.push({
+            key: `antigravity:${ch.id}`,
+            id: ch.id,
+            name: chName,
+            status: chStatus,
+            ...(ch.tool ? { tool: ch.tool } : {}),
+            since: chSince,
+            updatedAt: chUpdated,
+            ...(chAskText ? { ask: chAskText } : {}),
+            ...(ch.swarm ? { swarm: true } : {}),
+          });
+        };
+        for (const ch of item.children ?? []) addChild(ch);
+        for (const fb of fallbackKids.get(item.id) ?? []) {
+          addChild({ id: fb.id, name: fb.agentName || fb.title || fb.id.slice(0, 8), status: fb.phase || "working", running: fb.running, phase: fb.phase, tool: fb.tool, ask: fb.ask, updatedAt: fb.at, since: fb.since, swarm: fb.swarm });
+        }
+        const activeChildren = children.filter((c) => c.status !== "idle");
+        const subCount = activeChildren.length || item.subagents || 0;
+        const waitingChild = activeChildren.find((c) => c.status === "waiting");
+        const rawOwnAsk = item.running && item.ask ? askOf(item.ask.name, item.ask.args, item.ask.id, item.at) ?? undefined : undefined;
+        const ownAsk = rawOwnAsk && waitingChild?.ask && (waitingChild.ask === item.ask?.name || waitingChild.ask === rawOwnAsk.tool)
+          ? { ...rawOwnAsk, from: waitingChild.name, ...(waitingChild.swarm ? { swarm: true } : {}) }
+          : rawOwnAsk;
+        const ask = ownAsk ?? childAsk;
+        const isRunning = item.running || activeChildren.length > 0;
+        const toolChild = activeChildren.find((c) => c.tool);
+        const phase = (ask || item.phase === "waiting" || waitingChild) ? "waiting"
+          : (item.phase === "tool" || toolChild) ? "tool"
+          : (item.phase || "thinking");
+        const toolName = item.tool || toolChild?.tool || (phase === "tool" && subCount ? "Agent" : undefined);
+        const seenAt = Math.max(item.at, childAt);
+        const inferred: Inferred = isRunning
+          ? { status: phase, since: item.since, at: seenAt, ...(toolName ? { tool: toolName } : {}), ...(ask ? { ask } : {}) }
+          : { status: "done", since: item.since, at: seenAt, doneAt: seenAt, ...(item.ended ? { ended: item.ended } : {}) };
+        const isSwarm = Boolean(item.swarm || children.some((c) => c.swarm));
+        const task: AgentTask = {
+          key: `antigravity:${item.id}`, kind: "antigravity", agent: AGENT.antigravity, id: item.id,
+          title: clip(item.title || item.swarmTitle || "未命名会话"), project: path.basename(item.workspace || ""),
+          status: "thinking", since: 0, updatedAt: 0,
+          ...(isSwarm ? { swarm: true } : {}),
+          ...(item.swarmTitle ? { swarmTitle: clip(item.swarmTitle, 60) } : {}),
+        };
+        consider(holder, task, inferred, seenAt, subCount || children.length ? { count: subCount, children } : undefined);
       }
       for (const id of [...this.agy.keys()]) if (!alive.has(id)) this.agy.delete(id);
     }

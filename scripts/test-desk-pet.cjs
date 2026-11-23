@@ -1235,6 +1235,299 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.equal(model.petPhase({ running: [task('waiting')] }), 'waiting');
   });
 
+  await checkAsync('desk pet: Antigravity Swarm children, worker ask bubbling, and nested fallback', async () => {
+    const agyMod = require('../build/core/antigravity');
+    const origRead = agyMod.readAntigravityActivity;
+    const now = Date.now();
+    let payload = [
+      {
+        id: 'sw-root',
+        title: 'TokenPulse 多代理改造',
+        workspace: 'D:\\work\\TokenPulse',
+        running: false,
+        phase: 'thinking',
+        nested: false,
+        since: now - 120_000,
+        at: now - 30_000,
+        swarm: true,
+        swarmTitle: 'Subagent Swarm',
+        children: [
+          { id: 'sw-w1', name: 'audit-pet', status: 'working', running: true, phase: 'tool', tool: 'grep_search', updatedAt: now - 3000, swarm: true },
+          { id: 'sw-w2', name: 'core-sessions', status: 'waiting', running: true, phase: 'waiting', ask: '确认是否合并接口？', updatedAt: now - 1000, swarm: true },
+          { id: 'sw-w3', name: 'verifier', status: 'idle', running: false, updatedAt: now - 20_000, swarm: true },
+        ],
+      },
+      {
+        id: 'fb-root',
+        title: 'Fallback 主会话',
+        workspace: 'D:\\work\\Fallback',
+        running: true,
+        phase: 'thinking',
+        nested: false,
+        since: now - 60_000,
+        at: now - 10_000,
+      },
+      {
+        id: 'fb-child',
+        title: 'Fallback 子任务',
+        agentName: 'worker-fb',
+        workspace: 'D:\\work\\Fallback',
+        running: true,
+        phase: 'tool',
+        tool: 'run_command',
+        nested: true,
+        parentId: 'fb-root',
+        since: now - 15_000,
+        at: now - 2000,
+      },
+    ];
+    agyMod.readAntigravityActivity = () => payload;
+    try {
+      const none = path.join(root, 'none');
+      const scanner = new activity.ActivityScanner({ claude: none, codex: none, codexIndex: path.join(root, 'none.jsonl'), antigravity: path.join(root, 'agy-swarm-mock') });
+      const first = await scanner.scan();
+      assert.deepEqual(first.running.map(t => t.key).sort(), ['antigravity:fb-root', 'antigravity:sw-root'], '嵌套子会话不单独列为顶层任务');
+      const sw = first.running.find(t => t.key === 'antigravity:sw-root');
+      assert.equal(sw.swarm, true);
+      assert.equal(sw.swarmTitle, 'Subagent Swarm');
+      assert.equal(sw.subagents, 2, '只计活跃 worker，不计 idle');
+      assert.equal(sw.status, 'waiting', 'worker 在问人时主任务升为 waiting');
+      assert.equal(sw.ask?.from, 'core-sessions');
+      assert.equal(sw.ask?.swarm, true);
+      assert.equal(sw.ask?.questions?.[0]?.question, '确认是否合并接口？');
+      assert.deepEqual(sw.children.map(c => [c.key, c.name, c.status, c.tool ?? '', !!c.swarm]), [
+        ['antigravity:sw-w2', 'core-sessions', 'waiting', '', true],
+        ['antigravity:sw-w1', 'audit-pet', 'working', 'grep_search', true],
+        ['antigravity:sw-w3', 'verifier', 'idle', '', true],
+      ], 'children 按 waiting > working > idle 排序');
+
+      const fb = first.running.find(t => t.key === 'antigravity:fb-root');
+      assert.equal(fb.subagents, 1, 'nested + parentId 兜底归入父会话');
+      assert.equal(fb.status, 'tool');
+      assert.equal(fb.tool, 'run_command');
+      assert.deepEqual(fb.children.map(c => [c.key, c.name, c.status, c.tool]), [['antigravity:fb-child', 'worker-fb', 'working', 'run_command']]);
+
+      // 结构化 ask 对象也能从 worker 冒泡到父任务
+      payload = [
+        {
+          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: false, phase: 'thinking', nested: false, since: now - 120_000, at: now, swarm: true,
+          children: [
+            { id: 'sw-w1', name: 'audit-pet', status: 'waiting', running: true, phase: 'waiting', ask: { id: 'call_sub_1', name: 'ask_question', args: JSON.stringify({ questions: [{ question: '选方案？', options: ['A', 'B'] }] }), at: now }, updatedAt: now, swarm: true },
+          ],
+        },
+      ];
+      const second = await scanner.scan();
+      const sw2 = second.running.find(t => t.key === 'antigravity:sw-root');
+      assert.deepEqual(second.asked, ['antigravity:sw-root'], '新冒泡出的 worker 提问记进 asked');
+      assert.equal(sw2.ask?.from, 'audit-pet');
+      assert.deepEqual(sw2.ask?.questions?.[0]?.options?.map(o => o.label), ['A', 'B']);
+
+      // core-sessions 契约形态：root.ask 携带结构化问题，同时 child.ask 传工具名 'ask_question' → 自动补上 from/swarm
+      payload = [
+        {
+          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: true, phase: 'waiting', nested: false, since: now - 120_000, at: now + 1000, swarm: true,
+          ask: { id: 'call_bubbled_2', name: 'ask_question', args: JSON.stringify({ questions: [{ question: '需要清理缓存吗？', options: ['是', '否'] }] }), at: now + 1000 },
+          children: [
+            { id: 'sw-w1', name: 'audit-pet', status: 'waiting', running: true, phase: 'waiting', ask: 'ask_question', updatedAt: now + 1000, swarm: true },
+          ],
+        },
+      ];
+      const bubbled = await scanner.scan();
+      const swB = bubbled.running.find(t => t.key === 'antigravity:sw-root');
+      assert.equal(swB.ask?.from, 'audit-pet');
+      assert.equal(swB.ask?.swarm, true);
+      assert.equal(swB.ask?.questions?.[0]?.question, '需要清理缓存吗？');
+
+      // 所有 worker 都空闲后，主会话算正常完成
+      payload = [
+        {
+          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: false, phase: 'thinking', nested: false, since: now - 120_000, at: now + 5000, ended: 'ok', swarm: true,
+          children: [{ id: 'sw-w1', name: 'audit-pet', status: 'idle', running: false, updatedAt: now + 5000, swarm: true }],
+        },
+      ];
+      const third = await scanner.scan();
+      assert.deepEqual([third.running.length, third.finished], [0, ['antigravity:sw-root']]);
+    } finally {
+      agyMod.readAntigravityActivity = origRead;
+    }
+  });
+
+  await checkAsync('desk pet: Claude, Codex, DeepSeek, and Grok subagent enrichment, ask bubbling, and DeepSeek user-fork exclusion', async () => {
+    // 1) codexHead / deepseekHead 元数据解析
+    const cxSpawn = activity.codexHead([
+      line({ type: 'session_meta', payload: { id: 'cx-sub-1', cwd: '/w/p', source: { subagent: { thread_spawn: { parent_thread_id: 'cx-root-1', agent_nickname: 'parser', agent_role: 'worker' } } } } }),
+    ]);
+    assert.deepEqual(cxSpawn, { id: 'cx-sub-1', cwd: '/w/p', prompt: '', side: true, parentId: 'cx-root-1', agentName: 'parser' });
+    const dsSubHead = activity.deepseekHead([
+      line({ type: 'session', id: 'ds-sub-h', cwd: '/w/ds', origin: 'subagent', delegationDepth: 0, parentSession: 'ds-p', agentPreset: 'researcher' }),
+    ]);
+    assert.deepEqual(dsSubHead, { id: 'ds-sub-h', cwd: '/w/ds', title: '', prompt: '', side: true, parentId: 'ds-p', agentName: 'researcher' });
+    const dsForkHead = activity.deepseekHead([
+      line({ type: 'session', id: 'ds-fork-h', cwd: '/w/ds', isSeeded: true, delegationDepth: 0, parentSession: 'ds-p' }),
+    ]);
+    assert.equal(dsForkHead.side, false, 'DeepSeek 用户 fork（isSeeded=true, delegationDepth=0）不算子代理');
+
+    const home = path.join(root, 'home-multi-sub');
+    const claudeRoot = path.join(home, '.claude', 'projects');
+    const claudeProj = path.join(claudeRoot, 'D--work-multi');
+    const claudeSubDir = path.join(claudeProj, 'cl-main', 'subagents');
+    const nowDate = new Date();
+    const codexRoot = path.join(home, '.codex', 'sessions');
+    const codexDay = path.join(codexRoot, String(nowDate.getFullYear()), String(nowDate.getMonth() + 1).padStart(2, '0'), String(nowDate.getDate()).padStart(2, '0'));
+    const grokRoot = path.join(home, '.grok', 'sessions');
+    const grokProj = path.join(grokRoot, encodeURIComponent('D:\\work\\grok-multi'));
+    const dsRoot = path.join(home, '.dsh', 'sessions');
+    fs.mkdirSync(claudeSubDir, { recursive: true });
+    fs.mkdirSync(codexDay, { recursive: true });
+    fs.mkdirSync(grokProj, { recursive: true });
+
+    const recent = s => new Date(Date.now() - s * 1000).toISOString();
+    const sec = () => Math.floor(Date.now() / 1000);
+    const grok = update => line({ timestamp: sec(), method: 'session/update', params: { sessionId: 'g', update } });
+    const dsRow = (type, data = {}) => ({ type, seq: 1, time: Date.now(), data });
+    const zframe = list => zlib.zstdCompressSync(Buffer.from(list.map(row => JSON.stringify(row)).join('\n') + '\n'));
+
+    // 2) Claude Code: .meta.json (description + agentType fallback) + 子代理 AskUserQuestion 冒泡
+    fs.writeFileSync(path.join(claudeProj, 'cl-main.jsonl'), [
+      line({ type: 'user', timestamp: recent(120), sessionId: 'cl-main', cwd: 'D:\\work\\multi', message: { content: '主任务' } }),
+      line({ type: 'assistant', timestamp: recent(60), message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'ag1', name: 'Agent', input: {} }] } }),
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(claudeSubDir, 'agent-abc.meta.json'), JSON.stringify({ agentType: 'Explore', description: 'Inspect auth flow' }));
+    fs.writeFileSync(path.join(claudeSubDir, 'agent-abc.jsonl'), [
+      line({ type: 'user', timestamp: recent(20), isSidechain: true, message: { content: 'check auth' } }),
+      line({ type: 'assistant', timestamp: recent(2), isSidechain: true, message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'sub-q1', name: 'AskUserQuestion', input: { questions: [{ question: '要保留旧 token 吗？', options: [{ label: '保留' }] }] } }] } }),
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(claudeSubDir, 'agent-def.meta.json'), JSON.stringify({ agentType: 'Plan' }));
+    fs.writeFileSync(path.join(claudeSubDir, 'agent-def.jsonl'), [
+      line({ type: 'user', timestamp: recent(15), isSidechain: true, message: { content: 'plan it' } }),
+      line({ type: 'assistant', timestamp: recent(3), isSidechain: true, message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't2', name: 'Read', input: {} }] } }),
+    ].join('\n') + '\n');
+
+    // 3) Codex CLI: parent 已完成但 thread_spawn 子代理在跑 + request_user_input 冒泡
+    fs.writeFileSync(path.join(codexDay, 'rollout-cx-main.jsonl'), [
+      line({ type: 'session_meta', timestamp: recent(90), payload: { id: 'cx-main', cwd: '/w/codex-app' } }),
+      line({ type: 'event_msg', timestamp: recent(90), payload: { type: 'task_started' } }),
+      line({ type: 'response_item', timestamp: recent(89), payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '重构解析器' }] } }),
+      line({ type: 'event_msg', timestamp: recent(50), payload: { type: 'task_complete' } }),
+    ].join('\n') + '\n');
+    const codexSubFile = path.join(codexDay, 'rollout-cx-sub.jsonl');
+    fs.writeFileSync(codexSubFile, [
+      line({ type: 'session_meta', timestamp: recent(40), payload: { id: 'cx-sub', cwd: '/w/codex-app', source: { subagent: { thread_spawn: { parent_thread_id: 'cx-main', agent_nickname: 'parser', agent_role: 'worker' } } } } }),
+      line({ type: 'event_msg', timestamp: recent(40), payload: { type: 'task_started' } }),
+      line({ type: 'response_item', timestamp: recent(5), payload: { type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{}' } }),
+    ].join('\n') + '\n');
+
+    // 4) DeepSeek Harness: origin=subagent 归入父会话，isSeeded=true&delegationDepth=0 作为独立主任务保留
+    const dsMainDir = path.join(dsRoot, '--D-work-ds--', 'session-ds-main');
+    const dsSubDir = path.join(dsRoot, '--D-work-ds--', 'session-ds-sub');
+    const dsForkDir = path.join(dsRoot, '--D-work-ds--', 'session-ds-fork');
+    for (const d of [dsMainDir, dsSubDir, dsForkDir]) fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(dsMainDir, 'session.v4.jsonl.zstd'), zframe([
+      { type: 'session', id: 'ds-main', cwd: 'D:\\work\\ds', delegationDepth: 0 },
+      dsRow('turn/start'), dsRow('user/message', { content: [{ type: 'text', text: '主会话' }] }),
+      dsRow('turn/end', { reason: { kind: 'completed' } }),
+    ]));
+    const dsSubFile = path.join(dsSubDir, 'session.v4.jsonl.zstd');
+    fs.writeFileSync(dsSubFile, zframe([
+      { type: 'session', id: 'ds-sub', cwd: 'D:\\work\\ds', origin: 'subagent', delegationDepth: 1, parentSession: 'ds-main', agentPreset: 'coder' },
+      dsRow('turn/start'), dsRow('tool/call', { callId: 'c1', name: 'edit_file' }),
+    ]));
+    fs.writeFileSync(path.join(dsForkDir, 'session.v4.jsonl.zstd'), zframe([
+      { type: 'session', id: 'ds-fork', cwd: 'D:\\work\\ds', isSeeded: true, delegationDepth: 0, parentSession: 'ds-main' },
+      dsRow('turn/start'), dsRow('user/message', { content: [{ type: 'text', text: '用户分支会话' }] }),
+    ]));
+
+    // 5) Grok Build: 超过 64KB 追加写入后仍保留 subagent_spawned 关联，且 events.jsonl 触发 waiting
+    const grMainDir = path.join(grokProj, 'gr-main');
+    const grSubDir = path.join(grokProj, 'gr-sub');
+    fs.mkdirSync(grMainDir, { recursive: true }); fs.mkdirSync(grSubDir, { recursive: true });
+    fs.writeFileSync(path.join(grMainDir, 'summary.json'), JSON.stringify({ generated_title: 'Grok 审计', info: { cwd: 'D:\\work\\grok-multi' } }));
+    const grMainFile = path.join(grMainDir, 'updates.jsonl');
+    fs.writeFileSync(grMainFile, [
+      grok({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '审计 API' } }),
+      grok({ sessionUpdate: 'subagent_spawned', child_session_id: 'gr-sub', description: 'Audit API' }),
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(grSubDir, 'summary.json'), JSON.stringify({ session_kind: 'subagent', agent_name: 'explorer' }));
+    fs.writeFileSync(path.join(grSubDir, 'updates.jsonl'), [
+      grok({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'scan endpoints' } }),
+      grok({ sessionUpdate: 'tool_call', toolCallId: 'r1', title: 'bash', _meta: { 'x.ai/tool': { name: 'bash' } } }),
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(grSubDir, 'events.jsonl'), line({ timestamp: sec(), type: 'permission_requested', tool: 'bash' }) + '\n');
+
+    const scanner = new activity.ActivityScanner({
+      claude: claudeRoot, codex: codexRoot, codexIndex: path.join(home, '.codex', 'session_index.jsonl'),
+      grok: grokRoot, deepseek: dsRoot,
+    });
+    const first = await scanner.scan();
+    assert.deepEqual(first.running.map(t => t.key).sort(), [
+      'claude:cl-main', 'codex:cx-main', 'deepseek:ds-fork', 'deepseek:ds-main', 'grok:gr-main',
+    ], '子代理不单独列为主任务；DeepSeek 用户 fork 保留为独立主任务');
+
+    const cl = first.running.find(t => t.key === 'claude:cl-main');
+    assert.equal(cl.subagents, 2);
+    assert.equal(cl.status, 'waiting');
+    assert.equal(cl.ask?.from, 'Inspect auth flow');
+    assert.deepEqual(cl.children.map(c => [c.key, c.name, c.status]), [
+      ['claude:agent-abc', 'Inspect auth flow', 'waiting'],
+      ['claude:agent-def', 'Plan', 'working'],
+    ]);
+
+    const cx = first.running.find(t => t.key === 'codex:cx-main');
+    assert.equal(cx.subagents, 1);
+    assert.equal(cx.status, 'tool');
+    assert.equal(cx.tool, 'shell');
+    assert.deepEqual(cx.children.map(c => [c.key, c.name, c.status, c.tool]), [['codex:cx-sub', 'parser', 'working', 'shell']]);
+
+    const ds = first.running.find(t => t.key === 'deepseek:ds-main');
+    assert.equal(ds.subagents, 1);
+    assert.deepEqual(ds.children.map(c => [c.key, c.name, c.status, c.tool]), [['deepseek:ds-sub', 'coder', 'working', 'edit_file']]);
+    const dsFork = first.running.find(t => t.key === 'deepseek:ds-fork');
+    assert.equal(dsFork.subagents, undefined);
+
+    const gr = first.running.find(t => t.key === 'grok:gr-main');
+    assert.equal(gr.subagents, 1);
+    assert.equal(gr.children?.[0]?.key, 'grok:gr-sub');
+    assert.equal(gr.children?.[0]?.status, 'waiting', 'Grok 子代理 events.jsonl permission_requested 标为 waiting');
+    assert.equal(gr.children?.[0]?.name, 'explorer', 'Grok 子代理优先用 summary.json 的 agent_name');
+
+    // 第二轮变动：Codex 子代理发 request_user_input；DeepSeek 子代理发 approval/asked；Grok 主文件追加 >70KB 滚过 64KB 尾巴
+    fs.appendFileSync(codexSubFile, line({
+      type: 'response_item', timestamp: new Date().toISOString(),
+      payload: { type: 'function_call', call_id: 'cx-q1', name: 'request_user_input', arguments: JSON.stringify({ questions: [{ question: '要改接口签名吗？', options: [{ label: '是' }, { label: '否' }] }] }) },
+    }) + '\n');
+    fs.appendFileSync(dsSubFile, zframe([dsRow('approval/asked', { id: 'a9', callId: 'c1' })]));
+    const bigThought = grok({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 't'.repeat(2000) } });
+    fs.appendFileSync(grMainFile, Array(40).fill(bigThought).join('\n') + '\n');
+
+    const second = await scanner.scan();
+    assert.ok(second.asked.includes('codex:cx-main'), 'Codex 子代理新提问冒泡到主任务 asked');
+    const cx2 = second.running.find(t => t.key === 'codex:cx-main');
+    assert.equal(cx2.status, 'waiting');
+    assert.equal(cx2.ask?.from, 'parser');
+    const ds2 = second.running.find(t => t.key === 'deepseek:ds-main');
+    assert.equal(ds2.children?.[0]?.status, 'waiting', 'DeepSeek 子代理 approval/asked 置为 waiting');
+    const gr2 = second.running.find(t => t.key === 'grok:gr-main');
+    assert.equal(gr2.subagents, 1, 'Grok 主会话追加超过 64KB 后仍保持已知子代理关联');
+    assert.equal(gr2.children?.[0]?.key, 'grok:gr-sub');
+  });
+
+  check('desk pet: built-in pets react visually to active subagents', () => {
+    const Pet = globalThis.PulsePet;
+    const base = { quota: 70, mood: 'ok', state: 'work', phase: 'tool', action: null, look: { x: 0, y: 0 }, from: 0, at: 0 };
+    const key = g => g.c.join(',');
+    for (const name of ['squirrel', 'hamster', 'octopus']) {
+      let differs = false;
+      for (let t = 0; t <= 20; t++) {
+        const solo = key(Pet.drawPet(name, { ...base, tasks: 1, subagents: 0, t }));
+        const withSubs = key(Pet.drawPet(name, { ...base, tasks: 1, subagents: 2, t }));
+        const threeTasks = key(Pet.drawPet(name, { ...base, tasks: 3, subagents: 0, t }));
+        assert.equal(withSubs, threeTasks, `${name} t=${t}: tasks=1 + subagents=2 等效于忙碌度 3`);
+        if (withSubs !== solo) differs = true;
+      }
+      assert.ok(differs, `${name} 有活跃子代理时干活动画应有可见变化`);
+    }
+  });
+
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录删不掉不影响结果 */ }
   if (failed) process.exit(1);
   process.exit(0);

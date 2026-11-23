@@ -72,11 +72,16 @@
 
   function taskLine(data) {
     const running = data.tasks.running, waiting = running.filter(task => task.status === 'waiting').length;
+    const subCount = running.reduce((sum, task) => sum + (task.subagents || 0), 0);
     if (!data.scanned) return el('p', { class: 'bb-line none' }, [el('span', { text: L('正在看本机的会话…', 'Reading local sessions…') })]);
     if (!running.length) return el('p', { class: 'bb-line none' }, [el('i', { class: 'bb-dot done' }), el('span', { text: L('没有任务在跑', 'No tasks running') })]);
     const line = el('button', { type: 'button', class: 'bb-line', title: L('打开会话管理', 'Open Sessions') }, [
       el('i', { class: 'bb-dot' + (waiting ? ' waiting' : '') }),
-      el('span', { text: L(`${running.length} 个任务在跑`, `${running.length} task${running.length === 1 ? '' : 's'} running`) + (waiting ? L(` · ${waiting} 个可能在等你`, ` · ${waiting} may need you`) : '') }),
+      el('span', {
+        text: L(`${running.length} 个任务在跑`, `${running.length} task${running.length === 1 ? '' : 's'} running`)
+          + (subCount ? L(` · ${subCount} 个子代理`, ` · ${subCount} subagent${subCount === 1 ? '' : 's'}`) : '')
+          + (waiting ? L(` · ${waiting} 个可能在等你`, ` · ${waiting} may need you`) : ''),
+      }),
       el('em', { text: '›', 'aria-hidden': 'true' }),
     ]);
     line.addEventListener('click', () => api.bubbleAction('sessions'));
@@ -99,26 +104,62 @@
 
   /* ---------- 任务列表 ---------- */
 
+  const SUB_LIMIT = 4;
   const STATUS = { thinking: L('思考中', 'Thinking'), tool: L('执行工具', 'Running a tool'), waiting: L('可能在等你', 'May need you'), done: L('刚完成', 'Done') };
-  function taskRow(task, now) {
+  const SUB_STATUS = { working: L('运行中', 'Working'), waiting: L('等你确认', 'Waiting'), idle: L('待命', 'Idle') };
+  function subRow(child) {
+    const waiting = child.status === 'waiting' || !!child.asking;
+    const chip = child.asking ? L('在问你', 'Asking') : child.tool || SUB_STATUS[child.status] || '';
+    const row = el('button', {
+      type: 'button',
+      class: 'bb-subtask' + (waiting ? ' waiting' : '') + (child.swarm ? ' swarm' : ''),
+      'data-key': child.key,
+      title: child.tool ? `${child.name} · ${child.tool}` : child.name,
+    }, [
+      el('i', { class: 'bb-dot' + (waiting ? ' waiting' : '') }),
+      el('span', { class: 'bb-sub-name', text: child.name }),
+      chip ? el('i', { class: 'bb-sub-chip', text: chip }) : null,
+    ]);
+    row.addEventListener('click', () => api.bubbleAction('sessions', child.key));
+    return row;
+  }
+  function taskGroup(task, now) {
     const done = task.status === 'done';
+    const subCount = !done ? (task.subagents || task.children?.length || 0) : 0;
     const when = done
       ? (task.doneAt ? L(`${minutesSince(task.doneAt, now) || '不到 1'} 分钟前完成`, `finished ${minutesSince(task.doneAt, now) || '<1'} min ago`) : '')
       : (task.since ? L(`已运行 ${minutesSince(task.since, now) || '不到 1'} 分钟`, `running ${minutesSince(task.since, now) || '<1'} min`) : '');
+    const subBadge = subCount > 0
+      ? el('i', { class: 'bb-sub-tag' + (task.swarm ? ' swarm' : ''), text: task.swarm ? `Swarm · ${subCount}` : L(`+${subCount} 子代理`, `+${subCount} sub`) })
+      : null;
     const row = el('button', { type: 'button', class: 'bb-task' + (done ? ' done' : '') + (task.status === 'waiting' ? ' waiting' : ''), 'data-key': task.key, title: task.tool ? `${task.title} · ${task.tool}` : task.title }, [
       el('i', { class: 'bb-dot' + (done ? ' done' : task.status === 'waiting' ? ' waiting' : '') }),
-      el('span', { class: 'bb-task-main' }, [el('b', { text: task.title }), el('small', { text: [task.agent, task.project, when].filter(Boolean).join(' · ') })]),
+      el('span', { class: 'bb-task-main' }, [
+        subBadge ? el('span', { class: 'bb-task-title' }, [el('b', { text: task.title }), subBadge]) : el('b', { text: task.title }),
+        el('small', { text: [task.agent, task.project, when].filter(Boolean).join(' · ') }),
+      ]),
       el('i', { class: 'bb-chip', text: task.asking ? L('在问你', 'Asking you') : STATUS[task.status] || '' }),
     ]);
     row.addEventListener('click', () => api.bubbleAction('sessions', task.key));
-    return row;
+    const kids = !done && Array.isArray(task.children) ? task.children : [];
+    if (!kids.length) return [row];
+    const shown = kids.slice(0, SUB_LIMIT).map(subRow);
+    const extra = Math.max(kids.length, subCount) - shown.length;
+    if (extra > 0) {
+      const moreBtn = el('button', { type: 'button', class: 'bb-sub-more', text: L(`+${extra} 更多`, `+${extra} more`) });
+      moreBtn.addEventListener('click', () => api.bubbleAction('sessions', task.key));
+      shown.push(moreBtn);
+    }
+    return [row, el('div', { class: 'bb-sublist', 'data-parent': task.key }, shown)];
   }
   function tasksView(data) {
     const { running, recent } = data.tasks;
-    const rows = [...running, ...recent].map(task => taskRow(task, data.now));
+    const subCount = running.reduce((sum, task) => sum + (task.subagents || 0), 0);
+    const rows = [...running, ...recent].flatMap(task => taskGroup(task, data.now));
     const head = !data.scanned ? L('正在看本机的会话…', 'Reading local sessions…')
-      : running.length ? L(`${running.length} 个任务在跑～`, `${running.length} task${running.length === 1 ? '' : 's'} running~`)
-      : L('现在没有任务在跑，歇会儿～', 'Nothing running, taking a break~');
+      : running.length
+        ? L(`${running.length} 个任务在跑`, `${running.length} task${running.length === 1 ? '' : 's'} running`) + (subCount ? L(`（含 ${subCount} 个子代理）`, ` (+${subCount} subagent${subCount === 1 ? '' : 's'})`) : '') + L('～', '~')
+        : L('现在没有任务在跑，歇会儿～', 'Nothing running, taking a break~');
     return [
       el('p', { class: 'bb-say', text: head }),
       rows.length ? el('div', { class: 'bb-list' }, rows) : el('p', { class: 'bb-note', text: L('支持 Claude Code、Codex、Grok Build、DeepSeek Harness、pi 和 Antigravity。点一条打开会话管理。', 'Supports Claude Code, Codex, Grok Build, DeepSeek Harness, pi, and Antigravity. Click one to open Sessions.') }),
