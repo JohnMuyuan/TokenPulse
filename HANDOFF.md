@@ -1,6 +1,36 @@
-# 当前接手入口 · TokenPulse `v0.3.107` 已正式发布（2026-11-22）
+# 当前接手入口 · TokenPulse `v0.3.108` 已正式发布（2026-11-22）
 
-## 最新已发布版本 · `v0.3.107` · 2026-11-22
+## 最新已发布版本 · `v0.3.108` · 2026-11-22
+
+- **Git 与发布**。[TokenPulse v0.3.108](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.108) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `455129875`）。发布提交 `46ac1bce3dac40a75ba96583f9e1f0d901954dfb`（合入 `44858fd`、`fc94d09`、`4589f50`、`46ac1bc`）与签注标签 `v0.3.108`（`87234f0f40ad173ab030a6315b6ca131e45fea34`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（全工具子代理与 Antigravity Swarm 蜂群会话树、桌宠实时感知与用量跨页联动）**：
+  1. **全工具子代理与 Antigravity Swarm 核心解析层**：
+     - [src/core/antigravity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity.ts)：导出 `AgyChildActivity`、扩展 `AgyActivity`/`AgySummary`（`agentName`/`swarm`/`swarmTitle`/`children`）、新增 stat 缓存的 `antigravitySwarmMeta()`（读取 `swarm/members.json` 与 `subagents/<id>.json`）、在 `readAntigravityConversation()` 支持 `step_type=101` 任务指派/蜂群通知解析，并修复 `readAntigravityActivity` 的 `conversation_parents` 合并、环路保护 `rootOf`、`0001-01-01`/WAL 滞后回退、活跃 worker `phase`/`tool`/`ask` 上浮及 0 活跃 worker 时空闲协调器防误报。
+     - [src/core/sessions.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/sessions.ts)：将 `INDEX_VERSION` 升至 `10`，补齐 `isSubagent`/`parentKey`/`rootKey`/`depth`/`subagentKind`/`agentName`/`subagentRole`/`swarmTitle`/`hasSwarm`/`subagentCount`/`canDelete`/`subtreeUsage`；打通 Antigravity（IDE+CLI 含纯工具 worker）、Claude Code（`subagents/agent-*.jsonl` + `.meta.json`）、Codex CLI（`parent_thread_id` / `review` / `thread_spawn`）、Grok Build、DeepSeek Harness（区分委派子代理与用户手动分叉）及 pi；统一自身 `usage` + 根会话 `subtreeUsage` 不重复计数，子代理固定 `resumable: false`/`canDelete: false`，根会话删除/忘记级联清理后代。
+     - [src/core/session-search.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/session-search.ts)、[src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts) & [src/core/cache-analysis.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/cache-analysis.ts)：全链路透传子代理/Swarm 元数据与 `sessionKey`，修复 Antigravity `.db` 与 DeepSeek `session-` 前缀匹配，并在请求/会话搜索中支持按成员名与蜂群标题检索。
+  2. **桌宠实时识别 Antigravity Swarm 与多工具子代理**：
+     - [src/core/agent-activity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/agent-activity.ts) & [src/main/desk-pet.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet.ts)：新增 `SubagentBrief`、`AgentTask.{children, swarm, swarmTitle}`、`AgentAsk.{from, swarm}` 与 `TaskBrief` 活跃子代理列表（上限 16），覆盖 Antigravity Swarm、Claude Code、Codex CLI、DeepSeek Harness 与 Grok Build；监听 `members.json` 变化；`deskPetBubbleAction("sessions", value)` 支持携带 `{ page: "sessions", pick: value }` 直达目标子代理会话。
+     - [renderer/desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js)、[renderer/pet-engine.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-engine.js)、[renderer/desk-pet-settings.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-settings.js)、[renderer/desk-pet-bubble.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-bubble.js)、[renderer/desk-pet-bubble.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-bubble.css) & [renderer/desk-pet-ask.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-ask.js)：内置宠物响应子代理忙碌度；悬停提示、自定义徽章（`+N`）、设置状态、额度摘要与任务气泡标题在 `subagents > 0` 时展示子代理计数；任务气泡渲染 `Swarm` / `+N 子代理` 标签与最多 4 条缩进 `.bb-subtask` 子行及 `+M 更多` 折叠，点击子行直达对应会话；提问卡片头部展示截断保护的 `.bb-sub-tag` 来源标识。
+  3. **会话管理层级树与用量/缓存跨页联动**：
+     - [renderer/sessions.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/sessions.js) & [renderer/sessions.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/sessions.css)：侧栏默认按主会话折叠 `Swarm · N` / `子代理 · N` 胶囊，支持点击与键盘 `←`/`→` 展开严格 DFS 前序排列的 1–3 层缩进子代理树（含孤儿子代理兼容）、旁置「显示子代理」平铺切换及搜索自动浮出命中子代理；主会话详情头新增 `.sw-sub-bar`（成员胶囊 + 含子代理共汇总），子代理详情头新增 `.sw-parent-bar`（角色徽标、`↑ 返回主会话`、同组切换），并在「更多」菜单隐藏不适用的终端继续与单独删除。
+     - [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)、[renderer/usage-sessions.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-sessions.js)、[renderer/usage-cache.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-cache.js)、[renderer/intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js) & [renderer/i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js)：接入 `open-page` `{ page: "sessions", pick }` 联动；为请求详情、「按会话」排行与「缓存 → 断档最多的会话」补齐 Swarm/子代理徽标与主会话一键跳转；同步 `0.3.108` 更新说明及全量英文翻译。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.108.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_OK=true`（`version=0.3.108`）；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.108.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.108.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.108-Setup.exe`，`112,920,650` B，SHA256 `9f476d6544bef8afbac18dc45c2549a9f19dc1c4fbf2178cd981187dbb9fecfd`
+  - `dist/TokenPulse-0.3.108-Portable.exe`，`112,663,437` B，SHA256 `49cca81e9aaf78bb277fcb7ee45c7b9b29830b368ad9fffa309b139cd90e28cc`
+  - `dist/TokenPulse-0.3.108-Setup.exe.blockmap`，`119,954` B，SHA256 `aa2d37b6ef1f07e3af144f2855353dd60bc4e5922379d4545a2f363bde5cd768`
+  - `dist/latest.yml`，`355` B，SHA256 `484bf7bcc7d6fa831692f1c982ffe3601a57f3af0d647b07cc7dfffbef37d82d`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测脚本，含扩展后的 `test-sessions.cjs`、`test-antigravity-sessions.cjs`、`test-session-search.cjs`、`test-requests.cjs`、`test-cache-analysis.cjs`、`test-desk-pet.cjs`、`test-features.cjs` 英文零漏翻校验）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试（7/7 全部退出 0）：`test-ui.cjs`（27 PASS，含 `v0.3.108` 子代理树、DFS 前序回归、明暗对比、EN 零中文残留与跨页跳转）、`test-desk-pet-ui.cjs`（22 PASS）、`test-antigravity-ui.cjs`（8 PASS）、`test-cache-ui.cjs`（1 PASS）、`test-intro-ui.cjs`（3 PASS）、`test-usage-projects-ui.cjs`（1 PASS）、`test-layout-ui.cjs`（9 PASS）。
+  - 隔离合成数据浅色 + 深色主题截图核验（1440×920 主窗 + 桌宠任务气泡）：首轮截图捕获并由 `ui-sessions` 修复了 `depth=2` 子代理在按时间降序时浮于 `depth=1` 父级之上的排序缺陷（`46ac1bc`），复拍确认父子嵌套、`.sw-sub-bar`、`.sw-parent-bar`、`step_type=101` 工具步、桌宠 Swarm 缩进行与用量「按会话」徽标全部对齐清晰；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/index.js`、`build/main/desk-pet.js`、`build/core/{antigravity,sessions,agent-activity,request-log,cache-analysis}.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.108` 发行产物共 13 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.108` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.107` · 2026-11-22
 
 - **Git 与发布**。[TokenPulse v0.3.107](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.107) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `454410313`）。发布提交 `92d151d47dd51ed1062ec5871ffdfebcf4771e9b` 与签注标签 `v0.3.107`（`e57f5f189e6b58140440d5d3added092f250b2da`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（用量明细 → 缓存新增「各模型实测缓存持续时长」与短效波动识别）**：
