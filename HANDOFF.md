@@ -1,6 +1,34 @@
-# 当前接手入口 · TokenPulse `v0.3.111` 已正式发布（2026-11-23）
+# 当前接手入口 · TokenPulse `v0.3.112` 已正式发布（2026-11-24）
 
-## 最新已发布版本 · `v0.3.111` · 2026-11-23
+## 最新已发布版本 · `v0.3.112` · 2026-11-24
+
+- **Git 与发布**。[TokenPulse v0.3.112](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.112) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `456838159`）。发布提交 `427fcd4233d83193bb0f82f878fae4f20a8b666a` 与签注标签 `v0.3.112`（`78215d398c0d6643fbab8ba43e3cbfc2338187e0`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **根因定位与发布内容（修复 Claude Code 子代理消耗未归属到对应官方 Claude 账号及空账号键永不重算的问题）**：
+  - **样本与根因**：对照真实 Claude Code Agent Teams 子代理样本（`subagents/agent-*.jsonl`）确认两点缺陷：(1) 子代理日志通常无 `bridge-session`（`ownerAccountUuid`），且 `session_context.context` 为空 `{}`（无 `userEmail`），仅记录 `attachment.type === "credential_org"` 的 `organizationUuid`，先前扫描器未解析该字段且子代理未继承父会话身份；(2) 当首次扫描归属返回 `null` 时，小时账落入空账号键 `state.accountHours[""]`，而 `needsAccountHours` 仅检查 `Object.keys(state.accountHours).length === 0`（对 `[""]` 恒为 `false`），导致后续登录时间线或账号信息补齐后永不触发重算，进而在 `quota-monitor.ts` 按账号过滤时被整体丢弃。
+  1. [src/core/credentials.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/credentials.ts) & [src/core/accounts.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/accounts.ts)：`CliAccount` 与 `StoredOfficialAccount` 增补可选 `orgId`（读取 `.claude.json` 的 `oauthAccount.organizationUuid`），在 `rememberOfficialAccount()` 与 `adoptCliAccount()` 持久化保存。
+  2. [src/core/login-timeline.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/login-timeline.ts)：`LoginSpan` 增补可选 `orgId` 并在 `recordCliLogins()` 中自动回填；`accountLabels()` 统一索引 `cli-logins.json`、`official-accounts.json`（含既有 OAuth/切号保存的 `cliAuth.account.organizationUuid`）的 `orgs` 映射，并将多人共享的同一 Team 组织标记为 `null`（歧义不误猜）；`resolveAccount()` 支持按 `AccountEvidence.org` / `orgAt` 精确归属（登录切换后仅新写入的 `orgAt >= span.from` 生效，旧上下文遵循新登录段）。
+  3. [src/core/usage-scan.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/usage-scan.ts)、[src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts) & [src/core/pass-speed.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/pass-speed.ts)：
+     - `scanFile()` 解析 Claude Code `attachment.type === "credential_org"` → `accountOrg` / `accountOrgAt` 并透传至请求流水与日志估算速度归属；
+     - `scanLocalUsage()` 对 Claude Code 文件排序先扫主会话再扫 `subagents/` 子代理，子代理缺失身份或处于共享组织时自动回退继承所属父会话 `<sessionId>.jsonl` 的账号证据；
+     - 修复 `needsAccountHours` 对 `accountHours[""]` 的漏判，新增上下文指纹 `unattributedSig` + `canResolveUnattributed()`，仅在账号/时间线/父会话变更且可解析时单次重算（杜绝登出段或不可归属文件每轮重复重扫循环）；升级 `STATE_VERSION`（`19 → 20`）自动重算历史账本。
+  4. 回归测试：[scripts/test-cli-attribution.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-cli-attribution.cjs)（17/17 PASS，覆盖 `orgId` 读取/索引、`cliAuth` 兼容、切号前后 `credential_org` 鲜度、共享 Team 组织歧义保护、子代理继承父会话、`accountHours[""]` 恢复与零循环验证）及 [scripts/test-routing-regressions.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-routing-regressions.cjs)（同步 `STATE_VERSION=20` 断言）。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.112.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_HAS_03112=true`、`ASAR_HAS_CREDENTIAL_ORG=true`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.112.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.112.md)。
+- **发行附件**（4 件经 `gh release create` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.112-Setup.exe`，`112,926,255` B，SHA256 `d3d88632173fcfa001ea7213b4983defa1011496b006d197a640ed77d72619ce`
+  - `dist/TokenPulse-0.3.112-Portable.exe`，`112,669,060` B，SHA256 `afe953676a7c57a3c010728be3f1809e915f099b03bd02a39e2b38e765bb1e2b`
+  - `dist/TokenPulse-0.3.112-Setup.exe.blockmap`，`119,958` B，SHA256 `14f77f9f84fc362983c9866a4d3ed5d272fc97d4b56f82c5b46ff4fe4d4667c4`
+  - `dist/latest.yml`，`355` B，SHA256 `06e8f19af2b28f1d410dd3ae317c8835bc35e7f5e5a92658452ca5e89057799f`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测，含 `test-cli-attribution.cjs` 17/17、`test-routing-regressions.cjs` 9/9 与 `test-features.cjs` 46/46 英文零漏翻校验）：**退出 0，全部 PASS**。
+  - 真实子代理样本脱敏隔离验证（空 `cli-logins.json`、仅提供匹配 `orgId` 的合成账号）：`REAL_SAMPLE_VERIFY {"rows":27,"accountHourKeys":["claude:synthetic-friend"],"hasOrg":true,"allAttributed":true}`。
+  - Electron 自动化 UI 测试：`scripts/test-intro-ui.cjs` 与 `scripts/test-ui.cjs` **退出 0，全部 PASS**；`git diff --check` 通过。
+- **未执行的验证与已知限制**：若外部转接服务调用 `claude -p` 时附加了 `--no-session-persistence` 或使用未配置为 `CLAUDE_CONFIG_DIR` 的临时配置目录，Claude Code 本身不会向 `~/.claude/projects/` 写入 `.jsonl` 会话文件，属于外部 CLI 未落盘场景（需去掉 `--no-session-persistence` 或经 TokenPulse 本地透明转发 / 号池转发才可统计）；未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/index.js`、`build/core/{credentials,accounts,login-timeline,request-log,pass-speed,usage-scan}.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.112` 发行产物共 13 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+- **下一步具体动作**：用户及朋友可在软件内检查更新自动升级至 `v0.3.112`（升级后将自动按 `STATE_VERSION=20` 重扫并补齐 Claude 子代理账号归属），或从 GitHub Release 下载安装器 / 便携版。
+
+---
+
+## 上一已发布版本 · `v0.3.111` · 2026-11-23
 
 - **Git 与发布**。[TokenPulse v0.3.111](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.111) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `456357169`）。发布提交 `99a50ef2134c0bb8b0356857349852bc45c931da` 与签注标签 `v0.3.111`（`bacca7c86d4824ab4646afa2e3e01349c13ef3f2`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（修复主会话与子代理模型不同时——如主会话 Opus 5.5、子代理实际 Opus 4.6——子代理被误标为主会话模型的问题）**：
