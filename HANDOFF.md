@@ -1,6 +1,33 @@
-# 当前接手入口 · TokenPulse `v0.3.109` 已正式发布（2026-11-23）
+# 当前接手入口 · TokenPulse `v0.3.110` 已正式发布（2026-11-23）
 
-## 最新已发布版本 · `v0.3.109` · 2026-11-23
+## 最新已发布版本 · `v0.3.110` · 2026-11-23
+
+- **Git 与发布**。[TokenPulse v0.3.110](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.110) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `456246746`）。发布提交 `92c51dc56fc770410580a0b1b70100d0e4341baa` 与签注标签 `v0.3.110`（`77a9af1677b95de48f699474f11b88277c344cfb`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **根因定位与发布内容（修复 Windows 上 TokenPulse 永久占用 Antigravity `resources\app.asar` 导致无法覆盖升级的问题）**：
+  - **根因**：在 Electron 运行时，Node 默认 `fs` 模块带有 ASAR 虚拟文件系统补丁（`asar-fs-wrapper`）。先前 [src/core/antigravity-accounts.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity-accounts.ts) 在 OAuth 续期或登录提取客户端参数时，通过默认 `fs.existsSync` / `fs.statSync` 探测 `%LOCALAPPDATA%\Programs\antigravity\resources\app.asar`，触发 Electron 内部 `getOrCreateArchive` 打开原生 `asar::Archive` 文件句柄并永久缓存在进程全局 `cachedArchives` 中，直到 `TokenPulse.exe` 完全退出才释放，导致 Antigravity 覆盖升级替换 `app.asar` 时报 Win32 错误 32（`ERROR_SHARING_VIOLATION` / `"Antigravity cannot be closed"`）；且 Electron 下 `fs.statSync("...\\app.asar")` 把归档视作目录（`isFile() === false`），导致原先从 `app.asar` 提取 `auth/aicode` 客户端 ID 的逻辑也同时静默失效。顺查全仓发现 [src/main/session-reply.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/session-reply.ts) 的 `resolveCli("deepseek")` 通过默认 `fs.existsSync` 探测 `DeepSeek Harness\resources\app.asar\...` 存在同类句柄常驻泄漏风险。
+  - [src/core/raw-fs.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/raw-fs.ts)：新增 Electron 原始文件系统封装 `getRawFs()`（Electron 环境下返回 `original-fs`，纯 Node 环境回退 `fs`，避免修改全局 `process.noAsar` 影响自身 `app.asar` 资源加载）与只读 ASAR 头部解析器 `asarContainsFile()`（单次只读打开、解析头部 JSON 并在 `finally` 立即 `closeSync`，绝不进入 Electron `cachedArchives`）。
+  - [src/core/antigravity-accounts.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity-accounts.ts)：`antigravityOAuthBinaryCandidates`、`extractPersonalClientIdFromFile`、`extractAgyOAuthClientFromFile` 全部改用 `getRawFs()` 与单次 `openSync` + `fstatSync` + `finally { closeSync }` 读写，消除 `existsSync → statSync → openSync` TOCTOU 竞态与 Electron ASAR 句柄常驻泄漏；缓存的仍是解析后的纯字符串 `{ clientId, clientSecret, candidateSecrets }`；同步将默认兜底 `DEFAULT_AGY_IDE_VERSION` 升至 `"2.35.0"`。
+  - [src/main/session-reply.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/session-reply.ts)：`resolveCli("deepseek")` 改用 `getRawFs().existsSync(exe) && asarContainsFile(asar, cliRel)`，避免锁定 `DeepSeek Harness\resources\app.asar`。
+  - [renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)：顺手修复 Windows 175% 分数倍 DPI 缩放下 `scrollGuard.setPad` 因 `Math.round` 取整误差少垫 1px 引发的 1.14px 滚动回弹抖动（改为 `value > 0 ? Math.ceil(value) + 1 : 0`）。
+  - [scripts/test-asar-handle-release.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-asar-handle-release.cjs) & [scripts/test-antigravity-accounts.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-antigravity-accounts.cjs)：新增真实 Electron 运行时下的 Windows ASAR 句柄释放回归测试（已接入 `package.json` `test:ui`），覆盖合法二进制 ASAR 正常读取、无匹配/损坏/截断/缺失异常路径、模拟 `2.34.0 → 2.35.0` 覆盖更新期间文件缺失降级与 15 轮并发交替刷新/替换、跨进程 PowerShell `FileShare.None` 独占打开及 `rename`/`replace`/`unlink` 验证，并覆盖 `DeepSeek Harness` `resolveCli`。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.110.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_HAS_03110=true`、`ASAR_HAS_RAW_FS=true`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.110.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.110.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.110-Setup.exe`，`112,922,697` B，SHA256 `a19671fc9b6fd0e8625b42199d8c824db450662e1dc2ba672c4529bd3c94defe`
+  - `dist/TokenPulse-0.3.110-Portable.exe`，`112,665,496` B，SHA256 `a5655528e9a876e8e11c6635f3a1b13465d2eacc0ef91f4e15ae0b1b13db909f`
+  - `dist/TokenPulse-0.3.110-Setup.exe.blockmap`，`119,998` B，SHA256 `28ed96072cf14727214de073e17131b2287ef1d18c1a98ecd8ee08012b005c21`
+  - `dist/latest.yml`，`355` B，SHA256 `dca89112c7fd72458d8a462faac494ca9d82ac868327aab37013820501374c0b`
+- **正式验证**：
+  - Electron Windows 句柄释放回归：`npx electron scripts/test-asar-handle-release.cjs`（**5/5 PASS**）。
+  - 真实 Antigravity 2.35.0 `resources\app.asar`（6.7 MB）隔离临时副本实机探针：在 Electron 进程存活状态下调用 `extractPersonalClientIdFromFile()`（`foundPersonalId=true`、`12ms` 完成），随后的跨进程 `FileShare.None` 独占打开返回 `UNLOCKED`，`renameSync` + `unlinkSync` 立即成功。
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测脚本，含扩展后的 `test-antigravity-accounts.cjs` 9/9 与 `test-features.cjs` 46/46 英文零漏翻校验）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-intro-ui.cjs` 与 `scripts/test-ui.cjs` **退出 0，全部 PASS**；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未直接在本机覆盖安装正式版 Antigravity 安装包（本机已是 2.35.0 且正在运行，使用 2.35.0 真实 `app.asar` 隔离副本及跨进程 `FileShare.None`/重命名/删除等效验证）；未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/index.js`、`build/core/raw-fs.js`、`build/core/antigravity-accounts.js`、`build/main/session-reply.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.110` 发行产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级，或从 GitHub Release 下载 `v0.3.110` 安装器 / 便携版；本轮发版任务已完整闭环。
+
+---
+
+## 上一已发布版本 · `v0.3.109` · 2026-11-23
 
 - **Git 与发布**。[TokenPulse v0.3.109](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.109) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `455611725`）。发布提交 `a67bc22e8d27a397cffb1eb54300950159f1b3f4` 与签注标签 `v0.3.109`（`848dfffe6a4106f103181c277c6f1743636b4291`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **问题核实与发布内容（修复 Antigravity 子代理 / 动态分档模型误报「型号不一致」及补齐 Orchestrator Neon 别名）**：
