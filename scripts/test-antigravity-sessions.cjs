@@ -388,6 +388,35 @@ const summary = (id, title, nesting = 0, parentId = '', opts = {}) => summaries.
     assert.deepEqual(reply.readEvent('antigravity', JSON.stringify({ event: 'error', error: '连接中断' }), false), { error: '连接中断' });
     pass('antigravity CLI sessions: scanned from antigravity-cli, deleted locally without IDE, and stream-json reply/terminal commands work');
 
+    // Antigravity 子代理实际使用 Claude Opus 4.6（gen_metadata 1.19 = claude-opus-4-6-medium），但 model_enum / label 沿用父会话 Opus 5.5 时，会话管理正确标为 claude-opus-4-6
+    const AGY_P55 = '77777777-2222-4000-8000-000000000016';
+    const AGY_S46 = '88888888-2222-4000-8000-000000000017';
+    a.rememberModelLabels({ MODEL_PLACEHOLDER_M401: 'Claude Opus 5.5 (Medium)' });
+    const writeCustomAgyConv = (id, rawModel, enumName, label) => {
+      const file = path.join(agy, 'conversations', id + '.db');
+      const db = new DatabaseSync(file);
+      try {
+        db.exec('create table steps (idx integer primary key, step_type integer, status integer, metadata blob, step_payload blob); create table gen_metadata (idx integer primary key, data blob, size integer);');
+        db.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(0, 14, 3, userStep(T0 + 20_000, '核查型号'));
+        db.prepare('insert into steps (idx, step_type, status, step_payload) values (?, ?, ?, ?)').run(1, 15, 3, replyStep(T0 + 22_000, { text: '已核查', usage: { input: 2000, output: 300 } }));
+        const gen = msg(1, str(19, rawModel), msg(20, str(1, 'model_enum'), str(2, enumName)), str(21, label));
+        db.prepare('insert into gen_metadata values (?, ?, ?)').run(0, gen, gen.length);
+      } finally { db.close(); }
+    };
+    writeCustomAgyConv(AGY_P55, 'claude-opus-5-5-medium', 'MODEL_PLACEHOLDER_M401', 'Claude Opus 5.5 (Medium)');
+    writeCustomAgyConv(AGY_S46, 'claude-opus-4-6-medium', 'MODEL_PLACEHOLDER_M401', 'Claude Opus 5.5 (Medium)');
+    summary(AGY_P55, '主对话 Opus 5.5', 0);
+    summary(AGY_S46, '子代理 Opus 4.6', 1, AGY_P55, { agentName: 'researcher' });
+    const agyOpusList = sessions.listSessions().filter(s => s.kind === 'antigravity');
+    const p55 = agyOpusList.find(s => s.id === AGY_P55);
+    const s46 = agyOpusList.find(s => s.id === AGY_S46);
+    assert.deepEqual(p55?.models, ['claude-opus-5-5']);
+    assert.deepEqual(s46?.models, ['claude-opus-4-6'], 'Antigravity 子代理实际为 Opus 4.6 时不被 Opus 5.5 标签覆盖');
+    assert.equal(s46?.usage?.models?.[0]?.model, 'claude-opus-4-6');
+    const s46Detail = sessions.getSession('antigravity', AGY_S46);
+    assert.equal(s46Detail?.messages.find(m => m.role === 'assistant')?.model, 'claude-opus-4-6');
+    pass('antigravity subagent sessions: Opus 4.6 subagent under Opus 5.5 parent is labeled claude-opus-4-6 even when model_enum/label inherits Opus 5.5');
+
     console.log(`${checks}/${checks} antigravity session checks passed`);
   } finally {
     summaries.close();

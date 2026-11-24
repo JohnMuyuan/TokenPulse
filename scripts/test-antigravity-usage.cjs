@@ -465,6 +465,38 @@ function addSteps(file, steps) {
     assert.deepEqual(cacheOnlyRows.map((row) => [row.input, row.cacheWrite, row.calls]), [[200, 200, 1]]);
     pass('antigravity usage: a cache-write-only response counts toward tokens and requests');
 
+    // 子代理实际使用 Claude Opus 4.6 时，即使沿用父会话 Opus 5.5 的 model_enum / 显示标签或同数字 modelId，也不得误标为 Opus 5.5
+    const opusLabels = { MODEL_PLACEHOLDER_M401: 'Claude Opus 5.5 (Medium)', MODEL_PLACEHOLDER_M26: 'Claude Opus 5.5 (High)' };
+    assert.deepEqual(
+      a.resolveModel({ model: 'claude-opus-4-6-medium', enum: 'MODEL_PLACEHOLDER_M401', label: 'Claude Opus 5.5 (Medium)' }, opusLabels),
+      { model: 'claude-opus-4-6', effort: 'medium', labeled: true },
+      'rawModel 明确为 claude-opus-4-6 时不被 Opus 5.5 占位标签覆盖',
+    );
+    assert.deepEqual(
+      a.resolveModel({ model: 'claude-opus-4-6', enum: 'MODEL_PLACEHOLDER_M26', label: 'Claude Opus 4.6 (High)' }, opusLabels),
+      { model: 'claude-opus-4-6', effort: 'high', labeled: true },
+      '单步自带的 1.21 标签优先于全局可能被原地重映射的 antigravity-models.json',
+    );
+    const convSubOpus = 'ffffffff-2222-4000-8000-000000000009';
+    makeConversation(convSubOpus, [
+      { idx: 0, type: 15, status: 3, meta: stepMeta({ start: T0 + 20_000, end: T0 + 22_000, modelId: 1401, gen: 0, input: 1000, output: 100 }) },
+      { idx: 1, type: 15, status: 3, meta: stepMeta({ start: T0 + 23_000, end: T0 + 25_000, modelId: 1401, gen: 1, input: 2000, output: 200 }) },
+    ], [
+      [0, Buffer.concat([msg(1, str(19, 'claude-opus-5-5-medium'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M401')), str(21, 'Claude Opus 5.5 (Medium)'))])],
+      [1, Buffer.concat([msg(1, str(19, 'claude-opus-4-6-medium'), msg(20, str(1, 'model_enum'), str(2, 'MODEL_PLACEHOLDER_M401')), str(21, 'Claude Opus 5.5 (Medium)'))])],
+    ]);
+    a.rememberModelLabels(opusLabels);
+    const opusRows = scan.scanLocalUsage().records.filter((row) => row.id.startsWith(convSubOpus + ':'));
+    assert.deepEqual(
+      opusRows.map((row) => [row.id, row.model, row.effort]),
+      [
+        [convSubOpus + ':0', 'claude-opus-5-5', 'medium'],
+        [convSubOpus + ':1', 'claude-opus-4-6', 'medium'],
+      ],
+      '同对话内复用同一数字 modelId 时，每步按自身 gen_metadata 精确识别 Opus 5.5 与 Opus 4.6',
+    );
+    pass('antigravity usage: explicit rawModel claude-opus-4-6 overrides stale/inherited Opus 5.5 label and per-step gen_metadata is not clobbered by modelId cache');
+
     console.log(`${checks}/${checks} antigravity checks passed`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

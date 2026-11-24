@@ -198,7 +198,7 @@ const MAX_TEXT = 40_000;
 const MAX_TOOL_TEXT = 6_000;
 /** 详情最多带回这么多条（超长会话只给最后这些，前面标出省略了多少）。 */
 const MAX_MESSAGES = 4_000;
-const INDEX_VERSION = 10;
+const INDEX_VERSION = 11;
 
 type SpawnedChildMeta = { id: string; role?: string; description?: string };
 type SessionMetaInput = {
@@ -726,11 +726,18 @@ export function claudeUserText(raw: string): { text: string; event?: string } {
   return { text: text.trim() };
 }
 
+function claudeParentDirId(file: string): string {
+  const parts = file.split(/[\\/]+/);
+  const idx = parts.lastIndexOf("subagents");
+  return idx > 0 ? parts[idx - 1] : "";
+}
+
 function parseClaude(file: string): Parsed | null {
   const b = new Builder();
-  const isSubagentFile = path.basename(path.dirname(file)) === "subagents";
   const fileId = path.basename(file, ".jsonl");
-  const parentDirId = isSubagentFile ? path.basename(path.dirname(path.dirname(file))) : "";
+  const inSubagentsDir = /(?:^|[\\/])subagents[\\/]/i.test(file);
+  const isSubagentFile = inSubagentsDir || /^agent-/i.test(fileId);
+  const parentDirId = inSubagentsDir ? claudeParentDirId(file) : "";
   const subMeta = isSubagentFile
     ? readJson<Record<string, unknown> | null>(file.replace(/\.jsonl$/i, ".meta.json"), null)
     : null;
@@ -1315,7 +1322,7 @@ function parseAntigravity(
         turnHasMeasured = false;
       }
     } else if (step.kind === "reply") {
-      const model = resolveModel(read.models[step.modelId], labels);
+      const model = resolveModel(step.genModel ?? read.models[step.modelId], labels);
       const modelName = model.model !== "未知模型" ? model.model : "";
       if (modelName) b.models.add(modelName);
       if (step.usage) b.addUsage(modelName || "未知模型", step.usage);
@@ -1574,6 +1581,12 @@ function summarize(
   const previewRaw = (lastAssistant ?? firstUser)?.text
     ?? (firstTool ? `${firstTool.name}: ${firstTool.summary}` : firstEvent?.text ?? "");
   const resumeCommand = isSubagent ? "" : commandOf(kind, id);
+  const tokensByModel = new Map<string, number>();
+  for (const m of usage?.models ?? []) tokensByModel.set(m.model, m.tokens);
+  const scoreOf = (m: string) => tokensByModel.get(m) ?? tokensByModel.get(displayModel(m)) ?? -1;
+  const orderedModels = [...b.models]
+    .filter((m) => m && m !== "未知模型")
+    .sort((a, c) => scoreOf(c) - scoreOf(a));
   return {
     key: `${kind}:${id}`,
     id,
@@ -1586,7 +1599,7 @@ function summarize(
     turns: messages.filter((message) => message.role === "user").length,
     messageCount: talk.length,
     toolCount,
-    models: [...b.models].slice(0, 6),
+    models: orderedModels.slice(0, 6),
     preview: oneLine(previewRaw).slice(0, 140),
     resumeCommand,
     resumable: isSubagent ? false : Boolean(resumeCommand),
@@ -1671,7 +1684,7 @@ function fileStamp(kind: AgentKind, file: string, agyLabelsMtime: number): { siz
   const st = fs.statSync(file);
   let size = st.size;
   let mtimeMs = st.mtimeMs;
-  if (kind === "claude" && path.basename(path.dirname(file)) === "subagents") {
+  if (kind === "claude" && (/(?:^|[\\/])subagents[\\/]/i.test(file) || /^agent-/i.test(path.basename(file, ".jsonl")))) {
     try {
       const ms = fs.statSync(file.replace(/\.jsonl$/i, ".meta.json"));
       size += ms.size;

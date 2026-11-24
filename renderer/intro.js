@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.111': [
+      ['sessions', '修复子代理实际使用其他模型（如 Opus 4.6）时被误标为主会话模型的问题', 'Antigravity 子代理现优先采用单步实际执行的模型 ID 与单步标签，不再被沿用的父会话占位枚举或缓存 modelId 覆盖；Claude Code 同步补采单次 requestedModel / api-request.params.model、兼容嵌套/顶层 agent-*.jsonl，并按实际计费 Tokens 排序侧栏与排行主模型，升级后自动重算。'],
+    ],
     '0.3.110': [
       ['check', '修复 Windows 上 TokenPulse 占用 Antigravity 安装目录 app.asar 导致无法更新的问题', '访问外部软件安装目录的 app.asar（Antigravity 客户端 OAuth 提取与 DeepSeek Harness CLI 探测）改为走 Electron 原生 original-fs，彻底绕开 Electron ASAR 句柄全局缓存并在单次只读后立即关闭句柄，保持 TokenPulse 运行时 Antigravity 等软件也可顺利覆盖升级。'],
     ],

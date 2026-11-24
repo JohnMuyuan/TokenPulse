@@ -551,6 +551,41 @@ assert.strictEqual(sessions.formatLatency(null), null);
   await reply.deleteSession('deepseek', 'session-other');
   assert(!fs.existsSync(path.join(dshHome, 'sessions', 'Demo', 'session-other')));
   await assert.rejects(reply.deleteSession('pi', 'missing'), /找不到这段对话的会话记录文件/);
+
+  // Claude Code：父会话 Opus 5.5、子代理实为 Opus 4.6（含零用量 Opus 5.5 占位行 + 顶层 agent-*.jsonl 兼容），侧栏与用量均主标 claude-opus-4-6
+  const opusProjDir = path.join(claudeDir, 'projects', 'D--OpusTest');
+  fs.mkdirSync(opusProjDir, { recursive: true });
+  const opusParentFile = path.join(opusProjDir, 'opus-55-parent.jsonl');
+  fs.writeFileSync(opusParentFile, [
+    { type: 'user', sessionId: 'opus-55-parent', cwd: 'D:\\Work\\OpusTest', timestamp: '2026-06-02T01:00:00Z', message: { content: '派子代理排查' } },
+    { type: 'assistant', sessionId: 'opus-55-parent', cwd: 'D:\\Work\\OpusTest', timestamp: '2026-06-02T01:00:05Z', requestId: 'req_p55', message: { id: 'msg_p55', model: 'claude-opus-5-5', content: [{ type: 'text', text: '已派发' }], usage: { input_tokens: 5000, output_tokens: 200 } } },
+  ].map(r => JSON.stringify(r)).join('\n') + '\n');
+  const opusSubDir = path.join(opusProjDir, 'opus-55-parent', 'subagents');
+  fs.mkdirSync(opusSubDir, { recursive: true });
+  fs.writeFileSync(path.join(opusSubDir, 'agent-opus46-sub.meta.json'), JSON.stringify({ agentType: 'Explore', description: '代码检索子代理', pickedEffortModel: 'claude-opus-5-5' }));
+  fs.writeFileSync(path.join(opusSubDir, 'agent-opus46-sub.jsonl'), [
+    { type: 'user', isSidechain: true, sessionId: 'opus-55-parent', agentId: 'opus46-sub', cwd: 'D:\\Work\\OpusTest', timestamp: '2026-06-02T01:00:06Z', message: { content: '检索实现' } },
+    // 零用量前置占位行不应抢占侧栏主模型
+    { type: 'assistant', isSidechain: true, sessionId: 'opus-55-parent', agentId: 'opus46-sub', timestamp: '2026-06-02T01:00:07Z', message: { id: 'msg_stub', model: 'claude-opus-5-5', content: [{ type: 'text', text: '准备中' }] } },
+    { type: 'assistant', isSidechain: true, sessionId: 'opus-55-parent', agentId: 'opus46-sub', timestamp: '2026-06-02T01:00:10Z', requestId: 'req_s46', message: { id: 'msg_s46', model: 'claude-opus-4-6', content: [{ type: 'text', text: '找到目标' }], usage: { input_tokens: 4000, output_tokens: 300 } } },
+  ].map(r => JSON.stringify(r)).join('\n') + '\n');
+  // 顶层 agent-*.jsonl（旧目录形态）也能识别为子代理且不与父会话键碰撞
+  fs.writeFileSync(path.join(opusProjDir, 'agent-legacy46.jsonl'), [
+    { type: 'user', isSidechain: true, sessionId: 'opus-55-parent', agentId: 'legacy46', cwd: 'D:\\Work\\OpusTest', timestamp: '2026-06-02T01:00:12Z', message: { content: '旧布局子代理' } },
+    { type: 'assistant', isSidechain: true, sessionId: 'opus-55-parent', agentId: 'legacy46', timestamp: '2026-06-02T01:00:15Z', requestId: 'req_l46', message: { id: 'msg_l46', model: 'claude-opus-4-6', content: [{ type: 'text', text: '完成' }], usage: { input_tokens: 1500, output_tokens: 150 } } },
+  ].map(r => JSON.stringify(r)).join('\n') + '\n');
+  const opusList = sessions.listSessions();
+  const opusParent = opusList.find(s => s.key === 'claude:opus-55-parent');
+  const opusSub = opusList.find(s => s.key === 'claude:agent-opus46-sub');
+  const opusLegacy = opusList.find(s => s.key === 'claude:agent-legacy46');
+  assert.strictEqual(opusParent?.models?.[0], 'claude-opus-5-5');
+  assert.strictEqual(opusSub?.parentKey, 'claude:opus-55-parent');
+  assert.strictEqual(opusSub?.models?.[0], 'claude-opus-4-6', '有实际用量的 claude-opus-4-6 排在主模型首位，不被零用量占位行抢占');
+  assert.strictEqual(opusSub?.usage?.models?.[0]?.model, 'claude-opus-4-6');
+  assert.strictEqual(opusLegacy?.isSubagent, true);
+  assert.strictEqual(opusLegacy?.parentKey, 'claude:opus-55-parent');
+  assert.strictEqual(opusLegacy?.models?.[0], 'claude-opus-4-6');
+
   fs.rmSync(root, { recursive: true, force: true });
   console.log(`session tests passed (${list.length} sessions, reply args + stream events)`);
 })().catch(error => { console.error(error); process.exit(1); });

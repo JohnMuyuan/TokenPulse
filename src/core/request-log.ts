@@ -891,7 +891,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
     hours.set(hourAt, hour);
   };
   const projects = new Map<string, Omit<ProjectAggregate, "quota"> & { sessionSet: Set<string>; agentMap: Map<string, { source: string; sessionSet: Set<string>; tokens: number; requests: number }>; comboMap: Map<string, ProjectCombo> }>();
-  const sessions = new Map<string, Omit<SessionAggregate, "quota" | "models"> & { modelSet: Set<string> }>();
+  const sessions = new Map<string, Omit<SessionAggregate, "quota" | "models"> & { modelTokens: Map<string, number> }>();
   const officialParts = new Map<string, OfficialPart[]>();
   const sessionOfficialParts = new Map<string, OfficialPart[]>();
   const accountRows = new Map<string, RequestRow[]>();
@@ -926,7 +926,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
         maxAutoStep: 1,
         firstAt: row.at,
         lastAt: row.at,
-        modelSet: new Set<string>(),
+        modelTokens: new Map<string, number>(),
       };
       sessions.set(key, sess);
     }
@@ -959,7 +959,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
     if (step > sess.maxAutoStep) sess.maxAutoStep = step;
     sess.firstAt = Math.min(sess.firstAt, row.at);
     sess.lastAt = Math.max(sess.lastAt, row.at);
-    if (row.model && row.model !== "未知模型") sess.modelSet.add(row.model);
+    if (row.model && row.model !== "未知模型") sess.modelTokens.set(row.model, (sess.modelTokens.get(row.model) ?? 0) + row.tokens);
     if (row.official === true && row.account) {
       const list = sessionOfficialParts.get(key) ?? [];
       list.push({ account: row.account.id, at: row.at, tokens: row.tokens, costUsd: row.costUsd });
@@ -1248,9 +1248,9 @@ export function queryRequests(query: RequestQuery): RequestPage {
     ...(query.sessions
       ? {
           sessions: [...sessions.values()]
-            .map(({ modelSet, ...sess }) => ({
+            .map(({ modelTokens, ...sess }) => ({
               ...sess,
-              models: [...modelSet].slice(0, 8),
+              models: [...modelTokens.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m).slice(0, 8),
               quota: sessionQuotas?.get(sess.key) ?? { week: 0, officialTokens: 0, attributedTokens: 0 },
             }))
             .sort((a, b) => b.tokens - a.tokens || b.lastAt - a.lastAt),

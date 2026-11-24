@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { dataFile, readJson, writeJson } from "./paths";
 import { pbDurationMs, pbFields, pbMessage, pbNumber, pbString, pbTime } from "./protobuf-lite";
+import { normalizeModel } from "./request-verify";
 
 /**
  * Google Antigravity 的本地数据（2026-11 对着 Antigravity 2.29 / language server 2.29.0 的真实文件核过）。
@@ -128,6 +129,8 @@ export type AgyGeneration = {
   /** 这一步开始的时间（发出请求）。 */
   startAt: number;
   modelId: number;
+  /** 这一步自身 gen_metadata 里记录的型号信息（优先于按 modelId 缓存的共享条目）。 */
+  genModel?: AgyModel;
   input: number;
   output: number;
   cacheRead: number;
@@ -238,11 +241,67 @@ export function splitModelLabel(label: string): { model: string; family: string;
   splitLabelMemo.set(label, out);
   return out;
 }
+/**
+ * 识别明确带版本号的真实模型 ID（如 claude-opus-4-6、claude-opus-4-6-medium、gemini-2.5-flash），
+ * 排除 MODEL_PLACEHOLDER_* 占位符、无版本号内部代号（gemini-pro-orchestrator / gemini-flash-worker-agy）及测试假名（claude-x）。
+ */
+const EXPLICIT_VERSIONED_MODEL = /^(?:claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:[.-]\d+)*|gemini-\d+(?:\.\d+)*-[a-z][\w.-]*|gpt-\d+(?:[.-][\w]+)*|gpt-oss-\d+b|grok-\d+(?:\.\d+)*)(?:-[a-z0-9._-]+)*$/i;
+const RAW_EFFORT_TAIL = /^(.*?)(?:-(?:tiered-)?(thinking|minimal|low|medium|high|xhigh|max|ultra|adaptive|auto|dynamic))+$/i;
+
+function parseExplicitRawModel(raw: string): { model: string; effort?: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed || !EXPLICIT_VERSIONED_MODEL.test(trimmed)) return null;
+  let base = trimmed.toLowerCase();
+  let effort: string | undefined;
+  const m = base.match(RAW_EFFORT_TAIL);
+  if (m && m[1] && EXPLICIT_VERSIONED_MODEL.test(m[1])) {
+    base = m[1];
+    const rawEff = m[2].toLowerCase();
+    effort = rawEff === "thinking" ? "high" : rawEff;
+  }
+  if (base.startsWith("claude-")) base = base.replace(/\./g, "-");
+  return { model: base, ...(effort ? { effort } : {}) };
+}
+
+function stepModelFromGen(genParsed: AgyGenMeta | null, existing?: AgyModel): AgyModel | undefined {
+  if (!genParsed?.model) return undefined;
+  if (genParsed.rawModel) {
+    const inheritLabel = !genParsed.label && existing?.label && (!genParsed.enum || !existing.enum || genParsed.enum === existing.enum)
+      ? existing.label
+      : undefined;
+    return {
+      model: genParsed.rawModel,
+      ...(genParsed.enum ? { enum: genParsed.enum } : {}),
+      ...(genParsed.label ? { label: genParsed.label } : inheritLabel ? { label: inheritLabel } : {}),
+    };
+  }
+  if (existing && (!genParsed.enum || !existing.enum || genParsed.enum === existing.enum)) {
+    return {
+      ...existing,
+      ...(genParsed.enum && !existing.enum ? { enum: genParsed.enum } : {}),
+      ...(genParsed.label ? { label: genParsed.label } : {}),
+    };
+  }
+  return {
+    model: genParsed.model,
+    ...(genParsed.enum ? { enum: genParsed.enum } : {}),
+    ...(genParsed.label ? { label: genParsed.label } : {}),
+  };
+}
+
 export function resolveModel(found: AgyModel | undefined, labels: Record<string, string>): { model: string; effort?: string; labeled: boolean } {
-  const label = (found?.enum ? labels[found.enum] : undefined) || found?.label;
+  const stepLabel = found?.label?.trim() || "";
+  const enumLabel = (found?.enum ? labels[found.enum] : undefined)?.trim() || "";
+  const label = stepLabel || enumLabel;
   if (!label) return { model: found?.model || "未知模型", labeled: false };
-  const { model, effort } = splitModelLabel(label);
-  return { model, ...(effort ? { effort } : {}), labeled: true };
+  const { model: labelModel, effort: labelEffort } = splitModelLabel(label);
+  const rawParsed = found?.model ? parseExplicitRawModel(found.model) : null;
+  if (rawParsed && normalizeModel(rawParsed.model) !== normalizeModel(labelModel)) {
+    // gen_metadata 1.19 明确记录了真实执行的带版本号模型（如子代理实际走 claude-opus-4-6），
+    // 而 label / model_enum 沿用了父会话或被重映射的占位标签（如 Claude Opus 5.5）：以实际模型为准。
+    return { model: rawParsed.model, ...(rawParsed.effort ? { effort: rawParsed.effort } : {}), labeled: true };
+  }
+  return { model: labelModel, ...(labelEffort ? { effort: labelEffort } : {}), labeled: true };
 }
 
 /*
@@ -411,7 +470,7 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const usage = pbMessage(meta, 9);
       const input = pbNumber(usage, 2), output = pbNumber(usage, 3), cacheRead = pbNumber(usage, 5), cacheWrite = pbNumber(usage, 4);
       if (!usage || (!input && !output && !cacheRead && !cacheWrite)) continue;
-      const modelId = pbNumber(meta, 11) || pbNumber(usage, 1);
+      const modelId = pbNumber(usage, 1) || pbNumber(meta, 11);
       const key = String(modelId);
       const genInfo = pbMessage(meta, 20);
       // Protobuf3 中 gen_idx = 0（对话第 1 次生成，对应 gen_metadata.idx = 0）属于默认标量值，序列化时省略 field 3；
@@ -420,15 +479,12 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
       const genBuf = toBuf(genData);
       const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
-      if (modelId && !known[key] && !models[key] && genParsed?.model) {
-        models[key] = {
-          model: genParsed.model,
-          ...(genParsed.enum ? { enum: genParsed.enum } : {}),
-          ...(genParsed.label ? { label: genParsed.label } : {}),
-        };
-      } else if (modelId && genParsed?.label) {
-        const existing = models[key] ?? known[key];
-        if (existing && !existing.label) models[key] = { ...existing, label: genParsed.label };
+      const existingModel = modelId ? (models[key] ?? known[key]) : undefined;
+      const stepModel = stepModelFromGen(genParsed, existingModel);
+      if (modelId && !known[key] && !models[key] && stepModel) {
+        models[key] = stepModel;
+      } else if (modelId && genParsed?.label && existingModel && !existingModel.label && (!genParsed.enum || !existingModel.enum || genParsed.enum === existingModel.enum)) {
+        models[key] = { ...existingModel, label: genParsed.label };
       }
       const startAt = pbTime(pbMessage(meta, 1));
       const viewableAt = pbTime(pbMessage(meta, 6));
@@ -467,10 +523,11 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const responseId = pbString(usage, 11);
       const messageId = pbString(usage, 7);
       const requestId = genParsed?.requestId || messageId;
-      const returned = genParsed?.rawModel || (known[key] ?? models[key])?.model;
+      const returned = genParsed?.rawModel || (stepModel ?? known[key] ?? models[key])?.model;
       autoStep += 1;
       rows.push({
         step: step.idx, at, startAt, modelId,
+        ...(stepModel ? { genModel: stepModel } : {}),
         input: input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, reasoning,
         ...(responseId ? { responseId } : {}),
         ...(requestId ? { requestId } : {}),
@@ -513,6 +570,7 @@ export type AgyStep =
       at: number;
       text: string;
       modelId: number;
+      genModel?: AgyModel;
       tools: { id: string; name: string; args: string }[];
       usage?: AgyStepUsage;
       durationMs?: number;
@@ -575,23 +633,21 @@ export function readAntigravityConversation(
         const rawInput = pbNumber(u, 2), output = pbNumber(u, 3), cacheWrite = pbNumber(u, 4), cacheRead = pbNumber(u, 5), reasoning = pbNumber(u, 9);
         const input = rawInput + cacheRead + cacheWrite;
         const usage: AgyStepUsage | undefined = u && (input > 0 || output > 0) ? { input, output, cacheRead, cacheWrite, reasoning } : undefined;
-        const modelId = pbNumber(payloadMeta, 11) || pbNumber(colMeta, 11) || pbNumber(u, 1);
+        const modelId = pbNumber(u, 1) || pbNumber(payloadMeta, 11) || pbNumber(colMeta, 11);
 
         const genInfo = pbMessage(payloadMeta, 20) ?? pbMessage(colMeta, 20);
         const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;
         const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
         const genBuf = toBuf(genData);
         const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
+        const existingModel = modelId ? models[String(modelId)] : undefined;
+        const stepModel = stepModelFromGen(genParsed, existingModel);
 
         if (modelId) {
           const key = String(modelId);
-          if (!models[key] && genParsed?.model) {
-            models[key] = {
-              model: genParsed.model,
-              ...(genParsed.enum ? { enum: genParsed.enum } : {}),
-              ...(genParsed.label ? { label: genParsed.label } : {}),
-            };
-          } else if (genParsed?.label && models[key] && !models[key].label) {
+          if (!models[key] && stepModel) {
+            models[key] = stepModel;
+          } else if (genParsed?.label && models[key] && !models[key].label && (!genParsed.enum || !models[key].enum || genParsed.enum === models[key].enum)) {
             models[key].label = genParsed.label;
           }
         }
@@ -635,6 +691,7 @@ export function readAntigravityConversation(
             at: replyAt || at,
             text,
             modelId,
+            ...(stepModel ? { genModel: stepModel } : {}),
             tools,
             ...(usage ? { usage } : {}),
             ...(totalMs > 0 ? { durationMs: totalMs, isMeasured: true } : {}),
@@ -921,6 +978,7 @@ export function antigravitySubagentFilesByRoot(
 export type AgySubagentUsageRow = {
   at: number;
   modelId: number;
+  genModel?: AgyModel;
   input: number;
   output: number;
   cacheRead: number;
@@ -965,29 +1023,23 @@ export function readAntigravitySubagentUsage(file: string, known: Record<string,
       const reasoning = pbNumber(usage, 9);
       const input = rawInput + cacheRead + cacheWrite;
       if (input <= 0 && output <= 0) continue;
-      const modelId = pbNumber(meta, 11) || pbNumber(usage, 1);
-      if (modelId) {
-        const key = String(modelId);
-        const cur = localModels[key] ?? known[key];
-        if (!cur || !cur.label) {
-          const genInfo = pbMessage(meta, 20);
-          const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;
-          const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
-          const genBuf = toBuf(genData);
-          const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
-          if (genParsed?.model && !cur) {
-            const entry: AgyModel = {
-              model: genParsed.model,
-              ...(genParsed.enum ? { enum: genParsed.enum } : {}),
-              ...(genParsed.label ? { label: genParsed.label } : {}),
-            };
-            localModels[key] = entry;
-            known[key] = entry;
-          } else if (genParsed?.label && cur && !cur.label) {
-            const entry: AgyModel = { ...cur, label: genParsed.label };
-            localModels[key] = entry;
-            known[key] = entry;
-          }
+      const modelId = pbNumber(usage, 1) || pbNumber(meta, 11);
+      const key = modelId ? String(modelId) : "";
+      const cur = key ? (localModels[key] ?? known[key]) : undefined;
+      const genInfo = pbMessage(meta, 20);
+      const genIdx = genInfo ? pbNumber(genInfo, 3) : -1;
+      const genData = genIdx >= 0 ? (genModel?.get(genIdx) as { data?: Uint8Array } | undefined)?.data : undefined;
+      const genBuf = toBuf(genData);
+      const genParsed = genBuf ? parseGenerationMeta(genBuf) : null;
+      const stepModel = stepModelFromGen(genParsed, cur);
+      if (key) {
+        if (stepModel && !cur) {
+          localModels[key] = stepModel;
+          known[key] = stepModel;
+        } else if (genParsed?.label && cur && !cur.label && (!genParsed.enum || !cur.enum || genParsed.enum === cur.enum)) {
+          const entry: AgyModel = { ...cur, label: genParsed.label };
+          localModels[key] = entry;
+          known[key] = entry;
         }
       }
       const startAt = pbTime(pbMessage(meta, 1));
@@ -1002,6 +1054,7 @@ export function readAntigravitySubagentUsage(file: string, known: Record<string,
       out.push({
         at,
         modelId,
+        ...(stepModel ? { genModel: stepModel } : {}),
         input,
         output,
         cacheRead,

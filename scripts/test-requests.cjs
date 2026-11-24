@@ -544,6 +544,46 @@ try {
       dshRow?.session === "dsh-1" && dshRow?.sessionKey === "deepseek:session-dsh-1" && dshByShort.total === 1 && dshByFullKey.total === 1 && dshByPrefix.total === 1,
       JSON.stringify({ session: dshRow?.session, sessionKey: dshRow?.sessionKey, totals: [dshByShort.total, dshByFullKey.total, dshByPrefix.total] }),
     );
+
+    // Claude Code 子代理（主会话 Opus 5.5、子代理实际用 Opus 4.6，即使 attachment.identity 沿用父会话 Opus 5.5，也按单次 requestedModel / api-request 精确核验与归属）
+    const ccSubDay = new Date(2026, 6, 22, 10, 0).getTime();
+    const ccSubDir = path.join(claudeDir, "opus-sub-parent", "subagents");
+    fs.mkdirSync(ccSubDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(ccSubDir, "agent-opus46.jsonl"),
+      [
+        { type: "attachment", isSidechain: true, timestamp: new Date(ccSubDay).toISOString(), attachment: { type: "model", identity: { modelId: "claude-opus-5-5" } } },
+        { type: "api-request", timestamp: new Date(ccSubDay + 100).toISOString(), params: { model: "claude-opus-4-6" } },
+        {
+          type: "assistant",
+          isSidechain: true,
+          timestamp: new Date(ccSubDay + 1000).toISOString(),
+          requestId: "req_011SubOpus46Test000001",
+          requestedModel: "claude-opus-4-6",
+          advisorModel: "claude-opus-5-5",
+          message: { id: "msg_01SubOpus46Test000000001", model: "claude-opus-4-6", usage: { input_tokens: 1200, cache_read_input_tokens: 3000, output_tokens: 250 } },
+        },
+        { type: "api-request", timestamp: new Date(ccSubDay + 2000).toISOString(), params: { model: "claude-opus-4-6" } },
+        {
+          type: "assistant",
+          isSidechain: true,
+          timestamp: new Date(ccSubDay + 3000).toISOString(),
+          requestId: "req_011SubOpus46Test000002",
+          message: { id: "msg_01SubOpus46Test000000002", model: "claude-opus-4-6", usage: { input_tokens: 1500, cache_read_input_tokens: 4000, output_tokens: 300 } },
+        },
+      ].map((r) => JSON.stringify(r)).join("\n") + "\n",
+    );
+    scanLocalUsage();
+    const ccSubPage = queryRequests({ from: "2026-07-22", to: "2026-07-22", source: "Claude Code", status: "all", search: "", sort: "time", page: 0, pageSize: 20, sessions: true });
+    const ccSubRows = ccSubPage.rows.filter((r) => r.session === "agent-opus46");
+    const ccSubSess = ccSubPage.sessions.find((s) => s.session === "agent-opus46");
+    check(
+      "Claude Code Opus 4.6 子代理不被父会话 identity 的 Opus 5.5 污染，请求/返回/核验与按会话排行均为 claude-opus-4-6",
+      ccSubRows.length === 2 &&
+        ccSubRows.every((r) => r.model === "claude-opus-4-6" && r.requested === "claude-opus-4-6" && r.returned === "claude-opus-4-6" && r.status === "match") &&
+        ccSubSess?.models?.[0] === "claude-opus-4-6",
+      JSON.stringify({ rows: ccSubRows.map((r) => ({ model: r.model, requested: r.requested, returned: r.returned, status: r.status })), sessModels: ccSubSess?.models }),
+    );
   }
 
   /* ---------------- 额度归属 ---------------- */

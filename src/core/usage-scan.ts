@@ -119,6 +119,8 @@ type FileState = {
    * - Codex：就是上面的 `model`（turn_context）。
    */
   requested?: string;
+  /** Claude Code 单次 api-request 事件里带的 params.model，优先于会话级 attachment.identity.modelId，消费后清掉。 */
+  apiRequestModel?: string;
   /** 工作目录（Codex 在 session_meta 里；Claude 每行都有；Grok 在目录名里）。 */
   cwd?: string;
   /**
@@ -208,7 +210,7 @@ export type UsageRollups = {
  * 17：流水补记按日志时间戳估算的速度（estimate，0.3.53），Claude Code 和 Codex 重扫一遍。
  * 18：流水补记同一轮用户指令下无人工介入连续自动调用步数（autoStep，0.3.106）。
  */
-const STATE_VERSION = 18;
+const STATE_VERSION = 19;
 const GROK_ROUTE_VERSION = 1;
 const HOUR_MS = 3_600_000;
 /** 常规批次大小。单个 JSONL 事件超出时，续读到该行结束。 */
@@ -517,6 +519,8 @@ type Row = {
   model: string;
   usage: UsageBucket;
   id?: string;
+  /** 本次请求在当前行直接记下的请求型号（如 Claude Code assistant.requestedModel）。 */
+  requested?: string;
   /** 上游返回的型号（响应里写的那个）。Codex 不记。 */
   returned?: string;
   responseId?: string;
@@ -613,6 +617,7 @@ function claudeRow(obj: Record<string, unknown>): Row | null {
     at,
     id: String(obj.requestId || message?.id || ""),
     model: String(message?.model || "") || "未知模型",
+    ...(typeof obj.requestedModel === "string" && obj.requestedModel ? { requested: obj.requestedModel } : {}),
     returned: message?.model ? String(message.model) : undefined,
     responseId: message?.id ? String(message.id) : undefined,
     requestId: obj.requestId ? String(obj.requestId) : undefined,
@@ -905,6 +910,7 @@ function scanFile(
     state.effortSource = undefined;
     state.lastId = undefined;
     state.requested = undefined;
+    state.apiRequestModel = undefined;
     state.accountRef = undefined;
     state.accountEmail = undefined;
     state.accountAt = undefined;
@@ -1018,6 +1024,10 @@ function scanFile(
       if (attachment?.type === "session_context" && attachment.changed) state.requested = undefined;
       const identity = attachment?.identity as Record<string, unknown> | undefined;
       if (typeof identity?.modelId === "string" && identity.modelId) state.requested = identity.modelId;
+    }
+    if (kind === "claude-code" && obj.type === "api-request") {
+      const reqModel = (obj.params as Record<string, unknown> | undefined)?.model;
+      if (typeof reqModel === "string" && reqModel) state.apiRequestModel = reqModel;
     }
     if (kind === "deepseek-harness") {
       if (obj.type === "session" && typeof obj.cwd === "string" && obj.cwd) state.cwd = obj.cwd;
@@ -1236,7 +1246,9 @@ function scanFile(
           model,
           effort: piece.effort ?? (kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined),
           effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined),
-          requested: kind === "codex" || kind === "pi" ? state.model : state.requested,
+          requested: kind === "claude-code"
+            ? (row.requested ?? state.apiRequestModel ?? state.requested)
+            : (kind === "codex" || kind === "pi" ? state.model : state.requested),
           returned: row.returned,
           responseId: row.responseId,
           requestId: row.requestId,
@@ -1257,6 +1269,7 @@ function scanFile(
           ...(row.compaction ? { compaction: true } : {}),
         });
       }
+      if (!row.compaction && kind === "claude-code") state.apiRequestModel = undefined;
       // 估算速度（0.3.53）：只给一条一次调用的（号池拆开的、压缩估算的不算）
       if (!row.compaction && pieces.length === 1 && callStart && (kind === "claude-code" || kind === "codex")) {
         const record = out.records[out.records.length - 1];
@@ -1286,7 +1299,7 @@ function scanFile(
  * 费用交给统计时按型号估；不归任何官方账号（Antigravity 的额度按模型分组单独看，见 quota.ts）。
  * 型号就是请求的型号，没有上游返回的型号，核验显示无法核对。
  */
-const ANTIGRAVITY_STATE_VERSION = 9;
+const ANTIGRAVITY_STATE_VERSION = 10;
 
 /** 之前没对上显示名的型号，现在有标签了：这个对话要整份重算一遍，型号和档位才对。 */
 export function antigravityNeedsRelabel(state: FileState, labels: Record<string, string>) {
@@ -1320,7 +1333,7 @@ function scanAntigravity(file: string, state: FileState, out: ScanOutput, worksp
   const cwd = workspaces.get(conversation);
   if (cwd) state.cwd = cwd;
   for (const row of read.rows) {
-    const known: AgyModel | undefined = state.agyModels?.[String(row.modelId)];
+    const known: AgyModel | undefined = row.genModel ?? state.agyModels?.[String(row.modelId)];
     const resolved = resolveModel(known, labels);
     if (!resolved.labeled && known?.enum && !(state.agyUnlabeled ??= []).includes(known.enum)) state.agyUnlabeled.push(known.enum);
     const model = displayModel(resolved.model);
