@@ -447,6 +447,26 @@ function renderAgyAccounts(agyStatus) {
       account.autoRenew && !account.hidden ? el('span', { class: 'oauth-renew', text: '自动续期', title: '在过期前自动续期，关着 Antigravity 也能直连查询额度' }) : null,
       shareSelect,
       el('span', { class: 'oauth-card-state' + (account.hidden ? '' : account.usable ? ' ok' : ' warn'), text: stateText, ...(stateTitle ? { title: stateTitle } : {}) }),
+      !account.hidden && !account.inLocal
+        ? (account.cloudAuth && account.autoRenew
+            ? el('button', {
+                type: 'button',
+                class: 'btn oauth-switch',
+                'data-account-action': 'switch-agy',
+                'data-account-kind': 'antigravity',
+                'data-account-id': account.id,
+                'data-account-name': name,
+                'data-account-email': email,
+                'data-agy-running': agyStatus.running ? '1' : '0',
+                title: '一键切换本机 Antigravity（桌面端与 CLI）的登录账号，切换时会自动重启 Antigravity',
+              }, [icon('refresh'), '切换登录'])
+            : el('button', {
+                type: 'button',
+                class: 'btn oauth-switch agy-switch-need-auth',
+                disabled: true,
+                title: '此账号尚未在 TokenPulse 完成 OAuth 授权或授权已失效，请先点右侧「重新授权」后再一键切换',
+              }, [icon('lock'), '需先授权']))
+        : null,
       el('span', { class: 'oauth-actions' }, actions),
     ]);
   });
@@ -4432,6 +4452,39 @@ $('antigravity-accounts')?.addEventListener('change', async event => {
     select.disabled = false;
   }
 });
+let pendingAgySwitch = null;
+function openAgySwitchConfirm(info) {
+  const modal = $('agy-switch-modal');
+  if (!modal) return;
+  pendingAgySwitch = info;
+  const running = Boolean(info.running);
+  $('agy-switch-name').textContent = info.name || info.email || '';
+  $('agy-switch-email').textContent = info.name && info.email && info.name !== info.email ? info.email : '';
+  $('agy-switch-desc').textContent = running
+    ? '确认后将自动关闭并重启 Antigravity，同步切换桌面端与 agy CLI 的登录账号。'
+    : '确认后将同步切换本机 Antigravity（桌面端与 agy CLI）的登录凭据。';
+  $('agy-switch-note').textContent = running
+    ? '提示：正在进行的对话、终端或子代理会被中断。切换前会自动备份原登录凭据，若失败将自动恢复原样。'
+    : '提示：当前未检测到运行中的 Antigravity，切换后下次打开客户端或运行 agy 时自动生效。切换前会自动备份原登录凭据。';
+  $('agy-switch-confirm-text').textContent = running ? '确认切换并重启' : '确认切换';
+  modal.hidden = false;
+  $('agy-switch-confirm').focus();
+}
+function closeAgySwitchConfirm(restoreFocus = true) {
+  const modal = $('agy-switch-modal');
+  const trigger = pendingAgySwitch?.button;
+  pendingAgySwitch = null;
+  if (modal) modal.hidden = true;
+  if (restoreFocus && trigger?.isConnected) trigger.focus();
+}
+$('agy-switch-close')?.addEventListener('click', () => closeAgySwitchConfirm(true));
+$('agy-switch-cancel')?.addEventListener('click', () => closeAgySwitchConfirm(true));
+$('agy-switch-modal')?.addEventListener('click', event => { if (event.target === $('agy-switch-modal')) closeAgySwitchConfirm(true); });
+$('agy-switch-confirm')?.addEventListener('click', () => {
+  const info = pendingAgySwitch;
+  closeAgySwitchConfirm(false);
+  if (info) void runAccountAction('switch-agy', 'antigravity', info.id, info.button);
+});
 $('antigravity-accounts')?.addEventListener('click', event => {
   const button = event.target.closest('[data-account-action]');
   if (!button || button.disabled) return;
@@ -4442,6 +4495,17 @@ $('antigravity-accounts')?.addEventListener('click', event => {
       { value: 'add-cli', label: '用本机 Antigravity 已登录的账号', hint: '不在 TokenPulse 里保存凭据：直接登记当前打开的 Antigravity 登录账号' },
       { value: 'login', label: '登录一个新账号', hint: '在浏览器里完成 Google 授权，由 TokenPulse 保存凭据并自动续期；关着 Antigravity 也能查额度，可添加多个' },
     ], null, value => runAccountAction(value, kind, id, button));
+    return;
+  }
+  if (button.dataset.accountAction === 'switch-agy') {
+    disarmRemove();
+    openAgySwitchConfirm({
+      id,
+      name: button.dataset.accountName || '',
+      email: button.dataset.accountEmail || '',
+      running: button.dataset.agyRunning === '1',
+      button,
+    });
     return;
   }
   return runAccountAction(button.dataset.accountAction, kind, id, button);
@@ -4460,14 +4524,22 @@ async function runAccountAction(action, kind, id, button) {
   buttons.forEach(item => { item.disabled = true; });
   $('prefs-status').textContent = action === 'switch-cli'
     ? '正在切换 CLI 的登录…'
-    : action === 'login' || action === 'reauthorize'
-      ? '已在浏览器打开授权页面，完成后会自动返回…'
-      : action === 'add-cli'
-        ? (isAgy ? '正在读取本机 Antigravity 的登录…' : '正在读取 CLI 的登录…')
-        : '正在保存…';
+    : action === 'switch-agy'
+      ? (button?.dataset?.agyRunning === '1' ? '正在切换 Antigravity 登录并重启客户端…' : '正在切换 Antigravity 登录…')
+      : action === 'login' || action === 'reauthorize'
+        ? '已在浏览器打开授权页面，完成后会自动返回…'
+        : action === 'add-cli'
+          ? (isAgy ? '正在读取本机 Antigravity 的登录…' : '正在读取 CLI 的登录…')
+          : '正在保存…';
   try {
     if (isAgy) {
-      if (action === 'add-cli') {
+      if (action === 'switch-agy') {
+        const result = await api.antigravityQuota.switchLocal(id);
+        renderAgyAccounts(result.status);
+        settingsDone(result.message);
+        api.antigravityQuota.state().then(s => window.AntigravityQuota?.apply?.(s)).catch(() => {});
+        api.refresh().then(render).catch(() => {});
+      } else if (action === 'add-cli') {
         const result = await api.antigravityQuota.addLocal();
         renderAgyAccounts(result.status);
         settingsDone(result.added ? '已添加本机 Antigravity 登录的账号（不保存凭据），正在刷新额度' : '本机 Antigravity 登录的账号已经在列表里了');
@@ -4536,6 +4608,17 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && layoutEdit && !menuOwner && $('settings').hidden && $('range-popover').hidden) {
     event.preventDefault();
     setLayoutEdit(false);
+    return;
+  }
+  if ($('agy-switch-modal') && !$('agy-switch-modal').hidden) {
+    if (event.key === 'Escape') { event.preventDefault(); closeAgySwitchConfirm(true); }
+    if (event.key === 'Tab') {
+      const controls = [...$('agy-switch-modal').querySelectorAll('button:not(:disabled)')].filter(item => item.offsetParent);
+      if (controls.length) {
+        if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+        else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
+      }
+    }
     return;
   }
   const modal = ['settings'].find(id => !$(id).hidden); if (!modal || menuOwner) return;

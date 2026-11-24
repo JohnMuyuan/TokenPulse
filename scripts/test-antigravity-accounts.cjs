@@ -535,7 +535,152 @@ function httpGet(url) {
     assert.equal(asarContainsFile(path.join(root, 'absent.asar'), 'dsh/cli.js'), false, '缺失文件安全返回 false');
     pass('raw-fs asarContainsFile handles valid archives, missing entries, and truncated files cleanly');
 
-    console.log(`\n${checks}/9 antigravity multi-account checks passed`);
+    // 10. Antigravity 一键切换账号（系统凭据槽写入、自动续期、抢救换下凭据、停/启桌面端、app_storage 更新与失败回滚）
+    const sw = require('../build/core/antigravity-switch');
+    const swAppData = path.join(root, 'roaming');
+    const swAppStorage = path.join(swAppData, 'Antigravity', 'app_storage.json');
+    fs.mkdirSync(path.dirname(swAppStorage), { recursive: true });
+    fs.writeFileSync(swAppStorage, JSON.stringify({
+      keepComputerAwake: 'true',
+      'agy.onboarding.lastLoginUsername': 'local-old@example.com',
+      'agy.onboarding.lastLoginIsGcpTos': 'false',
+    }, null, 2));
+    const swMockExe = path.join(root, 'fake-agy', 'Antigravity.exe');
+    fs.mkdirSync(path.dirname(swMockExe), { recursive: true });
+    fs.writeFileSync(swMockExe, 'stub');
+
+    const tSw = Date.UTC(2026, 10, 24, 8, 0, 0);
+    mod.writeAgyAccountStore({ version: 1, accounts: [] });
+    const localOnlyId = mod.rememberAgyAccount({ email: 'local-old@example.com', label: 'local-old@example.com' }, false, tSw);
+    const targetBId = mod.rememberAgyAccount({
+      email: 'target-b@example.com',
+      label: 'target-b@example.com',
+      credential: { token: 'expired-b-tok', refreshToken: '1//refresh-target-b', expiresAt: tSw - 1000, projectId: 'proj-b' },
+    }, true, tSw);
+
+    // 10a. 未保存 OAuth 凭据的账号拒绝切换并给出明确提示
+    let rejectedNoAuth = false;
+    try {
+      await sw.switchAntigravityAccount(localOnlyId, { now: () => tSw, appDataDir: swAppData, readKeyring: () => null, listProcesses: () => [] });
+    } catch (err) {
+      rejectedNoAuth = /重新授权/.test(err.message);
+    }
+    assert.equal(rejectedNoAuth, true, '未授权账号拒绝切换并引导重新授权');
+
+    // 10b. 运行中切换：先自动续期 → 抢救换下账号凭据 → 停止进程 → 备份 → 写入并核验 → 更新 app_storage → 重启桌面端
+    let memKeyring = JSON.stringify({
+      token: { access_token: 'ya29.outgoing-old', token_type: 'Bearer', refresh_token: '1//refresh-outgoing-old', expiry: new Date(tSw + 3600_000).toISOString(), expires_in: 3599 },
+      auth_method: 'consumer',
+      id_token_email: 'local-old@example.com',
+      writer_id: 'oldWriterId1234567890123456789012345678901',
+    });
+    const events = [];
+    const switchRes = await sw.switchAntigravityAccount(targetBId, {
+      now: () => tSw,
+      platform: 'win32',
+      appDataDir: swAppData,
+      readKeyring: () => memKeyring,
+      writeKeyring: (raw) => { events.push('writeKeyring'); memKeyring = raw; },
+      deleteKeyring: () => { events.push('deleteKeyring'); memKeyring = null; },
+      listProcesses: () => [{ pid: 999999, name: 'Antigravity.exe', executablePath: swMockExe, isDesktop: true }],
+      stopProcesses: async () => { events.push('stopProcesses'); },
+      findDesktopExe: () => swMockExe,
+      launchDesktop: (exe) => { events.push('launch:' + exe); },
+      fetchLocalEmail: async () => 'local-old@example.com',
+      renewAll: async () => 0,
+      refreshOne: async (cred) => {
+        events.push('refreshOne');
+        return { ok: true, credential: { ...cred, token: 'ya29.fresh-target-b', expiresAt: tSw + 3600_000 } };
+      },
+      listStatus: async (at, email) => mod.listAgyAccountStatus(at, email),
+      sleep: async () => {},
+    });
+    assert.equal(switchRes.ok, true);
+    assert.equal(switchRes.restarted, true);
+    assert.equal(switchRes.email, 'target-b@example.com');
+    assert.deepEqual(events, ['refreshOne', 'stopProcesses', 'writeKeyring', 'launch:' + swMockExe], '严格按续期→关进程→写凭据→重启顺序执行');
+    const writtenCred = sw.parseAgyKeyringPayload(memKeyring);
+    assert.equal(writtenCred.id_token_email, 'target-b@example.com');
+    assert.equal(writtenCred.token.access_token, 'ya29.fresh-target-b');
+    assert.equal(writtenCred.token.refresh_token, '1//refresh-target-b');
+    assert.equal(writtenCred.token.token_type, 'Bearer');
+    assert.equal(writtenCred.auth_method, 'consumer');
+    assert.equal(writtenCred.writer_id.length, 43);
+    const updatedStorage = JSON.parse(fs.readFileSync(swAppStorage, 'utf8'));
+    assert.equal(updatedStorage['agy.onboarding.lastLoginUsername'], 'target-b@example.com');
+    assert.equal(updatedStorage.keepComputerAwake, 'true', '保留 app_storage.json 其他键');
+    const rescuedOld = mod.readAgyAccountStore().accounts.find((a) => a.id === localOnlyId);
+    assert.equal(rescuedOld?.credential?.refreshToken, '1//refresh-outgoing-old', '被换下的仅本机账号自动抢救保存其 OAuth 凭据，方便随时切回');
+    assert.equal(mod.readAgyLoginTimeline().at(-1)?.id, targetBId, '切换后立刻记录登录时间线边界');
+    const backupDirs = fs.readdirSync(path.join(dataDir, 'backups', 'antigravity-switch'));
+    assert.ok(backupDirs.length >= 1 && fs.existsSync(path.join(dataDir, 'backups', 'antigravity-switch', backupDirs[0], 'keyring.json')), '切换前生成备份');
+
+    // 10c. 已是当前账号时不重复重启
+    const sameEvents = [];
+    const alreadyRes = await sw.switchAntigravityAccount(targetBId, {
+      now: () => tSw + 1000,
+      platform: 'win32',
+      appDataDir: swAppData,
+      readKeyring: () => memKeyring,
+      writeKeyring: () => { sameEvents.push('write'); },
+      listProcesses: () => [{ pid: 999999, name: 'Antigravity.exe', executablePath: swMockExe, isDesktop: true }],
+      stopProcesses: async () => { sameEvents.push('stop'); },
+      launchDesktop: () => { sameEvents.push('launch'); },
+      fetchLocalEmail: async () => 'target-b@example.com',
+      renewAll: async () => 0,
+      listStatus: async (at, email) => mod.listAgyAccountStatus(at, email),
+      sleep: async () => {},
+    });
+    assert.equal(alreadyRes.alreadyActive, true);
+    assert.equal(alreadyRes.restarted, false);
+    assert.deepEqual(sameEvents, [], '已是目标账号时不关不启不重写');
+
+    // 10d. 写入核对失败时完整回滚系统凭据、app_storage.json 与账号库，并拉回原运行中的桌面端
+    const keyringBeforeFail = memKeyring;
+    let rollbackRelaunched = false;
+    let rollbackThrew = false;
+    try {
+      await sw.switchAntigravityAccount(localOnlyId, {
+        now: () => tSw + 2000,
+        platform: 'win32',
+        appDataDir: swAppData,
+        readKeyring: () => memKeyring,
+        writeKeyring: (raw) => {
+          // 首次写入故意模拟脏写（验证不通过），回滚写回原串则正常保存
+          if (raw === keyringBeforeFail) memKeyring = raw;
+          else memKeyring = JSON.stringify({ token: { access_token: 'corrupt', refresh_token: 'wrong' }, id_token_email: 'wrong@example.com' });
+        },
+        listProcesses: () => [{ pid: 999999, name: 'Antigravity.exe', executablePath: swMockExe, isDesktop: true }],
+        stopProcesses: async () => {},
+        findDesktopExe: () => swMockExe,
+        launchDesktop: () => { rollbackRelaunched = true; },
+        fetchLocalEmail: async () => 'target-b@example.com',
+        renewAll: async () => 0,
+        listStatus: async (at, email) => mod.listAgyAccountStatus(at, email),
+        sleep: async () => {},
+      });
+    } catch (err) {
+      rollbackThrew = /已恢复原样/.test(err.message);
+    }
+    assert.equal(rollbackThrew, true);
+    assert.equal(memKeyring, keyringBeforeFail, '失败后系统凭据回滚为原值');
+    assert.equal(JSON.parse(fs.readFileSync(swAppStorage, 'utf8'))['agy.onboarding.lastLoginUsername'], 'target-b@example.com', '失败后 app_storage.json 保持原值');
+    assert.equal(rollbackRelaunched, true, '失败后自动拉回原本运行中的桌面端');
+
+    // 10e. 隔离 mock keyring 文件模式往返
+    const mockKeyringPath = path.join(root, 'mock-keyring.json');
+    process.env.TOKENPULSE_AGY_KEYRING_FILE = mockKeyringPath;
+    try {
+      sw.writeAgyKeyringRaw(keyringBeforeFail);
+      assert.equal(sw.readAgyKeyringEmail(), 'target-b@example.com');
+      sw.deleteAgyKeyringRaw();
+      assert.equal(sw.readAgyKeyringEmail(), '');
+    } finally {
+      delete process.env.TOKENPULSE_AGY_KEYRING_FILE;
+    }
+    pass('Antigravity one-click account switch: pre-refresh, outgoing rescue, stop/write/verify/relaunch, already-active no-op, and rollback');
+
+    console.log(`\n${checks}/10 antigravity multi-account checks passed`);
   } catch (err) {
     console.error(err);
     process.exitCode = 1;

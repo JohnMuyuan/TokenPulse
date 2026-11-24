@@ -614,6 +614,32 @@
   </section>
 </div>
 
+<div id="agy-switch-modal" class="modal agy-switch-modal" hidden>
+  <section class="modal-card agy-switch-card" role="dialog" aria-modal="true" aria-labelledby="agy-switch-title">
+    <header class="agy-switch-head">
+      <span class="agy-switch-icon" aria-hidden="true"><svg class="icon"><use href="#i-alert"/></svg></span>
+      <div class="agy-switch-head-text">
+        <h2 id="agy-switch-title">切换 Antigravity 登录账号</h2>
+        <p id="agy-switch-desc">确认后将自动关闭并重启 Antigravity，同步切换桌面端与 agy CLI 的登录账号。</p>
+      </div>
+      <button id="agy-switch-close" class="icon-circle" type="button" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
+    </header>
+    <div class="agy-switch-body">
+      <div class="agy-switch-target">
+        <span class="agy-switch-label">目标账号</span>
+        <strong id="agy-switch-name" translate="no"></strong>
+        <small id="agy-switch-email" translate="no"></small>
+        <span class="agy-switch-scope">桌面端 + agy CLI 同步切换</span>
+      </div>
+      <p id="agy-switch-note" class="agy-switch-note"></p>
+    </div>
+    <div class="agy-switch-foot">
+      <button id="agy-switch-cancel" class="btn" type="button">取消</button>
+      <button id="agy-switch-confirm" class="btn btn-accent" type="button"><svg class="icon"><use href="#i-refresh"/></svg><span id="agy-switch-confirm-text">确认切换并重启</span></button>
+    </div>
+  </section>
+</div>
+
 <div id="option-menu" class="option-menu" role="menu" hidden></div>
 
 <script src="i18n.js"></script>

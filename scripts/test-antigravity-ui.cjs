@@ -8,7 +8,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs'), http = re
 const { app, BrowserWindow, ipcMain } = require('electron');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-agy-ui-'));
 const agy = path.join(root, 'antigravity');
-Object.assign(process.env, { TOKENPULSE_DATA_DIR: path.join(root, 'data'), TOKENPULSE_ANTIGRAVITY_DIR: agy, AGENT_SWITCH_HOME: path.join(root, 'home'), HOME: path.join(root, 'home'), USERPROFILE: path.join(root, 'home'), PI_CODING_AGENT_DIR: path.join(root, 'pi'), TOKENPULSE_DSH_HOME: path.join(root, 'dsh'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CODEX_HOME: path.join(root, 'codex'), GROK_HOME: path.join(root, 'grok'), AGENT_SWITCH_CC_DB: path.join(root, 'missing.db') });
+Object.assign(process.env, { TOKENPULSE_DATA_DIR: path.join(root, 'data'), TOKENPULSE_ANTIGRAVITY_DIR: agy, TOKENPULSE_AGY_KEYRING_FILE: path.join(root, 'mock-keyring.json'), AGENT_SWITCH_HOME: path.join(root, 'home'), HOME: path.join(root, 'home'), USERPROFILE: path.join(root, 'home'), PI_CODING_AGENT_DIR: path.join(root, 'pi'), TOKENPULSE_DSH_HOME: path.join(root, 'dsh'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CODEX_HOME: path.join(root, 'codex'), GROK_HOME: path.join(root, 'grok'), AGENT_SWITCH_CC_DB: path.join(root, 'missing.db') });
 for (const dir of ['data', 'home', 'antigravity/conversations', 'antigravity/daemon']) fs.mkdirSync(path.join(root, dir), { recursive: true });
 // 提醒线关掉：测试里不弹真的系统通知
 fs.writeFileSync(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' }));
@@ -401,15 +401,42 @@ app.on('web-contents-created', (_event, wc) => {
       now: () => NOW,
       publish: (s) => { if (!wc.isDestroyed()) wc.send('antigravity-quota-state', s); },
       fetcher: async () => null,
+      cloudFetcher: async (acc) => ({
+        status: {
+          tier: acc.id === idSolo ? 'Google AI Ultra' : 'Google AI Pro',
+          plan: acc.id === idSolo ? 'Ultra' : 'Pro',
+          groups: acc.id === idSolo ? soloGroups : sharedGroups,
+          labels: {},
+        },
+      }),
     });
-    for (const ch of ['antigravity-quota:state', 'antigravity-quota:timeline', 'antigravity-accounts:list', 'antigravity-accounts:manage']) ipcMain.removeHandler(ch);
+    let activeTestEmail = 'fam-alpha@example.com';
+    let mockAgyRunning = true;
+    const switchedIds = [];
+    for (const ch of ['antigravity-quota:state', 'antigravity-quota:timeline', 'antigravity-accounts:list', 'antigravity-accounts:manage', 'antigravity-accounts:switch-local']) ipcMain.removeHandler(ch);
     ipcMain.handle('antigravity-quota:state', () => multiMgr.state());
     ipcMain.handle('antigravity-quota:timeline', (_ev, q) => multiMgr.timeline(q));
-    ipcMain.handle('antigravity-accounts:list', () => accMod.listAgyAccountStatus(NOW));
+    ipcMain.handle('antigravity-accounts:list', async () => ({ ...(await accMod.listAgyAccountStatus(NOW, activeTestEmail)), running: mockAgyRunning }));
     ipcMain.handle('antigravity-accounts:manage', async (_ev, act, id, val) => {
       const res = await accMod.manageAgyAccount(act, id, val, NOW);
       multiMgr.publish();
-      return res;
+      return { ...res, running: mockAgyRunning };
+    });
+    ipcMain.handle('antigravity-accounts:switch-local', async (_ev, id) => {
+      switchedIds.push(id);
+      const target = accMod.readAgyAccountStore().accounts.find(a => a.id === id);
+      assert.ok(target, 'switch target must exist');
+      activeTestEmail = target.email;
+      multiMgr.onAccountSwitched(target.email, mockAgyRunning);
+      const st = { ...(await accMod.listAgyAccountStatus(NOW, activeTestEmail)), running: mockAgyRunning };
+      return {
+        ok: true,
+        accountId: target.id,
+        email: target.email,
+        restarted: mockAgyRunning,
+        message: `已把 Antigravity（桌面端与 CLI）切换到 ${target.alias || target.email}，正在自动重启 Antigravity。`,
+        status: st,
+      };
     });
 
     await e("localStorage.setItem('tokenpulse-lang', 'zh'); location.reload()");
@@ -450,6 +477,25 @@ app.on('web-contents-created', (_event, wc) => {
     assert.equal(await e("document.querySelectorAll('#official-accounts .oauth-card').length"), 3, '保持原有三家 CLI 卡片数量不变');
     assert.match(await text('#antigravity-accounts'), /3 个账号 · 2 份额度池（家庭组自动防偏移）[\s\S]*fam-alpha@example\.com[\s\S]*家庭组共享/);
     assert.doesNotMatch(await e("document.documentElement.outerHTML"), /secret_alpha_tok|secret_alpha_ref|secret_beta_tok|secret_solo_tok/);
+    // 验证一键切换 Antigravity 账号确认对话框（先弹出确认、Esc 只关确认框不关设置页、点确认后触发 IPC 并刷新状态）
+    assert.equal(await e(`!!document.querySelector('#antigravity-accounts [data-account-row="${idAlpha}"] [data-account-action="switch-agy"]')`), false, '当前本机登录的账号不显示切换按钮');
+    assert.equal(await e(`!!document.querySelector('#antigravity-accounts [data-account-row="${idBeta}"] [data-account-action="switch-agy"]')`), true, '已授权的非当前账号显示切换登录按钮');
+    await e(`document.querySelector('#antigravity-accounts [data-account-row="${idBeta}"] [data-account-action="switch-agy"]').click()`);
+    await until("!document.getElementById('agy-switch-modal').hidden");
+    assert.match(await text('#agy-switch-modal'), /切换 Antigravity 登录账号[\s\S]*fam-beta@example\.com[\s\S]*桌面端 \+ agy CLI 同步切换[\s\S]*确认切换并重启/);
+    await shot('agy-switch-confirm');
+    await e("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+    await until("document.getElementById('agy-switch-modal').hidden");
+    assert.equal(await e("document.getElementById('settings').hidden"), false, 'Esc 关闭切换确认框时保持设置对话框打开');
+    assert.equal(switchedIds.length, 0, '取消确认时不得触发切换 IPC');
+    await e(`document.querySelector('#antigravity-accounts [data-account-row="${idBeta}"] [data-account-action="switch-agy"]').click()`);
+    await until("!document.getElementById('agy-switch-modal').hidden");
+    await e("document.getElementById('agy-switch-confirm').click()");
+    await until(`document.getElementById('agy-switch-modal').hidden && !document.querySelector('#antigravity-accounts [data-account-row="${idBeta}"] [data-account-action="switch-agy"]')`);
+    assert.deepEqual(switchedIds, [idBeta], '点击确认后触发 antigravity-accounts:switch-local');
+    assert.equal(await e(`!!document.querySelector('#antigravity-accounts [data-account-row="${idBeta}"] [data-account-action="switch-agy"]')`), false, '切换后新活跃账号不再显示切换按钮');
+    assert.equal(await e(`!!document.querySelector('#antigravity-accounts [data-account-row="${idAlpha}"] [data-account-action="switch-agy"]')`), true, '被换下的已授权账号出现切换登录按钮');
+    assert.match(await text('#toast-stack'), /fam-beta@example\.com/);
     await e("document.getElementById('settings-close').click()");
 
     // 切到英文模式验证多账号与家庭组新增界面零残留中文、深色模式无默认黑字、900px 不溢出、零 CSP 报错
@@ -468,6 +514,13 @@ app.on('web-contents-created', (_event, wc) => {
     await pause(300);
     const enMultiSettings = await text('#antigravity-accounts');
     assert.ok(!/[一-鿿]/.test(enMultiSettings), enMultiSettings.match(/.{0,40}[一-鿿].{0,40}/)?.[0]);
+    await e("document.querySelector('#antigravity-accounts [data-account-action=\"switch-agy\"]').click()");
+    await until("!document.getElementById('agy-switch-modal').hidden");
+    await pause(150);
+    const enSwitchModal = await text('#agy-switch-modal');
+    assert.ok(!/[一-鿿]/.test(enSwitchModal), enSwitchModal.match(/.{0,40}[一-鿿].{0,40}/)?.[0]);
+    await e("document.getElementById('agy-switch-cancel').click()");
+    await until("document.getElementById('agy-switch-modal').hidden");
     await e("document.getElementById('settings-close').click()");
     await e("setThemeMode('dark')"); await pause(200);
     assert.deepEqual(await e("[...document.querySelectorAll('#quota-detail *, #quota-cards [data-antigravity] *')].filter(n => [...n.childNodes].some(c => c.nodeType === 3 && c.nodeValue.trim()) && getComputedStyle(n).color === 'rgb(0, 0, 0)').map(n => n.className)"), []);

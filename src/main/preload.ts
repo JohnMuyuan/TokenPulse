@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     accounts: () => ipcRenderer.invoke("antigravity-accounts:list"),
     login: (replaceId?: string) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:login", replaceId)),
     addLocal: () => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:add-local")),
+    switchLocal: (id: string) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:switch-local", id)),
     manage: (action: "remove" | "purge" | "restore" | "rename" | "share-mode", id: string, value?: string) =>
       demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:manage", action, id, value),
     reorder: (ids: string[]) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:reorder", ids)),

@@ -3378,7 +3378,24 @@
     '修复子代理实际使用其他模型（如 Opus 4.6）时被误标为主会话模型的问题': 'Fix Subagents Using Another Model (e.g., Opus 4.6) Being Mislabeled as Parent Model',
     'Antigravity 子代理现优先采用单步实际执行的模型 ID 与单步标签，不再被沿用的父会话占位枚举或缓存 modelId 覆盖；Claude Code 同步补采单次 requestedModel / api-request.params.model、兼容嵌套/顶层 agent-*.jsonl，并按实际计费 Tokens 排序侧栏与排行主模型，升级后自动重算。': 'Antigravity subagents now trust each step’s actual executed model ID and per-step label rather than inherited placeholder enums or cached numeric modelIds; Claude Code now captures per-request requestedModel and api-request.params.model, supports nested/top-level agent-*.jsonl files, and sorts primary session models by billed tokens with automatic rescan on upgrade.',
     '修复 Claude Code 子代理消耗未归属到对应官方 Claude 账号的问题': 'Fix Claude Code Subagent Usage Not Attributed to the Matching Official Claude Account',
-    '扫描 Claude Code 会话与子代理现解析 credential_org.organizationUuid 并匹配各 Claude 账号保存的组织 ID（多人共享 Team 组织时不误猜），缺失身份的子代理自动回退继承所属主会话账号；同时修复历史上落入空账号键（accountHours[""]）的官方用量在账号/时间线补全后无法自动重算的问题，升级后自动重扫历史账本。': 'Claude Code session and subagent scanning now parses credential_org.organizationUuid and matches it against each Claude account’s stored organization ID (skipping ambiguous shared Team orgs), with subagents falling back to their parent session’s account identity when missing. Also fixes previously unattributed official hours stored under accountHours[""] failing to re-attribute once account or timeline data becomes available, with automatic rescan on upgrade.'
+    '扫描 Claude Code 会话与子代理现解析 credential_org.organizationUuid 并匹配各 Claude 账号保存的组织 ID（多人共享 Team 组织时不误猜），缺失身份的子代理自动回退继承所属主会话账号；同时修复历史上落入空账号键（accountHours[""]）的官方用量在账号/时间线补全后无法自动重算的问题，升级后自动重扫历史账本。': 'Claude Code session and subagent scanning now parses credential_org.organizationUuid and matches it against each Claude account’s stored organization ID (skipping ambiguous shared Team orgs), with subagents falling back to their parent session’s account identity when missing. Also fixes previously unattributed official hours stored under accountHours[""] failing to re-attribute once account or timeline data becomes available, with automatic rescan on upgrade.',
+    '切换登录': 'Switch Login',
+    '需先授权': 'Authorize First',
+    '一键切换本机 Antigravity（桌面端与 CLI）的登录账号，切换时会自动重启 Antigravity': 'Switch the local Antigravity (Desktop & CLI) login to this account and restart Antigravity automatically',
+    '此账号尚未在 TokenPulse 完成 OAuth 授权或授权已失效，请先点右侧「重新授权」后再一键切换': 'This account has no active OAuth authorization in TokenPulse yet or it expired. Click “Re-authorize” on the right before switching.',
+    '切换 Antigravity 登录账号': 'Switch Antigravity Account',
+    '确认后将自动关闭并重启 Antigravity，同步切换桌面端与 agy CLI 的登录账号。': 'Confirm to close and restart Antigravity, syncing the login for both Desktop and agy CLI.',
+    '确认后将同步切换本机 Antigravity（桌面端与 agy CLI）的登录凭据。': 'Confirm to switch the local Antigravity (Desktop & agy CLI) credentials to this account.',
+    '目标账号': 'Target account',
+    '桌面端 + agy CLI 同步切换': 'Syncs Desktop + agy CLI',
+    '提示：正在进行的对话、终端或子代理会被中断。切换前会自动备份原登录凭据，若失败将自动恢复原样。': 'Note: active conversations, terminals, or subagents will be interrupted. Existing credentials are backed up automatically and rolled back on failure.',
+    '提示：当前未检测到运行中的 Antigravity，切换后下次打开客户端或运行 agy 时自动生效。切换前会自动备份原登录凭据。': 'Note: Antigravity is not currently running; the new account takes effect on next launch or agy CLI run. Existing credentials are backed up automatically.',
+    '确认切换并重启': 'Switch & Restart',
+    '确认切换': 'Confirm Switch',
+    '正在切换 Antigravity 登录并重启客户端…': 'Switching Antigravity login and restarting client…',
+    '正在切换 Antigravity 登录…': 'Switching Antigravity login…',
+    '设置 → 官方账号新增 Antigravity 一键切换账号并自动重启': 'One-Click Antigravity Account Switch & Auto-Restart in Settings',
+    '在「设置 → 官方账号」的 Antigravity 卡片中点击「切换登录」并确认后，自动备份现有凭据、安全写入已授权 OAuth 凭据到系统凭据管理器（同步生效于桌面端与 agy CLI），并自动关闭重启运行中的 Antigravity；未完成 OAuth 授权的账号直接标示「需先授权」，失败时自动回滚恢复。': 'Click “Switch Login” on any OAuth-authorized Antigravity account in Settings → Official Accounts to confirm, back up existing credentials, write the fresh OAuth token to the OS keyring (syncing both Desktop and agy CLI), and automatically restart Antigravity if running. Accounts without OAuth show “Authorize First”, and failures roll back automatically.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */
@@ -3413,6 +3430,14 @@
     P('添加账号：(.+)', m => `Add account: ${m[1]}`),
     P('外部 \\+([\\d.]+)%', m => `External +${m[1]}%`),
     P('官方增加 ([\\d.]+) 个百分点，同期本机没有 Antigravity 请求', m => `Official +${m[1]} pts, no Antigravity requests on this PC`),
+    P('Antigravity 当前登录的就是 (.+)。', m => `Antigravity is already signed in as ${m[1]}.`),
+    P('已把 Antigravity（桌面端与 CLI）切换到 (.+)，正在自动重启 Antigravity。', m => `Switched Antigravity (Desktop & CLI) to ${m[1]} and restarting Antigravity.`),
+    P('已把 Antigravity（桌面端与 CLI）切换到 (.+)，请手动重新打开 Antigravity 生效。', m => `Switched Antigravity (Desktop & CLI) to ${m[1]}. Reopen Antigravity to take effect.`),
+    P('已把 Antigravity（桌面端与 CLI）切换到 (.+)，下次打开 Antigravity 或运行 agy 时自动生效。', m => `Switched Antigravity (Desktop & CLI) to ${m[1]}. Takes effect on next launch or agy run.`),
+    P('切换失败，Antigravity 的登录已恢复原样：(.+)', m => `Switch failed; restored previous Antigravity login: ${v(m[1])}`),
+    P('目标账号 OAuth 续期失败（(.+)），请先点「重新授权」后再切换。', m => `Target account OAuth refresh failed (${v(m[1])}). Click “Re-authorize” before switching.`),
+    P('登录凭据已失效或无权访问（HTTP (\\d+)）', m => `Credentials expired or unauthorized (HTTP ${m[1]})`),
+    P('登录凭据已失效（HTTP (\\d+)）', m => `Credentials expired (HTTP ${m[1]})`),
     // 0.3.61 桌宠：自定义宠物导入时的报错、作者
     P('「(\\w+)」的图片要写成同一个文件夹里的文件名', m => `The “${m[1]}” image must be a file name in the same folder`),
     P('找不到「(\\w+)」的图片：(.+)', m => `Can't find the “${m[1]}” image: ${m[2]}`),

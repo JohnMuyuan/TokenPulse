@@ -2583,6 +2583,26 @@ export class AntigravityQuota {
     } catch { /* 存不下来：这次的结果还在内存里 */ }
   }
 
+  /** 切换本机 Antigravity 账号后立刻同步当前活跃身份，并在重启就绪后补刷一次额度与本机状态。 */
+  onAccountSwitched(email: string, restarted: boolean) {
+    const norm = normalizeAgyEmail(email);
+    const at = this.now();
+    if (norm) {
+      this.activeLocalEmail = norm;
+      this.activeLocalAccountId = recordAgyLocalLogin(email, at);
+    }
+    if (restarted) this.running = true;
+    this.publish();
+    if (restarted && !this.stopped) {
+      setTimeout(() => {
+        if (this.stopped) return;
+        void this.syncLocalLogin()
+          .then(() => this.refresh(false))
+          .catch(() => {});
+      }, 6_000).unref();
+    }
+  }
+
   /** 快速同步本机正在运行的 Antigravity IDE 登录态到时间线（供刷新前调用，Antigravity 未开时零开销）。 */
   async syncLocalLogin(): Promise<void> {
     if (this.options.fetcher || !antigravityHub()) return;

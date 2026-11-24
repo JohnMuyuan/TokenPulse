@@ -57,6 +57,8 @@ import { DeepSeekBalance } from "./deepseek-balance";
 import { setDeepSeekMark } from "../core/deepseek-insight";
 import { AntigravityQuota, agyQuotaAccounts, type AgyQuotaState } from "./antigravity-quota";
 import { addLocalAgyAccount, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts, resolveAgyLocalOwner } from "../core/antigravity-accounts";
+import { readAgyKeyringEmailAsync, switchAntigravityAccount } from "../core/antigravity-switch";
+import { antigravityHub } from "../core/antigravity";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 
 
@@ -1243,7 +1245,19 @@ if (!app.requestSingleInstanceLock()) {
         typeof accountId === "string" ? accountId : undefined,
       ),
     );
-    ipcMain.handle("antigravity-accounts:list", () => listAgyAccountStatus());
+    ipcMain.handle("antigravity-accounts:list", async () => {
+      const localEmail = antigravityHub() ? undefined : await readAgyKeyringEmailAsync();
+      return listAgyAccountStatus(Date.now(), localEmail);
+    });
+    ipcMain.handle("antigravity-accounts:switch-local", async (_event, id: unknown) => {
+      if (typeof id !== "string" || !id.startsWith("antigravity:") || id.length > 400) {
+        throw new Error("Antigravity 账号参数无效");
+      }
+      const result = await switchAntigravityAccount(id);
+      antigravityQuota.onAccountSwitched(result.email, result.restarted);
+      backgroundRefresh(true);
+      return result;
+    });
     ipcMain.handle("antigravity-accounts:login", async (_event, replaceId?: unknown) => {
       if (replaceId !== undefined && (typeof replaceId !== "string" || replaceId.length > 400)) throw new Error("账号参数无效");
       const result = await loginAntigravityOAuth(typeof replaceId === "string" ? replaceId : undefined);
