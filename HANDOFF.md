@@ -1,6 +1,35 @@
-# 当前接手入口 · TokenPulse `v0.3.110` 已正式发布（2026-11-23）
+# 当前接手入口 · TokenPulse `v0.3.111` 已正式发布（2026-11-23）
 
-## 最新已发布版本 · `v0.3.110` · 2026-11-23
+## 最新已发布版本 · `v0.3.111` · 2026-11-23
+
+- **Git 与发布**。[TokenPulse v0.3.111](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.111) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `456357169`）。发布提交 `99a50ef2134c0bb8b0356857349852bc45c931da` 与签注标签 `v0.3.111`（`bacca7c86d4824ab4646afa2e3e01349c13ef3f2`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（修复主会话与子代理模型不同时——如主会话 Opus 5.5、子代理实际 Opus 4.6——子代理被误标为主会话模型的问题）**：
+  1. [src/core/antigravity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity.ts)：
+     - `resolveModel()` 改为优先采用单步自身 `gen_metadata 1.21` 标签而非全局可变的 `antigravity-models.json`；且当 `gen_metadata 1.19`（`rawModel`）明确为带版本号的真实模型 ID（如 `claude-opus-4-6` / `claude-opus-4-6-medium`）并与 `label` / `model_enum`（如沿用父会话或原地重映射后的 `Claude Opus 5.5`）冲突时，以实际执行的 `rawModel`（及对应思考等级后缀）为准。
+     - `readAntigravityGenerations()`、`readAntigravityConversation()` 与 `readAntigravitySubagentUsage()` 均改为优先读取 `usage.1` 实际计费型号 ID，并在每步直接携带 `genModel`，不再被按数字 `modelId` 缓存的首步条目覆盖。
+  2. [src/core/usage-scan.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/usage-scan.ts)：
+     - Claude Code 解析补采单行 `assistant.requestedModel` 与 `api-request.params.model`（`apiRequestModel`），优先于会话级 `attachment.identity.modelId`，避免子代理继承父会话 `identity` 时误标请求型号或误报「型号不一致」；`scanAntigravity()` 优先使用单步 `row.genModel`。
+     - 升级 `STATE_VERSION`（`18 → 19`）与 `ANTIGRAVITY_STATE_VERSION`（`9 → 10`），升级后自动重算历史账本。
+  3. [src/core/sessions.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/sessions.ts) & [src/core/request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts)：
+     - `parseClaude()` 兼容嵌套 `subagents/` 目录及顶层 `agent-*.jsonl`，防止非直接子目录子代理因 `row.sessionId` 与父会话键碰撞；`parseAntigravity()` 优先使用 `step.genModel`。
+     - `summarize()` 与 `request-log.ts`「按会话排行」均按实际计费 Tokens 降序排列 `models`，避免零用量前置占位消息抢占侧栏主模型标签；升级 `INDEX_VERSION`（`10 → 11`）。
+  4. 回归测试：[scripts/test-antigravity-usage.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-antigravity-usage.cjs)、[scripts/test-antigravity-sessions.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-antigravity-sessions.cjs)、[scripts/test-sessions.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-sessions.cjs)、[scripts/test-requests.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-requests.cjs) 与 [scripts/test-routing-regressions.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-routing-regressions.cjs)。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.111.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_HAS_03111=true`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.111.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.111.md)。
+- **发行附件**（4 件经 `gh release upload` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.111-Setup.exe`，`112,924,062` B，SHA256 `ed5cbeb0980b0b9ff6fcf9fe86d1d6ffc325bf84d4c6b34844f2f4d6bce8057f`
+  - `dist/TokenPulse-0.3.111-Portable.exe`，`112,666,866` B，SHA256 `bccdb289f09e45d0e9153c1e7c15f08fa15969beca29eecde1f82d7e7035b2f4`
+  - `dist/TokenPulse-0.3.111-Setup.exe.blockmap`，`119,926` B，SHA256 `789758dae284cac470a380a10265d4db13348932bc16e06470c3e334415f0192`
+  - `dist/latest.yml`，`355` B，SHA256 `9b9a476e938ed273312e4cf27b66450774b18a10b99132d9730f0cafe38aa5f0`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测，含 `test-features.cjs` 46/46 英文零漏翻校验及本轮新增的 Antigravity / Claude Code 子代理 Opus 4.6 回归测试）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-ui.cjs` 与 `scripts/test-intro-ui.cjs` **退出 0，全部 PASS**；`git diff --check` 通过。
+- **未执行的验证与已知限制**：本轮因无用户朋友的原始日志样本，若其场景涉及外部中转站改写响应内 `message.model` 或其他私有字段，待其升级 `v0.3.111` 实测反馈后再核对；未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/index.js`、`build/core/{antigravity,usage-scan,sessions,request-log}.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.111` 发行产物共 11 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+- **下一步具体动作**：用户朋友可在软件内检查更新或下载 `v0.3.111` 验证子代理型号是否已修正；若仍复现可提供 3 行脱敏子代理元信息进一步定位。
+
+---
+
+## 上一已发布版本 · `v0.3.110` · 2026-11-23
 
 - **Git 与发布**。[TokenPulse v0.3.110](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.110) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `456246746`）。发布提交 `92c51dc56fc770410580a0b1b70100d0e4341baa` 与签注标签 `v0.3.110`（`77a9af1677b95de48f699474f11b88277c344cfb`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **根因定位与发布内容（修复 Windows 上 TokenPulse 永久占用 Antigravity `resources\app.asar` 导致无法覆盖升级的问题）**：
