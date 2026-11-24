@@ -506,7 +506,36 @@ function httpGet(url) {
     assert.equal(zeroRes.rows.find((r) => r.key === rowBob.key).account.label, '本机 Antigravity');
     pass('Antigravity multi-account usage attribution, official channel, account filter, and zero-config privacy fallback');
 
-    console.log(`\n${checks}/8 antigravity multi-account checks passed`);
+    // 9. raw-fs / asarContainsFile 校验（支持标准 ASAR 二进制头、目录回退、缺失与损坏文件，无句柄残留）
+    const { asarContainsFile } = require('../build/core/raw-fs');
+    const makeAsar = (target, tree, payload) => {
+      const headerBuf = Buffer.from(JSON.stringify({ files: tree }), 'utf8');
+      const padLen = (4 - (headerBuf.length % 4)) % 4;
+      const headerPicklePayload = 4 + headerBuf.length + padLen;
+      const headerPickleSize = 4 + headerPicklePayload;
+      const out = Buffer.alloc(8 + headerPickleSize + payload.length);
+      out.writeUInt32LE(4, 0);
+      out.writeUInt32LE(headerPickleSize, 4);
+      out.writeUInt32LE(headerPicklePayload, 8);
+      out.writeUInt32LE(headerBuf.length, 12);
+      headerBuf.copy(out, 16);
+      payload.copy(out, 8 + headerPickleSize);
+      fs.writeFileSync(target, out);
+    };
+    const asarFile = path.join(root, 'sample.asar');
+    const payload = Buffer.from('console.log("ok");', 'utf8');
+    makeAsar(asarFile, { dsh: { files: { 'cli.js': { size: payload.length, offset: '0' } } } }, payload);
+    assert.equal(asarContainsFile(asarFile, 'dsh/cli.js'), true, '能命中合法 ASAR 归档内的文件');
+    assert.equal(asarContainsFile(asarFile, 'dsh\\cli.js'), true, '兼容 Windows 反斜杠路径');
+    assert.equal(asarContainsFile(asarFile, 'dsh'), false, '目录节点不误判为文件');
+    assert.equal(asarContainsFile(asarFile, 'dsh/missing.js'), false, '不存在的内部路径返回 false');
+    const corruptAsar = path.join(root, 'corrupt.asar');
+    fs.writeFileSync(corruptAsar, Buffer.from([1, 2, 3, 4, 5]));
+    assert.equal(asarContainsFile(corruptAsar, 'dsh/cli.js'), false, '损坏或截断的 ASAR 安全降级');
+    assert.equal(asarContainsFile(path.join(root, 'absent.asar'), 'dsh/cli.js'), false, '缺失文件安全返回 false');
+    pass('raw-fs asarContainsFile handles valid archives, missing entries, and truncated files cleanly');
+
+    console.log(`\n${checks}/9 antigravity multi-account checks passed`);
   } catch (err) {
     console.error(err);
     process.exitCode = 1;

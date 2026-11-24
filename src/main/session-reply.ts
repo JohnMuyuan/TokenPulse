@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import { deleteLocalSessionFiles, forgetSession, type AgentKind } from "../core/sessions";
 import { deleteAntigravityConversation } from "../core/antigravity";
+import { asarContainsFile, getRawFs } from "../core/raw-fs";
 
 /**
  * 在 TokenPulse 里直接回复一段会话：用对应 CLI 的无界面模式接着这个会话跑一轮，
@@ -110,10 +111,13 @@ export function resolveCli(kind: AgentKind): { file: string; prefix: string[]; e
   if (kind === "deepseek") {
     const override = process.env.TOKENPULSE_DSH_CLI;
     if (override && fs.existsSync(override)) return { file: override, prefix: [] };
+    const rawFs = getRawFs();
     const root = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Programs", "DeepSeek Harness");
     const exe = path.join(root, "DeepSeek Harness.exe");
-    const cli = path.join(root, "resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js");
-    if (fs.existsSync(exe) && fs.existsSync(cli)) return { file: exe, prefix: [cli], env: { ELECTRON_RUN_AS_NODE: "1" } };
+    const asar = path.join(root, "resources", "app.asar");
+    const cliRel = path.join("dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js");
+    const cli = path.join(asar, cliRel);
+    if (rawFs.existsSync(exe) && asarContainsFile(asar, cliRel)) return { file: exe, prefix: [cli], env: { ELECTRON_RUN_AS_NODE: "1" } };
     return null;
   }
   if (kind === "antigravity") {

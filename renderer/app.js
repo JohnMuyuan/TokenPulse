@@ -2762,7 +2762,7 @@ const scrollGuard = (() => {
   const pad = el('div', { id: 'scroll-floor', 'aria-hidden': 'true' });
   scroller.append(pad);
   let wanted = scroller.scrollTop, height = 0;
-  const setPad = value => { const next = Math.max(0, Math.round(value)); if (next !== height) { height = next; pad.style.height = next ? `${next}px` : ''; } };
+  const setPad = value => { const next = value > 0 ? Math.ceil(value) + 1 : 0; if (next !== height) { height = next; pad.style.height = next ? `${next}px` : ''; } };
   /** 不算垫片，内容自己有多高。 */
   const natural = () => scroller.scrollHeight - height;
   const fit = () => setPad(wanted + scroller.clientHeight - natural());

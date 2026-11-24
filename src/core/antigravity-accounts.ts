@@ -25,6 +25,7 @@ import { isExpired, jwtClaims } from "./credentials";
 import { curlJson, curlPost } from "./curl";
 import { startLoginLog } from "./login-log";
 import { dataFile, readJson, writeJson } from "./paths";
+import { getRawFs } from "./raw-fs";
 import { logRenew } from "./renew-log";
 import { errorCodeOf, isPermanentFailure } from "./token-refresh";
 
@@ -89,8 +90,9 @@ function antigravityOAuthBinaryCandidates(): string[] {
     // 从 agy.cmd 启动脚本反推自定义盘符安装目录（如 D:\Antigravity\resources\app.asar）
     const cmdWrapper = path.join(roaming, "Antigravity", "bin", "agy.cmd");
     try {
-      if (fs.existsSync(cmdWrapper)) {
-        const cmdText = fs.readFileSync(cmdWrapper, "utf8");
+      const rawFs = getRawFs();
+      if (rawFs.existsSync(cmdWrapper)) {
+        const cmdText = rawFs.readFileSync(cmdWrapper, "utf8");
         const exeMatch = cmdText.match(/"([^"]+Antigravity\.exe)"/i);
         if (exeMatch?.[1]) {
           const ideRoot = path.dirname(exeMatch[1]);
@@ -163,12 +165,12 @@ function findAicodeClientIdInText(text: string, hostSuffix: string): string {
 }
 
 export function extractPersonalClientIdFromFile(filePath: string): string {
+  const rawFs = getRawFs();
   let fd: number | null = null;
   try {
-    if (!fs.existsSync(filePath)) return "";
-    const stat = fs.statSync(filePath);
+    fd = rawFs.openSync(filePath, "r");
+    const stat = rawFs.fstatSync(fd);
     if (!stat.isFile() || stat.size <= 0 || stat.size > 400 * 1024 * 1024) return "";
-    fd = fs.openSync(filePath, "r");
     const CHUNK = 4 * 1024 * 1024;
     const OVERLAP = 16 * 1024;
     const buf = Buffer.allocUnsafe(Math.min(CHUNK, stat.size));
@@ -177,7 +179,7 @@ export function extractPersonalClientIdFromFile(filePath: string): string {
     let tail = "";
     while (pos < stat.size) {
       const toRead = Math.min(buf.length, stat.size - pos);
-      const bytesRead = fs.readSync(fd, buf, 0, toRead, pos);
+      const bytesRead = rawFs.readSync(fd, buf, 0, toRead, pos);
       if (bytesRead <= 0) break;
       const text = tail + buf.subarray(0, bytesRead).toString("latin1");
       const found = findAicodeClientIdInText(text, hostSuffix);
@@ -191,19 +193,19 @@ export function extractPersonalClientIdFromFile(filePath: string): string {
   } finally {
     if (fd !== null) {
       try {
-        fs.closeSync(fd);
+        rawFs.closeSync(fd);
       } catch { /* ignore */ }
     }
   }
 }
 
 export function extractAgyOAuthClientFromFile(filePath: string, preferredClientId = ""): AgyOAuthClient | null {
+  const rawFs = getRawFs();
   let fd: number | null = null;
   try {
-    if (!fs.existsSync(filePath)) return null;
-    const stat = fs.statSync(filePath);
+    fd = rawFs.openSync(filePath, "r");
+    const stat = rawFs.fstatSync(fd);
     if (!stat.isFile() || stat.size <= 0 || stat.size > 400 * 1024 * 1024) return null;
-    fd = fs.openSync(filePath, "r");
     const CHUNK = 4 * 1024 * 1024;
     const OVERLAP = 16 * 1024;
     const buf = Buffer.allocUnsafe(Math.min(CHUNK, stat.size));
@@ -240,7 +242,7 @@ export function extractAgyOAuthClientFromFile(filePath: string, preferredClientI
     let tail = "";
     while (pos < stat.size) {
       const toRead = Math.min(buf.length, stat.size - pos);
-      const bytesRead = fs.readSync(fd, buf, 0, toRead, pos);
+      const bytesRead = rawFs.readSync(fd, buf, 0, toRead, pos);
       if (bytesRead <= 0) break;
       const text = tail + buf.subarray(0, bytesRead).toString("latin1");
 
@@ -328,7 +330,7 @@ export function extractAgyOAuthClientFromFile(filePath: string, preferredClientI
   } finally {
     if (fd !== null) {
       try {
-        fs.closeSync(fd);
+        rawFs.closeSync(fd);
       } catch { /* ignore */ }
     }
   }
@@ -1403,7 +1405,7 @@ export function parseAntigravityCloudQuota(
   };
 }
 
-const DEFAULT_AGY_IDE_VERSION = "2.34.0";
+const DEFAULT_AGY_IDE_VERSION = "2.35.0";
 
 function detectAntigravityIdeVersion(): string {
   let best = DEFAULT_AGY_IDE_VERSION;

@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.110': [
+      ['check', '修复 Windows 上 TokenPulse 占用 Antigravity 安装目录 app.asar 导致无法更新的问题', '访问外部软件安装目录的 app.asar（Antigravity 客户端 OAuth 提取与 DeepSeek Harness CLI 探测）改为走 Electron 原生 original-fs，彻底绕开 Electron ASAR 句柄全局缓存并在单次只读后立即关闭句柄，保持 TokenPulse 运行时 Antigravity 等软件也可顺利覆盖升级。'],
+    ],
     '0.3.109': [
       ['check', '修复 Antigravity 动态分档 / 思考等级复合后缀误报「型号不一致」', '修复请求 gemini-4-hydrogen 等模型时，子代理或动态思考分档返回 gemini-4-hydrogen-tiered-high 等复合后缀被误判为「型号不一致」的问题（同步兼容 -b/-n/-tiered/-worker-agy 与思考等级叠加以及 Orchestrator (Neon)），历史记录立即生效。'],
     ],
