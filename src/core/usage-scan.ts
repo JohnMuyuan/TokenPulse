@@ -5,7 +5,7 @@ import path from "path";
 import { cliDir, authFile } from "./credentials";
 import { dataFile, dshRoot, piDir, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
-import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type LoginTimeline } from "./login-timeline";
+import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type AccountEvidence, type AccountLabels, type LoginTimeline } from "./login-timeline";
 import { routeEvents, type RouteEvent } from "./route-ledger";
 import { zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
@@ -125,13 +125,18 @@ type FileState = {
   cwd?: string;
   /**
    * 会话里直接记下的账号（只有 Claude Code 有，而且只是部分会话）：
-   * `bridge-session.ownerAccountUuid`（= 凭据里的 accountUuid）和 `session_context.context.userEmail`。
-   * 没有的按登录时间线对（login-timeline.ts）。
+   * `bridge-session.ownerAccountUuid`（= 凭据里的 accountUuid）、`session_context.context.userEmail`
+   * 以及子代理里的 `credential_org.organizationUuid`。没有的按父会话或登录时间线对（login-timeline.ts）。
    */
   accountRef?: string;
   accountEmail?: string;
   /** 会话邮箱最后写入的时间，用来识别换号后沿用的旧上下文。 */
   accountAt?: number;
+  /** Claude Code `attachment.type === "credential_org"` 的 `organizationUuid`。 */
+  accountOrg?: string;
+  accountOrgAt?: number;
+  /** 当 `accountHours[""]` 存在未归属小时账时记录上次尝试归属的上下文指纹，避免无法归属时每轮重复全量重扫。 */
+  unattributedSig?: string;
   /** 账本结构版本，见 STATE_VERSION。 */
   v?: number;
   /** 最近一次真实请求的型号（Claude / Grok）。压缩上下文的那次调用不写型号，按它记。 */
@@ -209,8 +214,10 @@ export type UsageRollups = {
  * 16：身份带上会话上下文时间；重算换号后误归到旧账号的请求及小时账。
  * 17：流水补记按日志时间戳估算的速度（estimate，0.3.53），Claude Code 和 Codex 重扫一遍。
  * 18：流水补记同一轮用户指令下无人工介入连续自动调用步数（autoStep，0.3.106）。
+ * 19：Claude Code 补采单行 requestedModel / api-request.params.model（0.3.111）。
+ * 20：Claude Code 解析 credential_org.organizationUuid、子代理回退继承父会话账号并重算历史未归属小时账（0.3.112）。
  */
-const STATE_VERSION = 19;
+const STATE_VERSION = 20;
 const GROK_ROUTE_VERSION = 1;
 const HOUR_MS = 3_600_000;
 /** 常规批次大小。单个 JSONL 事件超出时，续读到该行结束。 */
@@ -885,7 +892,76 @@ function grokCwd(file: string) {
   }
 }
 
-type AccountContext = { timeline: LoginTimeline; labels: Map<string, string> };
+type AccountContext = { timeline: LoginTimeline; labels: AccountLabels };
+
+/** Claude Code 子代理（`<sessionId>/subagents/.../agent-*.jsonl`）对应的父会话文件 `<sessionId>.jsonl`。 */
+function claudeParentSessionFile(file: string): string | undefined {
+  const normalized = file.replace(/\\/g, "/");
+  const idx = normalized.indexOf("/subagents/");
+  if (idx < 0) return undefined;
+  const parentBase = file.slice(0, idx);
+  if (!parentBase) return undefined;
+  const candidate = `${parentBase}.jsonl`;
+  return candidate !== file ? candidate : undefined;
+}
+
+function stateEvidence(state: FileState | undefined): AccountEvidence | undefined {
+  if (!state) return undefined;
+  if (!state.accountRef && !state.accountEmail && !state.accountOrg) return undefined;
+  return {
+    ref: state.accountRef,
+    email: state.accountEmail,
+    at: state.accountAt,
+    org: state.accountOrg,
+    orgAt: state.accountOrgAt,
+  };
+}
+
+function effectiveEvidence(state: FileState, parent?: AccountEvidence): AccountEvidence {
+  return {
+    ref: state.accountRef ?? parent?.ref,
+    email: state.accountEmail ?? parent?.email,
+    at: state.accountEmail ? state.accountAt : parent?.at,
+    org: state.accountOrg ?? parent?.org,
+    orgAt: state.accountOrg ? state.accountOrgAt : parent?.orgAt,
+  };
+}
+
+function hasUnattributedAccountHours(state: FileState): boolean {
+  const bucket = state.accountHours?.[""];
+  return Boolean(bucket && Object.keys(bucket).length > 0);
+}
+
+function unattributedSignature(kind: Kind, state: FileState, accountContext: AccountContext, parent?: AccountEvidence): string {
+  const accountKind = KIND_OF_SOURCE[SOURCES[kind]];
+  if (!accountKind) return "";
+  const spans = accountContext.timeline.kinds[accountKind] ?? [];
+  const spanSig = spans.map((s) => `${s.from}:${s.id}`).join(",");
+  const evidence = effectiveEvidence(state, parent);
+  const orgKey = evidence.org ? `${accountKind}:${evidence.org.trim().toLowerCase()}` : "";
+  const orgId = orgKey ? (accountContext.labels.orgs?.get(orgKey) ?? "") : "";
+  const parentSig = parent ? `${parent.ref ?? ""}|${parent.email ?? ""}|${parent.at ?? ""}|${parent.org ?? ""}|${parent.orgAt ?? ""}` : "";
+  return `${spanSig}#${orgId}#${parentSig}`;
+}
+
+function canResolveUnattributed(kind: Kind, state: FileState, accountContext: AccountContext, parent?: AccountEvidence): boolean {
+  const unattributed = state.accountHours?.[""];
+  if (!unattributed) return false;
+  const accountKind = KIND_OF_SOURCE[SOURCES[kind]];
+  if (!accountKind) return false;
+  const evidence = effectiveEvidence(state, parent);
+  for (const hourKey of Object.keys(unattributed)) {
+    const hour = Number(hourKey);
+    if (!Number.isFinite(hour)) continue;
+    if (
+      resolveAccount(accountKind, hour, evidence, accountContext.timeline, accountContext.labels) ||
+      resolveAccount(accountKind, hour + HOUR_MS - 1, evidence, accountContext.timeline, accountContext.labels)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function scanFile(
   file: string,
@@ -893,6 +969,7 @@ function scanFile(
   state: FileState,
   out: ScanOutput = { records: [], rescanned: false },
   accountContext: AccountContext = { timeline: readLoginTimeline(), labels: accountLabels() },
+  parentEvidence?: AccountEvidence,
 ) {
   let stat: fs.Stats;
   try {
@@ -914,6 +991,9 @@ function scanFile(
     state.accountRef = undefined;
     state.accountEmail = undefined;
     state.accountAt = undefined;
+    state.accountOrg = undefined;
+    state.accountOrgAt = undefined;
+    delete state.unattributedSig;
     state.codexRecords = undefined;
     state.lastTokenCount = undefined;
     state.lastModel = undefined;
@@ -1011,16 +1091,19 @@ function scanFile(
       state.accountRef = obj.ownerAccountUuid;
     }
     if (kind === "claude-code" && obj.type === "attachment") {
-      const context = (obj.attachment as Record<string, unknown> | undefined)?.context as Record<string, unknown> | undefined;
+      const attachment = obj.attachment as Record<string, unknown> | undefined;
+      const context = attachment?.context as Record<string, unknown> | undefined;
       // 这个字段后面还跟着一句说明（实测「xxx@gmail.com. Use it only to identify the user…」），只取邮箱本身
       const email = typeof context?.userEmail === "string" ? context.userEmail.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/)?.[0] : undefined;
       if (email) {
         state.accountEmail = email.replace(/\.$/, "");
         state.accountAt = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) || undefined : undefined;
       }
-    }
-    if (kind === "claude-code" && obj.type === "attachment") {
-      const attachment = obj.attachment as Record<string, unknown> | undefined;
+      // 子代理会话通常不含 bridge-session 且 session_context.context 为空，但会写入当前凭证对应的 credential_org.organizationUuid
+      if (attachment?.type === "credential_org" && typeof attachment.organizationUuid === "string" && attachment.organizationUuid.trim()) {
+        state.accountOrg = attachment.organizationUuid.trim();
+        state.accountOrgAt = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) || undefined : undefined;
+      }
       if (attachment?.type === "session_context" && attachment.changed) state.requested = undefined;
       const identity = attachment?.identity as Record<string, unknown> | undefined;
       if (typeof identity?.modelId === "string" && identity.modelId) state.requested = identity.modelId;
@@ -1206,6 +1289,7 @@ function scanFile(
         }));
         if (otherWeight > 0) pieces.push({ at: row.at, usage: parts[parts.length - 1], id: `${baseId}~other` });
       } else pieces.push({ at: row.at, usage: row.usage, id: baseId, ...(routed ? { account: routed.id, basis: "response-id" as const } : {}) });
+      const evidence = effectiveEvidence(state, parentEvidence);
       if (!metadataOnly) {
         addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
         const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
@@ -1220,7 +1304,7 @@ function scanFile(
           const account = routed ?? resolveAccount(
             KIND_OF_SOURCE[source],
             row.at,
-            { ref: state.accountRef, email: state.accountEmail, at: state.accountAt },
+            evidence,
             accountContext.timeline,
             accountContext.labels,
           );
@@ -1261,9 +1345,11 @@ function scanFile(
           calls: piece.usage.requests,
           ...(pieceAutoStep ? { autoStep: pieceAutoStep } : {}),
           ...(row.stream ? { timing: deepseekTiming(row.stream, state.turnStartAt) } : {}),
-          accountRef: state.accountRef,
-          accountEmail: state.accountEmail,
-          accountAt: state.accountAt,
+          accountRef: evidence.ref,
+          accountEmail: evidence.email,
+          accountAt: evidence.at,
+          ...(evidence.org ? { accountOrg: evidence.org } : {}),
+          ...(evidence.orgAt ? { accountOrgAt: evidence.orgAt } : {}),
           ...(piece.account ? { routedAccount: piece.account, routedAccountBasis: piece.basis } : {}),
           ...(piece.routeEventId ? { routeEventId: piece.routeEventId } : {}),
           ...(row.compaction ? { compaction: true } : {}),
@@ -1408,21 +1494,44 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     let files = 0;
     const out: ScanOutput = { records: [], rescanned: false };
     for (const { kind, dir } of roots()) {
-      for (const file of walkJsonl(dir)) {
+      const walked = walkJsonl(dir);
+      // Claude Code 先扫主会话再扫 subagents/ 子代理，保证子代理缺少身份时可直接继承主会话身份。
+      if (kind === "claude-code") {
+        walked.sort((a, b) => Number(Boolean(claudeParentSessionFile(a))) - Number(Boolean(claudeParentSessionFile(b))));
+      }
+      for (const file of walked) {
         alive.add(file);
         files += 1;
         const state = (rollups.files[file] ??= { size: 0, mtimeMs: 0, offset: 0, days: {} });
         applyAttribution(file, kind, state, official, codex);
+        const parentFile = kind === "claude-code" ? claudeParentSessionFile(file) : undefined;
+        const parentEvidence = parentFile ? stateEvidence(rollups.files[parentFile]) : undefined;
         // 大小和改动时间都没变就跳过（新文件记的是 0，不会误判成没变）。
         const stat = safeStat(file);
+        const unattributed = state.official === true && hasUnattributedAccountHours(state);
+        const retrySig = unattributed ? unattributedSignature(kind, state, accountContext, parentEvidence) : undefined;
+        const retryUnattributed = Boolean(
+          unattributed &&
+          state.unattributedSig !== retrySig &&
+          canResolveUnattributed(kind, state, accountContext, parentEvidence),
+        );
         const needsAccountHours =
           state.official === true &&
-          (!state.accountHours || (Object.keys(state.accountHours).length === 0 && Object.keys(state.hours ?? {}).length > 0));
+          (
+            !state.accountHours ||
+            (Object.keys(state.accountHours).length === 0 && Object.keys(state.hours ?? {}).length > 0) ||
+            retryUnattributed
+          );
         const needsGrokReplay = kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION;
         if (stat && state.v === STATE_VERSION && state.offset >= stat.size && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours && !needsGrokReplay) continue;
-        // 缺按账号的小时账：得从头重读这个文件才补得出来。只把它交给 scanFile 的话，偏移没变它直接返回，永远补不上
+        // 缺按账号的小时账（含历史上记在空键 "" 现已可归属的账）：得从头重读这个文件才补得出来。
         if (needsAccountHours) state.v = 0;
-        if (scanFile(file, kind, state, out, accountContext)) changed += 1;
+        if (scanFile(file, kind, state, out, accountContext, parentEvidence)) changed += 1;
+        if (state.official === true && hasUnattributedAccountHours(state)) {
+          state.unattributedSig = unattributedSignature(kind, state, accountContext, parentEvidence);
+        } else {
+          delete state.unattributedSig;
+        }
       }
     }
     // Antigravity：每个对话一个 SQLite（见 scanAntigravity）

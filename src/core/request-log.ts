@@ -62,10 +62,12 @@ export type RequestRecord = {
   source?: string;
   /** cc-switch：是不是走它本地代理的请求（型号是从上游响应里读的）。 */
   viaProxy?: boolean;
-  /** 会话里直接记下的账号（Claude Code 部分会话有）。 */
+  /** 会话里直接记下的账号（Claude Code 部分会话与子代理有）。 */
   accountRef?: string;
   accountEmail?: string;
   accountAt?: number;
+  accountOrg?: string;
+  accountOrgAt?: number;
   /** 经 TokenPulse 号池发出去的：扫描时按路由账本对上的号池成员（官方账号 id）。记在流水里，账本过期清掉之后仍然知道。 */
   routedAccount?: string;
   /** 新归属已用共同响应 ID 核验；旧的时间猜测不能继续当成确证。 */
@@ -606,7 +608,7 @@ function toCapacityRow(record: RequestRecord, fileOfficial: boolean | undefined,
         : routedAccount(kind, record.at, accounts.labels, record.responseId);
   const official = routed ? true : fileOfficial;
   if (official !== true) return null;
-  const account = routed ?? resolveAccount(kind, record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt }, accounts.timeline, accounts.labels);
+  const account = routed ?? resolveAccount(kind, record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt, org: record.accountOrg, orgAt: record.accountOrgAt }, accounts.timeline, accounts.labels);
   if (!account) return null;
   const usage = { input: record.input, output: record.output, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite };
   return {
@@ -643,7 +645,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
   const account = routed ? routed :
     official === false || (record.kind === "cc-switch" && record.viaProxy)
       ? null
-      : resolveAccount(ACCOUNT_KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt }, accounts.timeline, accounts.labels, accounts.agyTimeline);
+      : resolveAccount(ACCOUNT_KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt, org: record.accountOrg, orgAt: record.accountOrgAt }, accounts.timeline, accounts.labels, accounts.agyTimeline);
   const verdict: { status: VerifyStatus; reasons: string[]; channel: string } = record.compaction
     ? { status: "unverified", reasons: [COMPACTION_REASON], channel: "压缩上下文（估算）" }
     : verifyRequest({

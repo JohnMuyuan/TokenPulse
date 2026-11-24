@@ -42,6 +42,8 @@ export type CliAccount = {
   kind: OfficialAccountKind;
   ref: string;
   email: string;
+  /** 组织 ID（Claude Code 的 oauthAccount.organizationUuid），用于匹配子代理 credential_org。 */
+  orgId?: string;
   label: string;
   credential: OfficialCredential;
 };
@@ -115,10 +117,11 @@ function claudeAccounts(home: string, isolated: boolean): CliAccount[] {
   if (!token) return [];
   const profile = readJsonFile(claudeProfileFile(home, isolated))?.oauthAccount;
   const email = str(profile?.emailAddress);
+  const orgId = str(profile?.organizationUuid) || undefined;
   const ref = str(profile?.accountUuid) || tokenRef(str(oauth?.refreshToken) || token);
   const expiresAt = typeof oauth?.expiresAt === "number" ? oauth.expiresAt : undefined;
   const refreshToken = str(oauth?.refreshToken) || undefined;
-  return [{ kind: "claude", ref, email, label: email || "Claude 账号", credential: { token, expiresAt, refreshToken } }];
+  return [{ kind: "claude", ref, email, ...(orgId ? { orgId } : {}), label: email || "Claude 账号", credential: { token, expiresAt, refreshToken } }];
 }
 
 function chatgptAccounts(home: string): CliAccount[] {

@@ -29,6 +29,8 @@ export type StoredOfficialAccount = {
   kind: OfficialAccountKind;
   ref: string;
   email: string;
+  /** 组织 ID（Claude Code 的 oauthAccount.organizationUuid），供子代理日志 credential_org 归属。 */
+  orgId?: string;
   label: string;
   /** 用户在设置里起的名字。有它就显示它（首页、额度页、请求记录、托盘），没有就显示邮箱。 */
   alias?: string;
@@ -84,6 +86,7 @@ function validAccount(item: any): item is StoredOfficialAccount {
       typeof item.label === "string" &&
       typeof item.createdAt === "number" &&
       typeof item.lastSeenAt === "number" &&
+      (item.orgId === undefined || typeof item.orgId === "string") &&
       (item.alias === undefined || typeof item.alias === "string") &&
       (item.credential === undefined || typeof item.credential?.token === "string"),
   );
@@ -116,13 +119,14 @@ export function rememberOfficialAccount(account: CliAccount, keepCredential: boo
   const id = accountIdOf(account.kind, account.ref);
   const found = store.accounts.find((item) => item.id === id);
   const email = account.email || found?.email || "";
-  const meta = { email, label: account.label, lastSeenAt: now };
+  const orgId = account.orgId || found?.orgId;
+  const meta = { email, ...(orgId ? { orgId } : {}), label: account.label, lastSeenAt: now };
   // 只读 CLI 的时候，删掉过的账号不再登记回来；在 TokenPulse 里重新登录才算用户要它回来
   if (!keepCredential && !found && store.removed?.includes(id)) return id;
   if (found) {
     // 额度按设置的间隔查一轮，CLI 登录没变也进来登记一次。名字和邮箱都没变就别写盘：
     // 这份文件里有 refresh token，没变化也整份重写只会增加和设置里拖动排序撞在一起的机会。
-    if (!keepCredential && found.email === email && found.label === account.label) return id;
+    if (!keepCredential && found.email === email && found.label === account.label && found.orgId === orgId) return id;
     Object.assign(found, meta);
     if (keepCredential) {
       found.credential = account.credential;
@@ -229,11 +233,12 @@ export function adoptCliAccount(account: CliAccount, now = Date.now()) {
   const id = accountIdOf(account.kind, account.ref);
   const found = store.accounts.find((item) => item.id === id);
   const added = !found || Boolean(found.hidden);
+  const orgId = account.orgId || found?.orgId;
   if (found) {
-    Object.assign(found, { email: account.email || found.email || "", label: account.label, lastSeenAt: now });
+    Object.assign(found, { email: account.email || found.email || "", ...(orgId ? { orgId } : {}), label: account.label, lastSeenAt: now });
     delete found.hidden;
   } else {
-    store.accounts.push({ id, kind: account.kind, ref: account.ref, email: account.email || "", label: account.label, createdAt: now, lastSeenAt: now });
+    store.accounts.push({ id, kind: account.kind, ref: account.ref, email: account.email || "", ...(orgId ? { orgId } : {}), label: account.label, createdAt: now, lastSeenAt: now });
   }
   if (store.removed?.includes(id)) store.removed = store.removed.filter((item) => item !== id);
   writeOfficialAccountStore(store);

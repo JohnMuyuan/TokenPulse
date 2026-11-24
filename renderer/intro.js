@@ -14,6 +14,9 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.3.112': [
+      ['quota', '修复 Claude Code 子代理消耗未归属到对应官方 Claude 账号的问题', '扫描 Claude Code 会话与子代理现解析 credential_org.organizationUuid 并匹配各 Claude 账号保存的组织 ID（多人共享 Team 组织时不误猜），缺失身份的子代理自动回退继承所属主会话账号；同时修复历史上落入空账号键（accountHours[""]）的官方用量在账号/时间线补全后无法自动重算的问题，升级后自动重扫历史账本。'],
+    ],
     '0.3.111': [
       ['sessions', '修复子代理实际使用其他模型（如 Opus 4.6）时被误标为主会话模型的问题', 'Antigravity 子代理现优先采用单步实际执行的模型 ID 与单步标签，不再被沿用的父会话占位枚举或缓存 modelId 覆盖；Claude Code 同步补采单次 requestedModel / api-request.params.model、兼容嵌套/顶层 agent-*.jsonl，并按实际计费 Tokens 排序侧栏与排行主模型，升级后自动重算。'],
     ],

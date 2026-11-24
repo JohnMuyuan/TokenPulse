@@ -22,7 +22,7 @@ import { dataFile } from "./paths";
  * 包含首字之前的等待，比转发时量到的偏慢；画图时单独成线、标「≈」，不和量到的混在一起。
  * 按文件大小和修改时间缓存解析结果：流水文件可能有几十 MB。
  */
-export type EstimateRow = { at: number; app: string; kind: string; model: string; effort: string; speed: number; first?: number; estimated?: boolean; output: number; ref?: string; email?: string; accountAt?: number };
+export type EstimateRow = { at: number; app: string; kind: string; model: string; effort: string; speed: number; first?: number; estimated?: boolean; output: number; ref?: string; email?: string; accountAt?: number; org?: string; orgAt?: number };
 const APP_OF_REQUEST: Record<string, string> = {
   "claude-code": "claude",
   codex: "codex",
@@ -64,6 +64,8 @@ function requestSpeedRows(since: number, now = Date.now()): EstimateRow[] {
           ...(typeof row.accountRef === "string" ? { ref: row.accountRef } : {}),
           ...(typeof row.accountEmail === "string" ? { email: row.accountEmail } : {}),
           ...(typeof row.accountAt === "number" ? { accountAt: row.accountAt } : {}),
+          ...(typeof row.accountOrg === "string" ? { org: row.accountOrg } : {}),
+          ...(typeof row.accountOrgAt === "number" ? { orgAt: row.accountOrgAt } : {}),
         };
         const idKey = kind + "\u0000" + String(row.id);
         // 自带本机测速的来源（Antigravity、DeepSeek Harness）或已带 timing 的记录：
@@ -215,7 +217,7 @@ export function accountSpeed(kind: OfficialAccountKind, account: string, days: n
   // 按日志估算的（0.3.53）：归到会话里记的账号，没有就按当时 CLI 登录的账号
   if (withEstimates) for (const row of estimatedRows(since, now)) {
     if (KIND_OF_APP[row.app] !== kind) continue;
-    const owner = resolveAccount(kind, row.at, { ref: row.ref, email: row.email, at: row.accountAt }, timeline, labels)?.id;
+    const owner = resolveAccount(kind, row.at, { ref: row.ref, email: row.email, at: row.accountAt, org: row.org, orgAt: row.orgAt }, timeline, labels)?.id;
     if (!owner || (account && owner !== account)) continue;
     rows.push({ at: row.at, model: row.model, fast: false, speed: row.speed, first: 0, output: row.output, estimated: true });
   }
