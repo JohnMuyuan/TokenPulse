@@ -1,6 +1,35 @@
-# 当前接手入口 · TokenPulse `v0.3.112` 已正式发布（2026-11-24）
+# 当前接手入口 · TokenPulse `v0.3.113` 已正式发布（2026-11-24）
 
-## 最新已发布版本 · `v0.3.112` · 2026-11-24
+## 最新已发布版本 · `v0.3.113` · 2026-11-24
+
+- **Git 与发布**。[TokenPulse v0.3.113](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.113) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `457055594`）。发布提交 `303b5036b3b0f919d648533ed50b28e3aeecb4e1` 与签注标签 `v0.3.113`（`18cae3dd31e2d3babb220c748df22a6a8fc91920`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（设置 → 官方账号新增 Antigravity 一键切换账号、确认弹窗与自动重启）**：
+  1. [src/core/antigravity-switch.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity-switch.ts)：
+     - 对着 Antigravity 2.35.0 实机核对凭据存储：桌面端与 `agy` CLI 共用操作系统凭据管理器槽位 `gemini:antigravity`（Windows Generic Credential，UserName `antigravity`，UTF-8 JSON 含 `token`、`auth_method: "consumer"`、`id_token_email`、`writer_id`）及 `%APPDATA%/Antigravity/app_storage.json` 的 `agy.onboarding.lastLoginUsername`。
+     - 实现全异步非阻塞的跨平台系统凭据读写（Windows `advapi32.dll` `CredRead`/`CredWrite`/`CredDelete`、macOS `security -i`、Linux `secret-tool`，全部通过 stdin 管道传值，绝不经命令行参数暴露；并支持 `TOKENPULSE_AGY_KEYRING_FILE` 隔离测试模式与 15 秒邮箱读缓存，无 Antigravity 账号时零子进程开销，确保主进程事件循环零阻塞）。
+     - `switchAntigravityAccount()` 实现完整安全换号流水线：校验目标账号存在可续期 OAuth 凭据并在临近/已过期时先自动续期 → 抢救收存被换下原账号的现有 OAuth 凭据以便随时切回 → 运行中时先优雅关闭 Antigravity 桌面端与关联 `language_server` 并等待退出释放文件锁（绝不触碰 TokenPulse 或无关进程，路径检查全程走 `getRawFs()` 避免锁 `app.asar`）→ 备份原凭据与 `app_storage.json` 至 `backups/antigravity-switch/`（保留最近 10 份，`0o600`）→ 写入并读回核验 → 更新 `app_storage.json` 与 `antigravity-logins.json` 时间线 → 原运行中则自动拉起 `Antigravity.exe`；任何一步失败完整回滚原凭据/配置文件/账号库并拉回原桌面端。
+  2. [src/main/antigravity-quota.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/antigravity-quota.ts)、[src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts) & [src/main/preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts)：
+     - 新增 `antigravity-accounts:switch-local` IPC 与 `antigravityQuota.switchLocal(id)` 预加载桥接；`antigravity-accounts:list` 在 Antigravity 未运行时异步读取系统凭据槽邮箱以准确标示当前账号；新增 `AntigravityQuota.onAccountSwitched()` 即时同步当前活跃身份并在重启后补刷状态。
+  3. [renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)、[renderer/antigravity.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity.css)、[renderer/app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) & [renderer/i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js)：
+     - 在「设置 → 官方账号」Antigravity 卡片中为非当前且已保存 OAuth 的账号添加「切换登录」按钮，未完成 OAuth 授权或已失效的账号直观展示禁用态「需先授权」提示；
+     - 新增置于设置弹窗之上的确认对话框 `#agy-switch-modal`（清晰区分 Antigravity 运行中「确认切换并重启」与未运行「确认切换」，提示桌面端 + `agy` CLI 同步切换与中断风险，支持 `Esc`/点遮罩取消且不关闭设置弹窗、零行内样式兼容 CSP、完整中英文翻译）。
+  4. 回归测试：[scripts/test-antigravity-accounts.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-antigravity-accounts.cjs)（10/10 PASS，新增未授权拦截、预续期、换下账号凭据抢救、停/写/验/启时序、已活跃跳过、失败回滚与隔离 keyring 往返测试）及 [scripts/test-antigravity-ui.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-antigravity-ui.cjs)（8/8 PASS，含确认弹窗中英文、Esc 取消、确认触发切换与按钮状态联动及截图自查）。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.113.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_HAS_03113=true`、`ASAR_HAS_AGY_SWITCH=true`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配。发布说明在 [release-0.3.113.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.113.md)。
+- **发行附件**（4 件经 `gh release create` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.113-Setup.exe`，`112,935,393` B，SHA256 `35ec7bae363d01dc25d0a54b542c53993cab89815f09a39cadeadc473115a585`
+  - `dist/TokenPulse-0.3.113-Portable.exe`，`112,678,183` B，SHA256 `a393bef6d91ab0d415fa2f1651d750d2b7698df3baff7c86c304a16813cf8840`
+  - `dist/TokenPulse-0.3.113-Setup.exe.blockmap`，`120,048` B，SHA256 `063cfbc06d429cfc9aa42a2581a44efceeff229d162a9c5a4b3b0c8a68116ca4`
+  - `dist/latest.yml`，`355` B，SHA256 `1edead76e8b5efb560223a75dfa2c5accafdb15ae0adf7da2c1e8a8a7c61e04b`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测，含 `test-antigravity-accounts.cjs` 10/10 与 `test-features.cjs` 46/46 英文零漏翻校验）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-antigravity-ui.cjs`（8/8 PASS + 确认对话框截图视觉自查通过）、`scripts/test-intro-ui.cjs` 与 `scripts/test-ui.cjs`（含主进程事件循环响应性校验）：**退出 0，全部 PASS**；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未在开发会话中直接改写本机真实的 Windows 凭据槽或关闭当前正在运行的 Antigravity 会话（单元测试与 UI 测试全程使用隔离 mock 与依赖注入，真实机切换体验待用户更新后实测）；Antigravity 2.x 桌面端与 `agy` CLI 共用同一系统凭据槽 `gemini:antigravity`，不支持稳定拆分为两端不同账号；未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机正在运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/{index,preload,antigravity-quota}.js`、`build/core/antigravity-switch.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.113` 发行产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级至 `v0.3.113`（或下载安装包/便携版），在「设置 → 官方账号」的 Antigravity 卡片中点击「切换登录」实测一键切换与自动重启。
+
+---
+
+## 上一已发布版本 · `v0.3.112` · 2026-11-24
 
 - **Git 与发布**。[TokenPulse v0.3.112](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.112) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `456838159`）。发布提交 `427fcd4233d83193bb0f82f878fae4f20a8b666a` 与签注标签 `v0.3.112`（`78215d398c0d6643fbab8ba43e3cbfc2338187e0`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **根因定位与发布内容（修复 Claude Code 子代理消耗未归属到对应官方 Claude 账号及空账号键永不重算的问题）**：
