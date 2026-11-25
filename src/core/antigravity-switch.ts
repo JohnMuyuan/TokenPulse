@@ -219,6 +219,8 @@ function runWinPowerShellAsync(script: string, stdin?: string): Promise<string> 
         else resolve(String(stdout ?? ""));
       },
     );
+    // 子进程先退出（15 秒超时被杀、启动失败）时写 stdin 会抛 EPIPE：不接住就是未捕获异常，原因走上面的回调
+    child.stdin?.on("error", () => undefined);
     if (stdin !== undefined && child.stdin) {
       child.stdin.end(stdin, "utf8");
     } else {
@@ -227,12 +229,14 @@ function runWinPowerShellAsync(script: string, stdin?: string): Promise<string> 
   });
 }
 
-function execFileAsync(file: string, args: string[], stdin?: string, timeout = 10_000): Promise<string> {
+function execFileAsync(file: string, args: string[], stdin?: string, timeout = 10_000, failOnStderrPattern?: RegExp): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = execFile(file, args, { encoding: "utf8", windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) reject(new Error(stderr?.trim() || error.message));
+      else if (failOnStderrPattern && failOnStderrPattern.test(String(stderr ?? ""))) reject(new Error(String(stderr).trim()));
       else resolve(String(stdout ?? ""));
     });
+    child.stdin?.on("error", () => undefined);
     if (stdin !== undefined && child.stdin) {
       child.stdin.end(stdin, "utf8");
     } else {
@@ -241,8 +245,21 @@ function execFileAsync(file: string, args: string[], stdin?: string, timeout = 1
   });
 }
 
+/** macOS `security find-generic-password -w` 遇到换行或非 ASCII 字节会自动输出十六进制字符串：识别并还原为 UTF-8 JSON。 */
+export function decodeDarwinKeyringOutput(raw: string): string | null {
+  const trimmed = raw.replace(/\r?\n$/, "");
+  if (!trimmed) return null;
+  if (!trimmed.trimStart().startsWith("{") && trimmed.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(trimmed)) {
+    const decoded = Buffer.from(trimmed, "hex").toString("utf8");
+    if (decoded.trimStart().startsWith("{")) return decoded;
+  }
+  return trimmed;
+}
+
 let cachedKeyringEmail: { at: number; email: string } | null = null;
+let keyringEmailCacheEpoch = 0;
 export function clearAgyKeyringEmailCache(): void {
+  keyringEmailCacheEpoch += 1;
   cachedKeyringEmail = null;
 }
 
@@ -260,7 +277,7 @@ if ($null -eq $val) { [Console]::Write('__TP_CRED_MISSING__') } else { [Console]
   if (platform === "darwin") {
     try {
       const out = await execFileAsync("security", ["find-generic-password", "-s", AGY_KEYRING_SERVICE, "-a", AGY_KEYRING_ACCOUNT, "-w"]);
-      return out.replace(/\r?\n$/, "") || null;
+      return decodeDarwinKeyringOutput(out);
     } catch {
       return null;
     }
@@ -293,7 +310,7 @@ $payload = [Console]::In.ReadToEnd()
   }
   if (platform === "darwin") {
     const hex = Buffer.from(rawUtf8, "utf8").toString("hex");
-    await execFileAsync("security", ["-i"], `add-generic-password -U -s ${AGY_KEYRING_SERVICE} -a ${AGY_KEYRING_ACCOUNT} -X ${hex}\n`);
+    await execFileAsync("security", ["-i"], `add-generic-password -U -s ${AGY_KEYRING_SERVICE} -a ${AGY_KEYRING_ACCOUNT} -X ${hex}\n`, 10_000, /security:/i);
     return;
   }
   await execFileAsync(
@@ -363,7 +380,7 @@ if ($null -eq $val) { [Console]::Write('__TP_CRED_MISSING__') } else { [Console]
         ["find-generic-password", "-s", AGY_KEYRING_SERVICE, "-a", AGY_KEYRING_ACCOUNT, "-w"],
         { encoding: "utf8", timeout: 10_000 },
       );
-      return out.replace(/\r?\n$/, "") || null;
+      return decodeDarwinKeyringOutput(out);
     } catch {
       return null;
     }
@@ -381,6 +398,7 @@ if ($null -eq $val) { [Console]::Write('__TP_CRED_MISSING__') } else { [Console]
 }
 
 export function writeAgyKeyringRaw(rawUtf8: string, platform: NodeJS.Platform = process.platform): void {
+  clearAgyKeyringEmailCache();
   const mock = isMockKeyringMode();
   if (mock) {
     writeMockKeyring(mock, rawUtf8);
@@ -415,6 +433,7 @@ $payload = [Console]::In.ReadToEnd()
 }
 
 export function deleteAgyKeyringRaw(platform: NodeJS.Platform = process.platform): void {
+  clearAgyKeyringEmailCache();
   const mock = isMockKeyringMode();
   if (mock) {
     deleteMockKeyring(mock);
@@ -484,10 +503,11 @@ export async function readAgyKeyringEmailAsync(platform: NodeJS.Platform = proce
   if (!isMockKeyringMode() && cachedKeyringEmail && now - cachedKeyringEmail.at < 15_000) {
     return cachedKeyringEmail.email;
   }
+  const epoch = keyringEmailCacheEpoch;
   try {
     const parsed = parseAgyKeyringPayload(await readAgyKeyringRawAsync(platform));
     const email = parsed?.id_token_email ? parsed.id_token_email.trim() : "";
-    if (!isMockKeyringMode()) cachedKeyringEmail = { at: Date.now(), email };
+    if (!isMockKeyringMode() && epoch === keyringEmailCacheEpoch) cachedKeyringEmail = { at: Date.now(), email };
     return email;
   } catch {
     return "";
@@ -624,10 +644,14 @@ if ($null -eq $rows) { '[]' } else { ConvertTo-Json -InputObject @($rows) -Compr
         const name = m[2];
         const args = m[3];
         if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || /tokenpulse/i.test(args)) continue;
-        const isDesktop = /Antigravity\.app\/Contents\/MacOS\/Antigravity/i.test(args) || /(?:^|\/)antigravity(?:\s|$)/i.test(args);
+        const argv0 = args.split(/\s+/)[0] || "";
+        const isDesktop =
+          /Antigravity\.app\/Contents\/MacOS\/Antigravity(?:\s|$)/i.test(args) ||
+          /(?:^|\/)antigravity$/i.test(argv0) ||
+          /^antigravity$/i.test(name);
         const isLangSrv = /language_server/i.test(name) && /antigravity/i.test(args);
         if (isDesktop || isLangSrv) {
-          res.push({ pid, name, executablePath: args.split(/\s+/)[0] || "", isDesktop });
+          res.push({ pid, name, executablePath: argv0, isDesktop });
         }
       }
       return res;
@@ -679,10 +703,14 @@ if ($null -eq $rows) { '[]' } else { ConvertTo-Json -InputObject @($rows) -Compr
         const name = m[2];
         const args = m[3];
         if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || /tokenpulse/i.test(args)) continue;
-        const isDesktop = /Antigravity\.app\/Contents\/MacOS\/Antigravity/i.test(args) || /(?:^|\/)antigravity(?:\s|$)/i.test(args);
+        const argv0 = args.split(/\s+/)[0] || "";
+        const isDesktop =
+          /Antigravity\.app\/Contents\/MacOS\/Antigravity(?:\s|$)/i.test(args) ||
+          /(?:^|\/)antigravity$/i.test(argv0) ||
+          /^antigravity$/i.test(name);
         const isLangSrv = /language_server/i.test(name) && /antigravity/i.test(args);
         if (isDesktop || isLangSrv) {
-          res.push({ pid, name, executablePath: args.split(/\s+/)[0] || "", isDesktop });
+          res.push({ pid, name, executablePath: argv0, isDesktop });
         }
       }
       return res;
@@ -759,6 +787,8 @@ async function stopAntigravityProcessesDefault(
 export function launchAntigravityDesktopDefault(exePath: string, platform: NodeJS.Platform = process.platform): void {
   if (platform === "darwin" && exePath.endsWith(".app")) {
     const child = spawn("open", ["-a", exePath], { detached: true, stdio: "ignore" });
+    // 启动失败（权限、文件刚被卸载）是异步的 error 事件：不接住就是主进程的未捕获异常
+    child.on("error", (error) => log.warn("antigravity", "重新启动 Antigravity 失败：" + errorText(error)));
     child.unref();
     return;
   }
@@ -768,6 +798,7 @@ export function launchAntigravityDesktopDefault(exePath: string, platform: NodeJ
     windowsHide: false,
     cwd: path.dirname(exePath),
   });
+  child.on("error", (error) => log.warn("antigravity", "重新启动 Antigravity 失败：" + errorText(error)));
   child.unref();
 }
 

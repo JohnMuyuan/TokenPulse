@@ -30,7 +30,29 @@ export function writeJson(file: string, value: unknown) {
   // 几个 worker 线程共用一个 pid（比如扫描顺手预热会话索引时，用户正好打开会话页），临时文件名要带上线程号
   const tmp = `${file}.${process.pid}.${threadId}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value));
-  fs.renameSync(tmp, file);
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.renameSync(tmp, file);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code;
+        if (process.platform === "win32" && (code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < 4) {
+          if (code !== "EBUSY") {
+            try { fs.chmodSync(file, 0o666); } catch { /* 忽略 */ }
+          }
+          // Windows 杀软/索引器或并发读句柄的瞬时占用：短暂退避重试
+          const waitUntil = Date.now() + 15 * (attempt + 1);
+          while (Date.now() < waitUntil) { /* short backoff */ }
+          continue;
+        }
+        throw error;
+      }
+    }
+  } catch (error) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* 清理尽力而为 */ }
+    throw error;
+  }
 }
 
 /*
@@ -63,7 +85,9 @@ export function removeFromData(target: string) {
 
 export function readJson<T>(file: string, fallback: T): T {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+    // 别的工具（PowerShell 的 Set-Content -Encoding UTF8、记事本）存成带 BOM 的 UTF-8 时照样读：
+    // 读不出来会被当成「没有这份数据」，之后一次写入就把整份文件（账号库、供应商、设置）覆盖掉
+    return JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, "")) as T;
   } catch {
     return fallback;
   }

@@ -500,9 +500,9 @@ export function readAntigravityGenerations(file: string, from: number, known: Re
       const totalMs = hasStreamTiming
         ? (rawFirstTokenMs > 0 && streamingMs > 0
             ? rawFirstTokenMs + streamingMs
-            : finishedAt > startAt
+            : finishedAt && startAt && finishedAt > startAt
               ? finishedAt - startAt
-              : completedAt > startAt
+              : completedAt && startAt && completedAt > startAt
                 ? completedAt - startAt
                 : rawFirstTokenMs || streamingMs)
         : 0;
@@ -835,12 +835,13 @@ export function antigravitySwarmMeta(dir: string | string[] = antigravityDirs(),
   const workerById = new Map<string, { coordinatorId: string; swarmTitle: string; member: AgySwarmMember }>();
   const descriptorsById = new Map<string, AgySubagentDescriptor>();
 
+  const filterLower = filterRoots ? new Set([...filterRoots].map((s) => s.toLowerCase())) : undefined;
   for (const root of dirs) {
     const brainDir = path.join(root, "brain");
     const entries = filterRoots ? [...filterRoots] : activeBrainIds(brainDir, now);
     for (const bid of entries) {
       const bidLower = bid.toLowerCase();
-      if (filterRoots && !filterRoots.has(bidLower)) continue;
+      if (filterLower && !filterLower.has(bidLower)) continue;
       const sysDir = path.join(brainDir, bid, ".system_generated");
       const membersFile = path.join(sysDir, "swarm", "members.json");
       const parsedMembers = readJsonCached(membersFile);
@@ -930,7 +931,6 @@ export function antigravitySummaries(dir: string | string[] = antigravityDirs())
     if (!fs.existsSync(file)) continue;
     try {
       withDb(file, (db) => {
-        anyLoaded = true;
         const parentLinks = new Map<string, string>();
         const parentStmt = prepareOptional(db, "select conversation_id, parent_id from conversation_parents");
         if (parentStmt) {
@@ -940,7 +940,10 @@ export function antigravitySummaries(dir: string | string[] = antigravityDirs())
             if (cid && pid) parentLinks.set(cid.toLowerCase(), pid);
           }
         }
-        for (const row of db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[]) {
+        const summaryRows = db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[];
+        // 必须等 conversation_summaries 查询成功后才标记 anyLoaded，防止 SQLITE_BUSY 返回空 Map 误清空全部会话
+        anyLoaded = true;
+        for (const row of summaryRows) {
           const id = typeof row.conversation_id === "string" ? row.conversation_id : "";
           if (!id) continue;
           const rawParent = typeof row.parent_conversation_id === "string" && row.parent_conversation_id.trim()
@@ -1093,6 +1096,8 @@ export function readAntigravitySubagentUsage(file: string, known: Record<string,
           const entry: AgyModel = { ...cur, label: genParsed.label };
           localModels[key] = entry;
           known[key] = entry;
+        } else if (cur && !localModels[key]) {
+          localModels[key] = cur;
         }
       }
       const startAt = pbTime(pbMessage(meta, 1));
@@ -1164,14 +1169,15 @@ export async function deleteAntigravityConversation(id: string) {
   const cliRoot = antigravityCliDir();
   const inCli = fs.existsSync(path.join(cliRoot, "conversations", `${id}.db`));
   // 从桌面端导入 CLI 的对话两边都有：只删 CLI 那份的话，桌面端那份还会出现在列表里
-  const inIde = cliRoot !== antigravityDir() && fs.existsSync(path.join(antigravityDir(), "conversations", `${id}.db`));
+  const sameRoot = path.resolve(cliRoot).toLowerCase() === path.resolve(antigravityDir()).toLowerCase();
+  const inIde = !sameRoot && fs.existsSync(path.join(antigravityDir(), "conversations", `${id}.db`));
   const hub = antigravityHub();
   if (!hub && (!inCli || inIde)) throw new Error("Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）");
   if (hub) {
     try {
       await postLocal(hub.httpPort, hub.csrfToken, "DeleteCascadeTrajectory", { cascadeId: id });
     } catch (error) {
-      if (!inCli) throw error;
+      if (!inCli || inIde) throw error;
     }
   }
   if (inCli) {
@@ -1179,7 +1185,7 @@ export async function deleteAntigravityConversation(id: string) {
     const targetIds = new Set<string>([id, ...subFiles.map((f) => path.basename(f, ".db"))]);
     for (const targetId of targetIds) {
       removeCliConversationLocal(cliRoot, targetId);
-      for (const root of antigravityDirs()) removeSummaryRow(root, targetId);
+      removeSummaryRow(cliRoot, targetId);
     }
   }
   forgetCliImport(id);
@@ -1830,8 +1836,9 @@ export function readAntigravityActivity(since: number, dir: string | string[] = 
       const swarmAliveWorkers = (prev.swarmAliveWorkers !== undefined || item.swarmAliveWorkers !== undefined)
         ? Math.max(prev.swarmAliveWorkers ?? 0, item.swarmAliveWorkers ?? 0)
         : undefined;
+      const { swarmWaiting: _sw, pendingContinuation: _pc, ...priRest } = pri;
       merged.set(item.id, {
-        ...pri,
+        ...priRest,
         running: prev.running || item.running,
         ...(ownRunning !== undefined ? { ownRunning } : {}),
         nested: prev.nested || item.nested,

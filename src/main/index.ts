@@ -83,23 +83,37 @@ let win: BrowserWindow | null = null;
 let relaunchHidden = false;
 let tray: Tray | null = null;
 let quitting = false;
+
+/** 安全向主窗口发 IPC；若窗口刚重建仍在加载首帧，延后到 did-finish-load，避免导航/提醒事件丢失或已销毁窗口报错。 */
+function sendToWin(channel: string, ...args: unknown[]) {
+  const target = win;
+  if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return;
+  if (target.webContents.isLoadingMainFrame()) {
+    target.webContents.once("did-finish-load", () => {
+      if (!target.isDestroyed() && !target.webContents.isDestroyed()) target.webContents.send(channel, ...args);
+    });
+    return;
+  }
+  target.webContents.send(channel, ...args);
+}
+
 const exitMonitor = new ExitMonitor({
-  publish: snapshot => { if (win && !win.isDestroyed()) win.webContents.send("egress-state", snapshot); },
+  publish: snapshot => { sendToWin("egress-state", snapshot); },
   notify: event => {
     if (!Notification.isSupported()) return;
     const notification = new Notification({ title: tr("出口监控") + " · " + DOMAINS[event.provider].name, body: tr(event.message) + (event.ip ? " · " + event.ip : "") + (event.region ? " · " + event.region : ""), icon: windowIcon() });
-    notification.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "egress" }); });
+    notification.on("click", () => { revealWindow(); sendToWin("open-page", { page: "egress" }); });
     notification.show();
   },
 });
 /** DeepSeek 余额监控（0.3.42）：用户自己填的 API Key，只用来查余额，见 deepseek-balance.ts。 */
 const deepseekBalance = new DeepSeekBalance({
-  publish: state => { if (win && !win.isDestroyed()) win.webContents.send("deepseek-balance-state", state); },
+  publish: state => { sendToWin("deepseek-balance-state", state); },
   notify: (info, below, label, kind) => {
     if (!Notification.isSupported()) return;
     const sign = info.currency === "CNY" ? "¥" : info.currency === "USD" ? "$" : info.currency + " ";
     const note = new Notification({ title: tr(kind === "relay" ? "第三方 Key 余额不多了" : "DeepSeek 余额不多了") + (label ? " · " + label : ""), body: `${tr("当前余额")} ${sign}${info.total.toFixed(2)} · ${tr("提醒线")} ${sign}${below.toFixed(2)}`, icon: windowIcon() });
-    note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
+    note.on("click", () => { revealWindow(); sendToWin("open-page", { page: "quota" }); }); note.show();
   },
 });
 let agyStateCache: AgyQuotaState | null = null;
@@ -107,11 +121,11 @@ let agyStateCache: AgyQuotaState | null = null;
 const antigravityQuota = new AntigravityQuota({
   publish: state => {
     agyStateCache = state;
-    if (win && !win.isDestroyed()) win.webContents.send("antigravity-quota-state", state);
+    sendToWin("antigravity-quota-state", state);
     if (lastSnapshot) updateTrayTip(lastSnapshot);
     pushTrayPanel();
     deskPetSnapshotChanged();
-    if (win && !win.isDestroyed()) win.webContents.send("desk-pet-changed");
+    sendToWin("desk-pet-changed");
   },
   notifyAt: () => readPrefs().notifyAt,
   notify: (models, used, resetAt, accountLabel) => {
@@ -125,7 +139,7 @@ const antigravityQuota = new AntigravityQuota({
         ? (models.some((m) => /claude/i.test(m)) && models.some((m) => /gpt/i.test(m)) ? "Claude / GPT" : models.some((m) => /claude/i.test(m)) ? "Claude" : "GPT")
         : models.length > 2 ? `${models.slice(0, 2).join("、")} 等` : models.join("、");
     const note = new Notification({ title: `${prefix} · ${poolLabel} ${tr("额度已用")} ${Math.round(used)}%`, body: resetAt ? `${new Date(resetAt).toLocaleString()} ${tr("重置")}` : tr("注意节奏"), icon: windowIcon() });
-    note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "quota" }); }); note.show();
+    note.on("click", () => { revealWindow(); sendToWin("open-page", { page: "quota" }); }); note.show();
   },
 });
 function currentAgyState(): AgyQuotaState {
@@ -137,7 +151,7 @@ function currentAgyLocalAccountId(): string {
   return state.accounts.find((acc) => acc.inLocal)?.id || resolveAgyLocalOwner(Date.now()) || state.accounts[0]?.id || "antigravity";
 }
 /** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
-const tokensUploader = new TokensUploader({ publish: state => { if (win && !win.isDestroyed()) win.webContents.send("tokens-ci-state", state); } });
+const tokensUploader = new TokensUploader({ publish: state => { sendToWin("tokens-ci-state", state); } });
 /** 「账号:窗口」→ 已经提醒过的那个窗口的重置时间。同一个窗口只提醒一次。 */
 const notified = new Map<string, number>();
 /** 两次重置时间差不到这么多，就当是同一个窗口（接口返回的时间有抖动，见 maybeNotify）。 */
@@ -192,8 +206,11 @@ function createWindow() {
   });
   next.on("closed", () => {
     if (win === next) win = null;
-    // 「关窗口就退出」：桌宠窗口还开着的话，window-all-closed 不会来，软件就退不掉
-    if (!quitting && !readPrefs().closeToTray) destroyDeskPet();
+    // 「关窗口就退出」：桌宠或托盘面板窗口还开着的话，window-all-closed 不会来，软件就退不掉
+    if (!quitting && !readPrefs().closeToTray) {
+      destroyTrayPanel();
+      destroyDeskPet();
+    }
   });
   // 用户不在看窗口了：下载好的更新趁这个时候静默装上（见 updater.ts）。
   next.on("hide", onWindowAway);
@@ -203,17 +220,19 @@ function createWindow() {
   next.on("minimize", () => setWindowAway(true));
   next.on("show", () => setWindowAway(false));
   next.on("restore", () => setWindowAway(false));
-  const sendState = () => next.webContents.send("window-state", { maximized: next.isMaximized() });
+  const sendState = () => {
+    if (!next.isDestroyed() && !next.webContents.isDestroyed()) next.webContents.send("window-state", { maximized: next.isMaximized() });
+  };
   next.on("maximize", sendState);
   next.on("unmaximize", sendState);
   return next;
 }
 
 function revealWindow() {
-  if (!win) {
+  if (!win || win.isDestroyed()) {
     // 窗口已经被销毁过（关窗口即退出关掉了、或者 macOS 上全关了）：重新建一个。
     const next = createWindow();
-    next.once("ready-to-show", () => next.show());
+    next.once("ready-to-show", () => { if (!next.isDestroyed()) next.show(); });
     return;
   }
   if (win.isMinimized()) win.restore();
@@ -269,7 +288,7 @@ function agentTrayItems() {
               // 切换会改工具配置：打开窗口，在供应商页里看过改动对比、确认后才写（只读保护开着时不能切）
               click: () => {
                 revealWindow();
-                win?.webContents.send("agent-activate-request", item.id);
+                sendToWin("agent-activate-request", item.id);
               },
             }))
           : [{ label: tr("还没有供应商"), enabled: false }],
@@ -283,7 +302,7 @@ function agentTrayItems() {
 function publishAgent() {
   setTrayMenu();
   pushTrayPanel();
-  if (win && !win.isDestroyed()) win.webContents.send("agent-switch", agentView());
+  sendToWin("agent-switch", agentView());
 }
 
 /**
@@ -360,11 +379,11 @@ function checkDrift() {
   const fresh = drifts.filter((d) => driftSeen.get(d.app) !== d.key);
   if (!fresh.length) return;
   for (const d of fresh) driftSeen.set(d.app, d.key);
-  win?.webContents.send("agent-drift", fresh);
+  sendToWin("agent-drift", fresh);
   const away = !win || win.isDestroyed() || !win.isVisible() || win.isMinimized();
   if (away && Notification.isSupported()) for (const d of fresh) {
     const note = new Notification({ title: `${AGENT_LABEL[d.app]} · ${tr("没在用 TokenPulse 设好的供应商")}`, body: `${tr("现在连的是")}「${d.liveName}」${tr("，不是")}「${d.expectedName}」${tr("。点这里打开 TokenPulse 切回。")}`, icon: windowIcon() });
-    note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "providers" }); win?.webContents.send("agent-drift", [d]); });
+    note.on("click", () => { revealWindow(); sendToWin("open-page", { page: "providers" }); sendToWin("agent-drift", [d]); });
     note.show();
   }
 }
@@ -524,7 +543,7 @@ async function maybeNotifyExpiringAccounts() {
   if (readPrefs().notifyAccountExpiry === false || !Notification.isSupported()) return;
   const now = Date.now();
   const [statuses, agyStatus] = await Promise.all([
-    listOfficialOAuthStatus().catch(() => []),
+    listOfficialOAuthStatus(now, { skipRenew: true }).catch(() => []),
     listAgyAccountStatus().catch(() => null),
   ]);
   const expiring: { id: string; label: string; expiresAt: number }[] = [];
@@ -547,7 +566,7 @@ async function maybeNotifyExpiringAccounts() {
     }
   }
   if (!expiring.length) return;
-  const openAccounts = () => { revealWindow(); win?.webContents.send("open-page", { page: "settings", tab: "accounts" }); };
+  const openAccounts = () => { revealWindow(); sendToWin("open-page", { page: "settings", tab: "accounts" }); };
   if (expiring.length === 1) {
     const one = expiring[0];
     const note = new Notification({
@@ -595,14 +614,14 @@ async function runAutoSwitch(): Promise<boolean> {
   }
   if (!events.length) return false;
   for (const event of events) notifyAutoSwitch(event);
-  win?.webContents.send("cli-auto-switch", events);
+  sendToWin("cli-auto-switch", events);
   return events.some((event) => event.result === "switched");
 }
 function notifyAutoSwitch(event: AutoSwitchEvent) {
   if (!Notification.isSupported()) return;
   const text = describeAutoSwitch(event);
   const note = new Notification({ title: tr(text.title), body: tr(text.body), icon: windowIcon() });
-  note.on("click", () => { revealWindow(); win?.webContents.send("open-page", { page: "settings", tab: "accounts" }); });
+  note.on("click", () => { revealWindow(); sendToWin("open-page", { page: "settings", tab: "accounts" }); });
   note.show();
 }
 
@@ -638,7 +657,7 @@ function notifyRequests(snapshot: Snapshot) {
   });
   notification.on("click", () => {
     revealWindow();
-    win?.webContents.send("open-page", { page: "requests", status: mismatch.length ? "mismatch" : "suspect" });
+    sendToWin("open-page", { page: "requests", status: mismatch.length ? "mismatch" : "suspect" });
   });
   notification.show();
 }
@@ -739,7 +758,7 @@ function publishSnapshot(snapshot: Snapshot): Snapshot {
           notification.on("click", notice.onClick);
           notification.show();
         },
-        openPage: target => { revealWindow(); win?.webContents.send("open-page", target); },
+        openPage: target => { revealWindow(); sendToWin("open-page", target); },
       });
     } catch (error) { console.error("[TokenPulse] 每周小结处理失败", error); }
   }
@@ -748,7 +767,7 @@ function publishSnapshot(snapshot: Snapshot): Snapshot {
   deskPetSnapshotChanged();
   // 窗口收着的时候不往界面推（推了它就要把整页重画一遍，没人看）；再打开时补上最新的
   if (windowAway) snapshotHeld = true;
-  else win?.webContents.send("snapshot", snapshot);
+  else sendToWin("snapshot", snapshot);
   return snapshot;
 }
 
@@ -773,9 +792,7 @@ function scheduleQuotaChecks() {
 function setWindowAway(away: boolean) {
   if (windowAway === away) return;
   windowAway = away;
-  if (win && !win.isDestroyed()) {
-    win.webContents.send("window-away", away);
-  }
+  sendToWin("window-away", away);
   if (away) {
     if (win && !win.isDestroyed()) {
       win.webContents.session.clearCache().catch(() => {});
@@ -786,7 +803,7 @@ function setWindowAway(away: boolean) {
     }
     return;
   }
-  if (snapshotHeld && lastSnapshot) win?.webContents.send("snapshot", lastSnapshot);
+  if (snapshotHeld && lastSnapshot) sendToWin("snapshot", lastSnapshot);
   snapshotHeld = false;
   if (Date.now() - lastScanAt >= SCAN_EVERY_MS) backgroundRefresh(false);
 }
@@ -812,7 +829,7 @@ function backgroundRefresh(withQuota: boolean, notifyQuota = false, scheduled = 
   if (withQuota) quotaScheduled = scheduled;
   void refresh(withQuota, notifyQuota).catch((error) => {
     console.error("[TokenPulse] 刷新失败", error);
-    win?.webContents.send("refresh-error", tr("刷新失败，请重试并检查数据目录是否可写。"));
+    sendToWin("refresh-error", tr("刷新失败，请重试并检查数据目录是否可写。"));
   });
 }
 
@@ -830,7 +847,7 @@ function emitQuotaNotice(notice: string | undefined, kind: "success" | "warning"
   quotaNoticeSent = notice;
   (kind === "success" ? log.info : log.warn)("refresh", `提示：${notice}`);
   const channel = kind === "error" ? "refresh-error" : kind === "warning" ? "refresh-warn" : "refresh-ok";
-  win?.webContents.send(channel, tr(notice));
+  sendToWin(channel, tr(notice));
 }
 
 const QUOTA_KIND_LABEL: Record<string, string> = { claude: "Claude", chatgpt: "ChatGPT", grok: "Grok" };
@@ -900,10 +917,10 @@ let queuedQuota: Promise<Snapshot> | null = null;
  */
 function refresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
   if (notifyQuota) {
+    if (!quotaNoticePending) quotaNoticeSent = undefined;
     quotaNoticePending = true;
     // 手动刷新排进了定时的那轮：那轮也要全查
     quotaScheduled = false;
-    if (!refreshing) quotaNoticeSent = undefined;
   }
   if (refreshing) {
     if (!withQuota || refreshingQuota) {
@@ -939,42 +956,55 @@ function appVersion(): string {
 }
 
 function applyPrefs(patch: Partial<Prefs>): Prefs {
-  if ("agentReadOnly" in patch) patch = { ...patch, agentReadOnly: patch.agentReadOnly === true };
-  if ("weeklySummary" in patch) patch = { ...patch, weeklySummary: patch.weeklySummary === true };
-  if ("studyModels" in patch) {
-    const raw = patch.studyModels && typeof patch.studyModels === "object" ? patch.studyModels as Record<string, unknown> : {};
-    patch = { ...patch, studyModels: Object.fromEntries((["claude", "chatgpt", "grok"] as const).map((kind) => [kind, parseStudyModels(raw[kind])]).filter(([, list]) => (list as unknown[]).length)) };
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return readPrefs();
+  const raw = patch as Record<string, unknown>;
+  const clean: Partial<Prefs> = {};
+  for (const key of ["autoLaunch", "closeToTray", "startMinimized", "weeklySummary", "autoUpdate", "notifyAccountExpiry", "notifyMismatch", "ccSwitch", "agentReadOnly", "quotaQuietBackground"] as const) {
+    if (key in raw) clean[key] = raw[key] === true;
   }
-  if ("seenVersion" in patch) patch = { ...patch, seenVersion: typeof patch.seenVersion === "string" && /^\d+\.\d+\.\d+[\w.-]{0,20}$/.test(patch.seenVersion) ? patch.seenVersion : "" };
-  if ("onboarding" in patch && !["", "pending", "done"].includes(patch.onboarding as string)) patch = { ...patch, onboarding: "done" };
-  if ("localOnlyAccounts" in patch) {
-    const list = Array.isArray(patch.localOnlyAccounts) ? patch.localOnlyAccounts : [];
-    patch = { ...patch, localOnlyAccounts: [...new Set(list.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 400))].slice(0, 100) };
+  if ("theme" in raw) clean.theme = raw.theme === "dark" ? "dark" : "light";
+  if ("language" in raw) clean.language = raw.language === "zh" || raw.language === "en" ? raw.language : "system";
+  if ("notifyAt" in raw) {
+    const n = Math.round(Number(raw.notifyAt));
+    clean.notifyAt = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 85;
   }
-  if ("quotaEverySeconds" in patch) patch = { ...patch, quotaEverySeconds: quotaEverySeconds(patch.quotaEverySeconds) };
-  if ("quotaQuietBackground" in patch) patch = { ...patch, quotaQuietBackground: patch.quotaQuietBackground === true };
-  if ("cliAutoSwitch" in patch) {
-    const raw = patch.cliAutoSwitch && typeof patch.cliAutoSwitch === "object" ? patch.cliAutoSwitch as Record<string, unknown> : {};
-    patch = { ...patch, cliAutoSwitch: Object.fromEntries((["claude", "chatgpt", "grok"] as const).filter((kind) => kind in raw).map((kind) => [kind, normalizeRule(raw[kind])])) };
+  if ("pressureWeek" in raw) clean.pressureWeek = isPressureLevel(raw.pressureWeek) ? raw.pressureWeek : PRESSURE_DEFAULTS.week;
+  if ("pressureFive" in raw) clean.pressureFive = isPressureLevel(raw.pressureFive) ? raw.pressureFive : PRESSURE_DEFAULTS.five;
+  if ("studyModels" in raw) {
+    const models = raw.studyModels && typeof raw.studyModels === "object" ? raw.studyModels as Record<string, unknown> : {};
+    clean.studyModels = Object.fromEntries((["claude", "chatgpt", "grok"] as const).map((kind) => [kind, parseStudyModels(models[kind])]).filter(([, list]) => (list as unknown[]).length));
   }
-  const petKeys = Object.keys(patch).filter((key) => key.startsWith("deskPet"));
-  if (petKeys.length) patch = { ...patch, ...normalizeDeskPet(patch as Record<string, unknown>) };
+  if ("seenVersion" in raw) clean.seenVersion = typeof raw.seenVersion === "string" && /^\d+\.\d+\.\d+[\w.-]{0,20}$/.test(raw.seenVersion) ? raw.seenVersion : "";
+  if ("onboarding" in raw) clean.onboarding = raw.onboarding === "" || raw.onboarding === "pending" || raw.onboarding === "done" ? raw.onboarding : "done";
+  if ("localOnlyAccounts" in raw) {
+    const list = Array.isArray(raw.localOnlyAccounts) ? raw.localOnlyAccounts : [];
+    clean.localOnlyAccounts = [...new Set(list.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 400))].slice(0, 100);
+  }
+  if ("quotaEverySeconds" in raw) clean.quotaEverySeconds = quotaEverySeconds(raw.quotaEverySeconds);
+  if ("cliAutoSwitch" in raw) {
+    const rules = raw.cliAutoSwitch && typeof raw.cliAutoSwitch === "object" ? raw.cliAutoSwitch as Record<string, unknown> : {};
+    clean.cliAutoSwitch = Object.fromEntries((["claude", "chatgpt", "grok"] as const).filter((kind) => kind in rules).map((kind) => [kind, normalizeRule(rules[kind])]));
+  }
+  const petPatch = normalizeDeskPet(raw);
+  const petKeys = Object.keys(petPatch);
+  if (petKeys.length) Object.assign(clean, petPatch);
+  if (!Object.keys(clean).length) return readPrefs();
   const previousEvery = readPrefs().quotaEverySeconds;
-  const next = writePrefs(patch);
+  const next = writePrefs(clean);
   // 桌宠：开关、大小、透明度、换宠物都要落到窗口上；设置页开着的话也要知道（比如在宠物的右键菜单里点了隐藏）
-  if (petKeys.length || "theme" in patch) { syncDeskPet(); win?.webContents.send("desk-pet-changed"); }
+  if (petKeys.length || "theme" in clean) { syncDeskPet(); sendToWin("desk-pet-changed"); }
   // 保存之后才改定时器。这一轮不额外查，下一轮按新间隔走。
   if (next.quotaEverySeconds !== previousEvery) scheduleQuotaChecks();
   // 容量怎么折算变了：不重新查额度，只按新的口径重算一遍快照
-  if ("localOnlyAccounts" in patch || "pressureWeek" in patch || "pressureFive" in patch) backgroundRefresh(false);
+  if ("localOnlyAccounts" in clean || "pressureWeek" in clean || "pressureFive" in clean) backgroundRefresh(false);
   // 后台账号少查一点：不额外查，下一轮定时查询按新设置走；哪些是后台账号在下一次发快照时重新标
   /*
    * 只有打好包的版本才去动开机启动项。
    * 开发时（`npm start`）跑的是 node_modules 里的 electron.exe，把它登记进启动项，
    * 开机会启动一个空的 Electron 而不是 TokenPulse —— 既没用又难找。
    */
-  if ("autoUpdate" in patch) setAutoUpdate(next.autoUpdate);
-  if ("autoLaunch" in patch && app.isPackaged && process.platform !== "linux") {
+  if ("autoUpdate" in clean) setAutoUpdate(next.autoUpdate);
+  if ("autoLaunch" in clean && app.isPackaged && process.platform !== "linux") {
     app.setLoginItemSettings({
       openAtLogin: next.autoLaunch,
       /*
@@ -1170,15 +1200,15 @@ if (!app.requestSingleInstanceLock()) {
       preload: path.join(__dirname, "preload.js"),
       prefs: () => readPrefs(),
       savePos: (pos) => { writePrefs({ deskPetPos: pos }); },
-      saveMini: (on, edge) => { writePrefs(edge ? { deskPetMini: on, deskPetEdge: edge } : { deskPetMini: on }); win?.webContents.send("desk-pet-changed"); },
-      savePrefs: (patch) => { applyPrefs(patch); win?.webContents.send("desk-pet-changed"); },
+      saveMini: (on, edge) => { writePrefs(edge ? { deskPetMini: on, deskPetEdge: edge } : { deskPetMini: on }); sendToWin("desk-pet-changed"); },
+      savePrefs: (patch) => { applyPrefs(patch); sendToWin("desk-pet-changed"); },
       hide: () => applyPrefs({ deskPet: false }),
       snapshot: () => lastSnapshot,
       extraAccounts: () => agyQuotaAccounts(currentAgyState()),
       antigravityLogin: () => currentAgyLocalAccountId(),
       title: accountTitle,
-      openMain: (target) => { revealWindow(); if (target) win?.webContents.send("open-page", target); },
-      openSettings: () => { revealWindow(); win?.webContents.send("open-page", { page: "pet" }); },
+      openMain: (target) => { revealWindow(); if (target) sendToWin("open-page", target); },
+      openSettings: () => { revealWindow(); sendToWin("open-page", { page: "pet" }); },
       refresh: () => backgroundRefresh(true, true),
     });
     initUpdater({ window: () => win, autoUpdate: readPrefs().autoUpdate });
@@ -1312,7 +1342,10 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("refresh", async () => refresh(true, true));
     ipcMain.handle("prefs:read", () => readPrefs());
     ipcMain.handle("prefs:write", (_event, patch: Partial<Prefs>) => applyPrefs(patch));
-    ipcMain.handle("accounts:list", () => listOfficialOAuthStatus());
+    ipcMain.handle("accounts:list", async () => {
+      const gates = await Promise.all(OFFICIAL_KINDS.map(async (kind) => ({ kind, ok: await exitMonitor.gateQuota(kind).catch(() => false) })));
+      return listOfficialOAuthStatus(Date.now(), { allowedKinds: gates.filter((g) => g.ok).map((g) => g.kind) });
+    });
     ipcMain.handle("accounts:login", async (_event, kind: unknown, replaceId: unknown) => {
       if (!isOfficialAccountKind(kind)) throw new Error("官方账号类型无效");
       if (replaceId !== undefined && (typeof replaceId !== "string" || replaceId.length > 400)) throw new Error("官方账号参数无效");
@@ -1348,17 +1381,17 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("theme", (_event, theme: unknown) => {
       if (theme !== "light" && theme !== "dark") return;
-      win?.setBackgroundColor(BACKGROUND[theme]);
+      if (win && !win.isDestroyed()) win.setBackgroundColor(BACKGROUND[theme]);
       if (readPrefs().theme !== theme) { writePrefs({ theme }); syncDeskPet(); }
     });
     ipcMain.handle("open-data-dir", () => shell.openPath(dataDir()));
     // 还没登录过就没有日志文件：打开数据目录，返回 false 让界面说一句
     ipcMain.handle("open-log", () => { const file = appLogFile(); if (fsSync.existsSync(file)) { shell.showItemInFolder(file); return true; } void shell.openPath(dataDir()); return false; });
-    ipcMain.handle("window:minimize", () => win?.minimize());
-    ipcMain.handle("window:toggle-maximize", () => (win?.isMaximized() ? win.unmaximize() : win?.maximize()));
+    ipcMain.handle("window:minimize", () => { if (win && !win.isDestroyed()) win.minimize(); });
+    ipcMain.handle("window:toggle-maximize", () => { if (win && !win.isDestroyed()) (win.isMaximized() ? win.unmaximize() : win.maximize()); });
     // 走 close() 而不是 destroy()：「关闭窗口时」的设置（收进托盘 / 直接退出）在 close 事件里处理。
-    ipcMain.handle("window:close", () => win?.close());
-    ipcMain.handle("window:state", () => ({ maximized: Boolean(win?.isMaximized()) }));
+    ipcMain.handle("window:close", () => { if (win && !win.isDestroyed()) win.close(); });
+    ipcMain.handle("window:state", () => ({ maximized: Boolean(win && !win.isDestroyed() && win.isMaximized()) }));
     // 直接读 package.json：app.getVersion() 在测试 / 截图脚本里（electron 加载的不是本应用目录）返回的是 Electron 自己的版本。
     ipcMain.handle("update:state", () => updateState());
     ipcMain.handle("update:check", () => checkForUpdates(true));
@@ -1375,7 +1408,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.on("tray-panel:activate", (_event, id: unknown) => {
       if (typeof id !== "string" || !id || id.length > 200) return;
       hideTrayPanel(); revealWindow();
-      win?.webContents.send("agent-activate-request", id);
+      sendToWin("agent-activate-request", id);
     });
     ipcMain.on("tray-panel:size", (_event, height: unknown) => resizeTrayPanel(Number(height)));
     ipcMain.on("tray-panel:action", (_event, action: unknown) => {
@@ -1408,7 +1441,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("desk-pet:import-pack", async () => {
       const options = { title: tr("选择宠物文件夹（里面有 pet.json 或 theme.json）"), properties: ["openDirectory" as const] };
-      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const picked = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
       try { return { ok: true as const, pack: importPetPack(picked.filePaths[0]), packs: listPetPacks() }; }
       catch (error) { return { ok: false as const, error: importError(error) }; }
@@ -1422,7 +1455,7 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle("desk-pet:import-desk-pack", async () => {
       const options = { title: tr("选择键盘样式文件夹（里面有 desk.json）"), properties: ["openDirectory" as const] };
-      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const picked = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
       try { return { ok: true as const, pack: importDeskPack(picked.filePaths[0]), packs: listDeskPacks() }; }
       catch (error) { return { ok: false as const, error: importError(error) }; }
@@ -1436,7 +1469,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("desk-pet:sound-data", (_event, kind: unknown) => petSoundData(kind));
     ipcMain.handle("desk-pet:import-sound", async (_event, kind: unknown) => {
       const options = { title: tr("选择提示音（WAV、MP3、OGG、FLAC、M4A，2 MB 以内）"), properties: ["openFile" as const], filters: [{ name: tr("音频"), extensions: ["wav", "mp3", "ogg", "oga", "flac", "m4a", "aac", "mp4"] }] };
-      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const picked = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
       try { const sound = importPetSound(kind, picked.filePaths[0]); syncDeskPet(); return { ok: true as const, sound, sounds: listPetSounds() }; }
       catch (error) { return { ok: false as const, error: importError(error) }; }
@@ -1524,7 +1557,7 @@ if (!app.requestSingleInstanceLock()) {
       try { await work(); return { ok: true as const, state: prismView() }; }
       catch (error) { return { ok: false as const, error: error instanceof Error ? error.message : "操作失败", state: prismView() }; }
     };
-    onPrismChange(() => { if (win && !win.isDestroyed()) win.webContents.send("prism-bridge", prismView()); });
+    onPrismChange(() => { sendToWin("prism-bridge", prismView()); });
     ipcMain.handle("prism:state", async () => { await checkPrismProxy().catch(() => undefined); return prismView(); });
     // 0.3.20：代理冲突一键修复、日志文件、占用空间、一键删除（供应商由界面先走「切回官方 + 删除」，这里只删文件）
     ipcMain.handle("prism:fix-proxy", () => prismCall(() => fixPrismProxy()));
@@ -1618,7 +1651,7 @@ if (!app.requestSingleInstanceLock()) {
         defaultPath: requests ? `TokenPulse-${tr("请求记录") === "请求记录" ? "请求记录" : "requests"}-${today}.csv` : `TokenPulse-${today}.csv`,
         filters: [{ name: "CSV", extensions: ["csv"] }],
       };
-      const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+      const result = win && !win.isDestroyed() ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
       if (result.canceled || !result.filePath) return false;
       await fs.writeFile(result.filePath, "\uFEFF" + content, "utf8");
       return true;
@@ -1646,9 +1679,12 @@ if (!app.requestSingleInstanceLock()) {
 
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
-    destroyTrayPanel();
-    destroyDeskPet();
-    if (agentQuitReady) { quitting = true; exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); antigravityQuota.stop(); releasePrism(); return; }
+    if (agentQuitReady) {
+      destroyTrayPanel();
+      destroyDeskPet();
+      quitting = true; exitMonitor.stop(); tokensUploader.stop(); deepseekBalance.stop(); antigravityQuota.stop(); releasePrism();
+      return;
+    }
     event.preventDefault();
     if (agentQuitPending) return;
     agentQuitPending = true;

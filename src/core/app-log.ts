@@ -65,23 +65,42 @@ function stamp(date = new Date()) {
 
 /** 本进程写过的字节数估计：每行都 stat 一次没必要。null＝还没看过文件多大。 */
 let size: number | null = null;
+let rotateBlockedUntil = 0;
 
-function rotate(file: string) {
-  for (let i = KEEP; i >= 1; i--) {
-    const from = i === 1 ? file : file.replace(/\.log$/, `.${i - 1}.log`);
+function rotate(file: string): boolean {
+  const staging = `${file}.rotating`;
+  // 先尝试移走当前主日志：如果别的进程正锁着它，立刻放弃且绝不删旧备份 .1.log / .2.log
+  try {
+    if (!fs.existsSync(file)) return true;
+    try { fs.rmSync(staging, { force: true }); } catch { /* 忽略残留 */ }
+    fs.renameSync(file, staging);
+  } catch {
+    return false;
+  }
+  for (let i = KEEP; i >= 2; i--) {
+    const from = file.replace(/\.log$/, `.${i - 1}.log`);
     const to = file.replace(/\.log$/, `.${i}.log`);
     try {
       if (i === KEEP) fs.rmSync(to, { force: true });
       if (fs.existsSync(from)) fs.renameSync(from, to);
     } catch {
-      // 别的进程正开着它：这次不轮换，下次再试
+      // 保留已有备份，继续把 staging 挪到 .1.log
     }
+  }
+  const firstBackup = file.replace(/\.log$/, ".1.log");
+  try {
+    fs.renameSync(staging, firstBackup);
+    return true;
+  } catch {
+    try { fs.renameSync(staging, file); } catch { /* 已尽力回滚 */ }
+    return false;
   }
 }
 
 /** 测试换数据目录时清掉大小缓存。 */
 export function resetAppLogState() {
   size = null;
+  rotateBlockedUntil = 0;
 }
 
 export function appLog(level: LogLevel, category: string, message: string) {
@@ -96,9 +115,12 @@ export function appLog(level: LogLevel, category: string, message: string) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       try { size = fs.statSync(file).size; } catch { size = 0; }
     }
-    if (size + bytes > MAX_BYTES) {
-      rotate(file);
-      try { size = fs.statSync(file).size; } catch { size = 0; }
+    if (size + bytes > MAX_BYTES && Date.now() >= rotateBlockedUntil) {
+      if (rotate(file)) {
+        try { size = fs.statSync(file).size; } catch { size = 0; }
+      } else {
+        rotateBlockedUntil = Date.now() + 30_000;
+      }
     }
     fs.appendFileSync(file, text, { mode: 0o600 });
     size += bytes;

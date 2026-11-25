@@ -147,7 +147,7 @@ export function readDeskFolder(dir: string): {
   if (!stat.isFile() || stat.size > 64 * 1024) throw new Error("desk.json 不是普通文件，或者太大了");
   let raw: Record<string, unknown>;
   try {
-    raw = JSON.parse(fs.readFileSync(manifest, "utf8"));
+    raw = JSON.parse(fs.readFileSync(manifest, "utf8").replace(/^\uFEFF/, ""));
   } catch {
     throw new Error("desk.json 不是有效的 JSON");
   }

@@ -179,7 +179,7 @@ async function loginBrowser(): Promise<LoginBrowser> {
   const installed = (...parts: string[]) => [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"], process.env.LOCALAPPDATA].map((dir) => (dir ? path.join(dir, ...parts) : "")).find((file) => !!file && fs.existsSync(file)) || "";
   const chrome = installed("Google", "Chrome", "Application", "chrome.exe"), edge = installed("Microsoft", "Edge", "Application", "msedge.exe");
   const preferred = await new Promise<string>((resolve) => {
-    execFile("reg", ["query", "HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice", "/v", "ProgId"], { windowsHide: true, timeout: 5000 }, (error, stdout) => resolve(error ? "" : String(stdout)));
+    execFile("reg", ["query", "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice", "/v", "ProgId"], { windowsHide: true, timeout: 5000 }, (error, stdout) => resolve(error ? "" : String(stdout)));
   });
   const asChrome = { channel: "chrome", exe: chrome }, asEdge = { channel: "msedge", exe: edge };
   if (/ChromeHTML/i.test(preferred) && chrome) return asChrome;
@@ -307,9 +307,9 @@ export async function loginPrism() {
   busy();
   const python = interpreter();
   const restart = phase !== "stopped";
-  if (restart) await stopPrism();
   task = "login"; lastError = ""; emit();
   try {
+    if (restart) await stopPrism();
     const before = loginInfo()?.expiresAt || 0;
     const browser = await loginBrowser();
     const env = await childEnv(browser);
@@ -354,7 +354,7 @@ export async function startPrism() {
   if (!login) throw new Error("请先登录 Prism");
   if (login.expired) throw new Error("Prism 登录已经过期，请重新登录");
   const env = await childEnv();
-  if (phase !== "stopped") return;
+  if (phase !== "stopped" || task) return;
   lastError = ""; stopping = false; phase = "starting"; liveModels = []; modelSwap = null; emit();
   const child = spawn(python, ["-u", scriptPath(), "serve"], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   server = child;
@@ -391,8 +391,18 @@ export function stopPrism() {
   const child = server;
   if (!child) return Promise.resolve();
   stopping = true;
+  if (child.exitCode != null || child.signalCode != null) return Promise.resolve();
   return new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      child.off("exit", finish);
+      child.off("error", finish);
+      resolve();
+    };
+    child.once("exit", finish);
+    child.once("error", finish);
     killTree(child);
   });
 }

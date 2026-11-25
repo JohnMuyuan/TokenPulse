@@ -61,6 +61,8 @@ function same(a: QuotaSample, b: QuotaSample) {
     a.week === b.week &&
     sameReset(a.fiveReset, b.fiveReset) &&
     sameReset(a.weekReset, b.weekReset) &&
+    sameReset(a.weekStart, b.weekStart) &&
+    a.plan === b.plan &&
     a.resetCredits === b.resetCredits &&
     a.account === b.account &&
     sameModels(a.models, b.models)

@@ -27,9 +27,10 @@ export type BalanceResult = { at: number; ok: boolean; available?: boolean; info
 export type BalanceKind = "deepseek" | "relay";
 /** harness：本机 DeepSeek Harness 的用量算在这个账号上。Harness 是账号授权登录的，和 API Key 对不上号，只能由用户指定；最多一个账号有。 */
 /** icon / avatar：第三方 Key 的图标。icon 是预设图标的 id（或 letter = 用首字母，空 = 按名字和地址自动匹配），avatar 是上传的图片（data URL，界面已经缩成 128px）。 */
-type Account = { id: string; kind: BalanceKind; label: string; apiKey: string; baseUrl?: string; flavor?: RelayFlavor; icon?: string; avatar?: string; alertBelow?: number; last?: BalanceResult; alerted?: boolean; harness?: boolean };
+type Account = { id: string; kind: BalanceKind; label: string; apiKey: string; baseUrl?: string; flavor?: RelayFlavor; icon?: string; avatar?: string; alertBelow?: number; last?: BalanceResult; alerted?: boolean; alertedCurrencies?: string[]; harness?: boolean };
 type Stored = { accounts: Account[] };
 type Fetcher = (key: string) => Promise<{ status: number; body: string }>;
+type KeyEdit = { key: string; accept: (result: BalanceResult) => boolean };
 
 const MANUAL_GAP_MS = 5000;
 const EVERY_MIN_MS = 60_000;
@@ -125,6 +126,7 @@ export class DeepSeekBalance {
         ...(Number.isFinite(below) && below > 0 ? { alertBelow: below } : {}),
         ...(last && typeof last.at === "number" && Array.isArray(last.infos) ? { last } : {}),
         ...(item.alerted === true ? { alerted: true } : {}),
+        ...(Array.isArray(item.alertedCurrencies) ? { alertedCurrencies: item.alertedCurrencies.filter((c): c is string => typeof c === "string" && /^[A-Z]{3}$/.test(c)) } : {}),
         ...(kind === "deepseek" && item.harness === true && !accounts.some((account) => account.harness) ? { harness: true } : {}),
       });
     }
@@ -223,28 +225,36 @@ export class DeepSeekBalance {
     const key = typeof input.key === "string" ? input.key.trim() : "";
     if (key && account.kind === "deepseek" && !KEY.test(key)) throw new Error("这不像 DeepSeek 的 API Key（应该是 sk- 开头的一串）");
     if (key && account.kind === "relay" && !RELAY_KEY.test(key)) throw new Error("这不像 API Key（应该是一串不带空格的字符）");
-    if (key && this.stored.accounts.some((item) => item !== account && item.apiKey === key && (item.baseUrl ?? "") === (account.baseUrl ?? ""))) throw new Error("这个 API Key 已经添加过了");
+    const duplicate = () => this.stored.accounts.some((item) => item !== account && item.apiKey === key && (item.baseUrl ?? "") === (account.baseUrl ?? ""));
+    if (key && duplicate()) throw new Error("这个 API Key 已经添加过了");
     const alertBelow = "alertBelow" in input ? alertAmount(input.alertBelow) : account.alertBelow;
-    if (key && key !== account.apiKey) {
-      const before = { apiKey: account.apiKey, last: account.last, alerted: account.alerted };
-      account.apiKey = key; account.last = undefined; account.alerted = false;
-      await this.refresh(account.id, true, true);
-      if ((account.last as BalanceResult | undefined)?.error === INVALID_KEY) {
-        Object.assign(account, before);
-        this.save(); this.publish();
-        throw new Error(INVALID_KEY);
+    const apply = () => {
+      if ("label" in input) account.label = labelText(input.label);
+      if (account.kind === "relay" && ("icon" in input || "avatar" in input)) {
+        const icon = iconOf(input.icon), avatar = avatarOf(input.avatar);
+        if (icon) account.icon = icon; else delete account.icon;
+        if (avatar) account.avatar = avatar; else delete account.avatar;
       }
+      if (input.harness === true && account.kind === "deepseek") { for (const other of this.stored.accounts) other.harness = false; account.harness = true; }
+      else if (input.harness === false) account.harness = false;
+      if (alertBelow !== account.alertBelow) { if (alertBelow) account.alertBelow = alertBelow; else delete account.alertBelow; account.alerted = false; delete account.alertedCurrencies; }
+    };
+    if (key && key !== account.apiKey) {
+      let refused: string | undefined;
+      const state = await this.refreshAccount(account.id, true, true, { key, accept: (result) => {
+        if (result.error === INVALID_KEY) refused = INVALID_KEY;
+        else if (duplicate()) refused = "这个 API Key 已经添加过了";
+        if (refused) return false;
+        account.apiKey = key;
+        account.alerted = false;
+        delete account.alertedCurrencies;
+        apply();
+        return true;
+      } });
+      if (refused) throw new Error(refused);
+      return state;
     }
-    if (!this.stored.accounts.includes(account)) return this.state();
-    if ("label" in input) account.label = labelText(input.label);
-    if (account.kind === "relay" && ("icon" in input || "avatar" in input)) {
-      const icon = iconOf(input.icon), avatar = avatarOf(input.avatar);
-      if (icon) account.icon = icon; else delete account.icon;
-      if (avatar) account.avatar = avatar; else delete account.avatar;
-    }
-    if (input.harness === true && account.kind === "deepseek") { for (const other of this.stored.accounts) other.harness = false; account.harness = true; }
-    else if (input.harness === false) account.harness = false;
-    if (alertBelow !== account.alertBelow) { if (alertBelow) account.alertBelow = alertBelow; else delete account.alertBelow; account.alerted = false; }
+    apply();
     this.check(account);
     this.save(); this.publish();
     return this.state();
@@ -276,57 +286,80 @@ export class DeepSeekBalance {
   }
   async refresh(id: unknown, manual: boolean, force = false) {
     if (typeof id !== "string") return this.state();
+    return this.refreshAccount(id, manual, force);
+  }
+  private async refreshAccount(id: string, manual: boolean, force: boolean, edit?: KeyEdit) {
     const previous = this.pending.get(id);
     if (previous) return previous;
-    const task = this.refreshNow(id, manual, force);
+    const task = this.refreshNow(id, manual, force, edit);
     this.pending.set(id, task);
     try { return await task; }
     finally { if (this.pending.get(id) === task) this.pending.delete(id); }
   }
-  private async refreshNow(id: unknown, manual: boolean, force = false) {
+  private async refreshNow(id: string, manual: boolean, force: boolean, edit?: KeyEdit) {
     const account = this.stored.accounts.find((item) => item.id === id);
     if (!account || this.loading.has(account.id) || this.stopped) return this.state();
     if (manual && !force && this.now() - (this.lastStarted.get(account.id) ?? -Infinity) < MANUAL_GAP_MS) return this.state();
-    const key = account.apiKey;
+    const originalKey = account.apiKey;
     this.lastStarted.set(account.id, this.now());
-    this.loading.add(account.id); this.publish();
-    let result: BalanceResult;
+    this.loading.add(account.id);
+    try {
+      this.publish();
+      const result = await this.queryBalance(account, edit?.key ?? originalKey, edit ? undefined : account.last);
+      if (this.stored.accounts.includes(account) && account.apiKey === originalKey && (!edit || edit.accept(result))) {
+        if (result.ok && result.extra) account.flavor = result.extra.flavor;
+        account.last = result; this.check(account); this.save();
+        // 查到了就记进余额历史：消耗趋势、预计还能用多久都从这里算
+        if (result.ok) { try { appendBalanceSamples(account.id, result.at, result.infos); } catch { /* 记不下来：这次的余额照常显示 */ } }
+      }
+    } finally {
+      this.loading.delete(account.id);
+      this.publish();
+    }
+    return this.state();
+  }
+
+  private async queryBalance(account: Account, key: string, last: BalanceResult | undefined): Promise<BalanceResult> {
     try {
       if (account.kind === "relay") {
         const reply = await queryRelay(account.baseUrl!, key, this.relayGet, account.flavor);
         if (reply.ok) {
           const { balance } = reply;
-          if (this.stored.accounts.includes(account) && account.apiKey === key) account.flavor = balance.extra.flavor;
           // 余额统一放进 infos（没有充值 / 赠送之分）；不限额或订阅没有余额这个数时 infos 是空的，看 extra
-          result = { at: this.now(), ok: true, available: balance.available, infos: balance.remaining == null ? [] : [{ currency: balance.currency, total: balance.remaining, granted: 0, toppedUp: balance.remaining }], extra: balance.extra };
-        } else result = { at: this.now(), ok: false, infos: account.last?.infos ?? [], error: reply.error, ...(account.last?.extra ? { extra: account.last.extra } : {}) };
-      } else {
+          return { at: this.now(), ok: true, available: balance.available, infos: balance.remaining == null ? [] : [{ currency: balance.currency, total: balance.remaining, granted: 0, toppedUp: balance.remaining }], extra: balance.extra };
+        }
+        return { at: this.now(), ok: false, infos: last?.infos ?? [], error: reply.error, ...(last?.extra ? { extra: last.extra } : {}) };
+      }
       const reply = await this.fetcher(key);
       const parsed = reply.status === 200 ? parseBalance(reply.body) : null;
-      if (parsed) result = { at: this.now(), ok: true, available: parsed.available, infos: parsed.infos };
-      else result = { at: this.now(), ok: false, infos: account.last?.infos ?? [], error: reply.status === 401 || reply.status === 403 ? INVALID_KEY : reply.status === 429 ? "查得太频繁了，稍后会自动再查" : reply.status === 200 ? "DeepSeek 返回的内容看不懂" : `DeepSeek 返回了 HTTP ${reply.status}` };
-      }
+      if (parsed) return { at: this.now(), ok: true, available: parsed.available, infos: parsed.infos };
+      return { at: this.now(), ok: false, infos: last?.infos ?? [], error: reply.status === 401 || reply.status === 403 ? INVALID_KEY : reply.status === 429 ? "查得太频繁了，稍后会自动再查" : reply.status === 200 ? "DeepSeek 返回的内容看不懂" : `DeepSeek 返回了 HTTP ${reply.status}` };
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
       const who = account.kind === "relay" ? "站点" : "DeepSeek";
-      result = { at: this.now(), ok: false, infos: account.last?.infos ?? [], error: message === "timeout" ? `连接${who === "站点" ? "站点" : " DeepSeek "}超时` : `没连上${who === "站点" ? "站点" : " DeepSeek"}${message ? "：" + message.slice(0, 160) : ""}`, ...(account.last?.extra ? { extra: account.last.extra } : {}) };
+      return { at: this.now(), ok: false, infos: last?.infos ?? [], error: message === "timeout" ? `连接${who === "站点" ? "站点" : " DeepSeek "}超时` : `没连上${who === "站点" ? "站点" : " DeepSeek"}${message ? "：" + message.slice(0, 160) : ""}`, ...(last?.extra ? { extra: last.extra } : {}) };
     }
-    // 查的过程中账号被删掉或 Key 被换掉了：这次的结果不要
-    if (this.stored.accounts.includes(account) && account.apiKey === key) {
-      account.last = result; this.check(account); this.save();
-      // 查到了就记进余额历史：消耗趋势、预计还能用多久都从这里算
-      if (result.ok) { try { appendBalanceSamples(account.id, result.at, result.infos); } catch { /* 记不下来：这次的余额照常显示 */ } }
-    }
-    this.loading.delete(account.id); this.publish();
-    return this.state();
   }
 
-  /** 余额低于设的数：提醒一次；回到上面之后重新计。有几种币种时每种都看。 */
+  /** 余额低于设的数：每种币种各自提醒一次；回到上面之后重新计。 */
   private check(account: Account) {
     const below = account.alertBelow, last = account.last;
     if (!below || !last?.ok || !last.infos.length) return;
-    const low = last.infos.find((info) => info.total < below);
-    if (low && !account.alerted) { account.alerted = true; this.options.notify?.(low, below, account.label || hostOf(account.baseUrl), account.kind); }
-    else if (!low && account.alerted) account.alerted = false;
+    const set = new Set<string>(
+      account.alertedCurrencies
+        ?? (account.alerted ? last.infos.filter((info) => info.total < below).map((info) => info.currency) : []),
+    );
+    for (const info of last.infos) {
+      if (info.total < below) {
+        if (!set.has(info.currency)) {
+          set.add(info.currency);
+          this.options.notify?.(info, below, account.label || hostOf(account.baseUrl), account.kind);
+        }
+      } else {
+        set.delete(info.currency);
+      }
+    }
+    account.alertedCurrencies = [...set];
+    account.alerted = set.size > 0;
   }
 }

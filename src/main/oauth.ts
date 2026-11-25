@@ -139,9 +139,10 @@ function quoteWin(value: string) {
 /** .cmd / .bat 不能直接 spawn，要经 cmd.exe。 */
 function invocation(command: string, args: string[]) {
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
+    // cmd.exe /s /c 总是剥掉首尾一对引号：整条命令再包一层引号，防止带空格的 .cmd 路径引号被剥掉
     return {
       file: process.env.ComSpec || "cmd.exe",
-      args: ["/d", "/s", "/c", [quoteWin(command), ...args.map(quoteWin)].join(" ")],
+      args: ["/d", "/s", "/c", `"${[quoteWin(command), ...args.map(quoteWin)].join(" ")}"`],
       windowsVerbatimArguments: true,
     };
   }
@@ -164,11 +165,26 @@ function loginArgs(kind: OfficialAccountKind) {
  *   用户平时浏览器里已登录的账号全都用不上，只能重新输密码验证。
  * 实测只设这三个变量，三家都读不到真实登录，真实的 ~/.claude.json 也不会被改。
  */
+const STRIP_OAUTH_ENV = new Set([
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "XAI_API_KEY",
+  "XAI_BASE_URL",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "GROK_HOME",
+]);
+
 export function isolatedEnv(tempHome: string, base: NodeJS.ProcessEnv = process.env) {
   // 从别的 Agent 终端里启动时继承的会话标记也去掉（见 session-reply.ts 的 cleanAgentEnv）
   const env: NodeJS.ProcessEnv = cleanAgentEnv(base);
-  // 官方登录不能被用户环境里的 API Key / 中转地址带偏。
-  for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "XAI_API_KEY", "XAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete env[key];
+  // 官方登录不能被用户环境里的 API Key / 中转地址带偏（Windows 环境变量名大小写不敏感，按大写统一清掉）。
+  for (const key of Object.keys(env)) {
+    if (STRIP_OAUTH_ENV.has(key.toUpperCase())) delete env[key];
+  }
   env.CLAUDE_CONFIG_DIR = cliDir("claude", tempHome);
   env.CODEX_HOME = cliDir("chatgpt", tempHome);
   env.GROK_HOME = cliDir("grok", tempHome);
@@ -264,22 +280,25 @@ async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<
     log.write(describeLoginDir(kind, tempHome));
     return { ok: false, error: `${error}${LOG_HINT}` };
   };
+  let verProc: ChildProcess | null = null;
   try {
     for (const k of OFFICIAL_KINDS) fs.mkdirSync(cliDir(k, tempHome), { recursive: true });
     const before = signature(kind, tempHome);
     const env = isolatedEnv(tempHome);
     const added = await systemProxyEnv(TOKEN_URL[kind], env).catch(() => ({} as Record<string, string>));
-    if (added.NO_PROXY) delete env.no_proxy;
+    if (added.NO_PROXY) {
+      for (const key of Object.keys(env)) if (key.toUpperCase() === "NO_PROXY") delete env[key];
+    }
     Object.assign(env, added);
     const proxyNote = added.HTTPS_PROXY ? `按系统代理补上 HTTPS_PROXY=${added.HTTPS_PROXY}`
       : PROXY_KEYS.filter((key) => env[key] || env[key.toLowerCase()]).map((key) => `${key}=${proxyHost(String(env[key] || env[key.toLowerCase()]))}`).join("，") || "没有代理，直连（环境变量里没设；系统代理没开，或者不是 HTTP 代理）";
     log.write(`CLI：${command}；代理：${proxyNote}`);
     const inv = invocation(command, loginArgs(kind));
-    // 版本号单独问一次，只为写进日志，不等它。用另一个空目录：别和登录抢着写同一份 .claude.json
+    // 版本号单独问一次，只为写进日志，不等它。cwd 用 os.tmpdir() 避免锁住 tempHome 导致退出删不掉明文临时目录
     const ver = invocation(command, ["--version"]);
     const probeHome = path.join(tempHome, "version-probe");
     for (const k of OFFICIAL_KINDS) fs.mkdirSync(cliDir(k, probeHome), { recursive: true });
-    execFile(ver.file, ver.args, { env: { ...isolatedEnv(probeHome), ...added }, cwd: probeHome, windowsHide: true, timeout: 15_000, windowsVerbatimArguments: ver.windowsVerbatimArguments }, (error, stdout) => {
+    verProc = execFile(ver.file, ver.args, { env: { ...isolatedEnv(probeHome), ...added }, cwd: os.tmpdir(), windowsHide: true, timeout: 15_000, windowsVerbatimArguments: ver.windowsVerbatimArguments }, (error, stdout) => {
       log.write(`CLI 版本：${error ? `读不到（${error.message}）` : String(stdout).trim() || "（空）"}`);
     });
     proc = spawn(inv.file, inv.args, {
@@ -308,10 +327,14 @@ async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<
         // Claude 的账号资料（邮箱、accountUuid）在凭据之后才写：没写好就最多等到 10 秒，不然身份会退回 token 哈希
         const settle = Date.now();
         while (!exited && Date.now() - settle < 10_000) {
-          if (Date.now() - settle >= 3_000 && (kind !== "claude" || readCliAccounts(kind, tempHome, true).every((account) => account.email))) break;
+          const settledAccounts = readCliAccounts(kind, tempHome, true);
+          if (Date.now() - settle >= 3_000 && settledAccounts.length > 0 && (kind !== "claude" || settledAccounts.every((account) => account.email))) break;
           await sleep(200);
         }
         const accounts = readCliAccounts(kind, tempHome, true);
+        if (!accounts.length) {
+          return fail("没有检测到 OAuth 登录成功，请完成浏览器授权后再试一次。", "检测到凭据变化但等待结束后未读到有效账号");
+        }
         if (replaceId && !accounts.some((account) => accountIdOf(kind, account.ref) === replaceId)) {
           return fail("重新授权登录的账号与目标账号不一致，原账号没有改变。", "登录进来的不是要重新授权的那个账号");
         }
@@ -325,7 +348,7 @@ async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<
           writeOfficialAccountStore(store);
         }
         log.write(`成功（${Math.round((Date.now() - started) / 1000)} 秒）：${accounts.length} 个账号，${accounts.map((account) => (account.email ? "有邮箱" : "没有邮箱") + (account.ref.startsWith("token:") ? "、身份取自 token" : "")).join("；")}`);
-        return { ok: true, statuses: await listOfficialOAuthStatus() };
+        return { ok: true, statuses: await listOfficialOAuthStatus(Date.now(), { skipRenew: true }) };
       }
       if (exited && graceUntil === Infinity) graceUntil = Date.now() + 3_000;
       await sleep(exited ? 500 : 1_000);
@@ -339,29 +362,38 @@ async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<
   } finally {
     if (proc && proc.exitCode == null && proc.pid != null) log.write("登录命令还在运行，结束它");
     if (proc) killTree(proc);
+    if (verProc) killTree(verProc);
     // 临时目录里是明文 token，不管成功失败都要删。CLI 进程刚被杀时文件可能还占着，重试几次。
     fs.rm(tempHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }, () => undefined);
   }
 }
 
 /** 同一家同时只跑一个登录：连点两下会起两个 CLI 抢同一个回调端口。 */
-const inflight = new Map<string, Promise<LoginResult>>();
+const inflight = new Map<OfficialAccountKind, { replaceId?: string; promise: Promise<LoginResult> }>();
 export function loginOfficialOAuth(kind: OfficialAccountKind, replaceId?: string): Promise<LoginResult> {
-  const key = `${kind}:${replaceId || ""}`;
-  let running = inflight.get(key);
-  if (!running) {
-    running = runLogin(kind, replaceId).finally(() => inflight.delete(key));
-    inflight.set(key, running);
+  const existing = inflight.get(kind);
+  if (existing) {
+    if (existing.replaceId === replaceId) return existing.promise;
+    return Promise.resolve({ ok: false, error: `${LABELS[kind]} 正在登录中，请先完成或取消当前登录再试。` });
   }
-  return running;
+  const promise = runLogin(kind, replaceId).finally(() => {
+    if (inflight.get(kind)?.promise === promise) inflight.delete(kind);
+  });
+  inflight.set(kind, { replaceId, promise });
+  return promise;
 }
 
-export async function listOfficialOAuthStatus(now = Date.now()): Promise<OfficialOAuthStatus[]> {
-  // 列表上的「可用 / 已过期」要反映续期之后的状态。
+export async function listOfficialOAuthStatus(
+  now = Date.now(),
+  options: { allowedKinds?: OfficialAccountKind[]; skipRenew?: boolean } = {},
+): Promise<OfficialOAuthStatus[]> {
+  const allowed = options.allowedKinds;
+  const allowClaude = !allowed || allowed.includes("claude");
+  // 列表上的「可用 / 已过期」要反映续期之后的状态；遵守出口白名单限制，不在允许列表里的不向官方发续期请求。
   const [installed, , cliRenew] = await Promise.all([
     Promise.all(OFFICIAL_KINDS.map(resolveCli)),
-    renewStoredCredentials(now).catch(() => 0),
-    renewCliCredential(now).catch(() => undefined),
+    options.skipRenew ? Promise.resolve(0) : renewStoredCredentials(now, undefined, allowed).catch(() => 0),
+    options.skipRenew || !allowClaude ? Promise.resolve(undefined) : renewCliCredential(now).catch(() => undefined),
   ]);
   return OFFICIAL_KINDS.map((kind, index) => {
     const live = readCliAccounts(kind);

@@ -370,6 +370,15 @@ accounts.rememberOfficialAccount({ kind: "grok", ref: "purge", email: "purge@exa
     check("CLI 账号的凭据每次现读 CLI：能用、inCli", resolved.inCli === true && resolved.expired === false && resolved.credential.token === cli.credential.token);
     check("CLI 退出登录后：这个账号没有可用凭据", accounts.resolveAccountCredential(find(), NOW + 9, []).credential === undefined);
   }
+
+  // 账号库被别的工具（PowerShell 的 Set-Content -Encoding UTF8、记事本）重存成带 BOM 的 UTF-8：
+  // 读不出来会被当成空账号库，下一次登记账号就把存着 refresh token 的整份文件覆盖掉
+  {
+    const file = path.join(process.env.TOKENPULSE_DATA_DIR, "official-accounts.json");
+    const before = accounts.readOfficialAccountStore().accounts.length;
+    fs.writeFileSync(file, "﻿" + fs.readFileSync(file, "utf8"));
+    check("账号库带 UTF-8 BOM 也能读出来，不会当成空库", before > 0 && accounts.readOfficialAccountStore().accounts.length === before, `${before} → ${accounts.readOfficialAccountStore().accounts.length}`);
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

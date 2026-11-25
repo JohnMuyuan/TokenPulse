@@ -235,7 +235,9 @@ export function startAgentProxy(options: Options) {
           options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: (outcome.endAt ?? Date.now()) - started, input: outcome.input, output: outcome.output, ...(outcome.cacheRead != null ? { cacheRead: outcome.cacheRead } : {}), ...returnedOf({ responseId: outcome.responseId, model: outcome.returnedModel, declared: outcome.declaredModel }), ...(outcome.timing ?? {}), ...(target.officialAccount ? { account: target.officialAccount } : {}), ...detail(target) });
           return;
         }
-        options.fail(target.id);
+        // 499 是用户自己取消了请求（Esc / Ctrl+C），不是供应商的问题：只记日志，不计入熔断，
+        // 否则连续取消三次就会让这个供应商被熔断 60 秒，期间所有请求都拿到 503。
+        if (outcome.status !== 499) options.fail(target.id);
         last = outcome.error;
         options.log({ at: Date.now(), app: routed.app, providerId: target.id, provider: target.name, model: target.model, status: outcome.status, ms: Date.now() - started, error: outcome.error, ...detail(target) });
         if (outcome.terminal || res.headersSent || res.destroyed) {
@@ -302,6 +304,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
   const stream = wantsStream(body, rest);
   let upstreamPath = rest || "/";
   let payload = body;
+  let convertedRequest = false;
   // ChatGPT 的 Codex 接口没有 /v1 前缀：…/backend-api/codex/responses
   if (target.auth === "codex-oauth") upstreamPath = upstreamPath.replace(/^\/v1(?=\/|$)/, "") || "/";
   if (!same && body.length && looksJson(body)) {
@@ -316,6 +319,7 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
       upstreamPath = converted.path;
       if (stream) converted.json.stream = true;
       payload = Buffer.from(JSON.stringify(converted.json));
+      convertedRequest = true;
     } catch (error) {
       return { kind: "fail", status: 400, error: "无法转换请求" };
     }
@@ -370,8 +374,9 @@ async function forward(req: http.IncomingMessage, res: http.ServerResponse, app:
         return;
       }
       const contentType = String(upstreamRes.headers["content-type"] || "");
-      if (!same && (stream || contentType.includes("text/event-stream") || contentType.includes("application/json"))) {
-        void pipeConverted(upstreamRes, res, client, target, stream || contentType.includes("event-stream"), watch).then(finish).catch(() => incomplete(502, "无法转换响应"));
+      if (convertedRequest && (stream || contentType.includes("text/event-stream") || contentType.includes("application/json"))) {
+        const asStream = contentType.includes("event-stream") || (stream && !contentType.includes("application/json"));
+        void pipeConverted(upstreamRes, res, client, target, asStream, watch).then(finish).catch(() => incomplete(502, "无法转换响应"));
         return;
       }
       const out: http.OutgoingHttpHeaders = {};
@@ -474,9 +479,10 @@ function passDecoder(encoding: string): zlib.Gunzip | null {
 }
 /** 解压只用于旁路统计；结束 / 失败 / 取消都释放解压器和超时句柄。 */
 function bodyObserver(encoding: string, look: (text: string) => void) {
-  const decoder = passDecoder(encoding.trim().toLowerCase());
+  const normalized = encoding.trim().toLowerCase();
+  const plain = !normalized || normalized === "identity";
+  const decoder = plain ? null : passDecoder(normalized);
   const utf8 = new StringDecoder("utf8");
-  const plain = !encoding;
   let failed = false, settled = false;
   let timer: NodeJS.Timeout | null = null;
   let callback: (() => void) | null = null;
@@ -627,10 +633,30 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
       ...(usage ? { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, ...(status < 400 ? speedOf(usage.output, endAt - (turn.genAt || turn.firstAt || turn.started)) : {}) } : {}),
       ...returnedOf(turn.grab), ...extra }));
   };
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearCloseTimer = () => { if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; } };
+  const validCloseCode = (code: number) => code === 1000 || code === 1001 || code === 1002 || code === 1003 || (code >= 1007 && code <= 1011) || (code >= 3000 && code <= 4999);
+  const abortOpenTurns = () => {
+    for (const queue of [...lanes.values()]) for (const turn of [...queue]) closeTurn(turn, 499, { error: '连接在回复完成前关闭' });
+  };
   const close = () => {
     if (ended) return; ended = true;
-    for (const queue of [...lanes.values()]) for (const turn of [...queue]) closeTurn(turn, 499, { error: '连接在回复完成前关闭' });
+    clearCloseTimer();
+    abortOpenTurns();
     local?.terminate(); remote.terminate(); server?.close(); socket.destroy();
+  };
+  const gracefulClose = (target: WebSocket | undefined, code: number, reason: Buffer) => {
+    abortOpenTurns();
+    if (ended) return;
+    if (!target || target.readyState !== WebSocket.OPEN) { close(); return; }
+    // 把干净的 Close 帧排在尚未压缩/发完的消息后面，避免 permessage-deflate 队列里最后几条消息被 terminate 截断
+    try {
+      if (validCloseCode(code)) target.close(code, reason);
+      else target.close();
+    } catch { close(); return; }
+    clearCloseTimer();
+    closeTimer = setTimeout(close, 5000);
+    closeTimer.unref?.();
   };
   socket.once('close', close);
   socket.once('error', close);
@@ -638,16 +664,17 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
     if (!opened && !ended) { refuse(502, 'Bad Gateway'); log(entry({ status: 502, error: describeNetError(error, Boolean(proxy)) })); }
     close();
   });
-  remote.once('close', close);
+  remote.once('close', (code, reason) => gracefulClose(local, code, reason));
   remote.once('upgrade', res => { response = res; });
   remote.once('unexpected-response', (_request, res) => {
     if (ended) { res.destroy(); return; }
+    opened = true;
     const status = res.statusCode || 502;
     let raw = 'HTTP/1.1 ' + status + ' ' + res.statusMessage + '\r\n';
     for (let i = 0; i < res.rawHeaders.length; i += 2) if (!['transfer-encoding', 'connection', 'keep-alive'].includes(res.rawHeaders[i].toLowerCase())) raw += res.rawHeaders[i] + ': ' + res.rawHeaders[i + 1] + '\r\n';
     socket.write(raw + 'connection: close\r\n\r\n');
     res.on('data', chunk => socket.write(chunk));
-    res.once('end', () => { log(entry({ status, error: 'HTTP ' + status })); socket.end(); });
+    res.once('end', () => { log(entry({ status, error: 'HTTP ' + status })); ended = true; socket.end(); remote.terminate(); });
     res.once('error', close);
   });
   remote.once('open', () => {
@@ -671,7 +698,7 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
     });
     server.handleUpgrade(req, socket, head, peer => {
       local = peer;
-      peer.on('error', close); peer.once('close', close);
+      peer.on('error', close); peer.once('close', (code, reason) => gracefulClose(remote, code, reason));
       peer.on('message', (data, binary) => {
         if (ended || remote.readyState !== WebSocket.OPEN) return;
         let json: Record<string, any> | null = null;
@@ -739,8 +766,9 @@ function resolvedModel(body: Buffer, target: ProxyTarget) {
 
 function rewriteModel(raw: string, model: string) {
   try {
-    const json = JSON.parse(raw) as { model?: string };
-    if (json && typeof json === "object") json.model = model;
+    const json = JSON.parse(raw) as { model?: unknown };
+    if (!json || typeof json !== "object" || Array.isArray(json) || typeof json.model !== "string") return raw;
+    json.model = model;
     return JSON.stringify(json);
   } catch {
     return raw;
@@ -839,7 +867,8 @@ function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse,
     const chunks: Buffer[] = [];
     const status = upstream.statusCode || 502;
     const encoding = String(upstream.headers["content-encoding"] || "").trim().toLowerCase();
-    const decoder = passDecoder(encoding);
+    const plain = !encoding || encoding === "identity";
+    const decoder = plain ? null : passDecoder(encoding);
     const input = decoder || upstream;
     let done = false;
     const finish = (outcome: Outcome) => { if (done) return; done = true; decoder?.destroy(); resolve(outcome); };
@@ -850,7 +879,7 @@ function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse,
     upstream.once("aborted", failed);
     upstream.on("error", failed);
     if (decoder) { decoder.on("error", failed); upstream.pipe(decoder); }
-    else if (encoding) { upstream.resume(); failed(); return; }
+    else if (!plain) { upstream.resume(); failed(); return; }
     // 流式客户端也可能收到 JSON 错误，必须先按原状态发错误，而不是无条件开始 200 SSE。
     if (status >= 400) {
       let size = 0;
@@ -914,25 +943,30 @@ export async function fetchUpstreamModels(baseUrl: string, apiKey: string, offic
     const headers: Record<string, string> = {};
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     if (official === "claude-oauth") Object.assign(headers, { "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01" });
+    let settled = false;
+    const finish = (fn: () => void) => { if (settled) return; settled = true; fn(); };
     const request = upstreamRequest(url, proxy, { method: "GET", timeout: 8000, headers }, (response) => {
       const chunks: Buffer[] = [];
+      const broken = () => finish(() => reject(new Error("获取模型时连接中断")));
+      response.once("aborted", broken);
+      response.on("error", broken);
       response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
       response.on("end", () => {
         if ((response.statusCode || 500) >= 400) {
-          reject(new Error(`获取模型失败，HTTP ${response.statusCode || 0}`));
+          finish(() => reject(new Error(`获取模型失败，HTTP ${response.statusCode || 0}`)));
           return;
         }
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { data?: { id?: string; name?: string }[]; models?: { id?: string; name?: string }[] };
           const rows = body.data || body.models || [];
-          resolve([...new Set(rows.map((item) => item.id || item.name || "").filter(Boolean))]);
+          finish(() => resolve([...new Set(rows.map((item) => item.id || item.name || "").filter(Boolean))]));
         } catch {
-          reject(new Error("供应商没有返回可识别的模型列表"));
+          finish(() => reject(new Error("供应商没有返回可识别的模型列表")));
         }
       });
     });
-    request.on("timeout", () => { request.destroy(); reject(new Error("获取模型超时")); });
-    request.on("error", (error) => reject(new Error(describeNetError(error, Boolean(proxy)))));
+    request.on("timeout", () => { request.destroy(); finish(() => reject(new Error("获取模型超时"))); });
+    request.on("error", (error) => finish(() => reject(new Error(describeNetError(error, Boolean(proxy))))));
     request.end();
   });
 }

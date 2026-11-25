@@ -77,7 +77,8 @@ export function prefsExist(): boolean {
 }
 
 export function readPrefs(): Prefs {
-  const raw = readJson<Partial<Prefs>>(file(), {});
+  const stored = readJson<Partial<Prefs> | null>(file(), null);
+  const raw = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
   return { ...DEFAULTS, ...raw, quotaEverySeconds: quotaEverySeconds(raw.quotaEverySeconds) };
 }
 

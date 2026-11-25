@@ -61,6 +61,23 @@ try {
   check("没有 thread_settings_applied 的会话也认得型号", models["gpt-6-astra"] === 1, JSON.stringify(models));
 
   {
+    const dir = path.join(process.env.HOME, ".codex", "sessions", "2026", "09", "04");
+    const file = path.join(dir, "rollout-replaced.jsonl");
+    const staging = path.join(dir, "rollout-replaced.tmp");
+    const rows = (id, model) => [
+      { timestamp: at(1), type: "turn_context", payload: { model } }, usage(id, 2),
+    ].map(JSON.stringify).join("\n") + "\n";
+    fs.writeFileSync(file, rows("resp_old", "gpt-old"));
+    scanLocalUsage();
+    fs.writeFileSync(staging, rows("resp_new", "gpt-new"));
+    fs.renameSync(staging, file);
+    const replaced = scanLocalUsage();
+    const state = readRollups().files[file];
+    const buckets = Object.values(state.days).flatMap(day => Object.keys(day["Codex CLI"] ?? {}));
+    check("同路径替换成等长新会话时，从头扫描并重算用量", replaced.records.some(row => row.id === "resp_new") && buckets.join() === "gpt-new");
+  }
+
+  {
     const custom = path.join(root, "custom-codex");
     const session = path.join(custom, "sessions", "rollout-custom.jsonl");
     process.env.CODEX_HOME = custom;

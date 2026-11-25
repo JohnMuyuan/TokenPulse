@@ -220,6 +220,24 @@ curl.curlJson = async (...args) => {
     const renewedCli = await fetchOfficialQuota(true);
     check("替 Claude Code 续上之后这一轮就能查额度", renewedCli.issues.length === 0 && curlCalls === 1 && renewedCli.claude?.fiveHourPct === 10, JSON.stringify(renewedCli.issues));
 
+    // TokenPulse 存的那份凭据已经过期（没有 refresh token 续不上），而 CLI 里同一个账号的登录还有效：
+    // 设置页（resolveAccountCredential）认为可用，额度查询也必须用 CLI 那份，不能报「登录已失效」。
+    resetQuotaCooldowns();
+    accounts.writeOfficialAccountStore({ version: 2, accounts: [{ id: "claude:uuid-a", kind: "claude", ref: "uuid-a", email: "a@example.com", label: "Claude 账号", credential: { token: "tok-stored-old", expiresAt: Date.now() - 3600_000 }, createdAt: 1, lastSeenAt: 1 }], active: {} });
+    fs.writeFileSync(path.join(process.env.HOME, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "tok-cli-fresh", refreshToken: "r-cli-3", expiresAt: Date.now() + 8 * 3600_000 } }));
+    const usedTokens = [];
+    curlImpl = async (_url, headers) => {
+      usedTokens.push(headers.find((h) => h.startsWith("Authorization:")) || "");
+      return { five_hour: { utilization: 12, resets_at: "2026-10-11T14:00:00.000Z" }, seven_day: { utilization: 34, resets_at: "2026-10-14T12:00:00.000Z" } };
+    };
+    cliRenew.renewCliCredential = async () => ({ state: "fresh", accountId: "claude:uuid-a" });
+    const fallback = await fetchOfficialQuota(true);
+    check("TokenPulse 存的凭据过期、CLI 里同一账号的还有效：用 CLI 那份查额度", fallback.issues.length === 0 && fallback.claude?.fiveHourPct === 12 && usedTokens.length >= 1 && usedTokens.every((line) => line.includes("tok-cli-fresh")), JSON.stringify({ issues: fallback.issues, usedTokens }));
+    accounts.writeOfficialAccountStore({ version: 2, accounts: [{ id: "claude:uuid-a", kind: "claude", ref: "uuid-a", email: "a@example.com", label: "Claude 账号", credential: { token: "tok-stored-ok", expiresAt: Date.now() + 8 * 3600_000 }, createdAt: 1, lastSeenAt: 1 }], active: {} });
+    usedTokens.length = 0;
+    const preferStored = await fetchOfficialQuota(true);
+    check("两份都有效：仍用 TokenPulse 存的那份（行为不变）", preferStored.issues.length === 0 && usedTokens.length >= 1 && usedTokens.every((line) => line.includes("tok-stored-ok")), JSON.stringify(usedTokens));
+
     // ---- 后台账号少查一点（quota-quiet.ts）：a 登录在 Claude Code 里（在用），b 只存在 TokenPulse 里（后台） ----
     const quiet = build("core/quota-quiet.js");
     const { readQuotaChecks } = build("core/quota-history.js");

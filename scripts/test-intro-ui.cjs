@@ -39,7 +39,7 @@ const fingerprint = () => {
   for (const dir of ['data', 'home']) if (fs.existsSync(path.join(root, dir))) walk(path.join(root, dir));
   return out;
 };
-const demoDir = () => fs.readdirSync(os.tmpdir()).filter(name => name === `tokenpulse-demo-${process.pid}`);
+const demoDir = () => fs.readdirSync(os.tmpdir()).filter(name => name.startsWith(`tokenpulse-demo-${process.pid}-`));
 // 35 步引导、演示进程和多次重载合计可能超过40秒；各步骤仍有独立的短超时。
 const watchdog = setTimeout(() => { console.error('FAIL intro UI timed out'); app.exit(1); }, 90000);
 app.on('web-contents-created', (_, contents) => contents.once('did-finish-load', async () => {

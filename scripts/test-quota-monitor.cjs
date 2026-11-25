@@ -503,6 +503,13 @@ try {
     check("每个账号各自记最后一次查询成功的时间", checks.accounts["grok:a"] === t1 + 6 * 60_000 && checks.accounts["grok:b"] === t1 + 6 * 60_000);
     const onlyA = analyzeAccount("grok", readQuotaHistory().accounts.grok.filter((s) => s.account === "grok:a"), [], t1 + 7 * 60_000, { at: checks.accounts["grok:a"], account: "grok:a" });
     check("按账号分开的采样各自出报告", onlyA.accountId === "grok:a" && onlyA.week && Math.round(onlyA.week.used) === 10);
+
+    const quota = { name: "ChatGPT", weekPct: 10, weekReset: iso(t0 + WEEK_MS), weekStart: iso(t0), plan: "Plus" };
+    recordQuotaSamples({ chatgpt: quota }, t0);
+    recordQuotaSamples({ chatgpt: { ...quota, plan: "Pro" } }, t0 + 60_000);
+    recordQuotaSamples({ chatgpt: { ...quota, plan: "Pro", weekStart: iso(t0 + HOUR_MS) } }, t0 + 120_000);
+    const changed = readQuotaHistory().accounts.chatgpt;
+    check("用量不变时套餐或周窗口起点发生变化也立即记录", changed.length === 3 && changed[1].plan === "Pro" && changed[2].weekStart === iso(t0 + HOUR_MS));
   }
 } finally {
   fs.rmSync(data, { recursive: true, force: true });

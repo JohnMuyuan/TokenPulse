@@ -61,19 +61,21 @@ function atomicRaw(file: string, value: string | null) {
 function lock() {
   fs.mkdirSync(dataDir(), { recursive: true });
   const file = dataFile('agent-config.lock');
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const fd = fs.openSync(file, 'wx', 0o600);
       try { fs.writeFileSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
       return () => { if (raw(file) === String(process.pid)) fs.unlinkSync(file); };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const pid = Number(raw(file));
+      const text = raw(file);
+      if (text === null) continue;
+      const pid = Number(text);
       if (!Number.isInteger(pid) || pid <= 0) throw new Error('配置写入锁无效，请先检查其他 TokenPulse 进程');
       let stale = false;
       try { process.kill(pid, 0); } catch (e) { stale = (e as NodeJS.ErrnoException).code === 'ESRCH'; }
       if (!stale) throw new Error('其他供应商配置操作正在进行，请稍后重试');
-      fs.unlinkSync(file);
+      try { fs.unlinkSync(file); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     }
   }
   throw new Error('无法取得供应商配置写入锁');

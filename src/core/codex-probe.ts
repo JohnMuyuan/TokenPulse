@@ -62,7 +62,7 @@ const run: Probe = (exe, catalogJson) => new Promise((resolve) => {
     fs.writeFileSync(catalog, catalogJson);
     // 和 TokenPulse 实际写的结构一样，只是地址和密钥是占位的；TOML 字面量字符串里的路径不用转义
     fs.writeFileSync(path.join(dir, "config.toml"), [
-      'model_provider = "tokenpulse_probe"', 'model = "probe"', `model_catalog_json = '${catalog}'`,
+      'model_provider = "tokenpulse_probe"', 'model = "probe"', `model_catalog_json = ${JSON.stringify(catalog)}`,
       "[model_providers.tokenpulse_probe]", 'name = "TokenPulse"', 'base_url = "http://127.0.0.1:9/v1"', 'wire_api = "responses"', 'experimental_bearer_token = "probe"', "requires_openai_auth = false", "",
     ].join("\n"));
     execFile(exe, ["features", "list"], { env: { ...process.env, CODEX_HOME: dir }, timeout: TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, _stdout, stderr) => {

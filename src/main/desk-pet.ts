@@ -94,7 +94,7 @@ let scanner: ActivityScanner | null = null;
 let activity: ActivityState | null = null;
 let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null, flyTimer: NodeJS.Timeout | null = null, topTimer: NodeJS.Timeout | null = null;
 /** menuOpen：右键菜单开着（菜单也是置顶窗口，这时不把宠物提上去盖住菜单）。 */
-let scanning = false, listening = false, interactive = false, bubbleShown = false, menuOpen = false;
+let listening = false, interactive = false, bubbleShown = false, menuOpen = false;
 /** 盯着会话目录的 watcher；soonTimer 是文件变了以后那次扫描；scanGen 每次 stopTimers 加一，旧的扫描循环看到就不再排下一次。 */
 let watchers: fs.FSWatcher[] = [], soonTimer: NodeJS.Timeout | null = null, scanGen = 0;
 let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "", lastDeskStyle = "";
@@ -230,15 +230,18 @@ function startTimers() {
   stopTimers();
   scanner ??= new ActivityScanner();
   const gen = scanGen;
-  let lastScan = 0, again = false;
+  let lastScan = 0, again = false, scanning = false;
   const scan = async () => {
-    if (!scanner || gen !== scanGen) return;
+    const current = scanner;
+    if (!current || gen !== scanGen) return;
     // 正在看：看完再来一次（这次的变化可能没赶上）
     if (scanning) { again = true; return; }
     scanning = true; lastScan = Date.now();
     try {
       const before = activity;
-      activity = await scanner.scan();
+      const nextActivity = await current.scan();
+      if (gen !== scanGen) return;
+      activity = nextActivity;
       lastUsedKind = usingKinds()[0] ?? lastUsedKind;
       // 和上一次比：做完了庆祝；出错停下、刚变成「可能在等你」的提醒一下（宠物窗口按设置响提示音）
       if (before && activity.finished.length) sendEvent({ type: "celebrate" });
@@ -249,7 +252,7 @@ function startTimers() {
       if (bubbleVisible()) pushBubble(true);
       syncAsk();
     } catch (error) { console.error("[TokenPulse] 桌宠读取会话状态失败", error); }
-    finally { scanning = false; if (again) { again = false; soon(); } }
+    finally { scanning = false; if (again && gen === scanGen) { again = false; soon(); } }
   };
   const soon = () => {
     if (soonTimer || gen !== scanGen) return;
@@ -593,6 +596,7 @@ export function resetDeskPetPosition() {
   options.savePos(null);
   if (options.prefs().deskPetMini) options.saveMini(false);
   placePet();
+  syncInputMonitor();
   pushDeskPet(true);
 }
 

@@ -51,7 +51,10 @@ export function validateConfig(value: unknown): EgressConfig {
     if (row.allowedIps.some(ip => typeof ip !== "string" || ip.length > 64)) throw new Error("IP 白名单无效。");
     const regions = row.allowedRegions.map(code => {
       if (typeof code !== "string" || !/^[a-z]{2}$/i.test(code) || ["XX", "ZZ", "EU", "UN"].includes(code.toUpperCase())) throw new Error("地区请使用两位代码，例如 US、JP。");
-      const normalized = code.toUpperCase();
+      const raw = code.toUpperCase();
+      let normalized = raw;
+      try { normalized = new Intl.Locale(`und-${raw}`).region || raw; } catch { /* keep raw */ }
+      if (["XX", "ZZ", "EU", "UN"].includes(normalized)) throw new Error("地区代码无效。");
       if (new Intl.DisplayNames(["en"], { type: "region" }).of(normalized) === normalized) throw new Error("地区代码无效。");
       return normalized;
     });

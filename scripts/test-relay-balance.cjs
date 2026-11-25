@@ -67,6 +67,9 @@ const wallet = { balance: 42.5, daily_usage: [{ date: '2026-10-08', requests: 3,
   calls.length = 0;
   await relay.queryRelay('https://b.example', KEY, site(newapiSite), 'newapi');
   assert.deepEqual(calls, ['/v1/dashboard/billing/subscription', '/v1/dashboard/billing/usage'], '上次认出来是 new-api：直接问它');
+  found = await relay.queryRelay('https://b.example', KEY, site({ ...newapiSite, '/v1/usage': () => { throw new Error('timeout'); } }));
+  assert.equal(found.ok && found.balance.remaining, 15, 'a failed probe of one interface should still allow the other interface to succeed');
+  await assert.rejects(relay.queryRelay('https://b.example', KEY, async () => { throw new Error('timeout'); }), /timeout/);
   assert.deepEqual(await relay.queryRelay('https://c.example', KEY, site({ '/v1/usage': { status: 401, body: '{}' } })), { ok: false, error: 'API Key 无效或已被删除，请换一个', invalidKey: true });
   assert.deepEqual(await relay.queryRelay('https://d.example', KEY, site({})), { ok: false, error: relay.RELAY_UNSUPPORTED });
   assert.deepEqual(await relay.queryRelay('https://e.example', KEY, site({ '/v1/usage': { status: 502, body: '' } })), { ok: false, error: '站点返回了 HTTP 502' });

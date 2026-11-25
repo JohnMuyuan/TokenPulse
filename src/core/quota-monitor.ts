@@ -677,7 +677,11 @@ export function analyzeAccount(
     const segment = currentSegment(windowSegments(samples, "week", style), resetAt);
     const startAt = segment?.startAt ?? nominal;
     const rolled = rollWindow(latest.week, startAt, resetAt, WEEK_MS, now);
-    trend = rolled.stale ? [] : pointsOf(samples, (sample) => sample.week, rolled.startAt);
+    trend = rolled.stale
+      ? []
+      : segment
+        ? segment.points.filter((p) => rolled.startAt == null || p.at >= rolled.startAt)
+        : pointsOf(samples, (sample) => sample.week, rolled.startAt);
     week = analyzeWindow(
       {
         current: rolled.current,
@@ -703,7 +707,11 @@ export function analyzeAccount(
     const segment = currentSegment(windowSegments(samples, "five", style), resetAt);
     const startAt = segment?.startAt ?? (resetAt != null ? resetAt - FIVE_HOUR_MS : undefined);
     const rolled = rollWindow(latest.five, startAt, resetAt, FIVE_HOUR_MS, now);
-    const points = rolled.stale ? [] : pointsOf(samples, (sample) => sample.five, rolled.startAt);
+    const points = rolled.stale
+      ? []
+      : segment
+        ? segment.points.filter((p) => rolled.startAt == null || p.at >= rolled.startAt)
+        : pointsOf(samples, (sample) => sample.five, rolled.startAt);
     five = analyzeWindow(
       {
         current: rolled.current,

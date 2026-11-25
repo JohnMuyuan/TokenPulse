@@ -75,7 +75,7 @@ export function poolRows(pool: PoolDef, since: number, now = Date.now()): PoolRo
       const label = names.get(member) || String(row.provider || "").replace(pool.name + " · ", "") || member;
       const ms = num(row.ms);
       rows.push({
-        at, start: at - ms, member, memberName: label, model, effort: typeof row.effort === "string" ? row.effort.slice(0, 20) : "", status, ok, limited: status === 429, attempt: Number(row.attempt) || 1,
+        at, start: at - ms, member, memberName: label, model, effort: typeof row.effort === "string" ? row.effort.slice(0, 20) : "", status, ok, limited: status === 429 || status === 402, attempt: Number(row.attempt) || 1,
         input, output, cacheRead, tokens: ok ? input + output : 0, costUsd: ok ? estimateCost(model, { input, output, cacheRead, cacheWrite: 0 }) : 0,
         speed: ok ? num(row.tokensPerSec) : 0, first: ok ? num(row.firstTokenMs ?? row.firstByteMs) : 0, fast: isFastTier(row.tier), ms,
       });

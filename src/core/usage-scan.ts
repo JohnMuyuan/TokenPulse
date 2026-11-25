@@ -7,7 +7,7 @@ import { dataFile, dshRoot, piDir, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type AccountEvidence, type AccountLabels, type LoginTimeline } from "./login-timeline";
 import { routeEvents, type RouteEvent } from "./route-ledger";
-import { zstdFrames } from "./zstd-frames";
+import { readLargeZstdFrame, zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
 import { antigravityConversationFiles, antigravityStamp, antigravityWorkspaces, readAntigravityGenerations, readModelLabels, resolveModel, type AgyModel } from "./antigravity";
@@ -69,6 +69,7 @@ export const SOURCES: Record<Kind, string> = {
 type FileState = {
   size: number;
   mtimeMs: number;
+  ino?: number;
   /** 已经读到哪个字节。下次从这里接着读。 */
   offset: number;
   /** 结构升级分批重读的旧偏移边界；每批都整理重复流水，直到补采覆盖旧范围。 */
@@ -313,7 +314,7 @@ const num = (value: unknown) => {
 function configOfficial(): Record<Kind, boolean | undefined> {
   let claude = true;
   try {
-    const settings = JSON.parse(fs.readFileSync(path.join(cliDir("claude"), "settings.json"), "utf8")) as {
+    const settings = JSON.parse(fs.readFileSync(path.join(cliDir("claude"), "settings.json"), "utf8").replace(/^\uFEFF/, "")) as {
       env?: Record<string, unknown>;
     };
     const env = settings.env ?? {};
@@ -327,8 +328,17 @@ function configOfficial(): Record<Kind, boolean | undefined> {
   }
   let grok = true;
   try {
-    const toml = fs.readFileSync(path.join(cliDir("grok"), "config.toml"), "utf8");
-    grok = !/^\s*base_url\s*=\s*["'][^"']+["']/m.test(toml);
+    const toml = fs.readFileSync(path.join(cliDir("grok"), "config.toml"), "utf8").replace(/^\uFEFF/, "");
+    const passThrough = (value: string) => /^http:\/\/127\.0\.0\.1:\d+\/pass\/grok\/?$/.test(value);
+    for (const rawLine of toml.split(/\r?\n/)) {
+      const m = rawLine.match(/^\s*base_url\s*=\s*(?:"([^"]*)"|'([^']*)')/);
+      if (!m) continue;
+      const val = (m[1] ?? m[2] ?? "").trim();
+      if (val && !passThrough(val)) {
+        grok = false;
+        break;
+      }
+    }
   } catch {
     // 没有 config.toml 同上
   }
@@ -337,6 +347,25 @@ function configOfficial(): Record<Kind, boolean | undefined> {
 }
 
 type CodexProviderRule = { official: boolean };
+
+function stripTomlInlineComment(line: string): string {
+  let quote = "";
+  let escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote === '"') {
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (ch === '"') quote = "";
+    } else if (quote === "'") {
+      if (ch === "'") quote = "";
+    } else {
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "#") return line.slice(0, i).trim();
+    }
+  }
+  return line.trim();
+}
 
 /**
  * 解析 `~/.codex/config.toml` 里的 provider 配置块。
@@ -357,7 +386,14 @@ function parseCodexProviders(toml: string) {
   const flush = () => {
     if (!current) return;
     const base = block.base_url || "";
-    const host = (base.match(/^https?:\/\/([^/]+)/i) || [])[1] || "";
+    let host = "";
+    if (base) {
+      try {
+        host = new URL(base).hostname;
+      } catch {
+        host = ((base.match(/^https?:\/\/([^/]+)/i) || [])[1] || "").replace(/:\d+$/, "");
+      }
+    }
     const openaiHost = /(^|\.)openai\.com$|(^|\.)chatgpt\.com$/i.test(host);
     const official =
       !block.env_key &&
@@ -370,8 +406,9 @@ function parseCodexProviders(toml: string) {
     current = "";
     block = {};
   };
-  for (const raw of toml.split(String.fromCharCode(10))) {
-    const line = raw.trim();
+  for (const raw of toml.replace(/^\uFEFF/, "").split(String.fromCharCode(10))) {
+    const line = stripTomlInlineComment(raw);
+    if (!line) continue;
     const section = line.match(/^\[([^\]]+)\]$/);
     if (section) {
       flush();
@@ -1031,7 +1068,17 @@ function scanFile(
       const length = Math.min(MAX_CHUNK, stat.size - state.offset);
       const buffer = Buffer.allocUnsafe(length);
       const read = fs.readSync(fd, buffer, 0, length, state.offset);
-      if (kind === "deepseek-harness") { const frames = zstdFrames(buffer.subarray(0, read)); text = frames.text; packed = frames.consumed; }
+      if (kind === "deepseek-harness") {
+        const first = buffer.subarray(0, read);
+        let frames = zstdFrames(first);
+        const remaining = stat.size - state.offset;
+        if (!frames.consumed && read === MAX_CHUNK && remaining > read) {
+          const large = readLargeZstdFrame(fd, first, state.offset, remaining);
+          if (large) frames = zstdFrames(large);
+        }
+        text = frames.text;
+        packed = frames.consumed;
+      }
       else {
         const first = buffer.subarray(0, read);
         const lastBreak = first.lastIndexOf(10);
@@ -1065,9 +1112,16 @@ function scanFile(
   } catch {
     return false;
   }
-  // 最后一行可能只读了一半：留到下次，偏移只推进到最后一个完整换行。
-  const lastBreak = text.lastIndexOf(String.fromCharCode(10));
-  if (lastBreak < 0) return false;
+  let chunkText = text;
+  if (packed >= 0) {
+    // zstd 按完整帧解压：帧边界天然完整，最后一行不一定带 \n；空帧也需推进偏移，否则永久卡在空帧前
+    if (packed === 0) return false;
+  } else {
+    // 最后一行可能只读了一半：留到下次，偏移只推进到最后一个完整换行。
+    const lastBreak = text.lastIndexOf(String.fromCharCode(10));
+    if (lastBreak < 0) return false;
+    chunkText = text.slice(0, lastBreak);
+  }
   const consumed = packed >= 0 ? packed : plainBytes;
   const source = SOURCES[kind];
   let touched = false;
@@ -1075,7 +1129,7 @@ function scanFile(
   const rowsBefore: Row[] = [];
   // Claude Code 一次回复拆成好几行写：记下刚记的那一条，后面同一个 id 的行到了就把估算的结束时间往后挪
   let pendingEstimate: { id: string; startAt: number; output: number; record: RequestRecord } | null = null;
-  for (const line of text.slice(0, lastBreak).split(String.fromCharCode(10))) {
+  for (const line of chunkText.split(String.fromCharCode(10))) {
     lineEnd += Buffer.byteLength(line, "utf8") + 1;
     if (packed >= 0) lineEnd = state.offset + packed;
     const metadataOnly = state.metadataOnlyUntil != null && lineEnd <= state.metadataOnlyUntil;
@@ -1328,8 +1382,8 @@ function scanFile(
           file,
           cwd: state.cwd ?? (kind === "grok-build" ? grokCwd(file) : undefined),
           model,
-          effort: piece.effort ?? (kind === "claude-code" ? responseEffort?.effort : effortMatchesModel ? state.effort : undefined),
-          effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : undefined) : effortMatchesModel ? state.effortSource : undefined),
+          effort: piece.effort ?? (kind === "claude-code" ? (responseEffort?.effort ?? state.effort) : effortMatchesModel ? state.effort : undefined),
+          effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : state.effortSource) : effortMatchesModel ? state.effortSource : undefined),
           requested: kind === "claude-code"
             ? (row.requested ?? state.apiRequestModel ?? state.requested)
             : (kind === "codex" || kind === "pi" ? state.model : state.requested),
@@ -1503,11 +1557,20 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
         alive.add(file);
         files += 1;
         const state = (rollups.files[file] ??= { size: 0, mtimeMs: 0, offset: 0, days: {} });
+        const stat = safeStat(file);
+        if (stat) {
+          if ((stat.ino && state.ino && stat.ino !== state.ino) || stat.size < state.size) {
+            state.v = 0;
+            delete state.provider;
+            delete state.cwd;
+            delete state.official;
+          }
+          if (stat.ino) state.ino = stat.ino;
+        }
         applyAttribution(file, kind, state, official, codex);
         const parentFile = kind === "claude-code" ? claudeParentSessionFile(file) : undefined;
         const parentEvidence = parentFile ? stateEvidence(rollups.files[parentFile]) : undefined;
         // 大小和改动时间都没变就跳过（新文件记的是 0，不会误判成没变）。
-        const stat = safeStat(file);
         const unattributed = state.official === true && hasUnattributedAccountHours(state);
         const retrySig = unattributed ? unattributedSignature(kind, state, accountContext, parentEvidence) : undefined;
         const retryUnattributed = Boolean(

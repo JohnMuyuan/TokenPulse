@@ -200,20 +200,53 @@ export function readThemeFolder(dir: string, limits = { file: 5 * 1024 * 1024, t
   const parsed = normalizeTheme(raw);
   const wanted = themeFiles(parsed);
   if (wanted.length > THEME_FILES_MAX) throw new Error(`主题引用的动画超过 ${THEME_FILES_MAX} 个`);
-  const roots = [dir, path.join(dir, "assets"), path.join(dir, "assets", "svg")];
+  const rootReal = fs.realpathSync(dir);
+  const insideRoot = (target: string) => {
+    try {
+      const real = fs.realpathSync(target);
+      const norm = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+      const rel = path.relative(norm(rootReal), norm(real));
+      return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+    } catch {
+      return false;
+    }
+  };
+  const safeSubdir = (sub: string) => {
+    try {
+      const st = fs.lstatSync(sub);
+      return st.isDirectory() && !st.isSymbolicLink() && insideRoot(sub);
+    } catch {
+      return false;
+    }
+  };
+  const assetsDir = path.join(dir, "assets");
+  const svgDir = path.join(assetsDir, "svg");
+  const roots = [dir, ...(safeSubdir(assetsDir) ? [assetsDir, ...(safeSubdir(svgDir) ? [svgDir] : [])] : [])];
   const found = new Map<string, { file: string; type: ThemeFileType; svg?: string }>(), missing: string[] = [];
   let total = 0;
   for (const name of wanted) {
     let hit: { file: string; info: fs.Stats } | null = null;
-    for (const base of roots) { const file = path.join(base, name); try { const info = fs.lstatSync(file); if (info.isFile()) { hit = { file, info }; break; } } catch { /* 下一个目录 */ } }
+    for (const base of roots) {
+      const file = path.join(base, name);
+      try {
+        const info = fs.lstatSync(file);
+        if (info.isFile() && !info.isSymbolicLink() && insideRoot(file)) { hit = { file, info }; break; }
+      } catch { /* 下一个目录 */ }
+    }
     if (!hit) { missing.push(name); continue; }
     const type = themeFileType(readHead(hit.file), name);
     if (!type) throw new Error(`「${name}」不是 SVG、PNG、GIF、WebP 或 JPEG`);
     if (hit.info.size > (type === "svg" ? SVG_FILE_MAX : limits.file)) throw new Error(`「${name}」太大了（SVG 最多 2 MB，图片最多 5 MB）`);
-    total += hit.info.size;
-    if (total > limits.total) throw new Error("整套动画超过 20 MB");
     let svg: string | undefined;
-    if (type === "svg") { try { svg = sanitizeSvg(fs.readFileSync(hit.file, "utf8")); } catch (error) { throw new Error(`「${name}」${error instanceof Error ? error.message : "读不出来"}`); } }
+    let countedSize = hit.info.size;
+    if (type === "svg") {
+      try { svg = sanitizeSvg(fs.readFileSync(hit.file, "utf8")); } catch (error) { throw new Error(`「${name}」${error instanceof Error ? error.message : "读不出来"}`); }
+      const svgBytes = Buffer.byteLength(svg, "utf8");
+      if (svgBytes > SVG_FILE_MAX) throw new Error(`「${name}」消毒后超过 2 MB`);
+      countedSize = Math.max(hit.info.size, svgBytes);
+    }
+    total += countedSize;
+    if (total > limits.total) throw new Error("整套动画超过 20 MB");
     found.set(name, { file: hit.file, type, ...(svg ? { svg } : {}) });
   }
   const theme = dropMissing(parsed, new Set(found.keys()));

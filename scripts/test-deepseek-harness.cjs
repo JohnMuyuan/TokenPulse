@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { randomBytes } = require('node:crypto');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-dsh-'));
 process.env.HOME = process.env.USERPROFILE = path.join(root, 'home');
@@ -66,6 +67,17 @@ try {
   const total = Object.values(state.days).flatMap(sources => Object.values(sources)).flatMap(models => Object.values(models)).reduce((sum, bucket) => ({ input: sum.input + bucket.input, output: sum.output + bucket.output, requests: sum.requests + bucket.requests }), { input: 0, output: 0, requests: 0 });
   assert.deepEqual(total, { input: 2000 + 2348 + 4596 + 900, output: 200, requests: 4 });
   pass('appended frames are read incrementally; a half-written frame waits; effort changes mid-session are followed; no double counting');
+
+  const large = frame([{ type: 'fixture', padding: randomBytes(33 * 1024 * 1024).toString('base64') }, reply(8, 'msg-large', 100, 4, 0)]);
+  assert.ok(large.length > 32 * 1024 * 1024);
+  fs.appendFileSync(file, large.subarray(0, -1));
+  assert.equal(scanLocalUsage().records.length, 0, 'the oversized frame is still incomplete');
+  fs.appendFileSync(file, large.subarray(-1));
+  fs.appendFileSync(file, frame([reply(9, 'msg-after-large', 100, 4, 0)]));
+  assert.deepEqual(scanLocalUsage().records.map(record => record.id), ['msg-large']);
+  assert.deepEqual(scanLocalUsage().records.map(record => record.id), ['msg-after-large']);
+  assert.equal(scanLocalUsage().records.length, 0);
+  pass('an oversized frame is consumed when complete and later frames still scan');
 
   console.log(`${checks}/${checks} deepseek harness checks passed`);
 } catch (error) {

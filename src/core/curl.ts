@@ -120,31 +120,61 @@ export async function curlJson(url: string, headers: string[], timeout = 15000) 
 export async function curlPost(url: string, body: string, headers: string[], timeoutMs = 25_000): Promise<{ status: number; json: any }> {
   const proxyArgs = await curlProxyArgs(url);
   const started = Date.now();
+  const MAX_BYTES = 4 * 1024 * 1024;
   return new Promise((resolve, reject) => {
     const args = ["-sS", "-m", "20", "--http1.1", ...proxyArgs, "-X", "POST", url, "--data-binary", "@-", "-w", "\n%{http_code}"];
     for (const header of headers) args.push("-H", header);
     const proc = spawn(curlBin(), args, { windowsHide: true });
-    let out = "";
-    let err = "";
+    const outChunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    let outBytes = 0;
+    let errBytes = 0;
+    let settled = false;
     const timer = setTimeout(() => proc.kill(), timeoutMs);
     const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       log.warn("net", `POST ${logUrl(url)} 失败（${Date.now() - started} ms）：${errorText(error)}`);
       reject(error);
     };
-    proc.stdout.on("data", (chunk) => { out += chunk; });
-    proc.stderr.on("data", (chunk) => { err += chunk; });
-    proc.once("error", (error) => { clearTimeout(timer); fail(error); });
+    proc.stdout.on("data", (chunk: Buffer) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      outBytes += buf.length;
+      if (outBytes > MAX_BYTES) {
+        proc.kill();
+        fail(new Error("响应体过大"));
+        return;
+      }
+      outChunks.push(buf);
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (errBytes < 65_536) {
+        errChunks.push(buf);
+        errBytes += buf.length;
+      }
+    });
+    // curl 先退出（连不上代理、被超时杀掉）时继续写请求体会抛 EPIPE：不接住就是未捕获异常，原因以 close 里的退出码为准
+    proc.stdin.on("error", () => undefined);
+    proc.once("error", (error) => fail(error));
     proc.once("close", (code) => {
+      if (settled) return;
       clearTimeout(timer);
+      const err = Buffer.concat(errChunks).toString("utf8");
       if (code !== 0) { fail(new Error(err.trim() || `curl 退出码 ${code}`)); return; }
+      const out = Buffer.concat(outChunks).toString("utf8");
       const cut = out.lastIndexOf("\n");
-      const status = Number(out.slice(cut + 1));
+      const status = cut >= 0 ? Number(out.slice(cut + 1)) : Number(out.trim());
       let json: any = null;
-      try { json = JSON.parse(out.slice(0, cut)); } catch { /* 非 JSON 响应按 null 处理 */ }
+      if (cut > 0) {
+        try { json = JSON.parse(out.slice(0, cut)); } catch { /* 非 JSON 响应按 null 处理 */ }
+      }
       const type = errorTypeOf(json);
       const line = `POST ${logUrl(url)} → ${status}（${Date.now() - started} ms）${type ? ` ${type}` : ""}`;
       if (status >= 400) log.warn("net", line);
       else log.info("net", line);
+      settled = true;
       resolve({ status, json });
     });
     proc.stdin.end(body);

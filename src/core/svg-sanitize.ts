@@ -43,24 +43,29 @@ const squash = (text: string) => text.replace(/[\u0000- \u007f]+/g, "").toLowerC
 
 /** CSS（<style> 的内容或 style 属性）：去掉能引外部东西、能改到 Shadow DOM 外面的写法。 */
 export function sanitizeCss(css: string) {
-  // 指向 #id 的 url() 先换成占位符收起来，剩下的 url( 全部废掉，最后放回去
-  const local: string[] = [];
-  return css
-    .replace(/\/\*[\s\S]*?(\*\/|$)/g, "")
-    .replace(/[\\\u0000]/g, "")
-    .replace(/<\/?\s*style/gi, "")
-    .replace(/@import[^;]*;?/gi, "")
-    .replace(/@namespace[^;]*;?/gi, "")
-    .replace(/(-webkit-)?image-set\s*\(/gi, "none(")
-    .replace(/url\s*\(\s*(['"]?)([^)'"]*)\1\s*\)/gi, (whole, _quote: string, target: string) => {
-      if (!/^#[\w-]+$/.test(target.trim())) return "none";
-      local.push(`url(${target.trim()})`);
-      return `\u0000${local.length - 1}\u0000`;
-    })
-    .replace(/url\s*\(/gi, "none(")
-    .replace(/expression\s*\(|javascript:|vbscript:|-moz-binding|behavior\s*:/gi, "none")
-    .replace(/::?(host|slotted|part)\b/gi, ":not(*)")
-    .replace(/\u0000(\d+)\u0000/g, (_whole, n: string) => local[Number(n)] ?? "none");
+  let current = css;
+  // 反复清洗直到收敛，防止 `@im@namespace;port` 这类嵌套构造在单趟删完后重新拼出禁用指令
+  for (let pass = 0; pass < 5; pass++) {
+    const local: string[] = [];
+    const next = current
+      .replace(/\/\*[\s\S]*?(\*\/|$)/g, "")
+      .replace(/[\\\u0000]/g, "")
+      .replace(/<\/?\s*style/gi, "")
+      .replace(/@(?:import|namespace)[^;{}]*;?/gi, "")
+      .replace(/(-webkit-)?image-set\s*\(/gi, "none(")
+      .replace(/url\s*\(\s*(['"]?)([^)'"]*)\1\s*\)/gi, (whole, _quote: string, target: string) => {
+        if (!/^#[\w-]+$/.test(target.trim())) return "none";
+        local.push(`url(${target.trim()})`);
+        return `\u0000${local.length - 1}\u0000`;
+      })
+      .replace(/url\s*\(/gi, "none(")
+      .replace(/expression\s*\(|javascript:|vbscript:|-moz-binding|behavior\s*:/gi, "none")
+      .replace(/::?(host|slotted|part)\b/gi, ":not(*)")
+      .replace(/\u0000(\d+)\u0000/g, (_whole, n: string) => local[Number(n)] ?? "none");
+    if (next === current) return next;
+    current = next;
+  }
+  return current;
 }
 
 /** 属性值里的 url(...)：只能指向自己文件里的 #id。 */
@@ -87,7 +92,7 @@ function keepAttr(element: string, name: string, raw: string): string | null {
   return value;
 }
 
-type Open = { name: string; keep: boolean; out: string[] | null };
+type Open = { name: string; keep: boolean; out: string[] | null; styleChunks?: string[] };
 
 /** 拆标签、重新拼。返回消毒后的 SVG 文本；不是 SVG、写坏了、太大就抛错。 */
 export function sanitizeSvg(input: string): string {
@@ -106,7 +111,9 @@ export function sanitizeSvg(input: string): string {
     if (text.startsWith("<![CDATA[", i)) {
       const end = text.indexOf("]]>", i + 9); if (end < 0) throw new Error("SVG 里有没写完的 CDATA");
       const body = text.slice(i + 9, end);
-      write(top()?.name === "style" ? escapeText(sanitizeCss(body)) : escapeText(body));
+      const cur = top();
+      if (cur?.styleChunks) cur.styleChunks.push(body);
+      else write(escapeText(body));
       i = end + 3; continue;
     }
     if (text.startsWith("<!", i)) throw new Error("SVG 里不能有 DOCTYPE 或实体定义");
@@ -116,6 +123,9 @@ export function sanitizeSvg(input: string): string {
       const open = stack.pop();
       if (!m || !open || open.name !== m[1]) throw new Error("SVG 写坏了（标签没对上）");
       if (open.keep && open.out) {
+        if (open.styleChunks && open.styleChunks.length) {
+          open.out.push(escapeText(sanitizeCss(open.styleChunks.join(""))));
+        }
         const parent = sink();
         const piece = open.out.join("") + `</${open.name}>`;
         if (parent) parent.push(piece);
@@ -149,7 +159,8 @@ export function sanitizeSvg(input: string): string {
         if (name !== "svg") throw new Error("不是 SVG 文件");
         rootOpen = true;
       }
-      const parentKeeps = !stack.length || !!sink();
+      const inStyle = top()?.name === "style";
+      const parentKeeps = !stack.length || (!inStyle && !!sink());
       let keep = parentKeeps && ELEMENTS.has(name);
       const kept: string[] = [];
       if (keep) {
@@ -167,7 +178,7 @@ export function sanitizeSvg(input: string): string {
         if (!stack.length) rootOpen = false;
         continue;
       }
-      stack.push({ name, keep, out: keep ? [head] : null });
+      stack.push({ name, keep, out: keep ? [head] : null, ...(keep && name === "style" ? { styleChunks: [] } : {}) });
       continue;
     }
     const next = text.indexOf("<", i);
@@ -175,7 +186,9 @@ export function sanitizeSvg(input: string): string {
     i = next < 0 ? text.length : next;
     if (!stack.length) { if (raw.trim()) throw new Error("SVG 写坏了（根元素外面有文字）"); continue; }
     const value = decode(raw);
-    write(top()?.name === "style" ? escapeText(sanitizeCss(value)) : escapeText(value));
+    const cur = top();
+    if (cur?.styleChunks) cur.styleChunks.push(value);
+    else write(escapeText(value));
   }
   if (stack.length || root === null) throw new Error("SVG 写坏了（没写完）");
   return root;

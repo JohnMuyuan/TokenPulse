@@ -282,11 +282,20 @@ export function terminalHome(cwd?: string) {
   return os.homedir();
 }
 
+const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+function assertValidSessionId(id: string) {
+  if (typeof id !== "string" || !SESSION_ID_RE.test(id)) throw new Error("会话 ID 无效");
+}
+
 /** 命令行参数（不含提示词本身）。单独导出给测试。 */
 export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFile?: string) {
   if (kind === "pi") throw new Error("pi 会话请在终端里继续。");
   // headless 文档：dsh --profile headless --json --session-id <id>，任务用 - 从 stdin 读。新任务不带 session-id。
-  if (kind === "deepseek") return ["--profile", "headless", "--json", ...(id ? ["--session-id", id] : []), "-"];
+  if (kind === "deepseek") {
+    if (id) assertValidSessionId(id);
+    return ["--profile", "headless", "--json", ...(id ? ["--session-id", id] : []), "-"];
+  }
+  assertValidSessionId(id);
   if (kind === "antigravity") {
     return ["--conversation", id, "--output-format", "stream-json", "--mode", mode === "edit" ? "accept-edits" : "plan"];
   }
@@ -313,8 +322,8 @@ export function replyArgs(kind: AgentKind, id: string, mode: ReplyMode, promptFi
  * 直接报「cannot confirm session deletion without an interactive terminal」。确认已经由 TokenPulse 自己的对话框问过了。
  */
 export function deleteArgs(kind: AgentKind, id: string): string[] | null {
-  if (kind === "codex") return ["delete", "--force", id];
-  if (kind === "grok") return ["sessions", "delete", id];
+  if (kind === "codex") { assertValidSessionId(id); return ["delete", "--force", id]; }
+  if (kind === "grok") { assertValidSessionId(id); return ["sessions", "delete", id]; }
   return null;
 }
 
@@ -337,17 +346,20 @@ export async function deleteSession(kind: AgentKind, id: string) {
     let output = "";
     let timedOut = false;
     const child = spawn(cli.file, [...cli.prefix, ...args], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => { timedOut = true; killTree(child); }, 30_000);
     const collect = (chunk: Buffer | string) => { output = (output + chunk.toString()).slice(-2000); };
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", collect);
     child.stderr?.on("data", collect);
-    child.on("error", (error) => reject(new Error(`启动 CLI 失败：${error.message}`)));
-    const timer = setTimeout(() => { timedOut = true; killTree(child); }, 30_000);
+    child.on("error", (error) => { clearTimeout(timer); reject(new Error(`启动 CLI 失败：${error.message}`)); });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0) resolve();
       else reject(new Error(timedOut ? "删除会话超时" : output.trim().split(/\r?\n/).slice(-3).join(" " ).slice(0, 400) || `CLI 退出码 ${code}`));
     });
   });
+  forgetSession(kind, id);
 }
 
 /**
@@ -387,7 +399,7 @@ export function readEvent(kind: AgentKind, line: string, streamed: boolean): { d
   if (kind === "deepseek") {
     if (row.type === "text" && typeof row.text === "string") return { delta: row.text };
     if (row.type === "tool_call") return { tool: String(row.name || row.tool || "工具").slice(0, 160) };
-    if (row.type === "final") return { final: typeof row.text === "string" ? row.text : "" };
+    if (row.type === "final") return !streamed && typeof row.text === "string" && row.text ? { final: row.text } : {};
     if (row.type === "error") return { error: String(row.message || "DeepSeek Harness 回复失败") };
     return {};
   }
@@ -458,19 +470,29 @@ export function startReply(
   if (!cli) throw new Error(`没找到 ${options.kind === "claude" ? "Claude Code" : options.kind === "codex" ? "Codex CLI" : options.kind === "deepseek" ? "DeepSeek Harness" : options.kind === "antigravity" ? "Antigravity CLI (agy.exe)" : "Grok Build"}，请先安装官方程序`);
   const runId = `r${Date.now()}-${seq++}`;
   let promptFile: string | undefined;
-  if (options.kind === "grok") {
-    promptFile = path.join(os.tmpdir(), `tokenpulse-reply-${runId}.txt`);
-    fs.writeFileSync(promptFile, options.prompt, "utf8");
+  let child: ChildProcess;
+  try {
+    if (options.kind === "grok") {
+      promptFile = path.join(os.tmpdir(), `tokenpulse-reply-${runId}.txt`);
+      fs.writeFileSync(promptFile, options.prompt, { encoding: "utf8", mode: 0o600 });
+    }
+    const args = replyArgs(options.kind, options.id, options.mode, promptFile);
+    const env: NodeJS.ProcessEnv = { ...cleanAgentEnv(), ...cli.env };
+    if (!cli.env?.ELECTRON_RUN_AS_NODE) delete env.ELECTRON_RUN_AS_NODE;
+    child = spawn(cli.file, [...cli.prefix, ...args], {
+      cwd: options.cwd,
+      env,
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (err) {
+    if (promptFile) fs.rmSync(promptFile, { force: true });
+    throw err;
   }
-  const env: NodeJS.ProcessEnv = { ...cleanAgentEnv(), ...cli.env };
-  if (!cli.env?.ELECTRON_RUN_AS_NODE) delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn(cli.file, [...cli.prefix, ...replyArgs(options.kind, options.id, options.mode, promptFile)], {
-    cwd: options.cwd,
-    env,
-    windowsHide: true,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
   runs.set(runId, { child, key, cleanup: promptFile });
+  // CLI 启动即退出、或写到一半用户点了「停止」：往已关闭的管道写会抛 EOF / EPIPE。
+  // 不接住就是主进程的未捕获异常；失败原因由下面 close 事件的退出码和 stderr 说明。
+  child.stdin?.on("error", () => undefined);
   if (options.kind !== "grok") child.stdin?.end(options.prompt, "utf8");
   else child.stdin?.end();
 
@@ -505,6 +527,7 @@ export function startReply(
     if (!runs.has(runId)) return;
     const run = runs.get(runId)!;
     runs.delete(runId);
+    stopped.delete(runId);
     if (run.cleanup) fs.rm(run.cleanup, { force: true }, () => undefined);
     emit({ runId, type: "done", ok, ...(message ? { error: message } : {}) });
   };
@@ -527,5 +550,9 @@ export function stopReply(runId: string) {
 }
 
 export function stopAllReplies() {
-  for (const run of runs.values()) killTree(run.child);
+  for (const [runId, run] of [...runs.entries()]) {
+    stopped.add(runId);
+    killTree(run.child);
+    if (run.cleanup) fs.rmSync(run.cleanup, { force: true });
+  }
 }

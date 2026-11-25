@@ -55,7 +55,8 @@ export function readPetFolder(dir: string): { name: string; author: string; file
   try { stat = fs.lstatSync(manifest); } catch { throw new Error("这个文件夹里没有 pet.json"); }
   if (!stat.isFile() || stat.size > 64 * 1024) throw new Error("pet.json 不是普通文件，或者太大了");
   let raw: Record<string, unknown>;
-  try { raw = JSON.parse(fs.readFileSync(manifest, "utf8")); } catch { throw new Error("pet.json 不是有效的 JSON"); }
+  // 手写的清单：记事本等编辑器存的 UTF-8 文件开头可能带 BOM（theme.json、desk.json 也是这样处理）
+  try { raw = JSON.parse(fs.readFileSync(manifest, "utf8").replace(/^﻿/, "")); } catch { throw new Error("pet.json 不是有效的 JSON"); }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("pet.json 不是有效的 JSON");
   const name = typeof raw.name === "string" ? raw.name.trim() : "";
   if (!name || name.length > 40) throw new Error("pet.json 里要写名字（name），最多 40 个字");

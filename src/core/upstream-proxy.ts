@@ -1,5 +1,6 @@
 import http from "http";
 import https from "https";
+import net from "net";
 import tls from "tls";
 import type { Duplex } from "stream";
 import { log, logUrl } from "./app-log";
@@ -47,7 +48,20 @@ function bypassed(target: URL, noProxy: string | undefined) {
   const host = target.hostname.toLowerCase(), port = target.port || (target.protocol === "https:" ? "443" : "80");
   for (const item of (noProxy || "").split(",").map((part) => part.trim().toLowerCase()).filter(Boolean)) {
     if (item === "*") return true;
-    const [name, itemPort] = item.replace(/^\*?\./, "").split(":");
+    const cleaned = item.replace(/^\*?\./, "");
+    let name = cleaned, itemPort = "";
+    if (cleaned.startsWith("[")) {
+      const close = cleaned.indexOf("]");
+      if (close > 0) {
+        name = cleaned.slice(0, close + 1);
+        if (cleaned[close + 1] === ":") itemPort = cleaned.slice(close + 2);
+      }
+    } else if (cleaned.indexOf(":") === cleaned.lastIndexOf(":")) {
+      const cut = cleaned.indexOf(":");
+      if (cut >= 0) { name = cleaned.slice(0, cut); itemPort = cleaned.slice(cut + 1); }
+    } else {
+      name = `[${cleaned}]`;
+    }
     if (itemPort && itemPort !== port) continue;
     if (host === name || host.endsWith("." + name)) return true;
   }
@@ -136,12 +150,16 @@ const TUNNEL_IDLE_MS = 30_000;
 class TunnelAgent extends https.Agent {
   constructor(private readonly proxy: UpstreamProxy) { super({ keepAlive: true, timeout: TUNNEL_IDLE_MS }); }
   createConnection(options: { host?: string | null; port?: number | string | null; servername?: string }, callback?: (error: Error | null, socket: Duplex) => void): Duplex | null | undefined {
-    const host = String(options.host || ""), authority = `${host}:${options.port || 443}`;
+    const host = String(options.host || "");
+    const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    const authority = `${bracketed}:${options.port || 443}`;
     const done = callback as (error: Error | null, socket?: Duplex) => void;
     const connect = http.request({ host: this.proxy.host, port: this.proxy.port, method: "CONNECT", path: authority, headers: { host: authority, ...(this.proxy.auth ? { "proxy-authorization": this.proxy.auth } : {}) }, timeout: 15_000 });
     connect.once("connect", (res, socket) => {
       if (res.statusCode !== 200) { socket.destroy(); done(new Error(`代理 ${this.proxy.host}:${this.proxy.port} 拒绝了连接（HTTP ${res.statusCode}）`)); return; }
-      const secure = tls.connect({ socket, servername: options.servername || host, ALPNProtocols: ["http/1.1"] });
+      const rawSni = options.servername ?? host;
+      const sniHost = rawSni.replace(/^\[|\]$/g, "");
+      const secure = tls.connect({ socket, ...(sniHost && !net.isIP(sniHost) ? { servername: sniHost } : {}), ALPNProtocols: ["http/1.1"] });
       done(null, secure);
     });
     connect.once("timeout", () => connect.destroy(new Error(`连接代理 ${this.proxy.host}:${this.proxy.port} 超时`)));

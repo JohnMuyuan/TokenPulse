@@ -335,7 +335,6 @@ export class DeskPetInputMonitor {
   private running = false;
   private readyFlag = false;
   private lastPassword = false;
-  private killTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly onEvent: (event: DeskPetInputEvent) => void) {}
 
@@ -369,6 +368,8 @@ export class DeskPetInputMonitor {
     );
     this.child = proc;
 
+    proc.stdin?.on("error", () => undefined);
+    proc.stdout?.on("error", () => undefined);
     proc.stdout?.setEncoding("utf8");
     proc.stdout?.on("data", (chunk: string) => {
       if (!this.running || this.child !== proc) return;
@@ -409,10 +410,6 @@ export class DeskPetInputMonitor {
   stop(): void {
     this.running = false;
     this.readyFlag = false;
-    if (this.killTimer) {
-      clearTimeout(this.killTimer);
-      this.killTimer = null;
-    }
     const proc = this.child;
     this.child = null;
     this.buffer = "";
@@ -424,10 +421,12 @@ export class DeskPetInputMonitor {
     try {
       proc.stdin?.end();
     } catch { /* ignore */ }
-    this.killTimer = setTimeout(() => {
-      this.killTimer = null;
+    const timer = setTimeout(() => {
       try { if (!proc.killed && proc.exitCode === null) proc.kill(); } catch { /* ignore */ }
     }, 250);
-    this.killTimer.unref?.();
+    timer.unref?.();
+    const clear = () => clearTimeout(timer);
+    proc.once("exit", clear);
+    proc.once("error", clear);
   }
 }

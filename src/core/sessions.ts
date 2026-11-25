@@ -298,7 +298,7 @@ const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "
 
 function readLines(file: string) {
   try {
-    return fs.readFileSync(file, "utf8").split(/\r?\n/);
+    return fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").split(/\r?\n/);
   } catch {
     return [];
   }
@@ -322,6 +322,7 @@ type RawModelUsage = {
   cacheWrite: number;
   reasoning: number;
   reportedCostUsd: number;
+  unreportedEstCostUsd: number;
 };
 
 /** 收消息：同一个角色连着的文字（同一条回复被拆成几块）合并；工具结果按 id 挂回调用上。 */
@@ -380,6 +381,7 @@ class Builder {
       cacheWrite: 0,
       reasoning: 0,
       reportedCostUsd: 0,
+      unreportedEstCostUsd: 0,
     };
     entry.requests += requests;
     entry.input += input;
@@ -387,7 +389,11 @@ class Builder {
     entry.cacheRead += cacheRead;
     entry.cacheWrite += cacheWrite;
     entry.reasoning += reasoning;
-    entry.reportedCostUsd += costUsd;
+    if (costUsd > 0) {
+      entry.reportedCostUsd += costUsd;
+    } else {
+      entry.unreportedEstCostUsd += estimateCost(key, { input, output, cacheRead, cacheWrite });
+    }
     this.usageByModel.set(key, entry);
   }
 
@@ -404,7 +410,7 @@ class Builder {
         cacheRead: b.cacheRead,
         cacheWrite: b.cacheWrite,
       });
-      const actualCost = b.reportedCostUsd > 0 ? b.reportedCostUsd : estCost;
+      const actualCost = b.reportedCostUsd > 0 ? b.reportedCostUsd + b.unreportedEstCostUsd : estCost;
       const uncachedEst = estimateCost(model, {
         input: b.input,
         output: b.output,
@@ -839,7 +845,9 @@ export function codexUserText(raw: string): { text: string; event?: string } {
   // AllAi 拿 Codex 当聊天后端时，把自己的系统提示和历史拼在用户这句话前面（electron/chat-run.ts）
   if (/^You are a helpful chat assistant/.test(text)) {
     const now = text.split("【以上是历史。用户此刻的问题】");
-    return codexUserText(now.length > 1 ? now.at(-1)! : text.replace(/^[^\n]*\n+/, ""));
+    const next = (now.length > 1 ? now.at(-1)! : text.replace(/^[^\n]*\n+/, "")).trim();
+    if (!next || next === text) return { text };
+    return codexUserText(next);
   }
   // `<environment_context>…</environment_context>`、`<recommended_plugins>…`、`<image …>` 这类：
   // 开头一个或几个成对的标签块都是 Codex 自己加的，剥掉；剩下的才是用户写的（通常什么都不剩）
@@ -1097,6 +1105,7 @@ function parseDeepseek(file: string): Parsed | null {
   let title = "";
   let model = "";
   let subMeta: SessionMetaInput | undefined;
+  let stepStartAt: number | undefined;
   for (const line of zstdFrames(raw).text.split(/\n/)) {
     const row = parseLine(line);
     if (!row) continue;
@@ -1123,20 +1132,23 @@ function parseDeepseek(file: string): Parsed | null {
       }
     } else if (row.type === "session/title" && typeof data.title === "string") title = data.title;
     else if (row.type === "model/selection" && typeof data.model === "string") { model = data.model; b.models.add(data.model); }
+    else if (row.type === "step/start") { stepStartAt = at ?? stepStartAt; }
     else if (row.type === "user/message") b.text("user", blockText(data.content, (type) => type === "text"), at);
     else if (row.type === "assistant/message") {
       const message = data.message ?? {};
       if (typeof message?.source?.model === "string") b.models.add(message.source.model);
       let streamDurationMs: number | undefined;
       let firstTokenMs: number | undefined;
-      if (Array.isArray(data.stream) && data.stream.length >= 2) {
+      if (Array.isArray(data.stream) && data.stream.length >= 1) {
         const first = Number(data.stream[0]?.time);
         const last = Number(data.stream[data.stream.length - 1]?.time);
-        if (first > 0 && last >= first) {
-          streamDurationMs = last - first;
-          if (at != null && first > at) firstTokenMs = first - at;
+        if (first > 0) {
+          if (data.stream.length >= 2 && last >= first) streamDurationMs = last - first;
+          const originAt = stepStartAt ?? at;
+          if (originAt != null && first > originAt && first - originAt < 600_000) firstTokenMs = first - originAt;
         }
       }
+      stepStartAt = undefined;
       const modelName = displayModel(str(message?.source?.model) || model || "deepseek-chat");
       b.text("assistant", blockText(message.content, (type) => type === "text"), at, undefined, {
         model: modelName !== "未知模型" ? modelName : undefined,
@@ -1569,7 +1581,7 @@ function summarize(
       : `${project} · ${AGENT_NAMES[kind]}`;
   const title = oneLine(cliTitle) || fallbackTitle;
   const times = messages.map((message) => message.at).filter((at): at is number => typeof at === "number");
-  let updatedAt = times.length ? Math.max(...times) : undefined;
+  let updatedAt = times.length ? times.reduce((max, t) => (t > max ? t : max), -Infinity) : undefined;
   if (b.extraUpdatedAt > 0) updatedAt = Math.max(updatedAt ?? 0, b.extraUpdatedAt);
   try {
     // 会话文件最后写入的时间比最后一条消息的时间更准（Grok 的分块没有时间戳）
@@ -1594,7 +1606,7 @@ function summarize(
     title,
     project,
     cwd,
-    createdAt: times.length ? Math.min(...times) : undefined,
+    createdAt: times.length ? times.reduce((min, t) => (t < min ? t : min), Infinity) : undefined,
     updatedAt,
     turns: messages.filter((message) => message.role === "user").length,
     messageCount: talk.length,
@@ -2002,7 +2014,7 @@ function forgetDeepseekSessions(ids: string[]) {
  * Claude 连同名附属目录（含 subagents/），DeepSeek 连整个会话目录和它派出的子代理；不允许单独删子代理。
  */
 export function deleteLocalSessionFiles(kind: AgentKind, id: string) {
-  if (!id || id.length > 200 || !/^[A-Za-z0-9._-]+$/.test(id)) return false;
+  if (!id || id.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id)) return false;
   let files = filesOf(kind, id);
   if (!files.length) {
     listSessions();

@@ -45,17 +45,19 @@ export const validVersion = (value: unknown): value is string => typeof value ==
 /** 读回来的设置可能是旧的、坏的或者被手改过：每一项都规整一遍。 */
 export function normalizeSettings(raw: unknown, base: TokensSettings = defaultSettings()): TokensSettings {
   const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const minutes = Math.round(Number(value.intervalMin));
+  const parseNum = (v: unknown) => (typeof v === "number" || (typeof v === "string" && v.trim() !== "") ? Number(v) : NaN);
+  const minutes = Math.round(parseNum(value.intervalMin));
+  const lastRun = parseNum(value.lastRunAt);
   const channel = value.channel === "latest" || value.channel === "installed" || value.channel === "pinned" ? value.channel : base.channel;
   return {
     enabled: typeof value.enabled === "boolean" ? value.enabled : base.enabled,
-    intervalMin: Number.isFinite(minutes) && value.intervalMin !== undefined ? Math.min(MAX_INTERVAL_MIN, Math.max(MIN_INTERVAL_MIN, minutes)) : base.intervalMin,
+    intervalMin: Number.isFinite(minutes) ? Math.min(MAX_INTERVAL_MIN, Math.max(MIN_INTERVAL_MIN, minutes)) : base.intervalMin,
     onLaunch: typeof value.onLaunch === "boolean" ? value.onLaunch : base.onLaunch,
     channel,
     version: validVersion(value.version) ? value.version : base.version,
     dismissed: typeof value.dismissed === "boolean" ? value.dismissed : base.dismissed,
     username: typeof value.username === "string" && /^[A-Za-z0-9_.-]{1,60}$/.test(value.username) ? value.username : base.username,
-    lastRunAt: Number.isFinite(Number(value.lastRunAt)) && Number(value.lastRunAt) >= 0 ? Number(value.lastRunAt) : base.lastRunAt,
+    lastRunAt: Number.isFinite(lastRun) && lastRun >= 0 ? lastRun : base.lastRunAt,
   };
 }
 

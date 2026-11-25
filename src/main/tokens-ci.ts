@@ -28,11 +28,13 @@ const KEEP_PREVIEW = 60_000;
 /** 默认的执行方式：交给 shell（Windows 上 npx / tokens 都是 .cmd，必须经 cmd 才能跑），不弹窗口；结束时连子进程一起结束。 */
 export const defaultRunner: Runner = (line, { env, timeoutMs, onData }) => {
   let output = "", timedOut = false;
-  const child = spawn(line, { shell: true, windowsHide: true, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(line, { shell: true, detached: process.platform !== "win32", windowsHide: true, env, stdio: ["ignore", "pipe", "pipe"] });
   const kill = () => {
     if (child.exitCode != null || child.signalCode != null || !child.pid) return;
     if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on("error", () => undefined);
-    else child.kill("SIGTERM");
+    else {
+      try { process.kill(-child.pid, "SIGTERM"); } catch { try { child.kill("SIGTERM"); } catch { /* already dead */ } }
+    }
   };
   const take = (chunk: Buffer) => { const text = chunk.toString("utf8"); output = tail(output + text, 200_000); onData?.(output); };
   child.stdout?.on("data", take);
@@ -117,7 +119,10 @@ export class TokensUploader {
   /** 设置页改了什么。enabled 从关到开时不立刻传（界面上「开启并立即上传」会接着调 upload）。 */
   save(patch: unknown) {
     const before = this.settings;
-    this.settings = normalizeSettings({ ...before, ...(patch && typeof patch === "object" ? patch : {}), lastRunAt: before.lastRunAt, username: before.username });
+    const input = patch && typeof patch === "object" && !Array.isArray(patch) ? { ...(patch as Record<string, unknown>) } : {};
+    delete input.lastRunAt;
+    delete input.username;
+    this.settings = normalizeSettings(input, before);
     if (!this.settings.enabled) this.paused = false;
     this.persist();
     this.publish();
@@ -152,7 +157,7 @@ export class TokensUploader {
       if (hasNpx) {
         const view = await execute(env.TOKENPULSE_TOKENS_CLI ? commandLine(this.settings, ["version"]) : "npm view tokens-cli version", env, CHECK_TIMEOUT_MS);
         if (cancelled || this.stopped) return cancelledState();
-        latest = plain(view.output).split(/\s+/).find(validVersion) || "";
+        latest = view.code === 0 && !view.timedOut ? (plain(view.output).split(/\s+/).filter(validVersion).at(-1) || "") : "";
         if (!latest) error = view.timedOut ? "查询 tokens-cli 的版本超时（可能需要代理）" : "查不到 tokens-cli 的版本（npm 连不上？）";
       } else error = "这台电脑上没有 npx：需要先安装 Node.js";
       this.tools = { checked: true, npx: hasNpx, installed: installed.code === 0, latest, error };
@@ -175,11 +180,11 @@ export class TokensUploader {
   }
 
   async upload(trigger: Trigger) {
-    if (this.job) return this.state();
+    if (this.job || this.stopped) return this.state();
     if (trigger !== "manual" && (!this.settings.enabled || this.paused)) return this.state();
     const started = this.now();
     const result = await this.run("submit", ["submit"], RUN_TIMEOUT_MS);
-    if (!result) return this.state();
+    if (!result || result.cancelled || this.stopped) return this.state();
     const ok = result.code === 0 && !result.timedOut;
     const output = tail(redact(plain(result.output)), KEEP_OUTPUT);
     const error = ok ? undefined : result.timedOut ? "超过 5 分钟还没传完，已经停下" : result.error ? `没能运行 tokens.ci 的工具：${result.error}` : !loggedIn() || authProblem(result.output) ? "tokens.ci 登录已失效，请重新登录" : summaryOf(result.output) || `上传失败（退出码 ${result.code}）`;
@@ -195,9 +200,9 @@ export class TokensUploader {
 
   /** 预览：工具的 --dry-run，只看会传什么，不上传。 */
   async dryRun() {
-    if (this.job) return this.state();
+    if (this.job || this.stopped) return this.state();
     const result = await this.run("preview", ["submit", "--dry-run"], RUN_TIMEOUT_MS);
-    if (!result) return this.state();
+    if (!result || result.cancelled || this.stopped) return this.state();
     const ok = result.code === 0 && !result.timedOut;
     this.preview = { at: this.now(), ok, output: tail(redact(plain(result.output)), KEEP_PREVIEW) || (result.error ? `没能运行 tokens.ci 的工具：${result.error}` : "") };
     this.publish();
@@ -206,7 +211,7 @@ export class TokensUploader {
 
   /** 登录（设备码流程）：工具打印网址和一次性码、自己打开浏览器，然后等用户在浏览器里授权。 */
   async login(privacy: unknown) {
-    if (this.job) return this.state();
+    if (this.job || this.stopped) return this.state();
     const mode = privacy === "private" ? "private" : privacy === "public" ? "public" : null;
     if (!mode) throw new Error("请先选公开上榜还是隐私模式");
     this.loginState = { privacy: mode, startedAt: this.now(), url: "", code: "", done: false, ok: false };
@@ -214,13 +219,17 @@ export class TokensUploader {
       const seen = readLogin(output);
       if (this.loginState && (seen.url !== this.loginState.url || seen.code !== this.loginState.code)) { this.loginState = { ...this.loginState, url: seen.url, code: seen.code }; this.publish(); }
     });
-    if (!result || !this.loginState) return this.state();
+    if (!result) {
+      if (this.loginState && !this.loginState.done) { this.loginState = null; this.publish(); }
+      return this.state();
+    }
+    if (!this.loginState) return this.state();
     const seen = readLogin(result.output);
     const ok = result.code === 0 && !result.timedOut && loggedIn();
     if (ok && seen.username) this.settings = { ...this.settings, username: seen.username };
     if (ok) { this.paused = false; this.failures = 0; }
     this.loginState = { ...this.loginState, done: true, ok, ...(ok && mode === "private" && seen.readToken ? { readToken: seen.readToken } : {}),
-      ...(ok ? {} : { error: result.timedOut ? "10 分钟内没有完成授权，已经停下" : result.code === null && !result.error ? "已取消登录" : summaryOf(result.output) || result.error || "登录没有成功" }) };
+      ...(ok ? {} : { error: result.timedOut ? "10 分钟内没有完成授权，已经停下" : (result.cancelled || result.code === null) && !result.error ? "已取消登录" : summaryOf(result.output) || result.error || "登录没有成功" }) };
     this.persist();
     this.publish();
     return this.state();
@@ -232,20 +241,25 @@ export class TokensUploader {
   /** 「重试」：从等待重新登录的状态里出来（比如用户在终端里自己登录过了）。 */
   resume() { this.paused = false; this.persist(); this.publish(); return this.state(); }
 
-  private async run(kind: Job, args: string[], timeoutMs: number, onData?: (text: string) => void) {
+  private async run(kind: Job, args: string[], timeoutMs: number, onData?: (text: string) => void): Promise<(Exit & { cancelled?: boolean }) | null> {
+    if (this.job || this.stopped) return null;
     let line: string;
     try { line = commandLine(this.settings, args); } catch { return null; }
-    const env = await this.env();
-    if (this.job || this.stopped) return null;
-    const handle = this.runner(line, { env, timeoutMs, onData });
     let cancelled = false;
-    this.job = { kind, kill: () => { cancelled = true; handle.kill(); } };
+    let handle: ReturnType<Runner> | null = null;
+    const job = { kind, kill: () => { cancelled = true; handle?.kill(); } };
+    this.job = job;
     this.publish();
     try {
+      const env = await this.env();
+      if (cancelled || this.stopped) return { code: null, output: "", timedOut: false, cancelled: true };
+      handle = this.runner(line, { env, timeoutMs, onData });
+      if (cancelled || this.stopped) { handle.kill(); }
       const result = await handle.done;
-      return cancelled && !result.timedOut ? { ...result, code: null } : result;
+      return cancelled && !result.timedOut ? { ...result, code: null, cancelled: true } : result;
     } finally {
-      this.job = null;
+      if (this.job === job) this.job = null;
+      this.publish();
     }
   }
 
@@ -258,7 +272,13 @@ export class TokensUploader {
       const proxy = await proxyFor(target).catch(() => null);
       if (proxy) {
         let auth = "";
-        if (proxy.auth) { try { auth = Buffer.from(proxy.auth.replace(/^Basic\s+/i, ""), "base64").toString("utf8").split(":").map(encodeURIComponent).join(":") + "@"; } catch { auth = ""; } }
+        if (proxy.auth) {
+          try {
+            const decoded = Buffer.from(proxy.auth.replace(/^Basic\s+/i, ""), "base64").toString("utf8");
+            const cut = decoded.indexOf(":");
+            auth = cut < 0 ? `${encodeURIComponent(decoded)}@` : `${encodeURIComponent(decoded.slice(0, cut))}:${encodeURIComponent(decoded.slice(cut + 1))}@`;
+          } catch { auth = ""; }
+        }
         env.HTTPS_PROXY = env.HTTP_PROXY = `http://${auth}${proxy.host}:${proxy.port}`;
       }
     }

@@ -47,7 +47,8 @@ export function relayBase(value: unknown): string {
   const raw = typeof value === "string" ? value.trim() : "";
   let url: URL;
   try { url = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw); } catch { throw new Error("站点地址不对，应该像 https://example.com"); }
-  if (!raw || !url.hostname.includes(".") && url.hostname !== "localhost") throw new Error("站点地址不对，应该像 https://example.com");
+  const isV6 = url.hostname.startsWith("[") && url.hostname.endsWith("]");
+  if (!raw || (!url.hostname.includes(".") && url.hostname !== "localhost" && !isV6)) throw new Error("站点地址不对，应该像 https://example.com");
   const local = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
   if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) throw new Error("站点地址要用 https（Key 会发到这个地址，不能明文传）");
   if (url.username || url.password) throw new Error("站点地址里不要带用户名和密码");
@@ -94,7 +95,8 @@ export function parseSub2api(body: string): RelayBalance | null {
   const remaining = num(json.remaining) ?? num(json.balance);
   if (remaining != null && remaining < 0) extra.unlimited = true;
   const left = remaining != null && remaining >= 0 ? remaining : null;
-  return { available: json.isValid === true && left !== 0, remaining: left, currency: /^[A-Z]{3}$/.test(text(json.unit, 3)) ? text(json.unit, 3) : "USD", extra };
+  const unit = text(json.unit, 16);
+  return { available: json.isValid === true && left !== 0, remaining: left, currency: /^[A-Z]{3}$/.test(unit) ? unit : "USD", extra };
 }
 
 /** new-api / one-api 的账单接口：subscription 给总额度，usage 给已用（美分）。 */
@@ -136,10 +138,16 @@ export async function queryRelay(base: string, key: string, get: HttpGet, prefer
     note(used.status);
     return parseNewApi(sub.body, used.status === 200 ? used.body : null);
   };
+  let failure: { error: unknown } | undefined;
   for (const attempt of prefer === "newapi" ? [newapi, sub2api] : [sub2api, newapi]) {
-    const balance = await attempt();
-    if (balance) return { ok: true, balance };
+    try {
+      const balance = await attempt();
+      if (balance) return { ok: true, balance };
+    } catch (error) {
+      failure ??= { error };
+    }
   }
+  if (failure) throw failure.error;
   if (denied) return { ok: false, error: RELAY_INVALID_KEY, invalidKey: true };
   if (limited) return { ok: false, error: "查得太频繁了，稍后会自动再查" };
   if (serverError) return { ok: false, error: `站点返回了 HTTP ${serverError}` };

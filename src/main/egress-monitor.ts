@@ -62,7 +62,8 @@ export class ExitMonitor {
     for (const p of PROVIDERS) {
       if (next.enabled !== this.config.enabled || JSON.stringify(next.providers[p]) !== JSON.stringify(this.config.providers[p])) {
         this.trackers.set(p, new EgressTracker());
-        if (!next.enabled || !next.providers[p].allowedIps.length) this.quotaBlocks.delete(p);
+        if (next.providers[p].host !== this.config.providers[p].host ||
+            JSON.stringify(next.providers[p].allowedIps) !== JSON.stringify(this.config.providers[p].allowedIps)) this.quotaBlocks.delete(p);
       }
     }
     if (!next.enabled) this.quotaBlocks.clear();
@@ -103,11 +104,12 @@ export class ExitMonitor {
    * 被拦时记一条告警、按设置弹通知（同一种情况只弹一次），放行后记一条恢复。
    */
   async gateQuota(provider: Provider): Promise<boolean> {
-    if (!this.config.enabled) {
+    const settings = this.config;
+    if (!settings.enabled) {
       if (this.quotaBlocks.delete(provider)) this.publish();
       return true;
     }
-    const config = this.config.providers[provider];
+    const config = settings.providers[provider];
     if (!config?.allowedIps.length) {
       if (this.quotaBlocks.delete(provider)) this.publish();
       return true;
@@ -117,6 +119,7 @@ export class ExitMonitor {
     let probe: Probe;
     try { probe = recent ? row! : await (this.options.probe ?? probeExit)(provider, config.host); }
     catch { probe = { provider, host: config.host, checkedAt: this.now(), latencyMs: 0, error: "network" }; }
+    if (this.config !== settings) return this.gateQuota(provider);
     const ok = !probe.error && probe.ip != null && config.allowedIps.includes(probe.ip);
     const previous = this.quotaBlocks.get(provider);
     if (ok) {
@@ -151,12 +154,14 @@ export class ExitMonitor {
    * 这里的 curl 和接下来启动的 CLI 用的是同一份环境变量，走的是同一条路。被拦时记一条告警。
    */
   async gateLaunch(provider: Provider, what: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const settings = this.config;
     const rule = this.launchRule(provider);
     if (!rule) return { ok: true };
     const byIp = rule.allowedIps.length > 0;
     let probe: Probe;
     try { probe = await (this.options.probe ?? probeExit)(provider, rule.host); }
     catch { probe = { provider, host: rule.host, checkedAt: this.now(), latencyMs: 0, error: "network" }; }
+    if (this.config !== settings) return this.gateLaunch(provider, what);
     const seen = probe.error ? undefined : byIp ? probe.ip : probe.region;
     if (seen != null && (byIp ? rule.allowedIps : rule.allowedRegions).includes(seen)) return { ok: true };
     const subject = byIp ? "出口 IP" : "出口地区";

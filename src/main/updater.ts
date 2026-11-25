@@ -162,7 +162,10 @@ export function checkForUpdates(manual: boolean): Promise<UpdateState> {
   if (!checking) {
     checking = autoUpdater
       .checkForUpdates()
-      .then(() => state)
+      .then((result) => {
+        result?.downloadPromise?.catch(() => undefined);
+        return state;
+      })
       .catch((error) => publish({ status: "error", error: friendlyError(error), checkedAt: Date.now() }))
       .finally(() => {
         checking = null;
@@ -173,7 +176,7 @@ export function checkForUpdates(manual: boolean): Promise<UpdateState> {
 
 /** 手动下载（自动更新关着、但用户想装这个版本）。 */
 export function downloadUpdate() {
-  if (state.status === "unsupported" || !state.version) return Promise.resolve(state);
+  if (state.status === "unsupported" || !state.version || state.status === "downloading" || state.status === "downloaded") return Promise.resolve(state);
   publish({ status: "downloading", progress: 0 });
   return autoUpdater
     .downloadUpdate()

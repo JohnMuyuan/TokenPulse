@@ -161,6 +161,14 @@ const body = (total, extra = {}) => JSON.stringify({ is_available: true, balance
     concurrent.stop();
     pass('key replacement waits for the in-flight query and rolls back all rejected edits');
 
+    const editNotices = [];
+    const editing = new DeepSeekBalance({ fetcher: async () => ({ status: 200, body: body(8) }), notify: (...args) => editNotices.push(args) });
+    await editing.update(original.id, { key: KEY3, label: '新名称', alertBelow: 5 });
+    assert.equal(editNotices.length, 0, '余额高于保存后的阈值，不应按旧阈值发送提醒');
+    assert.equal(editing.state().accounts[0].last.infos[0].total, 8);
+    editing.stop();
+    pass('replacing a key evaluates alerts using the newly saved settings');
+
     // 型号名和单价
     assert.equal(displayModel('deepseek-flash'), 'DeepSeek-V4.1-Flash');
     assert.equal(displayModel('deepseek-v4-pro'), 'DeepSeek-V4-Pro');

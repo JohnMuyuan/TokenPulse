@@ -13,16 +13,38 @@
 import fs from "fs";
 import path from "path";
 import type { OfficialAccountKind } from "./credentials";
-import { accountLabels, readLoginTimeline, resolveAccount } from "./login-timeline";
+import { accountLabels, readLoginTimeline, resolveAccount, routedAccount } from "./login-timeline";
 import { routeLogDir, speedVia } from "./route-ledger";
-import { dataFile } from "./paths";
+import { dataFile, readJson } from "./paths";
 
 /*
  * 按会话日志时间戳估算的速度（0.3.53）：扫描时记在请求流水（requests/<月>.jsonl）的 estimate 里，见 usage-scan.ts 的 estimateOf。
  * 包含首字之前的等待，比转发时量到的偏慢；画图时单独成线、标「≈」，不和量到的混在一起。
  * 按文件大小和修改时间缓存解析结果：流水文件可能有几十 MB。
  */
-export type EstimateRow = { at: number; app: string; kind: string; model: string; effort: string; speed: number; first?: number; estimated?: boolean; output: number; ref?: string; email?: string; accountAt?: number; org?: string; orgAt?: number };
+export type EstimateRow = { at: number; app: string; kind: string; model: string; effort: string; speed: number; first?: number; estimated?: boolean; output: number; file?: string; ref?: string; email?: string; accountAt?: number; org?: string; orgAt?: number; routedAccount?: string; routedAccountBasis?: string; responseId?: string };
+
+let officialMapCache: { file: string; size: number; mtimeMs: number; map: Map<string, boolean | undefined> } | null = null;
+function officialFileMap(): Map<string, boolean | undefined> {
+  const file = dataFile("usage-rollups.json");
+  let size = -1;
+  let mtimeMs = -1;
+  try {
+    const st = fs.statSync(file);
+    size = st.size;
+    mtimeMs = st.mtimeMs;
+    if (officialMapCache && officialMapCache.file === file && officialMapCache.size === size && officialMapCache.mtimeMs === mtimeMs) {
+      return officialMapCache.map;
+    }
+  } catch {
+    return new Map();
+  }
+  const map = new Map<string, boolean | undefined>();
+  const raw = readJson<{ files?: Record<string, { official?: boolean }> } | null>(file, null);
+  for (const [k, entry] of Object.entries(raw?.files ?? {})) map.set(k, entry?.official);
+  officialMapCache = { file, size, mtimeMs, map };
+  return map;
+}
 const APP_OF_REQUEST: Record<string, string> = {
   "claude-code": "claude",
   codex: "codex",
@@ -61,11 +83,15 @@ function requestSpeedRows(since: number, now = Date.now()): EstimateRow[] {
         if (!model || model === "未知模型") continue;
         const effort = typeof row.effort === "string" ? row.effort.slice(0, 20) : "";
         const accountFields = {
+          ...(typeof row.file === "string" && row.file ? { file: row.file } : {}),
           ...(typeof row.accountRef === "string" ? { ref: row.accountRef } : {}),
           ...(typeof row.accountEmail === "string" ? { email: row.accountEmail } : {}),
           ...(typeof row.accountAt === "number" ? { accountAt: row.accountAt } : {}),
           ...(typeof row.accountOrg === "string" ? { org: row.accountOrg } : {}),
           ...(typeof row.accountOrgAt === "number" ? { orgAt: row.accountOrgAt } : {}),
+          ...(typeof row.routedAccount === "string" ? { routedAccount: row.routedAccount } : {}),
+          ...(typeof row.routedAccountBasis === "string" ? { routedAccountBasis: row.routedAccountBasis } : {}),
+          ...(typeof row.responseId === "string" ? { responseId: row.responseId } : {}),
         };
         const idKey = kind + "\u0000" + String(row.id);
         // 自带本机测速的来源（Antigravity、DeepSeek Harness）或已带 timing 的记录：
@@ -214,12 +240,24 @@ export function accountSpeed(kind: OfficialAccountKind, account: string, days: n
       rows.push({ at, model, fast: isFastTier(row.tier), speed, first, output: Number(row.output) || 0 });
     }
   }
-  // 按日志估算的（0.3.53）：归到会话里记的账号，没有就按当时 CLI 登录的账号
-  if (withEstimates) for (const row of estimatedRows(since, now)) {
-    if (KIND_OF_APP[row.app] !== kind) continue;
-    const owner = resolveAccount(kind, row.at, { ref: row.ref, email: row.email, at: row.accountAt, org: row.org, orgAt: row.orgAt }, timeline, labels)?.id;
-    if (!owner || (account && owner !== account)) continue;
-    rows.push({ at: row.at, model: row.model, fast: false, speed: row.speed, first: 0, output: row.output, estimated: true });
+  // 按日志估算的（0.3.53）：排除中转/API Key 行，号池转发优先归到 routedAccount，其余归到会话或当时 CLI 登录的官方账号
+  if (withEstimates) {
+    const officialMap = officialFileMap();
+    for (const row of estimatedRows(since, now)) {
+      if (KIND_OF_APP[row.app] !== kind) continue;
+      const routed =
+        row.routedAccount && row.routedAccountBasis === "response-id" && row.responseId
+          ? row.routedAccount
+          : row.routedAccount && row.routedAccountBasis === "route-window"
+            ? row.routedAccount
+            : routedAccount(kind, row.at, labels, row.responseId)?.id;
+      const fileOfficial = row.file ? officialMap.get(row.file) : undefined;
+      const isOfficial = routed ? true : fileOfficial;
+      if (isOfficial === false || (officialMap.size > 0 && isOfficial !== true)) continue;
+      const owner = routed || resolveAccount(kind, row.at, { ref: row.ref, email: row.email, at: row.accountAt, org: row.org, orgAt: row.orgAt }, timeline, labels)?.id;
+      if (!owner || (account && owner !== account)) continue;
+      rows.push({ at: row.at, model: row.model, fast: false, speed: row.speed, first: 0, output: row.output, estimated: true });
+    }
   }
   return speedSeriesOf(rows, since, now);
 }

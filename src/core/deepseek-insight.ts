@@ -197,13 +197,13 @@ export function analyzeDeepSeek(input: { accountId: string; local: boolean; samp
   const daysLeft = perDay && latest ? latest.total / perDay : null;
 
   // 余额掉的那些区间里本机有没有请求，同时支持用户手动标注为「本机使用」或「本机以外」。
-  let costFrom = firstAt ?? now, localDrop = 0, localCost = 0, localSteps = 0, offDrop7 = 0, offDrop30 = 0;
+  let costFrom = firstAt ?? now, claimedThrough = -Infinity, localDrop = 0, rateDrop = 0, localCost = 0, localSteps = 0, offDrop7 = 0, offDrop30 = 0;
   const off: { from: number; to: number; spent: number }[] = [];
   const drops: DeepSeekDropItem[] = [];
   for (const step of steps) {
     if (step.to < now - DEEPSEEK_DAYS * DAY) { costFrom = step.to; continue; }
     if (step.added > 0) { costFrom = step.to; continue; }
-    const part = rowsIn(costFrom - 60_000, step.to);
+    const part = rowsIn(Math.max(costFrom - 60_000, claimedThrough), step.to);
     const sources = [...new Set(part.map((r) => r.source).filter(Boolean))];
     const autoMode: DeepSeekMarkMode = input.local && part.length > 0 ? "local" : "off";
     const mark = marks.find((item) => item.from === costFrom && item.to === step.to) ?? marks.find((item) => item.to === step.to);
@@ -211,7 +211,12 @@ export function analyzeDeepSeek(input: { accountId: string; local: boolean; samp
     drops.push({ from: costFrom, to: step.to, spent: step.spent, mode, auto: autoMode, manual: mark?.mode ?? null, sources, note: mark?.note ?? "" });
     if (mode === "local") {
       localDrop += step.spent;
-      if (part.length) { localCost += sum(part, (r) => r.costUsd); localSteps++; }
+      if (part.length) {
+        rateDrop += step.spent;
+        localCost += sum(part, (r) => r.costUsd);
+        localSteps++;
+        claimedThrough = Math.max(claimedThrough, step.to);
+      }
     } else if (input.local || mark?.mode === "off") {
       offDrop30 += step.spent;
       if (step.to > now - 7 * DAY) offDrop7 += step.spent;
@@ -221,7 +226,7 @@ export function analyzeDeepSeek(input: { accountId: string; local: boolean; samp
   }
   const localSources = [...new Set(rows.map((r) => r.source).filter(Boolean))];
   const range = RATE_RANGE[currency], reference = REFERENCE_RATE[currency] ?? null;
-  const measuredRate = localSteps >= 3 && localCost >= 0.02 ? localDrop / localCost : null;
+  const measuredRate = localSteps >= 3 && localCost >= 0.02 ? rateDrop / localCost : null;
   const measuredOk = measuredRate != null && (!range || (measuredRate >= range[0] && measuredRate <= range[1]));
   const rate = {
     /** 1 美元参考费用 = 多少余额。 */

@@ -735,6 +735,9 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     fs.writeFileSync(path.join(folder, 'huge.png'), Buffer.concat([png, Buffer.alloc(packs.PET_FILE_MAX)]));
     write({ name: '我的猫', states: { idle: 'huge.png' } }); assert.throws(() => packs.readPetFolder(folder), /超过 5 MB/);
     fs.writeFileSync(path.join(folder, 'pet.json'), '{nope'); assert.throws(() => packs.readPetFolder(folder), /不是有效的 JSON/);
+    // 记事本等编辑器保存的 UTF-8 文件开头带 BOM：和 theme.json、desk.json 一样要能读
+    fs.writeFileSync(path.join(folder, 'pet.json'), '﻿' + JSON.stringify({ name: '带 BOM 的猫', states: { idle: 'idle.png' } }));
+    assert.equal(packs.readPetFolder(folder).name, '带 BOM 的猫', 'pet.json 带 UTF-8 BOM 也能导入');
     write({ name: '我的猫', author: '小明', states: { idle: 'idle.png', work: 'work.gif', dance: 'idle.png' } });
     const pack = packs.importPetPack(folder);
     assert.match(pack.id, /^pet-[a-f0-9]{8}$/);
@@ -1873,7 +1876,7 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     fs.mkdirSync(validDir, { recursive: true });
     const tinyPng = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000000020001e221bc330000000049454e44ae426082', 'hex');
     fs.writeFileSync(path.join(validDir, 'kb.png'), tinyPng);
-    fs.writeFileSync(path.join(validDir, 'desk.json'), JSON.stringify({
+    fs.writeFileSync(path.join(validDir, 'desk.json'), '\uFEFF' + JSON.stringify({
       name: '霓虹樱花',
       author: 'TokenPulse QA',
       base: 'cyber',

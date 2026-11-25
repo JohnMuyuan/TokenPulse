@@ -3,6 +3,7 @@ import { parseTOML, getStaticTOMLValue, type AST } from "toml-eslint-parser";
 export type Block = { header: string | null; lines: string[]; eol?: string };
 const keys = (node: AST.TOMLKey) => node.keys.map(key => key.type === "TOMLBare" ? key.name : key.value);
 export function parseToml(text: string): Block[] {
+  text = text.replace(/^\uFEFF/, "");
   const ast = parseTOML(text);
   const tables = ast.body[0].body.filter((node): node is AST.TOMLTable => node.type === "TOMLTable");
   const eol = text.includes("\r\n") ? "\r\n" : "\n";

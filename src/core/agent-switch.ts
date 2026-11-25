@@ -280,7 +280,7 @@ function load(): Store {
     save(store);
     return store;
   }
-  const parsed = JSON.parse(text) as Store;
+  const parsed = JSON.parse(text.replace(/^\uFEFF/, "")) as Store;
   if (!parsed || parsed.version !== 1) throw new Error("供应商数据损坏，已停止写入，请先恢复备份");
   return normalize(parsed);
 }
@@ -645,6 +645,7 @@ export async function activateProvider(id: string) {
       const current = load(); current.direct[app] = id; current.route[app] = id;
       save(current); applyDirect(must(current, id));
     });
+    if (routeIdle()) await stopProxy();
     return { message: AGENT_LABEL[app] + ' 已切换到 ' + provider.name + resumeHint(app), restart: app !== 'claude' };
   });
 }
@@ -1105,7 +1106,13 @@ function importCcProvidersImpl() {
       try { meta = asObj(JSON.parse(String(row.meta || "{}"))); } catch { meta = {}; }
       // 用户不用 Gemini：接口格式是 Gemini 的供应商不导入
       if (str(meta.apiFormat) === "gemini") { skipped += 1; continue; }
-      const provider = providerFromSettings(id, app, String(row.name || "未命名"), settings, meta, String(row.category || ""), String(row.notes || ""));
+      let provider: Provider;
+      try {
+        provider = providerFromSettings(id, app, String(row.name || "未命名"), settings, meta, String(row.category || ""), String(row.notes || ""));
+      } catch {
+        skipped += 1;
+        continue;
+      }
       provider.sort = Number(row.sort_index) || nextSort(store, app);
       store.providers.push(provider);
       added += 1;
@@ -1567,7 +1574,7 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
   for (const key of CODEX_TOP) upsertKey(root.lines, key, null);
   const previous = store.exclusive.codex || {};
   for (const key of CODEX_EXCLUSIVE) {
-    if (previous[key] && readValue(root.lines, key) === previous[key]) upsertKey(root.lines, key, null);
+    if (previous[key] !== undefined && readValue(root.lines, key) === previous[key]) upsertKey(root.lines, key, null);
   }
   for (const key of ['name', 'base_url', 'wire_api', 'experimental_bearer_token', 'requires_openai_auth']) setTableKey(blocks, 'model_providers.tokenpulse_route', key, null);
   const exclusive: Record<string, string | number | boolean> = {};
@@ -1632,7 +1639,7 @@ function spliceMarked(text: string, block: string | null) {
       if (!after) return before + nl;
       return before + nl + nl + after.replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "") + nl;
     }
-    const parts = [before, block.replace(/\s*$/, ""), after].filter((part) => part.length);
+    const parts = [before, block.replace(/\s*$/, "").replace(/\r?\n/g, nl), after].filter((part) => part.length);
     return parts.join(nl + nl).replace(new RegExp(`(?:${nl === "\r\n" ? "\\r\\n" : "\\n"})+$`), "") + nl;
   }
   if (!block) return text;
@@ -1685,7 +1692,7 @@ function editCredentialRef(text: string, value: string | null) {
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const keys = credentialTopKeys(lines.join("\n"));
   if (new Set(keys).size !== keys.length) throw new Error("DeepSeek 的凭据文件有重复的顶层键，已停止写入");
-  const refsAt = lines.findIndex((line) => line === "refs:" || line === "refs: ");
+  const refsAt = lines.findIndex((line) => /^refs\s*:(?:\s*\{\s*\})?\s*(?:#.*)?$/.test(line));
   const refsEnd = (start: number) => {
     let end = start + 1;
     while (end < lines.length && (!lines[end].trim() || lines[end].trim().startsWith("#") || /^[ \t]/.test(lines[end]))) end++;
@@ -1708,6 +1715,7 @@ function editCredentialRef(text: string, value: string | null) {
       if (lines.length) lines.push("");
       lines.push("refs:", row);
     } else {
+      if (/^refs\s*:\s*\{\s*\}\s*(?:#.*)?$/.test(lines[refsAt])) lines[refsAt] = "refs:";
       const end = refsEnd(refsAt);
       const next = lines.slice(refsAt + 1, end).filter((line) => !/^\s*TOKENPULSE_ROUTE\s*:/.test(line));
       next.push(row);
@@ -2091,7 +2099,7 @@ function quoteEnv(value: string) {
 function readText(file: string) { return configRead(file) || ''; }
 function readObject(file: string) {
   const text = configRead(file); if (text === null) return {} as Record<string, unknown>;
-  const value = JSON.parse(text) as unknown;
+  const value = JSON.parse(text.replace(/^\uFEFF/, "")) as unknown;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('配置文件不是 JSON 对象');
   return value as Record<string, unknown>;
 }
@@ -2201,7 +2209,27 @@ function restoreProxy(store: Store, app: AgentApp) {
     if (live === null || ours === null) continue;
     if (file.endsWith('.toml')) configWrite(file, restoreToml(live, original || '', ours));
     else if (app === "deepseek") {
-      const stripped = file.endsWith(".credentials.yaml") ? editCredentialRef(live, null) : spliceMarked(live, null);
+      const restoreBlock = (src: string | null) => {
+        if (!src) return null;
+        const s = src.indexOf(DS_BEGIN), e = src.indexOf(DS_END);
+        return s >= 0 && e > s ? src.slice(s, e + DS_END.length) : null;
+      };
+      const restoreRef = (src: string | null) => {
+        if (!src) return null;
+        const ls = src.split(/\r?\n/);
+        const at = ls.findIndex((line) => /^refs\s*:(?:\s*\{\s*\})?\s*(?:#.*)?$/.test(line));
+        if (at < 0) return null;
+        for (let k = at + 1; k < ls.length; k++) {
+          const line = ls[k];
+          if (line.trim() && !line.trim().startsWith("#") && !/^[ \t]/.test(line)) break;
+          const m = /^\s*TOKENPULSE_ROUTE\s*:\s*(.+?)\s*$/.exec(line);
+          if (m) return yamlUnquote(m[1]);
+        }
+        return null;
+      };
+      const stripped = file.endsWith(".credentials.yaml")
+        ? editCredentialRef(live, restoreRef(original))
+        : spliceMarked(live, restoreBlock(original));
       configWrite(file, stripped.trim() ? stripped : null);
     }
     else if (file.endsWith('settings.json') || file.endsWith('claude.json') || app === 'pi') {

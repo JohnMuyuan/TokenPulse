@@ -76,12 +76,13 @@ check('compressed converted stream decodes content and usage', async () => {
 check('client cancellation closes upstream and releases active count', async () => {
   for (const target of [{}, { upstream: 'openai-chat' }]) {
     let closed = false;
-    await fixture((_req, res) => { res.on('close', () => { closed = true; }); res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n'); }, target, async ({ port, logs, proxy }) => {
+    await fixture((_req, res) => { res.on('close', () => { closed = true; }); res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n'); }, target, async ({ port, logs, failures, proxy }) => {
       await new Promise((resolve, reject) => {
         const req = http.request({ host: '127.0.0.1', port, path: '/claude/v1/messages', method: 'POST' }, res => { res.on('error', () => {}); res.once('data', () => { req.destroy(); resolve(); }); });
         req.on('error', reject); req.end(JSON.stringify({ model: 'qa', stream: true, messages: [] }));
       });
       await delay(40); assert(closed); assert.equal(proxy.stats().active, 0); assert.equal(logs.length, 1); assert.equal(logs[0].status, 499);
+      assert.equal(failures.length, 0, 'a user-cancelled request is not a provider failure and must not feed the circuit breaker');
     });
   }
 });

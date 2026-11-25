@@ -10,30 +10,36 @@ import { contextBridge, ipcRenderer } from "electron";
  */
 let demo = false;
 const blocked = () => Promise.reject(new Error("演示数据不能修改"));
+const mutate = (channel: string, ...args: unknown[]) => (demo ? blocked() : ipcRenderer.invoke(channel, ...args));
 
 contextBridge.exposeInMainWorld("tokenpulse", {
   /** 打开演示模式并返回演示快照；关掉时结束演示进程。 */
   demo: (on: boolean) => {
-    demo = Boolean(on);
-    return on ? ipcRenderer.invoke("demo:snapshot") : ipcRenderer.invoke("demo:end");
+    const next = Boolean(on);
+    demo = next;
+    if (!next) return ipcRenderer.invoke("demo:end");
+    return ipcRenderer.invoke("demo:snapshot").catch((error) => {
+      demo = false;
+      throw error;
+    });
   },
   isDemo: () => demo,
   /** DeepSeek 余额监控（0.3.42）。API Key 只往主进程送，不会再读回来。 */
   deepseekBalance: {
     state: () => ipcRenderer.invoke("deepseek-balance:state"),
-    add: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:add", value)),
-    update: (id: string, value: unknown) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:update", id, value)),
-    remove: (id: string) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:remove", id)),
-    refresh: (id: string) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:refresh", id)),
-    refreshAll: () => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:refresh-all")),
-    reorder: (ids: string[]) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:reorder", ids)),
+    add: (value: unknown) => mutate("deepseek-balance:add", value),
+    update: (id: string, value: unknown) => mutate("deepseek-balance:update", id, value),
+    remove: (id: string) => mutate("deepseek-balance:remove", id),
+    refresh: (id: string) => mutate("deepseek-balance:refresh", id),
+    refreshAll: () => mutate("deepseek-balance:refresh-all"),
+    reorder: (ids: string[]) => mutate("deepseek-balance:reorder", ids),
     /** 账号页的分析：消耗、预测、模型换算；时间线和速度各一个。 */
     insight: (id: string) => ipcRenderer.invoke("deepseek-balance:insight", id),
     timeline: (query: unknown) => ipcRenderer.invoke("deepseek-balance:timeline", query),
     speed: (days: number) => ipcRenderer.invoke("deepseek-balance:speed", days),
-    mark: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("deepseek-balance:mark", value)),
+    mark: (value: unknown) => mutate("deepseek-balance:mark", value),
     onState: (handler: (state: unknown) => void) => {
-      const listener = (_event: unknown, state: unknown) => handler(state);
+      const listener = (_event: unknown, state: unknown) => { if (!demo) handler(state); };
       ipcRenderer.on("deepseek-balance-state", listener);
       return () => ipcRenderer.off("deepseek-balance-state", listener);
     },
@@ -41,18 +47,18 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   /** Google Antigravity 的多账号与本机额度监控，见 main/antigravity-quota.ts。凭据不传到渲染进程。 */
   antigravityQuota: {
     state: () => ipcRenderer.invoke("antigravity-quota:state"),
-    refresh: (accountId?: string) => (demo ? blocked() : ipcRenderer.invoke("antigravity-quota:refresh", accountId)),
+    refresh: (accountId?: string) => mutate("antigravity-quota:refresh", accountId),
     timeline: (query?: unknown) => ipcRenderer.invoke("antigravity-quota:timeline", query),
     speed: (days: number, accountId?: string) => ipcRenderer.invoke("antigravity-quota:speed", days, accountId),
     accounts: () => ipcRenderer.invoke("antigravity-accounts:list"),
-    login: (replaceId?: string) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:login", replaceId)),
-    addLocal: () => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:add-local")),
-    switchLocal: (id: string) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:switch-local", id)),
+    login: (replaceId?: string) => mutate("antigravity-accounts:login", replaceId),
+    addLocal: () => mutate("antigravity-accounts:add-local"),
+    switchLocal: (id: string) => mutate("antigravity-accounts:switch-local", id),
     manage: (action: "remove" | "purge" | "restore" | "rename" | "share-mode", id: string, value?: string) =>
-      demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:manage", action, id, value),
-    reorder: (ids: string[]) => (demo ? blocked() : ipcRenderer.invoke("antigravity-accounts:reorder", ids)),
+      mutate("antigravity-accounts:manage", action, id, value),
+    reorder: (ids: string[]) => mutate("antigravity-accounts:reorder", ids),
     onState: (handler: (state: unknown) => void) => {
-      const listener = (_event: unknown, state: unknown) => handler(state);
+      const listener = (_event: unknown, state: unknown) => { if (!demo) handler(state); };
       ipcRenderer.on("antigravity-quota-state", listener);
       return () => ipcRenderer.off("antigravity-quota-state", listener);
     },
@@ -66,31 +72,31 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   /** tokens.ci 自动上传（0.3.38）。演示模式下会改东西的操作一律拒绝。 */
   tokensCi: {
     state: () => ipcRenderer.invoke("tokens-ci:state"),
-    save: (value: unknown) => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:save", value)),
-    check: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:check")),
-    useLatest: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:use-latest")),
-    upload: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:upload")),
-    preview: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:preview")),
-    login: (privacy: string) => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:login", privacy)),
+    save: (value: unknown) => mutate("tokens-ci:save", value),
+    check: () => mutate("tokens-ci:check"),
+    useLatest: () => mutate("tokens-ci:use-latest"),
+    upload: () => mutate("tokens-ci:upload"),
+    preview: () => mutate("tokens-ci:preview"),
+    login: (privacy: string) => mutate("tokens-ci:login", privacy),
     cancel: () => ipcRenderer.invoke("tokens-ci:cancel"),
-    clearLogin: () => ipcRenderer.invoke("tokens-ci:clear-login"),
-    clearPreview: () => ipcRenderer.invoke("tokens-ci:clear-preview"),
-    resume: () => (demo ? blocked() : ipcRenderer.invoke("tokens-ci:resume")),
+    clearLogin: () => mutate("tokens-ci:clear-login"),
+    clearPreview: () => mutate("tokens-ci:clear-preview"),
+    resume: () => mutate("tokens-ci:resume"),
     open: (url: string) => ipcRenderer.invoke("tokens-ci:open", url),
     onState: (handler: (state: unknown) => void) => {
-      const listener = (_event: unknown, state: unknown) => handler(state);
+      const listener = (_event: unknown, state: unknown) => { if (!demo) handler(state); };
       ipcRenderer.on("tokens-ci-state", listener);
       return () => ipcRenderer.off("tokens-ci-state", listener);
     },
   },
   egressState: () => ipcRenderer.invoke("egress:state"),
-  saveEgress: (config: unknown) => ipcRenderer.invoke("egress:save", config),
-  checkEgress: () => ipcRenderer.invoke("egress:check"),
-  clearEgressHistory: () => ipcRenderer.invoke("egress:clear"),
+  saveEgress: (config: unknown) => mutate("egress:save", config),
+  checkEgress: () => mutate("egress:check"),
+  clearEgressHistory: () => mutate("egress:clear"),
   /** 出口 IP 的归属 / 风险重新查一次（同一个 IP 一分钟一次）。 */
   refreshEgressIntel: (ip: string) => ipcRenderer.invoke("egress:intel", ip),
   onEgressState: (handler: (state: unknown) => void) => {
-    const listener = (_event: unknown, state: unknown) => handler(state);
+    const listener = (_event: unknown, state: unknown) => { if (!demo) handler(state); };
     ipcRenderer.on("egress-state", listener);
     return () => ipcRenderer.off("egress-state", listener);
   },
@@ -99,11 +105,11 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   readPrefs: () => ipcRenderer.invoke("prefs:read"),
   writePrefs: (patch: Record<string, unknown>) => ipcRenderer.invoke("prefs:write", patch),
   officialAccounts: () => ipcRenderer.invoke("accounts:list"),
-  loginOfficialAccount: (kind: string, replaceId?: string) => ipcRenderer.invoke("accounts:login", kind, replaceId),
+  loginOfficialAccount: (kind: string, replaceId?: string) => mutate("accounts:login", kind, replaceId),
   /** 添加本机 CLI 已经登录的账号（0.3.18）：不保存凭据，每次现读 CLI 的登录。 */
-  addCliAccount: (kind: string) => ipcRenderer.invoke("accounts:add-cli", kind),
+  addCliAccount: (kind: string) => mutate("accounts:add-cli", kind),
   /** 账号管理：remove 隐藏 / 普通删除，purge 完全删除 TokenPulse 记录，restore 恢复，rename 改名。 */
-  manageOfficialAccount: (action: "remove" | "purge" | "restore" | "rename", id: string, alias?: string) => ipcRenderer.invoke("accounts:manage", action, id, alias),
+  manageOfficialAccount: (action: "remove" | "purge" | "restore" | "rename", id: string, alias?: string) => mutate("accounts:manage", action, id, alias),
   /** 分享卡片（0.3.51）：月报 / 周报 / 里程碑的数据，画成 PNG（data URL），保存、复制。 */
   share: {
     month: (month?: string) => demo ? blocked() : ipcRenderer.invoke("share:month", month),
@@ -114,9 +120,9 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     copy: (dataUrl: string) => demo ? blocked() : ipcRenderer.invoke("share:copy", dataUrl),
   },
   /** 一键把 CLI 的登录切到这个账号（0.3.49）。 */
-  switchCliAccount: (id: string) => ipcRenderer.invoke("accounts:switch-cli", id),
+  switchCliAccount: (id: string) => mutate("accounts:switch-cli", id),
   /** 拖拽排序：这一家账号的新顺序。 */
-  reorderOfficialAccounts: (kind: string, ids: string[]) => ipcRenderer.invoke("accounts:reorder", kind, ids),
+  reorderOfficialAccounts: (kind: string, ids: string[]) => mutate("accounts:reorder", kind, ids),
   openDataDir: () => ipcRenderer.invoke("open-data-dir"),
   /** 统一运行日志（logs/tokenpulse.log，含登录过程）：在文件夹里选中它；还没有日志时打开数据目录、返回 false。 */
   openLog: () => ipcRenderer.invoke("open-log"),
@@ -224,58 +230,58 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   sessionClis: () => ipcRenderer.invoke("sessions:clis"),
   pickProjectFolder: (start?: string) => (demo ? Promise.resolve(null) : ipcRenderer.invoke("sessions:pick-folder", start)),
   startSession: (kind: string, folder: string) => (demo ? blocked() : ipcRenderer.invoke("sessions:new", kind, folder)),
-  deleteSession: (kind: string, id: string) => ipcRenderer.invoke("sessions:delete", kind, id),
+  deleteSession: (kind: string, id: string) => mutate("sessions:delete", kind, id),
   /** 模型知识库（型号单价和等价规则）：当前版本、上次检查；手动检查更新。 */
   knowledgeState: () => ipcRenderer.invoke("knowledge:state"),
   checkKnowledge: () => ipcRenderer.invoke("knowledge:check"),
   /** 立刻从 CC Switch 的库同步一次，返回新快照。 */
-  syncCcSwitch: () => ipcRenderer.invoke("ccswitch:sync"),
+  syncCcSwitch: () => mutate("ccswitch:sync"),
   /** 供应商切换和本地路由。列表里的密钥已打码。 */
   /** Prism 桥（0.3.19）：随软件带的 Prism Bridge，装环境、登录、启动 / 停止、加成 Codex 供应商。 */
   prismState: () => ipcRenderer.invoke("prism:state"),
-  prismInstall: () => ipcRenderer.invoke("prism:install"),
-  prismLogin: () => ipcRenderer.invoke("prism:login"),
-  prismStart: () => ipcRenderer.invoke("prism:start"),
-  prismStop: () => ipcRenderer.invoke("prism:stop"),
-  prismAutoStart: (on: boolean) => ipcRenderer.invoke("prism:auto-start", on),
-  prismProvider: () => ipcRenderer.invoke("prism:provider"),
-  prismFixProxy: () => ipcRenderer.invoke("prism:fix-proxy"),
+  prismInstall: () => mutate("prism:install"),
+  prismLogin: () => mutate("prism:login"),
+  prismStart: () => mutate("prism:start"),
+  prismStop: () => mutate("prism:stop"),
+  prismAutoStart: (on: boolean) => mutate("prism:auto-start", on),
+  prismProvider: () => mutate("prism:provider"),
+  prismFixProxy: () => mutate("prism:fix-proxy"),
   prismOpenLog: () => ipcRenderer.invoke("prism:open-log"),
   prismUsage: () => ipcRenderer.invoke("prism:usage"),
-  prismRemove: () => ipcRenderer.invoke("prism:remove"),
+  prismRemove: () => mutate("prism:remove"),
   onPrism: (handler: (state: unknown) => void) => {
-    const listener = (_event: unknown, state: unknown) => handler(state);
+    const listener = (_event: unknown, state: unknown) => { if (!demo) handler(state); };
     ipcRenderer.on("prism-bridge", listener);
     return () => ipcRenderer.off("prism-bridge", listener);
   },
   agentState: () => ipcRenderer.invoke("agent:state"),
-  agentSave: (input: unknown) => ipcRenderer.invoke("agent:save", input),
-  agentDelete: (id: string) => ipcRenderer.invoke("agent:delete", id),
-  agentActivate: (id: string) => ipcRenderer.invoke("agent:activate", id),
-  agentProxy: (app: string, on: boolean) => ipcRenderer.invoke("agent:proxy", app, on),
-  agentPass: (app: string, on: boolean) => ipcRenderer.invoke("agent:pass", app, on),
+  agentSave: (input: unknown) => mutate("agent:save", input),
+  agentDelete: (id: string) => mutate("agent:delete", id),
+  agentActivate: (id: string) => mutate("agent:activate", id),
+  agentProxy: (app: string, on: boolean) => mutate("agent:proxy", app, on),
+  agentPass: (app: string, on: boolean) => mutate("agent:pass", app, on),
   agentPassSpeed: (days?: number) => ipcRenderer.invoke("agent:pass-speed", days),
   passSpeedAccount: (kind: string, account: string, days: number) => ipcRenderer.invoke("pass-speed:account", kind, account, days),
   passSpeedSeries: (days: number) => ipcRenderer.invoke("pass-speed:series", days),
-  agentPort: (port: number) => ipcRenderer.invoke("agent:port", port),
-  agentFailover: (id: string, on: boolean) => ipcRenderer.invoke("agent:failover", id, on),
-  agentReorder: (app: string, ids: string[]) => ipcRenderer.invoke("agent:reorder", app, ids),
-  agentImportCc: () => ipcRenderer.invoke("agent:import-cc"),
-  agentImportLive: (app: string) => ipcRenderer.invoke("agent:import-live", app),
+  agentPort: (port: number) => mutate("agent:port", port),
+  agentFailover: (id: string, on: boolean) => mutate("agent:failover", id, on),
+  agentReorder: (app: string, ids: string[]) => mutate("agent:reorder", app, ids),
+  agentImportCc: () => mutate("agent:import-cc"),
+  agentImportLive: (app: string) => mutate("agent:import-live", app),
   agentProbe: (id: string) => ipcRenderer.invoke("agent:probe", id),
   agentModels: (input: unknown) => ipcRenderer.invoke("agent:models", input),
   agentPoolModels: (input: unknown) => ipcRenderer.invoke("agent:pool-models", input),
   /** 确认预览过的改动（agentSave / agentActivate 等返回 confirm 时）。 */
-  agentConfirm: (token: string) => ipcRenderer.invoke("agent:confirm", token),
+  agentConfirm: (token: string) => mutate("agent:confirm", token),
   agentBackups: () => ipcRenderer.invoke("agent:backups"),
-  agentRestore: (kind: "history" | "original", id: string) => ipcRenderer.invoke("agent:restore", kind, id),
-  agentReadOnly: (on: boolean) => ipcRenderer.invoke("agent:readonly", on),
+  agentRestore: (kind: "history" | "original", id: string) => mutate("agent:restore", kind, id),
+  agentReadOnly: (on: boolean) => mutate("agent:readonly", on),
   /** 工具配置被改走了（0.3.10）：现在的情况，和之后新出现的。 */
   agentDriftNow: () => ipcRenderer.invoke("agent:drift"),
   /** 启动时自动修复了什么（0.3.15）：只返回一次。 */
   agentStartupNotice: () => (demo ? Promise.resolve("") : ipcRenderer.invoke("agent:startup-notice")),
   onAgentDrift: (handler: (drifts: unknown) => void) => {
-    const listener = (_event: unknown, drifts: unknown) => handler(drifts);
+    const listener = (_event: unknown, drifts: unknown) => { if (!demo) handler(drifts); };
     ipcRenderer.on("agent-drift", listener);
     return () => ipcRenderer.off("agent-drift", listener);
   },
@@ -286,7 +292,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     return () => ipcRenderer.off("agent-activate-request", listener);
   },
   onAgentSwitch: (handler: (state: unknown) => void) => {
-    const listener = (_event: unknown, state: unknown) => handler(state);
+    const listener = (_event: unknown, state: unknown) => { if (!demo) handler(state); };
     ipcRenderer.on("agent-switch", listener);
     return () => ipcRenderer.off("agent-switch", listener);
   },
@@ -298,7 +304,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   },
   /** 0.3.55：自动切换了 CLI 登录（或者没有能切的号）。设置开着时刷新账号列表。 */
   onCliAutoSwitch: (handler: (events: unknown) => void) => {
-    const listener = (_event: unknown, events: unknown) => handler(events);
+    const listener = (_event: unknown, events: unknown) => { if (!demo) handler(events); };
     ipcRenderer.on("cli-auto-switch", listener);
     return () => ipcRenderer.off("cli-auto-switch", listener);
   },

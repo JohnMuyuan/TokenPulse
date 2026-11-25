@@ -116,8 +116,11 @@ async function check(exitMonitor: ExitMonitor): Promise<HealthReport> {
   } catch { /* 供应商数据读不了：这一组只剩能读到的 */ }
 
   const prefs = readPrefs();
+  // 先按出口白名单门控各家，再决定哪些 provider 允许发起续期和连通性探测，避免绕过出口白名单
+  const siteGates = await Promise.all(SITES.map(async (site) => ({ site, allowed: await exitMonitor.gateQuota(site.kind).catch(() => false) })));
+  const allowedKinds = siteGates.filter((entry) => entry.allowed).map((entry) => entry.site.kind);
   const [statuses, agyStatus] = await Promise.all([
-    listOfficialOAuthStatus().catch(() => []),
+    listOfficialOAuthStatus(now, { allowedKinds }).catch(() => []),
     listAgyAccountStatus().catch(() => null),
   ]);
   const accounts: HealthInputs["accounts"] = [
@@ -134,6 +137,7 @@ async function check(exitMonitor: ExitMonitor): Promise<HealthReport> {
   ];
   const autoSwitchIdle = statuses.filter((status) => status.autoSwitch.on && status.autoSwitch.idle).map((status) => ({ cli: { claude: "Claude Code", chatgpt: "Codex", grok: "Grok CLI" }[status.kind], reason: status.autoSwitch.idle! }));
 
+  // 出口快照在 gateQuota 探测之后读取，确保同一份体检报告里「出口规则」与「连通性」一致
   const egressSnap = exitMonitor.snapshot();
   const egress: HealthInputs["egress"] = {
     enabled: egressSnap.config.enabled,
@@ -146,8 +150,7 @@ async function check(exitMonitor: ExitMonitor): Promise<HealthReport> {
 
   // 出口设了白名单的那家，先按规则放行再连（和查额度同一个规矩）；安装了 Antigravity 或登记了账号时也测 Cloud Code
   const reachRows = await Promise.all([
-    ...SITES.map(async (site) => {
-      const allowed = await exitMonitor.gateQuota(site.kind).catch(() => false);
+    ...siteGates.map(async ({ site, allowed }) => {
       if (!allowed) return { name: site.name, host: site.host, ok: false, skipped: true };
       return { name: site.name, host: site.host, ...(await reach(site.host)) };
     }),

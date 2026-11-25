@@ -320,70 +320,79 @@ export const RENEW_BEFORE_MS = 30 * 60_000;
 export const RENEW_GIVE_UP = 6;
 export const RENEW_GIVE_UP_MS = 60 * 60_000;
 
-let renewing: Promise<number> | null = null;
+const renewing = new Map<OfficialAccountKind, Promise<number>>();
 
 /**
  * 给快过期的 **TokenPulse 登录的账号**续期，返回续期成功的个数。查额度前、打开账号列表前都会调。
  *
- * - 同一时间只跑一轮：两轮同时拿同一个 refresh token 去换，后一个会让前一个换到的新 token 作废；
+ * - 按 provider 分别单飞：同一家同一时间只跑一轮（两轮同时拿同一个 refresh token 去换会让前一个换到的作废），
+ *   不同家互不阻塞、也不会因为别的家正在续期而跳过这次请求的 provider；
  * - 每成功一个就立刻写盘：新的 refresh token 只有这一份，进程这时候被杀就再也续不上；
  * - 写之前重读账号库，只改这一个账号：续期要走网络，这期间用户可能刚添加 / 切换了账号。
  */
-export function renewStoredCredentials(
+export async function renewStoredCredentials(
   now = Date.now(),
   refresh: typeof refreshCredential = refreshCredential,
   /** 只续这几家。额度查询前出口 IP 不在允许列表里的那家，续期（也是向官方发请求）一起跳过。 */
   kinds?: OfficialAccountKind[],
 ): Promise<number> {
-  if (!renewing) {
-    renewing = (async () => {
-      let renewed = 0;
-      const due = readOfficialAccountStore().accounts.filter(
-        (item) => (!kinds || kinds.includes(item.kind)) && item.credential?.refreshToken && !item.renewFailed && item.credential.expiresAt != null && item.credential.expiresAt - now < RENEW_BEFORE_MS,
-      );
-      for (const account of due) {
-        const result: RefreshResult = await refresh(account.kind, account.credential!, now);
-        const rejected = !result.ok && !result.permanent && result.status != null && result.status >= 400 && result.status < 500 && result.status !== 429;
-        if (!result.ok && !result.permanent && !rejected) {
-          logRenew({ at: now, kind: account.kind, accountId: account.id, source: "stored", ok: false, status: result.status, code: result.code, error: result.error });
-          continue;
-        }
-        const store = readOfficialAccountStore();
-        const target = store.accounts.find((item) => item.id === account.id);
-        // 这期间用户重新登录过这个账号：以新登录的为准，这次续期的结果丢掉。
-        if (!target || target.credential?.refreshToken !== account.credential!.refreshToken) {
-          logRenew({ at: now, kind: account.kind, accountId: account.id, source: "stored", ok: result.ok, note: "续期期间重新登录过，结果丢弃" });
-          continue;
-        }
-        let note: string | undefined;
-        if (result.ok) {
-          target.credential = result.credential;
-          delete target.renewFailed;
-          delete target.renewTrouble;
-          renewed += 1;
-        } else if (result.permanent) {
-          target.renewFailed = result.error;
-          delete target.renewTrouble;
-        } else {
-          // 被拒但没说 refresh token 失效：先记着，下一轮再试；拒得够多、够久才判死
-          const trouble = target.renewTrouble ?? { since: now, count: 0, error: result.error };
-          target.renewTrouble = { since: trouble.since, count: trouble.count + 1, error: result.error };
-          if (target.renewTrouble.count >= RENEW_GIVE_UP && now - target.renewTrouble.since >= RENEW_GIVE_UP_MS) {
-            target.renewFailed = `${result.error}（连续 ${target.renewTrouble.count} 次被拒）`;
-            note = "连续被拒，判为需要重新登录";
-            delete target.renewTrouble;
+  const targetKinds: OfficialAccountKind[] = kinds ? [...new Set(kinds)] : ["claude", "chatgpt", "grok"];
+  if (!targetKinds.length) return 0;
+  const runKind = (kind: OfficialAccountKind): Promise<number> => {
+    let task = renewing.get(kind);
+    if (!task) {
+      task = (async () => {
+        let renewed = 0;
+        const due = readOfficialAccountStore().accounts.filter(
+          (item) => item.kind === kind && !item.hidden && item.credential?.refreshToken && !item.renewFailed && item.credential.expiresAt != null && item.credential.expiresAt - now < RENEW_BEFORE_MS,
+        );
+        for (const account of due) {
+          const result: RefreshResult = await refresh(account.kind, account.credential!, now);
+          const rejected = !result.ok && !result.permanent && result.status != null && result.status >= 400 && result.status < 500 && result.status !== 429;
+          if (!result.ok && !result.permanent && !rejected) {
+            logRenew({ at: now, kind: account.kind, accountId: account.id, source: "stored", ok: false, status: result.status, code: result.code, error: result.error });
+            continue;
           }
+          const store = readOfficialAccountStore();
+          const target = store.accounts.find((item) => item.id === account.id);
+          // 这期间用户重新登录过这个账号：以新登录的为准，这次续期的结果丢掉。
+          if (!target || target.credential?.refreshToken !== account.credential!.refreshToken) {
+            logRenew({ at: now, kind: account.kind, accountId: account.id, source: "stored", ok: result.ok, note: "续期期间重新登录过，结果丢弃" });
+            continue;
+          }
+          let note: string | undefined;
+          if (result.ok) {
+            target.credential = result.credential;
+            delete target.renewFailed;
+            delete target.renewTrouble;
+            renewed += 1;
+          } else if (result.permanent) {
+            target.renewFailed = result.error;
+            delete target.renewTrouble;
+          } else {
+            // 被拒但没说 refresh token 失效：先记着，下一轮再试；拒得够多、够久才判死
+            const trouble = target.renewTrouble ?? { since: now, count: 0, error: result.error };
+            target.renewTrouble = { since: trouble.since, count: trouble.count + 1, error: result.error };
+            if (target.renewTrouble.count >= RENEW_GIVE_UP && now - target.renewTrouble.since >= RENEW_GIVE_UP_MS) {
+              target.renewFailed = `${result.error}（连续 ${target.renewTrouble.count} 次被拒）`;
+              note = "连续被拒，判为需要重新登录";
+              delete target.renewTrouble;
+            }
+          }
+          logRenew({
+            at: now, kind: account.kind, accountId: account.id, source: "stored", ok: result.ok,
+            ...(result.ok ? {} : { status: result.status, code: result.code, error: result.error, permanent: Boolean(target.renewFailed), note }),
+          });
+          writeOfficialAccountStore(store);
         }
-        logRenew({
-          at: now, kind: account.kind, accountId: account.id, source: "stored", ok: result.ok,
-          ...(result.ok ? {} : { status: result.status, code: result.code, error: result.error, permanent: Boolean(target.renewFailed), note }),
-        });
-        writeOfficialAccountStore(store);
-      }
-      return renewed;
-    })().finally(() => {
-      renewing = null;
-    });
-  }
-  return renewing;
+        return renewed;
+      })().finally(() => {
+        if (renewing.get(kind) === task) renewing.delete(kind);
+      });
+      renewing.set(kind, task);
+    }
+    return task;
+  };
+  const counts = await Promise.all(targetKinds.map(runKind));
+  return counts.reduce((sum, n) => sum + n, 0);
 }

@@ -558,7 +558,7 @@ function enrichGroupsAndModelsWithCatalog<G extends { title?: string; models: st
     const pool = quotaPoolId(g.models, g.title);
     const catGroup = catalog.groups.find((cg) => cg.pool === pool);
     if (!catGroup || !catGroup.models.length) return g;
-    const catPoolModels = catalog.models.filter((m) => quotaPoolId(m.family || m.label, g.title) === pool);
+    const catPoolModels = catalog.models.filter((m) => quotaPoolId(m.family || m.label) === pool);
     if (!catPoolModels.length) return g;
 
     const shouldUpgradeGemini =
@@ -1337,6 +1337,13 @@ function buildWindowInsight(
   let basis: AgyWindowCapacity["basis"] = null;
   let confidence: AgyWindowCapacity["confidence"] = "insufficient";
 
+  // 若窗口半途才开始采样且前序无本机记录，采样前的初始已用同样计入外部/历史已用，不扣在本机头上
+  const preInitialExt =
+    !ended && !soloMode && curSeg && curSeg.points.length > 0 && curSeg.points[0].used >= 1.5 &&
+    !windowRows.some((r) => r.at < curSeg.points[0].at)
+      ? curSeg.points[0].used
+      : 0;
+
   if (sumPoints >= MIN_CAPACITY_PCT && sumTokens > 0) {
     const decay = windowKind === "week" ? 0.55 : 0.85;
     fullTokens = Math.round(
@@ -1356,7 +1363,7 @@ function buildWindowInsight(
     basis = intervals >= 2 && sumPoints >= 5 ? "measured" : "current";
     confidence = intervals >= 3 && sumPoints >= 15 ? "medium" : sumPoints >= 5 ? "low" : "current";
   } else if (!ended && used >= MIN_CAPACITY_PCT && local.tokens > 0) {
-    const extNow = !soloMode && curAttrResult ? curAttrResult.offPoints + curAttrResult.coUsedPoints : 0;
+    const extNow = !soloMode ? preInitialExt + (curAttrResult ? curAttrResult.offPoints + curAttrResult.coUsedPoints : 0) : 0;
     const netUsed = Math.max(0, used - extNow);
     if (netUsed >= MIN_CAPACITY_PCT) {
       fullTokens = Math.round((local.tokens / netUsed) * 100);
@@ -1378,12 +1385,6 @@ function buildWindowInsight(
 
   const rawOffPoints = !ended && !soloMode && curAttrResult ? curAttrResult.offPoints : 0;
   const rawCoUsedPoints = !ended && !soloMode && curAttrResult ? curAttrResult.coUsedPoints : 0;
-  // 若窗口半途才开始采样且前序无本机记录，采样前的初始已用同样计入外部/历史已用，不扣在本机头上
-  const preInitialExt =
-    !ended && !soloMode && curSeg && curSeg.points.length > 0 && curSeg.points[0].used >= 1.5 &&
-    !windowRows.some((r) => r.at < curSeg.points[0].at)
-      ? curSeg.points[0].used
-      : 0;
   const externalUsedPct = ended
     ? 0
     : Math.min(used, Math.round((preInitialExt + rawOffPoints + rawCoUsedPoints) * 10) / 10);
@@ -1819,11 +1820,11 @@ function buildTimelineWindow(
     if (group) {
       const matched = pickPoolSampleGroup(s.groups, group.key, group.title);
       if (!matched) return null;
-      const v = windowKind === "five" ? matched.used : (matched.weekUsed ?? matched.used);
+      const v = windowKind === "five" ? matched.used : matched.weekUsed;
       return typeof v === "number" && Number.isFinite(v) ? v : null;
     }
     const vals = s.groups
-      .map((g) => (windowKind === "five" ? g.used : (g.weekUsed ?? g.used)))
+      .map((g) => (windowKind === "five" ? g.used : g.weekUsed))
       .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     return vals.length ? Math.max(...vals) : null;
   };
@@ -1999,9 +2000,24 @@ export class AntigravityQuota {
   }
 
   forgetAccount(accountId: string) {
-    if (this.stored.accounts?.[accountId]) {
-      delete this.stored.accounts[accountId];
-      this.insightCache.delete(accountId);
+    const hadSlot = Boolean(this.stored.accounts?.[accountId]);
+    if (hadSlot) delete this.stored.accounts![accountId];
+    this.insightCache.delete(accountId);
+    this.insightCache.delete("antigravity");
+    // 同步清理或重绑顶层兼容槽，防止彻底删除账号后旧 last/history 留在顶层被新添加的无关账号继承
+    const remaining = visibleAgyAccounts();
+    const first = remaining[0];
+    if (first && this.stored.accounts?.[first.id]) {
+      const slot = this.stored.accounts[first.id];
+      this.stored.last = slot.last;
+      this.stored.history = slot.history;
+      this.stored.notified = { ...slot.notified };
+    } else if (!remaining.length) {
+      delete this.stored.last;
+      this.stored.history = [];
+      this.stored.notified = {};
+    }
+    if (hadSlot || !remaining.length) {
       this.save();
       this.publish();
     }
@@ -2446,10 +2462,11 @@ export class AntigravityQuota {
     const visible = visibleAgyAccounts();
     const rawAccountId = typeof q.accountId === "string" && q.accountId ? q.accountId : "antigravity";
     const matchedAcc = visible.find((a) => a.id === rawAccountId);
+    const targetAcc = matchedAcc ?? visible[0];
     const effectiveId = matchedAcc ? matchedAcc.id : visible[0]?.id ?? "antigravity";
     const legacyOwner = this.legacyOwnerId(visible);
     const slot = matchedAcc || visible.length ? this.slotOf(effectiveId, effectiveId === legacyOwner) : this.stored;
-    const soloMode = matchedAcc ? normalizeShareMode(matchedAcc.shareMode) === "solo" : false;
+    const soloMode = targetAcc ? normalizeShareMode(targetAcc.shareMode) === "solo" : false;
 
     const allRows = this.recentRows(now);
     let rows = allRows;
@@ -2457,10 +2474,9 @@ export class AntigravityQuota {
       const linkInput = visible.map((acc) => ({
         id: acc.id,
         shareMode: normalizeShareMode(acc.shareMode),
-        last: this.slotOf(acc.id, true).last,
+        last: this.stored.accounts?.[acc.id]?.last ?? (acc.id === legacyOwner ? this.stored.last : undefined),
       }));
       const links = detectFamilyLinks(linkInput).get(effectiveId);
-      const targetAcc = matchedAcc ?? visible[0];
       const inLocal = Boolean(this.activeLocalEmail && targetAcc && normalizeAgyEmail(targetAcc.email) === this.activeLocalEmail);
       rows = this.rowsForAccount(allRows, effectiveId, visible.length, new Set(links?.peers ?? []), inLocal);
     }
@@ -2538,8 +2554,13 @@ export class AntigravityQuota {
     if (accountId && accountId.startsWith("antigravity:") && visible.length > 1) {
       const target = visible.find((a) => a.id === accountId);
       const inLocal = Boolean(this.activeLocalEmail && target && normalizeAgyEmail(target.email) === this.activeLocalEmail);
+      const legacyOwner = this.legacyOwnerId(visible);
       const links = detectFamilyLinks(
-        visible.map((acc) => ({ id: acc.id, shareMode: normalizeShareMode(acc.shareMode), last: this.slotOf(acc.id, true).last })),
+        visible.map((acc) => ({
+          id: acc.id,
+          shareMode: normalizeShareMode(acc.shareMode),
+          last: this.stored.accounts?.[acc.id]?.last ?? (acc.id === legacyOwner ? this.stored.last : undefined),
+        })),
       ).get(accountId);
       rows = this.rowsForAccount(baseRows, accountId, visible.length, new Set(links?.peers ?? []), inLocal);
     }
@@ -2800,11 +2821,12 @@ export class AntigravityQuota {
           }),
         );
 
-        // 仅当顶层历史已经落入对应账号（或无待归属的原主账号）时同步兼容槽，防止先加别的号时把老采样洗掉
-        const firstAcc = refreshedVisible[0];
+        // 仅当顶层历史已经落入对应账号（或无待归属的原主账号）时同步兼容槽；重读当前可见列表，避免复活刷新途中已 purge 的账号
+        const currentVisible = visibleAgyAccounts();
+        const firstAcc = currentVisible[0];
         const waitingLegacyOwner = Boolean(legacyOwner && !this.stored.accounts?.[legacyOwner]);
-        if (firstAcc && !waitingLegacyOwner) {
-          const firstSlot = this.slotOf(firstAcc.id, firstAcc.id === legacyOwner);
+        if (firstAcc && !waitingLegacyOwner && this.stored.accounts?.[firstAcc.id]) {
+          const firstSlot = this.stored.accounts[firstAcc.id];
           this.stored.last = firstSlot.last;
           this.stored.history = firstSlot.history;
         }

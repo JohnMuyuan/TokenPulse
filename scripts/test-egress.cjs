@@ -267,6 +267,37 @@ const config = { host: 'api.anthropic.com', allowedIps: ['203.0.113.10'], allowe
     await Q.fetchOfficialQuota(true, async () => { throw new Error('boom'); });
     checks++; console.log('PASS quota queries are gated by the exit IP allowlist only when monitoring is enabled: off bypass, block, single alert, probe failure, recovery');
   }
+  {
+    let clock = NOW;
+    let finishProbe;
+    const monitor = new ExitMonitor({ now: () => clock, probe: async (provider, host) => {
+      if (provider === 'claude' && clock > NOW && !finishProbe) {
+        return new Promise(resolve => { finishProbe = ip => resolve(sample({ provider, host, ip, checkedAt: clock })); });
+      }
+      return sample({ provider, host, ip: '198.51.100.20', checkedAt: clock });
+    } });
+    const config = { ...E.defaults(), enabled: true, ipIntel: false };
+    config.providers.claude.allowedIps = ['203.0.113.10'];
+    try {
+      monitor.save(config);
+      await monitor.check(true);
+      clock += 60_000;
+      const quota = monitor.gateQuota('claude');
+      config.providers.claude.allowedIps = ['203.0.113.11'];
+      monitor.save(config);
+      finishProbe('203.0.113.10');
+      assert.equal(await quota, false, 'the old allowlist cannot authorize a quota request');
+      await monitor.check(true);
+      clock += 60_000;
+      finishProbe = undefined;
+      const launch = monitor.gateLaunch('claude', 'Claude Code');
+      monitor.save({ ...config, enabled: false });
+      finishProbe('198.51.100.20');
+      assert.deepEqual(await launch, { ok: true }, 'disabling monitoring applies to a pending launch');
+      assert.deepEqual(monitor.snapshot().quotaBlocks, {});
+    } finally { monitor.stop(); }
+    checks++; console.log('PASS in-flight quota and launch gates use the current settings');
+  }
   console.log(`${checks}/${checks} egress checks passed`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {
   assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep) && path.basename(root).startsWith('tokenpulse-egress-test-'));

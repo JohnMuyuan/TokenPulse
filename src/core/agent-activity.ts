@@ -785,7 +785,7 @@ export class ActivityScanner {
             } catch { /* 没有 events.jsonl */ }
             sub.inferred = inferred;
           }
-        } catch { sub.inferred = null; }
+        } catch { sub.read = false; sub.inferred = null; }
       }
       const staleLimit = sub.inferred?.ask ? ASK_STALE_MS : SUB_STALE_MS;
       if (now - sub.mtimeMs > staleLimit) { this.subs.delete(sub.file); continue; }
@@ -982,7 +982,7 @@ export class ActivityScanner {
       const mtimeMs = Math.max(stat.mtimeMs, auxMtimeMs ?? 0);
       if (!entry.read || stat.size !== entry.size || mtimeMs !== entry.mtimeMs || auxSize !== entry.auxSize) {
         entry.size = stat.size; entry.mtimeMs = mtimeMs; entry.auxSize = auxSize; entry.auxMtimeMs = auxMtimeMs;
-        try { await this.load(entry); } catch { entry.inferred = null; entry.task = null; }
+        try { await this.load(entry); } catch { entry.read = false; entry.inferred = null; entry.task = null; }
       }
     }
     const { byFile, byKey } = await this.scanSubs(now);
@@ -1165,6 +1165,10 @@ export class ActivityScanner {
               holder.settle = { since: now, notify, ended: item.ended, taskSince: item.since, seenAt };
             } else if (swarmWaiting || pendingContinuation) {
               holder.settle.notify = false;
+            } else {
+              holder.settle.notify = treatAsSwarm ? Boolean(holder.coordRan) : true;
+              holder.settle.ended = item.ended ?? holder.settle.ended;
+              holder.settle.seenAt = Math.max(holder.settle.seenAt, seenAt);
             }
             const settleMs = treatAsSwarm ? SWARM_SETTLE_MS : (subOnlyNonSwarm ? SUBAGENT_HANDOFF_MS : AGY_SCRIPT_HANDOFF_MS);
             if (now - holder.settle.since < settleMs) {

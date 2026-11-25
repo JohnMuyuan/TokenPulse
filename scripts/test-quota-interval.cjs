@@ -42,6 +42,11 @@ assert.equal(readPrefs().quotaEverySeconds, 600);
 assert.equal(writePrefs({ quotaEverySeconds: 180 }).quotaEverySeconds, 180);
 pass('prefs.json keeps the clamped interval across unrelated saves');
 
+fs.writeFileSync(path.join(process.env.TOKENPULSE_DATA_DIR, 'prefs.json'), 'null');
+assert.equal(readPrefs().quotaEverySeconds, 60);
+assert.equal(writePrefs({ notifyAt: 80 }).notifyAt, 80);
+pass('a null preferences file falls back to defaults and can be saved again');
+
 const timers = [];
 const originalSet = global.setInterval;
 const originalClear = global.clearInterval;

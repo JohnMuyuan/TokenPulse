@@ -1024,6 +1024,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   let tokens = 0;
   let costUsd = 0;
   const matched: RequestRow[] = [];
+  const cacheRows: RequestRow[] = [];
   let firstAt: number | undefined;
   if (!query.capacityOnly) {
     for (const name of names) {
@@ -1091,10 +1092,16 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const hint = query.source === "Antigravity" ? '"antigravity"' : undefined;
 
   const inMonths = function* () {
-    for (const name of names) {
+    // 倒序遍历月份并在单月内按「后写覆盖前写」去重，与 compactRequests() 保持一致（避免整理前读到旧重复行）
+    for (let i = names.length - 1; i >= 0; i--) {
+      const name = names[i];
       const month = name.slice(0, 7);
       if (month < fromMonth || month > toMonth) continue;
-      yield* streamMonth(name, hint, Boolean(query.capacityOnly));
+      const latest = new Map<string, RequestRecord>();
+      for (const raw of streamMonth(name, hint, Boolean(query.capacityOnly))) {
+        latest.set(keyOf(raw), raw);
+      }
+      yield* latest.values();
     }
     yield* cc.own;
   };
@@ -1163,6 +1170,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.aggregate && query.filteredAggregate) aggregateRow(row, day, raw.at);
       if (query.projects) projectRow(row);
       if (query.sessions) sessionRow(row);
+      if (query.cache) cacheRows.push(row);
       if (query.sort === "cache_low" && row.input < LARGE_INPUT_MIN) return;
       if (query.sort === "quota" && query.quotaWindows?.length) {
         const qp = quotaHintPct(row);
@@ -1217,7 +1225,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const nowForQuota = Date.now();
   const projectQuotas = query.projects ? projectQuota(officialParts, accountRows, nowForQuota) : null;
   const sessionQuotas = query.sessions ? projectQuota(sessionOfficialParts, accountRows, nowForQuota) : null;
-  const cache = query.cache ? analyzeCache(matched) : undefined;
+  const cache = query.cache ? analyzeCache(cacheRows) : undefined;
   const pages = Math.max(1, Math.ceil(totalMatched / pageSize));
   const page = Math.min(Math.max(0, query.page || 0), pages - 1);
   return {

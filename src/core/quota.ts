@@ -96,8 +96,7 @@ function isAuthFailure(raw?: string): boolean {
   const text = (raw || "").toLowerCase();
   return (
     text === "auth" ||
-    text.includes("401") ||
-    text.includes("403") ||
+    /\bhttp\s*(?:401|403)\b/.test(text) ||
     text.includes("unauthor") ||
     text.includes("authentication") ||
     text.includes("invalid_token") ||
@@ -221,7 +220,8 @@ function tmpName(prefix: string) {
 
 async function curlBinary(url: string, headers: string[], bodyFile: string) {
   const out = tmpName("tokenpulse-quota");
-  const args = ["-sS", "-m", "15", ...(await curlProxyArgs(url)), "-X", "POST", "-o", out, "-w", "%{http_code}", "--data-binary", `@${bodyFile}`, url];
+  const hdr = tmpName("tokenpulse-quota-hdr");
+  const args = ["-sS", "-m", "15", ...(await curlProxyArgs(url)), "-X", "POST", "-D", hdr, "-o", out, "-w", "%{http_code}", "--data-binary", `@${bodyFile}`, url];
   for (const header of headers) args.push("-H", header);
   const started = Date.now();
   try {
@@ -231,12 +231,32 @@ async function curlBinary(url: string, headers: string[], bodyFile: string) {
     const line = `POST ${logUrl(url)} → ${Number.isFinite(status) ? status : "?"}（${Date.now() - started} ms，${buf.length} 字节）`;
     if (status >= 400) log.warn("net", line);
     else log.info("net", line);
+    if (status === 401 || status === 403) throw new Error("auth");
+    if (status >= 400) {
+      let retryAfterMs: number | undefined;
+      try {
+        const rawHdr = fs.readFileSync(hdr, "utf8");
+        const m = /^retry-after\s*:\s*(.+)$/im.exec(rawHdr);
+        if (m) {
+          const val = m[1].trim();
+          const sec = Number(val);
+          if (Number.isFinite(sec) && sec >= 0) retryAfterMs = sec * 1000;
+          else {
+            const at = Date.parse(val);
+            if (Number.isFinite(at) && at > Date.now()) retryAfterMs = at - Date.now();
+          }
+        }
+      } catch { /* ignore */ }
+      throw new HttpError(status, retryAfterMs);
+    }
     return buf;
   } catch (error) {
+    if (error instanceof HttpError || (error instanceof Error && error.message === "auth")) throw error;
     log.warn("net", `POST ${logUrl(url)} 失败（${Date.now() - started} ms）：${errorText(error)}`);
     throw error;
   } finally {
     fs.unlink(out, () => undefined);
+    fs.unlink(hdr, () => undefined);
   }
 }
 
@@ -269,22 +289,27 @@ function readFields(chunk: Buffer): ProtoField[] {
   let i = 0;
   while (i < chunk.length) {
     const [tag, ni] = readVarint(chunk, i);
+    if (ni <= i) break;
     i = ni;
     const field = tag >> 3;
     const wire = tag & 7;
     if (wire === 0) {
       const [v, nj] = readVarint(chunk, i);
+      if (nj <= i) break;
       i = nj;
       out.push({ field, wire, varint: v });
     } else if (wire === 2) {
       const [n, nj] = readVarint(chunk, i);
+      if (nj <= i || n < 0 || nj + n > chunk.length) break;
       const bytes = chunk.subarray(nj, nj + n);
       i = nj + n;
       out.push({ field, wire, bytes });
     } else if (wire === 5) {
+      if (i + 4 > chunk.length) break;
       out.push({ field, wire, float: chunk.readFloatLE(i) });
       i += 4;
     } else if (wire === 1) {
+      if (i + 8 > chunk.length) break;
       i += 8;
     } else {
       break;
@@ -295,8 +320,29 @@ function readFields(chunk: Buffer): ProtoField[] {
 
 function grpcPayload(buf: Buffer): Buffer | undefined {
   if (buf.length < 5) return undefined;
-  const len = buf.readUInt32BE(1);
-  return buf.subarray(5, Math.min(buf.length, 5 + len));
+  let offset = 0;
+  let data: Buffer | undefined;
+  while (offset + 5 <= buf.length) {
+    const flag = buf[offset];
+    const len = buf.readUInt32BE(offset + 1);
+    if (offset + 5 + len > buf.length) break;
+    const slice = buf.subarray(offset + 5, offset + 5 + len);
+    if (flag === 0 && !data) {
+      data = slice;
+    } else if ((flag & 0x80) !== 0) {
+      const trailer = slice.toString("utf8");
+      const m = /^grpc-status\s*:\s*(\d+)/im.exec(trailer);
+      if (m) {
+        const code = Number(m[1]);
+        if (code === 16 || code === 7) throw new Error("auth");
+        if (code === 8) throw new HttpError(429);
+      }
+    } else if (flag !== 0) {
+      return undefined;
+    }
+    offset += 5 + len;
+  }
+  return data;
 }
 
 function timestampSeconds(msg: Buffer): number | undefined {
@@ -371,7 +417,11 @@ function targetsOf(kind: AccountKind, now = Date.now()): Target[] {
   const liveById = new Map(live.map((account) => [`${account.kind}:${account.ref}`, account]));
   const out: Target[] = [];
   for (const account of visibleAccounts(kind)) {
-    const credential = account.credential ?? liveById.get(account.id)?.credential;
+    const live = liveById.get(account.id)?.credential;
+    let credential = account.credential ?? live;
+    // TokenPulse 存的那份已经过期（续不上），而 CLI 里同一个账号的登录还有效：用 CLI 那份，
+    // 和设置页的 resolveAccountCredential 保持一致，别把还能用的账号报成「登录已失效」。
+    if (credential && live && credential !== live && isExpired(credential, now) && !isExpired(live, now)) credential = live;
     if (!credential || isExpired(credential, now)) continue;
     out.push({ token: credential.token, workspace: credential.accountId, accountId: account.id });
   }
@@ -410,7 +460,8 @@ async function grokCreditsConfig(key: string) {
         };
       }
     }
-  } catch {
+  } catch (error) {
+    if ((error instanceof Error && error.message === "auth") || (error instanceof HttpError && error.status === 429)) throw error;
     // 退回 protobuf
   }
   const empty = emptyGrpcWeb();
@@ -443,12 +494,12 @@ async function grokResetCount(key: string) {
 async function grokQuota(active: Target): Promise<OfficialQuota | undefined> {
   const key = active.token;
   const [config, resets] = await Promise.all([grokCreditsConfig(key), grokResetCount(key).catch(() => undefined)]);
-  if (!config && resets == null) return undefined;
+  if (!config) return undefined;
   return {
     name: "Grok 账号",
-    weekPct: config?.weekPct,
-    weekReset: config?.weekReset,
-    weekStart: config?.weekStart,
+    weekPct: config.weekPct,
+    weekReset: config.weekReset,
+    weekStart: config.weekStart,
     resetCredits: resets,
     accountId: active.accountId,
   };
@@ -510,8 +561,8 @@ async function claudeQuota(active: Target): Promise<OfficialQuota | undefined> {
   const modelWeeks = scoped.length && (await claudeTier(active)) === "max" ? scoped : undefined;
   return {
     name: "Claude 账号",
-    fiveHourPct: five?.pct ?? 0,
-    weekPct: week?.pct ?? 0,
+    fiveHourPct: five?.pct,
+    weekPct: week?.pct,
     weekReset: week?.reset,
     fiveHourReset: five?.reset,
     accountId: active.accountId,
@@ -631,7 +682,11 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate, pick?:
     if (!picked.has(id)) picked.set(id, pick(kind, id));
     return picked.get(id)!;
   };
-  const kinds: AccountKind[] = ["claude", "chatgpt", "grok"];
+  const allKinds: AccountKind[] = ["claude", "chatgpt", "grok"];
+  // 传入 pick 时只门控和续期本轮真正需要查询的 provider，避免对后台静默账号或无关 provider 误发探测/重复报 blocked
+  const kinds: AccountKind[] = pick
+    ? allKinds.filter((kind) => visibleAccounts(kind).some((account) => wanted(kind, account.id)))
+    : allKinds;
   const issues: QuotaIssue[] = [];
   // 检查本身出错也按「不放行」处理：宁可这一轮没有额度，也不从没确认过的出口去问官方
   const passed = gate ? await Promise.all(kinds.map((kind) => gate(kind).catch(() => false))) : kinds.map(() => true);
@@ -641,7 +696,7 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate, pick?:
     issues.push({ kind: kinds[i], who: KIND_LABEL[kinds[i]], reason: "blocked" });
   }
   // TokenPulse 自己登录的账号需要由本软件负责续期，额度查询仍只使用各账号自己的凭据。
-  await renewStoredCredentials(Date.now(), undefined, allowed).catch(() => 0);
+  if (allowed.length) await renewStoredCredentials(Date.now(), undefined, allowed).catch(() => 0);
   // 登录在 Claude Code 里的账号：Claude Code 没在运行时替它续（见 cli-renew.ts）
   const cliRenew: CliRenewResult | undefined = allowed.includes("claude") ? await renewCliCredential().catch(() => undefined) : undefined;
   const value: OfficialQuotaMap = {};
@@ -682,13 +737,14 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate, pick?:
               issues.push({ kind, accountId: target.accountId, who, reason: "rate-limited", retryAt: until, detail: detail.slice(0, 80) });
               return undefined;
             }
+            const cleanDetail = errorText(error);
             issues.push({
               kind,
               accountId: target.accountId,
               who,
-              reason: isAuthFailure(detail) ? "auth" : "error",
+              reason: isAuthFailure(cleanDetail) ? "auth" : "error",
               // execFile 的 message 是整条命令行（带 token），取 curl 自己的报错
-              detail: errorText(error).slice(0, 80),
+              detail: cleanDetail.slice(0, 80),
             });
             return undefined;
           },

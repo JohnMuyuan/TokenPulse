@@ -957,10 +957,19 @@ async function startOAuthLoopback(expectedState: string, timeoutMs = LOGIN_TIMEO
       servers.map(
         (srv) =>
           new Promise<void>((r) => {
+            let done = false;
+            const finish = () => { if (done) return; done = true; clearTimeout(force); r(); };
+            // 浏览器 Happy Eyeballs / 预连接可能留下空闲 TCP 连接：主动释放空闲连接并加短兜底，避免卡住 60s
+            const force = setTimeout(() => {
+              try { srv.closeAllConnections?.(); } catch { /* ignore */ }
+              finish();
+            }, 200);
+            force.unref?.();
             try {
-              srv.close(() => r());
+              srv.close(finish);
+              srv.closeIdleConnections?.();
             } catch {
-              r();
+              finish();
             }
           }),
       ),
@@ -1489,10 +1498,21 @@ export async function fetchAntigravityCloudStatus(
       if (modelsRes.status === 401 || modelsRes.status === 403) {
         throw new Error(`登录凭据已失效（HTTP ${modelsRes.status}）`);
       }
+      if (modelsRes.status === 429) {
+        throw new Error("请求过于频繁（HTTP 429），稍后自动重试");
+      }
       const okModels = modelsRes.status >= 200 && modelsRes.status < 300 ? modelsRes.json : null;
       const okSummary = summaryRes.status >= 200 && summaryRes.status < 300 ? summaryRes.json : null;
+      if (!okModels && !okSummary) {
+        lastErr = new Error(`Cloud Code 额度接口暂时不可用（HTTP ${modelsRes.status || 0}）`);
+        continue;
+      }
       const parsed = parseAntigravityCloudQuota(loadRes.json, okModels, okSummary);
       if (parsed) {
+        if (!parsed.status.groups.length && !okModels) {
+          lastErr = new Error(`Cloud Code 未返回有效额度分组（HTTP ${modelsRes.status || 0}）`);
+          continue;
+        }
         const result = { status: parsed.status, ...(parsed.projectId ? { projectId: parsed.projectId } : {}) };
         if (Object.keys(parsed.status.labels).length) rememberModelLabels(parsed.status.labels);
         if (isCloudResponseDegraded(okModels, okSummary)) {

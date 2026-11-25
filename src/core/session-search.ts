@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { threadId } from "worker_threads";
 import { dataFile, readJson, writeJson } from "./paths";
 import { parseSessionFile, sessionFiles, sessionTextFile, type AgentKind, type SubagentKind } from "./sessions";
 
@@ -98,7 +99,14 @@ export function searchSessions(query: unknown, kind?: unknown): SearchResult {
     const target = sessionTextFile(item.file);
     if (hit && hit.size === item.size && hit.mtimeMs === item.mtimeMs && fs.existsSync(target)) continue;
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, extract(item.summary.kind, item.file), { mode: 0o600 });
+    const tmp = `${target}.${process.pid}.${threadId}.tmp`;
+    fs.writeFileSync(tmp, extract(item.summary.kind, item.file), { mode: 0o600 });
+    try {
+      fs.renameSync(tmp, target);
+    } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
+      throw error;
+    }
     cache.files[item.file] = { size: item.size, mtimeMs: item.mtimeMs };
     changed = true;
     indexed += 1;

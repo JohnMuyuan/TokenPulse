@@ -3,15 +3,16 @@
  * 不认识的字段直接跳过；数据不完整、格式不对时返回 null / 0，不抛错。
  */
 
-export type PbField = { no: number; wire: number; num?: number; bytes?: Buffer };
+export type PbField = { no: number; wire: number; num?: number; signed?: number; bytes?: Buffer };
 
-function varint(buf: Buffer, at: number): [number, number] | null {
-  let value = 0, scale = 1;
+function varintBig(buf: Buffer, at: number): [bigint, number] | null {
+  let value = 0n, shift = 0n;
   for (let i = at; i < buf.length && i < at + 10; i += 1) {
     const byte = buf[i];
-    value += (byte & 0x7f) * scale;
+    if (i === at + 9 && byte > 0x01) return null;
+    value |= BigInt(byte & 0x7f) << shift;
     if (!(byte & 0x80)) return [value, i + 1];
-    scale *= 128;
+    shift += 7n;
   }
   return null;
 }
@@ -21,15 +22,15 @@ export function pbFields(buf: Buffer): PbField[] | null {
   const out: PbField[] = [];
   let at = 0;
   while (at < buf.length) {
-    const key = varint(buf, at);
+    const key = varintBig(buf, at);
     if (!key) return null;
     at = key[1];
-    const no = Math.floor(key[0] / 8), wire = key[0] % 8;
+    const no = Number(key[0] >> 3n), wire = Number(key[0] & 7n);
     if (no <= 0) return null;
     if (wire === 0) {
-      const value = varint(buf, at);
+      const value = varintBig(buf, at);
       if (!value) return null;
-      out.push({ no, wire, num: value[0] });
+      out.push({ no, wire, num: Number(value[0]), signed: Number(BigInt.asIntN(64, value[0])) });
       at = value[1];
     } else if (wire === 1 || wire === 5) {
       const size = wire === 1 ? 8 : 4;
@@ -37,10 +38,11 @@ export function pbFields(buf: Buffer): PbField[] | null {
       out.push({ no, wire, bytes: buf.subarray(at, at + size) });
       at += size;
     } else if (wire === 2) {
-      const length = varint(buf, at);
-      if (!length || length[1] + length[0] > buf.length) return null;
-      out.push({ no, wire, bytes: buf.subarray(length[1], length[1] + length[0]) });
-      at = length[1] + length[0];
+      const length = varintBig(buf, at);
+      const lenNum = length ? Number(length[0]) : -1;
+      if (!length || lenNum < 0 || length[1] + lenNum > buf.length) return null;
+      out.push({ no, wire, bytes: buf.subarray(length[1], length[1] + lenNum) });
+      at = length[1] + lenNum;
     } else return null;
   }
   return out;
@@ -63,6 +65,13 @@ export function pbNumber(buf: Buffer | null | undefined, no: number): number {
   return pbFields(buf)?.find((item) => item.no === no && item.wire === 0)?.num ?? 0;
 }
 
+/** 一层里某个有符号 64 位数字字段（int32 / int64 二进制补码 varint）。没有就是 0。 */
+export function pbSignedNumber(buf: Buffer | null | undefined, no: number): number {
+  if (!buf) return 0;
+  const hit = pbFields(buf)?.find((item) => item.no === no && item.wire === 0);
+  return hit?.signed ?? hit?.num ?? 0;
+}
+
 /** 一层里某个字符串字段。没有就是空字符串。 */
 export function pbString(buf: Buffer | null | undefined, no: number): string {
   if (!buf) return "";
@@ -70,18 +79,18 @@ export function pbString(buf: Buffer | null | undefined, no: number): string {
   return bytes ? bytes.toString("utf8") : "";
 }
 
-/** google.protobuf.Timestamp（1 秒、2 纳秒）→ 毫秒。没有就是 0。 */
+/** google.protobuf.Timestamp（1 秒、2 纳秒）→ 毫秒。Go 零值（负秒数）与缺失均返回 0。 */
 export function pbTime(buf: Buffer | null | undefined): number {
   if (!buf) return 0;
-  const seconds = pbNumber(buf, 1);
-  return seconds ? seconds * 1000 + Math.floor(pbNumber(buf, 2) / 1e6) : 0;
+  const seconds = pbSignedNumber(buf, 1);
+  return seconds > 0 ? seconds * 1000 + Math.floor(Math.max(0, pbSignedNumber(buf, 2)) / 1e6) : 0;
 }
 
-/** google.protobuf.Duration（1 秒、2 纳秒）→ 毫秒（含不足 1 秒的纳秒部分）。没有就是 0。 */
+/** google.protobuf.Duration（1 秒、2 纳秒）→ 毫秒（含不足 1 秒的纳秒部分；负值夹紧为 0）。没有就是 0。 */
 export function pbDurationMs(buf: Buffer | null | undefined): number {
   if (!buf) return 0;
-  const seconds = pbNumber(buf, 1);
-  const nanos = pbNumber(buf, 2);
+  const seconds = pbSignedNumber(buf, 1);
+  const nanos = pbSignedNumber(buf, 2);
   if (!seconds && !nanos) return 0;
   return Math.max(0, seconds * 1000 + Math.round(nanos / 1e6));
 }

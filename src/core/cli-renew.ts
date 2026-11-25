@@ -50,14 +50,25 @@ type Deps = {
 const dead = new Set<string>();
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 let inflight: Promise<CliRenewResult> | null = null;
+let cliSwitchDepth = 0;
+
+/** 供 cli-switch.ts 协调：切 Claude 账号前先等正在进行的 CLI 续期结束，且切换期间不再发起新的 CLI 续期，避免消耗单次 refresh token。 */
+export function setClaudeCliSwitching(active: boolean) {
+  cliSwitchDepth = Math.max(0, cliSwitchDepth + (active ? 1 : -1));
+}
+export async function waitCliRenewIdle() {
+  if (inflight) await inflight.catch(() => undefined);
+}
 
 /** 只续 Claude：Codex / Grok 的 CLI 凭据有效期长得多，目前没有这个问题。 */
 export function renewCliCredential(now = Date.now(), deps: Deps = {}): Promise<CliRenewResult> {
+  if (cliSwitchDepth > 0) return Promise.resolve({ state: "waiting" });
   if (!inflight) inflight = run(now, deps).finally(() => { inflight = null; });
   return inflight;
 }
 
 async function run(now: number, deps: Deps): Promise<CliRenewResult> {
+  if (cliSwitchDepth > 0) return { state: "waiting" };
   const home = deps.home ?? os.homedir();
   const file = authFile("claude", home);
   const before = readText(file);
@@ -70,6 +81,10 @@ async function run(now: number, deps: Deps): Promise<CliRenewResult> {
   if (dead.has(hash(refreshToken))) return { state: "failed", accountId, error: "refresh token 已被官方拒绝", dead: true };
   if (fs.existsSync(path.join(cliDir("claude", home), ".oauth_refresh.lock"))) return { state: "waiting", accountId };
   if (await (deps.running ?? claudeCodeRunning)()) return { state: "waiting", accountId };
+  // 查进程可能花几百毫秒：再确认一次没开始切号、没被 CLI 加锁、凭据文件没变，避免浪费单次 refresh token
+  if (cliSwitchDepth > 0 || fs.existsSync(path.join(cliDir("claude", home), ".oauth_refresh.lock")) || readText(file) !== before) {
+    return { state: "waiting", accountId };
+  }
 
   const result = await (deps.refresh ?? refreshCredential)("claude", { token: oauth.accessToken, expiresAt: oauth.expiresAt, refreshToken }, now);
   const log = (ok: boolean, extra: Record<string, unknown> = {}) => logRenew({ at: now, kind: "claude", accountId: accountId ?? "claude:?", source: "cli", ok, ...extra });
@@ -123,14 +138,14 @@ export async function claudeCodeRunning(): Promise<boolean> {
       const script = "Get-CimInstance Win32_Process -Filter \"Name='claude.exe' or Name='node.exe' or Name='bun.exe'\" | ForEach-Object { [string]$_.Name + [char]9 + [string]$_.ExecutablePath + [char]9 + [string]$_.CommandLine }";
       const out = await execText("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
       return out.split(/\r?\n/).some((line) => {
-        const [name = "", exe = "", cmd = ""] = line.split("\t");
-        return isClaudeCodeProcess(name, exe, cmd);
+        const [name = "", exe = "", ...rest] = line.split("\t");
+        return isClaudeCodeProcess(name, exe, rest.join("\t"));
       });
     }
     const out = await execText("ps", ["-axo", "args="]);
     return out.split("\n").some((line) => {
       if (/Claude\.app\/Contents\/MacOS\/Claude(\s|$)/.test(line)) return false;
-      return /(^|\/)claude(\s|$)/.test(line.trim().split(/\s+/)[0] ?? "") || /claude-code|@anthropic-ai\/claude/.test(line);
+      return /(^|\/)claude(\s|$)/.test(line.trim()) || /claude-code|@anthropic-ai\/claude/.test(line);
     });
   } catch {
     return true;

@@ -320,8 +320,8 @@ export function analyzeCache(rows: RequestRow[]): CacheAnalysis {
           const dropDef = buckets[firstDropIdx];
           const holdHits = pairs.filter(p => p.kept && p.gapMs >= holdDef.minMs && (holdDef.maxMs === null || p.gapMs < holdDef.maxMs));
           const dropMisses = pairs.filter(p => !p.kept && p.gapMs >= dropDef.minMs && (dropDef.maxMs === null || p.gapMs < dropDef.maxMs));
-          const holdMax = holdHits.length ? Math.max(...holdHits.map(p => p.gapMs)) : holdDef.minMs;
-          const dropMin = dropMisses.length ? Math.min(...dropMisses.map(p => p.gapMs)) : dropDef.minMs;
+          const holdMax = holdHits.length ? holdHits.reduce((max, p) => Math.max(max, p.gapMs), -Infinity) : holdDef.minMs;
+          const dropMin = dropMisses.length ? dropMisses.reduce((min, p) => Math.min(min, p.gapMs), Infinity) : dropDef.minMs;
           const lowMin = Math.max(1, Math.round(Math.max(holdDef.minMs, holdMax) / 60_000));
           const highMin = Math.max(lowMin, Math.round(Math.max(dropDef.minMs, dropMin) / 60_000));
           ttlMinMs = lowMin * 60_000;

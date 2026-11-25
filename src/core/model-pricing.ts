@@ -93,8 +93,8 @@ export function contextWindowOf(modelId: string, requestedId?: string, observedI
   if (!id || id === "未知模型" || id === "unknown") return null;
 
   let base: number | null = null;
-  if (/\[2m\]|(?:^|[-_:/])2m(?:$|[-_[\]])/.test(combined)) base = 2_000_000;
-  else if (/\[1m\]|(?:^|[-_:/])1m(?:$|[-_[\]])/.test(combined)) base = 1_000_000;
+  if (/\[2m\]|(?:^|[\s\-_:/])2m(?:$|[\s\-_[\]])/.test(combined)) base = 2_000_000;
+  else if (/\[1m\]|(?:^|[\s\-_:/])1m(?:$|[\s\-_[\]])/.test(combined)) base = 1_000_000;
   else if (/gemini-[234]|orchestrator/.test(id)) base = 1_000_000;
   else if (/claude-/.test(id)) base = 200_000;
   else if (/gpt-4\.1/.test(id)) base = 1_000_000;

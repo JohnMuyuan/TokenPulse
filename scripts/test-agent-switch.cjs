@@ -31,6 +31,25 @@ const grokFile = path.join(home, '.grok', 'config.toml');
   assert.equal(chat.json.model, 'gpt-test');
   assert.equal(chat.json.messages[1].content, 'ping');
   assert.equal(chat.json.tools[0].function.name, 'read');
+  // Claude Code 常在 tool_result 的同一条 user 消息里再带一段文本（system-reminder 之类）：
+  // OpenAI 系接口要求 tool 消息紧跟在带 tool_calls 的 assistant 消息后面，文本只能排在它们之后
+  const mixed = conv.convertRequest('anthropic', 'openai-chat', JSON.stringify({
+    model: 'claude-sonnet-5', max_tokens: 32,
+    messages: [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'read', input: { p: 1 } }, { type: 'tool_use', id: 'toolu_2', name: 'read', input: { p: 2 } }] },
+      { role: 'user', content: [{ type: 'text', text: '<system-reminder>注意</system-reminder>' }, { type: 'tool_result', tool_use_id: 'toolu_1', content: 'one' }, { type: 'tool_result', tool_use_id: 'toolu_2', content: 'two' }] },
+    ],
+  }), 'gpt-test');
+  assert.deepEqual(mixed.json.messages.map(m => m.role), ['user', 'assistant', 'tool', 'tool', 'user'], '带 tool_calls 的 assistant 消息后面必须先是全部 tool 消息，再是用户文本');
+  assert.deepEqual(mixed.json.messages.slice(2, 4).map(m => [m.tool_call_id, m.content]), [['toolu_1', 'one'], ['toolu_2', 'two']]);
+  assert.match(mixed.json.messages[4].content, /注意/);
+  // 多条 system / developer 指令要合并，不能后一条覆盖前一条
+  const manySystems = conv.convertRequest('openai-chat', 'anthropic', JSON.stringify({
+    model: 'gpt', messages: [{ role: 'system', content: '规则一' }, { role: 'developer', content: '规则二' }, { role: 'user', content: 'hi' }],
+  }), 'claude-sonnet-5');
+  assert.match(manySystems.json.system, /规则一/); assert.match(manySystems.json.system, /规则二/);
+  assert.deepEqual(manySystems.json.messages.map(m => m.role), ['user'], 'developer 不能被当成用户消息');
   const back = conv.convertJsonResponse('anthropic', 'openai-chat', {
     choices: [{ message: { role: 'assistant', content: 'pong', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"p":1}' } }] }, finish_reason: 'tool_calls' }],
     usage: { prompt_tokens: 3, completion_tokens: 2 },
@@ -43,6 +62,19 @@ const grokFile = path.join(home, '.grok', 'config.toml');
   const sse = bridge.push('data: {"choices":[{"delta":{"content":"你"}}]}\n\n') + bridge.push('data: {"choices":[{"finish_reason":"stop"}]}\n\n') + bridge.end();
   assert.match(sse, /你/);
   assert.match(sse, /message_stop/);
+  // 有的 OpenAI 兼容服务流式 tool_calls 不带 id，只有数字 index：两个并行调用不能都叫 call_0，参数也要归到各自的调用上
+  const noIds = new conv.StreamBridge('openai-chat', 'anthropic', 'claude-sonnet-5');
+  const toolSse = [
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read","arguments":""}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"p\\":1}"}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"read","arguments":""}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\\"p\\":2}"}}]}},{"finish_reason":"tool_calls"}]}\n\n',
+  ].map((chunk) => noIds.push(chunk)).join('') + noIds.end();
+  const toolIds = [...toolSse.matchAll(/"type":"tool_use","id":"([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(toolIds.length, 2); assert.notEqual(toolIds[0], toolIds[1], '两个工具调用的 id 不能重复');
+  const noIdJson = conv.convertJsonResponse('anthropic', 'openai-chat', { choices: [{ message: { role: 'assistant', content: null, tool_calls: [{ type: 'function', function: { name: 'read', arguments: '{"p":1}' } }, { type: 'function', function: { name: 'read', arguments: '{"p":2}' } }] }, finish_reason: 'tool_calls' }] }, 'claude-sonnet-5');
+  assert.notEqual(noIdJson.content[0].id, noIdJson.content[1].id, '整段响应里没 id 的工具调用也不能重名');
+  assert.deepEqual(noIdJson.content.map((c) => c.input.p), [1, 2], '参数归到各自的调用上');
   const responses = conv.convertRequest('openai-responses', 'anthropic', JSON.stringify({ model: 'gpt', input: 'hello', stream: true }), 'claude-sonnet-5');
   assert.equal(responses.path, '/v1/messages');
   assert.equal(responses.json.messages[0].content[0].text, 'hello');

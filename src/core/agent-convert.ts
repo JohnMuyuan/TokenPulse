@@ -13,8 +13,9 @@ type Norm = { system: string; turns: Turn[]; tools: ToolDef[]; stream: boolean; 
 
 export type Delta =
   | { kind: "text"; text: string }
-  | { kind: "tool-start"; id: string; name: string }
-  | { kind: "tool-args"; id: string; args: string }
+  /** index：OpenAI Chat / Responses 流式工具调用的序号；itemId：Responses 的 item.id（参数分片带 item_id 而非 call_id）。 */
+  | { kind: "tool-start"; id: string; name: string; index?: number; itemId?: string }
+  | { kind: "tool-args"; id: string; args: string; index?: number }
   | { kind: "stop"; reason: string }
   | { kind: "usage"; input: number; output: number };
 
@@ -56,8 +57,10 @@ function normFrom(client: Upstream, raw: unknown): Norm {
         else if (part.type === "tool_use") calls.push({ id: textOf(part.id) || "tool", name: textOf(part.name), args: JSON.stringify(part.input ?? {}) });
         else if (part.type === "tool_result") tools.push({ role: "tool", text: textBlocks(part.content), callId: textOf(part.tool_use_id) });
       }
-      if (texts.join("").trim() || calls.length) norm.turns.push({ role, text: texts.join(""), calls });
+      // 工具结果必须紧跟在上一条 assistant 消息（带 tool_calls）后面：OpenAI 系接口发现中间夹了别的消息会直接 400。
+      // Claude Code 常在同一条 user 消息里 tool_result 之外再带一段文本（system-reminder 之类），文本只能排在结果之后。
       norm.turns.push(...tools);
+      if (texts.join("").trim() || calls.length) norm.turns.push({ role, text: texts.join(""), calls });
     }
     norm.tools = asArr(body.tools).map((tool) => {
       const item = asObj(tool);
@@ -69,8 +72,9 @@ function normFrom(client: Upstream, raw: unknown): Norm {
   if (client === "openai-chat") {
     for (const message of asArr(body.messages)) {
       const item = asObj(message);
-      if (item.role === "system") {
-        norm.system = textBlocks(item.content);
+      // system / developer 都是给模型的指令：多条要合在一起，不能让后一条把前一条覆盖掉
+      if (item.role === "system" || item.role === "developer") {
+        norm.system = [norm.system, textBlocks(item.content)].filter(Boolean).join("\n\n");
         continue;
       }
       const calls = asArr(item.tool_calls).map((call) => {
@@ -94,11 +98,26 @@ function normFrom(client: Upstream, raw: unknown): Norm {
     if (typeof input === "string") norm.turns.push({ role: "user", text: input });
     for (const item of asArr(input)) {
       const row = asObj(item);
-      if (row.type === "function_call") norm.turns.push({ role: "assistant", text: "", calls: [{ id: textOf(row.call_id) || "tool", name: textOf(row.name), args: textOf(row.arguments) || "{}" }] });
-      else if (row.type === "function_call_output") norm.turns.push({ role: "tool", text: textOf(row.output), callId: textOf(row.call_id) });
-      else {
+      if (row.type === "function_call") {
+        const call: ToolCall = { id: textOf(row.call_id) || "tool", name: textOf(row.name), args: textOf(row.arguments) || "{}" };
+        const prev = norm.turns[norm.turns.length - 1];
+        // Responses API 把同一轮的并行工具调用拆成多条独立 function_call：合进同一条 assistant 消息，避免转 Chat / Anthropic 后报 400
+        if (prev && prev.role === "assistant") (prev.calls ??= []).push(call);
+        else norm.turns.push({ role: "assistant", text: "", calls: [call] });
+      } else if (row.type === "function_call_output") {
+        norm.turns.push({ role: "tool", text: textOf(row.output), callId: textOf(row.call_id) });
+      } else if (row.role === "system" || row.role === "developer") {
+        norm.system = [norm.system, textBlocks(row.content) || textOf(row.text)].filter(Boolean).join("\n\n");
+      } else if (row.role === "user" || row.role === "assistant" || row.type === "message") {
+        // 忽略 reasoning / item_reference 等无 role 的非消息项，避免凭空插入空 user 消息
         const role = row.role === "assistant" ? "assistant" : "user";
-        norm.turns.push({ role, text: textBlocks(row.content) || textOf(row.text) });
+        const text = textBlocks(row.content) || textOf(row.text);
+        if (role === "assistant" && norm.turns[norm.turns.length - 1]?.role === "assistant") {
+          const prev = norm.turns[norm.turns.length - 1];
+          if (text) prev.text = prev.text ? `${prev.text}\n\n${text}` : text;
+        } else {
+          norm.turns.push({ role, text });
+        }
       }
     }
     norm.tools = asArr(body.tools)
@@ -113,9 +132,19 @@ function normFrom(client: Upstream, raw: unknown): Norm {
 
 function anthropicBody(norm: Norm, model: string) {
   const messages: Obj[] = [];
+  const pushMsg = (role: "user" | "assistant", blocks: Obj[]) => {
+    if (!blocks.length) return;
+    const prev = messages[messages.length - 1];
+    // Anthropic 要求并行 tool_result 放在同一条 user 消息里，且不允许相邻同角色消息
+    if (prev && prev.role === role && Array.isArray(prev.content)) {
+      (prev.content as Obj[]).push(...blocks);
+      return;
+    }
+    messages.push({ role, content: blocks });
+  };
   for (const turn of norm.turns) {
     if (turn.role === "tool") {
-      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: turn.callId || "tool", content: turn.text }] });
+      pushMsg("user", [{ type: "tool_result", tool_use_id: turn.callId || "tool", content: turn.text }]);
       continue;
     }
     const content: Obj[] = [];
@@ -125,7 +154,7 @@ function anthropicBody(norm: Norm, model: string) {
       try { input = JSON.parse(call.args || "{}"); } catch { input = { raw: call.args }; }
       content.push({ type: "tool_use", id: call.id, name: call.name, input });
     }
-    if (content.length) messages.push({ role: turn.role === "assistant" ? "assistant" : "user", content });
+    pushMsg(turn.role === "assistant" ? "assistant" : "user", content);
   }
   if (!messages.length) messages.push({ role: "user", content: [{ type: "text", text: " " }] });
   const body: Obj = { model, max_tokens: norm.maxTokens, messages, stream: norm.stream };
@@ -194,13 +223,16 @@ export function deltasOf(upstream: Upstream, event: string, payload: unknown): D
     const choice = asObj(asArr(body.choices)[0]);
     const message = asObj(choice.delta ?? choice.message);
     if (typeof message.content === "string" && message.content) out.push({ kind: "text", text: message.content });
-    for (const call of asArr(message.tool_calls)) {
+    asArr(message.tool_calls).forEach((call, position) => {
       const row = asObj(call);
       const fn = asObj(row.function);
-      const id = textOf(row.id) || `call_${textOf(row.index) || "0"}`;
-      if (fn.name) out.push({ kind: "tool-start", id, name: textOf(fn.name) });
-      if (typeof fn.arguments === "string" && fn.arguments) out.push({ kind: "tool-args", id, args: fn.arguments });
-    }
+      // index 是数字（textOf 只认字符串，以前没 id 的调用全都成了 call_0）；整段响应里没有 index 时按数组位置
+      const index = typeof row.index === "number" && Number.isInteger(row.index) ? row.index : position;
+      const own = textOf(row.id);
+      if (fn.name) out.push({ kind: "tool-start", id: own || `call_${index}`, name: textOf(fn.name), index });
+      // 参数分片多半只带 index：id 留空，由 Emitter 按 index 找回这次调用
+      if (typeof fn.arguments === "string" && fn.arguments) out.push({ kind: "tool-args", id: own, args: fn.arguments, index });
+    });
     if (typeof choice.finish_reason === "string") out.push({ kind: "stop", reason: stopOf(choice.finish_reason) });
     const usage = asObj(body.usage);
     if (Object.keys(usage).length) out.push({ kind: "usage", input: Number(usage.prompt_tokens) || 0, output: Number(usage.completion_tokens) || 0 });
@@ -210,8 +242,14 @@ export function deltasOf(upstream: Upstream, event: string, payload: unknown): D
     const type = textOf(body.type) || event;
     if (type === "response.output_text.delta") out.push({ kind: "text", text: textOf(body.delta) });
     const item = asObj(body.item);
-    if (type === "response.output_item.added" && item.type === "function_call") out.push({ kind: "tool-start", id: textOf(item.call_id) || "tool", name: textOf(item.name) });
-    if (type === "response.function_call_arguments.delta") out.push({ kind: "tool-args", id: textOf(body.item_id) || textOf(item.call_id) || "", args: textOf(body.delta) });
+    const outIdx = typeof body.output_index === "number" && Number.isInteger(body.output_index) ? body.output_index : undefined;
+    if (type === "response.output_item.added" && item.type === "function_call") {
+      const itemId = textOf(item.id);
+      out.push({ kind: "tool-start", id: textOf(item.call_id) || itemId || "tool", name: textOf(item.name), ...(outIdx != null ? { index: outIdx } : {}), ...(itemId ? { itemId } : {}) });
+    }
+    if (type === "response.function_call_arguments.delta") {
+      out.push({ kind: "tool-args", id: textOf(body.item_id) || textOf(item.call_id) || "", args: textOf(body.delta), ...(outIdx != null ? { index: outIdx } : {}) });
+    }
     if (Array.isArray(body.output)) {
       for (const part of asArr(body.output)) {
         const row = asObj(part);
@@ -234,7 +272,10 @@ export function deltasOf(upstream: Upstream, event: string, payload: unknown): D
     return out.filter((delta) => delta.kind !== "text" || delta.text);
   }
   const type = textOf(body.type) || event;
-  if (type === "content_block_start" && asObj(body.content_block).type === "tool_use") {
+  if (type === "message_start") {
+    const usage = asObj(asObj(body.message).usage);
+    if (Object.keys(usage).length) out.push({ kind: "usage", input: Number(usage.input_tokens) || 0, output: Number(usage.output_tokens) || 0 });
+  } else if (type === "content_block_start" && asObj(body.content_block).type === "tool_use") {
     const block = asObj(body.content_block);
     out.push({ kind: "tool-start", id: textOf(block.id) || "tool", name: textOf(block.name) });
   } else if (type === "content_block_delta") {
@@ -267,12 +308,19 @@ class Emitter {
   private usage = { input: 0, output: 0 };
   private stop = "end_turn";
   private currentId = "";
+  private activeCallIndex = 0;
+  /** OpenAI Chat / Responses 流式工具调用的 index → 这次调用的 id。 */
+  private byIndex = new Map<number, string>();
+  /** Responses 流式的 item.id → call_id（参数分片带的是 item_id）。 */
+  private byItemId = new Map<string, string>();
 
   constructor(private readonly client: Upstream, private readonly model: string) {}
 
   push(delta: Delta): string {
     if (delta.kind === "usage") {
-      this.usage = { input: delta.input, output: delta.output };
+      // Anthropic 的 input_tokens 在 message_start，output_tokens 在 message_delta：分别合入，避免被 0 盖掉
+      if (delta.input > 0) this.usage.input = delta.input;
+      if (delta.output > 0) this.usage.output = delta.output;
       return "";
     }
     if (delta.kind === "stop") {
@@ -282,12 +330,28 @@ class Emitter {
     if (delta.kind === "text") this.text += delta.text;
     if (delta.kind === "tool-start") {
       this.currentId = delta.id || `tool_${this.calls.length}`;
+      // 上游给的 id 重复了（或都没给）：后来的换个不重名的，否则客户端下一轮带回的 tool_result 对不上
+      if (this.calls.some((call) => call.id === this.currentId)) this.currentId = `${this.currentId}_${this.calls.length}`;
       this.calls.push({ id: this.currentId, name: delta.name, args: "" });
+      this.activeCallIndex = this.calls.length - 1;
+      if (delta.index != null) this.byIndex.set(delta.index, this.currentId);
+      if (delta.itemId) this.byItemId.set(delta.itemId, this.currentId);
     }
     if (delta.kind === "tool-args") {
-      const id = delta.id || this.currentId;
-      const call = [...this.calls].reverse().find((item) => item.id === id) ?? this.calls[this.calls.length - 1];
-      if (call) call.args += delta.args;
+      const id =
+        (delta.index != null ? this.byIndex.get(delta.index) : undefined) ||
+        (delta.id ? this.byItemId.get(delta.id) : undefined) ||
+        delta.id ||
+        this.currentId;
+      let callIndex = -1;
+      for (let k = this.calls.length - 1; k >= 0; k--) {
+        if (this.calls[k].id === id) { callIndex = k; break; }
+      }
+      if (callIndex < 0) callIndex = this.calls.length - 1;
+      if (callIndex >= 0) {
+        this.activeCallIndex = callIndex;
+        this.calls[callIndex].args += delta.args;
+      }
     }
     if (this.client === "anthropic") return this.anthropic(delta);
     if (this.client === "openai-responses") return this.responses(delta);
@@ -359,7 +423,7 @@ class Emitter {
       if (this.open) out += this.sse("content_block_stop", { type: "content_block_stop", index: this.index });
       this.index += 1;
       this.open = "tool";
-      out += this.sse("content_block_start", { type: "content_block_start", index: this.index, content_block: { type: "tool_use", id: delta.id || this.currentId, name: delta.name, input: {} } });
+      out += this.sse("content_block_start", { type: "content_block_start", index: this.index, content_block: { type: "tool_use", id: this.currentId, name: delta.name, input: {} } });
     }
     if (delta.kind === "tool-args" && this.open === "tool") {
       out += this.sse("content_block_delta", { type: "content_block_delta", index: this.index, delta: { type: "input_json_delta", partial_json: delta.args } });
@@ -380,8 +444,8 @@ class Emitter {
 
   private chat(delta: Delta) {
     if (delta.kind === "text") return `data: ${JSON.stringify({ id: "chatcmpl_tokenpulse", object: "chat.completion.chunk", model: this.model, choices: [{ index: 0, delta: { content: delta.text }, finish_reason: null }] })}\n\n`;
-    if (delta.kind === "tool-start") return `data: ${JSON.stringify({ id: "chatcmpl_tokenpulse", object: "chat.completion.chunk", model: this.model, choices: [{ index: 0, delta: { tool_calls: [{ index: Math.max(this.calls.length - 1, 0), id: delta.id, type: "function", function: { name: delta.name, arguments: "" } }] }, finish_reason: null }] })}\n\n`;
-    if (delta.kind === "tool-args") return `data: ${JSON.stringify({ id: "chatcmpl_tokenpulse", object: "chat.completion.chunk", model: this.model, choices: [{ index: 0, delta: { tool_calls: [{ index: Math.max(this.calls.length - 1, 0), function: { arguments: delta.args } }] }, finish_reason: null }] })}\n\n`;
+    if (delta.kind === "tool-start") return `data: ${JSON.stringify({ id: "chatcmpl_tokenpulse", object: "chat.completion.chunk", model: this.model, choices: [{ index: 0, delta: { tool_calls: [{ index: this.activeCallIndex, id: this.currentId, type: "function", function: { name: delta.name, arguments: "" } }] }, finish_reason: null }] })}\n\n`;
+    if (delta.kind === "tool-args") return `data: ${JSON.stringify({ id: "chatcmpl_tokenpulse", object: "chat.completion.chunk", model: this.model, choices: [{ index: 0, delta: { tool_calls: [{ index: this.activeCallIndex, function: { arguments: delta.args } }] }, finish_reason: null }] })}\n\n`;
     return "";
   }
 
@@ -394,7 +458,7 @@ class Emitter {
       this.started = true;
     }
     if (delta.kind === "text") return this.sse("response.output_text.delta", { type: "response.output_text.delta", delta: delta.text });
-    if (delta.kind === "tool-start") return this.sse("response.output_item.added", { type: "response.output_item.added", item: { type: "function_call", call_id: delta.id, name: delta.name, arguments: "" } });
+    if (delta.kind === "tool-start") return this.sse("response.output_item.added", { type: "response.output_item.added", item: { type: "function_call", call_id: this.currentId, name: delta.name, arguments: "" } });
     if (delta.kind === "tool-args") return this.sse("response.function_call_arguments.delta", { type: "response.function_call_arguments.delta", delta: delta.args });
     return "";
   }
@@ -447,7 +511,7 @@ class SseBuffer {
   private buf = "";
 
   push(chunk: string) {
-    this.buf += chunk.replace(/\r\n/g, "\n");
+    this.buf = (this.buf + chunk).replace(/\r\n/g, "\n");
     const frames: { event: string; data: string }[] = [];
     let split = this.buf.indexOf("\n\n");
     while (split >= 0) {
