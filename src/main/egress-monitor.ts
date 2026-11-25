@@ -59,7 +59,13 @@ export class ExitMonitor {
     const next = validateConfig(value);
     writeJson(dataFile("egress-settings.json"), next);
     this.epoch++; this.abort?.abort();
-    for (const p of PROVIDERS) if (next.enabled !== this.config.enabled || JSON.stringify(next.providers[p]) !== JSON.stringify(this.config.providers[p])) this.trackers.set(p, new EgressTracker());
+    for (const p of PROVIDERS) {
+      if (next.enabled !== this.config.enabled || JSON.stringify(next.providers[p]) !== JSON.stringify(this.config.providers[p])) {
+        this.trackers.set(p, new EgressTracker());
+        if (!next.enabled || !next.providers[p].allowedIps.length) this.quotaBlocks.delete(p);
+      }
+    }
+    if (!next.enabled) this.quotaBlocks.clear();
     const retime = next.intervalSeconds !== this.config.intervalSeconds;
     this.config = next; this.configError = ""; this.lastStarted = -Infinity;
     if (retime && this.timer) this.schedule();
@@ -90,14 +96,22 @@ export class ExitMonitor {
   }
   /**
    * 向官方问额度之前的放行检查（quota.ts 的 QuotaGate）。
+   * - 出口监控已关闭：直接放行并清理历史拦截标记（监控关着就不再要求出口 IP 与白名单一致）；
    * - 这一家没设 IP 白名单：放行（没有规则可比）；
-   * - 设了：用 10 秒内的探测结果，没有就现探一次；出口 IP 在白名单里才放行。
+   * - 监控开着且设了白名单：用 10 秒内的探测结果，没有就现探一次；出口 IP 在白名单里才放行。
    *   探测失败也不放行 —— 确认不了从哪儿出去，就别拿账号去问官方。
-   * 不管监控开没开都检查：白名单是用户定的规矩。被拦时记一条告警、按设置弹通知（同一种情况只弹一次），放行后记一条恢复。
+   * 被拦时记一条告警、按设置弹通知（同一种情况只弹一次），放行后记一条恢复。
    */
   async gateQuota(provider: Provider): Promise<boolean> {
+    if (!this.config.enabled) {
+      if (this.quotaBlocks.delete(provider)) this.publish();
+      return true;
+    }
     const config = this.config.providers[provider];
-    if (!config?.allowedIps.length) { this.quotaBlocks.delete(provider); return true; }
+    if (!config?.allowedIps.length) {
+      if (this.quotaBlocks.delete(provider)) this.publish();
+      return true;
+    }
     const row = this.trackers.get(provider)?.row;
     const recent = row && !row.error && row.host === config.host && this.now() - row.checkedAt < 10_000;
     let probe: Probe;
@@ -122,10 +136,9 @@ export class ExitMonitor {
   }
   /**
    * 启动这一家的 CLI 之前要核对的出口规则（0.3.16）。返回 null 就是不检测、直接启动：
-   * - 出口监控没开：不检测（用户定的：监控关着就不核对出口）；
+   * - 出口监控没开：不检测（与 gateQuota 一致，监控关着就不核对出口白名单）；
    * - 开着，但这一家两个白名单都没设：不检测；
    * - 开着，设了 IP 白名单：只看 IP；没设 IP、设了地区白名单：看地区。
-   * 注意和额度查询的放行（gateQuota）不一样：那边只看白名单，不看监控开没开。
    */
   launchRule(provider: Provider): { host: string; allowedIps: string[]; allowedRegions: string[] } | null {
     if (!this.config.enabled) return null;

@@ -783,6 +783,22 @@
     }
     get nervous() { return this.now < this.nervousUntil && !this.action; }
     trigger(action, from) { this.action = action; this.at = 0; this.serial++; if (from != null) this.from = from; }
+    /** 判断当前动作是不是随机待机小动作（内置 fidget 或主题包 idle:*）。 */
+    isFidgetAction(action = this.action) {
+      if (!action) return false;
+      if (typeof action === 'string' && action.startsWith('idle:')) return true;
+      const list = this.fidgets || FIDGETS[this.name] || [];
+      return list.includes(action);
+    }
+    /** 有真实键鼠输入时：刷新活跃计时、延后随机待机（至少停手 12 秒后再触发），并立即打断正在播的随机待机小动作。 */
+    noteInput(now = Date.now()) {
+      this.aimedAt = now;
+      this.fidgetIn = Math.max(this.fidgetIn, 120);
+      if (this.isFidgetAction(this.action)) {
+        this.action = null;
+        this.at = 0;
+      }
+    }
     /** 随机小动作：空闲时每 20 到 60 秒一个（fidgetGap），几种轮着来。 */
     fidget() { const list = this.fidgets || FIDGETS[this.name] || []; if (!list.length) return; this.trigger(list[this.fidgetIdx++ % list.length]); this.fidgetIn = rand(...this.fidgetGap); }
     /** 鼠标相对宠物身体中心的位置（屏幕像素）。眼睛直接看过去，不等下一帧慢慢挪（跟手才不显得慢半拍）。 */

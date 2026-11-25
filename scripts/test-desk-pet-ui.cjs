@@ -744,6 +744,17 @@ app.whenReady().then(async () => {
         return { top: Math.round(br.top - sr.top), left: Math.round(br.left - sr.left), bottom: Math.round(br.bottom - sr.top) };
       })()`);
       assert.ok(badgeCheck.top <= 10 && badgeCheck.left <= 10 && badgeCheck.bottom < 45, `键鼠桌面开启时角标位于左上角不被遮挡：${JSON.stringify(badgeCheck)}`);
+      // 主题包播放随机待机动画期间：按方案 A 保留桌前键鼠、隐藏前景接管手、绝不出现悬空手；用户一打字立刻打断待机动画回到站姿
+      pet.webContents.send('desk-pet-state', { ...deskIdle, fidget: true });
+      await until(() => js("document.getElementById('dp-stage').dataset.action === 'idle:0' && document.getElementById('dp-stage').dataset.image === 'look.svg'"), '空闲超时播随机待机', 36000);
+      const fidgetDesk = await js('window.__petDesk.state()');
+      assert.equal(fidgetDesk.visible, true, '随机待机期间按方案 A 保留桌前键鼠');
+      assert.equal(fidgetDesk.hands, false, '随机待机期间隐去前景接管手，绝不出现悬空手');
+      assert.equal(fidgetDesk.hiddenThemeHands, 0, '随机待机期间原画手已完整还原');
+      pet.webContents.send('desk-pet-input', { type: 'key', key: 'K', row: 1, col: 7, hand: 'right' });
+      await until(() => js("document.getElementById('dp-stage').dataset.action === '' && document.getElementById('dp-stage').dataset.image === 'idle.svg' && window.__petDesk.state().floats.includes('K')"), '打字瞬间打断随机待机动画并切回站姿飘字');
+      // 切回无随机待机后继续测试 AI 干活融合
+      pet.webContents.send('desk-pet-state', deskIdle);
       // AI 在干活且用户未操作键鼠：方案 A 展示原生工作动画、隐藏桌面
       pet.webContents.send('desk-pet-state', { ...deskIdle, mode: 'work', phase: 'tool', tasks: 1 });
       await until(() => js("document.getElementById('dp-stage').dataset.image === 'work.svg' && window.__petDesk.state().visible === false"), 'AI 干活且未打字时显示原生工作动画');
@@ -783,6 +794,12 @@ app.whenReady().then(async () => {
     deskPetMain.pushDeskPet(true);
     await mjs("document.querySelector('.dps-remove').click()"); await mjs("document.querySelector('.dps-remove').click()");
     await until(() => js("document.getElementById('dp-stage').dataset.pet === 'squirrel' && document.getElementById('dp-svg').hidden && !document.getElementById('dp-canvas').hidden"), '删掉后回到松鼠');
+    // 内置宠物（松鼠）开启键鼠桌面时：站姿接管双手（hands=true），双击戳一下（poke）期间保留键鼠但自动隐去前景手，结束后恢复接管
+    pet.webContents.send('desk-pet-state', { ...awake, desk: true, privacy: false });
+    await until(() => js("window.__petDesk.state().visible === true && window.__petDesk.state().hands === true"), '松鼠空闲站姿接管双手');
+    await tap(); await delay(80); await tap();
+    await until(() => js("document.getElementById('dp-stage').dataset.action === 'poke' && window.__petDesk.state().visible === true && window.__petDesk.state().hands === false"), '松鼠 poke 反应期间保留键鼠但隐藏接管手，无悬空手');
+    await until(() => js("!document.getElementById('dp-stage').dataset.action && window.__petDesk.state().hands === true"), 'poke 结束后无缝恢复双手接管', 4000);
     screen.getCursorScreenPoint = realCursor;
 
     // 英文模式自查：桌宠提示、对话气泡（quota + tasks + Swarm 子代理行与折叠）均无中文残留

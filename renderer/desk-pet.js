@@ -32,10 +32,11 @@
   /** 主题包：进入干活时抽一次，一个档位有好几个动画时挑哪个（同一段干活里不换）；极简模式探出来的时间（mini-peek 放够了换 mini-peek-hold）。 */
   let workSeed = 0, peekAt = 0;
 
-  function ctx() {
-    // 主题包的随机待机：鼠标 mouseIdleTimeout 没动、没悬停没拖着才放
+  function ctx(now = Date.now()) {
+    // 主题包的随机待机：鼠标/键盘都静止、没悬停没拖着、且当前未在键鼠互动或密码捂眼时才允许触发
+    const deskBusy = !!desk && view?.desk === true && !view.mini && (desk.isUserActive(now) || desk.covering);
     const theme = themed() ? themeView.theme : null, idleAnims = !!theme?.idleAnimations.length && !hovering && !dragging && !press;
-    return { state: view.mode, phase: view.phase || null, quota: view.quota ?? 100, mood: view.mood, tasks: view.tasks, subagents: view.subagents || 0, mini: !!view.mini, fidget: view.fidget && !reduced.matches && (BUILT_IN.includes(view.pet) || idleAnims), fidgetAfter: theme ? theme.timings.mouseIdleTimeout : 0 };
+    return { state: view.mode, phase: view.phase || null, quota: view.quota ?? 100, mood: view.mood, tasks: view.tasks, subagents: view.subagents || 0, mini: !!view.mini, fidget: !deskBusy && view.fidget && !reduced.matches && (BUILT_IN.includes(view.pet) || idleAnims), fidgetAfter: theme ? theme.timings.mouseIdleTimeout : 0 };
   }
 
   function size() {
@@ -237,29 +238,35 @@
     return 'idle';
   }
 
-  /** 方案 A 融合：计算当前帧键鼠桌面是否显示、以及宠物本体是否切到清爽站姿。 */
+  /** 方案 A 融合：计算当前帧键鼠桌面是否显示、是否切到清爽站姿，以及前景是否接管双手（非站姿/随机待机时保留键鼠并自动隐藏接管手，杜绝悬空手）。 */
   function deskMode(now = Date.now()) {
     if (!Desk || !desk || !deskCanvas || !view || view.desk !== true || view.mini || dragging) {
-      return { show: false, poseIdle: false, aiBadge: false, state: 'hidden' };
+      return { show: false, poseIdle: false, hands: false, aiBadge: false, state: 'hidden' };
     }
-    const baseState = ctl ? ctl.stateOf(ctx()) : view.mode;
+    const baseState = ctl ? ctl.stateOf(ctx(now)) : view.mode;
     const action = ctl?.action || null;
     // 睡着、打盹或正在做强覆盖动作（拖拽/庆祝/出错/挥手/转晕等）时暂不遮挡
     const blocked = baseState === 'sleep' || baseState === 'doze' || action === 'drag' || action === 'celebrate' || action === 'error' || action === 'startle' || action === 'dizzy' || action === 'flop' || action === 'yawn' || action === 'restock';
-    if (blocked) return { show: false, poseIdle: false, aiBadge: false, state: 'hidden' };
+    if (blocked) return { show: false, poseIdle: false, hands: false, aiBadge: false, state: 'hidden' };
     if (desk.covering) {
-      return { show: true, poseIdle: true, aiBadge: view.mode === 'work', state: 'privacy' };
+      return { show: true, poseIdle: true, hands: true, aiBadge: view.mode === 'work', state: 'privacy' };
     }
     const active = desk.isUserActive(now);
     if (view.mode === 'work') {
       // 方案 A：AI 干活时，只有用户在打字/用鼠标且没有待确认提问时才弹出键鼠桌面 + 右上角 AI 忙碌微标；停手后无缝切回原生工作动画
       if (active && !view.asking) {
-        return { show: true, poseIdle: true, aiBadge: true, state: now - desk.lastKeyAt < 500 ? 'typing' : 'mouse' };
+        return { show: true, poseIdle: true, hands: true, aiBadge: true, state: now - desk.lastKeyAt < 500 ? 'typing' : 'mouse' };
       }
-      return { show: false, poseIdle: false, aiBadge: false, state: 'hidden' };
+      return { show: false, poseIdle: false, hands: false, aiBadge: false, state: 'hidden' };
     }
-    // 空闲时桌面常驻
-    return { show: true, poseIdle: false, aiBadge: false, state: now - desk.lastKeyAt < 500 ? 'typing' : active ? 'mouse' : 'idle' };
+    // 空闲时键鼠常驻；正在播放随机待机动画或点击反应（poke/lookaround/wave/tapLeft/tapRight/wake/land 等）时，
+    // 按方案 A 保留桌前键鼠、隐去前景接管手并还原桌宠原画自己的双手，彻底消除悬空手与四只手！
+    const inFidget = Boolean(action && ctl?.isFidgetAction?.(action));
+    if (active && inFidget) {
+      return { show: true, poseIdle: true, hands: true, aiBadge: false, state: now - desk.lastKeyAt < 500 ? 'typing' : 'mouse' };
+    }
+    const hands = !action;
+    return { show: true, poseIdle: false, hands, aiBadge: false, state: now - desk.lastKeyAt < 500 ? 'typing' : active ? 'mouse' : 'idle' };
   }
 
   /**
@@ -422,14 +429,19 @@
     if (stage.dataset.desk !== dm.state) stage.dataset.desk = dm.state;
     const nextPriv = desk.covering ? '1' : '0';
     if (stage.dataset.privacy !== nextPriv) stage.dataset.privacy = nextPriv;
-    const bt = applyBodyMotion(dm.show, now);
-    const nativeHands = syncThemeHands(dm.show, bt);
+    const wantHands = dm.show && dm.hands !== false;
+    const bt = applyBodyMotion(wantHands, now);
+    const nativeHands = syncThemeHands(wantHands, bt);
+    // 悬空手熔断保护：主题包 SVG 只要未能识别原生左右方块手（如非标准站姿 SVG），除密码捂眼外绝不画游离前景手
+    const showHands = wantHands && (!themed() || Boolean(nativeHands) || desk.covering);
+    const handsVal = showHands ? '1' : '0';
+    if (stage.dataset.deskHands !== handsVal) stage.dataset.deskHands = handsVal;
     if (!dm.show) {
       if (!deskCanvas.hidden) deskCanvas.hidden = true;
       lastDeskSig = '';
       return;
     }
-    const sig = `${dm.state}|${dm.aiBadge ? 1 : 0}|${view.theme}|${view.pet}|${view.mood}|${dm.aiBadge ? view.phase || '' : ''}|${dm.aiBadge ? view.subagents || 0 : 0}|${nextPriv}|${scale}|${bt.x}|${bt.y}|${nativeHands ? `${Math.round(nativeHands.left.cx)},${Math.round(nativeHands.right.cx)}` : ''}`;
+    const sig = `${dm.state}|${handsVal}|${dm.aiBadge ? 1 : 0}|${view.theme}|${view.pet}|${view.mood}|${dm.aiBadge ? view.phase || '' : ''}|${dm.aiBadge ? view.subagents || 0 : 0}|${nextPriv}|${scale}|${bt.x}|${bt.y}|${nativeHands ? `${Math.round(nativeHands.left.cx)},${Math.round(nativeHands.right.cx)}` : ''}`;
     if (!force && sig === lastDeskSig && !dm.aiBadge && !desk.covering) return;
     lastDeskSig = sig;
     lastDeskPaintAt = now;
@@ -442,6 +454,7 @@
       crabHint,
       eyeBox: measureEyeBox(bt),
       nativeHands,
+      showHands,
       aiWorking: dm.aiBadge,
       aiPhase: view.phase || 'tool',
       subagents: view.subagents || 0,
@@ -463,9 +476,10 @@
       const busy = desk.step(now, reduced.matches);
       const dm = deskMode(now);
       if (dm.show || !deskCanvas?.hidden) {
-        // 状态切换（例如刚进入/退出方案 A 或捂眼）时完整重绘一次宠物本体
+        // 状态切换（例如刚进入/退出方案 A、捂眼或切换接管双手）时完整重绘一次宠物本体
         const prevDeskState = stage.dataset.desk || '';
-        if ((prevDeskState === 'hidden') !== (!dm.show) || (prevDeskState === 'privacy') !== (dm.state === 'privacy')) draw(true);
+        const prevHands = stage.dataset.deskHands === '1';
+        if ((prevDeskState === 'hidden') !== (!dm.show) || (prevDeskState === 'privacy') !== (dm.state === 'privacy') || prevHands !== (dm.show && dm.hands)) draw(true);
         else paintDeskLayer(dm, now, true);
       }
       if (busy) wakeDeskAnim();
@@ -477,7 +491,7 @@
     if (!view || !ctl) return;
     const now = Date.now();
     const dm = deskMode(now);
-    const curState = ctl.stateOf(ctx());
+    const curState = ctl.stateOf(ctx(now));
     // 现在画的是哪只、在做什么：仅在变化时写属性，减少静止期 DOM 变更
     if (stage.dataset.pet !== view.pet) stage.dataset.pet = view.pet;
     if (stage.dataset.mode !== view.mode) stage.dataset.mode = view.mode;
@@ -534,7 +548,7 @@
     if (!img.hidden) img.hidden = true;
     if (!svgHost.hidden) svgHost.hidden = true;
     if (!badge.hidden) badge.hidden = true;
-    const baseCtx = { ...ctx(), deskPaws: dm.show ? 'hide' : null };
+    const baseCtx = { ...ctx(now), deskPaws: dm.show && dm.hands ? 'hide' : null };
     grid = dm.poseIdle
       ? Pet.drawPet(view.pet, { ...baseCtx, state: 'idle', phase: null, tasks: 0, subagents: 0, t: ctl.t, action: null, at: 0, look: desk?.covering ? { x: 0, y: 0 } : ctl.look, from: ctl.from, nervous: false })
       : ctl.frame(baseCtx);
@@ -726,13 +740,21 @@
     const edge = edgeOf();
     const prevLookX = ctl.look.x, prevLookY = ctl.look.y;
     ctl.aim(edge === 'left' || edge === 'top' ? -rel.x : rel.x, edge === 'top' ? -rel.y : rel.y);
+    let interruptedFidget = false;
     if (desk && view?.desk === true && !view.mini && rel.mx != null && rel.my != null) {
-      if (desk.onMouseMove(rel.mx, rel.my, Date.now())) wakeDeskAnim();
+      const now = Date.now();
+      if (desk.onMouseMove(rel.mx, rel.my, now)) {
+        if (desk.isUserActive(now)) {
+          if (ctl.isFidgetAction()) interruptedFidget = true;
+          ctl.noteInput(now);
+        }
+        wakeDeskAnim();
+      }
     }
     let dizzy = false;
     if (!canDizzy()) spin.reset();
     else if (spin.add(rel.x, rel.y)) { ctl.trigger('dizzy'); dizzy = true; }
-    if (dizzy) {
+    if (dizzy || interruptedFidget) {
       draw(true);
       return;
     }
@@ -742,8 +764,9 @@
       if (desk?.covering) themeView.look(0, 0);
       else themeView.look(ctl.look.x / 2, ctl.look.y / 1.5);
     } else if (!custom() && (ctl.look.x !== prevLookX || ctl.look.y !== prevLookY)) {
-      const dm = deskMode(Date.now());
-      const baseCtx = { ...ctx(), deskPaws: dm.show ? 'hide' : null };
+      const now = Date.now();
+      const dm = deskMode(now);
+      const baseCtx = { ...ctx(now), deskPaws: dm.show && dm.hands ? 'hide' : null };
       grid = dm.poseIdle
         ? Pet.drawPet(view.pet, { ...baseCtx, state: 'idle', phase: null, tasks: 0, subagents: 0, t: ctl.t, action: null, at: 0, look: desk?.covering ? { x: 0, y: 0 } : ctl.look, from: ctl.from, nervous: false })
         : ctl.frame(baseCtx);
@@ -757,11 +780,16 @@
     if (event.type === 'password') dirty = desk.setPassword(event.active, now);
     else if (event.type === 'key') dirty = desk.onKey(event, now);
     else if (event.type === 'mouse') dirty = desk.onMouseButton(event.left, event.right, now);
-    if (dirty && view && ctl) {
-      // 有真实输入说明用户醒着：如果宠物刚打盹，顺便揉揉眼睛醒来
-      if (event.type === 'key' || (event.type === 'mouse' && (event.left || event.right))) ctl.rouse();
-      draw();
-      wakeDeskAnim();
+    if (view && ctl) {
+      // 任何真实键盘/鼠标点击（包括密码框期间的打字与进入密码框）都刷新活跃计时、延后并立刻打断随机待机动画
+      if (event.type === 'key' || (event.type === 'mouse' && (event.left || event.right)) || (event.type === 'password' && event.active)) {
+        ctl.noteInput(now);
+        if (event.type !== 'password') ctl.rouse();
+      }
+      if (dirty) {
+        draw(true);
+        wakeDeskAnim();
+      }
     }
   });
   window.addEventListener('resize', layout);
@@ -859,6 +887,8 @@
     state: () => ({
       visible: !!deskCanvas && !deskCanvas.hidden,
       desk: stage.dataset.desk || '',
+      hands: stage.dataset.deskHands === '1',
+      hiddenThemeHands: hiddenThemeHands.length,
       covering: !!desk?.covering,
       passwordActive: !!desk?.passwordActive,
       manualPrivacy: !!desk?.manualPrivacy,

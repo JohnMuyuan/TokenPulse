@@ -218,7 +218,18 @@ const config = { host: 'api.anthropic.com', allowedIps: ['203.0.113.10'], allowe
     const gate = new ExitMonitor({ now: () => gateClock, notify: event => notified.push(event), probe: async (provider, host) => { probes++; return gateError ? { provider, host, checkedAt: gateClock, latencyMs: 0, error: gateError } : sample({ provider, host, ip: gateIp, checkedAt: gateClock }); } });
     gate.clearHistory();
     const cfg = E.defaults(); cfg.providers.claude.allowedIps = ['203.0.113.10'];
-    gate.save(cfg); // 监控没开也要检查：白名单是用户定的规矩
+    // 出口监控关闭时：即使配置了 IP 白名单且当前出口不在白名单内，也直接放行、不探测
+    gateIp = '198.51.100.99';
+    gate.save({ ...cfg, enabled: false });
+    assert.equal(await gate.gateQuota('claude'), true, 'monitor off: allowlist is not enforced on quota query');
+    assert.equal(probes, 0, 'monitor off: does not probe for quota gate');
+    assert.equal(gate.snapshot().quotaBlocks.claude, undefined);
+
+    // 开启出口监控后按白名单放行/拦截（先同步放回白名单 IP 并排空 save 触发的首轮检测）
+    gateIp = '203.0.113.10';
+    gate.save({ ...cfg, enabled: true });
+    await gate.check(true);
+    probes = 0; gateClock += 60000;
     assert.equal(await gate.gateQuota('chatgpt'), true, 'no allowlist: nothing to compare, allowed');
     assert.equal(probes, 0, 'no probe without an allowlist');
     assert.equal(await gate.gateQuota('claude'), true); assert.equal(probes, 1);
@@ -231,7 +242,18 @@ const config = { host: 'api.anthropic.com', allowedIps: ['203.0.113.10'], allowe
     gateError = 'timeout'; gateClock += 60000;
     assert.equal(await gate.gateQuota('claude'), false, 'cannot confirm the exit: blocked too');
     assert.equal(notified.length, 2); assert.match(notified[1].message, /无法确认出口/);
-    gateError = undefined; gateIp = '203.0.113.10'; gateClock += 60000;
+    // 被拦截状态下关闭出口监控：立刻清空 quotaBlocks，且不再拦截额度查询
+    gate.save({ ...cfg, enabled: false });
+    assert.equal(gate.snapshot().quotaBlocks.claude, undefined, 'turning monitor off immediately clears quotaBlocks');
+    const probesBeforeOff = probes;
+    assert.equal(await gate.gateQuota('claude'), true, 'monitor turned off: quota query immediately unblocked');
+    assert.equal(probes, probesBeforeOff, 'monitor turned off: zero probes');
+    // 重新开启出口监控并恢复白名单 IP：正常恢复
+    gate.save({ ...cfg, enabled: true });
+    await gate.check(true);
+    gateError = undefined; gateIp = '198.51.100.99'; gateClock += 60000;
+    assert.equal(await gate.gateQuota('claude'), false);
+    gateIp = '203.0.113.10'; gateClock += 60000;
     assert.equal(await gate.gateQuota('claude'), true);
     assert.equal(gate.snapshot().quotaBlocks.claude, undefined); assert.equal(gate.snapshot().events[0].type, 'recovery');
     // 10 秒内刚探测过的结果直接用，不重复探测
@@ -243,7 +265,7 @@ const config = { host: 'api.anthropic.com', allowedIps: ['203.0.113.10'], allowe
     await Q.fetchOfficialQuota(true, async kind => { asked.push(kind); return kind !== 'claude'; });
     assert.deepEqual(asked.sort(), ['chatgpt', 'claude', 'grok']);
     await Q.fetchOfficialQuota(true, async () => { throw new Error('boom'); });
-    checks++; console.log('PASS quota queries are gated by the exit IP allowlist: block, single alert, probe failure, recovery');
+    checks++; console.log('PASS quota queries are gated by the exit IP allowlist only when monitoring is enabled: off bypass, block, single alert, probe failure, recovery');
   }
   console.log(`${checks}/${checks} egress checks passed`);
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {

@@ -1724,6 +1724,9 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.deepEqual(input.keyLayoutOf(0x4b), { key: 'K', row: 1, col: 7, hand: 'right' });
     assert.deepEqual(input.keyLayoutOf(0x0d), { key: '↵', row: 1, col: 8, hand: 'right' });
     assert.deepEqual(input.keyLayoutOf(0x20), { key: '␣', row: 3, col: 4, hand: 'left' });
+    assert.deepEqual(input.keyLayoutOf(0xa0), { key: '⇧', row: 2, col: 0, hand: 'left' });
+    assert.deepEqual(input.keyLayoutOf(0xa2), { key: 'Ctrl', row: 3, col: 0, hand: 'left' });
+    assert.deepEqual(input.keyLayoutOf(0x70), { key: 'F1', row: 0, col: 0, hand: 'left' });
     assert.deepEqual(input.parseHelperLine('{"t":"k","vk":65}'), { type: 'key', key: 'A', row: 1, col: 0, hand: 'left' });
     assert.deepEqual(input.parseHelperLine('{"t":"m","l":1,"r":0}'), { type: 'mouse', left: true, right: false });
     assert.deepEqual(input.parseHelperLine('{"t":"pw","v":true}'), { type: 'password', active: true });
@@ -1745,6 +1748,10 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     // 180° 面向宠物反转键盘：空格排(row=3)最靠近宠物在最上方，数字排(row=0)在最下方，Enter(col=8) 在宠物右手/观众左侧
     assert.ok(Desk.keyRect(3, 4).cy < Desk.keyRect(0, 0).cy, '反转键盘后空格键排在最靠近宠物的上方');
     assert.ok(Desk.keyRect(1, 8).cx < Desk.keyRect(1, 0).cx, '反转键盘后 Enter 落在观众左侧（宠物右手侧）');
+    // 全白极简键盘：取消橙色 Enter 键帽与灰色修饰键
+    assert.equal(Desk.deskPalette('light').keyTop, '#ffffff');
+    assert.equal(Desk.deskPalette('light').keyEnter, undefined, '不再有橙色回车方块，键盘键帽全白');
+    assert.equal(Desk.deskPalette('dark').keyEnter, undefined, '深色主题同样无橙色方块');
 
     // 键鼠双线并行：刚移动完鼠标（< 820ms）期间敲右侧键，右手稳握鼠标、左手代敲，不鬼畜闪现
     assert.equal(st.onKey({ key: 'W', row: 0, col: 1, hand: 'right' }, t0 + 200), true);
@@ -1773,6 +1780,39 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     const octPal = Desk.pawPalette('octopus', 'ok', '', false);
     assert.equal(octPal.tentacle, true, '章鱼启用原生触手造型');
     assert.equal(octPal.fill, '#F27D90', '章鱼触手与本体同色');
+
+    // 输入保活与随机待机打断：打字立即打断 idle:* / 内置小动作、不打断 poke/celebrate，并把下次待机至少延后 12 秒
+    const Pet = globalThis.PulsePet;
+    const themeCtl = new Pet.Controller('squirrel');
+    themeCtl.fidgets = ['idle:0'];
+    themeCtl.dur = { 'idle:0': 30 };
+    themeCtl.fidgetIn = 1;
+    themeCtl.tick({ state: 'idle', quota: 80, mood: 'ok', tasks: 0, mini: false, fidget: true, fidgetAfter: 3000 }, t0 + 10_000);
+    assert.equal(themeCtl.action, 'idle:0', '空闲超时后触发主题随机待机');
+    assert.equal(themeCtl.isFidgetAction(), true);
+    themeCtl.noteInput(t0 + 10_500);
+    assert.equal(themeCtl.action, null, '一打字立即打断随机待机动画，切回站姿');
+    assert.ok(themeCtl.fidgetIn >= 120, '至少停手 12 秒后才允许再次触发随机待机');
+    // 持续每秒打字超过 mouseIdleTimeout 期间绝不会切出随机待机
+    for (let s = 1; s <= 15; s++) {
+      const nowTick = t0 + 10_500 + s * 1000;
+      themeCtl.noteInput(nowTick);
+      for (let f = 0; f < 10; f++) {
+        themeCtl.tick({ state: 'idle', quota: 80, mood: 'ok', tasks: 0, mini: false, fidget: false, fidgetAfter: 3000 }, nowTick + f * 100);
+      }
+      assert.equal(themeCtl.action, null, `持续打字第 ${s} 秒绝不切出待机动画`);
+    }
+    // 非随机待机反应（如双击 poke / 庆祝）不被 noteInput 强行打断
+    themeCtl.trigger('poke');
+    assert.equal(themeCtl.isFidgetAction(), false);
+    themeCtl.noteInput(t0 + 30_000);
+    assert.equal(themeCtl.action, 'poke', 'poke 反应保留播放，由前景层隐藏接管手避让');
+    // 内置松鼠随机小动作（nibble）同样会被打字立即打断
+    const sqCtl = new Pet.Controller('squirrel');
+    sqCtl.trigger('nibble');
+    assert.equal(sqCtl.isFidgetAction(), true);
+    sqCtl.noteInput(t0 + 31_000);
+    assert.equal(sqCtl.action, null, '内置宠物随机小动作同样在打字时立即打断');
   });
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录删不掉不影响结果 */ }

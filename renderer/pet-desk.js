@@ -19,7 +19,7 @@
   const lerp = (a, b, t) => a + (b - a) * t;
 
   const ACTIVE_HOLD_MS = 2600;
-  const TAP_MS = 165;
+  const TAP_MS = 145;
   const MOUSE_BUSY_MS = 820;
   const FLOAT_MS = 760;
   const FLOAT_REDUCED_MS = 340;
@@ -190,8 +190,7 @@
         shadow: 'rgba(0, 0, 0, 0.36)',
         kbRim: '#11151d', kbBodyTop: '#242a36', kbBodyBot: '#1b202b', kbStroke: 'rgba(255,255,255,0.14)',
         kbWell: '#141821',
-        keyTop: '#363f52', keySide: '#242b38', keyMod: '#2c3445', keyModSide: '#1d2330',
-        keyEnter: '#e07a5f', keyEnterSide: '#a84f39',
+        keyTop: '#f3f6fb', keySide: '#b8c1d1',
         keyActive: '#47d6a0', keyActiveSide: '#1f8f66',
         mouseRim: '#11151d', mouseTop: '#d7dde8', mouseBot: '#bcc5d6', mouseBtnIdle: '#e3e8f2',
         mouseStroke: 'rgba(15, 20, 28, 0.78)', mouseSeam: 'rgba(24, 30, 42, 0.44)',
@@ -206,8 +205,7 @@
       shadow: 'rgba(24, 32, 48, 0.16)',
       kbRim: '#b8bec9', kbBodyTop: '#f5f6f8', kbBodyBot: '#e5e8ee', kbStroke: 'rgba(55, 64, 80, 0.42)',
       kbWell: '#cfd4de',
-      keyTop: '#ffffff', keySide: '#d0d5df', keyMod: '#e7ebf2', keyModSide: '#bfc6d3',
-      keyEnter: '#f28b66', keyEnterSide: '#c9623e',
+      keyTop: '#ffffff', keySide: '#d0d5df',
       keyActive: '#26b984', keyActiveSide: '#15835b',
       mouseRim: '#bcc2cd', mouseTop: '#f1f3f6', mouseBot: '#e4e7ee', mouseBtnIdle: '#ffffff',
       mouseStroke: 'rgba(48, 54, 66, 0.60)', mouseSeam: 'rgba(52, 58, 70, 0.38)',
@@ -363,6 +361,11 @@
         const ty = clamp(kr.cy - 2, 174, 204);
         if (!this.leftTap || now >= this.leftTap.at) {
           this.leftTap = { x: tx, y: ty, at: now };
+          this.leftPaw.tx = tx;
+          this.leftPaw.ty = ty;
+          this.leftPaw.x = lerp(this.leftPaw.x, tx, 0.58);
+          this.leftPaw.y = lerp(this.leftPaw.y, ty, 0.58);
+          this.leftPaw.rot = -0.34;
           this.leftPaw.squash = 1.0;
         }
       } else {
@@ -370,6 +373,11 @@
         const ty = clamp(kr.cy - 2, 174, 204);
         if (!this.rightTap || now >= this.rightTap.at) {
           this.rightTap = { x: tx, y: ty, at: now };
+          this.rightPaw.tx = tx;
+          this.rightPaw.ty = ty;
+          this.rightPaw.x = lerp(this.rightPaw.x, tx, 0.58);
+          this.rightPaw.y = lerp(this.rightPaw.y, ty, 0.58);
+          this.rightPaw.rot = 0.34;
           this.rightPaw.squash = 1.0;
         }
       }
@@ -490,7 +498,7 @@
         this.rightPaw.trot = 0;
       }
 
-      const pk = reducedMotion ? 1 : (1 - Math.exp(-dt * 28));
+      const pk = reducedMotion ? 1 : (1 - Math.exp(-dt * 46));
       this.leftPaw.x = lerp(this.leftPaw.x, this.leftPaw.tx, pk);
       this.leftPaw.y = lerp(this.leftPaw.y, this.leftPaw.ty, pk);
       this.leftPaw.rot = lerp(this.leftPaw.rot, this.leftPaw.trot, pk);
@@ -611,12 +619,11 @@
         const kx = rowLeft + (1 - spec.u1) * rowW + gapX * 0.5;
         const kw = (spec.u1 - spec.u0) * rowW - gapX;
         const press = state.covering ? 0 : (state.keyPress.get(`${r}:${s}`) || 0);
-        const sink = press * 2.0;
+        const sink = press * 2.4;
 
-        let topCol = dp.keyTop, sideCol = dp.keySide;
-        if (press > 0.15) { topCol = dp.keyActive; sideCol = dp.keyActiveSide; }
-        else if (spec.accent === 'enter') { topCol = dp.keyEnter; sideCol = dp.keyEnterSide; }
-        else if (spec.accent === 'mod') { topCol = dp.keyMod; sideCol = dp.keyModSide; }
+        // 全白极简键帽：静止全白，敲击瞬间高亮薄荷绿并下沉
+        const topCol = press > 0.12 ? dp.keyActive : dp.keyTop;
+        const sideCol = press > 0.12 ? dp.keyActiveSide : dp.keySide;
 
         ctx.fillStyle = sideCol;
         roundRect(ctx, kx, ky + 1.3, kw, kh, 2.3);
@@ -1053,6 +1060,7 @@
       crabHint = false,
       eyeBox = null,
       nativeHands = null,
+      showHands = true,
       aiWorking = false,
       aiPhase = null,
       subagents = 0,
@@ -1094,54 +1102,56 @@
     drawKeyboard(ctx, state, dp, en);
     drawMouse(ctx, state, dp);
 
-    // 2. 驱动宠物自己的原生双手（Clawd 侧边双小方块 / 松鼠圆棕爪 / 仓鼠粉小爪 / 章鱼外侧双触手）
-    const eyes = eyeBox || DEFAULT_EYES[pet] || DEFAULT_EYES.custom;
-    const leftEyeX = (eyes.cx - eyes.halfSpan) * U;
-    const rightEyeX = (eyes.cx + eyes.halfSpan) * U;
-    const eyeY = eyes.cy * U;
-    const coverT = state.coverT;
-    const shyBob = coverT > 0.2 && !reducedMotion ? Math.sin(now * 0.0075) * 1.8 * coverT : 0;
+    // 2. 仅当桌宠处于可接管站姿（showHands=true）时绘制前景双手；随机待机或点击反应期间隐藏接管手并还原原画手，杜绝悬空手/四只手
+    if (showHands) {
+      const eyes = eyeBox || DEFAULT_EYES[pet] || DEFAULT_EYES.custom;
+      const leftEyeX = (eyes.cx - eyes.halfSpan) * U;
+      const rightEyeX = (eyes.cx + eyes.halfSpan) * U;
+      const eyeY = eyes.cy * U;
+      const coverT = state.coverT;
+      const shyBob = coverT > 0.2 && !reducedMotion ? Math.sin(now * 0.0075) * 1.8 * coverT : 0;
 
-    const lx = lerp(state.leftPaw.x, leftEyeX, coverT);
-    const ly = lerp(state.leftPaw.y, eyeY + shyBob, coverT);
-    const rx = lerp(state.rightPaw.x, rightEyeX, coverT);
-    const ry = lerp(state.rightPaw.y, eyeY - shyBob, coverT);
+      const lx = lerp(state.leftPaw.x, leftEyeX, coverT);
+      const ly = lerp(state.leftPaw.y, eyeY + shyBob, coverT);
+      const rx = lerp(state.rightPaw.x, rightEyeX, coverT);
+      const ry = lerp(state.rightPaw.y, eyeY - shyBob, coverT);
 
-    // 捂眼态柔和害羞腮红
-    if (coverT > 0.45) {
-      ctx.save();
-      ctx.globalAlpha = clamp((coverT - 0.45) / 0.55, 0, 1) * 0.72;
-      for (const cx of [leftEyeX - 15, rightEyeX + 15]) {
-        const cy = eyeY + 13;
-        const bg = ctx.createRadialGradient(cx, cy, 1, cx, cy, 12);
-        bg.addColorStop(0, 'rgba(255, 114, 152, 0.72)');
-        bg.addColorStop(1, 'rgba(255, 140, 174, 0)');
-        ctx.fillStyle = bg;
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, 12, 6.5, 0, 0, Math.PI * 2);
-        ctx.fill();
+      // 捂眼态柔和害羞腮红
+      if (coverT > 0.45) {
+        ctx.save();
+        ctx.globalAlpha = clamp((coverT - 0.45) / 0.55, 0, 1) * 0.72;
+        for (const cx of [leftEyeX - 15, rightEyeX + 15]) {
+          const cy = eyeY + 13;
+          const bg = ctx.createRadialGradient(cx, cy, 1, cx, cy, 12);
+          bg.addColorStop(0, 'rgba(255, 114, 152, 0.72)');
+          bg.addColorStop(1, 'rgba(255, 140, 174, 0)');
+          ctx.fillStyle = bg;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, 12, 6.5, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
       }
-      ctx.restore();
-    }
 
-    const covering = coverT > 0.48;
-    if (nativeHands?.left && nativeHands?.right) {
-      // Clawd 原装双小方块手：同尺寸同色，零多余长臂！
-      const fill = nativeHands.fill || pp.fill;
-      const rgb = parseColor(fill) || pp.rgb || [222, 136, 109];
-      const strokeRgb = mix(rgb, [74, 30, 20], 0.52);
-      drawNativeSquareHand(ctx, lx, ly, nativeHands.left.w, nativeHands.left.h, state.leftPaw.rot, coverT < 0.2 ? state.leftPaw.squash : 0, fill, strokeRgb, covering, 'left');
-      drawNativeSquareHand(ctx, rx, ry, nativeHands.right.w, nativeHands.right.h, state.rightPaw.rot, coverT < 0.2 ? state.rightPaw.squash : 0, fill, strokeRgb, covering, 'right');
-    } else if (pet === 'octopus') {
-      // 章鱼墨墨：最外侧两条原生触手（从章鱼下缘左右根部自然伸出）
-      const sh = reducedMotion ? 0 : state.bodyShiftX * 2.0;
-      const bob = reducedMotion ? 0 : state.bodyBob * 2.4;
-      drawOctopusTentacle(ctx, 100 + sh, 124 + bob, lx, ly, coverT < 0.2 ? state.leftPaw.squash : 0, pp, covering, 'left');
-      drawOctopusTentacle(ctx, 188 + sh, 124 + bob, rx, ry, coverT < 0.2 ? state.rightPaw.squash : 0, pp, covering, 'right');
-    } else {
-      // 松鼠栗栗（暖棕圆爪）/ 仓鼠豆豆（粉嫩小爪）/ 自定义图片宠物
-      drawPresetPaw(ctx, lx, ly, state.leftPaw.rot, coverT < 0.2 ? state.leftPaw.squash : 0, pp, covering, 'left');
-      drawPresetPaw(ctx, rx, ry, state.rightPaw.rot, coverT < 0.2 ? state.rightPaw.squash : 0, pp, covering, 'right');
+      const covering = coverT > 0.48;
+      if (nativeHands?.left && nativeHands?.right) {
+        // Clawd 原装双小方块手：同尺寸同色，零多余长臂！
+        const fill = nativeHands.fill || pp.fill;
+        const rgb = parseColor(fill) || pp.rgb || [222, 136, 109];
+        const strokeRgb = mix(rgb, [74, 30, 20], 0.52);
+        drawNativeSquareHand(ctx, lx, ly, nativeHands.left.w, nativeHands.left.h, state.leftPaw.rot, coverT < 0.2 ? state.leftPaw.squash : 0, fill, strokeRgb, covering, 'left');
+        drawNativeSquareHand(ctx, rx, ry, nativeHands.right.w, nativeHands.right.h, state.rightPaw.rot, coverT < 0.2 ? state.rightPaw.squash : 0, fill, strokeRgb, covering, 'right');
+      } else if (pet === 'octopus') {
+        // 章鱼墨墨：最外侧两条原生触手（从章鱼下缘左右根部自然伸出）
+        const sh = reducedMotion ? 0 : state.bodyShiftX * 2.0;
+        const bob = reducedMotion ? 0 : state.bodyBob * 2.4;
+        drawOctopusTentacle(ctx, 100 + sh, 124 + bob, lx, ly, coverT < 0.2 ? state.leftPaw.squash : 0, pp, covering, 'left');
+        drawOctopusTentacle(ctx, 188 + sh, 124 + bob, rx, ry, coverT < 0.2 ? state.rightPaw.squash : 0, pp, covering, 'right');
+      } else {
+        // 松鼠栗栗（暖棕圆爪）/ 仓鼠豆豆（粉嫩小爪）/ 自定义图片宠物
+        drawPresetPaw(ctx, lx, ly, state.leftPaw.rot, coverT < 0.2 ? state.leftPaw.squash : 0, pp, covering, 'left');
+        drawPresetPaw(ctx, rx, ry, state.rightPaw.rot, coverT < 0.2 ? state.rightPaw.squash : 0, pp, covering, 'right');
+      }
     }
 
     if (aiWorking) {
