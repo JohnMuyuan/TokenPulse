@@ -1299,11 +1299,17 @@ export type AgyChildActivity = {
 export type AgyActivity = {
   id: string; title: string; workspace?: string;
   running: boolean; nested: boolean;
+  /** 顶层会话自身是否在运行（区别于仅靠子代理 / Swarm worker 拉起）。 */
+  ownRunning?: boolean;
   /** 这个主对话下正在跑的子代理个数。 */
   subagents?: number;
   agentName?: string;
   swarm?: boolean;
   swarmTitle?: string;
+  /** Swarm 协调器最近一步是已完成的 swarm_wait（正在等蜂群消息，尚未完成总目标回复用户）。 */
+  swarmWaiting?: boolean;
+  /** Swarm 中尚未被 kill 的非 monitor 工作子代理个数。 */
+  swarmAliveWorkers?: number;
   children?: AgyChildActivity[];
   /** 最后改动的时间（毫秒）；since：最后一次用户输入。 */
   at: number; since: number;
@@ -1321,7 +1327,7 @@ export function sqliteTime(value: unknown): number {
   return parsed > 0 ? parsed : 0;
 }
 
-type PhaseResult = Pick<AgyActivity, "phase" | "ended" | "tool" | "ask"> & { open?: boolean };
+type PhaseResult = Pick<AgyActivity, "phase" | "ended" | "tool" | "ask" | "swarmWaiting"> & { open?: boolean };
 const phaseCache = new Map<string, { size: number; mtimeMs: number; value: PhaseResult }>();
 
 /** 一个对话最后几步：在跑的时候分出在想 / 工具 / 等你；空闲了看最后一次回复怎么结束的。 */
@@ -1356,7 +1362,15 @@ export function conversationPhase(file: string, knownStamp?: { size: number; mti
         : "thinking" as const;
       const reply = tail.find((step) => step.step_type === MODEL_REPLY && !STEP_OPEN.has(step.status));
       const ended = reply?.status === STEP.ERROR ? "error" as const : reply && (reply.status === STEP.CANCELED || reply.status === STEP.INTERRUPTED) ? "interrupted" as const : "ok" as const;
-      return { phase, ended, open, ...(tool ? { tool } : {}), ...(ask ? { ask } : {}) };
+      let swarmWaiting = false;
+      if (!open) {
+        const latestSignal = tail.find((step) => step.step_type === TOOL_STEP || step.step_type === MODEL_REPLY || step.step_type === USER_INPUT || step.step_type === INCOMING_MSG);
+        if (latestSignal && latestSignal.step_type === TOOL_STEP && latestSignal.status !== STEP.ERROR && latestSignal.status !== STEP.CANCELED && latestSignal.status !== STEP.INTERRUPTED) {
+          const latestName = pbString(pbMessage(toBuf(latestSignal.metadata), 4), 2);
+          if (latestName === "swarm_wait") swarmWaiting = true;
+        }
+      }
+      return { phase, ended, open, ...(tool ? { tool } : {}), ...(ask ? { ask } : {}), ...(swarmWaiting ? { swarmWaiting: true } : {}) };
     });
     if (phaseCache.size > 128) phaseCache.clear();
     phaseCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, value });
@@ -1377,7 +1391,7 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     });
   } catch { return []; }
 
-  const swarmMeta = antigravitySwarmMeta(dir);
+  const swarmMeta = antigravitySwarmMeta(allDirs);
   const parentOf = new Map<string, string>();
   const canonicalId = new Map<string, string>();
   const rawById = new Map<string, Record<string, unknown>>();
@@ -1443,6 +1457,7 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       !swarmWorker.member.killed &&
       swarmWorker.member.wakeMode === "working" &&
       swarmWorker.member.phase !== "STOPPED" &&
+      swarmWorker.member.phase !== "KILLED" &&
       now - (swarmWorker.member.updatedAt ?? 0) <= 5 * 60_000,
     );
     if (!swarmWorking && (!stamp || stamp.mtimeMs < since)) continue;
@@ -1487,12 +1502,18 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     const killed = Number(row.killed || 0) !== 0 || swarmWorker?.member.killed === true;
     const notFullyIdle = Number(row.not_fully_idle || 0) !== 0;
     const statusRunning = !killed && /RUNNING|BUSY|CANCELING/.test(status);
-    const swarmParked = Boolean(swarmWorker && !killed && (swarmWorker.member.wakeMode === "mentions" || swarmWorker.member.wakeMode === "all"));
+    // Antigravity Swarm 的 swarm_wait(mentions_only=false) 会写入 wake_mode="anything"（如内置 monitor）
+    const swarmParked = Boolean(
+      swarmWorker &&
+      !killed &&
+      (swarmWorker.member.wakeMode === "mentions" || swarmWorker.member.wakeMode === "all" || swarmWorker.member.wakeMode === "anything"),
+    );
     const swarmWorking = Boolean(
       swarmWorker &&
       !killed &&
       swarmWorker.member.wakeMode === "working" &&
-      swarmWorker.member.phase !== "STOPPED",
+      swarmWorker.member.phase !== "STOPPED" &&
+      swarmWorker.member.phase !== "KILLED",
     );
     const sumRunning = !killed && (statusRunning || (notFullyIdle && !swarmParked));
 
@@ -1544,21 +1565,41 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     if (!forceKeep && !running && at < since && !swarmCoord) return null;
 
     const agentName = (typeof row.agent_name === "string" && row.agent_name.trim()) || swarmWorker?.member.name || desc?.typeName || undefined;
-    const { open: _open, ...phase } = info;
+    const swarmAliveWorkers = !nested && swarmCoord
+      ? swarmCoord.members.filter((m) =>
+        m.conversationId.toLowerCase() !== lower &&
+        m.role !== "coordinator" &&
+        m.name.toLowerCase() !== "monitor" &&
+        !m.killed &&
+        m.phase !== "KILLED" &&
+        m.phase !== "STOPPED" &&
+        m.desiredState !== "KILLED",
+      ).length
+      : undefined;
+    const { open: _open, swarmWaiting: rawSwarmWaiting, ...phase } = info;
+    const swarmWaiting = !nested && Boolean(swarmCoord) && Boolean(rawSwarmWaiting);
     ownActiveById.set(lower, ownActive);
     return {
       id,
       at,
       since: sqliteTime(row.last_user_input_time) || sumAt || at,
       running,
+      ...(!nested ? { ownRunning: ownActive } : {}),
       title: typeof row.title === "string" ? row.title : "",
       workspace: workspacePath(typeof row.workspace_uris === "string" ? row.workspace_uris : null),
       nested,
       ...(agentName ? { agentName } : {}),
       ...(swarmCoord || swarmWorker ? { swarm: true } : {}),
       ...(swarmCoord?.title ? { swarmTitle: swarmCoord.title } : swarmWorker?.swarmTitle ? { swarmTitle: swarmWorker.swarmTitle } : {}),
+      ...(swarmWaiting ? { swarmWaiting: true } : {}),
+      ...(swarmAliveWorkers !== undefined ? { swarmAliveWorkers } : {}),
       ...phase,
     };
+  };
+
+  const isSwarmMonitor = (lowerId: string) => {
+    const w = swarmMeta.workerById.get(lowerId);
+    return Boolean(w && w.member.role !== "coordinator" && w.member.name.toLowerCase() === "monitor");
   };
 
   for (const row of allRows) {
@@ -1566,6 +1607,8 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     if (!item) continue;
     byId.set(item.id.toLowerCase(), item);
     if (item.nested && item.running && now - item.at <= 5 * 60_000) {
+      // Swarm 内置 monitor 每 ~3 分钟按定时器/板消息醒来巡检：不单独唤醒空闲协调器、不触发假完成音（仅明确提问时保留）
+      if (isSwarmMonitor(item.id.toLowerCase()) && !item.ask && item.phase !== "waiting") continue;
       const rootId = rootOf(item.id);
       const rootLower = rootId.toLowerCase();
       if (rootId && rootLower !== item.id.toLowerCase()) {
@@ -1667,9 +1710,16 @@ export function readAntigravityActivity(since: number, dir: string | string[] = 
       const agentName = pri.agentName || sec.agentName;
       const swarm = prev.swarm || item.swarm || undefined;
       const swarmTitle = pri.swarmTitle || sec.swarmTitle;
+      const hasOwnRunning = prev.ownRunning !== undefined || item.ownRunning !== undefined;
+      const ownRunning = hasOwnRunning ? Boolean(prev.ownRunning || item.ownRunning) : undefined;
+      const swarmWaiting = (!ownRunning && pri.swarmWaiting) || undefined;
+      const swarmAliveWorkers = (prev.swarmAliveWorkers !== undefined || item.swarmAliveWorkers !== undefined)
+        ? Math.max(prev.swarmAliveWorkers ?? 0, item.swarmAliveWorkers ?? 0)
+        : undefined;
       merged.set(item.id, {
         ...pri,
         running: prev.running || item.running,
+        ...(ownRunning !== undefined ? { ownRunning } : {}),
         nested: prev.nested || item.nested,
         at: Math.max(prev.at, item.at),
         since: Math.max(prev.since, item.since),
@@ -1678,6 +1728,8 @@ export function readAntigravityActivity(since: number, dir: string | string[] = 
         ...(agentName ? { agentName } : {}),
         ...(swarm ? { swarm } : {}),
         ...(swarmTitle ? { swarmTitle } : {}),
+        ...(swarmWaiting ? { swarmWaiting } : {}),
+        ...(swarmAliveWorkers !== undefined ? { swarmAliveWorkers } : {}),
         ...(children ? { children } : {}),
         ...(subagents ? { subagents } : {}),
       });

@@ -75,6 +75,10 @@ export const ASK_STALE_MS = 60 * 60_000;
 export const RECENT_MS = 10 * 60_000;
 /** 子代理没结束、文件却这么久没动：多半是被停掉了（停掉的子代理不写结束行），不再算在跑。 */
 export const SUB_STALE_MS = 5 * 60_000;
+/** Antigravity Swarm 阶段交接稳定期：worker 或协调器刚停时等这段时间确认没有下一阶段被唤醒，才算整个 Swarm 目标完成。 */
+export const SWARM_SETTLE_MS = 8_000;
+/** 非 Swarm Antigravity 子代理交接稳定期：子代理刚完成、父会话尚未唤醒时短暂等待，避免提前弹完成提示音。 */
+export const SUBAGENT_HANDOFF_MS = 5_000;
 const FULL_SCAN_MS = 30_000;
 const KEEP_MS = 2 * 60 * 60_000;
 const CHUNK = 64 * 1024;
@@ -525,7 +529,30 @@ type AgyChildLike = {
   updatedAt?: number; since?: number; swarm?: boolean;
 };
 type AgyActivityLike = Omit<ReturnType<typeof readAntigravityActivity>[number], "children"> & {
-  agentName?: string; parentId?: string; swarm?: boolean; swarmTitle?: string; children?: AgyChildLike[];
+  agentName?: string; parentId?: string; swarm?: boolean; swarmTitle?: string;
+  ownRunning?: boolean; swarmWaiting?: boolean; swarmAliveWorkers?: number;
+  children?: AgyChildLike[];
+};
+type AgySettle = {
+  since: number;
+  notify: boolean;
+  ended?: TurnEnd;
+  taskSince: number;
+  seenAt: number;
+};
+type AgyHolder = {
+  last?: TaskStatus | null;
+  lastAsk?: string;
+  /** 本轮活跃周期里，主协调器自身是否真正跑过（用于区分「仅 Swarm worker 跑完一阶段」与「协调器亲自汇总回复用户」）。 */
+  coordRan?: boolean;
+  /** 协调器自身从运行变为静止的时间戳（用于判断子代理是短暂收尾还是新一轮独立阶段）。 */
+  coordIdleAt?: number;
+  /** 上一次扫描时该会话是否存在活跃子代理。 */
+  hadActiveSubs?: boolean;
+  /** 上一次扫描是否为 Swarm 会话。 */
+  wasSwarm?: boolean;
+  /** Swarm / 子代理交接稳定期状态。 */
+  settle?: AgySettle;
 };
 const SUB_ORDER: Record<SubagentStatus, number> = { waiting: 0, working: 1, idle: 2 };
 function sortChildren(list: SubagentBrief[]): SubagentBrief[] {
@@ -591,8 +618,8 @@ export class ActivityScanner {
   private subs = new Map<string, SubEntry>();
   private lastFull = 0;
   private titles = { mtimeMs: -1, map: new Map<string, string>() };
-  /** Antigravity 的对话：上一次的状态（和上面 entries 的 last / lastAsk 一个意思）。 */
-  private agy = new Map<string, { last?: TaskStatus | null; lastAsk?: string }>();
+  /** Antigravity 的对话：上一次的状态（和上面 entries 的 last / lastAsk 一个意思，另记 Swarm 阶段交接状态）。 */
+  private agy = new Map<string, AgyHolder>();
   constructor(private roots: ActivityRoots = defaultRoots(), private now: () => number = Date.now) {}
 
   /** 两小时内动过的会话文件。Claude 只看 projects/<项目>/ 下直接的 .jsonl；Codex 只看最近 30 天的日期目录（兼顾 resume 旧会话）。 */
@@ -907,7 +934,7 @@ export class ActivityScanner {
     if (now - this.lastFull >= FULL_SCAN_MS) { this.lastFull = now; await this.discover(now); }
     const running: AgentTask[] = [], recent: AgentTask[] = [], finished: string[] = [], failed: string[] = [], needsYou: string[] = [], asked: string[] = [];
     /** 一个会话这一次的状态：放进在跑 / 刚完成，和上一次比出做完了、出错了、问了你、在等你（holder 记着上一次）。 */
-    const consider = (holder: { last?: TaskStatus | null; lastAsk?: string }, base: AgentTask | null, inferred: Inferred | null, seen: number, sub?: { count: number; children?: SubagentBrief[] }) => {
+    const consider = (holder: { last?: TaskStatus | null; lastAsk?: string }, base: AgentTask | null, inferred: Inferred | null, seen: number, sub?: { count: number; children?: SubagentBrief[] }, suppressFinish = false) => {
       const status = inferred ? liveStatus(inferred, seen, now) : null;
       if (base && inferred && status) {
         const ask = status === "done" ? undefined : inferred.ask;
@@ -928,7 +955,7 @@ export class ActivityScanner {
         else if (task.doneAt && now - task.doneAt <= RECENT_MS) recent.push(task);
         if (status === "done" && holder.last && holder.last !== "done") {
           if (inferred.ended === "error") failed.push(task.key);
-          else if (inferred.ended !== "interrupted") finished.push(task.key);
+          else if (inferred.ended !== "interrupted" && !suppressFinish) finished.push(task.key);
         }
         // 第一次扫描（holder.last 还是 undefined）不算：免得一启动就响
         if (ask && holder.last !== undefined && holder.lastAsk !== ask.id) asked.push(task.key);
@@ -1062,6 +1089,9 @@ export class ActivityScanner {
           : rawOwnAsk;
         const ask = ownAsk ?? childAsk;
         const isRunning = item.running || activeChildren.length > 0;
+        const ownRunning = item.ownRunning !== undefined ? item.ownRunning : item.running;
+        const hasActiveSubs = activeChildren.length > 0;
+        const swarmWaiting = Boolean(item.swarmWaiting);
         const toolChild = activeChildren.find((c) => c.tool);
         const phase = (ask || item.phase === "waiting" || waitingChild) ? "waiting"
           : (item.phase === "tool" || toolChild) ? "tool"
@@ -1079,7 +1109,80 @@ export class ActivityScanner {
           ...(isSwarm ? { swarm: true } : {}),
           ...(item.swarmTitle ? { swarmTitle: clip(item.swarmTitle, 60) } : {}),
         };
-        consider(holder, task, inferred, seenAt, subCount || children.length ? { count: subCount, children } : undefined);
+        if (isRunning) {
+          holder.settle = undefined;
+          if (ownRunning) {
+            holder.coordRan = true;
+            holder.coordIdleAt = undefined;
+          } else if (swarmWaiting) {
+            holder.coordRan = false;
+            holder.coordIdleAt = undefined;
+          } else if (holder.coordRan) {
+            // 协调器停下后若有新的子代理拉起，或子代理持续运行超过稳定期，则本轮已进入子代理阶段
+            if (!holder.hadActiveSubs && hasActiveSubs) {
+              holder.coordRan = false;
+              holder.coordIdleAt = undefined;
+            } else {
+              holder.coordIdleAt ??= now;
+              if (now - holder.coordIdleAt >= SWARM_SETTLE_MS) holder.coordRan = false;
+            }
+          }
+          holder.hadActiveSubs = hasActiveSubs;
+          holder.wasSwarm = isSwarm;
+          consider(holder, task, inferred, seenAt, subCount || children.length ? { count: subCount, children } : undefined);
+        } else {
+          const treatAsSwarm = isSwarm || Boolean(holder.wasSwarm);
+          const hasLiveSwarmContext = treatAsSwarm && (
+            swarmWaiting ||
+            Boolean(holder.hadActiveSubs) ||
+            !holder.coordRan ||
+            (item.swarmAliveWorkers ?? 1) > 0
+          );
+          const subOnlyNonSwarm = !treatAsSwarm && Boolean(holder.hadActiveSubs) && !holder.coordRan;
+          const shouldSettle = Boolean(
+            holder.last &&
+            holder.last !== "done" &&
+            item.ended !== "interrupted" &&
+            item.ended !== "error" &&
+            (hasLiveSwarmContext || subOnlyNonSwarm),
+          );
+          if (shouldSettle) {
+            if (!holder.settle) {
+              // Swarm 中只有「协调器自身跑完且未停在 swarm_wait」才允许在稳定期后响完成音；仅 worker 跑完一阶段绝不响完成音
+              const notify = treatAsSwarm ? Boolean(holder.coordRan) && !swarmWaiting : true;
+              holder.settle = { since: now, notify, ended: item.ended, taskSince: item.since, seenAt };
+            } else if (swarmWaiting) {
+              holder.settle.notify = false;
+            }
+            const settleMs = treatAsSwarm ? SWARM_SETTLE_MS : SUBAGENT_HANDOFF_MS;
+            if (now - holder.settle.since < settleMs) {
+              consider(holder, task, { status: "thinking", since: holder.settle.taskSince, at: holder.settle.seenAt }, holder.settle.since);
+              continue;
+            }
+            const shouldNotify = holder.settle.notify && !swarmWaiting;
+            const settleEnded = holder.settle.ended ?? item.ended;
+            holder.settle = undefined;
+            holder.coordRan = false;
+            holder.coordIdleAt = undefined;
+            holder.hadActiveSubs = false;
+            holder.wasSwarm = isSwarm;
+            consider(
+              holder,
+              task,
+              { status: "done", since: item.since, at: seenAt, doneAt: seenAt, ...(settleEnded ? { ended: settleEnded } : {}) },
+              seenAt,
+              undefined,
+              !shouldNotify,
+            );
+          } else {
+            holder.settle = undefined;
+            holder.coordRan = false;
+            holder.coordIdleAt = undefined;
+            holder.hadActiveSubs = false;
+            holder.wasSwarm = isSwarm;
+            consider(holder, task, inferred, seenAt, undefined, treatAsSwarm && swarmWaiting);
+          }
+        }
       }
       for (const id of [...this.agy.keys()]) if (!alive.has(id)) this.agy.delete(id);
     }

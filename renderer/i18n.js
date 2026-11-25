@@ -3395,7 +3395,9 @@
     '正在切换 Antigravity 登录并重启客户端…': 'Switching Antigravity login and restarting client…',
     '正在切换 Antigravity 登录…': 'Switching Antigravity login…',
     '设置 → 官方账号新增 Antigravity 一键切换账号并自动重启': 'One-Click Antigravity Account Switch & Auto-Restart in Settings',
-    '在「设置 → 官方账号」的 Antigravity 卡片中点击「切换登录」并确认后，自动备份现有凭据、安全写入已授权 OAuth 凭据到系统凭据管理器（同步生效于桌面端与 agy CLI），并自动关闭重启运行中的 Antigravity；未完成 OAuth 授权的账号直接标示「需先授权」，失败时自动回滚恢复。': 'Click “Switch Login” on any OAuth-authorized Antigravity account in Settings → Official Accounts to confirm, back up existing credentials, write the fresh OAuth token to the OS keyring (syncing both Desktop and agy CLI), and automatically restart Antigravity if running. Accounts without OAuth show “Authorize First”, and failures roll back automatically.'
+    '在「设置 → 官方账号」的 Antigravity 卡片中点击「切换登录」并确认后，自动备份现有凭据、安全写入已授权 OAuth 凭据到系统凭据管理器（同步生效于桌面端与 agy CLI），并自动关闭重启运行中的 Antigravity；未完成 OAuth 授权的账号直接标示「需先授权」，失败时自动回滚恢复。': 'Click “Switch Login” on any OAuth-authorized Antigravity account in Settings → Official Accounts to confirm, back up existing credentials, write the fresh OAuth token to the OS keyring (syncing both Desktop and agy CLI), and automatically restart Antigravity if running. Accounts without OAuth show “Authorize First”, and failures roll back automatically.',
+    '修复 Antigravity Swarm 子代理阶段完成与巡检心跳误触发桌宠完成提示音': 'Fix False Desk Pet Completion Chimes on Antigravity Swarm Stage Handoffs & Monitor Pulses',
+    '识别 Swarm 协调器的 swarm_wait 等待态并引入 8 秒阶段交接稳定期，过滤内置 monitor 定时巡检心跳与仅子代理阶段结束导致的假完成事件；仅当协调器完成最终回复且稳定期内无新阶段唤醒时才准确响一次完成提示音，普通对话与非 Swarm 会话不受影响。': 'Detects Swarm coordinator swarm_wait state and adds an 8-second phase handoff settle window while filtering built-in monitor watchdog pulses and worker-only stage completions; plays the completion chime once only after the coordinator delivers its final reply with no further phase wakeup, leaving regular non-Swarm sessions instant.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */

@@ -320,6 +320,68 @@ const summary = (id, title, nesting = 0, parentId = '', opts = {}) => summaries.
     const act3 = a.readAntigravityActivity(now - 60_000, agy, now);
     const coordAct3 = act3.find(x => x.id === COORD);
     assert.equal(coordAct3?.running ?? false, false, '所有 worker 休眠后，IDLE + not_fully_idle=1 的 Swarm 协调器不再卡在 running/thinking');
+
+    // 4. Swarm 内置 monitor：wake_mode=anything 视为休眠；即使 monitor 定时醒来跑 read_board，也不单独唤醒空闲协调器
+    fs.writeFileSync(path.join(swarmDir, 'members.json'), JSON.stringify({
+      title: '会话子代理审查蜂群',
+      members: {
+        coordinator: { conversation_id: COORD, role: 'coordinator', phase: 'RUNNING', wake_mode: 'mentions', killed: false },
+        'audit-worker': { conversation_id: WORKER, role: 'worker', phase: 'RUNNING', wake_mode: 'mentions', killed: false },
+        monitor: { conversation_id: PARKED, role: 'worker', phase: 'RUNNING', wake_mode: 'anything', killed: false },
+      },
+    }));
+    summary(PARKED, '', 1, COORD, { agentName: 'monitor', status: 'CASCADE_RUN_STATUS_IDLE', notFullyIdle: true, modified: new Date(now - 1000).toISOString().replace('T', ' ').replace('Z', '+00:00') });
+    const actMonParked = a.readAntigravityActivity(now - 60_000, agy, now);
+    assert.equal(actMonParked.find(x => x.id === COORD)?.running ?? false, false, 'wake_mode=anything 的 monitor 休眠时不唤醒协调器');
+
+    conversation(PARKED, [
+      [101, 3, incomingStep(now - 2000, 'timer tick')],
+      [132, 2, null, Buffer.concat([time(1, now - 1000), msg(4, str(1, 'call_mon_1'), str(2, 'read_board'), str(3, '{}'))])],
+    ]);
+    summary(PARKED, '', 1, COORD, { agentName: 'monitor', status: 'CASCADE_RUN_STATUS_RUNNING', modified: new Date(now - 500).toISOString().replace('T', ' ').replace('Z', '+00:00') });
+    fs.writeFileSync(path.join(swarmDir, 'members.json'), JSON.stringify({
+      title: '会话子代理审查蜂群',
+      members: {
+        coordinator: { conversation_id: COORD, role: 'coordinator', phase: 'RUNNING', wake_mode: 'mentions', killed: false },
+        'audit-worker': { conversation_id: WORKER, role: 'worker', phase: 'RUNNING', wake_mode: 'mentions', killed: false },
+        monitor: { conversation_id: PARKED, role: 'worker', phase: 'RUNNING', wake_mode: 'working', killed: false },
+      },
+    }));
+    const actMonPulse = a.readAntigravityActivity(now - 60_000, agy, now);
+    assert.equal(actMonPulse.find(x => x.id === COORD)?.running ?? false, false, 'Swarm monitor 巡检心跳不单独把空闲协调器标成 running');
+
+    // 5. 协调器最后一步是已完成的 swarm_wait -> 标记 swarmWaiting=true 与 swarmAliveWorkers=1；全部 worker kill 且协调器最终回复后清零
+    const swarmWaitMeta = Buffer.concat([time(1, now - 1000), msg(4, str(1, 'call_sw_wait'), str(2, 'swarm_wait'), str(3, '{"since":10}'))]);
+    conversation(COORD, [
+      [14, 3, userStep(now - 20_000, '开启 Swarm 审查')],
+      [15, 3, replyStep(now - 10_000, { text: '等待 worker。' })],
+      [132, 3, null, swarmWaitMeta],
+    ]);
+    summary(COORD, 'Swarm 主会话', 0, '', { status: 'CASCADE_RUN_STATUS_IDLE', notFullyIdle: true, modified: new Date(now - 500).toISOString().replace('T', ' ').replace('Z', '+00:00') });
+    const actSwWait = a.readAntigravityActivity(now - 60_000, agy, now).find(x => x.id === COORD);
+    assert.equal(actSwWait?.running, false);
+    assert.equal(actSwWait?.ownRunning, false);
+    assert.equal(actSwWait?.swarmWaiting, true, '协调器停在 swarm_wait 时标出 swarmWaiting');
+    assert.equal(actSwWait?.swarmAliveWorkers, 1, '只计未 kill 的非 monitor 工作子代理');
+
+    conversation(COORD, [
+      [14, 3, userStep(now - 20_000, '开启 Swarm 审查')],
+      [132, 3, null, swarmWaitMeta],
+      [15, 3, replyStep(now - 200, { text: '全部审查完成。' })],
+    ]);
+    fs.writeFileSync(path.join(swarmDir, 'members.json'), JSON.stringify({
+      title: '会话子代理审查蜂群',
+      members: {
+        coordinator: { conversation_id: COORD, role: 'coordinator', phase: 'RUNNING', wake_mode: 'mentions', killed: false },
+        'audit-worker': { conversation_id: WORKER, role: 'worker', phase: 'KILLED', desired_state: 'KILLED', wake_mode: 'working', killed: true },
+        monitor: { conversation_id: PARKED, role: 'worker', phase: 'RUNNING', wake_mode: 'anything', killed: false },
+      },
+    }));
+    summary(COORD, 'Swarm 主会话', 0, '', { status: 'CASCADE_RUN_STATUS_IDLE', notFullyIdle: false, modified: new Date(now - 100).toISOString().replace('T', ' ').replace('Z', '+00:00') });
+    const actSwDone = a.readAntigravityActivity(now - 60_000, agy, now).find(x => x.id === COORD);
+    assert.equal(actSwDone?.swarmWaiting, undefined, '协调器最终回复后不再是 swarmWaiting');
+    assert.equal(actSwDone?.swarmAliveWorkers, 0, '工作子代理全部 kill 后 swarmAliveWorkers=0');
+
     // 清理测试用的 Swarm 夹具以免干扰下方删除测试
     for (const tid of [COORD, WORKER, PARKED, ORPHAN_P, SUB, SUB1, SUB2]) {
       summaries.prepare('delete from conversation_summaries where conversation_id = ?').run(tid);

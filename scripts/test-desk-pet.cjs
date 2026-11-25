@@ -1239,6 +1239,7 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     const agyMod = require('../build/core/antigravity');
     const origRead = agyMod.readAntigravityActivity;
     const now = Date.now();
+    let clock = now;
     let payload = [
       {
         id: 'sw-root',
@@ -1284,7 +1285,7 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     agyMod.readAntigravityActivity = () => payload;
     try {
       const none = path.join(root, 'none');
-      const scanner = new activity.ActivityScanner({ claude: none, codex: none, codexIndex: path.join(root, 'none.jsonl'), antigravity: path.join(root, 'agy-swarm-mock') });
+      const scanner = new activity.ActivityScanner({ claude: none, codex: none, codexIndex: path.join(root, 'none.jsonl'), antigravity: path.join(root, 'agy-swarm-mock') }, () => clock);
       const first = await scanner.scan();
       assert.deepEqual(first.running.map(t => t.key).sort(), ['antigravity:fb-root', 'antigravity:sw-root'], '嵌套子会话不单独列为顶层任务');
       const sw = first.running.find(t => t.key === 'antigravity:sw-root');
@@ -1308,11 +1309,12 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
       assert.deepEqual(fb.children.map(c => [c.key, c.name, c.status, c.tool]), [['antigravity:fb-child', 'worker-fb', 'working', 'run_command']]);
 
       // 结构化 ask 对象也能从 worker 冒泡到父任务
+      clock += 1000;
       payload = [
         {
-          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: false, phase: 'thinking', nested: false, since: now - 120_000, at: now, swarm: true,
+          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: false, phase: 'thinking', nested: false, since: now - 120_000, at: clock, swarm: true,
           children: [
-            { id: 'sw-w1', name: 'audit-pet', status: 'waiting', running: true, phase: 'waiting', ask: { id: 'call_sub_1', name: 'ask_question', args: JSON.stringify({ questions: [{ question: '选方案？', options: ['A', 'B'] }] }), at: now }, updatedAt: now, swarm: true },
+            { id: 'sw-w1', name: 'audit-pet', status: 'waiting', running: true, phase: 'waiting', ask: { id: 'call_sub_1', name: 'ask_question', args: JSON.stringify({ questions: [{ question: '选方案？', options: ['A', 'B'] }] }), at: clock }, updatedAt: clock, swarm: true },
           ],
         },
       ];
@@ -1323,12 +1325,13 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
       assert.deepEqual(sw2.ask?.questions?.[0]?.options?.map(o => o.label), ['A', 'B']);
 
       // core-sessions 契约形态：root.ask 携带结构化问题，同时 child.ask 传工具名 'ask_question' → 自动补上 from/swarm
+      clock += 1000;
       payload = [
         {
-          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: true, phase: 'waiting', nested: false, since: now - 120_000, at: now + 1000, swarm: true,
-          ask: { id: 'call_bubbled_2', name: 'ask_question', args: JSON.stringify({ questions: [{ question: '需要清理缓存吗？', options: ['是', '否'] }] }), at: now + 1000 },
+          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: true, phase: 'waiting', nested: false, since: now - 120_000, at: clock, swarm: true,
+          ask: { id: 'call_bubbled_2', name: 'ask_question', args: JSON.stringify({ questions: [{ question: '需要清理缓存吗？', options: ['是', '否'] }] }), at: clock },
           children: [
-            { id: 'sw-w1', name: 'audit-pet', status: 'waiting', running: true, phase: 'waiting', ask: 'ask_question', updatedAt: now + 1000, swarm: true },
+            { id: 'sw-w1', name: 'audit-pet', status: 'waiting', running: true, phase: 'waiting', ask: 'ask_question', updatedAt: clock, swarm: true },
           ],
         },
       ];
@@ -1338,15 +1341,151 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
       assert.equal(swB.ask?.swarm, true);
       assert.equal(swB.ask?.questions?.[0]?.question, '需要清理缓存吗？');
 
-      // 所有 worker 都空闲后，主会话算正常完成
+      // 所有 worker 都空闲后，先经过交接稳定期（避免阶段切换误响完成音），确认无新阶段唤醒后报完成一次
+      clock += 2000;
       payload = [
         {
-          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: false, phase: 'thinking', nested: false, since: now - 120_000, at: now + 5000, ended: 'ok', swarm: true,
-          children: [{ id: 'sw-w1', name: 'audit-pet', status: 'idle', running: false, updatedAt: now + 5000, swarm: true }],
+          id: 'sw-root', title: 'TokenPulse 多代理改造', workspace: 'D:\\work\\TokenPulse', running: false, phase: 'thinking', nested: false, since: now - 120_000, at: clock, ended: 'ok', swarm: true,
+          children: [{ id: 'sw-w1', name: 'audit-pet', status: 'idle', running: false, updatedAt: clock, swarm: true }],
         },
       ];
+      const settling = await scanner.scan();
+      assert.deepEqual([settling.running.length, settling.finished], [1, []], 'Swarm 刚静默先进入交接稳定期，不立刻弹完成提示音');
+      clock += activity.SWARM_SETTLE_MS;
       const third = await scanner.scan();
-      assert.deepEqual([third.running.length, third.finished], [0, ['antigravity:sw-root']]);
+      assert.deepEqual([third.running.length, third.finished], [0, ['antigravity:sw-root']], '稳定期后无新阶段唤醒，主会话正常完成一次');
+    } finally {
+      agyMod.readAntigravityActivity = origRead;
+    }
+  });
+
+  await checkAsync('desk pet: Antigravity Swarm worker stage completions, handoff gaps, and swarm_wait do not trigger premature finished chimes', async () => {
+    const agyMod = require('../build/core/antigravity');
+    const origRead = agyMod.readAntigravityActivity;
+    const T = Date.now();
+    let clock = T;
+    let payload = [];
+    agyMod.readAntigravityActivity = () => payload;
+    try {
+      const none = path.join(root, 'none');
+      const scanner = new activity.ActivityScanner({ claude: none, codex: none, codexIndex: path.join(root, 'none.jsonl'), antigravity: path.join(root, 'agy-swarm-life') }, () => clock);
+      const base = (extra = {}) => ({
+        id: 'sw-life',
+        title: '多阶段 Swarm 任务',
+        workspace: 'D:\\work\\TokenPulse',
+        nested: false,
+        since: T,
+        at: clock,
+        swarm: true,
+        swarmTitle: 'Multi-Stage Swarm',
+        swarmAliveWorkers: 2,
+        ...extra,
+      });
+
+      // 阶段 1：协调器启动 -> 调用 swarm_wait 休眠 -> 2s 交接空窗 -> worker-1 运行 -> worker-1 完成阶段 1 休眠 -> 3s 交接空窗（全过程零完成音）
+      payload = [base({ running: true, ownRunning: true, phase: 'tool', tool: 'swarm' })];
+      assert.deepEqual((await scanner.scan()).finished, []);
+
+      clock += 2000;
+      payload = [base({ running: false, ownRunning: false, swarmWaiting: true, ended: 'ok' })];
+      const waitGap = await scanner.scan();
+      assert.deepEqual([waitGap.running.length, waitGap.finished], [1, []], '协调器刚调 swarm_wait 等待 worker 启动时不响完成音');
+
+      clock += 2000;
+      payload = [base({
+        running: true, ownRunning: false, swarmWaiting: true, phase: 'tool', tool: 'run_command',
+        children: [{ id: 'w1', name: 'stage-1', status: 'working', running: true, phase: 'tool', tool: 'run_command', updatedAt: clock, swarm: true }],
+      })];
+      assert.deepEqual((await scanner.scan()).finished, []);
+
+      clock += 60_000;
+      // worker-1 完成阶段 1 并休眠，协调器还没被唤醒（实测 1.5~3s 空窗）
+      payload = [base({ running: false, ownRunning: false, swarmWaiting: true, ended: 'ok', children: [] })];
+      assert.deepEqual((await scanner.scan()).finished, [], 'worker-1 刚完成阶段 1 不响完成音');
+      clock += 3000;
+      assert.deepEqual((await scanner.scan()).finished, [], '阶段交接 3s 空窗内仍不响完成音');
+      clock += activity.SWARM_SETTLE_MS;
+      const stalledWait = await scanner.scan();
+      assert.deepEqual([stalledWait.running.length, stalledWait.finished], [0, []], '即便 swarm_wait 超过稳定期也静默回空闲，绝不误报完成');
+
+      // 阶段 2：协调器醒来，未调 swarm_wait 而是发完说明后停下，4s 后 worker-2 才醒 -> worker-2 跑完阶段 2 停下（全过程零完成音）
+      clock += 2000;
+      payload = [base({ running: true, ownRunning: true, swarmWaiting: false, phase: 'tool', tool: 'post_message' })];
+      assert.deepEqual((await scanner.scan()).finished, []);
+
+      clock += 5000;
+      payload = [base({ running: false, ownRunning: false, swarmWaiting: false, ended: 'ok' })];
+      assert.deepEqual((await scanner.scan()).finished, [], '协调器刚派完阶段 2 任务、worker-2 尚未醒来时不提前响完成音');
+
+      clock += 4000;
+      payload = [base({
+        running: true, ownRunning: false, swarmWaiting: false, phase: 'tool', tool: 'edit_file',
+        children: [{ id: 'w2', name: 'stage-2', status: 'working', running: true, phase: 'tool', tool: 'edit_file', updatedAt: clock, swarm: true }],
+      })];
+      assert.deepEqual((await scanner.scan()).finished, []);
+
+      clock += 50_000;
+      payload = [base({ running: false, ownRunning: false, swarmWaiting: false, ended: 'ok', children: [] })];
+      assert.deepEqual((await scanner.scan()).finished, [], '仅 worker-2 完成阶段 2 时不响完成音');
+      clock += activity.SWARM_SETTLE_MS + 1000;
+      const workerOnlyDone = await scanner.scan();
+      assert.deepEqual([workerOnlyDone.running.length, workerOnlyDone.finished], [0, []], '协调器尚未亲自回复用户，仅 worker 结束即使超过稳定期也不响完成音');
+
+      // 阶段 3（收尾）：协调器醒来汇总并答复用户，不再有新 worker 唤醒 -> 稳定期后只响一次完成音
+      clock += 2000;
+      payload = [base({ running: true, ownRunning: true, swarmWaiting: false, phase: 'thinking' })];
+      assert.deepEqual((await scanner.scan()).finished, []);
+
+      clock += 8000;
+      payload = [base({ running: false, ownRunning: false, swarmWaiting: false, ended: 'ok' })];
+      assert.deepEqual((await scanner.scan()).finished, [], '最终回复后先等交接稳定期');
+      clock += activity.SWARM_SETTLE_MS;
+      const finalDone = await scanner.scan();
+      assert.deepEqual([finalDone.running.length, finalDone.finished], [0, ['antigravity:sw-life']], 'Swarm 总目标真正完成后准确响一次完成音');
+      clock += 4000;
+      assert.deepEqual((await scanner.scan()).finished, [], '完成音只触发一次');
+
+      // 阶段 4：历史 Swarm（所有工作 worker 已 kill，swarmAliveWorkers=0）后续普通对话 + 非 Swarm 普通对话均立刻完成无额外延迟
+      clock += 10_000;
+      payload = [
+        base({ running: true, ownRunning: true, swarmWaiting: false, swarmAliveWorkers: 0, phase: 'thinking' }),
+        { id: 'plain-1', title: '普通对话', workspace: 'D:\\work\\TokenPulse', running: true, ownRunning: true, phase: 'thinking', nested: false, since: clock, at: clock },
+      ];
+      assert.deepEqual((await scanner.scan()).finished, []);
+      clock += 5000;
+      payload = [
+        base({ running: false, ownRunning: false, swarmWaiting: false, swarmAliveWorkers: 0, ended: 'ok' }),
+        { id: 'plain-1', title: '普通对话', workspace: 'D:\\work\\TokenPulse', running: false, ownRunning: false, phase: 'thinking', nested: false, since: clock - 5000, at: clock, ended: 'ok' },
+      ];
+      const immediate = await scanner.scan();
+      assert.deepEqual(immediate.finished.sort(), ['antigravity:plain-1', 'antigravity:sw-life'], '无存活 worker 的历史 Swarm 后续对话与普通对话立刻报完成');
+
+      // 阶段 5：非 Swarm Antigravity 子代理交接空窗（< SUBAGENT_HANDOFF_MS）不提前响完成音，父会话醒来答复后才响一次
+      clock += 10_000;
+      payload = [{
+        id: 'sub-parent', title: '普通子代理会话', workspace: 'D:\\work\\TokenPulse',
+        running: true, ownRunning: false, phase: 'tool', tool: 'grep_search', nested: false, since: clock, at: clock,
+        children: [{ id: 'sub-1', name: 'research', status: 'working', running: true, phase: 'tool', tool: 'grep_search', updatedAt: clock }],
+      }];
+      assert.deepEqual((await scanner.scan()).finished, []);
+      clock += 10_000;
+      payload = [{
+        id: 'sub-parent', title: '普通子代理会话', workspace: 'D:\\work\\TokenPulse',
+        running: false, ownRunning: false, phase: 'thinking', nested: false, since: clock - 10_000, at: clock, ended: 'ok', children: [],
+      }];
+      assert.deepEqual((await scanner.scan()).finished, [], '非 Swarm 子代理刚结束、父会话尚未唤醒时不提前弹完成音');
+      clock += 3000;
+      payload = [{
+        id: 'sub-parent', title: '普通子代理会话', workspace: 'D:\\work\\TokenPulse',
+        running: true, ownRunning: true, phase: 'thinking', nested: false, since: clock - 13_000, at: clock,
+      }];
+      assert.deepEqual((await scanner.scan()).finished, [], '父会话 3s 后醒来继续处理，取消交接等待');
+      clock += 4000;
+      payload = [{
+        id: 'sub-parent', title: '普通子代理会话', workspace: 'D:\\work\\TokenPulse',
+        running: false, ownRunning: false, phase: 'thinking', nested: false, since: clock - 17_000, at: clock, ended: 'ok',
+      }];
+      assert.deepEqual((await scanner.scan()).finished, ['antigravity:sub-parent'], '父会话答复完成后立即报完成一次');
     } finally {
       agyMod.readAntigravityActivity = origRead;
     }
