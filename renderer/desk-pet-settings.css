@@ -52,7 +52,30 @@
 .dps-list { display: grid; gap: 6px; margin: 0; padding-left: 20px; color: var(--text-2); font-size: 13.5px; line-height: 1.7; }
 .dps-format summary { cursor: pointer; color: var(--accent); font-size: 13.5px; font-weight: 600; }
 .dps-format .setting-hint { margin-top: 8px; }
+.dps-guide-steps { margin-top: 10px; }
+.dps-code-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 10px 0 8px; }
+.dps-code-head .setting-hint { margin: 0; }
 .dps-code { margin: 0; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); font: 12.5px/1.6 ui-monospace, Consolas, monospace; }
+
+/* 键鼠样式选择卡片 */
+.dps-desk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 12px; margin-top: 10px; }
+.dps-desk-card { position: relative; display: grid; align-content: start; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); transition: border-color .2s, box-shadow .2s; }
+.dps-desk-card:hover { border-color: var(--line-strong); }
+.dps-desk-card.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.dps-desk-stage {
+  display: grid; place-items: center; padding: 10px 6px; min-height: 76px;
+  border-radius: 10px; border: 1px solid var(--line);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 84%, var(--line-strong) 16%), var(--surface-2));
+}
+.dps-desk-canvas { display: block; max-width: 100%; height: auto; }
+.dps-desk-card .dps-chip { top: 14px; right: 14px; }
+.dps-desk-card.on .dps-pick { cursor: default; }
+.dps-desk-add { place-content: center; justify-items: center; min-height: 142px; border-style: dashed; color: var(--muted); cursor: pointer; text-align: center; font: inherit; }
+.dps-desk-add .icon { width: 20px; height: 20px; color: var(--accent); }
+.dps-desk-add b { color: var(--text); font-size: 13.5px; }
+.dps-desk-add small { font-size: 12px; line-height: 1.5; }
+.dps-desk-add:hover { border-color: var(--accent); }
+.dps-desk-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 @media (max-width: 760px) {
   .dps-hero { grid-template-columns: minmax(0, 1fr); }

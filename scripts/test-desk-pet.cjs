@@ -1728,6 +1728,8 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.deepEqual(input.keyLayoutOf(0xa2), { key: 'Ctrl', row: 3, col: 0, hand: 'left' });
     assert.deepEqual(input.keyLayoutOf(0x70), { key: 'F1', row: 0, col: 0, hand: 'left' });
     assert.deepEqual(input.parseHelperLine('{"t":"k","vk":65}'), { type: 'key', key: 'A', row: 1, col: 0, hand: 'left' });
+    assert.deepEqual(input.parseHelperLine('{"t":"k","vk":65,"h":1}'), { type: 'key', key: 'A', row: 1, col: 0, hand: 'left', hold: true });
+    assert.deepEqual(input.parseHelperLine('{"t":"ku","vk":65}'), { type: 'keyup', key: 'A', row: 1, col: 0, hand: 'left' });
     assert.deepEqual(input.parseHelperLine('{"t":"m","l":1,"r":0}'), { type: 'mouse', left: true, right: false });
     assert.deepEqual(input.parseHelperLine('{"t":"pw","v":true}'), { type: 'password', active: true });
     assert.equal(input.parseHelperLine('not json'), null);
@@ -1813,6 +1815,97 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
     assert.equal(sqCtl.isFidgetAction(), true);
     sqCtl.noteInput(t0 + 31_000);
     assert.equal(sqCtl.action, null, '内置宠物随机小动作同样在打字时立即打断');
+  });
+
+  check('desk pet: key-hold stays pressed without spamming bubbles, 5 built-in desk styles, and custom desk.json packs', () => {
+    // 1. 样式偏好默认值与归一化
+    assert.equal(model.DESK_PET_DEFAULTS.deskPetDeskStyle, 'white', '键鼠样式默认极简纯白');
+    for (const s of ['white', 'obsidian', 'esports', 'apple', 'cyber', 'desk-1234abcd']) {
+      assert.deepEqual(model.normalizeDeskPet({ deskPetDeskStyle: s }), { deskPetDeskStyle: s });
+    }
+    assert.deepEqual(model.normalizeDeskPet({ deskPetDeskStyle: '../evil' }), { deskPetDeskStyle: 'white' });
+    assert.deepEqual(model.normalizeDeskPet({ deskPetDeskStyle: 'unknown-style' }), { deskPetDeskStyle: 'white' });
+
+    // 2. 长按按键状态机（按下 → 持续按住不狂弹气泡 → 抬起平滑释放；密码框自动清空长按态）
+    const Desk = globalThis.PulsePetDesk;
+    const st = new Desk.DeskState();
+    const t0 = 500_000;
+    assert.equal(st.onKey({ key: 'W', row: 0, col: 1, hand: 'left', hold: true }, t0), true);
+    assert.deepEqual(st.floats.map(f => f.key), ['W'], '首次按下只弹 1 个气泡');
+    assert.equal(st.heldKeys.size, 1);
+    // 重复收到同键 hold 事件不追加气泡
+    assert.equal(st.onKey({ key: 'W', row: 0, col: 1, hand: 'left', hold: true }, t0 + 120), false);
+    assert.deepEqual(st.floats.map(f => f.key), ['W'], '长按期间绝不重复刷气泡');
+    // 持续按住 3 秒：气泡自然飘完消失，键帽仍保持按压态 (1) 且保持活跃不触发待机，稳定后 step 返回 false 零空转
+    for (let i = 1; i <= 150; i++) st.step(t0 + i * 20);
+    assert.equal(st.floats.length, 0, '单次气泡已飘完');
+    assert.equal(st.keyPress.get('0:1'), 1, '长按期间键帽持续保持下沉高亮');
+    assert.equal(st.isUserActive(t0 + 3000), true, '长按期间始终保持用户活跃状态');
+    assert.equal(st.step(t0 + 3020), false, '按住稳态后不空转重绘');
+    // 松开按键：平滑回弹、清空按压态
+    assert.equal(st.onKeyUp({ key: 'W', row: 0, col: 1, hand: 'left' }, t0 + 3100), true);
+    assert.equal(st.heldKeys.size, 0);
+    for (let i = 1; i <= 25; i++) st.step(t0 + 3100 + i * 25);
+    assert.equal(st.keyPress.has('0:1'), false, '抬起后键帽平滑回弹熄灭');
+    // 进入密码框立刻清除按住态
+    st.onKey({ key: 'S', row: 1, col: 1, hand: 'left', hold: true }, t0 + 4000);
+    assert.equal(st.heldKeys.size, 1);
+    st.setPassword(true, t0 + 4050);
+    assert.equal(st.heldKeys.size, 0, '进入密码框立即清空长按状态');
+
+    // 3. 5 款内置键鼠样式解析与动效标记
+    assert.deepEqual(Desk.DESK_STYLES.map(s => s.id), ['white', 'obsidian', 'esports', 'apple', 'cyber']);
+    assert.equal(Desk.resolveStyle('obsidian').dp.keyActive, '#38bdf8');
+    assert.equal(Desk.resolveStyle('esports').effects.rgbBorder, true);
+    assert.equal(Desk.isAnimatedStyle('esports'), true);
+    assert.equal(Desk.resolveStyle('apple').effects.magicMouse, true);
+    assert.equal(Desk.resolveStyle('apple').effects.slimKeys, true);
+    assert.equal(Desk.isAnimatedStyle('apple'), false);
+    assert.equal(Desk.resolveStyle('cyber').effects.hoverFloat, true);
+    assert.equal(Desk.resolveStyle('cyber').effects.holoGrid, true);
+    assert.equal(Desk.isAnimatedStyle('cyber'), true);
+    assert.equal(Desk.isAnimatedStyle('white'), false);
+
+    // 4. 自定义键盘样式包导入、校验、读取与删除
+    const deskPacks = require('../build/core/desk-pack');
+    assert.deepEqual(deskPacks.listDeskPacks(), []);
+    const validDir = path.join(root, 'desk-sakura');
+    fs.mkdirSync(validDir, { recursive: true });
+    const tinyPng = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000000020001e221bc330000000049454e44ae426082', 'hex');
+    fs.writeFileSync(path.join(validDir, 'kb.png'), tinyPng);
+    fs.writeFileSync(path.join(validDir, 'desk.json'), JSON.stringify({
+      name: '霓虹樱花',
+      author: 'TokenPulse QA',
+      base: 'cyber',
+      colors: { kbStroke: '#ff6ec7', keyActive: 'rgba(255, 110, 199, 0.95)', glow: '#ff6ec7' },
+      effects: { hoverFloat: true, holoGrid: true, glow: 0.9 },
+      images: { keyboard: 'kb.png' },
+    }));
+    const imported = deskPacks.importDeskPack(validDir);
+    assert.match(imported.id, /^desk-[a-f0-9]{8}$/);
+    assert.equal(imported.name, '霓虹樱花');
+    assert.equal(imported.base, 'cyber');
+    assert.equal(imported.images.keyboard, 'keyboard.png');
+    assert.equal(deskPacks.listDeskPacks().length, 1);
+    const data = deskPacks.deskPackData(imported.id);
+    assert.ok(data && data.images.keyboard.startsWith('data:image/png;base64,'));
+    const resolvedCustom = Desk.resolveStyle(imported.id, data, 'light');
+    assert.equal(resolvedCustom.dp.kbStroke, '#ff6ec7');
+    assert.equal(resolvedCustom.effects.hoverFloat, true);
+    assert.equal(deskPacks.removeDeskPack(imported.id), true);
+    assert.deepEqual(deskPacks.listDeskPacks(), []);
+
+    // 非法样式校验拦截（缺 desk.json / 非法颜色 / 路径穿越 / 伪造图片）
+    const badDir = path.join(root, 'desk-bad');
+    fs.mkdirSync(badDir, { recursive: true });
+    assert.throws(() => deskPacks.importDeskPack(badDir), /没有 desk\.json/);
+    fs.writeFileSync(path.join(badDir, 'desk.json'), JSON.stringify({ name: '坏配色', colors: { keyTop: 'javascript:alert(1)' } }));
+    assert.throws(() => deskPacks.importDeskPack(badDir), /必须是有效的颜色值/);
+    fs.writeFileSync(path.join(badDir, 'desk.json'), JSON.stringify({ name: '穿越', images: { keyboard: '../secret.png' } }));
+    assert.throws(() => deskPacks.importDeskPack(badDir), /同一个文件夹里的文件名/);
+    fs.writeFileSync(path.join(badDir, 'fake.png'), 'not an image');
+    fs.writeFileSync(path.join(badDir, 'desk.json'), JSON.stringify({ name: '假图', images: { keyboard: 'fake.png' } }));
+    assert.throws(() => deskPacks.importDeskPack(badDir), /不是 PNG、GIF、WebP 或 JPEG 图片/);
   });
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录删不掉不影响结果 */ }

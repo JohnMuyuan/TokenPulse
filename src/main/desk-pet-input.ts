@@ -37,7 +37,8 @@ export type KeyLayout = {
 };
 
 export type DeskPetInputEvent =
-  | { type: "key"; key: string; row: number; col: number; hand: "left" | "right" }
+  | { type: "key"; key: string; row: number; col: number; hand: "left" | "right"; hold?: boolean }
+  | { type: "keyup"; key: string; row: number; col: number; hand: "left" | "right" }
   | { type: "mouse"; left: boolean; right: boolean }
   | { type: "password"; active: boolean };
 
@@ -172,7 +173,13 @@ export function parseHelperLine(line: string): DeskPetInputEvent | null {
     const vk = Number(obj.vk);
     const layout = keyLayoutOf(vk);
     if (!layout) return null;
-    return { type: "key", ...layout };
+    return obj.h === 1 || obj.h === true ? { type: "key", ...layout, hold: true } : { type: "key", ...layout };
+  }
+  if (obj.t === "ku") {
+    const vk = Number(obj.vk);
+    const layout = keyLayoutOf(vk);
+    if (!layout) return null;
+    return { type: "keyup", ...layout };
   }
   if (obj.t === "m") {
     return { type: "mouse", left: obj.l === 1 || obj.l === true, right: obj.r === 1 || obj.r === true };
@@ -285,7 +292,7 @@ function buildWindowsHelperScript(parentPid: number): string {
     "    });",
     "    tUia.IsBackground = true; tUia.SetApartmentState(ApartmentState.MTA); tUia.Start();",
     "    bool[] prev = new bool[vks.Length];",
-    "    int[] holdTicks = new int[vks.Length];",
+    "    bool[] sentHold = new bool[vks.Length];",
     "    for (int i = 0; i < vks.Length; i++) prev[i] = (GetAsyncKeyState(vks[i]) & 0x8000) != 0;",
     "    bool pL = (GetAsyncKeyState(0x01) & 0x8000) != 0, pR = (GetAsyncKeyState(0x02) & 0x8000) != 0;",
     "    Emit(\"{\\\"t\\\":\\\"ready\\\"}\");",
@@ -300,15 +307,17 @@ function buildWindowsHelperScript(parentPid: number): string {
     "        short st = GetAsyncKeyState(vks[i]);",
     "        bool down = (st & 0x8000) != 0;",
     "        bool pressedSince = (st & 0x0001) != 0;",
-    "        bool edge = (!prev[i] && (down || pressedSince)) || (prev[i] && down && pressedSince);",
-    "        if (down) {",
-    "          holdTicks[i]++;",
-    "          if (!edge && holdTicks[i] >= 36 && (holdTicks[i] - 36) % 10 == 0) edge = true;",
-    "        } else {",
-    "          holdTicks[i] = 0;",
+    "        if (!prev[i] && down) {",
+    "          prev[i] = true;",
+    "          if (!pw) { sentHold[i] = true; Emit(\"{\\\"t\\\":\\\"k\\\",\\\"vk\\\":\" + vks[i] + \",\\\"h\\\":1}\"); }",
+    "        } else if (!prev[i] && !down && pressedSince) {",
+    "          if (!pw) Emit(\"{\\\"t\\\":\\\"k\\\",\\\"vk\\\":\" + vks[i] + \"}\");",
+    "        } else if (prev[i] && !down) {",
+    "          prev[i] = false;",
+    "          if (sentHold[i]) { sentHold[i] = false; Emit(\"{\\\"t\\\":\\\"ku\\\",\\\"vk\\\":\" + vks[i] + \"}\"); }",
+    "        } else if (prev[i] && down && pw && sentHold[i]) {",
+    "          sentHold[i] = false;",
     "        }",
-    "        prev[i] = down;",
-    "        if (edge && !pw) Emit(\"{\\\"t\\\":\\\"k\\\",\\\"vk\\\":\" + vks[i] + \"}\");",
     "      }",
     "      if (++ticks >= 75) { ticks = 0; if (ppid > 0) { try { var p = Process.GetProcessById(ppid); if (p == null || p.HasExited) _stop = true; } catch { _stop = true; } } }",
     "    }",

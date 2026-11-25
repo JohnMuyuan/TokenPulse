@@ -785,10 +785,50 @@ app.whenReady().then(async () => {
       await until(() => prefsFile().deskPetDesk === false, '关闭键鼠互动桌面存下来');
       await until(() => js("window.__petDesk.state().visible === false"), '关闭后桌宠恢复原样');
       assert.equal(await mjs("document.getElementById('dps-privacy')"), null, '关闭键鼠桌面后隐私捂眼子项隐藏');
+      assert.equal(await mjs("document.querySelectorAll('.dps-desk-card[data-desk-style]').length"), 0, '关闭键鼠桌面后键鼠样式卡片隐藏');
       await pickOption('dps-desk', '开启');
       await until(() => prefsFile().deskPetDesk === true, '重新开启键鼠互动桌面存下来');
-      await until(() => mjs("!!document.getElementById('dps-privacy')"), '重新开启后隐私捂眼子项出现');
-      console.log('PASS desk pet UI: minimalist pixel desk, floating keys, mirrored mouse, password eye-cover, Scheme A work fusion, and settings toggle');
+      await until(() => mjs("!!document.getElementById('dps-privacy') && document.querySelectorAll('.dps-desk-card[data-desk-style]').length === 5"), '重新开启后隐私捂眼与 5 款内置键鼠样式卡片出现');
+      // 切换内置键盘样式（esports / apple / cyber）落盘并实时推送至桌宠窗口
+      await mjs("document.querySelector('.dps-desk-card[data-desk-style=\"esports\"] .dps-pick').click()");
+      await until(() => prefsFile().deskPetDeskStyle === 'esports', '切换电竞 RGB 样式落盘');
+      await until(() => js("window.__petDesk.state().style === 'esports'"), '桌宠窗口同步切至电竞 RGB 样式');
+      await mjs("document.querySelector('.dps-desk-card[data-desk-style=\"cyber\"] .dps-pick').click()");
+      await until(() => prefsFile().deskPetDeskStyle === 'cyber' && js("window.__petDesk.state().style === 'cyber'"), '桌宠窗口同步切至未来悬浮样式');
+      // 长按按键端到端：按下只弹 1 个气泡、保持 heldKeys=1，抬起后清零
+      pet.webContents.send('desk-pet-state', { ...deskIdle, deskStyle: 'cyber' });
+      await until(() => js("window.__petDesk.state().visible === true"), '切回空闲态验证长按');
+      pet.webContents.send('desk-pet-input', { type: 'key', key: 'Q', row: 0, col: 0, hand: 'left', hold: true });
+      pet.webContents.send('desk-pet-input', { type: 'key', key: 'Q', row: 0, col: 0, hand: 'left', hold: true });
+      await until(() => js("window.__petDesk.state().heldKeys === 1 && window.__petDesk.state().floats.filter(k => k === 'Q').length === 1"), '长按 Q 仅弹 1 个气泡且进入按住态');
+      pet.webContents.send('desk-pet-input', { type: 'keyup', key: 'Q', row: 0, col: 0, hand: 'left' });
+      await until(() => js("window.__petDesk.state().heldKeys === 0"), '松开 Q 后退出按住态');
+      // 导入自定义键盘样式（desk.json）→ 自动选中并同步至桌宠 → 双击删除自动回退至极简纯白
+      const customDeskDir = path.join(root, 'my-desk-style');
+      fs.mkdirSync(customDeskDir, { recursive: true });
+      fs.writeFileSync(path.join(customDeskDir, 'desk.json'), JSON.stringify({
+        name: '测试霓虹键盘',
+        author: 'QA',
+        base: 'obsidian',
+        colors: { keyActive: '#ff6ec7', glow: '#ff6ec7' },
+        effects: { hoverFloat: true },
+      }));
+      const realShowOpen = dialog.showOpenDialog;
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [customDeskDir] });
+      try {
+        await mjs("document.getElementById('dps-import-desk').click()");
+        await until(() => /^desk-[a-f0-9]{8}$/.test(prefsFile().deskPetDeskStyle || ''), '导入自定义键盘样式并自动选中');
+        const customId = prefsFile().deskPetDeskStyle;
+        await until(() => js(`window.__petDesk.state().style === '${customId}' && window.__petDesk.state().deskPackId === '${customId}'`), '桌宠窗口收到自定义键盘样式包');
+        // 最下方制作指南与模板复制按钮可见
+        assert.equal(await mjs("Boolean(document.getElementById('dps-desk-guide') && document.getElementById('dps-copy-desk-template'))"), true, '页面最下方渲染自定义键盘制作指南与复制模板按钮');
+        // 双击删除自定义键盘样式，自动回退到 white
+        await mjs(`document.querySelector('[data-remove-desk="${customId}"]').click()`);
+        await mjs(`document.querySelector('[data-remove-desk="${customId}"]').click()`);
+        await until(() => prefsFile().deskPetDeskStyle === 'white', '删除正在用的自定义键盘样式后自动回退极简纯白');
+        await until(() => js("window.__petDesk.state().style === 'white' && window.__petDesk.state().deskPackId === ''"), '桌宠窗口同步回退极简纯白');
+      } finally { dialog.showOpenDialog = realShowOpen; }
+      console.log('PASS desk pet UI: minimalist pixel desk, 5 built-in styles + custom desk.json import/delete + guide, key-hold press/release, floating keys, mirrored mouse, password eye-cover, Scheme A work fusion, and settings toggle');
     }
 
     deskPetMain.pushDeskPet(true);

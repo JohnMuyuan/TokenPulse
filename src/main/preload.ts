@@ -144,6 +144,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     onState: (handler: (view: unknown) => void) => { const listener = (_event: unknown, view: unknown) => handler(view); ipcRenderer.on("desk-pet-state", listener); return () => ipcRenderer.off("desk-pet-state", listener); },
     onEvent: (handler: (event: unknown) => void) => { const listener = (_event: unknown, value: unknown) => handler(value); ipcRenderer.on("desk-pet-event", listener); return () => ipcRenderer.off("desk-pet-event", listener); },
     onPack: (handler: (pack: unknown) => void) => { const listener = (_event: unknown, pack: unknown) => handler(pack); ipcRenderer.on("desk-pet-pack", listener); return () => ipcRenderer.off("desk-pet-pack", listener); },
+    onDeskPack: (handler: (deskPack: unknown) => void) => { const listener = (_event: unknown, deskPack: unknown) => handler(deskPack); ipcRenderer.on("desk-pet-desk-pack", listener); return () => ipcRenderer.off("desk-pet-desk-pack", listener); },
     onIdle: (handler: (seconds: number) => void) => { const listener = (_event: unknown, seconds: number) => handler(Number(seconds) || 0); ipcRenderer.on("desk-pet-idle", listener); return () => ipcRenderer.off("desk-pet-idle", listener); },
     onCursor: (handler: (rel: { x: number; y: number; cx?: number; cy?: number; mx?: number; my?: number }) => void) => { const listener = (_event: unknown, rel: { x: number; y: number; cx?: number; cy?: number; mx?: number; my?: number }) => handler(rel); ipcRenderer.on("desk-pet-cursor", listener); return () => ipcRenderer.off("desk-pet-cursor", listener); },
     onInput: (handler: (input: unknown) => void) => { const listener = (_event: unknown, input: unknown) => handler(input); ipcRenderer.on("desk-pet-input", listener); return () => ipcRenderer.off("desk-pet-input", listener); },
@@ -157,6 +158,10 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     packImages: (id: string) => ipcRenderer.invoke("desk-pet:pack-images", id),
     importPack: () => (demo ? blocked() : ipcRenderer.invoke("desk-pet:import-pack")),
     removePack: (id: string) => (demo ? blocked() : ipcRenderer.invoke("desk-pet:remove-pack", id)),
+    deskPacks: () => ipcRenderer.invoke("desk-pet:desk-packs"),
+    deskPackData: (id: string) => ipcRenderer.invoke("desk-pet:desk-pack-data", id),
+    importDeskPack: () => (demo ? blocked() : ipcRenderer.invoke("desk-pet:import-desk-pack")),
+    removeDeskPack: (id: string) => (demo ? blocked() : ipcRenderer.invoke("desk-pet:remove-desk-pack", id)),
     resetPosition: () => ipcRenderer.invoke("desk-pet:reset-position"),
     /** 问题卡片（desk-pet-ask.html）：Agent 在问你的问题和选项。 */
     askData: () => ipcRenderer.invoke("desk-pet:ask-data"),

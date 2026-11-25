@@ -25,7 +25,8 @@ import { invalidateAntigravitySwarmCache } from "../core/antigravity";
 import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
-import { anchorOf, askBounds, bubbleBounds, edgeReached, flingPath, GRID, jumpPoint, miniBounds, miniPose, miniSpriteBox, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetAccount, type PetAccountKind, type PetEdge, type PetMood, type PetUsing } from "../core/desk-pet-model";
+import { anchorOf, askBounds, bubbleBounds, DESK_PACK_ID, DESK_STYLES, edgeReached, flingPath, GRID, jumpPoint, miniBounds, miniPose, miniSpriteBox, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DeskStyle, type DragSample, type PetAccount, type PetAccountKind, type PetEdge, type PetMood, type PetUsing } from "../core/desk-pet-model";
+import { deskPackData, listDeskPacks } from "../core/desk-pack";
 import { petPackImages } from "../core/pet-pack";
 import { DeskPetInputMonitor, type DeskPetInputEvent } from "./desk-pet-input";
 import { tr } from "./i18n";
@@ -96,7 +97,7 @@ let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null 
 let scanning = false, listening = false, interactive = false, bubbleShown = false, menuOpen = false;
 /** 盯着会话目录的 watcher；soonTimer 是文件变了以后那次扫描；scanGen 每次 stopTimers 加一，旧的扫描循环看到就不再排下一次。 */
 let watchers: fs.FSWatcher[] = [], soonTimer: NodeJS.Timeout | null = null, scanGen = 0;
-let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "";
+let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "", lastDeskStyle = "";
 /** 最近一次有任务的是哪家（任务做完十分钟后不在 activity 里了，靠它记住「最近用的」）。 */
 let lastUsedKind: PetAccountKind | null = null;
 let bubbleBox = { width: 236, height: 120 }, bubbleView: BubbleView = "quota", bubbleOpened = 0, bubbleHiddenAt = 0;
@@ -364,7 +365,7 @@ export function deskPetView() {
   const running = activity?.running ?? [];
   return {
     pet: prefs.deskPetKind, scale: prefs.deskPetScale, theme: prefs.theme, fidget: prefs.deskPetFidget, badge: prefs.deskPetBadge, fps: prefs.deskPetFps,
-    desk: prefs.deskPetDesk !== false, privacy: prefs.deskPetPrivacy === true,
+    desk: prefs.deskPetDesk !== false, deskStyle: prefs.deskPetDeskStyle || "white", privacy: prefs.deskPetPrivacy === true,
     sound: prefs.deskPetSound, volume: prefs.deskPetVolume, mute: prefs.deskPetMute,
     // 换成自己音频的提示音：种类 → 导入时间（变了宠物窗口重新要一次数据）
     sounds: Object.fromEntries(Object.entries(listPetSounds()).map(([kind, item]) => [kind, item!.at])),
@@ -389,6 +390,10 @@ export function pushDeskPet(force = false) {
     lastQuota = { id, quota: view.quota, mood: view.mood };
   }
   if (view.pet !== lastKind) { lastKind = view.pet; pet.webContents.send("desk-pet-pack", PACK_ID.test(view.pet) ? petPackImages(view.pet) : null); }
+  if (view.deskStyle !== lastDeskStyle || (force && DESK_PACK_ID.test(view.deskStyle))) {
+    lastDeskStyle = view.deskStyle;
+    pet.webContents.send("desk-pet-desk-pack", DESK_PACK_ID.test(view.deskStyle) ? deskPackData(view.deskStyle) : null);
+  }
   const json = JSON.stringify(view);
   if (!force && json === lastView) return;
   lastView = json;
@@ -405,8 +410,13 @@ export function deskPetReady() {
   lastView = "";
   const view = deskPetView();
   lastKind = view?.pet ?? "";
+  lastDeskStyle = view?.deskStyle ?? "";
   if (view) lastView = JSON.stringify(view);
-  return { view, pack: view && PACK_ID.test(view.pet) ? petPackImages(view.pet) : null };
+  return {
+    view,
+    pack: view && PACK_ID.test(view.pet) ? petPackImages(view.pet) : null,
+    deskPack: view && DESK_PACK_ID.test(view.deskStyle) ? deskPackData(view.deskStyle) : null,
+  };
 }
 
 /** 鼠标在不在宠物身上：在的时候接鼠标，不在的时候点击穿透到后面。 */
@@ -526,6 +536,31 @@ export function deskPetMenu() {
   const o = options;
   const edges: [PetEdge, string][] = [["left", tr("贴到屏幕左边")], ["right", tr("贴到屏幕右边")], ["top", tr("倒挂在屏幕上边")], ["bottom", tr("藏到屏幕下边")]];
   const prefs = o.prefs();
+  const builtInStyleLabels: Record<DeskStyle, string> = {
+    white: tr("极简纯白"),
+    obsidian: tr("曜石黑"),
+    esports: tr("电竞 RGB"),
+    apple: tr("苹果银白"),
+    cyber: tr("未来悬浮"),
+  };
+  const customDeskStyles = prefs.deskPetDesk !== false ? listDeskPacks() : [];
+  const styleSubmenu = [
+    ...DESK_STYLES.map((styleId) => ({
+      label: builtInStyleLabels[styleId],
+      type: "radio" as const,
+      checked: (prefs.deskPetDeskStyle || "white") === styleId,
+      click: () => o.savePrefs?.({ deskPetDeskStyle: styleId }),
+    })),
+    ...(customDeskStyles.length ? [
+      { type: "separator" as const },
+      ...customDeskStyles.map((item) => ({
+        label: item.name,
+        type: "radio" as const,
+        checked: prefs.deskPetDeskStyle === item.id,
+        click: () => o.savePrefs?.({ deskPetDeskStyle: item.id }),
+      })),
+    ] : []),
+  ];
   const menu = Menu.buildFromTemplate([
     { label: tr("查看额度"), click: () => openDeskPetBubble("quota") },
     { label: tr("查看任务"), click: () => openDeskPetBubble("tasks") },
@@ -533,7 +568,10 @@ export function deskPetMenu() {
     { type: "separator" },
     ...(o.savePrefs ? [
       { label: tr("键鼠互动桌面"), type: "checkbox" as const, checked: prefs.deskPetDesk !== false, click: () => o.savePrefs?.({ deskPetDesk: prefs.deskPetDesk === false }) },
-      ...(prefs.deskPetDesk !== false ? [{ label: tr("隐私捂眼"), type: "checkbox" as const, checked: prefs.deskPetPrivacy === true, click: () => o.savePrefs?.({ deskPetPrivacy: !prefs.deskPetPrivacy }) }] : []),
+      ...(prefs.deskPetDesk !== false ? [
+        { label: tr("键鼠样式"), submenu: styleSubmenu },
+        { label: tr("隐私捂眼"), type: "checkbox" as const, checked: prefs.deskPetPrivacy === true, click: () => o.savePrefs?.({ deskPetPrivacy: !prefs.deskPetPrivacy }) },
+      ] : []),
       { type: "separator" as const },
     ] : []),
     prefs.deskPetMini

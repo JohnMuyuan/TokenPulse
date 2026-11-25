@@ -6,6 +6,7 @@
  */
 (function () {
   const Pet = window.PulsePet;
+  const Desk = window.PulsePetDesk;
   const pet = api.deskPet;
   // 带数字、名字的句子按语言直接拼好（节点标 translate=no）；固定的文字交给 i18n.js 的词典
   const EN = window.PulseI18n?.lang?.() === 'en';
@@ -16,10 +17,10 @@
     { id: 'hamster', name: '仓鼠 · 豆豆', line: '腮帮子越鼓额度越多，干活时在跑轮里冲刺。' },
     { id: 'octopus', name: '章鱼 · 墨墨', line: '身体颜色表示额度，每条举起的触手抱着一个任务。' },
   ];
-  const S = { prefs: null, packs: [], accounts: [], view: null, visible: false, images: {}, sounds: {} };
+  const S = { prefs: null, packs: [], deskPacks: [], deskPackData: {}, accounts: [], view: null, visible: false, images: {}, sounds: {} };
   const N = {};
   let built = false, frameTimer = 0, statusTimer = 0;
-  let previews = [];
+  let previews = [], deskPreviews = [];
 
   function build() {
     if (built) return;
@@ -168,6 +169,7 @@
         { value: true, label: '偶尔做小动作', hint: '默认' }, { value: false, label: '安静待着' }], value => save({ deskPetFidget: value })),
       row('dps-desk', '键鼠互动桌面', '宠物面前摆极简键鼠，打字跟拍飘字母、鼠标同向移动，输密码自动捂眼', p.deskPetDesk !== false, [
         { value: true, label: '开启', hint: '默认，带极简键鼠与自动捂眼' }, { value: false, label: '关闭', hint: '保持原样，不启动后台键鼠监听' }], value => save({ deskPetDesk: value }), '仅在内存里瞬间触发键盘动画与飘字，绝不记录、不落盘、不上传；关闭后立刻停止后台监听。AI 干活时打字会自动融合展示工作状态。'),
+      p.deskPetDesk !== false ? deskStylePicker() : null,
       p.deskPetDesk !== false ? row('dps-privacy', '隐私捂眼', '输入密码时自动捂住眼睛并停止飘字，也可手动始终捂眼', p.deskPetPrivacy === true, [
         { value: false, label: '自动检测密码框', hint: '默认，进入密码框自动捂眼' }, { value: true, label: '始终捂眼', hint: '终端等场景手动兜底，不飘字母' }], value => save({ deskPetPrivacy: value }), '系统自动识别浏览器、Electron 及原生密码框；终端 sudo/SSH 等未标为密码框的场景，可在此或右键菜单随时切换「隐私捂眼」。') : null,
       row('dps-fps', '动画帧率', '主题宠物动画的最高帧率', p.deskPetFps ?? 30, [
@@ -182,6 +184,117 @@
       row('dps-badge', '自定义宠物的额度标签', '在自定义宠物右下角叠加剩余额度与任务数', p.deskPetBadge, [
         { value: true, label: '显示', hint: '默认' }, { value: false, label: '不显示' }], value => save({ deskPetBadge: value })),
     ].filter(Boolean));
+  }
+
+  /* ---------- 键鼠样式选择与导入 ---------- */
+
+  function deskPreview(styleId, pack) {
+    const canvas = el('canvas', { class: 'dps-desk-canvas', 'aria-hidden': 'true' });
+    const dpr = Math.max(2, window.devicePixelRatio || 1);
+    const cssW = 204, cssH = 58;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    const theme = S.prefs?.theme === 'dark' ? 'dark' : 'light';
+    const item = { canvas, styleId, pack: pack || null, animated: false };
+    const paintNow = () => {
+      if (!Desk?.paintDeskPreview) return;
+      const data = item.pack?.id ? (S.deskPackData[item.pack.id] || item.pack) : null;
+      item.animated = Boolean(Desk.isAnimatedStyle?.(styleId, data));
+      Desk.paintDeskPreview(canvas, styleId, data, {
+        theme,
+        now: Date.now(),
+        reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        onImageLoad: paintNow,
+      });
+    };
+    if (pack?.id && pack.images && Object.keys(pack.images).length && !S.deskPackData[pack.id] && pet.deskPackData) {
+      pet.deskPackData(pack.id).then(data => {
+        if (data) { S.deskPackData[pack.id] = data; paintNow(); }
+      }).catch(() => undefined);
+    }
+    paintNow();
+    deskPreviews.push(item);
+    return canvas;
+  }
+
+  function deskStyleCard(id, name, line, on, builtIn, pack = null, extra = []) {
+    const card = el('div', { class: 'dps-desk-card' + (on ? ' on' : ''), 'data-desk-style': id });
+    const pick = el('button', { type: 'button', class: 'dps-pick', 'aria-pressed': String(on), 'aria-label': L(`选择${name}键鼠样式`, `Choose ${T(name)} keyboard style`), translate: 'no' });
+    pick.addEventListener('click', () => { if (!on) save({ deskPetDeskStyle: id }); });
+    card.append(...[
+      el('div', { class: 'dps-desk-stage' }, [deskPreview(id, pack)]),
+      el('div', { class: 'dps-choice-text' }, [
+        el('b', { text: name, translate: builtIn ? null : 'no' }),
+        el('small', { text: line, translate: builtIn ? null : 'no' }),
+      ]),
+      on ? el('span', { class: 'dps-chip', text: '正在用' }) : null,
+      ...extra,
+      pick,
+    ].filter(Boolean));
+    return card;
+  }
+
+  function deskStylePicker() {
+    const current = S.prefs?.deskPetDeskStyle || 'white';
+    const builtIns = Desk?.DESK_STYLES || [
+      { id: 'white', name: '极简纯白', line: '纯白 60% 键盘与圆润小鼠标，清爽百搭' },
+      { id: 'obsidian', name: '曜石黑', line: '哑光黑铝底座配冰蓝按压高亮，沉稳耐看' },
+      { id: 'esports', name: '电竞 RGB', line: '流光霓虹灯带与彩光键帽，电竞氛围拉满' },
+      { id: 'apple', name: '苹果银白', line: '纤薄阳极银铝机身、孤岛平键与无缝触控鼠标' },
+      { id: 'cyber', name: '未来悬浮', line: '全息透明玻璃、能量光影底座与悬浮科技感' },
+    ];
+    const customCards = (S.deskPacks || []).map(pack => {
+      const remove = el('button', { type: 'button', class: 'text-btn dps-remove', 'data-remove-desk': pack.id, text: '删除' });
+      remove.addEventListener('click', event => {
+        event.stopPropagation();
+        if (!remove.classList.contains('armed')) {
+          remove.classList.add('armed'); remove.textContent = '再点一次删除';
+          setTimeout(() => { if (remove.isConnected) { remove.classList.remove('armed'); remove.textContent = '删除'; } }, 3000);
+          return;
+        }
+        pet.removeDeskPack(pack.id).then(packs => {
+          S.deskPacks = packs || [];
+          delete S.deskPackData[pack.id];
+          return load();
+        }).catch(() => toast('删除失败，请检查数据目录权限', { kind: 'warning' }));
+      });
+      const baseMeta = builtIns.find(b => b.id === pack.base);
+      const by = pack.author
+        ? L(`作者：${pack.author}`, `By ${pack.author}`)
+        : L(`基于「${baseMeta ? baseMeta.name : pack.base}」自定义`, `Custom based on ${T(baseMeta ? baseMeta.name : pack.base)}`);
+      return deskStyleCard(pack.id, pack.name, by, current === pack.id, false, pack, [remove]);
+    });
+    const add = el('button', { type: 'button', class: 'dps-desk-card dps-desk-add', id: 'dps-import-desk' }, [
+      icon('plus'),
+      el('b', { text: '导入键盘样式' }),
+      el('small', { text: '选含 desk.json 的文件夹（支持配色、特效与贴图）' }),
+    ]);
+    add.addEventListener('click', importDeskStyle);
+    return el('div', { class: 'setting-block' }, [
+      el('div', { class: 'setting-title setting-title-row' }, [
+        el('span', { text: '键鼠样式' }),
+        typeof infoTip === 'function' ? infoTip('内置 5 款原创键鼠风格，也可导入自己制作的 desk.json 样式文件夹；页面最下方有完整制作指南和模板。', '键鼠样式说明', '', 'help') : null,
+      ].filter(Boolean)),
+      el('p', { class: 'setting-hint', text: '选一款喜欢的键盘与鼠标风格，切换后立刻生效；右键点击桌宠也可快速切换' }),
+      el('div', { class: 'dps-desk-grid', role: 'group', 'aria-label': '选择键鼠样式' }, [
+        ...builtIns.map(item => deskStyleCard(item.id, item.name, item.line, current === item.id, true)),
+        ...customCards,
+        add,
+      ]),
+    ]);
+  }
+
+  async function importDeskStyle() {
+    let result;
+    try { result = await pet.importDeskPack(); } catch { toast(api.isDemo?.() ? '演示模式下不能导入' : '导入失败', { kind: 'warning' }); return; }
+    if (!result || result.canceled) return;
+    if (!result.ok) { toast(result.error || '导入失败', { kind: 'warning' }); return; }
+    S.deskPacks = result.packs || [];
+    delete S.deskPackData[result.pack.id];
+    toast(L(`已导入键盘样式「${result.pack.name}」`, `Imported keyboard style “${result.pack.name}”`));
+    await save({ deskPetDeskStyle: result.pack.id });
   }
 
   /* ---------- 提示音 ---------- */
@@ -281,12 +394,74 @@
         el('summary', { text: 'Clawd on Desk 格式的主题包' }),
         el('p', { class: 'setting-hint', text: '也可以导入 Clawd on Desk 格式的主题包：选放着 theme.json 的那个文件夹（动画放在文件夹里、assets 或 assets/svg 里都行）。会用到它的待机、思考、干活（按任务数换姿势）、在问你、庆祝、出错、打哈欠、打盹、睡觉、醒来、转晕，以及拖动、点左右、双击、连点的反应；待机时眼睛跟着鼠标转。SVG 会先去掉脚本、外部链接这类内容再保存，最多 150 个动画、整套不超过 20 MB。TokenPulse 不带任何主题素材，导入之前请确认这个主题包的许可允许你这样用。' }),
       ]),
+      deskGuide(),
     );
+  }
+
+  function deskGuide() {
+    const deskExample = JSON.stringify({
+      name: '霓虹樱花',
+      author: '你的名字（可选）',
+      base: 'cyber',
+      colors: {
+        kbBodyTop: '#2a1636',
+        kbBodyBot: '#160b20',
+        kbStroke: '#ff6ec7',
+        kbWell: '#12081b',
+        keyTop: '#3c1f4d',
+        keySide: '#1c0d26',
+        keyStroke: 'rgba(255, 110, 199, 0.55)',
+        keyActive: '#ff6ec7',
+        keyActiveSide: '#c02688',
+        mouseTop: '#2a1636',
+        mouseBot: '#160b20',
+        mouseStroke: '#ff6ec7',
+        mouseLeft: '#ff6ec7',
+        mouseRight: '#38bdf8',
+        floatTop: '#241132',
+        floatStroke: '#ff6ec7',
+        floatText: '#ffe4f6',
+        glow: '#ff6ec7',
+      },
+      effects: {
+        rgbBorder: false,
+        hoverFloat: true,
+        holoGrid: true,
+        magicMouse: false,
+        slimKeys: false,
+        glow: 0.85,
+      },
+    }, null, 2);
+    const copyBtn = el('button', { type: 'button', class: 'btn', id: 'dps-copy-desk-template', text: '复制模板 JSON' });
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await api.copyText(deskExample);
+        toast('已复制 desk.json 模板');
+      } catch {
+        toast('复制失败', { kind: 'warning' });
+      }
+    });
+    return el('details', { class: 'dps-format', id: 'dps-desk-guide', open: '' }, [
+      el('summary', { text: '如何制作自定义键盘样式' }),
+      el('ol', { class: 'dps-list dps-guide-steps' }, [
+        el('li', { text: '新建一个文件夹，在里面放一个 desk.json 文件（纯调色和特效只需这一个文件即可）。' }),
+        el('li', { text: '在 desk.json 中设置 name（必填，最多 40 字）、author（可选）和 base（基准款式：white 极简纯白 / obsidian 曜石黑 / esports 电竞 RGB / apple 苹果银白 / cyber 未来悬浮）。' }),
+        el('li', { text: '按需在 colors 里覆盖任意部位颜色（支持 #RGB / #RRGGBB / rgba(...)，例如 kbBodyTop、kbBodyBot、kbStroke、kbWell、keyTop、keySide、keyActive、mouseTop、mouseLeft、mouseRight、floatTop、floatText、glow），在 effects 里开关 rgbBorder（流光 RGB 边框）、hoverFloat（悬浮光影底座）、holoGrid（全息扫描线）、magicMouse（无缝触控鼠标）、slimKeys（超薄孤岛平键）和 glow（0~1 发光强度）。' }),
+        el('li', { text: '如果想用自己画的键鼠贴图，把 PNG / GIF / WebP / JPEG 放在同一个文件夹里，并在 desk.json 加上 "images": { "keyboard": "keyboard.png", "mouse": "mouse.png" }（单张不超过 2 MB、整包不超过 5 MB；按键按下和鼠标点击时仍会自动叠加发光反馈）。' }),
+        el('li', { text: '回到上方「键鼠样式」点「导入键盘样式」选中这个文件夹即可立刻切换。导入时会复制到数据目录，原文件夹之后删改不影响。' }),
+      ]),
+      el('div', { class: 'dps-code-head' }, [
+        el('span', { class: 'setting-hint', text: 'desk.json 模板示例（可直接保存为 desk.json 导入试用）：' }),
+        copyBtn,
+      ]),
+      el('pre', { class: 'dps-code', translate: 'no', text: deskExample }),
+    ]);
   }
 
   function render() {
     if (!S.prefs) return;
     previews = [];
+    deskPreviews = [];
     hero(); choices(); options();
   }
 
@@ -306,8 +481,15 @@
   }
 
   async function load() {
-    const [prefs, packs, accounts, status, sounds] = await Promise.all([api.readPrefs(), pet.packs(), pet.accounts(), pet.status(), pet.sounds()]);
-    S.prefs = prefs; S.packs = packs || []; S.accounts = accounts || []; S.view = status?.view || null; S.sounds = sounds || {};
+    const [prefs, packs, deskPacks, accounts, status, sounds] = await Promise.all([
+      api.readPrefs(),
+      pet.packs(),
+      pet.deskPacks ? pet.deskPacks() : Promise.resolve([]),
+      pet.accounts(),
+      pet.status(),
+      pet.sounds(),
+    ]);
+    S.prefs = prefs; S.packs = packs || []; S.deskPacks = deskPacks || []; S.accounts = accounts || []; S.view = status?.view || null; S.sounds = sounds || {};
     loadSounds();
     render();
   }
@@ -319,6 +501,15 @@
       if (!item.canvas.isConnected) continue;
       item.ctl.tick(context);
       Pet.paint(item.canvas, item.ctl.frame(context), item.pixel);
+    }
+    if (Desk?.paintDeskPreview && deskPreviews.length && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const now = Date.now();
+      const theme = S.prefs?.theme === 'dark' ? 'dark' : 'light';
+      for (const item of deskPreviews) {
+        if (!item.animated || !item.canvas.isConnected) continue;
+        const data = item.pack?.id ? (S.deskPackData[item.pack.id] || item.pack) : null;
+        Desk.paintDeskPreview(item.canvas, item.styleId, data, { theme, now, reducedMotion: false });
+      }
     }
   }
 

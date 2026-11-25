@@ -21,7 +21,7 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const BUILT_IN = ['squirrel', 'hamster', 'octopus'];
 
-  let view = null, pack = null, ctl = null, grid = null, scale = 2, pixel = 2, hovering = false, shownKey = '';
+  let view = null, pack = null, deskPack = null, ctl = null, grid = null, scale = 2, pixel = 2, hovering = false, shownKey = '';
   /** xf：极简模式下舞台的变换（轴 o、变换的逆矩阵），判断鼠标位置时用；平时是 null。 */
   let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0, xf = null, customBox = null;
   let customColor = '', crabHint = false, deskTimer = 0, lastDeskPaintAt = 0, lastDeskSig = '', themeMetrics = null, lastCursorIn = null;
@@ -441,13 +441,17 @@
       lastDeskSig = '';
       return;
     }
-    const sig = `${dm.state}|${handsVal}|${dm.aiBadge ? 1 : 0}|${view.theme}|${view.pet}|${view.mood}|${dm.aiBadge ? view.phase || '' : ''}|${dm.aiBadge ? view.subagents || 0 : 0}|${nextPriv}|${scale}|${bt.x}|${bt.y}|${nativeHands ? `${Math.round(nativeHands.left.cx)},${Math.round(nativeHands.right.cx)}` : ''}`;
-    if (!force && sig === lastDeskSig && !dm.aiBadge && !desk.covering) return;
+    const deskStyle = view.deskStyle || 'white';
+    const animatedStyle = !reduced.matches && Desk.isAnimatedStyle?.(deskStyle, deskPack);
+    const sig = `${dm.state}|${handsVal}|${dm.aiBadge ? 1 : 0}|${view.theme}|${deskStyle}|${deskPack?.id || ''}|${view.pet}|${view.mood}|${dm.aiBadge ? view.phase || '' : ''}|${dm.aiBadge ? view.subagents || 0 : 0}|${nextPriv}|${scale}|${bt.x}|${bt.y}|${nativeHands ? `${Math.round(nativeHands.left.cx)},${Math.round(nativeHands.right.cx)}` : ''}`;
+    if (!force && sig === lastDeskSig && !dm.aiBadge && !desk.covering && !animatedStyle) return;
     lastDeskSig = sig;
     lastDeskPaintAt = now;
     if (deskCanvas.hidden) deskCanvas.hidden = false;
     Desk.paintDesk(deskCanvas, desk, {
       theme: view.theme,
+      style: deskStyle,
+      deskPack,
       pet: view.pet,
       mood: view.mood,
       customColor,
@@ -461,6 +465,7 @@
       now,
       reducedMotion: reduced.matches,
       en: EN,
+      onImageLoad: () => { lastDeskSig = ''; draw(true); },
     });
   }
 
@@ -726,6 +731,7 @@
 
   api.onState(apply);
   api.onPack(next => { setPack(next); draw(); });
+  api.onDeskPack?.(next => { deskPack = next || null; lastDeskSig = ''; draw(true); });
   api.onCursor(rel => {
     // 点击穿透时收不到 mousemove（主进程不再用 forward 的全局鼠标钩子）：用主进程轮询到的窗口内坐标判断鼠标在不在宠物身上。
     // 光标已经出了窗口范围（cx 为空）而还挂着 hover：漏掉的 mouseleave，补上
@@ -779,6 +785,7 @@
     let dirty = false;
     if (event.type === 'password') dirty = desk.setPassword(event.active, now);
     else if (event.type === 'key') dirty = desk.onKey(event, now);
+    else if (event.type === 'keyup') dirty = desk.onKeyUp(event, now);
     else if (event.type === 'mouse') dirty = desk.onMouseButton(event.left, event.right, now);
     if (view && ctl) {
       // 任何真实键盘/鼠标点击（包括密码框期间的打字与进入密码框）都刷新活跃计时、延后并立刻打断随机待机动画
@@ -816,7 +823,7 @@
     else if (event.type === 'landed') { clearTimeout(landTimer); ctl.trigger('land'); }
     draw();
   });
-  api.ready().then(data => { setPack(data?.pack || null); apply(data?.view); }).catch(() => undefined);
+  api.ready().then(data => { deskPack = data?.deskPack || null; setPack(data?.pack || null); apply(data?.view); }).catch(() => undefined);
 
   /*
    * CSS 动画限帧：主题包宠物的 SVG 自带无限循环的 CSS 动画（呼吸、眨眼、蹦跳），极简模式倒挂时舞台在摆，眼睛跟鼠标用很短的 transition。
@@ -887,12 +894,15 @@
     state: () => ({
       visible: !!deskCanvas && !deskCanvas.hidden,
       desk: stage.dataset.desk || '',
+      style: view?.deskStyle || 'white',
+      deskPackId: deskPack?.id || '',
       hands: stage.dataset.deskHands === '1',
       hiddenThemeHands: hiddenThemeHands.length,
       covering: !!desk?.covering,
       passwordActive: !!desk?.passwordActive,
       manualPrivacy: !!desk?.manualPrivacy,
       floats: (desk?.floats || []).map(f => f.key),
+      heldKeys: desk ? desk.heldKeys.size : 0,
       mouse: desk ? desk.mousePos() : null,
       mouseLeft: !!desk?.mouseLeft,
       mouseRight: !!desk?.mouseRight,

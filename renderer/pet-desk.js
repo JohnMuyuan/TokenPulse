@@ -184,37 +184,186 @@
     };
   }
 
+  /** 5 款内置键鼠样式元数据（全部 100% 原创 Canvas 2D 矢量绘制）。 */
+  const DESK_STYLES = [
+    { id: 'white', name: '极简纯白', line: '纯白 60% 键盘与圆润小鼠标，清爽百搭' },
+    { id: 'obsidian', name: '曜石黑', line: '哑光黑铝底座配冰蓝按压高亮，沉稳耐看' },
+    { id: 'esports', name: '电竞 RGB', line: '流光霓虹灯带与彩光键帽，电竞氛围拉满' },
+    { id: 'apple', name: '苹果银白', line: '纤薄阳极银铝机身、孤岛平键与无缝触控鼠标' },
+    { id: 'cyber', name: '未来悬浮', line: '全息透明玻璃、能量光影底座与悬浮科技感' },
+  ];
+  const DESK_STYLE_IDS = DESK_STYLES.map(s => s.id);
+  const DEFAULT_EFFECTS = { rgbBorder: false, hoverFloat: false, holoGrid: false, magicMouse: false, slimKeys: false, glow: 0 };
+
+  const customImageCache = new Map();
+  function getCustomImage(src, onLoad) {
+    if (!src || typeof src !== 'string' || typeof Image !== 'function') return null;
+    let entry = customImageCache.get(src);
+    if (!entry) {
+      entry = { img: new Image(), ready: false, failed: false, listeners: new Set() };
+      entry.img.onload = () => {
+        entry.ready = true;
+        for (const fn of entry.listeners) { try { fn(); } catch { /* ignore */ } }
+        entry.listeners.clear();
+      };
+      entry.img.onerror = () => { entry.failed = true; entry.listeners.clear(); };
+      entry.img.src = src;
+      customImageCache.set(src, entry);
+      if (customImageCache.size > 48) {
+        const firstKey = customImageCache.keys().next().value;
+        if (firstKey) customImageCache.delete(firstKey);
+      }
+    }
+    if (entry.ready && entry.img.naturalWidth > 0) return entry.img;
+    if (!entry.failed && typeof onLoad === 'function') entry.listeners.add(onLoad);
+    return null;
+  }
+
   function deskPalette(theme) {
     if (theme === 'dark') {
       return {
         shadow: 'rgba(0, 0, 0, 0.36)',
         kbRim: '#11151d', kbBodyTop: '#242a36', kbBodyBot: '#1b202b', kbStroke: 'rgba(255,255,255,0.14)',
         kbWell: '#141821',
-        keyTop: '#f3f6fb', keySide: '#b8c1d1',
+        keyTop: '#f3f6fb', keySide: '#b8c1d1', keyStroke: '',
         keyActive: '#47d6a0', keyActiveSide: '#1f8f66',
         mouseRim: '#11151d', mouseTop: '#d7dde8', mouseBot: '#bcc5d6', mouseBtnIdle: '#e3e8f2',
         mouseStroke: 'rgba(15, 20, 28, 0.78)', mouseSeam: 'rgba(24, 30, 42, 0.44)',
         mouseLeft: '#47d6a0', mouseRight: '#ff8254',
-        wheelWell: '#232833', wheel: '#7d879b',
+        wheelWell: '#232833', wheel: '#7d879b', mouseLabel: 'rgba(92, 100, 114, 0.52)',
         floatSide: '#141923', floatTop: '#222938', floatStroke: 'rgba(71, 214, 160, 0.75)', floatText: '#f4f7fb',
         privacyFill: 'rgba(15, 20, 32, 0.80)', privacyStroke: 'rgba(244, 114, 182, 0.55)', privacyText: '#fbcfe8',
         aiBg: 'rgba(26, 32, 44, 0.94)', aiStroke: 'rgba(148, 163, 184, 0.45)', aiAccent: '#47d6a0', aiWarn: '#f0b85a', aiDot: '#cbd5e1',
+        glow: '#47d6a0',
       };
     }
     return {
       shadow: 'rgba(24, 32, 48, 0.16)',
       kbRim: '#b8bec9', kbBodyTop: '#f5f6f8', kbBodyBot: '#e5e8ee', kbStroke: 'rgba(55, 64, 80, 0.42)',
       kbWell: '#cfd4de',
-      keyTop: '#ffffff', keySide: '#d0d5df',
+      keyTop: '#ffffff', keySide: '#d0d5df', keyStroke: '',
       keyActive: '#26b984', keyActiveSide: '#15835b',
       mouseRim: '#bcc2cd', mouseTop: '#f1f3f6', mouseBot: '#e4e7ee', mouseBtnIdle: '#ffffff',
       mouseStroke: 'rgba(48, 54, 66, 0.60)', mouseSeam: 'rgba(52, 58, 70, 0.38)',
       mouseLeft: '#26b984', mouseRight: '#ff7b47',
-      wheelWell: '#353a46', wheel: '#8b92a1',
+      wheelWell: '#353a46', wheel: '#8b92a1', mouseLabel: 'rgba(92, 100, 114, 0.48)',
       floatSide: '#c6ccd6', floatTop: '#ffffff', floatStroke: 'rgba(38, 185, 132, 0.65)', floatText: '#1a202c',
       privacyFill: 'rgba(24, 30, 44, 0.78)', privacyStroke: 'rgba(244, 114, 182, 0.58)', privacyText: '#ffe4ef',
       aiBg: 'rgba(255, 255, 255, 0.95)', aiStroke: 'rgba(71, 85, 105, 0.32)', aiAccent: '#1d9b6e', aiWarn: '#d98e2b', aiDot: '#64748b',
+      glow: '#26b984',
     };
+  }
+
+  function builtInPreset(styleId, theme) {
+    const base = deskPalette(theme);
+    if (styleId === 'obsidian') {
+      return {
+        dp: {
+          ...base,
+          shadow: 'rgba(4, 7, 14, 0.42)',
+          kbRim: '#080a0f', kbBodyTop: '#242936', kbBodyBot: '#141821', kbStroke: 'rgba(255, 255, 255, 0.16)',
+          kbWell: '#0c0f16',
+          keyTop: '#313849', keySide: '#171c26', keyStroke: 'rgba(255, 255, 255, 0.08)',
+          keyActive: '#38bdf8', keyActiveSide: '#0369a1',
+          mouseRim: '#080a0f', mouseTop: '#272d3b', mouseBot: '#161a24', mouseBtnIdle: '#2e3546',
+          mouseStroke: 'rgba(255, 255, 255, 0.18)', mouseSeam: 'rgba(6, 9, 14, 0.76)',
+          mouseLeft: '#38bdf8', mouseRight: '#a78bfa',
+          wheelWell: '#0d1018', wheel: '#cbd5e1', mouseLabel: 'rgba(226, 232, 240, 0.46)',
+          floatSide: '#0e121b', floatTop: '#1e2432', floatStroke: 'rgba(56, 189, 248, 0.78)', floatText: '#f8fafc',
+          glow: '#38bdf8',
+        },
+        effects: { ...DEFAULT_EFFECTS, glow: 0.25 },
+      };
+    }
+    if (styleId === 'esports') {
+      return {
+        dp: {
+          ...base,
+          shadow: 'rgba(5, 6, 16, 0.48)',
+          kbRim: '#070912', kbBodyTop: '#1b1f30', kbBodyBot: '#0f121e', kbStroke: '#22d3ee',
+          kbWell: '#0a0d17',
+          keyTop: '#262c42', keySide: '#111423', keyStroke: 'rgba(148, 163, 184, 0.14)',
+          keyActive: '#00f5d4', keyActiveSide: '#0d9488',
+          mouseRim: '#070912', mouseTop: '#21273b', mouseBot: '#121624', mouseBtnIdle: '#272e44',
+          mouseStroke: 'rgba(34, 211, 238, 0.62)', mouseSeam: 'rgba(7, 10, 18, 0.85)',
+          mouseLeft: '#00f5d4', mouseRight: '#ff2e97',
+          wheelWell: '#0b0e19', wheel: '#f472b6', mouseLabel: 'rgba(226, 232, 240, 0.56)',
+          floatSide: '#0d101d', floatTop: '#191e30', floatStroke: 'rgba(0, 245, 212, 0.86)', floatText: '#f8fafc',
+          glow: '#00f5d4',
+        },
+        effects: { ...DEFAULT_EFFECTS, rgbBorder: true, glow: 0.85 },
+      };
+    }
+    if (styleId === 'apple') {
+      return {
+        dp: {
+          ...base,
+          shadow: 'rgba(20, 28, 44, 0.15)',
+          kbRim: '#9ea8b8', kbBodyTop: '#dfe5ee', kbBodyBot: '#c6cfdD', kbStroke: 'rgba(92, 106, 126, 0.48)',
+          kbWell: '#b6c0d0',
+          keyTop: '#ffffff', keySide: '#d7dce6', keyStroke: 'rgba(148, 163, 184, 0.36)',
+          keyActive: '#007aff', keyActiveSide: '#0055c4',
+          mouseRim: '#a9b3c4', mouseTop: '#ffffff', mouseBot: '#eef2f7', mouseBtnIdle: '#ffffff',
+          mouseStroke: 'rgba(116, 128, 146, 0.52)', mouseSeam: 'rgba(148, 163, 184, 0.28)',
+          mouseLeft: '#007aff', mouseRight: '#ff3b30',
+          wheelWell: '#cbd5e1', wheel: '#e2e8f0', mouseLabel: 'rgba(100, 116, 139, 0.34)',
+          floatSide: '#cbd5e1', floatTop: '#ffffff', floatStroke: 'rgba(0, 122, 255, 0.62)', floatText: '#111827',
+          glow: '#007aff',
+        },
+        effects: { ...DEFAULT_EFFECTS, magicMouse: true, slimKeys: true, glow: 0 },
+      };
+    }
+    if (styleId === 'cyber') {
+      return {
+        dp: {
+          ...base,
+          shadow: 'rgba(14, 165, 233, 0.28)',
+          kbRim: 'rgba(6, 78, 110, 0.72)', kbBodyTop: 'rgba(10, 24, 50, 0.84)', kbBodyBot: 'rgba(6, 14, 34, 0.92)', kbStroke: '#22d3ee',
+          kbWell: 'rgba(4, 12, 28, 0.66)',
+          keyTop: 'rgba(34, 211, 238, 0.22)', keySide: 'rgba(14, 116, 144, 0.56)', keyStroke: 'rgba(103, 232, 249, 0.58)',
+          keyActive: '#a5f3fc', keyActiveSide: '#06b6d4',
+          mouseRim: 'rgba(14, 116, 144, 0.76)', mouseTop: 'rgba(12, 28, 56, 0.88)', mouseBot: 'rgba(7, 15, 34, 0.94)', mouseBtnIdle: 'rgba(34, 211, 238, 0.14)',
+          mouseStroke: '#22d3ee', mouseSeam: 'rgba(56, 189, 248, 0.42)',
+          mouseLeft: '#22d3ee', mouseRight: '#c084fc',
+          wheelWell: 'rgba(6, 16, 36, 0.92)', wheel: '#67e8f9', mouseLabel: 'rgba(165, 243, 252, 0.62)',
+          floatSide: '#082038', floatTop: 'rgba(9, 24, 48, 0.94)', floatStroke: '#22d3ee', floatText: '#e0f2fe',
+          glow: '#22d3ee',
+        },
+        effects: { ...DEFAULT_EFFECTS, hoverFloat: true, holoGrid: true, glow: 0.9 },
+      };
+    }
+    return { dp: base, effects: { ...DEFAULT_EFFECTS } };
+  }
+
+  /** 解析最终键鼠样式（内置 5 款 + 可选自定义样式包的颜色/特效/贴图覆盖）。 */
+  function resolveStyle(styleId, deskPack, theme = 'light') {
+    const pack = deskPack && typeof deskPack === 'object' ? deskPack : null;
+    const baseId = pack && DESK_STYLE_IDS.includes(pack.base)
+      ? pack.base
+      : (DESK_STYLE_IDS.includes(styleId) ? styleId : 'white');
+    const preset = builtInPreset(baseId, theme);
+    const dp = { ...preset.dp };
+    if (pack?.colors && typeof pack.colors === 'object') {
+      for (const [k, v] of Object.entries(pack.colors)) {
+        if (typeof v === 'string' && v.trim() && k in dp) dp[k] = v.trim();
+      }
+    }
+    const effects = { ...preset.effects };
+    if (pack?.effects && typeof pack.effects === 'object') {
+      for (const flag of ['rgbBorder', 'hoverFloat', 'holoGrid', 'magicMouse', 'slimKeys']) {
+        if (typeof pack.effects[flag] === 'boolean') effects[flag] = pack.effects[flag];
+      }
+      if (typeof pack.effects.glow === 'number' && Number.isFinite(pack.effects.glow)) {
+        effects.glow = clamp(pack.effects.glow, 0, 1);
+      }
+    }
+    const images = pack?.images && typeof pack.images === 'object' ? pack.images : null;
+    return { id: pack?.id || baseId, base: baseId, dp, effects, images };
+  }
+
+  function isAnimatedStyle(styleId, deskPack) {
+    const { effects } = resolveStyle(styleId, deskPack, 'light');
+    return Boolean(effects.rgbBorder || effects.hoverFloat);
   }
 
   class DeskState {
@@ -251,6 +400,7 @@
       this.kbBounce = 0;
 
       this.pressed = [];
+      this.heldKeys = new Map();
       this.keyPress = new Map();
       this.floats = [];
       this.mouseBadges = [];
@@ -283,6 +433,7 @@
       this.floats.length = 0;
       this.mouseBadges.length = 0;
       this.pressed.length = 0;
+      this.heldKeys.clear();
       this.keyPress.clear();
       this.leftTap = null;
       this.rightTap = null;
@@ -340,6 +491,14 @@
       const label = typeof ev.key === 'string' && ev.key.trim() ? ev.key.trim().slice(0, 4) : '';
       if (!label) return false;
       const kr = keyRect(ev.row, ev.col);
+      const slotKey = `${kr.r}:${kr.sIdx}`;
+      const holdId = `${kr.r}:${clamp(Math.round(ev.col || 0), 0, 8)}:${label}`;
+      // 长按防重：同一键已处于按住态时绝不重复弹气泡或狂敲，仅延续活跃计时
+      if (ev.hold === true && this.heldKeys.has(holdId)) {
+        this.activeUntil = Math.max(this.activeUntil, now + ACTIVE_HOLD_MS);
+        this.keyPress.set(slotKey, 1);
+        return false;
+      }
       this.lastKeyAt = now;
       this.activeUntil = Math.max(this.activeUntil, now + ACTIVE_HOLD_MS);
       this.bodyBob = Math.min(1.0, this.bodyBob + 0.52);
@@ -350,15 +509,16 @@
 
       this.pressed.push({ row: kr.r, col: clamp(Math.round(ev.col || 0), 0, 8), slot: kr.sIdx, at: now });
       if (this.pressed.length > 12) this.pressed.shift();
-      this.keyPress.set(`${kr.r}:${kr.sIdx}`, 1);
+      this.keyPress.set(slotKey, 1);
 
       // 键盘已 180° 面向宠物：按键帽在画面上的左右区自动选同侧小手（避免双臂交叉），正在用鼠标时由画面左手代敲
       let useHand = kr.cx < KB.cx ? 'left' : 'right';
       if (mouseBusy) useHand = 'left';
 
+      let tx, ty;
       if (useHand === 'left') {
-        const tx = clamp(kr.cx, 46, mouseBusy ? 168 : 132);
-        const ty = clamp(kr.cy - 2, 174, 204);
+        tx = clamp(kr.cx, 46, mouseBusy ? 168 : 132);
+        ty = clamp(kr.cy - 2, 174, 204);
         if (!this.leftTap || now >= this.leftTap.at) {
           this.leftTap = { x: tx, y: ty, at: now };
           this.leftPaw.tx = tx;
@@ -369,8 +529,8 @@
           this.leftPaw.squash = 1.0;
         }
       } else {
-        const tx = clamp(kr.cx, 122, 196);
-        const ty = clamp(kr.cy - 2, 174, 204);
+        tx = clamp(kr.cx, 122, 196);
+        ty = clamp(kr.cy - 2, 174, 204);
         if (!this.rightTap || now >= this.rightTap.at) {
           this.rightTap = { x: tx, y: ty, at: now };
           this.rightPaw.tx = tx;
@@ -380,6 +540,10 @@
           this.rightPaw.rot = 0.34;
           this.rightPaw.squash = 1.0;
         }
+      }
+
+      if (ev.hold === true) {
+        this.heldKeys.set(holdId, { slotKey, hand: useHand, x: tx, y: ty, at: now });
       }
 
       if (!mouseBusy) {
@@ -394,8 +558,19 @@
       return true;
     }
 
+    onKeyUp(ev, now = Date.now()) {
+      if (!ev || !this.heldKeys.size) return false;
+      const label = typeof ev.key === 'string' && ev.key.trim() ? ev.key.trim().slice(0, 4) : '';
+      if (!label) return false;
+      const kr = keyRect(ev.row, ev.col);
+      const holdId = `${kr.r}:${clamp(Math.round(ev.col || 0), 0, 8)}:${label}`;
+      if (!this.heldKeys.delete(holdId)) return false;
+      this.activeUntil = Math.max(this.activeUntil, now + 900);
+      return true;
+    }
+
     isUserActive(now = Date.now()) {
-      return now < this.activeUntil || this.mouseLeft || this.mouseRight;
+      return now < this.activeUntil || this.mouseLeft || this.mouseRight || (!this.covering && this.heldKeys.size > 0);
     }
 
     bodyTransform(scale = 2, now = Date.now(), reducedMotion = false) {
@@ -431,7 +606,9 @@
       this.coverT = lerp(this.coverT, targetCover, ck);
       if (Math.abs(this.coverT - targetCover) < 0.015) this.coverT = targetCover;
 
-      const typingNow = !this.covering && (now - this.lastKeyAt < 340);
+      const hasHeld = !this.covering && this.heldKeys.size > 0;
+      if (hasHeld) this.activeUntil = Math.max(this.activeUntil, now + ACTIVE_HOLD_MS);
+      const typingNow = !this.covering && (now - this.lastKeyAt < 340 || hasHeld);
       const mouseBusy = !this.covering && (this.mouseLeft || this.mouseRight || now - this.lastMouseActiveAt < MOUSE_BUSY_MS);
       const mouseMovingNow = !this.covering && (this.mouseLeft || this.mouseRight || now - this.lastMouseActiveAt < 280);
       if (this.covering) {
@@ -459,11 +636,28 @@
       this.pressed = this.pressed.filter(item => now - item.at < TAP_MS);
       this.floats = this.floats.filter(item => now - item.at < floatLife);
       this.mouseBadges = this.mouseBadges.filter(item => now - item.at < 520);
+
+      const heldSlots = new Set();
+      let heldLeft = null, heldRight = null;
+      if (hasHeld) {
+        for (const item of this.heldKeys.values()) {
+          heldSlots.add(item.slotKey);
+          this.keyPress.set(item.slotKey, 1);
+          if (item.hand === 'left' && (!heldLeft || item.at >= heldLeft.at)) heldLeft = item;
+          if (item.hand === 'right' && (!heldRight || item.at >= heldRight.at)) heldRight = item;
+        }
+      }
+
+      let decayingKey = false;
       for (const [k, v] of this.keyPress) {
-        const stillDown = !this.covering && this.pressed.some(item => `${item.row}:${item.slot}` === k);
+        const stillHeld = heldSlots.has(k);
+        const stillDown = stillHeld || (!this.covering && this.pressed.some(item => `${item.row}:${item.slot}` === k));
         const next = stillDown ? 1 : v * Math.exp(-dt * 18);
         if (next < 0.02) this.keyPress.delete(k);
-        else this.keyPress.set(k, next);
+        else {
+          this.keyPress.set(k, next);
+          if (!stillHeld) decayingKey = true;
+        }
       }
 
       if (this.leftTap && now - this.leftTap.at >= TAP_MS + 140) this.leftTap = null;
@@ -472,16 +666,26 @@
       const mp = this.mousePos();
       const leftActive = !this.covering && this.leftTap && now - this.leftTap.at < TAP_MS;
       const rightActive = !this.covering && this.rightTap && now - this.rightTap.at < TAP_MS;
-      const rightTyping = !this.covering && this.rightTap && now - this.rightTap.at < TAP_MS + 180;
+      const rightTyping = !this.covering && ((this.rightTap && now - this.rightTap.at < TAP_MS + 180) || Boolean(heldRight));
       const rightOnMouse = !rightTyping && mouseBusy;
 
       // 默认待机时：尽量贴近宠物自己原本的小手位置（Clawd 就在身侧、松鼠/仓鼠在胸前桌沿）！
       const restL = this.nativeRest?.left || { x: 86 + this.bodyShiftX * 1.6, y: 170 };
       const restR = this.nativeRest?.right || { x: 186 + this.bodyShiftX * 1.6, y: 170 };
 
-      this.leftPaw.tx = leftActive ? this.leftTap.x : restL.x;
-      this.leftPaw.ty = leftActive ? this.leftTap.y : restL.y;
-      this.leftPaw.trot = leftActive ? -0.34 : 0;
+      if (leftActive) {
+        this.leftPaw.tx = this.leftTap.x;
+        this.leftPaw.ty = this.leftTap.y;
+        this.leftPaw.trot = -0.34;
+      } else if (heldLeft) {
+        this.leftPaw.tx = heldLeft.x;
+        this.leftPaw.ty = heldLeft.y + 0.6;
+        this.leftPaw.trot = -0.22;
+      } else {
+        this.leftPaw.tx = restL.x;
+        this.leftPaw.ty = restL.y;
+        this.leftPaw.trot = 0;
+      }
 
       if (rightOnMouse) {
         const clickDrop = Math.max(this.mouseLeftPress, this.mouseRightPress) * 2.4;
@@ -492,6 +696,10 @@
         this.rightPaw.tx = this.rightTap.x;
         this.rightPaw.ty = this.rightTap.y;
         this.rightPaw.trot = 0.34;
+      } else if (heldRight) {
+        this.rightPaw.tx = heldRight.x;
+        this.rightPaw.ty = heldRight.y + 0.6;
+        this.rightPaw.trot = 0.22;
       } else {
         this.rightPaw.tx = restR.x;
         this.rightPaw.ty = restR.y;
@@ -512,7 +720,7 @@
 
       return this.floats.length > 0
         || this.mouseBadges.length > 0
-        || this.keyPress.size > 0
+        || decayingKey
         || !!this.leftTap
         || !!this.rightTap
         || Math.abs(this.smx - this.mx) > 0.004
@@ -569,45 +777,188 @@
     ctx.closePath();
   }
 
-  function drawKeyboard(ctx, state, dp, en) {
+  function makeRgbGradient(ctx, x0, y0, x1, y1, hue, sat = 95, light = 60, alpha = 1) {
+    const g = ctx.createLinearGradient(x0, y0, x1, y1);
+    const stops = [0, 0.25, 0.5, 0.75, 1];
+    for (const s of stops) {
+      const h = (hue + s * 300) % 360;
+      g.addColorStop(s, alpha < 1 ? `hsla(${h.toFixed(0)}, ${sat}%, ${light}%, ${alpha})` : `hsl(${h.toFixed(0)}, ${sat}%, ${light}%)`);
+    }
+    return g;
+  }
+
+  function drawKeyboard(ctx, state, resolved, en, now, reducedMotion, onImageLoad) {
+    const { dp, effects, images, base } = resolved;
+    const hue = reducedMotion ? 190 : (now * 0.085) % 360;
+    const hoverY = effects.hoverFloat ? (reducedMotion ? -2.6 : -3.0 + Math.sin(now * 0.0032) * 1.5) : 0;
     const bounce = state.kbBounce * 2.2;
-    const cy = KB.cy + bounce;
+    const cy = KB.cy + bounce + hoverY;
     const halfH = KB.h / 2;
+    const rimDrop = effects.slimKeys ? 1.8 : 3.0;
+    const cornerR = effects.slimKeys ? 5.5 : 7;
+    const glowRgb = parseColor(dp.glow) || [34, 211, 238];
 
     ctx.save();
-    ctx.fillStyle = dp.shadow;
-    trapezoidPath(ctx, KB.cx, cy + 5.0, KB.topHalfW - 1, KB.botHalfW + 1, halfH, 7);
-    ctx.fill();
 
+    // 1. 阴影 / 悬浮投影光盘 / RGB 底边光晕
+    if (effects.hoverFloat) {
+      const baseShadowY = KB.cy + 8.0;
+      ctx.save();
+      const padGrad = ctx.createRadialGradient(KB.cx, baseShadowY + halfH - 5, 12, KB.cx, baseShadowY + halfH - 5, KB.botHalfW + 8);
+      padGrad.addColorStop(0, toRgba(glowRgb, 0.34));
+      padGrad.addColorStop(0.65, toRgba(glowRgb, 0.14));
+      padGrad.addColorStop(1, toRgba(glowRgb, 0));
+      ctx.fillStyle = padGrad;
+      ctx.beginPath();
+      ctx.ellipse(KB.cx, baseShadowY + halfH - 5, KB.botHalfW + 4, 8.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 悬浮能量基线
+      ctx.strokeStyle = toRgba(glowRgb, 0.65);
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(KB.cx - KB.botHalfW + 18, baseShadowY + halfH - 3.5);
+      ctx.lineTo(KB.cx + KB.botHalfW - 18, baseShadowY + halfH - 3.5);
+      ctx.stroke();
+      ctx.restore();
+    } else if (effects.rgbBorder) {
+      ctx.save();
+      ctx.fillStyle = dp.shadow;
+      trapezoidPath(ctx, KB.cx, cy + 5.2, KB.topHalfW - 1, KB.botHalfW + 1, halfH, cornerR);
+      ctx.fill();
+      ctx.shadowColor = `hsla(${hue.toFixed(0)}, 96%, 58%, 0.55)`;
+      ctx.shadowBlur = 9;
+      ctx.strokeStyle = makeRgbGradient(ctx, KB.cx - KB.botHalfW, cy, KB.cx + KB.botHalfW, cy, hue, 96, 60, 0.72);
+      ctx.lineWidth = 2.6;
+      trapezoidPath(ctx, KB.cx, cy + 1.8, KB.topHalfW + 0.6, KB.botHalfW + 0.6, halfH + 0.4, cornerR);
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      ctx.fillStyle = dp.shadow;
+      trapezoidPath(ctx, KB.cx, cy + (effects.slimKeys ? 3.8 : 5.0), KB.topHalfW - 1, KB.botHalfW + 1, halfH, cornerR);
+      ctx.fill();
+    }
+
+    // 2. 底座厚度边
     ctx.fillStyle = dp.kbRim;
-    trapezoidPath(ctx, KB.cx, cy + 3.0, KB.topHalfW, KB.botHalfW, halfH, 7);
+    trapezoidPath(ctx, KB.cx, cy + rimDrop, KB.topHalfW, KB.botHalfW, halfH, cornerR);
     ctx.fill();
 
-    const bodyGrad = ctx.createLinearGradient(KB.cx, cy - halfH, KB.cx, cy + halfH);
-    bodyGrad.addColorStop(0, dp.kbBodyTop);
-    bodyGrad.addColorStop(1, dp.kbBodyBot);
-    ctx.fillStyle = bodyGrad;
-    ctx.strokeStyle = dp.kbStroke;
-    ctx.lineWidth = 1.4;
-    trapezoidPath(ctx, KB.cx, cy, KB.topHalfW, KB.botHalfW, halfH, 7);
-    ctx.fill();
-    ctx.stroke();
+    // 3. 键盘主体（支持自定义贴图覆盖）
+    const customKbImg = images?.keyboard ? getCustomImage(images.keyboard, onImageLoad) : null;
+    if (customKbImg) {
+      ctx.save();
+      trapezoidPath(ctx, KB.cx, cy, KB.topHalfW, KB.botHalfW, halfH, cornerR);
+      ctx.clip();
+      ctx.drawImage(customKbImg, KB.cx - KB.botHalfW, cy - halfH, KB.botHalfW * 2, KB.h);
+      ctx.restore();
+      ctx.strokeStyle = effects.rgbBorder
+        ? makeRgbGradient(ctx, KB.cx - KB.botHalfW, cy, KB.cx + KB.botHalfW, cy, hue)
+        : dp.kbStroke;
+      ctx.lineWidth = effects.rgbBorder ? 1.8 : 1.35;
+      trapezoidPath(ctx, KB.cx, cy, KB.topHalfW, KB.botHalfW, halfH, cornerR);
+      ctx.stroke();
+    } else {
+      const bodyGrad = ctx.createLinearGradient(KB.cx, cy - halfH, KB.cx, cy + halfH);
+      bodyGrad.addColorStop(0, dp.kbBodyTop);
+      bodyGrad.addColorStop(1, dp.kbBodyBot);
+      ctx.fillStyle = bodyGrad;
+      trapezoidPath(ctx, KB.cx, cy, KB.topHalfW, KB.botHalfW, halfH, cornerR);
+      ctx.fill();
 
-    ctx.fillStyle = dp.kbWell;
-    trapezoidPath(ctx, KB.cx, cy + 0.3, KB.topHalfW - 5.2, KB.botHalfW - 5.2, halfH - 4.0, 4);
-    ctx.fill();
+      // 金属机身顶缘高光（苹果银铝 / 曜石黑专属细节）
+      if (effects.slimKeys || base === 'obsidian') {
+        ctx.save();
+        ctx.strokeStyle = effects.slimKeys ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.18)';
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        ctx.moveTo(KB.cx - KB.topHalfW + cornerR + 2, cy - halfH + 1.0);
+        ctx.lineTo(KB.cx + KB.topHalfW - cornerR - 2, cy - halfH + 1.0);
+        ctx.stroke();
+        ctx.restore();
+      }
 
-    const innerTop = cy - halfH + KB.padY;
-    const innerH = KB.h - KB.padY * 2;
+      // 机身边框（电竞 RGB 流光边框 / 未来悬浮发光边框 / 标准描边）
+      ctx.save();
+      if (effects.rgbBorder) {
+        ctx.strokeStyle = makeRgbGradient(ctx, KB.cx - KB.botHalfW, cy, KB.cx + KB.botHalfW, cy, hue, 96, 62);
+        ctx.lineWidth = 2.0;
+      } else if (effects.holoGrid || effects.glow >= 0.6) {
+        ctx.shadowColor = toRgba(glowRgb, 0.7);
+        ctx.shadowBlur = 5;
+        ctx.strokeStyle = dp.kbStroke;
+        ctx.lineWidth = 1.5;
+      } else {
+        ctx.strokeStyle = dp.kbStroke;
+        ctx.lineWidth = 1.4;
+      }
+      trapezoidPath(ctx, KB.cx, cy, KB.topHalfW, KB.botHalfW, halfH, cornerR);
+      ctx.stroke();
+      ctx.restore();
+
+      // 键槽井
+      const wellInset = effects.slimKeys ? 4.0 : 5.2;
+      const wellPadH = effects.slimKeys ? 3.2 : 4.0;
+      ctx.fillStyle = dp.kbWell;
+      trapezoidPath(ctx, KB.cx, cy + 0.3, KB.topHalfW - wellInset, KB.botHalfW - wellInset, halfH - wellPadH, effects.slimKeys ? 3 : 4);
+      ctx.fill();
+
+      // 电竞 RGB 键槽微光底纹
+      if (effects.rgbBorder) {
+        ctx.save();
+        trapezoidPath(ctx, KB.cx, cy + 0.3, KB.topHalfW - wellInset, KB.botHalfW - wellInset, halfH - wellPadH, 4);
+        ctx.clip();
+        ctx.fillStyle = makeRgbGradient(ctx, KB.cx - KB.botHalfW, cy, KB.cx + KB.botHalfW, cy, (hue + 40) % 360, 95, 58, 0.16);
+        ctx.fillRect(KB.cx - KB.botHalfW, cy - halfH, KB.botHalfW * 2, KB.h);
+        ctx.restore();
+      }
+
+      // 未来悬浮全息扫描线 + 四角 HUD 括号
+      if (effects.holoGrid) {
+        ctx.save();
+        trapezoidPath(ctx, KB.cx, cy + 0.3, KB.topHalfW - wellInset, KB.botHalfW - wellInset, halfH - wellPadH, 4);
+        ctx.clip();
+        ctx.strokeStyle = toRgba(glowRgb, 0.14);
+        ctx.lineWidth = 0.8;
+        for (let sy = cy - halfH + 6; sy < cy + halfH - 4; sy += 5) {
+          ctx.beginPath();
+          ctx.moveTo(KB.cx - KB.botHalfW, sy);
+          ctx.lineTo(KB.cx + KB.botHalfW, sy);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // 四角科技描边角标
+        ctx.save();
+        ctx.strokeStyle = toRgba(glowRgb, 0.92);
+        ctx.lineWidth = 1.6;
+        ctx.lineCap = 'round';
+        const txL = KB.cx - KB.topHalfW + 3, txR = KB.cx + KB.topHalfW - 3, tyT = cy - halfH + 1;
+        const bxL = KB.cx - KB.botHalfW + 3, bxR = KB.cx + KB.botHalfW - 3, byB = cy + halfH - 1;
+        ctx.beginPath();
+        ctx.moveTo(txL, tyT + 6); ctx.lineTo(txL + 1, tyT); ctx.lineTo(txL + 8, tyT);
+        ctx.moveTo(txR, tyT + 6); ctx.lineTo(txR - 1, tyT); ctx.lineTo(txR - 8, tyT);
+        ctx.moveTo(bxL, byB - 6); ctx.lineTo(bxL + 1, byB); ctx.lineTo(bxL + 8, byB);
+        ctx.moveTo(bxR, byB - 6); ctx.lineTo(bxR - 1, byB); ctx.lineTo(bxR - 8, byB);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // 4. 键帽阵列（180° 面向宠物视角；若使用了自定义贴图，只在按键按下时叠加高亮光效）
+    const padX = effects.slimKeys ? 6.0 : KB.padX;
+    const padY = effects.slimKeys ? 4.6 : KB.padY;
+    const innerTop = cy - halfH + padY;
+    const innerH = KB.h - padY * 2;
     const rowH = innerH / 4;
-    const gapX = 1.8;
-    const gapY = 1.7;
+    const gapX = effects.slimKeys ? 1.5 : 1.8;
+    const gapY = effects.slimKeys ? 1.4 : 1.7;
+    const keyR = effects.slimKeys ? 1.5 : 2.1;
 
     for (let r = 0; r < 4; r++) {
       // 180° 面向宠物翻转：row=3（空格排）画在最上排靠近宠物，row=0（数字/Esc）画在最下排，左右同步反转
       const visRow = 3 - r;
       const vMid = (visRow + 0.5) / 4;
-      const halfW = lerp(KB.topHalfW - KB.padX, KB.botHalfW - KB.padX, vMid);
+      const halfW = lerp(KB.topHalfW - padX, KB.botHalfW - padX, vMid);
       const rowLeft = KB.cx - halfW;
       const rowW = halfW * 2;
       const ky = innerTop + visRow * rowH + gapY * 0.5;
@@ -619,19 +970,57 @@
         const kx = rowLeft + (1 - spec.u1) * rowW + gapX * 0.5;
         const kw = (spec.u1 - spec.u0) * rowW - gapX;
         const press = state.covering ? 0 : (state.keyPress.get(`${r}:${s}`) || 0);
-        const sink = press * 2.4;
+        const isActive = press > 0.12;
 
-        // 全白极简键帽：静止全白，敲击瞬间高亮薄荷绿并下沉
-        const topCol = press > 0.12 ? dp.keyActive : dp.keyTop;
-        const sideCol = press > 0.12 ? dp.keyActiveSide : dp.keySide;
+        if (customKbImg) {
+          if (isActive) {
+            ctx.save();
+            ctx.globalAlpha = clamp(press * 0.85, 0, 0.88);
+            ctx.fillStyle = effects.rgbBorder ? `hsl(${(hue + s * 34 + r * 26) % 360}, 96%, 62%)` : dp.keyActive;
+            roundRect(ctx, kx, ky + 0.6, kw, kh - 0.6, keyR);
+            ctx.fill();
+            ctx.restore();
+          }
+          continue;
+        }
 
+        const sink = press * (effects.slimKeys ? 1.6 : 2.4);
+        let topCol = isActive ? dp.keyActive : dp.keyTop;
+        let sideCol = isActive ? dp.keyActiveSide : dp.keySide;
+        if (isActive && effects.rgbBorder) {
+          const khue = (hue + s * 34 + r * 26) % 360;
+          topCol = `hsl(${khue.toFixed(0)}, 98%, 64%)`;
+          sideCol = `hsl(${khue.toFixed(0)}, 90%, 38%)`;
+        }
+
+        // 键帽侧裙
         ctx.fillStyle = sideCol;
-        roundRect(ctx, kx, ky + 1.3, kw, kh, 2.3);
+        roundRect(ctx, kx, ky + (effects.slimKeys ? 0.7 : 1.3), kw, kh, keyR + 0.2);
         ctx.fill();
 
+        // 键帽顶面
+        ctx.save();
+        if (isActive && effects.glow > 0.35) {
+          ctx.shadowColor = topCol;
+          ctx.shadowBlur = 4 + effects.glow * 4;
+        }
         ctx.fillStyle = topCol;
-        roundRect(ctx, kx, ky + sink, kw, kh - 1.1, 2.1);
+        roundRect(ctx, kx, ky + sink, kw, kh - (effects.slimKeys ? 0.6 : 1.1), keyR);
         ctx.fill();
+        ctx.restore();
+
+        // 细描边 / 电竞微光底边
+        if (dp.keyStroke && !isActive) {
+          ctx.strokeStyle = dp.keyStroke;
+          ctx.lineWidth = effects.holoGrid ? 0.8 : 0.65;
+          roundRect(ctx, kx + 0.2, ky + sink + 0.2, kw - 0.4, kh - (effects.slimKeys ? 0.9 : 1.4), keyR);
+          ctx.stroke();
+        }
+        if (effects.rgbBorder && !isActive) {
+          const edgeHue = (hue + s * 30 + r * 18) % 360;
+          ctx.fillStyle = `hsla(${edgeHue.toFixed(0)}, 96%, 62%, 0.48)`;
+          ctx.fillRect(kx + 1.4, ky + kh - 1.5, Math.max(2, kw - 2.8), 1.0);
+        }
       }
     }
 
@@ -656,11 +1045,17 @@
     ctx.restore();
   }
 
-  function drawMouse(ctx, state, dp) {
+  function drawMouse(ctx, state, resolved, now, reducedMotion, onImageLoad) {
+    const { dp, effects, images } = resolved;
+    const hue = reducedMotion ? 190 : (now * 0.085) % 360;
+    const hoverY = effects.hoverFloat ? (reducedMotion ? -2.6 : -3.0 + Math.sin(now * 0.0032 + 0.7) * 1.5) : 0;
+    const glowRgb = parseColor(dp.glow) || [34, 211, 238];
+
     const mp = state.mousePos();
     const mx = mp.x;
-    const my = mp.y + state.kbBounce * 1.4;
-    const rx = MOUSE.rx, ry = MOUSE.ry;
+    const my = mp.y + state.kbBounce * 1.4 + hoverY;
+    const rx = effects.magicMouse ? 15.2 : MOUSE.rx;
+    const ry = effects.magicMouse ? 20.6 : MOUSE.ry;
     const lPress = state.mouseLeftPress;
     const rPress = state.mouseRightPress;
 
@@ -668,16 +1063,64 @@
     ctx.translate(mx, my);
     ctx.rotate(0.04 + (state.smx - 0.5) * 0.08);
 
-    ctx.fillStyle = dp.shadow;
-    ctx.beginPath();
-    ctx.ellipse(0.5, 4.2, rx + 0.5, ry + 0.5, 0, 0, Math.PI * 2);
-    ctx.fill();
+    // 1. 阴影 / 未来悬浮能量环 / RGB 底光
+    if (effects.hoverFloat) {
+      ctx.save();
+      const sy = 8.2 - hoverY * 0.65;
+      const mg = ctx.createRadialGradient(0, sy + ry * 0.45, 2, 0, sy + ry * 0.45, rx + 5);
+      mg.addColorStop(0, toRgba(glowRgb, 0.36));
+      mg.addColorStop(1, toRgba(glowRgb, 0));
+      ctx.fillStyle = mg;
+      ctx.beginPath();
+      ctx.ellipse(0, sy + ry * 0.45, rx + 3, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = toRgba(glowRgb, 0.62);
+      ctx.lineWidth = 1.0;
+      ctx.beginPath();
+      ctx.ellipse(0, sy + ry * 0.45, rx * 0.72, 3.6, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      ctx.fillStyle = dp.shadow;
+      ctx.beginPath();
+      ctx.ellipse(0.5, effects.magicMouse ? 3.2 : 4.2, rx + 0.5, ry + 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
+    // 2. 底座厚度边
     ctx.fillStyle = dp.mouseRim;
     ctx.beginPath();
-    ctx.ellipse(0, 2.3, rx, ry, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, effects.magicMouse ? 1.7 : 2.3, rx, ry, 0, 0, Math.PI * 2);
     ctx.fill();
 
+    const customMouseImg = images?.mouse ? getCustomImage(images.mouse, onImageLoad) : null;
+    if (customMouseImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(customMouseImg, -rx, -ry, rx * 2, ry * 2);
+      if (lPress > 0.08) {
+        ctx.fillStyle = dp.mouseLeft;
+        ctx.globalAlpha = 0.42 * lPress;
+        ctx.fillRect(-rx - 1, -1, rx + 1, ry + 2);
+      }
+      if (rPress > 0.08) {
+        ctx.fillStyle = dp.mouseRight;
+        ctx.globalAlpha = 0.42 * rPress;
+        ctx.fillRect(0, -1, rx + 1, ry + 2);
+      }
+      ctx.restore();
+      ctx.strokeStyle = dp.mouseStroke;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    // 3. 鼠标外壳
     const shellGrad = ctx.createLinearGradient(0, -ry, 0, ry);
     shellGrad.addColorStop(0, dp.mouseTop);
     shellGrad.addColorStop(1, dp.mouseBot);
@@ -691,67 +1134,145 @@
     ctx.ellipse(0, 0, rx - 0.5, ry - 0.5, 0, 0, Math.PI * 2);
     ctx.clip();
 
-    // 面向宠物视角（180° 翻转）：掌托在上（靠近宠物），左右键板与滚轮在下（朝外，与 KuroCat 默认朝向一致）
-    ctx.beginPath();
-    ctx.moveTo(-rx - 2, -2.2);
-    ctx.quadraticCurveTo(-rx * 0.52, -0.2, 0, -0.5);
-    ctx.lineTo(0, ry + 2);
-    ctx.lineTo(-rx - 2, ry + 2);
-    ctx.closePath();
-    ctx.fillStyle = lPress > 0.08 ? dp.mouseLeft : dp.mouseBtnIdle;
-    ctx.fill();
-    if (lPress > 0.08) {
-      ctx.fillStyle = `rgba(12, 18, 26, ${(0.18 * lPress).toFixed(3)})`;
-      ctx.fillRect(-rx - 2, -2.2, rx + 2, 3.0);
+    if (effects.magicMouse) {
+      // 苹果无缝触控鼠标（Magic Mouse）：极简一体玻璃顶面 + 细腻触控微标，点击时泛出柔光触控区
+      if (lPress > 0.08) {
+        ctx.fillStyle = dp.mouseLeft;
+        ctx.globalAlpha = 0.30 * lPress;
+        ctx.fillRect(-rx - 2, -1, rx + 2, ry + 3);
+        ctx.globalAlpha = 1;
+      }
+      if (rPress > 0.08) {
+        ctx.fillStyle = dp.mouseRight;
+        ctx.globalAlpha = 0.30 * rPress;
+        ctx.fillRect(0, -1, rx + 2, ry + 3);
+        ctx.globalAlpha = 1;
+      }
+      // 玻璃表面柔和反光弧
+      const shine = ctx.createLinearGradient(-rx, -ry, rx * 0.4, ry * 0.4);
+      shine.addColorStop(0, 'rgba(255, 255, 255, 0.85)');
+      shine.addColorStop(0.45, 'rgba(255, 255, 255, 0.12)');
+      shine.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = shine;
+      ctx.beginPath();
+      ctx.ellipse(-3.5, -5.5, rx * 0.68, ry * 0.58, -0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 极淡触控中线提示
+      ctx.strokeStyle = dp.mouseSeam;
+      ctx.lineWidth = 0.9;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0, 4.5);
+      ctx.lineTo(0, 12.5);
+      ctx.stroke();
+
+      // 掌托微标圆点
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.32)';
+      ctx.beginPath();
+      ctx.arc(0, -8.5, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // 面向宠物视角（180° 翻转）：掌托在上（靠近宠物），左右键板与滚轮在下（朝外）
+      ctx.beginPath();
+      ctx.moveTo(-rx - 2, -2.2);
+      ctx.quadraticCurveTo(-rx * 0.52, -0.2, 0, -0.5);
+      ctx.lineTo(0, ry + 2);
+      ctx.lineTo(-rx - 2, ry + 2);
+      ctx.closePath();
+      ctx.fillStyle = lPress > 0.08 ? dp.mouseLeft : dp.mouseBtnIdle;
+      ctx.fill();
+      if (lPress > 0.08) {
+        ctx.fillStyle = `rgba(12, 18, 26, ${(0.18 * lPress).toFixed(3)})`;
+        ctx.fillRect(-rx - 2, -2.2, rx + 2, 3.0);
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(0, -0.5);
+      ctx.quadraticCurveTo(rx * 0.52, -0.2, rx + 2, -2.2);
+      ctx.lineTo(rx + 2, ry + 2);
+      ctx.lineTo(0, ry + 2);
+      ctx.closePath();
+      ctx.fillStyle = rPress > 0.08 ? dp.mouseRight : dp.mouseBtnIdle;
+      ctx.fill();
+      if (rPress > 0.08) {
+        ctx.fillStyle = `rgba(12, 18, 26, ${(0.18 * rPress).toFixed(3)})`;
+        ctx.fillRect(0, -2.2, rx + 2, 3.0);
+      }
+
+      // 电竞 RGB 尾部 V 型流光灯带
+      if (effects.rgbBorder) {
+        ctx.strokeStyle = makeRgbGradient(ctx, -rx, -ry, rx, -4, (hue + 90) % 360, 98, 64);
+        ctx.lineWidth = 2.0;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-9.5, -9.5);
+        ctx.quadraticCurveTo(0, -16.5, 9.5, -9.5);
+        ctx.stroke();
+      }
+
+      // 未来悬浮中央能量脊椎线
+      if (effects.holoGrid) {
+        ctx.strokeStyle = toRgba(glowRgb, 0.72);
+        ctx.lineWidth = 1.25;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(0, -14.5);
+        ctx.lineTo(0, -4.5);
+        ctx.stroke();
+        ctx.fillStyle = toRgba(glowRgb, 0.85);
+        ctx.beginPath();
+        ctx.arc(0, -10.5, 2.0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.strokeStyle = dp.mouseSeam;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(-rx - 2, -2.2);
+      ctx.quadraticCurveTo(0, 0.5, rx + 2, -2.2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(0, -0.5);
+      ctx.lineTo(0, ry + 1);
+      ctx.stroke();
+
+      ctx.fillStyle = dp.wheelWell;
+      roundRect(ctx, -2.4, 3.8, 4.8, 8.8, 2.4);
+      ctx.fill();
+      ctx.fillStyle = effects.rgbBorder ? `hsl(${((hue + 140) % 360).toFixed(0)}, 96%, 64%)` : dp.wheel;
+      roundRect(ctx, -1.5, 4.8, 3.0, 6.8, 1.5);
+      ctx.fill();
+
+      ctx.font = '800 7px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = lPress > 0.15 ? '#ffffff' : dp.mouseLabel;
+      ctx.fillText('L', -6.8, 12.6 + lPress * 0.8);
+      ctx.fillStyle = rPress > 0.15 ? '#ffffff' : dp.mouseLabel;
+      ctx.fillText('R', 6.8, 12.6 + rPress * 0.8);
     }
-
-    ctx.beginPath();
-    ctx.moveTo(0, -0.5);
-    ctx.quadraticCurveTo(rx * 0.52, -0.2, rx + 2, -2.2);
-    ctx.lineTo(rx + 2, ry + 2);
-    ctx.lineTo(0, ry + 2);
-    ctx.closePath();
-    ctx.fillStyle = rPress > 0.08 ? dp.mouseRight : dp.mouseBtnIdle;
-    ctx.fill();
-    if (rPress > 0.08) {
-      ctx.fillStyle = `rgba(12, 18, 26, ${(0.18 * rPress).toFixed(3)})`;
-      ctx.fillRect(0, -2.2, rx + 2, 3.0);
-    }
-
-    ctx.strokeStyle = dp.mouseSeam;
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(-rx - 2, -2.2);
-    ctx.quadraticCurveTo(0, 0.5, rx + 2, -2.2);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(0, -0.5);
-    ctx.lineTo(0, ry + 1);
-    ctx.stroke();
-
-    ctx.fillStyle = dp.wheelWell;
-    roundRect(ctx, -2.4, 3.8, 4.8, 8.8, 2.4);
-    ctx.fill();
-    ctx.fillStyle = dp.wheel;
-    roundRect(ctx, -1.5, 4.8, 3.0, 6.8, 1.5);
-    ctx.fill();
-
-    ctx.font = '800 7px "Segoe UI", system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = lPress > 0.15 ? '#ffffff' : 'rgba(92, 100, 114, 0.48)';
-    ctx.fillText('L', -6.8, 12.6 + lPress * 0.8);
-    ctx.fillStyle = rPress > 0.15 ? '#ffffff' : 'rgba(92, 100, 114, 0.48)';
-    ctx.fillText('R', 6.8, 12.6 + rPress * 0.8);
 
     ctx.restore();
 
-    ctx.strokeStyle = dp.mouseStroke;
-    ctx.lineWidth = 1.45;
+    ctx.save();
+    if (effects.rgbBorder) {
+      ctx.strokeStyle = makeRgbGradient(ctx, -rx, -ry, rx, ry, (hue + 60) % 360, 96, 62);
+      ctx.lineWidth = 1.75;
+    } else if (effects.holoGrid) {
+      ctx.shadowColor = toRgba(glowRgb, 0.72);
+      ctx.shadowBlur = 4;
+      ctx.strokeStyle = dp.mouseStroke;
+      ctx.lineWidth = 1.45;
+    } else {
+      ctx.strokeStyle = dp.mouseStroke;
+      ctx.lineWidth = 1.45;
+    }
     ctx.beginPath();
     ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
 
     ctx.restore();
   }
@@ -1054,6 +1575,8 @@
     if (!canvas) return;
     const {
       theme = 'light',
+      style = 'white',
+      deskPack = null,
       pet = 'squirrel',
       mood = 'ok',
       customColor = '',
@@ -1067,6 +1590,7 @@
       now = Date.now(),
       reducedMotion = false,
       en = false,
+      onImageLoad = null,
     } = opts || {};
 
     // 把实时测得的宠物原生待机手位记入 state，让空闲时手自然回到它原本的位置
@@ -1095,12 +1619,13 @@
     ctx.scale(canvas.width / LW, canvas.height / LH);
     ctx.imageSmoothingEnabled = true;
 
-    const dp = deskPalette(theme);
+    const resolved = resolveStyle(style, deskPack, theme);
+    const dp = resolved.dp;
     const pp = pawPalette(pet, mood, customColor, crabHint);
 
-    // 1. 悬浮极简微透视 60% 键盘 + 紧贴右侧圆润小鼠标
-    drawKeyboard(ctx, state, dp, en);
-    drawMouse(ctx, state, dp);
+    // 1. 悬浮极简微透视 60% 键盘 + 紧贴右侧小鼠标（按用户所选款式或自定义样式包绘制）
+    drawKeyboard(ctx, state, resolved, en, now, reducedMotion, onImageLoad);
+    drawMouse(ctx, state, resolved, now, reducedMotion, onImageLoad);
 
     // 2. 仅当桌宠处于可接管站姿（showHands=true）时绘制前景双手；随机待机或点击反应期间隐藏接管手并还原原画手，杜绝悬空手/四只手
     if (showHands) {
@@ -1163,6 +1688,33 @@
     ctx.restore();
   }
 
+  /** 设置页卡片用的紧裁键鼠预览（裁剪出键盘+鼠标区域，带 1 枚演示高亮键帽）。 */
+  function paintDeskPreview(canvas, styleId, deskPack, opts) {
+    if (!canvas) return;
+    const { theme = 'light', now = Date.now(), reducedMotion = false, onImageLoad = null } = opts || {};
+    const ctx = canvas.getContext('2d');
+    const resolved = resolveStyle(styleId, deskPack, theme);
+    const previewState = new DeskState();
+    previewState.keyPress.set('1:3', 1);
+    previewState.mouseLeftPress = 0.85;
+
+    // 紧裁视窗覆盖键盘 (x=28..212, y=166..224) + 鼠标 (x=218..258)
+    const cropX = 22, cropY = 160, cropW = 244, cropH = 68;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const sx = canvas.width / cropW, sy = canvas.height / cropH;
+    const sc = Math.min(sx, sy);
+    const ox = (canvas.width - cropW * sc) / 2;
+    const oy = (canvas.height - cropH * sc) / 2;
+    ctx.translate(ox - cropX * sc, oy - cropY * sc);
+    ctx.scale(sc, sc);
+    ctx.imageSmoothingEnabled = true;
+    drawKeyboard(ctx, previewState, resolved, false, now, reducedMotion, onImageLoad);
+    drawMouse(ctx, previewState, resolved, now, reducedMotion, onImageLoad);
+    ctx.restore();
+  }
+
   root.PulsePetDesk = {
     W,
     H,
@@ -1173,10 +1725,14 @@
     FLOAT_MS,
     DESK_HIT_BOX,
     DEFAULT_EYES,
+    DESK_STYLES,
     keyRect,
     pawPalette,
     deskPalette,
+    resolveStyle,
+    isAnimatedStyle,
     DeskState,
     paintDesk,
+    paintDeskPreview,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

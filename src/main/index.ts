@@ -13,6 +13,7 @@ import { deskPetAskAction, deskPetAskData, deskPetBubbleAction, deskPetBubbleDat
 import { importPetSound, listPetSounds, petSoundData, removePetSound } from "../core/pet-sound-file";
 import { accountKey, normalizeDeskPet } from "../core/desk-pet-model";
 import { importPetPack, listPetPacks, petPackImages, removePetPack } from "../core/pet-pack";
+import { deskPackData, importDeskPack, listDeskPacks, removeDeskPack } from "../core/desk-pack";
 import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
@@ -1410,6 +1411,20 @@ if (!app.requestSingleInstanceLock()) {
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
       try { return { ok: true as const, pack: importPetPack(picked.filePaths[0]), packs: listPetPacks() }; }
+      catch (error) { return { ok: false as const, error: importError(error) }; }
+    });
+    ipcMain.handle("desk-pet:desk-packs", () => listDeskPacks());
+    ipcMain.handle("desk-pet:desk-pack-data", (_event, id: unknown) => deskPackData(id));
+    ipcMain.handle("desk-pet:remove-desk-pack", (_event, id: unknown) => {
+      const removed = removeDeskPack(id);
+      if (removed && readPrefs().deskPetDeskStyle === id) applyPrefs({ deskPetDeskStyle: "white" });
+      return listDeskPacks();
+    });
+    ipcMain.handle("desk-pet:import-desk-pack", async () => {
+      const options = { title: tr("选择键盘样式文件夹（里面有 desk.json）"), properties: ["openDirectory" as const] };
+      const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || !picked.filePaths[0]) return { ok: false as const, canceled: true };
+      try { return { ok: true as const, pack: importDeskPack(picked.filePaths[0]), packs: listDeskPacks() }; }
       catch (error) { return { ok: false as const, error: importError(error) }; }
     });
     ipcMain.handle("desk-pet:reset-position", () => { resetDeskPetPosition(); return true; });
