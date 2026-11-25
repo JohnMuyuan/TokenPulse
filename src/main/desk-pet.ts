@@ -21,11 +21,13 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Snapshot } from "../core/report";
 import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask, type TaskKind } from "../core/agent-activity";
+import { invalidateAntigravitySwarmCache } from "../core/antigravity";
 import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
 import { anchorOf, askBounds, bubbleBounds, edgeReached, flingPath, GRID, jumpPoint, miniBounds, miniPose, miniSpriteBox, PACK_ID, petBounds, petMode, petPhase, petQuota, petWindowSize, pickPetAccount, releaseVelocity, type BubblePlace, type DeskPetPrefs, type DragSample, type PetAccount, type PetAccountKind, type PetEdge, type PetMood, type PetUsing } from "../core/desk-pet-model";
 import { petPackImages } from "../core/pet-pack";
+import { DeskPetInputMonitor, type DeskPetInputEvent } from "./desk-pet-input";
 import { tr } from "./i18n";
 
 type Account = PetAccount;
@@ -53,6 +55,8 @@ type Options = {
   savePos: (pos: { x: number; y: number } | null) => void;
   /** 进出极简模式；进的时候带上贴哪条边。 */
   saveMini: (on: boolean, edge?: PetEdge) => void;
+  /** 保存其他桌宠偏好（右键快捷开关键鼠桌面 / 隐私捂眼）。 */
+  savePrefs?: (patch: Partial<DeskPetPrefs>) => void;
   hide: () => void;
   snapshot: () => Snapshot | null;
   extraAccounts?: () => PetAccount[];
@@ -64,10 +68,10 @@ type Options = {
 };
 
 const OFFSCREEN = () => !!process.env.TOKENPULSE_DESK_PET_OFFSCREEN;
-/** 会话文件多久看一次：空闲时 4 秒，有任务在跑 1 秒。会话目录有文件变了（fs.watch）另外马上看一次，这两个只是兜底。 */
-const SCAN_EVERY_MS = 4000, SCAN_BUSY_MS = 1000;
+/** 会话文件多久看一次：空闲时 4 秒，有任务在跑 1.5 秒。会话目录有文件变了（fs.watch）另外马上看一次，这两个只是兜底。 */
+const SCAN_EVERY_MS = 4000, SCAN_BUSY_MS = 1500;
 /** 会话文件变了以后等多久再看（一下子写好几行只看一次）、两次之间至少隔多久。 */
-const SCAN_SOON_MS = 300, SCAN_GAP_MS = 500;
+const SCAN_SOON_MS = 500, SCAN_GAP_MS = 900;
 const BUBBLE_DESTROY_MS = 2 * 60_000;
 /** 多久把宠物重新提到置顶窗口的最上面一次。 */
 const TOPMOST_EVERY_MS = 3000;
@@ -100,6 +104,38 @@ let bubblePlace: BubblePlace | null = null;
 let drag: { dx: number; dy: number; size: { width: number; height: number }; at: { x: number; y: number; width: number; height: number }; trail: DragSample[] } | null = null;
 /** 上次发给宠物窗口的「电脑多久没人动」（秒）。 */
 let lastIdle = -1;
+/** 独立的键鼠与密码框监听（仅开启 deskPetDesk 且非极简模式、非测试无头模式时启动）。 */
+let inputMonitor: DeskPetInputMonitor | null = null;
+let autoPasswordActive = false;
+
+function handleInputEvent(event: DeskPetInputEvent) {
+  if (event.type === "password") autoPasswordActive = event.active;
+  if (!pet || pet.isDestroyed() || !options) return;
+  const prefs = options.prefs();
+  if (!prefs.deskPetDesk || prefs.deskPetMini) return;
+  // 双保险：手动隐私捂眼或自动密码框激活期间，主进程边界绝不向渲染层转发任何按键
+  if (event.type === "key" && (prefs.deskPetPrivacy || autoPasswordActive)) return;
+  pet.webContents.send("desk-pet-input", event);
+}
+
+/** 根据当前设置启停独立键鼠监听进程（关闭开关或进极简模式时立刻停掉、零后台残留）。 */
+function syncInputMonitor() {
+  const prefs = options?.prefs();
+  const want = Boolean(pet && !pet.isDestroyed() && prefs?.deskPet && prefs.deskPetDesk && !prefs.deskPetMini && !OFFSCREEN() && !process.env.TOKENPULSE_DESK_PET_NO_INPUT);
+  if (want) {
+    if (!inputMonitor) inputMonitor = new DeskPetInputMonitor(handleInputEvent);
+    if (!inputMonitor.active) inputMonitor.start();
+  } else if (inputMonitor) {
+    inputMonitor.stop();
+    inputMonitor = null;
+    autoPasswordActive = false;
+  }
+}
+
+/** 测试用：向桌宠窗口注入模拟键鼠/密码框事件（不依赖真实系统按键）。 */
+export function deskPetInjectInput(event: DeskPetInputEvent) {
+  handleInputEvent(event);
+}
 
 export function setupDeskPet(next: Options) {
   options = next;
@@ -183,6 +219,7 @@ export function syncDeskPet() {
   const size = petWindowSize(prefs.deskPetScale), now = pet.getBounds();
   if (now.width !== size.width || now.height !== size.height) placePet();
   applyLook();
+  syncInputMonitor();
   pushDeskPet(true);
   if (bubbleVisible()) pushBubble();
   syncAsk(true);
@@ -230,7 +267,8 @@ function startTimers() {
       const watcher = fs.watch(dir, { recursive: true, persistent: false }, (event, name) => {
         // Antigravity 的对话状态在 conversation_summaries.db、conversations/<id>.db（WAL 模式，先写 -wal）及 swarm/members.json
         const rel = String(name || "");
-        if (!rel || !/\.jsonl(\.zstd)?$|\.db(-wal)?$|members\.json$/.test(rel)) return;
+        if (!rel || !/\.jsonl(\.zstd)?$|\.db(-wal)?$|members\.json$|subagents[\\/][^\\/]+\.json$/.test(rel)) return;
+        if (/members\.json$|subagents[\\/][^\\/]+\.json$/.test(rel)) invalidateAntigravitySwarmCache();
         if (event === "rename" || (!rel.endsWith(".db") && !rel.endsWith(".db-wal") && !rel.endsWith("members.json") && !scanner?.knows(path.join(dir, rel)))) scanner?.poke();
         soon();
       });
@@ -238,27 +276,35 @@ function startTimers() {
       watchers.push(watcher);
     } catch { /* 目录不在：等定时扫描 */ }
   }
-  // 眼睛跟着鼠标：只发宠物身体中心到鼠标的相对位置，变了才发。眼睛要立刻跟上，绕着宠物转圈会晕（宠物窗口里判断），都要采得密：
-  // 鼠标在动（1.5 秒内动过）时每 16 毫秒看一次，停着时隔一次看一次（Windows 计时器一格约 15.6 毫秒，实际约 32 毫秒，一动最多晚这么久就跟上）
-  let tick = 0, movedAt = 0, idleAt = 0;
+  // 眼睛跟着鼠标：只发宠物身体中心到鼠标的相对位置，变了才发。光标在窗口外且停住超过 400ms 后自动降频至 ~48ms，减少主进程空转
+  let tick = 0, movedAt = 0, idleAt = 0, lastInside = false;
   cursorTimer = setInterval(() => {
     if (!pet || pet.isDestroyed() || !pet.isVisible() || drag) return;
     const now = Date.now();
-    if (now - movedAt > 1500 && ++tick % 2) return;
+    if (!lastInside && now - movedAt > 400 && ++tick % 3) return;
     // 睡眠序列要知道电脑多久没人动（键盘鼠标都算）；一秒看一次，变了才发。测试时（屏幕外）由测试自己发
     if (!OFFSCREEN() && now - idleAt >= 1000) { idleAt = now; const idle = idleSeconds(); if (idle !== lastIdle) { lastIdle = idle; pet.webContents.send("desk-pet-idle", idle); } }
     const point = screen.getCursorScreenPoint(), bounds = pet.getBounds(), sprite = spriteSize();
-    const rel: { x: number; y: number; cx?: number; cy?: number } = { x: Math.round(point.x - (bounds.x + bounds.width / 2)), y: Math.round(point.y - (bounds.y + bounds.height - sprite.height * 0.55)) };
+    const rel: { x: number; y: number; cx?: number; cy?: number; mx?: number; my?: number } = { x: Math.round(point.x - (bounds.x + bounds.width / 2)), y: Math.round(point.y - (bounds.y + bounds.height - sprite.height * 0.55)) };
+    // 键鼠互动桌面开着时，把光标在当前屏幕上的归一化坐标（0~1，右移增大）顺路带给宠物窗口，驱动小鼠标同向移动
+    const prefsNow = options?.prefs();
+    if (prefsNow?.deskPetDesk && !prefsNow.deskPetMini) {
+      const disp = screen.getDisplayNearestPoint(point).bounds;
+      rel.mx = Math.round(clamp((point.x - disp.x) / Math.max(1, disp.width), 0, 1) * 100) / 100;
+      rel.my = Math.round(clamp((point.y - disp.y) / Math.max(1, disp.height), 0, 1) * 100) / 100;
+    }
     // 光标在宠物窗口范围里：带上窗口内坐标，宠物窗口拿它判断是不是点在宠物身上（见文件开头：不用 forward 的鼠标钩子）。
     // 这时按像素比较，进出宠物身子不会晚一格
     const cx = point.x - bounds.x, cy = point.y - bounds.y;
     const inside = cx >= 0 && cy >= 0 && cx < bounds.width && cy < bounds.height;
+    lastInside = inside;
     if (inside) { rel.cx = cx; rel.cy = cy; }
-    const key = inside ? `in:${cx},${cy}` : `${Math.round(rel.x / 4)},${Math.round(rel.y / 4)}`;
+    const key = inside ? `in:${cx},${cy}:${rel.mx ?? ""},${rel.my ?? ""}` : `${Math.round(rel.x / 4)},${Math.round(rel.y / 4)}:${rel.mx ?? ""},${rel.my ?? ""}`;
     if (key === lastCursor) return;
     lastCursor = key; movedAt = now;
     pet.webContents.send("desk-pet-cursor", rel);
   }, 16);
+  syncInputMonitor();
 }
 
 function stopTimers() {
@@ -267,6 +313,8 @@ function stopTimers() {
   scanTimer = cursorTimer = dragTimer = flyTimer = soonTimer = topTimer = null;
   for (const watcher of watchers) watcher.close();
   watchers = [];
+  if (inputMonitor) { inputMonitor.stop(); inputMonitor = null; }
+  autoPasswordActive = false;
   drag = null; lastIdle = -1;
 }
 
@@ -316,6 +364,7 @@ export function deskPetView() {
   const running = activity?.running ?? [];
   return {
     pet: prefs.deskPetKind, scale: prefs.deskPetScale, theme: prefs.theme, fidget: prefs.deskPetFidget, badge: prefs.deskPetBadge, fps: prefs.deskPetFps,
+    desk: prefs.deskPetDesk !== false, privacy: prefs.deskPetPrivacy === true,
     sound: prefs.deskPetSound, volume: prefs.deskPetVolume, mute: prefs.deskPetMute,
     // 换成自己音频的提示音：种类 → 导入时间（变了宠物窗口重新要一次数据）
     sounds: Object.fromEntries(Object.entries(listPetSounds()).map(([kind, item]) => [kind, item!.at])),
@@ -431,6 +480,7 @@ function settle(at: { x: number; y: number; width: number; height: number }, toE
   if (edge) options.saveMini(true, edge);
   sendEvent({ type: "landed" });
   placePet();
+  syncInputMonitor();
   pushDeskPet(true);
 }
 
@@ -457,7 +507,7 @@ export function setDeskPetMini(on: boolean, edge?: PetEdge) {
   const at = prefs.deskPetPos ?? anchorOf(from);
   const to = on ? miniBounds(at, size, work, side) : petBounds(leaveAnchor(side, at, work), size, work);
   if (!on) { o.saveMini(false); pushDeskPet(true); }
-  const done = () => { o.savePos(anchorOf(to)); if (on) o.saveMini(true, side); sendEvent({ type: "landed" }); placePet(); pushDeskPet(true); };
+  const done = () => { o.savePos(anchorOf(to)); if (on) o.saveMini(true, side); sendEvent({ type: "landed" }); placePet(); syncInputMonitor(); pushDeskPet(true); };
   if (OFFSCREEN()) { done(); return; }
   sendEvent({ type: "fly" });
   const start = Date.now(), ms = 520, arc = side === "top" ? 0 : Math.round(size.height * 0.6);
@@ -475,12 +525,18 @@ export function deskPetMenu() {
   if (!pet || pet.isDestroyed() || !options) return;
   const o = options;
   const edges: [PetEdge, string][] = [["left", tr("贴到屏幕左边")], ["right", tr("贴到屏幕右边")], ["top", tr("倒挂在屏幕上边")], ["bottom", tr("藏到屏幕下边")]];
+  const prefs = o.prefs();
   const menu = Menu.buildFromTemplate([
     { label: tr("查看额度"), click: () => openDeskPetBubble("quota") },
     { label: tr("查看任务"), click: () => openDeskPetBubble("tasks") },
     { label: tr("立即刷新"), click: () => o.refresh() },
     { type: "separator" },
-    o.prefs().deskPetMini
+    ...(o.savePrefs ? [
+      { label: tr("键鼠互动桌面"), type: "checkbox" as const, checked: prefs.deskPetDesk !== false, click: () => o.savePrefs?.({ deskPetDesk: prefs.deskPetDesk === false }) },
+      ...(prefs.deskPetDesk !== false ? [{ label: tr("隐私捂眼"), type: "checkbox" as const, checked: prefs.deskPetPrivacy === true, click: () => o.savePrefs?.({ deskPetPrivacy: !prefs.deskPetPrivacy }) }] : []),
+      { type: "separator" as const },
+    ] : []),
+    prefs.deskPetMini
       ? { label: tr("退出极简模式"), click: () => setDeskPetMini(false) }
       : { label: tr("极简模式"), submenu: edges.map(([edge, label]) => ({ label, click: () => setDeskPetMini(true, edge) })) },
     { label: tr("桌宠设置"), click: () => o.openSettings() },

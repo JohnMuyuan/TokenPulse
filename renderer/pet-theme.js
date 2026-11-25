@@ -26,7 +26,7 @@
     /** 换了主题（null：不是主题宠物）。 */
     load(pack) {
       this.pack = pack && pack.kind === 'theme' && pack.theme && pack.files ? pack : null;
-      this.parsed.clear(); this.key = ''; this.file = ''; this.node = null; this.eyes = null;
+      this.parsed.clear(); this.key = ''; this.file = ''; this.node = null; this.eyes = null; this.lookAt = null;
       this.shadow.replaceChildren();
       this.fit();
     }
@@ -101,7 +101,7 @@
       this.place(node, use);
       if (mirror) node.style.transform = 'scaleX(-1)';
       this.shadow.replaceChildren(node);
-      this.node = node; this.file = use; this.key = key;
+      this.node = node; this.file = use; this.key = key; this.lookAt = null;
       this.eyes = this.trackable(use) ? this.findEyes(node) : null;
       return use;
     }
@@ -120,21 +120,44 @@
       if (found.shadow && this.theme.eyeTracking.shadowOrigin) found.shadow.style.transformOrigin = this.theme.eyeTracking.shadowOrigin;
       // 动画自带的 transition 多半是 0.2 秒以上，鼠标一直在动时每次都从头滑、总落后一截：换成很短的，只把一格一格的跳变抹平
       for (const el of [found.eyes, found.body, found.shadow]) if (el) el.style.transition = `transform ${FOLLOW_MS}ms ease-out`;
+      // 计算眼睛在躯干内的安全活动边距（只在插入节点时算一次，零运行时重排）：
+      // 防止像 Clawd（躯干 x=2..13、右眼 x=10..11 仅剩 2 格边距）在 maxOffset=3 时把右眼移出躯干外！
+      let safeX = this.theme.eyeTracking.maxOffset, safeY = safeX * 0.5;
+      if (found.eyes && found.body && found.body.contains(found.eyes)) {
+        const num = (el, attr) => Number(el.getAttribute(attr));
+        const eyeRects = [...found.eyes.querySelectorAll('rect')].map(r => ({ x: num(r, 'x'), y: num(r, 'y'), w: num(r, 'width'), h: num(r, 'height') })).filter(r => r.w > 0 && r.h > 0);
+        const bodyRects = [...found.body.querySelectorAll('rect')].filter(r => !found.eyes.contains(r)).map(r => ({ id: r.id, x: num(r, 'x'), y: num(r, 'y'), w: num(r, 'width'), h: num(r, 'height') })).filter(r => r.w > 0 && r.h > 0);
+        const torso = bodyRects.find(r => r.id === 'torso') || bodyRects.reduce((a, b) => (!a || b.w * b.h > a.w * a.h ? b : a), null);
+        if (torso && eyeRects.length) {
+          const eMinX = Math.min(...eyeRects.map(r => r.x)), eMaxX = Math.max(...eyeRects.map(r => r.x + r.w));
+          const eMinY = Math.min(...eyeRects.map(r => r.y)), eMaxY = Math.max(...eyeRects.map(r => r.y + r.h));
+          const marginX = Math.min(eMinX - torso.x, torso.x + torso.w - eMaxX);
+          const marginY = Math.min(eMinY - torso.y, torso.y + torso.h - eMaxY);
+          if (marginX > 0.5) safeX = Math.max(0.5, Math.min(safeX, Math.floor((marginX - 1) * 2) / 2));
+          if (marginY > 0.5) safeY = Math.max(0.5, Math.min(safeY, Math.floor((marginY - 1) * 2) / 2));
+        }
+      }
+      found.safeX = safeX;
+      found.safeY = safeY;
       return found.eyes || found.body ? found : null;
     }
 
     /**
-     * 往哪看：x、y 是 -1 ~ 1（鼠标在左 / 右、上 / 下多远，宠物窗口按鼠标位置算）。眼睛横着最多挪 maxOffset 个单位、竖着一半，
-     * 按整数单位挪（像素画）；身体跟着挪 bodyScale 倍，影子往那边拉长一点。过渡只有 FOLLOW_MS，几乎是立刻到位。
+     * 往哪看：x、y 是 -1 ~ 1（鼠标在左 / 右、上 / 下多远，宠物窗口按鼠标位置算）。眼睛横着最多挪 safeX 个单位、竖着最多 safeY，
+     * 不越出躯干边界；身体跟着挪 bodyScale 倍，影子往那边拉长一点。过渡只有 FOLLOW_MS，几乎是立刻到位。
      */
     look(x, y) {
       if (!this.eyes) return;
       const e = this.theme.eyeTracking, m = e.maxOffset;
-      const dx = Math.round(clamp(x, -1, 1) * m), dy = Math.round(clamp(y, -1, 1) * m * 0.5);
+      const sx = this.eyes.safeX ?? m, sy = this.eyes.safeY ?? m * 0.5;
+      const snap = (v, lim) => (lim >= 2 ? Math.round(v) : Math.round(v * 2) / 2);
+      const dx = snap(clamp(x, -1, 1) * sx, sx);
+      const dy = snap(clamp(y, -1, 1) * sy, sy);
+      if (this.lookAt && this.lookAt.dx === dx && this.lookAt.dy === dy) return;
       const set = (el, value) => { if (el && el.style.transform !== value) el.style.transform = value; };
       set(this.eyes.eyes, `translate(${dx}px, ${dy}px)`);
-      set(this.eyes.body, `translate(${dx * e.bodyScale}px, ${dy * e.bodyScale}px)`);
-      set(this.eyes.shadow, `translate(${dx * e.shadowShift}px, 0px) scaleX(${1 + Math.abs(dx) / (m || 1) * e.shadowStretch})`);
+      set(this.eyes.body, `translate(${Math.round(dx * e.bodyScale * 100) / 100}px, ${Math.round(dy * e.bodyScale * 100) / 100}px)`);
+      set(this.eyes.shadow, `translate(${Math.round(dx * e.shadowShift * 100) / 100}px, 0px) scaleX(${Math.round((1 + Math.abs(dx) / (sx || 1) * e.shadowStretch) * 1000) / 1000})`);
       this.lookAt = { dx, dy };
     }
 

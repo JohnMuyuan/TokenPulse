@@ -731,6 +731,55 @@ app.whenReady().then(async () => {
     pet.webContents.send('desk-pet-state', idleView);
     await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg' && !document.body.classList.contains('mini')"), '退出极简模式');
     console.log('PASS desk pet UI: theme phase 2 — subagents switch to the juggling pose, a resting mouse plays the theme\'s idle animations, and mini mode uses the theme\'s own enter / idle / peek animations at its own offsets');
+
+    // 键鼠互动桌面 + 方案 A 融合 + 输密码捂眼 + 开关控制（用主题包验证 Clawd 同款适配）
+    {
+      const deskIdle = { ...idleView, desk: true, privacy: false };
+      pet.webContents.send('desk-pet-state', deskIdle);
+      await until(() => js("window.__petDesk.state().visible === true && document.getElementById('dp-stage').dataset.desk === 'idle'"), '开启键鼠桌面后空闲态显示极简桌面');
+      // 键鼠桌面显示时，额度/任务角标挪到左上角，不被右下角鼠标/键盘遮挡
+      const badgeCheck = await js(`(() => {
+        const sr = document.getElementById('dp-stage').getBoundingClientRect();
+        const br = document.getElementById('dp-badge').getBoundingClientRect();
+        return { top: Math.round(br.top - sr.top), left: Math.round(br.left - sr.left), bottom: Math.round(br.bottom - sr.top) };
+      })()`);
+      assert.ok(badgeCheck.top <= 10 && badgeCheck.left <= 10 && badgeCheck.bottom < 45, `键鼠桌面开启时角标位于左上角不被遮挡：${JSON.stringify(badgeCheck)}`);
+      // AI 在干活且用户未操作键鼠：方案 A 展示原生工作动画、隐藏桌面
+      pet.webContents.send('desk-pet-state', { ...deskIdle, mode: 'work', phase: 'tool', tasks: 1 });
+      await until(() => js("document.getElementById('dp-stage').dataset.image === 'work.svg' && window.__petDesk.state().visible === false"), 'AI 干活且未打字时显示原生工作动画');
+      // 用户打字：立刻进入方案 A 融合态（本体切清爽 idle + 右上角 AI 忙碌微标 + 键盘高亮飘字）
+      pet.webContents.send('desk-pet-input', { type: 'key', key: 'A', row: 1, col: 0, hand: 'left' });
+      pet.webContents.send('desk-pet-input', { type: 'key', key: 'S', row: 1, col: 1, hand: 'left' });
+      await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg' && window.__petDesk.state().visible === true && window.__petDesk.state().floats.includes('A') && window.__petDesk.state().floats.includes('S')"), '打字触发方案 A 融合与按键飘字');
+      // 鼠标镜像右移与左键点击
+      pet.webContents.send('desk-pet-cursor', { x: -200, y: 0, mx: 0.05, my: 0.2 });
+      await delay(180);
+      const mLeft = await js('window.__petDesk.state().mouse.x');
+      pet.webContents.send('desk-pet-cursor', { x: 200, y: 0, mx: 0.95, my: 0.8 });
+      pet.webContents.send('desk-pet-input', { type: 'mouse', left: true, right: false });
+      await until(async () => (await js('window.__petDesk.state().mouse.x')) > mLeft + 3 && (await js('window.__petDesk.state().mouseLeft === true')), '鼠标同向右移与左键按下联动');
+      pet.webContents.send('desk-pet-input', { type: 'mouse', left: false, right: false });
+      // 自动检测密码框：立刻双爪捂眼、清空飘字且屏蔽新按键
+      pet.webContents.send('desk-pet-input', { type: 'password', active: true });
+      await until(() => js("window.__petDesk.state().covering === true && document.getElementById('dp-stage').dataset.desk === 'privacy' && window.__petDesk.state().floats.length === 0"), '输入密码自动捂眼并清空飘字');
+      pet.webContents.send('desk-pet-input', { type: 'key', key: 'X', row: 2, col: 1, hand: 'left' });
+      await delay(80);
+      assert.deepEqual(await js('window.__petDesk.state().floats'), [], '密码框期间绝不飘任何字母');
+      pet.webContents.send('desk-pet-input', { type: 'password', active: false });
+      await until(() => js("window.__petDesk.state().covering === false"), '离开密码框放手恢复');
+      // 停手超过 ACTIVE_HOLD_MS：AI 仍在干活则无缝切回原生工作动画
+      await until(() => js("document.getElementById('dp-stage').dataset.image === 'work.svg' && window.__petDesk.state().visible === false"), '停手后切回原生工作动画', 4500);
+      // 设置页开关切换：关闭「键鼠互动桌面」立刻恢复原样并落盘
+      await pickOption('dps-desk', '关闭');
+      await until(() => prefsFile().deskPetDesk === false, '关闭键鼠互动桌面存下来');
+      await until(() => js("window.__petDesk.state().visible === false"), '关闭后桌宠恢复原样');
+      assert.equal(await mjs("document.getElementById('dps-privacy')"), null, '关闭键鼠桌面后隐私捂眼子项隐藏');
+      await pickOption('dps-desk', '开启');
+      await until(() => prefsFile().deskPetDesk === true, '重新开启键鼠互动桌面存下来');
+      await until(() => mjs("!!document.getElementById('dps-privacy')"), '重新开启后隐私捂眼子项出现');
+      console.log('PASS desk pet UI: minimalist pixel desk, floating keys, mirrored mouse, password eye-cover, Scheme A work fusion, and settings toggle');
+    }
+
     deskPetMain.pushDeskPet(true);
     await mjs("document.querySelector('.dps-remove').click()"); await mjs("document.querySelector('.dps-remove').click()");
     await until(() => js("document.getElementById('dp-stage').dataset.pet === 'squirrel' && document.getElementById('dp-svg').hidden && !document.getElementById('dp-canvas').hidden"), '删掉后回到松鼠');

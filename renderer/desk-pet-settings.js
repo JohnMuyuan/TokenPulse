@@ -166,6 +166,10 @@
       row('dps-account', '额度跟哪个账号', '桌宠和气泡展示的额度来源', p.deskPetAccount, accounts, value => save({ deskPetAccount: value }), '取该账号 5 小时和周窗口中已用比例更高的那一个。'),
       row('dps-fidget', '空闲时动作', '无任务时是否偶尔做小动作', p.deskPetFidget, [
         { value: true, label: '偶尔做小动作', hint: '默认' }, { value: false, label: '安静待着' }], value => save({ deskPetFidget: value })),
+      row('dps-desk', '键鼠互动桌面', '宠物面前摆极简键鼠，打字跟拍飘字母、鼠标同向移动，输密码自动捂眼', p.deskPetDesk !== false, [
+        { value: true, label: '开启', hint: '默认，带极简键鼠与自动捂眼' }, { value: false, label: '关闭', hint: '保持原样，不启动后台键鼠监听' }], value => save({ deskPetDesk: value }), '仅在内存里瞬间触发键盘动画与飘字，绝不记录、不落盘、不上传；关闭后立刻停止后台监听。AI 干活时打字会自动融合展示工作状态。'),
+      p.deskPetDesk !== false ? row('dps-privacy', '隐私捂眼', '输入密码时自动捂住眼睛并停止飘字，也可手动始终捂眼', p.deskPetPrivacy === true, [
+        { value: false, label: '自动检测密码框', hint: '默认，进入密码框自动捂眼' }, { value: true, label: '始终捂眼', hint: '终端等场景手动兜底，不飘字母' }], value => save({ deskPetPrivacy: value }), '系统自动识别浏览器、Electron 及原生密码框；终端 sudo/SSH 等未标为密码框的场景，可在此或右键菜单随时切换「隐私捂眼」。') : null,
       row('dps-fps', '动画帧率', '主题宠物动画的最高帧率', p.deskPetFps ?? 30, [
         { value: 30, label: '30 帧', hint: '默认，省电，像素风看不出区别' }, { value: 60, label: '60 帧', hint: '更顺' }, { value: 120, label: '120 帧', hint: '最顺，开销约为 30 帧的 3 倍' }], value => save({ deskPetFps: value }), '帧率越高越流畅但也越耗 CPU/GPU；高刷屏过高帧率可能导致轻微卡顿。'),
       row('dps-ask', '问题卡片', 'AI 等待选择或确认时在右下角弹窗提醒', p.deskPetAsk, [

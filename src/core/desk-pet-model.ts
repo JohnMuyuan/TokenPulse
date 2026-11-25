@@ -49,9 +49,13 @@ export type DeskPetPrefs = {
    * 高刷屏（300 Hz）上透明置顶窗口每秒重画几百次，鼠标会一顿一顿的（2026-11-09）。默认 30。
    */
   deskPetFps: number;
+  /** 键鼠互动桌面：在宠物面前显示极简像素键盘与鼠标，跟随打字飘字母、鼠标同向移动，输入密码时自动捂眼。默认开。 */
+  deskPetDesk: boolean;
+  /** 隐私捂眼模式：手动让桌宠捂住眼睛、不显示真实按键字母（兜底终端等系统未标记为密码框的场景）。默认关。 */
+  deskPetPrivacy: boolean;
 };
 export const PET_FPS = [30, 60, 120] as const;
-export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false, deskPetEdge: "right", deskPetSound: true, deskPetVolume: 70, deskPetMute: [], deskPetAsk: true, deskPetFps: 30 };
+export const DESK_PET_DEFAULTS: DeskPetPrefs = { deskPet: false, deskPetKind: "squirrel", deskPetScale: 2, deskPetOpacity: 100, deskPetOnTop: true, deskPetAccount: "", deskPetFidget: true, deskPetBadge: true, deskPetPos: null, deskPetMini: false, deskPetEdge: "right", deskPetSound: true, deskPetVolume: 70, deskPetMute: [], deskPetAsk: true, deskPetFps: 30, deskPetDesk: true, deskPetPrivacy: false };
 
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 export const PACK_ID = /^pet-[a-f0-9]{8}$/;
@@ -74,6 +78,8 @@ export function normalizeDeskPet(patch: Record<string, unknown>): Partial<DeskPe
   if ("deskPetMute" in patch) out.deskPetMute = Array.isArray(patch.deskPetMute) ? SOUND_KINDS.filter((kind) => (patch.deskPetMute as unknown[]).includes(kind)) : [];
   if ("deskPetAsk" in patch) out.deskPetAsk = patch.deskPetAsk !== false;
   if ("deskPetFps" in patch) { const fps = Number(patch.deskPetFps); out.deskPetFps = (PET_FPS as readonly number[]).includes(fps) ? fps : DESK_PET_DEFAULTS.deskPetFps; }
+  if ("deskPetDesk" in patch) out.deskPetDesk = patch.deskPetDesk !== false;
+  if ("deskPetPrivacy" in patch) out.deskPetPrivacy = patch.deskPetPrivacy === true;
   if ("deskPetPos" in patch) {
     const pos = patch.deskPetPos as { x?: unknown; y?: unknown } | null;
     const x = Number(pos?.x), y = Number(pos?.y);

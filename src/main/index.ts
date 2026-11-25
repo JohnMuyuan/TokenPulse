@@ -1170,6 +1170,7 @@ if (!app.requestSingleInstanceLock()) {
       prefs: () => readPrefs(),
       savePos: (pos) => { writePrefs({ deskPetPos: pos }); },
       saveMini: (on, edge) => { writePrefs(edge ? { deskPetMini: on, deskPetEdge: edge } : { deskPetMini: on }); win?.webContents.send("desk-pet-changed"); },
+      savePrefs: (patch) => { applyPrefs(patch); win?.webContents.send("desk-pet-changed"); },
       hide: () => applyPrefs({ deskPet: false }),
       snapshot: () => lastSnapshot,
       extraAccounts: () => agyQuotaAccounts(currentAgyState()),

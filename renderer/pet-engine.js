@@ -336,7 +336,8 @@
 
     const sh = { [P.fur]: P.furD }, osc = [-1, 0, 1, 0][(at >> 1) % 4];
     const arm = (l, pts) => path(l, pts, P.fur, 4);
-    switch (p.paws) {
+    const drawPaws = c.deskPaws === 'hide' && p.paws === 'rest' ? 'none' : p.paws;
+    switch (drawPaws) {
       case 'rest': layer(g, P.o, sh, l => { ell(l, cx - 3.5, 39 + dy, 2.3, 1.9, P.fur); ell(l, cx + 3.5, 39 + dy, 2.3, 1.9, P.fur); }); break;
       case 'mouth': { const ay = ny + 2 + ((at >> 1) % 2); acorn(g, F - 3, ay, P); layer(g, P.o, sh, l => { arm(l, [[cx - 6, sY, 2], [F - 4, ay + 6, 2.3]]); arm(l, [[cx + 6, sY, 2], [2 * F - (F - 4), ay + 6, 2.3]]); }); break; }
       case 'face': layer(g, P.o, sh, l => { arm(l, [[cx - 7, sY, 2], [F - 8, hy + 2 + osc, 2.3]]); arm(l, [[cx + 7, sY, 2], [F + 8, hy + 2 - osc, 2.3]]); }); break;
@@ -458,7 +459,8 @@
     const paw = (l, x, y) => ell(l, x, y, 2, 1.7, P.pink);
     const arm = (l, x0, y0, x1, y1) => { path(l, [[x0, y0, 1.8], [x1, y1, 1.8]], P.fur, 4); paw(l, x1, y1); };
     const osc = [-1, 0, 1, 0][(at >> 1) % 4];
-    switch (p.paws) {
+    const drawPaws = c.deskPaws === 'hide' && p.paws === 'rest' ? 'none' : p.paws;
+    switch (drawPaws) {
       case 'rest': layer(g, P.o, null, l => { paw(l, cx - 4.5, by + 2); paw(l, cx + 4.5, by + 2); }); break;
       case 'mouth': { const sx = cx - 2 + (F - 2 - (cx - 2)) * carry, sy = by + 1 + (hy - 1 - (by + 1)) * carry; seed(g, sx, sy, P); layer(g, P.o, null, l => { paw(l, sx - 1, sy + 3); paw(l, sx + 5, sy + 3); }); break; }
       case 'face': layer(g, P.o, null, l => { paw(l, F - 8, hy - 1 + osc); paw(l, F + 8, hy - 1 - osc); }); break;
@@ -601,6 +603,8 @@
           const osc = [-1, 0, 1, 0][(at >> 1) % 4];
           curveArm(l, [bx, by], [cx + side * 14, cy + 18], [F + (k === 1 ? -6.5 : 6.5), cy + osc], 3, 1.8, P.body, t); return;
         }
+        // 互动键鼠桌面开启时：最外侧两根触手（k=0, 5）交由键鼠层直接操控拍键、推鼠标与捂眼，避免多出两条手
+        if (c.deskPaws === 'hide' && !work && !sleep && !hang && !raise.length && (k === 0 || k === 5)) return;
         for (let j = 0; j <= 16; j++) {
           const u = j / 16;
           let x = bx + side * j * 0.22 * spread + (hang ? Math.sin(t * 0.5 + k) * u * 1.5 : Math.sin(t * wave + j * 0.5 + k * 1.3) * (0.5 + u * 1.3));

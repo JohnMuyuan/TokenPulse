@@ -1486,6 +1486,50 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
         running: false, ownRunning: false, phase: 'thinking', nested: false, since: clock - 17_000, at: clock, ended: 'ok',
       }];
       assert.deepEqual((await scanner.scan()).finished, ['antigravity:sub-parent'], '父会话答复完成后立即报完成一次');
+
+      // 场景 5：Antigravity 普通会话里跑的脚本刚结束（pendingContinuation=true），但整个任务还没结束 -> 绝不提前响完成提示音；模型续跑并产出最终回复才响一次
+      clock += 20_000;
+      payload = [{
+        id: 'script-conv', title: '跑脚本后继续修 bug', workspace: 'D:\\work\\TokenPulse',
+        running: true, ownRunning: true, phase: 'tool', tool: 'run_command', nested: false, since: clock - 4000, at: clock,
+      }];
+      assert.deepEqual((await scanner.scan()).finished, [], '脚本正在跑');
+      clock += 2000;
+      payload = [{
+        id: 'script-conv', title: '跑脚本后继续修 bug', workspace: 'D:\\work\\TokenPulse',
+        running: false, ownRunning: false, pendingContinuation: true, phase: 'thinking', nested: false, since: clock - 6000, at: clock, ended: 'ok',
+      }];
+      const gap1 = await scanner.scan();
+      assert.deepEqual(gap1.finished, [], '仅脚本刚结束（pendingContinuation=true）绝不误报完成音');
+      assert.equal(gap1.running.some(t => t.key === 'antigravity:script-conv'), true, '交接稳定期内保持在跑，不闪烁');
+      clock += 2500;
+      payload = [{
+        id: 'script-conv', title: '跑脚本后继续修 bug', workspace: 'D:\\work\\TokenPulse',
+        running: true, ownRunning: true, phase: 'thinking', nested: false, since: clock - 8500, at: clock,
+      }];
+      assert.deepEqual((await scanner.scan()).finished, [], '模型接着处理脚本输出，继续执行任务');
+      // 即使脚本跑完后超过 AGY_SCRIPT_HANDOFF_MS 仍停在 pendingContinuation=true，也只静默退出，绝不响任务完成音
+      clock += 2000;
+      payload = [{
+        id: 'script-conv', title: '跑脚本后继续修 bug', workspace: 'D:\\work\\TokenPulse',
+        running: false, ownRunning: false, pendingContinuation: true, phase: 'thinking', nested: false, since: clock - 10_500, at: clock, ended: 'ok',
+      }];
+      assert.deepEqual((await scanner.scan()).finished, [], '再次进入脚本交接稳定期');
+      clock += activity.AGY_SCRIPT_HANDOFF_MS + 500;
+      assert.deepEqual((await scanner.scan()).finished, [], '超时后仍停在 pendingContinuation 时静默结束，不误响完成音');
+      // 下一轮跑完脚本后模型给出最终文字回复（pendingContinuation=false）：立刻报完成一次
+      clock += 1000;
+      payload = [{
+        id: 'script-conv', title: '跑脚本后继续修 bug', workspace: 'D:\\work\\TokenPulse',
+        running: true, ownRunning: true, phase: 'thinking', nested: false, since: clock - 1000, at: clock,
+      }];
+      assert.deepEqual((await scanner.scan()).finished, [], '模型生成最终回复');
+      clock += 1500;
+      payload = [{
+        id: 'script-conv', title: '跑脚本后继续修 bug', workspace: 'D:\\work\\TokenPulse',
+        running: false, ownRunning: false, phase: 'thinking', nested: false, since: clock - 2500, at: clock, ended: 'ok',
+      }];
+      assert.deepEqual((await scanner.scan()).finished, ['antigravity:script-conv'], '真正产出最终回复时才报一次完成音');
     } finally {
       agyMod.readAntigravityActivity = origRead;
     }
@@ -1665,6 +1709,70 @@ check('desk pet: questions the agent is waiting on — Claude AskUserQuestion / 
       }
       assert.ok(differs, `${name} 有活跃子代理时干活动画应有可见变化`);
     }
+  });
+
+  check('desk pet: interactive desk prefs, key/mouse parser, mirrored mouse, floating keys, Clawd claw palette, and password eye-cover', () => {
+    // 1. 偏好默认值与归一化
+    assert.equal(model.DESK_PET_DEFAULTS.deskPetDesk, true, '键鼠互动桌面默认开启');
+    assert.equal(model.DESK_PET_DEFAULTS.deskPetPrivacy, false, '手动隐私捂眼默认关闭');
+    assert.deepEqual(model.normalizeDeskPet({ deskPetDesk: false, deskPetPrivacy: true }), { deskPetDesk: false, deskPetPrivacy: true });
+    assert.deepEqual(model.normalizeDeskPet({ deskPetDesk: 'yes', deskPetPrivacy: 'yes' }), { deskPetDesk: true, deskPetPrivacy: false });
+
+    // 2. Windows 辅助进程事件解析与键位映射
+    const input = require('../build/main/desk-pet-input');
+    assert.deepEqual(input.keyLayoutOf(0x41), { key: 'A', row: 1, col: 0, hand: 'left' });
+    assert.deepEqual(input.keyLayoutOf(0x4b), { key: 'K', row: 1, col: 7, hand: 'right' });
+    assert.deepEqual(input.keyLayoutOf(0x0d), { key: '↵', row: 1, col: 8, hand: 'right' });
+    assert.deepEqual(input.keyLayoutOf(0x20), { key: '␣', row: 3, col: 4, hand: 'left' });
+    assert.deepEqual(input.parseHelperLine('{"t":"k","vk":65}'), { type: 'key', key: 'A', row: 1, col: 0, hand: 'left' });
+    assert.deepEqual(input.parseHelperLine('{"t":"m","l":1,"r":0}'), { type: 'mouse', left: true, right: false });
+    assert.deepEqual(input.parseHelperLine('{"t":"pw","v":true}'), { type: 'password', active: true });
+    assert.equal(input.parseHelperLine('not json'), null);
+
+    // 3. 极简键鼠桌面状态机：右移=右移、按键飘字、密码框捂眼清空并屏蔽飘字、Clawd 珊瑚橙小钳子识别
+    require('../renderer/pet-desk.js');
+    const Desk = globalThis.PulsePetDesk;
+    const st = new Desk.DeskState();
+    const t0 = 100_000;
+    st.onMouseMove(0.1, 0.2, t0);
+    const leftPos = st.mousePos();
+    st.onMouseMove(0.95, 0.85, t0 + 50);
+    for (let i = 1; i <= 15; i++) st.step(t0 + 50 + i * 20);
+    const rightPos = st.mousePos();
+    assert.ok(rightPos.x >= leftPos.x + 10 && rightPos.y > leftPos.y, `鼠标右移/下移在加宽鼠标垫内大幅同向移动：${JSON.stringify([leftPos, rightPos])}`);
+    assert.equal(st.isUserActive(t0 + 100), true);
+    assert.equal(st.bodyTransform(2, t0 + 350).deg, 0, '移动鼠标时保持脑袋端正不歪斜');
+    // 180° 面向宠物反转键盘：空格排(row=3)最靠近宠物在最上方，数字排(row=0)在最下方，Enter(col=8) 在宠物右手/观众左侧
+    assert.ok(Desk.keyRect(3, 4).cy < Desk.keyRect(0, 0).cy, '反转键盘后空格键排在最靠近宠物的上方');
+    assert.ok(Desk.keyRect(1, 8).cx < Desk.keyRect(1, 0).cx, '反转键盘后 Enter 落在观众左侧（宠物右手侧）');
+
+    // 键鼠双线并行：刚移动完鼠标（< 820ms）期间敲右侧键，右手稳握鼠标、左手代敲，不鬼畜闪现
+    assert.equal(st.onKey({ key: 'W', row: 0, col: 1, hand: 'right' }, t0 + 200), true);
+    assert.ok(st.leftTap && !st.rightTap, '刚动完鼠标时右手稳握鼠标、左手敲键盘');
+    // 鼠标停稳后纯打字：左右手分别负责左右键区
+    assert.equal(st.onKey({ key: 'A', row: 1, col: 0, hand: 'left' }, t0 + 1200), true);
+    assert.equal(st.onKey({ key: 'K', row: 1, col: 7, hand: 'right' }, t0 + 1220), true);
+    assert.deepEqual(st.floats.map(f => f.key), ['W', 'A', 'K'], '打字生成对应按键飘字');
+    assert.ok(st.leftTap && st.rightTap, '纯打字时左右手分别触发对应爪子拍键');
+
+    // 进入密码框：立刻清空在途飘字与按下的键帽，且新按键绝不再生成飘字
+    assert.equal(st.setPassword(true, t0 + 1260), true);
+    assert.equal(st.covering, true);
+    assert.deepEqual(st.floats, [], '进入密码框立即清空在途飘字');
+    assert.equal(st.onKey({ key: 'P', row: 0, col: 8, hand: 'right' }, t0 + 1280), false, '密码框内按键完全屏蔽');
+    assert.deepEqual(st.floats, []);
+    for (let i = 1; i <= 12; i++) st.step(t0 + 1280 + i * 30);
+    assert.ok(st.coverT > 0.9, '双爪抬起捂眼动画到位');
+    st.setPassword(false, t0 + 1800);
+    assert.equal(st.covering, false);
+
+    // 预设原生手部配色校验：Clawd 珊瑚橙、仓鼠粉爪、章鱼珊瑚粉触手
+    const clawdPal = Desk.pawPalette('pet-f62c2c82', 'ok', '#de886d', true);
+    assert.equal(clawdPal.crab, true, 'Clawd 小螃蟹识别成功');
+    assert.equal(Desk.pawPalette('hamster', 'ok', '', false).fill, '#F59AAA', '仓鼠复用原生粉嫩小爪配色');
+    const octPal = Desk.pawPalette('octopus', 'ok', '', false);
+    assert.equal(octPal.tentacle, true, '章鱼启用原生触手造型');
+    assert.equal(octPal.fill, '#F27D90', '章鱼触手与本体同色');
   });
 
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* 临时目录删不掉不影响结果 */ }

@@ -3397,7 +3397,27 @@
     '设置 → 官方账号新增 Antigravity 一键切换账号并自动重启': 'One-Click Antigravity Account Switch & Auto-Restart in Settings',
     '在「设置 → 官方账号」的 Antigravity 卡片中点击「切换登录」并确认后，自动备份现有凭据、安全写入已授权 OAuth 凭据到系统凭据管理器（同步生效于桌面端与 agy CLI），并自动关闭重启运行中的 Antigravity；未完成 OAuth 授权的账号直接标示「需先授权」，失败时自动回滚恢复。': 'Click “Switch Login” on any OAuth-authorized Antigravity account in Settings → Official Accounts to confirm, back up existing credentials, write the fresh OAuth token to the OS keyring (syncing both Desktop and agy CLI), and automatically restart Antigravity if running. Accounts without OAuth show “Authorize First”, and failures roll back automatically.',
     '修复 Antigravity Swarm 子代理阶段完成与巡检心跳误触发桌宠完成提示音': 'Fix False Desk Pet Completion Chimes on Antigravity Swarm Stage Handoffs & Monitor Pulses',
-    '识别 Swarm 协调器的 swarm_wait 等待态并引入 8 秒阶段交接稳定期，过滤内置 monitor 定时巡检心跳与仅子代理阶段结束导致的假完成事件；仅当协调器完成最终回复且稳定期内无新阶段唤醒时才准确响一次完成提示音，普通对话与非 Swarm 会话不受影响。': 'Detects Swarm coordinator swarm_wait state and adds an 8-second phase handoff settle window while filtering built-in monitor watchdog pulses and worker-only stage completions; plays the completion chime once only after the coordinator delivers its final reply with no further phase wakeup, leaving regular non-Swarm sessions instant.'
+    '识别 Swarm 协调器的 swarm_wait 等待态并引入 8 秒阶段交接稳定期，过滤内置 monitor 定时巡检心跳与仅子代理阶段结束导致的假完成事件；仅当协调器完成最终回复且稳定期内无新阶段唤醒时才准确响一次完成提示音，普通对话与非 Swarm 会话不受影响。': 'Detects Swarm coordinator swarm_wait state and adds an 8-second phase handoff settle window while filtering built-in monitor watchdog pulses and worker-only stage completions; plays the completion chime once only after the coordinator delivers its final reply with no further phase wakeup, leaving regular non-Swarm sessions instant.',
+    '键鼠互动桌面': 'Interactive Keyboard & Mouse Desk',
+    '宠物面前摆极简键鼠，打字跟拍飘字母、鼠标同向移动，输密码自动捂眼': 'Minimalist pixel keyboard & mouse in front of the pet that mirrors typing and cursor, covering eyes for passwords',
+    '默认，带极简键鼠与自动捂眼': 'Default — minimalist desk with auto eye-cover',
+    '保持原样，不启动后台键鼠监听': 'Plain pet only, stops background input listener',
+    '仅在内存里瞬间触发键盘动画与飘字，绝不记录、不落盘、不上传；关闭后立刻停止后台监听。AI 干活时打字会自动融合展示工作状态。': 'Key taps only trigger transient in-memory animation—never logged, saved, or uploaded. Turning this off stops the background listener immediately. Typing while AI works smoothly blends a work badge with desk interaction.',
+    '隐私捂眼': 'Privacy Eye-Cover',
+    '输入密码时自动捂住眼睛并停止飘字，也可手动始终捂眼': 'Automatically covers eyes in password fields, or keep eyes covered manually',
+    '自动检测密码框': 'Auto-detect passwords',
+    '默认，进入密码框自动捂眼': 'Default — covers eyes in password fields',
+    '始终捂眼': 'Always cover eyes',
+    '终端等场景手动兜底，不飘字母': 'Manual cover for terminals & custom inputs, no floating keys',
+    '系统自动识别浏览器、Electron 及原生密码框；终端 sudo/SSH 等未标为密码框的场景，可在此或右键菜单随时切换「隐私捂眼」。': 'Detects browser, Electron, and native Windows password fields automatically. For terminal sudo/SSH prompts without OS password flags, toggle Privacy Eye-Cover here or from the pet right-click menu.',
+    '键鼠互动桌面说明': 'About Interactive Desk',
+    '隐私捂眼说明': 'About Privacy Eye-Cover',
+    '桌宠新增高清极简键鼠互动桌面、原生双手联动与输入密码自动捂眼': 'Interactive Minimalist Keyboard & Mouse Desk, Native Pet Hands, and Auto Password Eye-Cover',
+    '宠物面前新增 180° 面向宠物的极简键盘与小鼠标：打字时用各宠物原生双手（适配 Clawd 小螃蟹、松鼠、仓鼠、章鱼）跟着拍键并飘起按键气泡，鼠标同向右移与左右键分色高亮；检测到密码框自动双爪捂眼并屏蔽飘字，AI 干活与用户打字无缝融合，额度角标自动避让至左上角，并修复 Clawd 眼睛越出躯干与歪头问题；可在设置页或右键菜单随时开关。': 'Adds a pet-facing minimalist keyboard and mouse in front of the desk pet: typing animates each pet’s own native hands (Clawd crab, squirrel, hamster, octopus) with floating keycap bubbles, and the mouse mirrors right-hand movement with color-coded clicks. Automatically covers the pet’s eyes and blocks bubbles on password fields, blends AI work with typing, shifts the quota badge to the top-left, fixes Clawd eye overflow/head tilt, and can be toggled in Settings or the right-click menu.',
+    '修复 Antigravity 仅跑完脚本或工具步骤时提前误响桌宠完成提示音': 'Fix Premature Desk Pet Completion Chimes When an Antigravity Script Finishes Mid-Task',
+    '识别 Antigravity 对话库尾部刚完成的工具/脚本步骤、后台任务完成通知与仍含工具调用的模型回复，进入交接稳定期且在真正产出最终文字回复前不再触发完成音，同时延长长耗时脚本的活跃判定窗口。': 'Detects finished tool/script steps, background task notifications, and tool-calling model turns at the tail of Antigravity conversations, holding a short handoff window and suppressing completion chimes until a final text reply is produced, while extending the active timeout for long-running scripts.',
+    '深度优化桌宠高刷屏渲染与 Antigravity 会话扫描性能，消除使用卡顿': 'Major Performance Optimization for High-Refresh Desk Pet Rendering & Antigravity Scanning',
+    '键鼠互动动画严格服从桌宠帧率上限（默认 30 FPS，不再在 300Hz 高刷屏上满刷拖卡 GPU/DWM），缓存主题坐标基准并实现静止期零重绘；Antigravity 活跃扫描引入多级缓存（热扫描从约 200ms 降至约 18ms），同步降低后台键鼠与密码框监听的 CPU 占用。': 'Caps interactive desk animations to the desk pet FPS limit (30 FPS default instead of saturating 300Hz transparent window DWM compositing), caches SVG theme layout metrics with zero idle repaints, adds multi-level caching to Antigravity activity scans (~200 ms down to ~18 ms warm), and reduces background input/password monitor CPU overhead.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */

@@ -13,9 +13,9 @@
  */
 (() => {
   const api = window.tokenpulse.deskPet;
-  const Pet = window.PulsePet, Theme = window.PulsePetTheme;
+  const Pet = window.PulsePet, Theme = window.PulsePetTheme, Desk = window.PulsePetDesk;
   const $ = id => document.getElementById(id);
-  const canvas = $('dp-canvas'), img = $('dp-img'), hint = $('dp-hint'), badge = $('dp-badge'), stage = $('dp-stage'), svgHost = $('dp-svg');
+  const canvas = $('dp-canvas'), deskCanvas = $('dp-desk'), img = $('dp-img'), hint = $('dp-hint'), badge = $('dp-badge'), stage = $('dp-stage'), svgHost = $('dp-svg');
   const EN = window.PulseI18n?.lang?.() === 'en';
   const L = (zh, en) => EN ? en : zh;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -24,6 +24,8 @@
   let view = null, pack = null, ctl = null, grid = null, scale = 2, pixel = 2, hovering = false, shownKey = '';
   /** xf：极简模式下舞台的变换（轴 o、变换的逆矩阵），判断鼠标位置时用；平时是 null。 */
   let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0, xf = null, customBox = null;
+  let customColor = '', crabHint = false, deskTimer = 0, lastDeskPaintAt = 0, lastDeskSig = '', themeMetrics = null, lastCursorIn = null;
+  const desk = Desk ? new Desk.DeskState() : null;
   const clicks = new Pet.Clicks(300);
   const themeView = new Theme.ThemeView(svgHost);
   let spin = new Pet.Spin(), pressX = 0;
@@ -40,8 +42,17 @@
     scale = view.scale;
     pixel = Math.max(1, Math.round(scale * (window.devicePixelRatio || 1)));
     canvas.width = Pet.W * pixel; canvas.height = Pet.H * pixel;
+    if (deskCanvas) {
+      const deskPx = Math.max(2, Math.round(scale * Math.max(2, window.devicePixelRatio || 1)));
+      deskCanvas.width = Pet.W * deskPx;
+      deskCanvas.height = Pet.H * deskPx;
+      deskCanvas.style.width = Pet.W * scale + 'px';
+      deskCanvas.style.height = Pet.H * scale + 'px';
+    }
     for (const node of [canvas, img]) { node.style.width = Pet.W * scale + 'px'; node.style.height = Pet.H * scale + 'px'; }
     themeView.layout(Pet.W * scale, Pet.H * scale, scale);
+    themeMetrics = null;
+    lastDeskSig = '';
     hint.style.bottom = Pet.H * scale + 2 + 'px';
     // 离身体太近角度乱跳、太远就不算绕着它转了：按放大倍数算
     spin = new Pet.Spin({ minR: 12 * scale, maxR: 160 * scale });
@@ -52,10 +63,43 @@
     if (themed()) return themeView.bodyCells();
     return custom() ? (customBox || [18, 20, 53, 55]) : Pet.BODY[view.pet];
   }
+  /** 从主题包（如 Clawd 珊瑚橙小螃蟹）或自定义图片里提取主色，让前景小爪/小钳子自然融入。 */
+  function samplePackColor() {
+    customColor = '';
+    crabHint = /clawd|crab|螃蟹/i.test(pack?.name || pack?.theme?.name || '');
+    if (!pack) return;
+    if (pack.kind === 'theme' && pack.files) {
+      const idleFile = pack.theme?.states?.idle?.[0];
+      const svg = (idleFile && pack.files[idleFile]?.svg) || Object.values(pack.files).find(f => f?.svg)?.svg || '';
+      if (svg) {
+        // 挑出现最多的非黑白灰填充色（小螃蟹 #D97757 / #DE7356 等会自然胜出）
+        const counts = new Map();
+        const re = /fill\s*[:=]\s*["']?(#[0-9a-f]{3,6}|rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\))/gi;
+        let m;
+        while ((m = re.exec(svg))) {
+          const col = m[1].toLowerCase();
+          const rgb = col.startsWith('#')
+            ? (col.length === 4 ? [parseInt(col[1] + col[1], 16), parseInt(col[2] + col[2], 16), parseInt(col[3] + col[3], 16)] : [parseInt(col.slice(1, 3), 16), parseInt(col.slice(3, 5), 16), parseInt(col.slice(5, 7), 16)])
+            : col.match(/\d+/g).map(Number);
+          if (!rgb || rgb.length < 3) continue;
+          const max = Math.max(rgb[0], rgb[1], rgb[2]), min = Math.min(rgb[0], rgb[1], rgb[2]);
+          if (max < 45 || (min > 215 && max - min < 20) || (max - min < 14 && max < 90)) continue;
+          counts.set(col, (counts.get(col) || 0) + 1);
+        }
+        let best = '', bestN = 0;
+        for (const [col, n] of counts) if (n > bestN) { best = col; bestN = n; }
+        if (best) customColor = best;
+      }
+      return;
+    }
+  }
+
   /** 换了自定义宠物：主题包交给 pet-theme.js，动作时长按主题写的。 */
   function setPack(next) {
-    pack = next; shownKey = '';
+    pack = next; shownKey = ''; themeMetrics = null; lastDeskSig = '';
+    restoreThemeHands();
     themeView.load(pack);
+    samplePackColor();
     tune();
     measurePack();
     layout();
@@ -86,6 +130,15 @@
       // 图片按 object-fit: contain 贴底居中放进 Pet.W × Pet.H 格的框里
       const k = Math.min(Pet.W / c.width, Pet.H / c.height), ox = (Pet.W - c.width * k) / 2, oy = Pet.H - c.height * k;
       customBox = [ox + x0 * k, oy + y0 * k, ox + (x1 + 1) * k - 1, oy + (y1 + 1) * k - 1];
+      // 顺手提取自定义图片的平均主色给小爪配色
+      let sr = 0, sg = 0, sb = 0, sn = 0;
+      for (let i = 0; i < d.length; i += 16) {
+        if (d[i + 3] < 120) continue;
+        const max = Math.max(d[i], d[i + 1], d[i + 2]), min = Math.min(d[i], d[i + 1], d[i + 2]);
+        if (max < 40 || (min > 220 && max - min < 20)) continue;
+        sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; sn++;
+      }
+      if (sn > 0) customColor = `rgb(${Math.round(sr / sn)},${Math.round(sg / sn)},${Math.round(sb / sn)})`;
       layout();
     };
     probe.src = src;
@@ -105,6 +158,8 @@
    */
   function layout() {
     const mini = view?.mini, edge = edgeOf();
+    themeMetrics = null;
+    lastDeskSig = '';
     document.body.classList.toggle('mini', !!mini);
     document.body.dataset.edge = edge;
     stage.dataset.mini = mini ? (peeking ? 'peek' : 'tuck') : '';
@@ -182,42 +237,310 @@
     return 'idle';
   }
 
-  function draw() {
+  /** 方案 A 融合：计算当前帧键鼠桌面是否显示、以及宠物本体是否切到清爽站姿。 */
+  function deskMode(now = Date.now()) {
+    if (!Desk || !desk || !deskCanvas || !view || view.desk !== true || view.mini || dragging) {
+      return { show: false, poseIdle: false, aiBadge: false, state: 'hidden' };
+    }
+    const baseState = ctl ? ctl.stateOf(ctx()) : view.mode;
+    const action = ctl?.action || null;
+    // 睡着、打盹或正在做强覆盖动作（拖拽/庆祝/出错/挥手/转晕等）时暂不遮挡
+    const blocked = baseState === 'sleep' || baseState === 'doze' || action === 'drag' || action === 'celebrate' || action === 'error' || action === 'startle' || action === 'dizzy' || action === 'flop' || action === 'yawn' || action === 'restock';
+    if (blocked) return { show: false, poseIdle: false, aiBadge: false, state: 'hidden' };
+    if (desk.covering) {
+      return { show: true, poseIdle: true, aiBadge: view.mode === 'work', state: 'privacy' };
+    }
+    const active = desk.isUserActive(now);
+    if (view.mode === 'work') {
+      // 方案 A：AI 干活时，只有用户在打字/用鼠标且没有待确认提问时才弹出键鼠桌面 + 右上角 AI 忙碌微标；停手后无缝切回原生工作动画
+      if (active && !view.asking) {
+        return { show: true, poseIdle: true, aiBadge: true, state: now - desk.lastKeyAt < 500 ? 'typing' : 'mouse' };
+      }
+      return { show: false, poseIdle: false, aiBadge: false, state: 'hidden' };
+    }
+    // 空闲时桌面常驻
+    return { show: true, poseIdle: false, aiBadge: false, state: now - desk.lastKeyAt < 500 ? 'typing' : active ? 'mouse' : 'idle' };
+  }
+
+  /**
+   * 对当前 SVG 主题节点只测量一次眼睛与原生左右小手基准坐标（按 node + scale 缓存），
+   * 避免每帧反复调用 getBoundingClientRect / querySelectorAll / getComputedStyle 触发布局抖动。
+   */
+  function getThemeMetrics() {
+    if (!themed() || !themeView.node) return null;
+    if (themeMetrics && themeMetrics.node === themeView.node && themeMetrics.scale === scale) return themeMetrics;
+    const prevTf = svgHost.style.transform;
+    if (prevTf) svgHost.style.transform = '';
+    let result = null;
+    try {
+      const sr = stage.getBoundingClientRect();
+      if (sr.width <= 0 || sr.height <= 0) return null;
+      const eyeId = themeView.theme?.eyeTracking?.ids?.eyes || 'eyes-js';
+      const bodyId = themeView.theme?.eyeTracking?.ids?.body || 'body-js';
+      const eyeEl = themeView.node.querySelector?.('#' + CSS.escape(eyeId));
+      let eyeBox = null;
+      if (eyeEl) {
+        const er = eyeEl.getBoundingClientRect();
+        if (er.width > 0 && er.height > 0) {
+          eyeBox = {
+            cx: ((er.left + er.right) / 2 - sr.left) / scale,
+            cy: ((er.top + er.bottom) / 2 - sr.top) / scale,
+            halfSpan: Math.max(4, Math.min(11, er.width / (2 * scale) * 0.85)),
+          };
+        }
+      }
+      if (!eyeBox) {
+        const [x0, y0, x1, y1] = themeView.bodyCells();
+        eyeBox = { cx: (x0 + x1) / 2, cy: y0 + (y1 - y0) * 0.44, halfSpan: Math.max(4, Math.min(8, (x1 - x0) * 0.16)) };
+      }
+
+      let hands = null;
+      const bodyEl = themeView.node.querySelector?.('#' + CSS.escape(bodyId));
+      if (bodyEl) {
+        const rects = [...bodyEl.querySelectorAll('rect')].filter(el => !eyeEl || !eyeEl.contains(el));
+        if (rects.length >= 3) {
+          const items = rects.map(el => {
+            const r = el.getBoundingClientRect();
+            return { el, r, area: r.width * r.height, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2 };
+          }).filter(it => it.r.width > 0 && it.r.height > 0);
+          const torso = items.find(it => it.el.id === 'torso') || items.reduce((a, b) => (b.area > a.area ? b : a), items[0]);
+          if (torso && torso.area > 0) {
+            const sideCandidates = items.filter(it =>
+              it !== torso &&
+              it.area < torso.area * 0.35 &&
+              it.cy >= torso.r.top - torso.r.height * 0.15 &&
+              it.cy <= torso.r.bottom + torso.r.height * 0.15
+            );
+            const leftHand = sideCandidates
+              .filter(it => it.cx < torso.r.left + torso.r.width * 0.12)
+              .sort((a, b) => a.cx - b.cx)[0];
+            const rightHand = sideCandidates
+              .filter(it => it.cx > torso.r.right - torso.r.width * 0.12)
+              .sort((a, b) => b.cx - a.cx)[0];
+            if (leftHand && rightHand) {
+              const toLogical = it => ({
+                cx: ((it.cx - sr.left) / scale) * 4,
+                cy: ((it.cy - sr.top) / scale) * 4,
+                w: (it.r.width / scale) * 4,
+                h: (it.r.height / scale) * 4,
+              });
+              const fill = leftHand.el.getAttribute('fill') || getComputedStyle(leftHand.el).fill || customColor || '';
+              hands = { leftEl: leftHand.el, rightEl: rightHand.el, left: toLogical(leftHand), right: toLogical(rightHand), fill };
+            }
+          }
+        }
+      }
+      result = { node: themeView.node, scale, eyeBox, hands };
+      themeMetrics = result;
+    } finally {
+      if (prevTf) svgHost.style.transform = prevTf;
+    }
+    return result;
+  }
+
+  /** 按缓存的主题基准坐标或自定义图片框推算捂眼对齐位置（零每帧 DOM 测量）。 */
+  function measureEyeBox(bt) {
+    if (!Desk) return null;
+    if (themed() && themeView.node) {
+      const m = getThemeMetrics();
+      if (m?.eyeBox) {
+        const dx = bt ? bt.x / scale : 0;
+        const dy = bt ? bt.y / scale : 0;
+        return dx || dy ? { cx: m.eyeBox.cx + dx, cy: m.eyeBox.cy + dy, halfSpan: m.eyeBox.halfSpan } : m.eyeBox;
+      }
+      const [x0, y0, x1, y1] = themeView.bodyCells();
+      return { cx: (x0 + x1) / 2, cy: y0 + (y1 - y0) * 0.44, halfSpan: Math.max(4, Math.min(8, (x1 - x0) * 0.16)) };
+    }
+    if (custom() && customBox) {
+      const [x0, y0, x1, y1] = customBox;
+      return { cx: (x0 + x1) / 2, cy: y0 + (y1 - y0) * 0.38, halfSpan: Math.max(4, Math.min(7, (x1 - x0) * 0.16)) };
+    }
+    return Desk.DEFAULT_EYES[view?.pet] || Desk.DEFAULT_EYES.custom;
+  }
+
+  function applyBodyMotion(show, now) {
+    const nodes = [svgHost, canvas, img];
+    if (!show || !desk) {
+      for (const el of nodes) if (el.style.transform) el.style.transform = '';
+      return { x: 0, y: 0, deg: 0, sx: 1, sy: 1 };
+    }
+    const bt = desk.bodyTransform(scale, now, reduced.matches);
+    const active = bt.x !== 0 || bt.y !== 0 || bt.deg !== 0 || bt.sx !== 1 || bt.sy !== 1;
+    const tf = active ? `translate(${bt.x}px, ${bt.y}px) rotate(${bt.deg}deg) scale(${bt.sx.toFixed(4)}, ${bt.sy.toFixed(4)})` : '';
+    const target = themed() ? svgHost : (custom() ? img : canvas);
+    for (const el of nodes) {
+      const want = el === target ? tf : '';
+      if (el.style.transform !== want) el.style.transform = want;
+    }
+    return bt;
+  }
+
+  let hiddenThemeHands = [];
+
+  /** 还原上次为了互动桌面临时隐藏的主题包原生小手元素。 */
+  function restoreThemeHands() {
+    if (!hiddenThemeHands.length) return;
+    for (const el of hiddenThemeHands) {
+      try { el.style.visibility = ''; } catch { /* ignore */ }
+    }
+    hiddenThemeHands = [];
+  }
+
+  /**
+   * 复用缓存的主题原生小手引用：互动桌面显示期间临时隐藏静态小手，
+   * 按 bodyTransform 数学推算最新坐标（零 DOM 读、零布局重排），离开桌面立刻无损还原。
+   */
+  function syncThemeHands(active, bt) {
+    if (!active || !themed() || !themeView.node) {
+      restoreThemeHands();
+      return null;
+    }
+    const m = getThemeMetrics();
+    const h = m?.hands;
+    if (!h) {
+      restoreThemeHands();
+      return null;
+    }
+    if (hiddenThemeHands[0] !== h.leftEl || hiddenThemeHands[1] !== h.rightEl) {
+      restoreThemeHands();
+      h.leftEl.style.visibility = 'hidden';
+      h.rightEl.style.visibility = 'hidden';
+      hiddenThemeHands = [h.leftEl, h.rightEl];
+    }
+    const dx = bt ? (bt.x / scale) * 4 : 0;
+    const dy = bt ? (bt.y / scale) * 4 : 0;
+    if (!dx && !dy) return { left: h.left, right: h.right, fill: h.fill };
+    return {
+      left: { cx: h.left.cx + dx, cy: h.left.cy + dy, w: h.left.w, h: h.left.h },
+      right: { cx: h.right.cx + dx, cy: h.right.cy + dy, w: h.right.w, h: h.right.h },
+      fill: h.fill,
+    };
+  }
+
+  function paintDeskLayer(dm, now = Date.now(), force = true) {
+    if (!deskCanvas || !Desk || !desk) return;
+    if (stage.dataset.desk !== dm.state) stage.dataset.desk = dm.state;
+    const nextPriv = desk.covering ? '1' : '0';
+    if (stage.dataset.privacy !== nextPriv) stage.dataset.privacy = nextPriv;
+    const bt = applyBodyMotion(dm.show, now);
+    const nativeHands = syncThemeHands(dm.show, bt);
+    if (!dm.show) {
+      if (!deskCanvas.hidden) deskCanvas.hidden = true;
+      lastDeskSig = '';
+      return;
+    }
+    const sig = `${dm.state}|${dm.aiBadge ? 1 : 0}|${view.theme}|${view.pet}|${view.mood}|${dm.aiBadge ? view.phase || '' : ''}|${dm.aiBadge ? view.subagents || 0 : 0}|${nextPriv}|${scale}|${bt.x}|${bt.y}|${nativeHands ? `${Math.round(nativeHands.left.cx)},${Math.round(nativeHands.right.cx)}` : ''}`;
+    if (!force && sig === lastDeskSig && !dm.aiBadge && !desk.covering) return;
+    lastDeskSig = sig;
+    lastDeskPaintAt = now;
+    if (deskCanvas.hidden) deskCanvas.hidden = false;
+    Desk.paintDesk(deskCanvas, desk, {
+      theme: view.theme,
+      pet: view.pet,
+      mood: view.mood,
+      customColor,
+      crabHint,
+      eyeBox: measureEyeBox(bt),
+      nativeHands,
+      aiWorking: dm.aiBadge,
+      aiPhase: view.phase || 'tool',
+      subagents: view.subagents || 0,
+      now,
+      reducedMotion: reduced.matches,
+      en: EN,
+    });
+  }
+
+  /** 按 petFps 上限（默认 30 FPS，绝不在 300Hz 屏上飙到 300 FPS 拖卡 GPU/DWM）按需驱动键鼠/飘字/捂眼帧；静止时自动停止。 */
+  function wakeDeskAnim() {
+    if (deskTimer || !Desk || !desk) return;
+    const minGap = reduced.matches ? 100 : Math.max(8, Math.round(1000 / Math.max(15, petFps)));
+    const wait = Math.max(0, minGap - (Date.now() - lastDeskPaintAt));
+    const step = () => {
+      deskTimer = 0;
+      if (!view || !ctl || document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      const busy = desk.step(now, reduced.matches);
+      const dm = deskMode(now);
+      if (dm.show || !deskCanvas?.hidden) {
+        // 状态切换（例如刚进入/退出方案 A 或捂眼）时完整重绘一次宠物本体
+        const prevDeskState = stage.dataset.desk || '';
+        if ((prevDeskState === 'hidden') !== (!dm.show) || (prevDeskState === 'privacy') !== (dm.state === 'privacy')) draw(true);
+        else paintDeskLayer(dm, now, true);
+      }
+      if (busy) wakeDeskAnim();
+    };
+    deskTimer = setTimeout(step, wait);
+  }
+
+  function draw(deskDirty = true) {
     if (!view || !ctl) return;
-    // 现在画的是哪只、在做什么：写在节点上，方便检查
-    stage.dataset.pet = view.pet; stage.dataset.mode = view.mode; stage.dataset.phase = view.phase || ''; stage.dataset.action = ctl.action || ''; stage.dataset.state = ctl.stateOf(ctx()); stage.dataset.subagents = String(view.subagents || 0);
+    const now = Date.now();
+    const dm = deskMode(now);
+    const curState = ctl.stateOf(ctx());
+    // 现在画的是哪只、在做什么：仅在变化时写属性，减少静止期 DOM 变更
+    if (stage.dataset.pet !== view.pet) stage.dataset.pet = view.pet;
+    if (stage.dataset.mode !== view.mode) stage.dataset.mode = view.mode;
+    const phaseVal = view.phase || '';
+    if (stage.dataset.phase !== phaseVal) stage.dataset.phase = phaseVal;
+    const actVal = ctl.action || '';
+    if (stage.dataset.action !== actVal) stage.dataset.action = actVal;
+    if (stage.dataset.state !== curState) stage.dataset.state = curState;
+    const subVal = String(view.subagents || 0);
+    if (stage.dataset.subagents !== subVal) stage.dataset.subagents = subVal;
     // 打盹、睡着是宠物自己走到的，不一定有新的状态送来：提示跟着画面变
     const text = hintText();
     if (hint.textContent !== text) hint.textContent = text;
     if (custom()) {
-      canvas.hidden = true;
+      if (!canvas.hidden) canvas.hidden = true;
       if (themed()) {
-        img.hidden = true; svgHost.hidden = false;
+        if (!img.hidden) img.hidden = true;
+        if (svgHost.hidden) svgHost.hidden = false;
         const theme = themeView.theme, right = window.screenX + window.innerWidth / 2 > (screen.availLeft || 0) + screen.availWidth / 2;
         const pick = Theme.visualOf(theme, {
-          action: ctl.action, serial: ctl.serial, state: ctl.stateOf(ctx()), mode: view.mode, phase: view.phase, asking: view.asking, tasks: view.tasks,
-          subagents: view.subagents || 0, seed: workSeed, right, mini: themeMini(), peek: peeking, peekHold: peeking && Date.now() - peekAt >= Theme.peekHoldMs(theme),
+          action: dm.poseIdle ? null : ctl.action, serial: ctl.serial,
+          state: dm.poseIdle ? 'idle' : curState,
+          mode: dm.poseIdle ? 'idle' : view.mode,
+          phase: dm.poseIdle ? null : view.phase,
+          asking: dm.poseIdle ? 0 : view.asking,
+          tasks: dm.poseIdle ? 0 : view.tasks,
+          subagents: dm.poseIdle ? 0 : (view.subagents || 0),
+          seed: workSeed, right, mini: themeMini(), peek: peeking, peekHold: peeking && now - peekAt >= Theme.peekHoldMs(theme),
         });
-        stage.dataset.image = themeView.show(pick.file, pick.once ? `${pick.file}#${ctl.serial}` : pick.key || pick.file, !!pick.mirror);
-        // 眼睛跟着鼠标：ctl.look 是看的方向（x -2 ~ 2，y -1.5 ~ 1.5；鼠标一动直接看过去，几秒不动时它自己慢慢东张西望）
-        themeView.look(ctl.look.x / 2, ctl.look.y / 1.5);
+        const shownImg = themeView.show(pick.file, pick.once ? `${pick.file}#${ctl.serial}` : pick.key || pick.file, !!pick.mirror);
+        if (stage.dataset.image !== shownImg) stage.dataset.image = shownImg;
+        // 眼睛跟着鼠标：捂眼时先看正前方，平时跟鼠标
+        if (desk?.covering) themeView.look(0, 0);
+        else themeView.look(ctl.look.x / 2, ctl.look.y / 1.5);
       } else {
-        svgHost.hidden = true; img.hidden = !pack;
-        const key = imageKey();
-        stage.dataset.image = key;
+        if (!svgHost.hidden) svgHost.hidden = true;
+        if (img.hidden !== !pack) img.hidden = !pack;
+        const key = dm.poseIdle ? 'idle' : imageKey();
+        if (stage.dataset.image !== key) stage.dataset.image = key;
         if (pack && key !== shownKey) { shownKey = key; img.src = pack.images[key] || pack.images.idle || ''; }
       }
-      badge.hidden = !view.badge;
+      if (badge.hidden !== !view.badge) badge.hidden = !view.badge;
       if (view.badge) {
         const sub = view.subagents || 0;
-        badge.textContent = (view.quota == null ? '—' : `${view.quota}%`) + (view.tasks ? ` · ${view.tasks}${sub ? `+${sub}` : ''}` : '');
-        badge.className = 'dp-badge' + (view.mood === 'ok' ? '' : ' ' + view.mood);
+        const badgeText = (view.quota == null ? '—' : `${view.quota}%`) + (view.tasks ? ` · ${view.tasks}${sub ? `+${sub}` : ''}` : '');
+        const badgeClass = 'dp-badge' + (view.mood === 'ok' ? '' : ' ' + view.mood);
+        if (badge.textContent !== badgeText) badge.textContent = badgeText;
+        if (badge.className !== badgeClass) badge.className = badgeClass;
       }
+      paintDeskLayer(dm, now, deskDirty);
       return;
     }
-    canvas.hidden = false; img.hidden = true; svgHost.hidden = true; badge.hidden = true;
-    grid = ctl.frame(ctx());
+    if (canvas.hidden) canvas.hidden = false;
+    if (!img.hidden) img.hidden = true;
+    if (!svgHost.hidden) svgHost.hidden = true;
+    if (!badge.hidden) badge.hidden = true;
+    const baseCtx = { ...ctx(), deskPaws: dm.show ? 'hide' : null };
+    grid = dm.poseIdle
+      ? Pet.drawPet(view.pet, { ...baseCtx, state: 'idle', phase: null, tasks: 0, subagents: 0, t: ctl.t, action: null, at: 0, look: desk?.covering ? { x: 0, y: 0 } : ctl.look, from: ctl.from, nervous: false })
+      : ctl.frame(baseCtx);
     Pet.paint(canvas, grid, pixel);
+    if (lastCursorIn && !dragging && !press) setHover(hitAt(lastCursorIn.x, lastCursorIn.y));
+    paintDeskLayer(dm, now, deskDirty);
   }
 
   function hintText() {
@@ -244,6 +567,7 @@
     if (!next) return;
     const changedPet = !view || view.pet !== next.pet, changedScale = !view || view.scale !== next.scale, wasEdge = edgeOf(), wasWork = view?.mode === 'work';
     view = next;
+    desk?.setManualPrivacy(next.privacy === true, Date.now());
     setFrameCap(view.fps);
     document.documentElement.dataset.theme = view.theme === 'dark' ? 'dark' : 'light';
     if (changedPet || !ctl) {
@@ -274,14 +598,23 @@
       const p = xf.inverse.transformPoint({ x: x - (stage.offsetLeft + xf.o.x), y: y - (stage.offsetTop + xf.o.y) });
       lx = p.x + xf.o.x; ly = p.y + xf.o.y;
     } else { const box = stage.getBoundingClientRect(); lx = x - box.left; ly = y - box.top; }
-    if (themed()) return themeView.hit(lx, ly);
-    if (lx < 0 || ly < 0 || lx >= width || ly >= height) return false;
-    if (custom()) return true;
-    if (!grid) return false;
-    const gx = Math.floor(lx / scale), gy = Math.floor(ly / scale);
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      const cx = gx + dx, cy = gy + dy;
-      if (cx >= 0 && cy >= 0 && cx < Pet.W && cy < Pet.H && grid.c[cy * Pet.W + cx]) return true;
+    if (themed()) {
+      if (themeView.hit(lx, ly)) return true;
+    } else if (lx >= 0 && ly >= 0 && lx < width && ly < height) {
+      if (custom()) return true;
+      if (grid) {
+        const gx = Math.floor(lx / scale), gy = Math.floor(ly / scale);
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const cx = gx + dx, cy = gy + dy;
+          if (cx >= 0 && cy >= 0 && cx < Pet.W && cy < Pet.H && grid.c[cy * Pet.W + cx]) return true;
+        }
+      }
+    }
+    // 键鼠互动桌面开着时，点在像素桌面上也算命中宠物（方便拖走/点开气泡）
+    if (Desk && deskCanvas && !deskCanvas.hidden) {
+      const gx = lx / scale, gy = ly / scale;
+      const [dx0, dy0, dx1, dy1] = Desk.DESK_HIT_BOX;
+      if (gx >= dx0 && gx <= dx1 + 1 && gy >= dy0 && gy <= dy1 + 1) return true;
     }
     return false;
   }
@@ -297,8 +630,8 @@
     }
   }
 
-  document.addEventListener('mousemove', event => { if (!dragging) setHover(hitAt(event.clientX, event.clientY)); });
-  document.addEventListener('mouseleave', () => { if (!dragging && !press) setHover(false); });
+  document.addEventListener('mousemove', event => { lastCursorIn = { x: event.clientX, y: event.clientY }; if (!dragging) setHover(hitAt(event.clientX, event.clientY)); });
+  document.addEventListener('mouseleave', () => { lastCursorIn = null; if (!dragging && !press) setHover(false); });
   stage.addEventListener('pointerdown', event => {
     if (event.button !== 0 || !hitAt(event.clientX, event.clientY)) return;
     press = { x: event.screenX, y: event.screenY };
@@ -382,6 +715,8 @@
   api.onCursor(rel => {
     // 点击穿透时收不到 mousemove（主进程不再用 forward 的全局鼠标钩子）：用主进程轮询到的窗口内坐标判断鼠标在不在宠物身上。
     // 光标已经出了窗口范围（cx 为空）而还挂着 hover：漏掉的 mouseleave，补上
+    if (rel.cx != null) lastCursorIn = { x: rel.cx, y: rel.cy };
+    else lastCursorIn = null;
     if (!dragging && !press) {
       if (rel.cx != null) setHover(hitAt(rel.cx, rel.cy));
       else if (hovering) setHover(false);
@@ -389,11 +724,45 @@
     if (!ctl) return;
     // 鼠标位置是按屏幕算的：宠物贴左边时左右翻着、倒挂时上下左右都反着，眼睛要反过来看
     const edge = edgeOf();
+    const prevLookX = ctl.look.x, prevLookY = ctl.look.y;
     ctl.aim(edge === 'left' || edge === 'top' ? -rel.x : rel.x, edge === 'top' ? -rel.y : rel.y);
+    if (desk && view?.desk === true && !view.mini && rel.mx != null && rel.my != null) {
+      if (desk.onMouseMove(rel.mx, rel.my, Date.now())) wakeDeskAnim();
+    }
+    let dizzy = false;
     if (!canDizzy()) spin.reset();
-    else if (spin.add(rel.x, rel.y)) ctl.trigger('dizzy');
-    // 眼睛马上画到新位置，不等下一帧（每秒 10 帧，等下去看着慢半拍）
-    draw();
+    else if (spin.add(rel.x, rel.y)) { ctl.trigger('dizzy'); dizzy = true; }
+    if (dizzy) {
+      draw(true);
+      return;
+    }
+    // 高频光标事件不再每帧同步重绘整张 #dp-desk 画布（由按 petFps 限帧的 wakeDeskAnim 驱动），
+    // 仅即时更新眼睛朝向，大幅降低 300Hz 透明置顶窗的 GPU/DWM 合成开销。
+    if (themed()) {
+      if (desk?.covering) themeView.look(0, 0);
+      else themeView.look(ctl.look.x / 2, ctl.look.y / 1.5);
+    } else if (!custom() && (ctl.look.x !== prevLookX || ctl.look.y !== prevLookY)) {
+      const dm = deskMode(Date.now());
+      const baseCtx = { ...ctx(), deskPaws: dm.show ? 'hide' : null };
+      grid = dm.poseIdle
+        ? Pet.drawPet(view.pet, { ...baseCtx, state: 'idle', phase: null, tasks: 0, subagents: 0, t: ctl.t, action: null, at: 0, look: desk?.covering ? { x: 0, y: 0 } : ctl.look, from: ctl.from, nervous: false })
+        : ctl.frame(baseCtx);
+      Pet.paint(canvas, grid, pixel);
+    }
+  });
+  api.onInput?.(event => {
+    if (!event || !desk) return;
+    const now = Date.now();
+    let dirty = false;
+    if (event.type === 'password') dirty = desk.setPassword(event.active, now);
+    else if (event.type === 'key') dirty = desk.onKey(event, now);
+    else if (event.type === 'mouse') dirty = desk.onMouseButton(event.left, event.right, now);
+    if (dirty && view && ctl) {
+      // 有真实输入说明用户醒着：如果宠物刚打盹，顺便揉揉眼睛醒来
+      if (event.type === 'key' || (event.type === 'mouse' && (event.left || event.right))) ctl.rouse();
+      draw();
+      wakeDeskAnim();
+    }
   });
   window.addEventListener('resize', layout);
   api.onIdle(seconds => { idleSec = seconds; ctl?.idle(seconds); });
@@ -474,7 +843,7 @@
   // 测试用：看现在接管了几个动画、帧率上限多少
   window.__petFrameCap = { get fps() { return petFps; }, adopted: () => petAnimations().filter(animation => adopted.has(animation) && animation.playState === 'paused').length, total: () => petAnimations().length };
 
-  // 每秒 10 帧；系统开了「减少动画」时每秒 2 帧、不做随机小动作。窗口被藏起来的时候不画
+  // 每秒 10 帧；系统开了「减少动画」时每秒 2 帧、不做随机小动作。窗口被藏起来的时候不画；静止时跳过桌面重绘保持零空转
   let last = 0;
   setInterval(() => {
     if (!view || !ctl || document.visibilityState === 'hidden') return;
@@ -482,6 +851,23 @@
     if (reduced.matches && now - last < 500) return;
     last = now;
     ctl.tick(ctx(), now);
-    draw();
+    const deskBusy = desk ? desk.step(now, reduced.matches) : false;
+    draw(deskBusy);
   }, 100);
+  // 调试/测试用：暴露当前桌宠键鼠桌面状态快照（不含任何隐私历史，仅瞬时在屏渲染态）
+  window.__petDesk = {
+    state: () => ({
+      visible: !!deskCanvas && !deskCanvas.hidden,
+      desk: stage.dataset.desk || '',
+      covering: !!desk?.covering,
+      passwordActive: !!desk?.passwordActive,
+      manualPrivacy: !!desk?.manualPrivacy,
+      floats: (desk?.floats || []).map(f => f.key),
+      mouse: desk ? desk.mousePos() : null,
+      mouseLeft: !!desk?.mouseLeft,
+      mouseRight: !!desk?.mouseRight,
+      customColor,
+      crabHint,
+    }),
+  };
 })();

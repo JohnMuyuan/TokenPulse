@@ -382,8 +382,47 @@ const summary = (id, title, nesting = 0, parentId = '', opts = {}) => summaries.
     assert.equal(actSwDone?.swarmWaiting, undefined, '协调器最终回复后不再是 swarmWaiting');
     assert.equal(actSwDone?.swarmAliveWorkers, 0, '工作子代理全部 kill 后 swarmAliveWorkers=0');
 
+    // 6. 脚本/工具刚完成、收到后台任务完成通知(step_type=101)、或模型回复含工具调用(step_type=15 + tools)时，
+    // 均标出 pendingContinuation=true，防止仅一个脚本跑完就提前误响任务完成音；直到产出纯文本最终回复才清零
+    const SCRIPT_C = '77777777-aaaa-4000-8000-000000000016';
+    const recentMod = new Date(now - 200).toISOString().replace('T', ' ').replace('Z', '+00:00');
+    conversation(SCRIPT_C, [
+      [14, 3, userStep(now - 5000, '帮我跑完构建脚本再继续修 bug')],
+      [15, 3, replyStep(now - 4000, { text: '先跑一下脚本', tools: [{ id: 'sh_1', name: 'run_command', args: '{"CommandLine":"npm run build"}' }] })],
+      [132, 3, toolStep(now - 500, 'sh_1', 'run_command', '{"CommandLine":"npm run build"}', 'ok')],
+    ]);
+    summary(SCRIPT_C, '脚本续跑测试', 0, '', { status: 'CASCADE_RUN_STATUS_IDLE', modified: recentMod });
+    const actScriptDone = a.readAntigravityActivity(now - 60_000, agy, now).find(x => x.id === SCRIPT_C);
+    assert.equal(actScriptDone?.running, false);
+    assert.equal(actScriptDone?.pendingContinuation, true, '脚本 step_type=132 刚完成、尚未出最终回复时标出 pendingContinuation');
+
+    conversation(SCRIPT_C, [
+      [14, 3, userStep(now - 5000, '帮我跑完构建脚本再继续修 bug')],
+      [15, 3, replyStep(now - 4000, { text: '先跑一下脚本', tools: [{ id: 'sh_1', name: 'run_command', args: '{}' }] })],
+      [132, 3, toolStep(now - 1000, 'sh_1', 'run_command', '{}', 'started')],
+      [101, 3, incomingStep(now - 300, 'Background command completed with exit code 0', { kind: 'system_notification' })],
+    ]);
+    const actBgNotice = a.readAntigravityActivity(now - 60_000, agy, now).find(x => x.id === SCRIPT_C);
+    assert.equal(actBgNotice?.pendingContinuation, true, '后台脚本完成通知 step_type=101 刚到达时标出 pendingContinuation');
+
+    conversation(SCRIPT_C, [
+      [14, 3, userStep(now - 5000, '帮我跑完构建脚本再继续修 bug')],
+      [15, 3, replyStep(now - 400, { text: '好的我先跑一下测试', tools: [{ id: 'sh_2', name: 'run_command', args: '{}' }] })],
+    ]);
+    const actToolCallReply = a.readAntigravityActivity(now - 60_000, agy, now).find(x => x.id === SCRIPT_C);
+    assert.equal(actToolCallReply?.pendingContinuation, true, '带 tool_call 的模型回复（哪怕带过渡文案）仍标出 pendingContinuation');
+
+    conversation(SCRIPT_C, [
+      [14, 3, userStep(now - 5000, '帮我跑完构建脚本再继续修 bug')],
+      [15, 3, replyStep(now - 4000, { tools: [{ id: 'sh_1', name: 'run_command', args: '{}' }] })],
+      [132, 3, toolStep(now - 1000, 'sh_1', 'run_command', '{}', 'ok')],
+      [15, 3, replyStep(now - 100, { text: '脚本跑完并且 bug 也全部修好了！' })],
+    ]);
+    const actFinalReply = a.readAntigravityActivity(now - 60_000, agy, now).find(x => x.id === SCRIPT_C);
+    assert.equal(actFinalReply?.pendingContinuation, undefined, '模型给出最终文本回复且无新工具调用时 pendingContinuation 清零');
+
     // 清理测试用的 Swarm 夹具以免干扰下方删除测试
-    for (const tid of [COORD, WORKER, PARKED, ORPHAN_P, SUB, SUB1, SUB2]) {
+    for (const tid of [COORD, WORKER, PARKED, ORPHAN_P, SCRIPT_C, SUB, SUB1, SUB2]) {
       summaries.prepare('delete from conversation_summaries where conversation_id = ?').run(tid);
       fs.rmSync(path.join(agy, 'conversations', tid + '.db'), { force: true });
     }

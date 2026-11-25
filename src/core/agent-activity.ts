@@ -79,6 +79,8 @@ export const SUB_STALE_MS = 5 * 60_000;
 export const SWARM_SETTLE_MS = 8_000;
 /** 非 Swarm Antigravity 子代理交接稳定期：子代理刚完成、父会话尚未唤醒时短暂等待，避免提前弹完成提示音。 */
 export const SUBAGENT_HANDOFF_MS = 5_000;
+/** Antigravity 脚本/工具交接稳定期：工具刚结束或后台脚本完成通知刚送达、模型尚未开始下一轮回复时短暂等待，避免仅脚本跑完就误响任务完成音。 */
+export const AGY_SCRIPT_HANDOFF_MS = 5_000;
 const FULL_SCAN_MS = 30_000;
 const KEEP_MS = 2 * 60 * 60_000;
 const CHUNK = 64 * 1024;
@@ -530,7 +532,7 @@ type AgyChildLike = {
 };
 type AgyActivityLike = Omit<ReturnType<typeof readAntigravityActivity>[number], "children"> & {
   agentName?: string; parentId?: string; swarm?: boolean; swarmTitle?: string;
-  ownRunning?: boolean; swarmWaiting?: boolean; swarmAliveWorkers?: number;
+  ownRunning?: boolean; swarmWaiting?: boolean; pendingContinuation?: boolean; swarmAliveWorkers?: number;
   children?: AgyChildLike[];
 };
 type AgySettle = {
@@ -549,9 +551,11 @@ type AgyHolder = {
   coordIdleAt?: number;
   /** 上一次扫描时该会话是否存在活跃子代理。 */
   hadActiveSubs?: boolean;
+  /** 上一次扫描时主会话是否正在跑脚本/工具（避免后台脚本刚结束、下一轮唤醒前 1~4 秒误弹完成音）。 */
+  hadToolPhase?: boolean;
   /** 上一次扫描是否为 Swarm 会话。 */
   wasSwarm?: boolean;
-  /** Swarm / 子代理交接稳定期状态。 */
+  /** Swarm / 子代理 / 脚本交接稳定期状态。 */
   settle?: AgySettle;
 };
 const SUB_ORDER: Record<SubagentStatus, number> = { waiting: 0, working: 1, idle: 2 };
@@ -1128,10 +1132,12 @@ export class ActivityScanner {
             }
           }
           holder.hadActiveSubs = hasActiveSubs;
+          holder.hadToolPhase = phase === "tool";
           holder.wasSwarm = isSwarm;
           consider(holder, task, inferred, seenAt, subCount || children.length ? { count: subCount, children } : undefined);
         } else {
           const treatAsSwarm = isSwarm || Boolean(holder.wasSwarm);
+          const pendingContinuation = Boolean(item.pendingContinuation);
           const hasLiveSwarmContext = treatAsSwarm && (
             swarmWaiting ||
             Boolean(holder.hadActiveSubs) ||
@@ -1139,32 +1145,39 @@ export class ActivityScanner {
             (item.swarmAliveWorkers ?? 1) > 0
           );
           const subOnlyNonSwarm = !treatAsSwarm && Boolean(holder.hadActiveSubs) && !holder.coordRan;
+          // Antigravity 后台脚本/工具刚结束（step_type=132/101/14 或含 tool_call 的 15 尚未产出最终文本回复）：
+          // 先进入短交接稳定期，防止仅脚本跑完就误响任务完成音；一旦拿到最终文本回复（pendingContinuation=false）则立刻完成并响一次。
+          const scriptHandoff = !treatAsSwarm && pendingContinuation;
           const shouldSettle = Boolean(
             holder.last &&
             holder.last !== "done" &&
             item.ended !== "interrupted" &&
             item.ended !== "error" &&
-            (hasLiveSwarmContext || subOnlyNonSwarm),
+            (hasLiveSwarmContext || subOnlyNonSwarm || scriptHandoff),
           );
           if (shouldSettle) {
             if (!holder.settle) {
-              // Swarm 中只有「协调器自身跑完且未停在 swarm_wait」才允许在稳定期后响完成音；仅 worker 跑完一阶段绝不响完成音
-              const notify = treatAsSwarm ? Boolean(holder.coordRan) && !swarmWaiting : true;
+              // Swarm 中只有「协调器自身跑完且未停在 swarm_wait」才允许响完成音；
+              // 普通会话若停在 pendingContinuation（仅脚本/工具刚结束或 101 通知刚到，无最终文字回复）绝不误响完成音！
+              const notify = treatAsSwarm
+                ? Boolean(holder.coordRan) && !swarmWaiting && !pendingContinuation
+                : !pendingContinuation;
               holder.settle = { since: now, notify, ended: item.ended, taskSince: item.since, seenAt };
-            } else if (swarmWaiting) {
+            } else if (swarmWaiting || pendingContinuation) {
               holder.settle.notify = false;
             }
-            const settleMs = treatAsSwarm ? SWARM_SETTLE_MS : SUBAGENT_HANDOFF_MS;
+            const settleMs = treatAsSwarm ? SWARM_SETTLE_MS : (subOnlyNonSwarm ? SUBAGENT_HANDOFF_MS : AGY_SCRIPT_HANDOFF_MS);
             if (now - holder.settle.since < settleMs) {
               consider(holder, task, { status: "thinking", since: holder.settle.taskSince, at: holder.settle.seenAt }, holder.settle.since);
               continue;
             }
-            const shouldNotify = holder.settle.notify && !swarmWaiting;
+            const shouldNotify = holder.settle.notify && !swarmWaiting && !pendingContinuation;
             const settleEnded = holder.settle.ended ?? item.ended;
             holder.settle = undefined;
             holder.coordRan = false;
             holder.coordIdleAt = undefined;
             holder.hadActiveSubs = false;
+            holder.hadToolPhase = false;
             holder.wasSwarm = isSwarm;
             consider(
               holder,
@@ -1179,8 +1192,9 @@ export class ActivityScanner {
             holder.coordRan = false;
             holder.coordIdleAt = undefined;
             holder.hadActiveSubs = false;
+            holder.hadToolPhase = false;
             holder.wasSwarm = isSwarm;
-            consider(holder, task, inferred, seenAt, undefined, treatAsSwarm && swarmWaiting);
+            consider(holder, task, inferred, seenAt, undefined, (treatAsSwarm && swarmWaiting) || pendingContinuation);
           }
         }
       }

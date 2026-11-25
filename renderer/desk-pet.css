@@ -28,7 +28,10 @@ body.dp-body { position: relative; }
 /* 自定义宠物是图片：不让浏览器把它当图片拖走（按住一拖会拖出一张图片的虚影、拖不动窗口），鼠标事件交给外面的 stage */
 .dp-stage img { object-fit: contain; object-position: 50% 100%; image-rendering: auto; -webkit-user-drag: none; pointer-events: none; }
 /* 主题包宠物：SVG 在它的 Shadow DOM 里，按主题坐标摆，可能比舞台大（头顶的特效）；鼠标事件同样交给外面的 stage */
-.dp-stage .dp-svg { position: relative; overflow: visible; pointer-events: none; }
+.dp-stage .dp-svg { position: relative; overflow: visible; pointer-events: none; transform-origin: 50% 86%; }
+.dp-stage #dp-canvas, .dp-stage #dp-img { transform-origin: 50% 86%; }
+/* 高清平滑极简键鼠互动桌面叠加层：平滑抗锯齿渲染，不拦截点击（点击仍落到 stage 上） */
+.dp-stage .dp-desk { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; image-rendering: auto; }
 body.hover .dp-stage { cursor: grab; }
 body.dragging .dp-stage { cursor: grabbing; }
 /*
@@ -58,11 +61,14 @@ body.mini[data-edge="top"] .dp-badge { transform: rotate(180deg); }
 body.hover .dp-hint { opacity: 1; transform: translate(-50%, 0); }
 body.dragging .dp-hint, body.talking .dp-hint { opacity: 0; }
 
-/* 自定义宠物画不出额度：右下角一个小标签写剩余和任务数 */
+/* 自定义宠物画不出额度：右下角一个小标签写剩余和任务数；开启键鼠互动桌面时挪到左上角清净区，不被鼠标/键盘与右上角 AI 徽标遮挡 */
 .dp-badge {
   position: absolute; right: -4px; bottom: 2px; padding: 0 6px; border: 1px solid var(--dp-line); border-radius: 999px;
   background: var(--dp-surface); color: var(--dp-accent); font-size: 11px; font-weight: 650; line-height: 17px;
-  box-shadow: var(--dp-shadow); font-variant-numeric: tabular-nums; pointer-events: none;
+  box-shadow: var(--dp-shadow); font-variant-numeric: tabular-nums; pointer-events: none; z-index: 4;
+}
+body:not(.mini) .dp-stage[data-desk]:not([data-desk=""]):not([data-desk="hidden"]) .dp-badge {
+  top: 4px; left: -4px; right: auto; bottom: auto;
 }
 .dp-badge.tight { color: var(--dp-warn); }
 .dp-badge.empty { color: var(--dp-danger); }

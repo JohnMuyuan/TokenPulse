@@ -771,20 +771,73 @@ function readJsonCached(file: string): { value: unknown; mtimeMs: number } | nul
   }
 }
 
+/** 缓存各 brain 目录下实际包含 swarm 或 subagents 的子目录清单，避免每次扫描遍历数百个普通对话目录。 */
+const brainIndexCache = new Map<string, { mtimeMs: number; scannedAt: number; activeIds: string[] }>();
+const BRAIN_INDEX_TTL_MS = 30_000;
+
+/** 缓存各 conversations 目录的文件名集合与陈旧历史 DB 的上次检查时间，避免每次扫描对上百个历史子库反复 existsSync/statSync。 */
+const convFilesCache = new Map<string, { mtimeMs: number; scannedAt: number; files: Set<string> }>();
+const staleDbCache = new Map<string, { mtimeMs: number; checkedAt: number }>();
+const CONV_FILES_TTL_MS = 5_000;
+const STALE_DB_TTL_MS = 30_000;
+
+/** 当 fs.watch 捕捉到 swarm/members.json 或 subagents/*.json 变动时立刻清空缓存。 */
+export function invalidateAntigravitySwarmCache(): void {
+  brainIndexCache.clear();
+  convFilesCache.clear();
+  staleDbCache.clear();
+}
+
+function convFileSet(dir: string, now: number): Set<string> | null {
+  const convDir = path.join(dir, "conversations");
+  let stat: fs.Stats;
+  try { stat = fs.statSync(convDir); } catch { return null; }
+  const hit = convFilesCache.get(convDir);
+  if (hit && hit.mtimeMs === stat.mtimeMs && now - hit.scannedAt < CONV_FILES_TTL_MS) return hit.files;
+  let names: string[];
+  try { names = fs.readdirSync(convDir); } catch { return null; }
+  const files = new Set<string>();
+  for (const name of names) if (name.endsWith(".db")) files.add(name.toLowerCase());
+  if (convFilesCache.size > 16) convFilesCache.clear();
+  convFilesCache.set(convDir, { mtimeMs: stat.mtimeMs, scannedAt: now, files });
+  return files;
+}
+
+function activeBrainIds(brainDir: string, now: number): string[] {
+  let dirStat: fs.Stats;
+  try { dirStat = fs.statSync(brainDir); } catch { return []; }
+  const cached = brainIndexCache.get(brainDir);
+  if (cached && cached.mtimeMs === dirStat.mtimeMs && now - cached.scannedAt < BRAIN_INDEX_TTL_MS) {
+    return cached.activeIds;
+  }
+  let entries: string[];
+  try { entries = fs.readdirSync(brainDir); } catch { return []; }
+  const activeIds: string[] = [];
+  for (const bid of entries) {
+    const sysDir = path.join(brainDir, bid, ".system_generated");
+    if (fs.existsSync(path.join(sysDir, "swarm", "members.json")) || fs.existsSync(path.join(sysDir, "subagents"))) {
+      activeIds.push(bid);
+    }
+  }
+  if (brainIndexCache.size > 16) brainIndexCache.clear();
+  brainIndexCache.set(brainDir, { mtimeMs: dirStat.mtimeMs, scannedAt: now, activeIds });
+  return activeIds;
+}
+
 /**
  * 读取 Antigravity 的 Swarm 成员清单（`brain/<coord>/.system_generated/swarm/members.json`）
- * 与子代理描述（`brain/<parent>/.system_generated/subagents/<id>.json`）。按文件 size + mtime 缓存。
+ * 与子代理描述（`brain/<parent>/.system_generated/subagents/<id>.json`）。按目录 mtime + 文件 size/mtime 多级缓存。
  */
 export function antigravitySwarmMeta(dir: string | string[] = antigravityDirs(), filterRoots?: Set<string>): AgySwarmMeta {
   const dirs = Array.isArray(dir) ? dir : [dir];
+  const now = Date.now();
   const swarmsByCoordinator = new Map<string, { id: string; title: string; members: AgySwarmMember[]; updatedAt: number }>();
   const workerById = new Map<string, { coordinatorId: string; swarmTitle: string; member: AgySwarmMember }>();
   const descriptorsById = new Map<string, AgySubagentDescriptor>();
 
   for (const root of dirs) {
     const brainDir = path.join(root, "brain");
-    let entries: string[];
-    try { entries = fs.readdirSync(brainDir); } catch { continue; }
+    const entries = filterRoots ? [...filterRoots] : activeBrainIds(brainDir, now);
     for (const bid of entries) {
       const bidLower = bid.toLowerCase();
       if (filterRoots && !filterRoots.has(bidLower)) continue;
@@ -1308,6 +1361,8 @@ export type AgyActivity = {
   swarmTitle?: string;
   /** Swarm 协调器最近一步是已完成的 swarm_wait（正在等蜂群消息，尚未完成总目标回复用户）。 */
   swarmWaiting?: boolean;
+  /** 最近一步仍是工具/脚本完成、后台任务唤醒（step_type=101）或仅含工具调用的模型回复，任务尚未产出最终回复。 */
+  pendingContinuation?: boolean;
   /** Swarm 中尚未被 kill 的非 monitor 工作子代理个数。 */
   swarmAliveWorkers?: number;
   children?: AgyChildActivity[];
@@ -1327,10 +1382,12 @@ export function sqliteTime(value: unknown): number {
   return parsed > 0 ? parsed : 0;
 }
 
-type PhaseResult = Pick<AgyActivity, "phase" | "ended" | "tool" | "ask" | "swarmWaiting"> & { open?: boolean };
+type PhaseResult = Pick<AgyActivity, "phase" | "ended" | "tool" | "ask" | "swarmWaiting" | "pendingContinuation"> & { open?: boolean };
 const phaseCache = new Map<string, { size: number; mtimeMs: number; value: PhaseResult }>();
+const summaryRowsCache = new Map<string, { size: number; mtimeMs: number; rows: Record<string, unknown>[]; parentRows: { conversation_id?: string; parent_id?: string }[] }>();
+const LIGHT_SUMMARY_SQL = "select conversation_id, title, last_modified_time, workspace_uris, status, agent_name, parent_conversation_id, nesting_depth, not_fully_idle, killed, last_user_input_time from conversation_summaries";
 
-/** 一个对话最后几步：在跑的时候分出在想 / 工具 / 等你；空闲了看最后一次回复怎么结束的。 */
+/** 一个对话最后几步：在跑的时候分出在想 / 工具 / 等你；空闲了看最后一次回复怎么结束的，并识别脚本/工具刚结束等待续跑的中间态。 */
 export function conversationPhase(file: string, knownStamp?: { size: number; mtimeMs: number } | null): PhaseResult {
   const stamp = knownStamp !== undefined ? knownStamp : antigravityStamp(file);
   if (!stamp) return {};
@@ -1338,7 +1395,9 @@ export function conversationPhase(file: string, knownStamp?: { size: number; mti
   if (hit && hit.size === stamp.size && hit.mtimeMs === stamp.mtimeMs) return hit.value;
   try {
     const value = withDb(file, (db) => {
-      const tail = db.prepare("select step_type, status, metadata from steps order by idx desc limit 6").all() as { step_type: number; status: number; metadata?: Uint8Array | null }[];
+      const stmt = prepareOptional(db, "select step_type, status, metadata, case when step_type = 15 then step_payload else null end as step_payload from steps order by idx desc limit 12")
+        ?? db.prepare("select step_type, status, metadata from steps order by idx desc limit 12");
+      const tail = stmt.all() as { step_type: number; status: number; metadata?: Uint8Array | null; step_payload?: Uint8Array | null }[];
       if (!tail.length) return {};
       const open = tail.some((step) => STEP_OPEN.has(step.status));
       let tool: string | undefined;
@@ -1363,14 +1422,30 @@ export function conversationPhase(file: string, knownStamp?: { size: number; mti
       const reply = tail.find((step) => step.step_type === MODEL_REPLY && !STEP_OPEN.has(step.status));
       const ended = reply?.status === STEP.ERROR ? "error" as const : reply && (reply.status === STEP.CANCELED || reply.status === STEP.INTERRUPTED) ? "interrupted" as const : "ok" as const;
       let swarmWaiting = false;
+      let pendingContinuation = false;
       if (!open) {
         const latestSignal = tail.find((step) => step.step_type === TOOL_STEP || step.step_type === MODEL_REPLY || step.step_type === USER_INPUT || step.step_type === INCOMING_MSG);
-        if (latestSignal && latestSignal.step_type === TOOL_STEP && latestSignal.status !== STEP.ERROR && latestSignal.status !== STEP.CANCELED && latestSignal.status !== STEP.INTERRUPTED) {
-          const latestName = pbString(pbMessage(toBuf(latestSignal.metadata), 4), 2);
-          if (latestName === "swarm_wait") swarmWaiting = true;
+        if (latestSignal) {
+          const stopped = latestSignal.status === STEP.CANCELED || latestSignal.status === STEP.INTERRUPTED;
+          if (latestSignal.step_type === TOOL_STEP && !stopped) {
+            const latestName = pbString(pbMessage(toBuf(latestSignal.metadata), 4), 2);
+            if (latestName === "swarm_wait" && latestSignal.status !== STEP.ERROR) swarmWaiting = true;
+            else pendingContinuation = true; // 脚本/工具刚完成，模型尚未接着输出给用户的最终回复
+          } else if ((latestSignal.step_type === INCOMING_MSG || latestSignal.step_type === USER_INPUT) && !stopped) {
+            pendingContinuation = true; // 后台脚本/子代理完成通知或用户提问刚写入，即将唤醒下一轮模型调用
+          } else if (latestSignal.step_type === MODEL_REPLY && !stopped && latestSignal.status !== STEP.ERROR) {
+            const hints = parseReplyBodyHints(toBuf(latestSignal.step_payload));
+            if (hints.hasTool) pendingContinuation = true; // 模型发起了工具调用（即使附带过渡文字），不是最终回复
+          }
         }
       }
-      return { phase, ended, open, ...(tool ? { tool } : {}), ...(ask ? { ask } : {}), ...(swarmWaiting ? { swarmWaiting: true } : {}) };
+      return {
+        phase, ended, open,
+        ...(tool ? { tool } : {}),
+        ...(ask ? { ask } : {}),
+        ...(swarmWaiting ? { swarmWaiting: true } : {}),
+        ...(pendingContinuation ? { pendingContinuation: true } : {}),
+      };
     });
     if (phaseCache.size > 128) phaseCache.clear();
     phaseCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, value });
@@ -1378,20 +1453,30 @@ export function conversationPhase(file: string, knownStamp?: { size: number; mti
   } catch { return {}; }
 }
 
-function readSingleDirActivity(since: number, dir: string, allDirs: string[], now: number): AgyActivity[] {
+function readSingleDirActivity(since: number, dir: string, allDirs: string[], now: number, sharedSwarmMeta?: AgySwarmMeta): AgyActivity[] {
   const file = path.join(dir, "conversation_summaries.db");
-  if (!fs.existsSync(file)) return [];
+  const sumStamp = antigravityStamp(file);
+  if (!sumStamp) return [];
   let rows: Record<string, unknown>[] = [];
   let parentRows: { conversation_id?: string; parent_id?: string }[] = [];
-  try {
-    withDb(file, (db) => {
-      rows = db.prepare("select * from conversation_summaries").all() as Record<string, unknown>[];
-      const pStmt = prepareOptional(db, "select conversation_id, parent_id from conversation_parents");
-      if (pStmt) parentRows = pStmt.all() as { conversation_id?: string; parent_id?: string }[];
-    });
-  } catch { return []; }
+  const cachedSum = summaryRowsCache.get(file);
+  if (cachedSum && cachedSum.size === sumStamp.size && cachedSum.mtimeMs === sumStamp.mtimeMs) {
+    rows = cachedSum.rows;
+    parentRows = cachedSum.parentRows;
+  } else {
+    try {
+      withDb(file, (db) => {
+        const lightStmt = prepareOptional(db, LIGHT_SUMMARY_SQL);
+        rows = (lightStmt ? lightStmt.all() : db.prepare("select * from conversation_summaries").all()) as Record<string, unknown>[];
+        const pStmt = prepareOptional(db, "select conversation_id, parent_id from conversation_parents");
+        if (pStmt) parentRows = pStmt.all() as { conversation_id?: string; parent_id?: string }[];
+      });
+      if (summaryRowsCache.size > 8) summaryRowsCache.clear();
+      summaryRowsCache.set(file, { size: sumStamp.size, mtimeMs: sumStamp.mtimeMs, rows, parentRows });
+    } catch { return []; }
+  }
 
-  const swarmMeta = antigravitySwarmMeta(allDirs);
+  const swarmMeta = sharedSwarmMeta ?? antigravitySwarmMeta(allDirs);
   const parentOf = new Map<string, string>();
   const canonicalId = new Map<string, string>();
   const rawById = new Map<string, Record<string, unknown>>();
@@ -1432,15 +1517,37 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     }
     return cur;
   };
+  const dirFileSets = new Map<string, Set<string> | null>();
+  const hasConvFile = (baseDir: string, id: string) => {
+    let set = dirFileSets.get(baseDir);
+    if (set === undefined) {
+      set = convFileSet(baseDir, now);
+      dirFileSets.set(baseDir, set);
+    }
+    return set ? set.has(id.toLowerCase() + ".db") : false;
+  };
   const resolveConvDb = (id: string) => {
-    const local = path.join(dir, "conversations", id + ".db");
-    if (fs.existsSync(local)) return local;
+    if (hasConvFile(dir, id)) return path.join(dir, "conversations", id + ".db");
     for (const other of allDirs) {
       if (other === dir) continue;
-      const candidate = path.join(other, "conversations", id + ".db");
-      if (fs.existsSync(candidate)) return candidate;
+      if (hasConvFile(other, id)) return path.join(other, "conversations", id + ".db");
     }
-    return local;
+    return "";
+  };
+  const stampFor = (db: string, skipStaleCheck: boolean): { size: number; mtimeMs: number } | null => {
+    if (!db) return null;
+    if (!skipStaleCheck) {
+      const stale = staleDbCache.get(db);
+      if (stale && now - stale.checkedAt < STALE_DB_TTL_MS && stale.mtimeMs < since - 30 * 60_000) return null;
+    }
+    const stamp = antigravityStamp(db);
+    if (stamp && stamp.mtimeMs < since - 30 * 60_000) {
+      if (staleDbCache.size > 2048) staleDbCache.clear();
+      staleDbCache.set(db, { mtimeMs: stamp.mtimeMs, checkedAt: now });
+    } else if (stamp) {
+      staleDbCache.delete(db);
+    }
+    return stamp;
   };
 
   // Synthesize rows for active/recent nested DBs present in conversation_parents or swarm/members.json but not yet in conversation_summaries.
@@ -1450,8 +1557,6 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     const cid = canonicalId.get(lower) ?? lower;
     const swarmWorker = swarmMeta.workerById.get(lower);
     const desc = swarmMeta.descriptorsById.get(lower);
-    const db = resolveConvDb(cid);
-    const stamp = antigravityStamp(db);
     const swarmWorking = Boolean(
       swarmWorker &&
       !swarmWorker.member.killed &&
@@ -1460,6 +1565,8 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       swarmWorker.member.phase !== "KILLED" &&
       now - (swarmWorker.member.updatedAt ?? 0) <= 5 * 60_000,
     );
+    const db = resolveConvDb(cid);
+    const stamp = stampFor(db, swarmWorking);
     if (!swarmWorking && (!stamp || stamp.mtimeMs < since)) continue;
     const synthetic: Record<string, unknown> = {
       conversation_id: cid,
@@ -1517,7 +1624,6 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     );
     const sumRunning = !killed && (statusRunning || (notFullyIdle && !swarmParked));
 
-    const db = resolveConvDb(id);
     const needStamp =
       forceKeep ||
       sumRunning ||
@@ -1526,7 +1632,8 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       (!killed && sumAt === 0) ||
       Boolean(swarmWorker) ||
       Boolean(swarmCoord);
-    const stamp = needStamp ? antigravityStamp(db) : null;
+    const db = needStamp ? resolveConvDb(id) : "";
+    const stamp = needStamp ? stampFor(db, forceKeep || sumRunning || swarmWorking || sumAt >= since) : null;
     if (!forceKeep && !sumRunning && !swarmWorking && sumAt < since && (!stamp || stamp.mtimeMs < since)) return null;
 
     const shouldReadPhase = Boolean(
@@ -1539,7 +1646,10 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       ),
     );
     const info = shouldReadPhase ? conversationPhase(db, stamp) : {};
-    const dbOpen = !killed && !!info.open && !!stamp && (sumAt === 0 || stamp.mtimeMs > sumAt + 1000) && now - stamp.mtimeMs < 60_000;
+    const dbOpen = !killed && !!info.open && !!stamp && (
+      ((sumAt === 0 || stamp.mtimeMs > sumAt + 1000) && now - stamp.mtimeMs < 60_000) ||
+      (info.phase === "tool" && (notFullyIdle || sumAt === 0 || stamp.mtimeMs >= sumAt - 5000) && now - stamp.mtimeMs < 10 * 60_000)
+    );
 
     let running: boolean;
     let ownActive = false;
@@ -1576,8 +1686,9 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
         m.desiredState !== "KILLED",
       ).length
       : undefined;
-    const { open: _open, swarmWaiting: rawSwarmWaiting, ...phase } = info;
+    const { open: _open, swarmWaiting: rawSwarmWaiting, pendingContinuation: rawPendingCont, ...phase } = info;
     const swarmWaiting = !nested && Boolean(swarmCoord) && Boolean(rawSwarmWaiting);
+    const pendingContinuation = !nested && !running && Boolean(rawPendingCont);
     ownActiveById.set(lower, ownActive);
     return {
       id,
@@ -1592,6 +1703,7 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       ...(swarmCoord || swarmWorker ? { swarm: true } : {}),
       ...(swarmCoord?.title ? { swarmTitle: swarmCoord.title } : swarmWorker?.swarmTitle ? { swarmTitle: swarmWorker.swarmTitle } : {}),
       ...(swarmWaiting ? { swarmWaiting: true } : {}),
+      ...(pendingContinuation ? { pendingContinuation: true } : {}),
       ...(swarmAliveWorkers !== undefined ? { swarmAliveWorkers } : {}),
       ...phase,
     };
@@ -1688,10 +1800,11 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
 /** 最近 since 之后动过的对话（支持同时扫描 Antigravity IDE 与 Antigravity CLI 目录并按会话合并）。读不到返回空的。 */
 export function readAntigravityActivity(since: number, dir: string | string[] = antigravityDirs(), now = Date.now()): AgyActivity[] {
   const dirs = Array.isArray(dir) ? dir : [dir];
-  if (dirs.length === 1) return readSingleDirActivity(since, dirs[0], dirs, now);
+  const sharedSwarm = antigravitySwarmMeta(dirs);
+  if (dirs.length === 1) return readSingleDirActivity(since, dirs[0], dirs, now, sharedSwarm);
   const merged = new Map<string, AgyActivity>();
   for (const d of dirs) {
-    for (const item of readSingleDirActivity(since, d, dirs, now)) {
+    for (const item of readSingleDirActivity(since, d, dirs, now, sharedSwarm)) {
       const prev = merged.get(item.id);
       if (!prev) {
         merged.set(item.id, item);
@@ -1713,6 +1826,7 @@ export function readAntigravityActivity(since: number, dir: string | string[] = 
       const hasOwnRunning = prev.ownRunning !== undefined || item.ownRunning !== undefined;
       const ownRunning = hasOwnRunning ? Boolean(prev.ownRunning || item.ownRunning) : undefined;
       const swarmWaiting = (!ownRunning && pri.swarmWaiting) || undefined;
+      const pendingContinuation = (!(prev.running || item.running) && pri.pendingContinuation) || undefined;
       const swarmAliveWorkers = (prev.swarmAliveWorkers !== undefined || item.swarmAliveWorkers !== undefined)
         ? Math.max(prev.swarmAliveWorkers ?? 0, item.swarmAliveWorkers ?? 0)
         : undefined;
@@ -1729,6 +1843,7 @@ export function readAntigravityActivity(since: number, dir: string | string[] = 
         ...(swarm ? { swarm } : {}),
         ...(swarmTitle ? { swarmTitle } : {}),
         ...(swarmWaiting ? { swarmWaiting } : {}),
+        ...(pendingContinuation ? { pendingContinuation } : {}),
         ...(swarmAliveWorkers !== undefined ? { swarmAliveWorkers } : {}),
         ...(children ? { children } : {}),
         ...(subagents ? { subagents } : {}),
