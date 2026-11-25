@@ -1,6 +1,32 @@
-# 当前接手入口 · `v0.3.115` 已正式发布（2026-11-25）
+# 当前接手入口 · `v0.3.116` 已正式发布（2026-11-25）
 
-## 最新已发布版本 · `v0.3.115` · 2026-11-25
+## 最新已发布版本 · `v0.3.116` · 2026-11-25
+
+- **Git 与发布**。[TokenPulse v0.3.116](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.116) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `458036165`）。发布提交 `ffb5ea93b9d8c0a588cc9c094cb94455e87c501c` 与签注标签 `v0.3.116`（`28ad410f7f4ba29330b9051b893cc1fa798fef51`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（桌宠防悬空手 + 全白高灵敏键盘 + 出口监控关闭不拦白名单）**：
+  1. **输入保活 + 随机待机立即打断 + 方案 A 悬空手熔断**（[renderer/pet-engine.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-engine.js)、[renderer/desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js)、[renderer/pet-desk.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-desk.js)）：
+     - `Controller` 新增 `isFidgetAction()` 与 `noteInput(now)`：键盘敲击、鼠标点击、有效鼠标移动或进入密码框都会刷新活跃计时、把下次随机待机至少延后 12 秒，并立即打断正在播的随机待机小动作（主题 `idle:*` 或内置 `nibble`/`groom`/`wash`/`stretch`/`bubbles` 等）；`ctx()` 在键鼠活跃或捂眼期间暂停 `fidget`；
+     - 空闲停手后触发随机待机或执行 `poke`/`lookaround`/`wave`/`tapLeft`/`tapRight`/`wake`/`land` 等非站姿反应时，按方案 A 保留桌前键鼠不动、将 `showHands` 置为 `false` 隐去前景接管手，并立即还原 Clawd 原画 SVG 双手与松鼠/仓鼠/章鱼原生爪触手；主题 SVG 未识别到原生左右方块手时除密码捂眼外一律不画游离前景手。
+  2. **大幅提升键盘灵敏度与全白极简键帽**（[src/main/desk-pet-input.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet-input.ts)、[renderer/pet-desk.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-desk.js)）：
+     - 后台按键轮询从 25ms 提速至 **10ms（100Hz）**，利用 `pressedSince`（`0x0001`）捕获极快同键连敲、支持长按连发（360ms 后每 100ms），补齐 `Shift`/`Ctrl`/`Alt`/`CapsLock`/`F1–F12`/`Home`/`End`/`PgUp`/`PgDn`/`Ins` 与小键盘运算符映射；`DeskState.onKey()` 首帧立刻将对应小手推向目标键位 58% 行程并把插值速度提至 `46`、`TAP_MS` 收紧至 `145ms`；
+     - 移除橙色回车方块（`keyEnter`）与灰色修饰键（`keyMod`），浅色与深色模式下静止键帽统一纯白，敲击瞬间高亮薄荷绿。
+  3. **出口监控关闭时不再强制要求出口 IP 与白名单一致**（[src/main/egress-monitor.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/egress-monitor.ts)）：
+     - `ExitMonitor.gateQuota()` 在 `!this.config.enabled` 时直接放行、零探测并清理历史 `quotaBlocks`（与 `launchRule()` 一致）；`save()` 关闭监控或清空某家白名单时立即清空 `quotaBlocks`，总览/额度卡片拦截提示即刻解除。
+- **Windows 构建与校验**。`npm run dist` 退出 0，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.116.0`；`ASAR_FLAGS` 全部 7 项为 `true`（`ASAR_HAS_03116` / `ASAR_HAS_NOTE_INPUT` / `ASAR_HAS_IS_FIDGET` / `ASAR_HAS_SHOW_HANDS` / `ASAR_HAS_HOLD_TICKS` / `ASAR_HAS_PRESSED_SINCE` / `ASAR_NO_KEY_ENTER`）；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配（`YML_SHA512_MATCH=true`、`YML_SIZE_MATCH=true`）。发布说明在 [release-0.3.116.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.116.md)。
+- **发行附件**（4 件经 `gh release create` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.116-Setup.exe`，`112,964,847` B，SHA256 `7cc90eb98086d66d5002e626bf0ec5c56efbc366a2c6ebbf994daa0169869828`
+  - `dist/TokenPulse-0.3.116-Portable.exe`，`112,707,682` B，SHA256 `9fb6a85def3a00913b94204db520748a3afa87a0d48feaced7b3d9ddbc6ccb16`
+  - `dist/TokenPulse-0.3.116-Setup.exe.blockmap`，`120,018` B，SHA256 `f35b0ddd332fc2054016e39db34f18a7a7f6f67cf5a76cedf1fb2cc27037c437`
+  - `dist/latest.yml`，`355` B，SHA256 `3d0a827110a4d713e8d8d71e650dba5747740c9082f4ef7579435bc8502410ad`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测，含 `test-features.cjs` 46/46 英文零漏翻、`test-egress.cjs` 19/19 与 `test-desk-pet.cjs` 全部新增回归用例）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-desk-pet-ui.cjs`（23/23 PASS）与 `scripts/test-intro-ui.cjs`（3/3 PASS）：**退出 0，全部 PASS**；`INPUT_SMOKE ready=true`；全白键盘六宫格预览图自查无误；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；临时预览脚本保存在会话 scratch 目录未污染仓库。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/main/{desk-pet-input,egress-monitor}.js`、`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}` 与四件 `v0.3.116` 发行产物共 8 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.3.115` · 2026-11-25
 
 - **Git 与发布**。[TokenPulse v0.3.115](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.115) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `457990089`）。发布提交 `64c80cef207bb024a7f01e646f38175c512bfd52`（变基于最新自动知识库更新 `7783dd4` 之上，包含 `2026.11.25` 知识库）与签注标签 `v0.3.115`（`b631f684c589193da05ee4f64f1b566242951dac`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（桌宠高清极简键鼠互动桌面 + 原生双手联动 + 输密码捂眼 + Antigravity 脚本误响修复 + 300Hz/扫描性能优化）**：
