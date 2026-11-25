@@ -1,6 +1,35 @@
-# 当前接手入口 · TokenPulse `v0.3.113` 已正式发布（2026-11-24）
+# 当前接手入口 · TokenPulse `v0.3.114` 已正式发布（2026-11-24）
 
-## 最新已发布版本 · `v0.3.113` · 2026-11-24
+## 最新已发布版本 · `v0.3.114` · 2026-11-24
+
+- **Git 与发布**。[TokenPulse v0.3.114](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.114) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `457795688`）。发布提交 `c3060705c39ac42a37d4af83c533cea8b3bfa55c` 与签注标签 `v0.3.114`（`0bb8a87ec2798046af1458cc437c4c61bd2d54b2`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **根因定位与发布内容（修复 Antigravity Swarm 子代理阶段完成与内置 `monitor` 巡检心跳误触发桌宠完成提示音）**：
+  - **实机根因**：对照本机 Antigravity Swarm 数据库与步骤时间间隔确认三处叠加缺陷：(1) Swarm worker 跑完阶段并调用 `post_message` + `swarm_wait` 休眠后，到协调器或下一阶段 worker 被唤醒（`step_type=101`）存在 **1.5s ~ 5.5s** 交接空窗，而桌宠 `fs.watch` 仅 300ms 扫描，`activeSubs` 瞬间为空直接把协调器判为 `running = false` → 单拍发射 `finished` 播放完成音；(2) 未区分协调器停在 `swarm_wait` 等待态（非给用户的最终回复）及「仅 worker 阶段结束、协调器尚未回复用户」；(3) Swarm 内置 `monitor` 休眠时写 `wake_mode: "anything"`（原 `swarmParked` 仅认 `"mentions"`/`"all"`），且每 ~3 分钟或遇板消息醒来跑几秒 `read_board` 后重新休眠，不断触发假完成音；同时 `readSingleDirActivity()` 仅传单目录给 `antigravitySwarmMeta(dir)`。
+  1. [src/core/antigravity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity.ts)：
+     - `conversationPhase()` 检测最新关键步骤为已完成 `swarm_wait` 时返回 `swarmWaiting: true`；
+     - `readSingleDirActivity()` 改用 `antigravitySwarmMeta(allDirs)`、`swarmParked` 增补 `wake_mode === "anything"`、`swarmWorking` 补齐 `phase !== "KILLED"`；
+     - 过滤 Swarm 内置 `monitor` 常规巡检心跳（仅明确提问 `ask` / `waiting` 时保留）；
+     - `AgyActivity` 透传 `ownRunning`、`swarmWaiting` 与 `swarmAliveWorkers`（未 kill 的非 monitor 工作子代理数），并在双目录合并中一致保留。
+  2. [src/core/agent-activity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/agent-activity.ts)：
+     - 导出 `SWARM_SETTLE_MS`（`8_000` ms）与 `SUBAGENT_HANDOFF_MS`（`5_000` ms），在 `ActivityScanner` 中跟踪 `coordRan`、`coordIdleAt`、`hadActiveSubs`、`wasSwarm` 与 `settle` 稳定期；
+     - Swarm 会话中协调器停在 `swarm_wait` 或仅 worker 跑完阶段时平滑渡过交接期且**绝不**发射 `finished`；仅当协调器自身完成非 `swarm_wait` 回复且稳定期内无新阶段唤醒时准确触发一次完成音；无存活 worker 的历史 Swarm 后续普通对话与普通非 Swarm 对话仍 0ms 即时提示；非 Swarm Antigravity 子代理交接亦受 5s 空窗保护。
+  3. 回归测试：[scripts/test-antigravity-sessions.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-antigravity-sessions.cjs)（新增 `monitor` `wake_mode=anything` 休眠与巡检脉冲不唤醒协调器、`swarmWaiting` 与 `swarmAliveWorkers` 断言）及 [scripts/test-desk-pet.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-desk-pet.cjs)（新增多阶段 Swarm 生命周期、`swarm_wait`、仅 worker 完成、历史 Swarm `swarmAliveWorkers=0`、普通对话与非 Swarm 子代理交接回归测试）。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.114.0`；`dist/win-unpacked/resources/app.asar` 校验 `ASAR_HAS_03114=True`、`ASAR_HAS_SWARM_SETTLE=True`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配（`YML_SHA512_MATCH=True`、`YML_SIZE_MATCH=True`）。发布说明在 [release-0.3.114.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.114.md)。
+- **发行附件**（4 件经 `gh release create` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.114-Setup.exe`，`112,937,061` B，SHA256 `9bfa58e1349a63b01a88f262a127d792d517a400ff6e6b1a13c11a7186a768c4`
+  - `dist/TokenPulse-0.3.114-Portable.exe`，`112,679,845` B，SHA256 `9a4c269319221af128c386e4dae5f552fccf456446ac00baaf310cf4f1a21d82`
+  - `dist/TokenPulse-0.3.114-Setup.exe.blockmap`，`119,943` B，SHA256 `d565eab36ee2b463faa7718f44bb48e9dacac581fe9f6ac5c43c5e037d12b51a`
+  - `dist/latest.yml`，`355` B，SHA256 `d5403fb803075a93d0c67988c7db6de4db6db6c530787117f0e351fc17828c0f`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测，含 `test-features.cjs` 46/46 英文零漏翻校验）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-desk-pet-ui.cjs`（22/22 PASS）与 `scripts/test-intro-ui.cjs`（3/3 PASS）：**退出 0，全部 PASS**；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；未关闭或覆盖用户本机运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`；另外排查确认用户朋友截图中连续 1 轮 `[SYSTEM]` Antigravity 对话实为外部脚本直接调用自定义 `agent_name: 'gemini-llm'` 生成的顶层独立会话（`depth: 0, parent: ''`），并非原生 `/swarm` 识别缺陷。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/core/{antigravity,agent-activity}.js`、`build/main/desk-pet.js`、`dist/win-unpacked/TokenPulse.exe`、`dist/win-unpacked/resources/app.asar` 与四件 `v0.3.114` 发行产物共 9 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+- **下一步具体动作**：用户可在软件内检查更新自动升级至 `v0.3.114`（或下载安装器 / 便携版），体验 Antigravity `/swarm` 多阶段执行期间桌宠不再误弹完成提示音的修复效果。
+
+---
+
+## 上一已发布版本 · `v0.3.113` · 2026-11-24
 
 - **Git 与发布**。[TokenPulse v0.3.113](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.113) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `457055594`）。发布提交 `303b5036b3b0f919d648533ed50b28e3aeecb4e1` 与签注标签 `v0.3.113`（`18cae3dd31e2d3babb220c748df22a6a8fc91920`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（设置 → 官方账号新增 Antigravity 一键切换账号、确认弹窗与自动重启）**：
