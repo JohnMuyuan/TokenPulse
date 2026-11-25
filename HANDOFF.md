@@ -1,6 +1,95 @@
-# 当前接手入口 · `v0.3.117` 已正式发布（2026-11-25）
+# 当前接手入口 · `v0.4.0` 正式发布（2026-11-25）
 
-## 最新已发布版本 · `v0.3.117` · 2026-11-25
+## 最新已发布版本 · `v0.4.0` · 2026-11-25
+
+- **Git 与发布**。[TokenPulse v0.4.0](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.0) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `458325432`）。发布提交 `2aa5c08b44c9d45279d2334178d26141d48e8f97` 与签注标签 `v0.4.0`（`2a62e40d68d88708435b984dff7c89f014574546`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（四轮全量后端审计与深度加固）**：整合下文第一至第四轮全部后端修复（覆盖本地路由/跨协议转换/上游代理、账号认证/续期/换号/额度/出口监控/余额/tokens.ci、Antigravity 多账号与本地数据库、用量扫描/会话管理/缓存与归因分析、SVG 主题包消毒/日志轮换/主进程安全与桌宠竞态），并新增 6 个回归脚本（含 4 组专项后端审计回归共 42 项检查），接入 `npm test`。
+- **Windows 构建与校验**。`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 0，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.4.0.0`（FileVersion `0.4.0`）；`app.asar` 头部核验 `ASAR_MISSING=[]`、`ASAR_PKG_VERSION=0.4.0`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配（`LATEST_YML_SHA512_MATCH=True`、`LATEST_YML_SIZE_MATCH=True`）。发布说明在 [release-0.4.0.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.4.0.md)。
+- **发行附件**（4 件均已上传至 GitHub Release `458325432`，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.4.0-Setup.exe`，`112,986,207` B，SHA256 `e4882275fb6bef9004859b983b48a4934042ff49dab936e9b84084d6926183dc`
+  - `dist/TokenPulse-0.4.0-Portable.exe`，`112,729,040` B，SHA256 `9ec33b2967f2c8eaa8f8bb499f36f2da8627b882e9f4ef59915b4267d989b0d5`
+  - `dist/TokenPulse-0.4.0-Setup.exe.blockmap`，`119,751` B，SHA256 `ab5f274c8c69fb03dadccf83dd2c1d9d95c169df16d6af7c46277f8185b41c22`
+  - `dist/latest.yml`，`349` B，SHA256 `9b8c00fab267f55e2cff0b41f93b809f68ff47f6062f35171ae213c050176d98`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **73/73** 个 Node 单测脚本，含 `test-features.cjs` 46/46 英文零漏翻校验及 4 组新增后端审计回归脚本）：**退出 0，`FAIL_LINES=0`**。
+  - Electron 自动化测试：`scripts/test-intro-ui.cjs`（PASS）、`scripts/test-desk-pet-ui.cjs`（23/23 PASS）、`scripts/test-updater.cjs`（13/13 PASS）：**全部退出 0**；`git diff --check` 通过。
+- **未执行验证与已知限制**：未跑全量 `npm run test:ui` 中其余与本轮无关的页面脚本；未执行真实上游 API / OAuth / 官方 CLI 联调；未关闭或覆盖用户本机运行的正式版 `AppData\Local\Programs\TokenPulse\TokenPulse.exe`。
+- **进程与句柄收尾检查**：本仓库关联进程筛查 `REPO_PROCS=0`；`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}`、四件 `v0.4.0` 发行产物及 8 个代表性 `build/` 编译产物共 14 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，检测句柄均已在 `finally` 立即关闭。
+
+---
+
+### `v0.4.0` 包含的四轮后端排查明细
+
+#### 第四轮 · 全量后端六域深查（代理/切换、认证/额度/出口、Antigravity、用量/会话/主进程）
+
+- **状态**。已并入 `v0.4.0` 正式发布（提交 `2aa5c08b`）。基于前三轮工作区对 `src/core/**`（73 文件）、`src/main/**`（21 文件）、`knowledge/egress-regions.json` 进行全量六域后端审计并分 4 波完成修复与先红后绿回归验证。
+- **已修复并验证（4 组专项回归脚本共 42 项检查，均修复前复现失败、修复后全绿并接入 `npm test`）**：
+  1. **Wave 1 · 代理转发、协议转换、供应商切换、Prism 桥与上游代理**（回归：`scripts/test-audit-proxy-switch.cjs`，13/13 PASS）：
+     - `src/core/agent-proxy.ts`：跨协议 `GET /v1/models` 不再误改写；SSE 判定兼容缺失 `event-stream` 但非 JSON 的流式响应；`Content-Encoding: identity` 不再误判压缩跳过观测/转换；`rewriteModel()` 仅改写字符串 `json.model`；`tunnelPass()` 透传合规 RFC 6455 close code 并加 5s 兜底释放避免截断队列/压缩尾帧；`unexpected-response` 置 `opened = true` 并在 `res.once('end')` 清理；`fetchUpstreamModels()` 监听响应 `aborted`/`error` 加 `settled` 防永久挂起。
+     - `src/core/agent-convert.ts`：`SseBuffer` 修复跨 chunk `\r\n` 拆分；`normFrom("openai-responses")` 忽略 `reasoning`/`item_reference` 并合并并行 `function_call`/连续 assistant；`anthropicBody()` 合并连续同角色消息（如并行 `tool_result`）；Anthropic 流式 `message_start` `input` 计数不再被后续 `0` 覆盖；Responses 流式透传 `output_index` 与 `activeCallIndex`。
+     - `src/core/agent-switch.ts` / `agent-toml.ts` / `agent-config.ts` / `agent-history.ts` / `pool-insight.ts`：读取 JSON/TOML 去 UTF-8 BOM；`activateProvider()` 路由全闲置时停 proxy；`importCcProvidersImpl()` 隔离单条解析异常；`writeCodex()` 正确清理布尔 `false` 字段；`spliceMarked()` 替换时规范换行；`editCredentialRef()` 兼容 `refs: {}`/行尾注释；`restoreProxy("deepseek")` 还原原有 `DS_BEGIN..DS_END` 块与 `TOKENPULSE_ROUTE`；`lock()` 竞争重读重试并忽略 `ENOENT`；`maskSecrets()` 补齐 YAML 与含 `#`/空格引号值脱敏；`pool-insight.ts` 计入 HTTP `402` 限额。
+     - `src/core/prism-bridge.ts` & `src/core/upstream-proxy.ts`：修复 Windows `reg query` 路径反斜杠转义；`loginPrism()` 先设 `task="login"` 防并发启动；`startPrism()` 复检状态；`stopPrism()` 检查已退出状态并监听 `error`；`upstream-proxy.ts` 补全 IPv6 `NO_PROXY`、方括号 `CONNECT` 目标与 RFC 6066 省略 IP 字面量 SNI。
+  2. **Wave 2 · 账号认证、OAuth/CLI 换号与续期、额度查询、出口与 tokens.ci**（回归：`scripts/test-audit-auth-quota.cjs`，10/10 PASS）：
+     - `src/core/quota.ts` & `src/core/curl.ts`：`curlBinary()` 捕获响应头识别 401/403（抛 `auth`）与 `>=400`；`readFields()` 边界校验 wire 0/1/2/5；`grpcPayload()` 校验帧头并解析 `0x80` trailer `grpc-status`（16/7→`auth`，8→429）；`grokCreditsConfig()` 透传 `auth`/429 且 `grokQuota()` 不在无配置时伪造；`claudeQuota()` 保留真实缺失不再编造 `0`；`isAuthFailure()` 收窄 `\bhttp\s*(?:401|403)\b` 并检查 `errorText`；`fetchOfficialQuota()` 按 `pick` 收窄续期与门禁；`curlPost()` 改用 `Buffer[]` + 4 MiB 上限防多字节乱码与内存溢出。
+     - `src/core/accounts.ts` / `cli-renew.ts` / `cli-switch.ts` / `codex-probe.ts`：`renewStoredCredentials()` 按 kind 单飞互斥并跳过隐藏账号；`cli-renew` 与 `cli-switch` 导出协同锁防止并发写 Claude 凭据，且 `claudeCodeRunning()` 兼容含空格路径与 tab 命令行；`cli-switch` 保留无 `id_token` 的 Codex 轮换 `refreshToken`、过滤隐藏/已删回写、保护 `orgId` 与 Grok 多行快照、原子写失败清 `.tmp`、读 JSON 去 BOM；`codex-probe` 使用 `JSON.stringify(catalog)`。
+     - `src/main/oauth.ts` / `health.ts` / `index.ts`：Windows `/d /s /c` 外层引号包裹；大小写不敏感清理 `NO_PROXY`/隔离环境变量；`--version` 探测置于 `tmpdir` 并在 `finally` 终止、登后校验非空并传 `skipRenew: true`；`inflight` 按 `kind` 互斥；`health.ts` 与 `accounts:list` 先执行 `gateQuota()` 再按放行列表续期并同步出口快照。
+     - `knowledge/egress-regions.json` / `src/core/egress.ts` / `quota-monitor.ts` / `relay-balance.ts` / `main/deepseek-balance.ts` / `core/tokens-ci.ts` / `main/tokens-ci.ts`：废弃国家码升级（`DY→BJ`/`HV→BF`/`FX→FR`/`YU→RS`/`TP→TL`/`UK→GB`）并做 `Intl.Locale` 规范化；`analyzeAccount()` 复用毛刺过滤后 `segment.points`；`relayBase()` 允许方括号 IPv6 且 `parseSub2api()` 校验未截断 3 字母币种；`deepseek-balance` 按币种独立跟踪低余额提醒；`tokens-ci` 修复空值转 `0`、POSIX 进程组终止、`save()` 过滤只读状态字段、`check()` 校验退出码、`run()` 提前占位与 `finally` 发布、取消不计失败、`login()` 清理卡死状态、代理密码按首个 `:` 拆分。
+  3. **Wave 3 · Antigravity 子系统**（回归：`scripts/test-audit-antigravity.cjs`，7/7 PASS）：
+     - `src/core/protobuf-lite.ts`：`varintBig` 改用 `BigInt` 正确解码 64 位负数二补码（Go 零值时间 / 负 Duration 归 0 并拒绝畸形第 10 字节）。
+     - `src/core/antigravity.ts`：`antigravitySummaries()` 查询成功后再置 `anyLoaded=true`（查询异常返回 `null`）；`readAntigravityGenerations()` 守卫 `startAt > 0` 防毫秒时间戳溢入 `totalMs`；`deleteAntigravityConversation()` 在 IDE 存在时透传 RPC 错误且忽略路径大小写；`readAntigravitySubagentUsage()` 记录 `localModels`；`readAntigravityActivity()` 合并时剔除过期 `swarmWaiting`/`pendingContinuation`；`antigravitySwarmMeta()` `filterRoots` 小写规范化。
+     - `src/core/antigravity-accounts.ts` & `antigravity-switch.ts`：`fetchAntigravityCloudStatus()` 识别 429 并在 `fetchAvailableModels` 失败/空组时切回退端点；`startOAuthLoopback().close()` 主动回收空闲/残留连接；新增 `decodeDarwinKeyringOutput()` 处理 macOS Keychain 自动十六进制编码并检查 `security -i` stderr；`readAgyKeyringEmailAsync()` 增加 epoch 防旧读回填缓存、同步写删清缓存；收窄 macOS/Linux 桌面进程匹配防误杀含 `/antigravity` 参数的无关进程。
+     - `src/main/antigravity-quota.ts`：`enrichGroupsAndModelsWithCatalog()` 去掉误传参数；`buildWindowInsight()` 保留 `preInitialExt` 兜底；`buildTimelineWindow()` 周线不拿 5h `used` 顶替缺失的 `weekUsed`；`forgetAccount()` 清 `insightCache` 并在全删后清空顶层 `stored.last/history/notified`；`timeline()`/`speed()` 只读查找槽位避免非原主账号偷走遗留历史并按目标账号取 `soloMode`；`refreshNow()` 写回顶层前重读当前可见账号防复活已清除账号。
+  4. **Wave 4 · 用量扫描、会话、分析、SVG/主题包、日志与主进程安全**（回归：`scripts/test-audit-usage-main.cjs`，12/12 PASS）：
+     - `src/core/zstd-frames.ts` & `src/core/usage-scan.ts`：支持 RFC 8878 Skippable Frame 跳过并拒绝置位 Reserved Bit；`configOfficial()` 豁免 Grok 本地透明转发 `127.0.0.1:<port>/pass/grok`；`parseCodexProviders()` 去行内 `#` 注释并按 `URL.hostname` 剥离端口；DeepSeek zstd 帧扫描消费末尾无 `\n` 行与空帧不卡偏移；Claude `user.thinkingMetadata` 正确回落为 `effort`/`effortSource`。
+     - `src/core/sessions.ts` & `src/core/session-search.ts` & `src/main/session-reply.ts`：修复 `codexUserText` 无限递归栈溢出；`parseDeepseek()` 从 `step/start` 计算 `firstTokenMs`（含单块流）；`Builder` 混合实报/未报费用按每调用累加不漏未报轮次；`readLines()` 去 UTF-8 BOM；`Math.max/min` 大数组改 `.reduce()`；`deleteLocalSessionFiles()` 与 `replyArgs()`/`deleteArgs()` 校验 ID 拒绝 `.`/`..`/前导 `-` 参数注入；`session-search.ts` 临时文件原子写入；`session-reply.ts` 修复 DeepSeek 流式 `final` 重复发射、`deleteSession()` 清理计时器/UTF-8 编码/调用 `forgetSession()`、临时提示词 `0o600` 与异常清理及 `stopAllReplies()` 同步清理。
+     - `src/core/deepseek-insight.ts` / `pass-speed.ts` / `model-pricing.ts` / `cache-analysis.ts` / `request-log.ts`：`analyzeDeepSeek()` 增加 `claimedThrough` 消除 60s 重叠重复计费并用独立 `rateDrop` 隔离空手动标注（保留 `rate.drop` 兼容）；`pass-speed.ts` 过滤 `official === false` 中转行并优先归属 `routedAccount`；`contextWindowOf()` 边界兼容空白分隔的 `-1m`/`-2m`；`cache-analysis.ts` 消除 `Math.max/min` 展开；`queryRequests()` 倒序月内后写覆盖去重与 `compactRequests()` 一致，且 `sort=cache_low` 不截断 `analyzeCache()` 的小输入行。
+     - `src/core/svg-sanitize.ts` / `pet-theme.ts` / `app-log.ts` / `paths.ts` / `agent-activity.ts`：`<style>` 整块聚合后多趟收敛清洗，拦截注释/CDATA/嵌套指令绕过；`readThemeFolder()` 校验证书目录 `lstatSync`/`realpathSync` 防 symlink/junction 逃逸并在消毒后校验 2 MB / 20 MB 字节上限；`app-log.ts` 先 rename 主日志到 `.rotating`，失败不删 `.1.log`/`.2.log` 并 30s 退避；`writeJson()` 增加 Windows `EPERM`/`EBUSY`/`EACCES` 短退避重试与失败清 `.tmp`；`agent-activity.ts` 瞬时读错重置 `read = false` 下轮重试，且 Antigravity 稳定期在 `pendingContinuation` 清除后恢复 `notify`。
+     - `src/main/preload.ts` / `index.ts` / `updater.ts` / `desk-pet.ts` / `desk-pet-input.ts`：演示模式补齐全部写操作拦截（保留 `writePrefs` 供新手引导使用）、失败复位 `demo=false` 并屏蔽演示期间后台推送；`index.ts` 新增 `sendToWin()` 守卫已销毁/加载中窗口、`applyPrefs()` 全量白名单校验、`closed` 同毁 `TrayPanel`、`before-quit` 失败时不提前销毁托盘/桌宠、`refresh()` 修复 `quotaNoticeSent` 复位、对话框传 `win` 前校验未销毁；`updater.ts` 接住 `downloadPromise` 拒绝并阻止重复 `downloadUpdate()`；`desk-pet.ts` 按 generation 隔离 `scanning` 与跨 `await` 检查、`resetDeskPetPosition()` 同步重启输入监听；`desk-pet-input.ts` 监听管道 `error` 且按子进程绑定超时兜底强杀。
+- **验证**。`npm run compile` 退出 0；完整 `npm test`（全部 **73/73** 个 Node 单测脚本，含 4 个新增审计回归脚本，全量日志 `FAIL_LINES=0`）退出 0；定向 Electron 测试 `npx electron --lang=zh-CN scripts/test-intro-ui.cjs`（PASS）、`npx electron --lang=zh-CN scripts/test-desk-pet-ui.cjs`（23/23 PASS）、`npx electron scripts/test-updater.cjs`（13/13 PASS）均退出 0；`git diff --check` 通过。
+- **未执行验证**。未跑全量 `npm run test:ui` 中与本轮无关的其余 Electron 页面脚本；未执行真实上游 API / OAuth / 正式 CLI 联调；未运行 `npm run dist` 重新打包。
+- **产物**。54 个修改源码对应的 `build/core/*.js` 与 `build/main/*.js` 已编译并打包入 `v0.4.0` 发行产物，新增 `scripts/test-audit-{proxy-switch,auth-quota,antigravity,usage-main}.cjs` 并已注册到 `package.json`。
+- **进程与占用**。见上方 `v0.4.0` 正式发布收尾检查（`REPO_PROCS=0`、`LOCKED_COUNT=0`）。
+
+#### 第三轮 · 本地路由、额度凭据、子进程 stdin、BOM、协议转换（已并入 `v0.4.0`）
+
+- **状态**。已完成。基于工作区（含前两轮未提交改动）排查，版本仍为 `0.3.117`。Git 未提交，未打包、安装或发布。
+- **已修复并验证（每项修复前测试先失败）**。
+  1. `src/core/agent-proxy.ts`：客户端中途取消（499）不再调用 `options.fail`，避免连续取消 3 次触发 60 秒熔断。回归：`scripts/test-routing-regressions.cjs` 取消用例新增 `failures.length === 0`。
+  2. `src/core/quota.ts` `targetsOf`：TokenPulse 存的凭据已过期而 CLI 里同账号凭据仍有效时，改用 CLI 那份（与设置页 `resolveAccountCredential` 一致），不再误报登录失效或 `cli-wait`。回归：`scripts/test-quota-fetch.cjs` 新增 2 项（66/66）。
+  3. `src/main/session-reply.ts` `startReply`、`src/core/curl.ts` `curlPost`、`src/core/antigravity-switch.ts` 两处 `execFile` stdin：补 `stdin.on("error")`；`launchAntigravityDesktopDefault` 两处 `spawn` 补 `error` 监听。CLI 启动即退出或回复中途停止时，写大提示词会抛未捕获的 `write EOF`。新增 `scripts/test-reply-stdin.cjs` 并接入 `npm test`。
+  4. `src/core/pet-pack.ts`：`pet.json` 带 UTF-8 BOM 时导入失败（`theme.json`、`desk.json` 已处理）。回归：`test-desk-pet.cjs`。
+  5. `src/core/paths.ts` `readJson`：带 BOM 的数据文件被当成不存在，账号库等随后被整份覆盖。回归：`test-accounts.cjs`（80/80）。
+  6. `src/core/agent-convert.ts`：Anthropic user 消息里 `tool_result` 与文本并存时，转 OpenAI 格式后文本插在 `tool_calls` 与 `tool` 之间，上游 400；改为结果在前、文本在后。多条 `system` / `developer` 指令改为合并，不再后一条覆盖前一条。
+  7. `src/core/agent-convert.ts`：OpenAI Chat 流式 `tool_calls` 的数字 `index` 被 `textOf` 丢掉，没 id 的并行调用全部叫 `call_0`；改为按 index 生成 id、按 index 归参数，重复 id 自动加后缀。回归：`test-agent-switch.cjs`。
+- **验证**。`npm run compile` 退出 0。完整 `npm test` 退出 0（69 个 Node 脚本，含新增 `test-reply-stdin.cjs`），日志 0 个 FAIL。`git diff --check` 通过。未重跑 `npm run test:ui` 等 Electron UI 套件与 `test-updater.cjs`；未联调真实上游与官方 CLI。
+- **产物**。`build/core/{agent-proxy,quota,curl,antigravity-switch,pet-pack,paths,agent-convert}.js`、`build/main/session-reply.js`，版本 `0.3.117`。`dist/` 仍是正式发布版。
+- **看过但未改**。
+  - `src/core/health-check.ts` `isAccountExpiringSoon`：只登录在 CLI、未由 TokenPulse 存凭据的账号 `autoRenew` 恒为 false。Claude access token 约 8 小时，几乎一直落在「24 小时内过期」里，每次 CLI 续期换到新的小时桶就再弹一次「请重新登录」通知。`test-health-check.cjs:54` 明确断言 CLI 账号要提醒，属产品约定，待用户决定。
+  - `agent-convert.ts`：上游把多个 tool call 的参数分片交错发送时，转给 Anthropic 流式客户端仍写进当前打开的块（SSE 块不能回退）；`json()` 汇总已按 index 归对。常见服务按顺序发送，不受影响。
+  - 400 等上游 4xx 计入熔断是 `test-routing-regressions.cjs` 断言的现有行为，未改。
+- **进程与占用**。测试进程均已退出，CIM 筛查本仓库相关 `node` / `electron` / `TokenPulse` / `curl` 进程 `REPO_PROCS=0`。本轮 8 个编译产物与 `dist/win-unpacked/{TokenPulse.exe,resources/app.asar}` 共 10 个文件独占打开检查 `LOCKED_COUNT=0`，检测句柄均在 `finally` 关闭。临时复现脚本只在会话 scratch 目录。
+
+#### 第二轮 · 用量扫描、额度采样与余额设置（已并入 `v0.4.0`）
+
+- **会话扫描**。`src/core/usage-scan.ts` 保存文件标识。会话路径换成新文件或记录的文件大小缩小时重算用量，并清理上一个文件的归属和目录字段。`src/core/zstd-frames.ts` 处理超过 32 MiB 普通读取批次的 DeepSeek Harness 压缩帧：先定位帧尾，写完整才读取整帧，保留增量偏移。
+- **余额与额度**。`src/main/deepseek-balance.ts` 查询新 Key 时保留原配置，确认结果可接受后一次应用新 Key 和同次编辑的设置，再核对提醒线。`src/core/quota-history.ts` 采样去重纳入套餐和周窗口起点。
+- **验证**。新增的 `test-usage-scan.cjs`（21/21）、`test-deepseek-harness.cjs`（3/3）、`test-deepseek-balance.cjs`（11/11）、`test-quota-monitor.cjs`（83/83）回归均先失败后通过。`npm run compile` 和完整 `npm test`（68 个 Node 脚本）退出 0。`electron --lang=zh-CN scripts/test-deepseek-balance-ui.cjs` 退出 0（9 项 PASS）。`git diff --check` 通过。
+- **产物与范围**。新产物位于 `build/core/{usage-scan,zstd-frames,quota-history}.js` 及 `build/main/deepseek-balance.js`，版本 `0.3.117`。文件标识和大小都不变的原地覆盖仍无法由本轮替换检测识别。未重跑其余独立 UI 或更新器测试，未联调真实第三方服务。Git 未提交，未重新打包、安装或发布。
+- **进程与占用**。测试进程均已退出，CIM 筛查匹配本轮及仓库的相关进程为 0。两轮改动的九个编译文件、`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}` 及四个正式发行产物共 15 个文件通过只读独占打开检查，所有检测句柄均已立即关闭。
+
+#### 第一轮 · 出口监控、演示进程及配置读取（已并入 `v0.4.0`）
+
+- **基线与状态**。基于 `main` 的 `82ca445` 排查。版本仍为 `0.3.117`，改动保存在工作区，尚未提交、安装或发布。原有未跟踪目录 `clawd-pet-extracted/` 保留。
+- **出口规则**。`src/main/egress-monitor.ts` 在异步探测完成后按最新设置重新判断额度访问和主进程放行。更改检测地址或 IP 白名单时清理对应的旧拦截标记。
+- **演示进程**。`src/main/demo.ts` 为每个进程分配独立的临时目录和请求队列。退出只清理本进程的状态，快速重开引导不会打断新请求。异常退出也会尝试清理该实例的目录。
+- **余额、设置和导入**。`src/core/relay-balance.ts` 在一种余额接口发生传输异常时仍尝试另一种接口。`src/main/prefs.ts` 对 `null` 等非对象设置文件使用默认值。`src/core/desk-pack.ts` 接受带 UTF-8 BOM 的 `desk.json`。
+- **回归与验证**。`test-egress.cjs`、`test-demo-worker.cjs`、`test-relay-balance.cjs`、`test-quota-interval.cjs`、`test-desk-pet.cjs` 的新增场景修复前均失败，修复后均通过。`npm run compile` 退出 0。基线 `npm test` 在默认沙箱的回环连接处遇到 `EACCES`，获准使用本机回环后完整 `npm test` 退出 0（68 个 Node 脚本）。`electron --lang=zh-CN scripts/test-intro-ui.cjs` 退出 0（3/3）。`git diff --check` 通过。
+- **产物与未执行验证**。本轮产物位于 `build/main/{egress-monitor,demo,prefs}.js` 和 `build/core/{relay-balance,desk-pack}.js`，版本 `0.3.117`。回归使用隔离数据与模拟服务。其余独立 UI 套件、更新器、真实服务联调和安装包构建未执行。`dist/` 对应下方正式发布版。
+- **进程与占用**。测试进程均已退出，CIM 筛查匹配本轮及仓库的相关进程为 0。上述五个编译产物、`dist/win-unpacked/TokenPulse.exe`、`resources/app.asar` 及四个正式发行产物共 11 个文件通过只读独占打开检查，检测句柄均立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.3.117` · 2026-11-25
 
 - **Git 与发布**。[TokenPulse v0.3.117](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.117) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `458096946`）。发布提交 `ffcab01eecd2304376f026174da194fae191cf43` 与签注标签 `v0.3.117`（`c1f7c243821a70d7ad63be428481c25dd2bb346d`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（5 款原创键鼠样式 + 自定义 `desk.json` 键盘样式导入与制作指南 + 修复长按按键连弹气泡）**：
