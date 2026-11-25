@@ -1,6 +1,38 @@
-# 当前接手入口 · TokenPulse `v0.3.114` 已正式发布（2026-11-24）
+# 当前接手入口 · `v0.3.115` 已正式发布（2026-11-25）
 
-## 最新已发布版本 · `v0.3.114` · 2026-11-24
+## 最新已发布版本 · `v0.3.115` · 2026-11-25
+
+- **Git 与发布**。[TokenPulse v0.3.115](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.115) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `457990089`）。发布提交 `64c80cef207bb024a7f01e646f38175c512bfd52`（变基于最新自动知识库更新 `7783dd4` 之上，包含 `2026.11.25` 知识库）与签注标签 `v0.3.115`（`b631f684c589193da05ee4f64f1b566242951dac`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（桌宠高清极简键鼠互动桌面 + 原生双手联动 + 输密码捂眼 + Antigravity 脚本误响修复 + 300Hz/扫描性能优化）**：
+  1. **桌宠高清极简键鼠互动桌面与原生双手联动**（[src/core/desk-pet-model.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/desk-pet-model.ts)、[src/main/desk-pet-input.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet-input.ts)、[src/main/desk-pet.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet.ts)、[renderer/pet-desk.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-desk.js)、[renderer/pet-engine.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-engine.js)、[renderer/desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js)、[renderer/desk-pet.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.css)、[renderer/desk-pet-settings.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-settings.js)）：
+     - 宠物面前新增 **180° 面向宠物**的 288×224 高清平滑极简键盘与小鼠标（空格在最上方贴近宠物、橙色 Enter 在观众左侧，鼠标掌托朝上、左薄荷绿/右珊瑚橙按键与滚轮朝下，保持右侧与同向右移）；
+     - 直接驱动各宠物原生双手（Clawd 珊瑚方块手经 `syncThemeHands` 接管并在离线还原，松鼠/仓鼠胸爪与章鱼外侧触手经 `deskPaws: 'hide'` 隐藏），避免“四只手”与外挂长臂；支持键鼠双线并行、3D 键帽飘字、LMB/RMB 徽标与方案 A（AI 干活 + 用户打字无缝融合）；
+     - Windows 独立零钩子后台进程（`powershell.exe -EncodedCommand` + `{"t":"ready"}`）结合 UIA `ControlType.Edit` + `8~140px` 高度过滤与 Win32 `ES_PASSWORD` 检测，进入密码框立刻双爪捂眼、清空在途飘字并屏蔽新按键，设置页与右键菜单均提供「键鼠互动桌面」与「隐私捂眼」开关；
+     - 互动桌面显示时 `.dp-badge` 自动避让至舞台左上角（`top: 4px; left: -4px; z-index: 4`），不再被鼠标/键盘遮挡。
+  2. **修复 Clawd 眼睛漂出躯干与歪头问题**（[renderer/pet-theme.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-theme.js)、[renderer/pet-desk.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-desk.js)）：
+     - `findEyes()` 在 SVG 挂载时按 `#torso` 与 `#eyes-js` 计算安全边距（Clawd 自动收紧为 1 格），`load()`/`show()` 重置 `lookAt`；移除鼠标悬停/移动时的歪头倾角与静止晃动。
+  3. **修复 Antigravity 仅脚本/工具跑完就提前误响桌宠完成提示音**（[src/core/antigravity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity.ts)、[src/core/agent-activity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/agent-activity.ts)）：
+     - `conversationPhase()` 识别尾部仍为已完成 `TOOL_STEP(132)`、`INCOMING_MSG(101)`、`USER_INPUT(14)` 或带 `tool_call` 的 `MODEL_REPLY(15)` 时标出 `pendingContinuation: true`（兼容无 `step_payload` 列的测试表 `prepareOptional`），长耗时工具 `dbOpen` 窗口放宽至 10 分钟；
+     - `ActivityScanner` 导出 `AGY_SCRIPT_HANDOFF_MS = 5_000`，在脚本交接中间态平滑保活且无最终文字回复前绝不发射 `finished`。
+  4. **深度性能优化（消除 300Hz 高刷屏与主进程扫描卡顿）**：
+     - [renderer/desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js)：`wakeDeskAnim()` 严格按 `petFps`（默认 30 FPS）限帧；`getThemeMetrics()` 按 `(node, scale)` 缓存主题眼睛与原生双手基准坐标消除每帧布局抖动；`onCursor` 轻路径仅更新眼睛；静止期 100ms 心跳跳过未变化的 `#dp-desk` 重绘；补齐内置宠物驻留光标命中复检（`lastCursorIn`）；
+     - [src/core/antigravity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity.ts) & [src/main/desk-pet.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet.ts)：新增 `brainIndexCache` / `convFilesCache` / `staleDbCache` / `summaryRowsCache` / `LIGHT_SUMMARY_SQL` 与 `invalidateAntigravitySwarmCache()`，实机热扫描从 **`181~276 ms` 降至 `17.8 ms`（`existsSync=0`）**，并放宽扫描与窗外静止光标节流；
+     - [src/main/desk-pet-input.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet-input.ts)：按键轮询 25ms，新增 `PollFocus()` 先用零开销 Win32 焦点句柄变化过滤，大幅减少跨进程 UIA COM 调用。
+- **Windows 构建与校验**。按用户授权先关闭运行中的旧测试版 `dist/win-unpacked/TokenPulse.exe`（`UNPACKED_RUNNING=0`），再执行 `npm run dist` 退出 0。`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.115.0`；`ASAR_FLAGS` 全部 6 项为 `true`（`ASAR_HAS_03115` / `ASAR_HAS_PET_DESK` / `ASAR_HAS_NATIVE_HANDS` / `ASAR_HAS_SCRIPT_HANDOFF` / `ASAR_HAS_METRICS` / `ASAR_HAS_POLL_FOCUS`）；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配（`YML_SHA512_MATCH=true`、`YML_SIZE_MATCH=true`）。发布说明在 [release-0.3.115.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.115.md)。
+- **发行附件**（4 件经 `gh release create` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.115-Setup.exe`，`112,962,868` B，SHA256 `bf800d1d085a694d73d2be5602d8529fa7c814e8bae17f269986d56d5545e071`
+  - `dist/TokenPulse-0.3.115-Portable.exe`，`112,705,717` B，SHA256 `ec6c84f5b327264828f24b10804902055d10eab9fbc6ef50da0805f1c7794c17`
+  - `dist/TokenPulse-0.3.115-Setup.exe.blockmap`，`119,987` B，SHA256 `1e2cefe3c01f03464b91abb21cd6a33e4b4f5b1c8cbcbac2cc09211fbedd1599`
+  - `dist/latest.yml`，`355` B，SHA256 `520f5da2842d3e5e58d7685f72d30a4c9821be3086821c4dea115dacf0352f38`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测，含 `test-features.cjs` 46/46 英文零漏翻、`test-antigravity-sessions.cjs` 9/9 与 `test-desk-pet.cjs` 全部新增回归用例）及变基后重跑 `test-knowledge-update.cjs`、`test-features.cjs`：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-desk-pet-ui.cjs`（23/23 PASS，含角标左上角避让与键鼠互动桌面完整流程）与 `scripts/test-intro-ui.cjs`（3/3 PASS）：**退出 0，全部 PASS**；合成六宫格预览图自查无误；`INPUT_SMOKE ready=true`；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；全局按键与自动密码框检测当前支持 Windows，终端 `sudo`/SSH 等未向 UIA/Win32 暴露密码属性的场景需手动切换「隐私捂眼」；临时预览脚本保存在会话 scratch 目录未污染仓库。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/core/{antigravity,agent-activity}.js`、`build/main/{desk-pet,desk-pet-input}.js`、`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}` 与四件 `v0.3.115` 发行产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.3.114` · 2026-11-24
 
 - **Git 与发布**。[TokenPulse v0.3.114](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.114) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `457795688`）。发布提交 `c3060705c39ac42a37d4af83c533cea8b3bfa55c` 与签注标签 `v0.3.114`（`0bb8a87ec2798046af1458cc437c4c61bd2d54b2`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **根因定位与发布内容（修复 Antigravity Swarm 子代理阶段完成与内置 `monitor` 巡检心跳误触发桌宠完成提示音）**：
