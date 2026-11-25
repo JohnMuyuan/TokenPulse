@@ -1,6 +1,34 @@
-# 当前接手入口 · `v0.3.116` 已正式发布（2026-11-25）
+# 当前接手入口 · `v0.3.117` 已正式发布（2026-11-25）
 
-## 最新已发布版本 · `v0.3.116` · 2026-11-25
+## 最新已发布版本 · `v0.3.117` · 2026-11-25
+
+- **Git 与发布**。[TokenPulse v0.3.117](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.117) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `458096946`）。发布提交 `ffcab01eecd2304376f026174da194fae191cf43` 与签注标签 `v0.3.117`（`c1f7c243821a70d7ad63be428481c25dd2bb346d`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
+- **发布内容（5 款原创键鼠样式 + 自定义 `desk.json` 键盘样式导入与制作指南 + 修复长按按键连弹气泡）**：
+  1. **5 款 100% 原创 Canvas 2D 键鼠样式与实时切换**（[src/core/desk-pet-model.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/desk-pet-model.ts)、[renderer/pet-desk.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-desk.js)、[renderer/desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js)、[src/main/desk-pet.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet.ts)）：
+     - 新增 `DESK_STYLES`（`white` 极简纯白 / `obsidian` 曜石黑 / `esports` 电竞 RGB / `apple` 苹果银白 / `cyber` 未来悬浮）与 `deskPetDeskStyle` 偏好字段（默认 `"white"`），全部保留 180° 面向宠物视角与各宠物原生双手联动；
+     - `obsidian` 配备哑光黑铝底座与冰蓝按压高亮；`esports` 配备流光 RGB 霓虹灯带、随列变色彩光键帽与 RGB 游戏鼠标；`apple` 配备阳极银铝底座、超薄孤岛纯白平键与无缝一体触控鼠标（Magic Mouse 质感，系统蓝触控反馈）；`cyber` 配备半透明全息玻璃、四角 HUD 角标、悬浮能量光影底座与未来悬浮鼠标；
+     - 动效样式（`esports` / `cyber`）服从 `reducedMotion` 与 10 FPS 轻量刷新，静态样式（`white` / `obsidian` / `apple`）保持静止期零重绘；桌宠右键菜单新增「键鼠样式」子菜单供一键秒切。
+  2. **自定义键盘样式包导入与「桌宠」页最下方制作指南**（[src/core/desk-pack.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/desk-pack.ts)、[src/main/index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)、[src/main/preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts)、[renderer/desk-pet-settings.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-settings.js)、[renderer/desk-pet-settings.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet-settings.css)、[renderer/index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)）：
+     - 新建 `src/core/desk-pack.ts`，支持导入包含 `desk.json`（`name` / `author` / `base` / 27 项白名单 CSS 配色 `colors` / 6 项特效开关 `effects`）及可选同级贴图 `images.keyboard` / `images.mouse`（按文件头校验 PNG/GIF/WebP/JPEG，单张 ≤ 2 MB、整包 ≤ 5 MB，最多 20 套）的文件夹并复制至 `~/.tokenpulse/desks/<desk-xxxxxxxx>/`；
+     - 「桌宠」设置页在「键鼠互动桌面」下方新增带实时画布预览的「键鼠样式」选卡区（内置 5 款 + 自定义样式双击删除自动回退 `"white"` + 「导入键盘样式」按钮）；页面最下方新增默认展开的「如何制作自定义键盘样式」指南与一键「复制模板 JSON」按钮。
+  3. **修复长按单个按键时疯狂连弹按键气泡的 bug**（[src/main/desk-pet-input.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet-input.ts)、[renderer/pet-desk.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-desk.js)、[renderer/desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js)）：
+     - 移除 `holdTicks` 人造连发与会命中 Windows OS ~30Hz 按键重复的 `(prev[i] && down && pressedSince)`，升级为标准「按下（`{"t":"k","vk":...,"h":1}`）→ 持续按住 → 抬起（`{"t":"ku","vk":...}`）」事件流（极短 `<10ms` 轻敲仍通过 `!prev[i] && !down && pressedSince` 补发单次点按）；
+     - `DeskState` 新增 `heldKeys` 与 `onKeyUp()`：长按期间仅在按下瞬间弹 1 个键帽气泡，键帽保持下沉高亮、宠物小爪稳稳按住不狂点、持续抑制随机待机且稳态零空转重绘；松手平滑回弹，进入密码框自动清空按住态。
+- **Windows 构建与校验**。`npm run dist` 退出 0，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.3.117.0`；`app.asar` 头部核验关键文件 `ASAR_MISSING=[]`；`dist/latest.yml` 大小与 SHA512 同安装器完全匹配（`LATEST_YML_MATCH=True`）。发布说明在 [release-0.3.117.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.3.117.md)。
+- **发行附件**（4 件经 `gh release create` 上传，远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/TokenPulse-0.3.117-Setup.exe`，`112,975,925` B，SHA256 `21a48b2aafd97ee4e60d760e4d6095fbb1eceebb41ee23f218807392ab87bc94`
+  - `dist/TokenPulse-0.3.117-Portable.exe`，`112,718,768` B，SHA256 `321620df9c004b45daa1961d089f14c6226f6b8c9d8c9a86bd6b8d2966e3fd28`
+  - `dist/TokenPulse-0.3.117-Setup.exe.blockmap`，`119,989` B，SHA256 `14b3188107dfe53173e885d2c46f91cc3890d766abb89aa24ca83fe4786123dc`
+  - `dist/latest.yml`，`355` B，SHA256 `6c6fd5ca3eb6baded08ccc622bdb8157e014947f1541d4375c4ec68b8bab388b`
+- **正式验证**：
+  - `npm test`（`tsc -p tsconfig.json` + 全部 **67/67** 个 Node 单测，含 `test-features.cjs` 46/46 英文零漏翻与 `test-desk-pet.cjs` 长按/5 款样式/`desk-pack` 校验全部新增用例）：**退出 0，全部 PASS**。
+  - Electron 自动化 UI 测试：`scripts/test-desk-pet-ui.cjs`（23/23 PASS，覆盖 5 款内置样式切换、自定义 `desk.json` 导入与删除回退、底部制作指南与长按按下/松开）与 `scripts/test-intro-ui.cjs`（3/3 PASS）：**退出 0，全部 PASS**；`INPUT_SMOKE_OK 1179ms`；5 款内置样式 + 霓虹樱花自定义模板合成预览图视觉复核无误；`git diff --check` 通过。
+- **未执行的验证与已知限制**：未重跑与本轮改动无关的其余独立 UI 脚本及 `test-updater.cjs`；临时预览脚本保存在会话 scratch 目录未污染仓库。
+- **进程与句柄收尾检查**：本仓库进程筛查 `REPO_PROCS=0`；`build/core/{desk-pack,desk-pet-model}.js`、`build/main/{desk-pet-input,desk-pet}.js`、`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}` 与四件 `v0.3.117` 发行产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，所有检测句柄均已在 `finally` 立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.3.116` · 2026-11-25
 
 - **Git 与发布**。[TokenPulse v0.3.116](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.3.116) 已正式公开（`draft: false`、`prerelease: false`、`latest`，Release ID `458036165`）。发布提交 `ffb5ea93b9d8c0a588cc9c094cb94455e87c501c` 与签注标签 `v0.3.116`（`28ad410f7f4ba29330b9051b893cc1fa798fef51`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。未跟踪目录 `clawd-pet-extracted/` 保留在工作区未动。差异凭据模式检查 `SECRET_HITS=0`。
 - **发布内容（桌宠防悬空手 + 全白高灵敏键盘 + 出口监控关闭不拦白名单）**：
