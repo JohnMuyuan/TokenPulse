@@ -1,6 +1,25 @@
-# 当前接手入口 · `v0.4.1`（已发布至 GitHub Releases）
+# 当前接手入口 · `v0.4.2`（已发布至 GitHub Releases）
 
-## 最新已发布版本 · `v0.4.1` · 2026-11-26
+## 最新已发布版本 · `v0.4.2` · 2026-11-26
+
+- **Git 与发布**。[TokenPulse v0.4.2](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.2) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `459284969`，发布时间 `2026-11-26T10:56:10Z`）。发布提交 `4e878535aa8ec9e255e28c342f691a13b9290ba5` 与签注标签 `v0.4.2`（`ee52421d10bd84a9493d543f65d4318ee9cec302`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前差异扫描 `CACHED_SECRET_HITS=0`。
+- **发布内容（总览页「瑞士精密仪表 × 柔和展示字重」视觉重设计）**：
+  - **首屏顺序与通栏指标带**：`renderer/index.html` 将 `#usage-filters` 与 `#usage-summary`（`#tiles`）源码前置至 `#page-overview` 之前；`renderer/app.css` / `renderer/app.js` 改用 1px 发丝线通栏指标带（四卡基线对齐、布局编辑自动拆回独立圆角卡），默认开启数字简写（保留设置页精确切换与中文 `≈亿/万`）。
+  - **冷灰中性色盘（色温 A）与展示字重**：`renderer/app.css` 与 `src/main/index.ts` 同步日/夜中性色盘（`#f5f6f8` / `#ffffff` / `#fafbfc`；夜间 `#0c0e12` / `#13161c` / `#101217`）、`590` 柔和展示字重、`-0.036em` 字距与 `tabular-nums lining-nums`，并补充 `@media (forced-colors: active)` 与 `@container quota-card` 支持。
+  - **大数字 + 精密双轨额度与余额卡片**：`renderer/app.js`、`renderer/deepseek-balance.{js,css}`、`renderer/antigravity-quota.js`、`renderer/antigravity.css` 移除总览顶部 3px 彩条/双环/灰底脚块，改为 `32px` 剩余主数字、重置倒计时/可用天数胶囊、4px 精密细轨与品牌同步圆点（额度详情页与多账号迷你队列环不变）。
+  - **分析区融合与可视化增强**：普通视图无缝合并「用量趋势」与「使用节奏」（编辑布局/隐藏单卡/窄窗自动回退）；新增「柱状 / 曲线」切换（SVG 渐变柱、平滑面积曲线、前置均值虚线与描边标注）、24 格「活跃脉搏」、全宽多品牌「工具分布」堆叠条及「模型用量排行」行内占比底色条；同步更新 `renderer/intro.js` 引导顺序、`renderer/i18n.js` 英文翻译及 3 组 UI 回归断言。
+- **Windows 构建与线上资产校验**：`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 `0`，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.4.2.0`（FileVersion `0.4.2`）；`app.asar` 头部核验 `ASAR_MISSING=[]`、`ASAR_PKG_VERSION=0.4.2`；`dist/latest.yml`（349 B）SHA512 与大小同 `TokenPulse-0.4.2-Setup.exe` 完全一致（`LATEST_YML_SHA512_MATCH=true`、`LATEST_YML_SIZE_MATCH=true`）。发布说明在 [release-0.4.2.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.4.2.md)。4 项附件均已上传至 Release `459284969`（远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/latest.yml`：`349` B，SHA256 `08c9c99f5d007bb98dabf69571bf10d79dab56b68d4b5b2f369b8329a13d084f`
+  - `dist/TokenPulse-0.4.2-Setup.exe`：`113,002,277` B，SHA256 `dc5145dff7311bd1652ae03e504b84949bf680887f06590714c0aa505211eec2`
+  - `dist/TokenPulse-0.4.2-Setup.exe.blockmap`：`119,686` B，SHA256 `1980b17722f804941dd2c67d5aaaaca07543cee0e5cc67908514ff0b7b7a750d`
+  - `dist/TokenPulse-0.4.2-Portable.exe`：`112,745,064` B，SHA256 `6bb6ea43ed4e26c25825da0a7611c29f5001c4559f7c58a0cd0f28235e0c9e11`
+- **验证与收尾**：
+  - `npm test`（**76/76** Node 套件，升版后复跑 `test-features.cjs` 英文零漏翻 46/46 与 `test-audit-frontend.cjs` 9/9）与全量 `npm run test:ui`（**24/24** Electron UI 套件，升版后复跑 `test-intro-ui.cjs` 3/3）均退出 `0`；使用隔离临时目录与纯合成演示数据完成 6 张日/夜实机截图视觉核查。
+  - 打包后本仓库关联进程 `REPO_PROCS=0`（未触碰用户已安装版软件）；`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}`、4 项 `v0.4.2` 发行产物及 4 项 `build/` 编译产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，全部句柄已在 `finally` 立即关闭。未做真实上游在线服务联调。
+
+---
+
+## 历史已发布版本 · `v0.4.1` · 2026-11-26
 
 - **Git 与发布**。[TokenPulse v0.4.1](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.1) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `459197291`，发布时间 `2026-11-26T09:32:35Z`）。发布提交 `baa4836ecb91da300722827c4800ff1a18e35823` 与签注标签 `v0.4.1`（`fef110edb0e9e4f5e35432c89e50bac055606c70`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前差异扫描零真实凭据（仅命中测试脚本中的 2 条占位假 Key `sk-1111...`/`sk-9999...`）。
 - **发布内容（全量前端审计 + 第五轮后端深度加固）**：整合下方全量前端审计（55 个渲染层文件排查、修复 38 个文件）与第五轮全量后端审计（94 个后端源码文件排查、修复 55 个文件）的全部修复，新增 `scripts/test-audit-r5-core.cjs`、`scripts/test-audit-r5-usage-main.cjs` 与 `scripts/test-audit-frontend.cjs` 三组专项回归并接入 `npm test`。
