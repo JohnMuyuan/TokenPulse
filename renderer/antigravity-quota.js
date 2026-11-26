@@ -1676,20 +1676,22 @@
       ]),
       el('span', { class: 'badge ' + badge[1], text: badge[0] }),
     ])];
-    const ringNode = ring({ five: live[0] ? { used: effectiveUsed(live[0]) } : null, week: live[1] ? { used: effectiveUsed(live[1]) } : null });
-    ringNode.title = live.length > 1 ? `外环：${groupTitleOf(live[0])}（${live[0].models.join(' · ')}）　内环：${groupTitleOf(live[1])}（${live[1].models.join(' · ')}）` : '';
     const left = live.length ? Math.min(...live.map(group => Math.max(0, 100 - effectiveUsed(group)))) : null;
-    ringNode.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining' + (left == null ? ' empty-number' : ''), text: left == null ? '—' : left.toFixed(1) }, left == null ? [] : [el('small', { text: '%' })])]));
+    const heroTone = !isStaleLead && worst ? (worstUsed >= 90 ? ' critical' : worstUsed >= 75 ? ' warning' : '') : '';
+    const valueNode = el('div', { class: 'quota-remaining' + (left == null ? ' empty-number' : heroTone), text: left == null ? '—' : left.toFixed(1) }, left == null ? [] : [el('small', { text: '%' })]);
     const worstWeek = worst?.week && !ended(worst.week);
     const worstReset = !worst ? null : (ended(worst) || (worstWeek && (worst.week.used || 0) > (worst.used || 0))) ? worst.week.resetAt : worst.resetAt;
     const worstResetMs = worstReset ? Date.parse(worstReset) : NaN;
     const subFallback = lead?.cloudAuth ? '已开启独立授权自动查询' : '额度只能问本机开着的 Antigravity';
-    body.push(el('div', { class: 'quota-hero' }, [ringNode, el('div', { class: 'quota-hero-text' }, [
-      el('span', { class: 'quota-hero-label', text: `${isStaleLead ? '上次' : ''}${live.length > 1 ? '较低一组' : '额度'}剩余` }),
-      el('span', { class: 'quota-hero-value', text: Number.isFinite(worstResetMs) ? (worstResetMs <= Date.now() ? '已经重置，等待下一次查询' : `${duration(worstResetMs - Date.now())}后重置`) : list.length ? '重置时间未知' : '尚未取得额度' }),
-      el('span', { class: 'quota-hero-sub', text: Number.isFinite(worstResetMs) ? `${date(worstResetMs)} · ${lead?.familyShared ? '家庭组共享额度' : '本地时间'}` : subFallback }),
-    ])]));
-    list.forEach((group, index) => {
+    const resetSub = Number.isFinite(worstResetMs) ? `${date(worstResetMs)} · ${lead?.familyShared ? '家庭组共享额度' : '本地时间'}` : subFallback;
+    body.push(el('div', { class: 'quota-hero' }, [
+      el('div', { class: 'quota-hero-main' }, [
+        valueNode,
+        el('span', { class: 'quota-hero-reset', text: Number.isFinite(worstResetMs) ? (worstResetMs <= Date.now() ? '已经重置，等待下一次查询' : `${duration(worstResetMs - Date.now())}后重置`) : list.length ? '重置时间未知' : '尚未取得额度' }),
+      ]),
+      el('div', { class: 'quota-hero-sub', text: `${isStaleLead ? '上次' : ''}${live.length > 1 ? '较低一组' : '额度'}剩余 · ${resetSub}` }),
+    ]));
+    const trackNodes = list.map((group, index) => {
       const done = ended(group);
       const rows = [
         el('div', { class: 'quota-mini-head' }, [
@@ -1712,8 +1714,9 @@
           el('div', { class: 'mini-reset agy-mini-week-reset' }, [icon('clock'), el('span', { text: resetText(group.week) })]),
         ]));
       }
-      body.push(paint(el('div', { class: 'quota-mini agy-mini', 'data-group': group.key }, rows), { '--agy-color': COLORS[index % COLORS.length] }));
+      return paint(el('div', { class: 'quota-mini agy-mini', 'data-group': group.key }, rows), { '--agy-color': COLORS[index % COLORS.length] });
     });
+    if (trackNodes.length) body.push(el('div', { class: 'quota-tracks' }, trackNodes));
     if (!list.length) body.push(el('div', { class: 'quota-missing' }, [el('p', { text: [].concat(notes(lead)[0] || '打开 Antigravity 后会自动查询。')[0] })]));
     const queue = agyQueueSection(lead);
     if (queue) body.push(queue);

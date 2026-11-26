@@ -114,8 +114,8 @@ app.on('web-contents-created', (_event, wc) => {
     assert.equal(await text(`${card} .agy-mini[data-group="${KEY_A}"] .agy-group-name`), 'Gemini', 'Gemini 池用简短标题，不再把一长串型号全拼上去');
     assert.match(await e(`document.querySelector('${card} .agy-mini[data-group="${KEY_A}"] .agy-group-name')?.title || ''`), /Gemini 4 Argon · Gemini 3\.8 Flash/, '悬停提示保留完整模型列表');
     assert.equal(await text(`${card} .agy-mini[data-group="${KEY_B}"] .agy-group-name`), 'Claude / GPT', 'Claude 与 GPT 池显示简短名称');
-    assert.equal(await text(`${card} .ring-center`), '70.0%', '圆环中间是剩得最少的那一组');
-    assert.equal(await e(`document.querySelectorAll('${card} .ring-value').length`), 2, '两组各一个环');
+    assert.equal(await text(`${card} .quota-remaining`), '70.0%', '大数字是剩得最少的那一组');
+    assert.equal(await e(`document.querySelectorAll('${card} .agy-mini .track').length`), 4, '两组各含 5 小时与周额度精密双轨');
     assert.ok(hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') && hits.some(h => h.url === '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary'));
     await shot('agy-overview');
     // 工具图标（2026-11-10 从 lobe-icons 补齐）：Antigravity 用自己的 logo，CC Switch 导入的工具有图标，认不出的还是首字母

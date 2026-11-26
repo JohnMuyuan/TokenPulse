@@ -722,18 +722,10 @@
    * 官方账号的圆环是「额度还剩百分之几」，这里没有百分比：圆环画的是按最近 7 天的速度还能用多少天（30 天以上画满），中间写天数。
    * DeepSeek 的主角是指定了本机用量的那个账号（没有就第一个），中转站的主角是第一个；其余的排在下面，点哪一行去哪个账号的页。
    */
-  function leftRing(left) {
-    const node = ring({});
-    const center = el('div', { class: 'ring-center' });
-    if (left == null) center.append(el('div', { class: 'quota-remaining empty-number', text: '—' }));
-    else {
-      const [value, unit] = left <= 0 ? ['0', '时'] : left >= 365 ? ['>1', '年'] : left >= 1 ? [String(left >= 10 ? Math.round(left) : left.toFixed(1)), '天'] : [String(Math.max(1, Math.round(left * 24))), '时'];
-      node.firstChild.append(svg('circle', { class: 'ring-value ring-five' + (left < 3 ? ' critical' : ''), cx: 50, cy: 50, r: 44, 'stroke-dasharray': RING, 'stroke-dashoffset': RING * (1 - Math.max(0, Math.min(1, left / 30))) }));
-      center.append(el('div', { class: 'quota-remaining' }, [el('span', { class: 'num', text: value }), el('small', { text: unit })]));
-    }
-    node.append(center);
-    node.title = '按最近 7 天的速度还能用多久；30 天以上画满';
-    return node;
+  function daysBadge(left) {
+    if (left == null) return el('span', { class: 'ds-days-pill', text: '按量余额' });
+    const text = left <= 0 ? '已用完' : left >= 365 ? '>1 年' : left >= 1 ? `${left >= 10 ? Math.round(left) : left.toFixed(1)} 天` : `${Math.max(1, Math.round(left * 24))} 时`;
+    return el('span', { class: 'ds-days-pill num' + (left < 3 ? ' critical' : ''), text, title: '按最近 7 天的速度还能用多久' });
   }
   function cardFor(kind) {
     const relay = kind === 'relay';
@@ -750,7 +742,13 @@
       if (relay || !balance.detected) return null;
       return node('intro', [
         head(null, ['还没填 Key', '']),
-        el('div', { class: 'quota-hero' }, [leftRing(null), el('div', { class: 'quota-hero-text' }, [el('span', { class: 'quota-hero-label', text: '总余额' }), el('span', { class: 'quota-hero-value', text: 'DeepSeek 余额监控' })])]),
+        el('div', { class: 'quota-hero' }, [
+          el('div', { class: 'quota-hero-main' }, [
+            el('div', { class: 'quota-remaining empty-number', text: '—' }),
+            el('span', { class: 'quota-hero-reset', text: 'DeepSeek 余额监控' }),
+          ]),
+          el('div', { class: 'quota-hero-sub', text: '总余额' }),
+        ]),
         el('div', { class: 'quota-missing' }, [el('p', { text: 'DeepSeek 按量付费，没有订阅额度。填一个 API Key，就能在这里看到余额，低于你设的数时提醒你。' })]),
         el('div', { class: 'ds-card-setup' }, button('填写 API Key', () => openDialog(null), { cls: 'btn btn-accent', action: 'setup' })),
         el('div', { class: 'quota-card-foot' }, [el('span', { text: '本机装了 DeepSeek Harness' }), el('span')]),
@@ -765,13 +763,15 @@
     const badge = !last ? [lead.loading ? '正在查询…' : '还没查询过', ''] : !last.ok ? ['查询失败', 'critical'] : level === 'bad' ? ['余额用完', 'critical'] : level === 'low' ? ['余额偏低', 'warning']
       : spend?.daysLeft != null && spend.daysLeft < 3 ? ['快用完了', 'critical'] : !info && extra?.unlimited ? ['不限额', 'good'] : ['余额充足', 'good'];
     const body = [head(lead, badge)];
-    body.push(el('div', { class: 'quota-hero' }, [leftRing(spend?.daysLeft ?? null), el('div', { class: 'quota-hero-text' }, [
-      el('span', { class: 'quota-hero-label', text: relay ? '余额' : '总余额' }),
-      el('span', { class: 'quota-hero-value ds-card-total num ' + level, text: info ? cash(info.total, info.currency) : extra?.unlimited ? '不限额' : '—' }),
-      relay ? el('span', { class: 'quota-hero-sub', translate: 'no', text: [extra?.plan, lead.label ? lead.host : ''].filter(Boolean).join(' · ') || lead.host })
-        : info ? el('span', { class: 'quota-hero-sub' }, [el('span', { text: '充值' }), el('span', { class: 'num', text: ` ${cash(info.toppedUp, info.currency)} · ` }), el('span', { text: '赠送' }), el('span', { class: 'num', text: ` ${cash(info.granted, info.currency)}` })])
-        : el('span', { class: 'quota-hero-sub', text: last?.error || '还没有查到余额' }),
-    ])]));
+    body.push(el('div', { class: 'quota-hero' }, [
+      el('div', { class: 'quota-hero-main' }, [
+        el('span', { class: 'ds-card-total num ' + level, text: info ? cash(info.total, info.currency) : extra?.unlimited ? '不限额' : '—' }),
+        daysBadge(spend?.daysLeft ?? null),
+      ]),
+      relay ? el('div', { class: 'quota-hero-sub' }, [el('span', { text: '余额 · ' }), el('span', { translate: 'no', text: [extra?.plan, lead.label ? lead.host : ''].filter(Boolean).join(' · ') || lead.host })])
+        : info ? el('div', { class: 'quota-hero-sub' }, [el('span', { text: '总余额 · 充值' }), el('span', { class: 'num', text: ` ${cash(info.toppedUp, info.currency)} · ` }), el('span', { text: '赠送' }), el('span', { class: 'num', text: ` ${cash(info.granted, info.currency)}` })])
+        : el('div', { class: 'quota-hero-sub', text: last?.error || '还没有查到余额' }),
+    ]));
     const notes = warning(lead);
     if (notes.length) body.push(el('p', { class: 'ds-card-warn ' + level }, [icon('alert'), el('span', { class: 'ds-note-text' }, notes)]));
     const row = (label, value) => el('div', { class: 'ds-card-row' }, [el('span', { text: label }), el('b', { class: 'num', text: value })]);

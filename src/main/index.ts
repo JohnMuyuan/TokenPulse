@@ -157,7 +157,7 @@ const notified = new Map<string, number>();
 /** 两次重置时间差不到这么多，就当是同一个窗口（接口返回的时间有抖动，见 maybeNotify）。 */
 const SAME_WINDOW_MS = 30 * 60_000;
 
-const BACKGROUND = { light: "#f7f8fa", dark: "#15181c" } as const;
+const BACKGROUND = { light: "#f5f6f8", dark: "#0c0e12" } as const;
 
 /* ---------------- 窗口 ---------------- */
 

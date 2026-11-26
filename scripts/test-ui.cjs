@@ -98,10 +98,12 @@ app.on('web-contents-created', (_, contents) => {
       console.log('PASS local statistics render while quota is pending');
       assert.match(await evaluate("document.getElementById('quota-cards').textContent"), /50.0/);
       assert.equal(await evaluate("document.querySelectorAll('.quota-card').length"), 3);
-      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .ring-value').length"), 2);
-      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .ring-value.ring-five').length"), 1);
-      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .ring-value.ring-week').length"), 1);
-      assert.equal(await evaluate("document.querySelectorAll('.quota-card.grok .ring-track').length"), 1);
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .track-fill').length"), 2);
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .track-fill.five').length"), 1);
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.chatgpt .track-fill.week').length"), 1);
+      assert.equal(await evaluate("document.querySelector('.quota-card.chatgpt .quota-remaining')?.textContent.trim()"), '50.0%');
+      assert.equal(await evaluate("document.querySelectorAll('.quota-card.grok .track').length"), 1);
+      assert.equal(await evaluate("document.getElementById('usage-summary').compareDocumentPosition(document.getElementById('page-overview')) & Node.DOCUMENT_POSITION_FOLLOWING"), 4, '指标带排在官方额度上方');
       assert.doesNotMatch(await evaluate("document.getElementById('quota-cards').textContent"), /可能提前耗尽/);
       // 「已用」的预警橙色不能被标题行的样式盖掉
       await evaluate("document.querySelector('.quota-card .quota-mini-head').insertAdjacentHTML('beforeend', '<span class=\"mini-used\"><span class=\"num warn-text\" id=\"warn-probe\">x</span></span>')");
@@ -521,7 +523,7 @@ app.on('web-contents-created', (_, contents) => {
         await delay(150);
         assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-options')).display !== 'none'"), true);
         await evaluate("document.documentElement.dataset.theme='dark'");
-        assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-options')).backgroundColor"), 'rgb(22, 25, 31)');
+        assert.equal(await evaluate("getComputedStyle(document.querySelector('.model-options')).backgroundColor"), 'rgb(19, 22, 28)');
         assert.equal(await evaluate("document.querySelector('.model-options').getBoundingClientRect().width <= innerWidth"), true);
       }
       await evaluate("document.documentElement.dataset.theme='light'; document.getElementById('model-picker').open=false; document.querySelector('.more-filters').open=false; document.getElementById('clear-detail-filters').click(); navigate('overview')");
@@ -616,13 +618,13 @@ app.on('web-contents-created', (_, contents) => {
       assert.match(await evaluate("document.getElementById('chart-caption').textContent"), /按小时/);
       assert.equal(await evaluate("analysis.hourly.length"), 24);
       assert.ok(await evaluate("analysis.total.tokens > 0"), 'the fixture requests fall inside the past 24 hours');
-      // 数字：默认精确到个位，中文后面跟「≈X万 / 亿」；可以换成简写
-      assert.match(await evaluate("document.querySelector('#tiles .stat .num').textContent"), /^\d{1,3}(,\d{3})*$/);
-      assert.match(await evaluate("document.querySelector('#tiles .stat .cn-approx')?.textContent || ''"), /^≈[\d,.]+[万亿]$/);
-      await evaluate("setNumberMode('compact')");
+      // 数字：默认简写（如 3.03B / 24.3K），中文后面跟「≈X万 / 亿」；可以换成精确到个位
       assert.match(await evaluate("document.querySelector('#tiles .stat .num').textContent"), /^[\d.]+[KMB]?$/);
-      await evaluate("setNumberMode('exact'); document.getElementById('range-button').click(); document.querySelector('#range-presets [data-days=\"30\"]').click()");
-      console.log('PASS usage opens on today, 24-hour range, exact numbers with Chinese approximations');
+      assert.match(await evaluate("document.querySelector('#tiles .stat .cn-approx')?.textContent || ''"), /^≈[\d,.]+[万亿]$/);
+      await evaluate("setNumberMode('exact')");
+      assert.match(await evaluate("document.querySelector('#tiles .stat .num').textContent"), /^\d{1,3}(,\d{3})*$/);
+      await evaluate("setNumberMode('compact'); document.getElementById('range-button').click(); document.querySelector('#range-presets [data-days=\"30\"]').click()");
+      console.log('PASS usage opens on today, 24-hour range, compact default and exact numbers with Chinese approximations');
 
       // 总览选「今天」：用量趋势按小时（零点到现在这一小时）
       await evaluate("applyRange(1)");
@@ -665,7 +667,7 @@ app.on('web-contents-created', (_, contents) => {
       await delay(600); // 切换主题有 0.35 秒的颜色过渡
       // 标题栏的侧栏背景独立移动，两块背景都要跟着深色主题。
       const titlebarBackground = await evaluate("({ sidebar: getComputedStyle(document.getElementById('titlebar'), '::before').backgroundColor, workspace: getComputedStyle(document.getElementById('titlebar')).backgroundColor, body: getComputedStyle(document.body).backgroundColor })");
-      assert.equal(titlebarBackground.sidebar, 'rgb(18, 20, 25)');
+      assert.equal(titlebarBackground.sidebar, 'rgb(16, 18, 23)');
       assert.equal(titlebarBackground.workspace, titlebarBackground.body);
       await evaluate("setThemeMode('light')");
       await delay(600);

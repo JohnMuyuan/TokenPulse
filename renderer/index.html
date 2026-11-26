@@ -161,18 +161,6 @@
       <button id="layout-empty-edit" type="button" class="btn">编辑布局</button>
     </section>
 
-    <section id="page-overview" class="page">
-      
-      <div class="section-heading">
-        <h2>官方额度<span class="section-tag">实时窗口</span></h2>
-        <button class="text-btn" data-go="quota">查看完整预测<svg class="icon"><use href="#i-arrow"/></svg></button>
-      </div>
-      <div id="quota-cards" class="quota-grid">
-        <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
-      </div>
-      <!-- DeepSeek 余额（renderer/deepseek-balance.js）：按量付费，没有额度窗口 -->
-    </section>
-
     <div id="usage-filters" class="filterbar">
       <div class="range-picker">
         <button id="range-button" class="range-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="range-popover">
@@ -247,20 +235,34 @@
       </div>
     </section>
 
+    <section id="page-overview" class="page">
+      <div class="section-heading">
+        <h2>官方额度<span class="section-tag">实时窗口</span></h2>
+        <button class="text-btn" data-go="quota">查看完整预测<svg class="icon"><use href="#i-arrow"/></svg></button>
+      </div>
+      <div id="quota-cards" class="quota-grid">
+        <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+      </div>
+      <!-- DeepSeek 余额（renderer/deepseek-balance.js）：按量付费，没有额度窗口 -->
+    </section>
+
     <section id="overview-analysis" class="page">
       <div class="analysis-grid">
         <article class="panel layout-card" data-layout="overview:trend">
           
           <div class="panel-heading">
             <div><h2>用量趋势</h2><p id="chart-caption">按天汇总 · 本机时间</p></div>
-            <div id="chart-metric" class="seg compact"><span class="seg-thumb" aria-hidden="true"></span><button data-metric="tokens" class="on">Tokens</button><button data-metric="costUsd">费用</button><button data-metric="requests">请求</button></div>
+            <div class="chart-controls">
+              <div id="chart-style" class="seg compact" role="group" aria-label="图表样式"><span class="seg-thumb" aria-hidden="true"></span><button type="button" data-chart-style="bar" class="on" aria-pressed="true">柱状</button><button type="button" data-chart-style="line" aria-pressed="false">曲线</button></div>
+              <div id="chart-metric" class="seg compact"><span class="seg-thumb" aria-hidden="true"></span><button data-metric="tokens" class="on">Tokens</button><button data-metric="costUsd">费用</button><button data-metric="requests">请求</button></div>
+            </div>
           </div>
           <div id="daily-chart" class="chart"></div>
           <div id="chart-summary" class="chart-summary"></div>
         </article>
         <article class="panel layout-card" data-layout="overview:rhythm">
           
-          <div class="panel-heading"><h2>使用节奏</h2><span class="section-tag">所选范围</span></div>
+          <div class="panel-heading"><h2>使用节奏</h2><span id="rhythm-tag" class="section-tag">所选范围</span></div>
           <div id="rhythm"></div>
         </article>
       </div>

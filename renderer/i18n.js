@@ -683,6 +683,7 @@
     "总览、额度详情、用量明细、出口监控、会话管理、供应商，都在这里。侧栏可以收起成只有图标；不常用的页面可以在「编辑布局」里藏起来。": "Overview, Quota details, Usage details, Egress monitor, Sessions and Providers are all here. The sidebar can collapse to icons, and pages you don’t use can be hidden in “Edit layout”.",
     "后台会定时扫描本机日志，并按设置里的间隔（默认 1 分钟）查询官方额度和余额。想马上看最新数字就点「刷新数据」，右上角会告诉你哪个账号的哪项额度变了多少。": "Local logs are scanned in the background, and official quota and balances are checked at the interval set in Settings (1 minute by default). Click “Refresh data” for the latest numbers right away; the top right tells you which account’s quota changed and by how much.",
     "每家一张卡：5 小时窗口和周窗口还剩多少、什么时候重置、照现在的节奏大约什么时候用完。同一家登记了几个账号时，下面列出其他账号的剩余。DeepSeek 和第三方 Key 的余额也在这一排，显示还能用几天。": "One card per provider: how much of the 5-hour and weekly windows is left, when they reset, and roughly when they run out at your current pace. With several accounts from one provider, the others are listed below. DeepSeek and third-party key balances sit in the same row, showing how many days they last.",
+    "每家一张卡：大数字直观显示当前剩余额度与重置倒计时，下方两条精密轨道区分 5 小时与周窗口。同一家登记了几个账号时，下面列出其他账号的剩余。DeepSeek 和第三方 Key 的余额也在这一排，显示还能用几天。": "One card per provider: big display numerals show the remaining quota and reset countdown, with dual precision tracks below for the 5-hour and weekly windows. With several accounts from one provider, the others are listed below. DeepSeek and third-party key balances sit in the same row, showing how many days they last.",
     "所选范围的四个数字": "Four numbers for the selected range",
     "总 Tokens、参考费用（按官方标价估算，订阅账号不会真的这样扣钱）、请求次数、缓存读取占比。上方可以切换时间范围和工具，下面的图表跟着变。": "Total tokens, reference cost (estimated at list prices; subscription accounts are not actually charged this), requests and cache-read share. Switch the range and tools above; the charts below follow.",
     "按天看 Tokens、费用、请求数的走势，以及一天里哪些时段用得最多。": "Daily tokens, cost and requests, and which hours of the day you use the most.",
@@ -2717,6 +2718,10 @@
     '官方额度没查到，请稍后重试。': 'Official quota could not be fetched. Try again later.',
     // 总览
     '官方额度': 'Official quota', '实时窗口': 'Live windows', '查看完整预测': 'Full forecast', '查看明细': 'View details', '用量趋势': 'Usage trend', '使用节奏': 'Rhythm', '所选范围': 'Selected range',
+    '图表样式': 'Chart style', '柱状': 'Bars', '曲线': 'Line', '日均消耗': 'Daily avg', '小时活跃脉搏': 'Hourly activity pulse', '近期活跃脉搏': 'Recent activity pulse',
+    '按量余额': 'Pay-as-you-go', '按最近 7 天的速度还能用多久': 'Estimated time remaining at the last 7-day pace', '总余额 · 充值': 'Total balance · Topped up', '>1 年': '>1 yr',
+    '较低一组剩余': 'Lower group remaining', '上次较低一组剩余': 'Lower group left at last sample', '上次额度剩余': 'Quota left at last sample',
+    '上次当前较低窗口剩余': 'Lower window left at last sample', '上次周额度剩余': 'Weekly left at last sample', '上次5 小时额度剩余': '5-hour left at last sample', '5 小时额度剩余': '5-hour remaining',
     '工具分布': 'By tool', '按 Tokens': 'By tokens', '模型用量排行': 'Top models', '按天汇总 · 本机时间': 'Daily · local time', '费用': 'Cost', '请求': 'Requests',
     '总 Tokens': 'Total tokens', '参考费用': 'Est. cost', '请求次数': 'Requests', '缓存读取占比': 'Cache read share', '输入 + 输出': 'in + out', '次': 'count', '输入口径': 'of input',
     '较上一时段': 'vs previous period', '上一时段无记录': 'No data in previous period', '暂无变化': 'No change', 'USD': 'USD',
@@ -2908,7 +2913,7 @@
     '所选时段按小时统计，对比紧邻的上一段等长时间。': 'Selected range, by hour, compared with the preceding period of equal length.',
     '过去 24 小时的数据读取失败，请重试。': 'Could not load the past 24 hours. Please try again.',
     '所选时间段的数据读取失败，请重试。': 'Could not load data for the selected time range. Please try again.',
-    '数字显示': 'Numbers', '精确到个位': 'Exact', '默认。例如 3,031,245,120': 'Default. e.g. 3,031,245,120', '简写': 'Compact', '例如 3.03B、240.3M': 'e.g. 3.03B, 240.3M',
+    '数字显示': 'Numbers', '精确到个位': 'Exact', '默认。例如 3,031,245,120': 'Default. e.g. 3,031,245,120', '例如 3,031,245,120': 'e.g. 3,031,245,120', '简写': 'Compact', '默认。例如 3.03B、240.3M': 'Default. e.g. 3.03B, 240.3M', '例如 3.03B、240.3M': 'e.g. 3.03B, 240.3M',
     'Token 和请求数怎么显示。中文界面会在数字后面再加一个小字，例如「≈30.3亿」，方便按中文习惯读。图表坐标轴始终用简写。': 'How token and request counts are shown. Chart axes always use the compact form.',
     // 用量明细（合并了请求记录）
     '每一笔用量，每一次请求': 'Every token, every request',
@@ -3487,7 +3492,15 @@
     '优化桌宠、供应商切换、出口监控与 tokens.ci 交互可靠性': 'Improve Desk Pet, Provider Switch, Egress & tokens.ci Reliability',
     '修复桌宠关闭互动桌面后密码捂眼残留、高刷空转、HTML 主题图片识别与音频重叠播放；补齐 DeepSeek Harness 模型目录/预览与号池校验、出口监控单供应商弹窗保存、tokens.ci 环境检查可重试及全站无障碍焦点环。': 'Fixes stuck password eye-cover on desk disable, high-refresh redraw loops, HTML theme image checks, and stacked audio chimes in Desk Pet; adds DeepSeek Harness model catalog/preview/pool validation, scoped egress dialog saving, retryable tokens.ci env checks, and accessible focus rings.',
     '进一步加固本地代理、账号续期换号与主进程安全边界': 'Further Hardening for Local Proxy, Account Switching & Main-Process Security',
-    '修复畸形代理请求防崩溃、SSE 尾帧与长度截断、TOML/YAML 脱敏与回滚事务、多账号协同续期换号、zstd/Codex/Antigravity 扫描边界、SVG 样式嵌套清洗 fail-closed 及演示模式全量写隔离。': 'Hardens malformed proxy URL handling, SSE trailing-frame flushing & length finish reasons, TOML/YAML secret masking & transaction rollbacks, coordinated account renewal/switching, zstd/Codex/Antigravity scan edges, fail-closed SVG CSS sanitization, and full demo-mode write isolation.'
+    '修复畸形代理请求防崩溃、SSE 尾帧与长度截断、TOML/YAML 脱敏与回滚事务、多账号协同续期换号、zstd/Codex/Antigravity 扫描边界、SVG 样式嵌套清洗 fail-closed 及演示模式全量写隔离。': 'Hardens malformed proxy URL handling, SSE trailing-frame flushing & length finish reasons, TOML/YAML secret masking & transaction rollbacks, coordinated account renewal/switching, zstd/Codex/Antigravity scan edges, fail-closed SVG CSS sanitization, and full demo-mode write isolation.',
+    '总览页全新「瑞士精密仪表」视觉重设计（v0.4.2）': 'Swiss Precision Instrument Overview Redesign (v0.4.2)',
+    '采用冷灰中性色盘、极细发丝线边框与柔和展示字重重塑日间与夜间界面，并将筛选条与通栏统计指标带前置到首屏顶部，四项核心指标数字基线对齐、默认以简写格式呈现（仍可在设置中随时切换精确到个位）。': 'Refreshes light and dark themes with a cool neutral slate palette, crisp hairline dividers, and refined display typography, placing the filter bar and unified Telemetry Strip at the top with baseline-aligned compact figures (still switchable to exact numbers in Settings).',
+    '官方额度与余额卡片升级为「大数字 + 精密双轨」': 'Big-Number & Precision Dual-Track Quota and Balance Cards',
+    '移除总览卡片顶部的粗彩条、双圆环与厚重灰底，改用醒目剩余主数字、右侧重置倒计时/可用天数胶囊与 4px 精密细轨，统一覆盖 Claude、ChatGPT、Grok、Antigravity 与 DeepSeek/中转站余额卡片。': 'Replaces heavy top color bars, double rings, and gray footers on Overview cards with crisp hero remaining figures, right-aligned reset countdown or days-left pills, and 4px precision tracks across Claude, ChatGPT, Grok, Antigravity, DeepSeek, and relay balance cards.',
+    '用量趋势新增柱状 / 曲线切换、均值参考线与活跃脉搏': 'Bar/Curve Trend Switch, Average Line & Activity Pulse',
+    '普通视图下将「用量趋势」与「使用节奏」无缝融合为一张面板（布局编辑与窄屏自动适配），新增渐变柱图、平滑面积曲线切换、日均/时均虚线参考线以及 24 格近期活跃脉搏条。': 'Merges Usage Trend and Usage Rhythm into one unified panel in standard view (automatically adapting in layout edit and narrow windows), adding gradient bars, a smooth area curve toggle, a dashed daily/hourly average reference line, and a 24-slot activity pulse strip.',
+    '工具分布升级全宽堆叠比例条，模型排行新增行内占比底色': 'Stacked Tool Proportion Bar & Inline Model Ranking Bars',
+    '「工具分布」顶部新增多品牌全宽堆叠比例条与细线列表，「模型用量排行」为每行模型加入柔和品牌色行内比例底纹，信息层级更清晰克制，同时同步更新新手引导顺序与全量英文翻译。': 'Adds a full-width multi-brand stacked proportion bar with hairline rows to Tool Distribution and subtle brand-tinted inline proportion fills to Model Ranking, alongside updated onboarding tour steps and complete English translations.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */
@@ -4352,6 +4365,11 @@
     P('返回主会话：(.+)', m => `Back to parent: ${m[1]}`),
     P('上级：(.+)', m => `Parent: ${m[1]}`),
     P('主会话：(.+)', m => `Parent session: ${m[1]}`),
+    P('活跃 (\\d+) / (\\d+) 天', m => `Active ${m[1]}/${m[2]} d`),
+    P('活跃 (\\d+) / (\\d+) 小时', m => `Active ${m[1]}/${m[2]} h`),
+    P('(日均|时均) (\\S+)', m => `${m[1] === '日均' ? 'Daily avg' : 'Hourly avg'} ${m[2]}`),
+    P('(\\d+) 时', m => `${m[1]} h`),
+    P('(.+) 重置', m => `Resets ${m[1]}`),
     P('([^：。·\\n]{1,20})：([^。·\\n]+)', m => `${v(m[1])}: ${v(m[2])}`)
   ];
 

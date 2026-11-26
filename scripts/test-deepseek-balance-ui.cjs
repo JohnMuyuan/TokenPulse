@@ -143,8 +143,8 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     const windowText = await text(`${DETAIL} .ds-window`), localText = await text(`${DETAIL} .ds-local`);
     assert.match(windowText, /按最近 7 天的速度，大约还能用\s*118 天.*最近 7 天\s*¥6\.50.*最近 30 天\s*¥8\.00.*平均每天\s*¥0\.93.*还能用\s*118 天/);
     assert.match(localText, /本机用量\s*DeepSeek Harness.*最近 7 天有一部分是本机以外花的：\s*¥1\.50.*参考 1 美元实际扣\s*¥7\.14\s*按实际扣费校准.*本机花的\s*¥6\.50.*本机以外花的\s*¥1\.50/);
-    // 最近 30 天：7 组 × 6 条 × 60,900 Tokens
-    assert.match(localText, /最近 30 天\s*2,557,800/);
+    // 最近 30 天：7 组 × 6 条 × 60,900 Tokens（默认简写 2.6M）
+    assert.match(localText, /最近 30 天\s*(2\.6M|2,557,800)/);
     // 手动把一笔「本机以外」扣费标为「本机使用」→ 本机以外花的立刻减少；点重置恢复自动判断
     await click(`${DETAIL} .ds-drop-row.is-off [data-ds-mark="local"]`);
     await until(`/本机以外花的\\s*¥0\\.80/.test(document.querySelector('${DETAIL} .ds-local')?.textContent || '')`, 15000);
@@ -274,8 +274,8 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     await evaluate("navigate('overview')");
     // 卡片的主角是指定了本机用量的那个账号（个人），另一个排在下面的队列里
     await until(`document.querySelectorAll('${STRIP} .ds-balance-row').length === 1 && /¥6\\.50/.test(document.querySelector('${STRIP}').textContent)`, 30000);
-    assert.match(await text(STRIP), /DeepSeek\s*个人\s*余额充足.*118\s*天.*总余额\s*¥110\.00\s*充值\s*¥100\.00 ·\s*赠送\s*¥10\.00.*最近 7 天花了\s*¥6\.50.*按这个速度还能用\s*118 天.*本机今天用了.*Tokens.*其他 DeepSeek 账号\s*2\s*个账号\s*公司\s*余额偏低\s*¥23\.40/);
-    assert.ok(Number(await evaluate(`document.querySelector('${STRIP} .ring-value').getAttribute('stroke-dashoffset')`)) < 1, '能用 30 天以上：圆环画满');
+    assert.match(await text(STRIP), /DeepSeek\s*个人\s*余额充足.*¥110\.00\s*118 天\s*总余额 · 充值\s*¥100\.00 ·\s*赠送\s*¥10\.00.*最近 7 天花了\s*¥6\.50.*按这个速度还能用\s*118 天.*本机今天用了.*Tokens.*其他 DeepSeek 账号\s*2\s*个账号\s*公司\s*余额偏低\s*¥23\.40/);
+    assert.equal(await text(`${STRIP} .ds-days-pill`), '118 天', '大数字旁紧凑展示还能用天数');
     assert.equal(await evaluate(`document.querySelector('${STRIP}').classList.contains('low')`), true);
     await evaluate(`document.querySelector('${STRIP}').scrollIntoView({ block: 'center' })`);
     await shot('5-overview');
@@ -397,7 +397,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     const host = new URL(site).host;
     const relayText = await text(DETAIL);
     assert.match(relayText, /我的中转站.*第三方中转站的 Key.*已低于提醒线\s*\$40\.00.*余额.*\$37\.50\s*还能用的额度.*接口\s*sub2api.*这个 Key 在站点上\s*sub2api\s*\$1\.25\s*这个 Key 今天花了\s*12\s*次请求\s*345\.0K Tokens/);
-    assert.match(relayText, /Key 总额度\s*\$12\.50 \/ \$50\.00.*5 小时\s*\$4\.00 \/ \$10\.00.*后重置.*7 天\s*\$28\.50 \/ \$30\.00.*这个 Key 累计.*\$12\.50.*480.*9,800,000.*到期时间/);
+    assert.match(relayText, /Key 总额度\s*\$12\.50 \/ \$50\.00.*5 小时\s*\$4\.00 \/ \$10\.00.*后重置.*7 天\s*\$28\.50 \/ \$30\.00.*这个 Key 累计.*\$12\.50.*480.*(9\.8M|9,800,000).*到期时间/);
     assert.match(relayText, new RegExp('每天的用量 · 站点统计.*余额走势.*站点地址\\s*' + site.replace(/[.:/]/g, '\\$&') + '\\s*Key 只发给这个地址'));
     assert.equal(relayText.includes(host), true);
     assert.deepEqual(await evaluate(`[document.querySelectorAll('${DETAIL} .ds-limit').length, document.querySelectorAll('${DETAIL} .quota-history-grid .chart .col').length, document.querySelector('${DETAIL} .speed-panel'), document.querySelector('${DETAIL} .ds-models'), document.querySelector('${DETAIL} [data-window="7d"] .warn-text') !== null]`), [3, 7, null, null, true], '三条限额、七天的用量；没有速度和模型换算');
@@ -431,7 +431,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
     await until("document.querySelector('#quota-cards [data-ds-balance=relay]')");
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#quota-cards [data-ds-balance]')].map(card => card.dataset.dsBalance)"), ['deepseek', 'relay']);
     assert.equal(await evaluate("document.querySelector('#quota-cards [data-ds-balance=relay] .account-avatar.relay img')?.getAttribute('src') === window.PulseAvatars.PRESETS[0].src"), true, '总览的卡片上也是选的图标');
-    assert.match(await text('#quota-cards [data-ds-balance=relay]'), /我的中转站\s*第三方 Key\s*余额偏低.*余额\s*\$37\.50.*已低于提醒线\s*\$40\.00.*这个 Key 今天用了\s*345\.0K Tokens/);
+    assert.match(await text('#quota-cards [data-ds-balance=relay]'), /我的中转站\s*第三方 Key\s*余额偏低.*\$37\.50.*余额 ·.*已低于提醒线\s*\$40\.00.*这个 Key 今天用了\s*345\.0K Tokens/);
     await evaluate("document.querySelector('#quota-cards [data-ds-balance=relay]').scrollIntoView({ block: 'center' })");
     await shot('12-relay-card');
     await click('#quota-cards [data-ds-balance=relay] [data-action="detail"]');

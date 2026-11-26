@@ -20,7 +20,7 @@ const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok 
   // CC Switch 导入的工具（core/cc-switch.ts 的 CC_SOURCES），图标来自 lobe-icons；认不出的还是首字母
   'Gemini CLI': 'geminicli', OpenCode: 'opencode', Hermes: 'hermes', 'Copilot CLI': 'githubcopilot' };
 const HEALTH = { good: '节奏正常', warning: '用量偏高', serious: '重置前压力较高', critical: '当前窗口紧张', unknown: '暂无数据' };
-const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', account: 'chatgpt', from: '', to: '', fromTime: '00:00', toTime: '23:59', since: undefined, until: undefined, search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', reqSession: '', reqSessionLabel: '', models: [], project: '', channel: 'all', usageView: 'requests' };
+const state = { page: 'overview', days: 30, follow: false, capWindow: 'week', capMetric: 'tokens', source: 'all', metric: 'tokens', chartStyle: 'bar', account: 'chatgpt', from: '', to: '', fromTime: '00:00', toTime: '23:59', since: undefined, until: undefined, search: '', sort: 'day', tablePage: 0, reqStatus: 'all', reqSearch: '', reqSort: 'time', reqPage: 0, reqAccount: '', reqSession: '', reqSessionLabel: '', models: [], project: '', channel: 'all', usageView: 'requests' };
 const RING = 2 * Math.PI * 44;
 const INNER_RING = 2 * Math.PI * 34;
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -712,12 +712,12 @@ function tokens(n) {
   return number(n);
 }
 /*
- * 数字显示：卡片、表格里的 Token 和请求数默认精确到个位（3,031,245,120），设置里可以换回简写（3.03B）。
+ * 数字显示：卡片、表格里的 Token 和请求数默认简写（3.03B），设置里可以换成精确到个位（3,031,245,120）。
  * 中文界面在后面再跟一个小字「≈30.3亿」—— 中文读者对「亿 / 万」比对 B / M 反应快得多。图表坐标轴和句子里仍用简写。
  */
 const NUMBER_KEY = 'tokenpulse-number';
-let numberMode = 'exact';
-try { numberMode = localStorage.getItem(NUMBER_KEY) === 'compact' ? 'compact' : 'exact'; } catch { /* 读不到就用默认 */ }
+let numberMode = 'compact';
+try { numberMode = localStorage.getItem(NUMBER_KEY) === 'exact' ? 'exact' : 'compact'; } catch { /* 读不到就用默认 */ }
 function amount(n) { return numberMode === 'compact' ? tokens(n) : number(Math.round(n || 0)); }
 function cnApprox(n) {
   if (window.PulseI18n?.lang() === 'en' || !Number.isFinite(n) || n < 1e4) return '';
@@ -1090,39 +1090,47 @@ function quotaCard({ kind, key, account }, pool = null) {
   if (account && (account.five || account.week)) {
     const remainingValues = windows.filter(win => !waitingReset(account, win)).map(win => Math.max(0, 100 - win.used));
     const remainingPct = remainingValues.length ? Math.min(...remainingValues) : null;
-    const value = el('div', { class: 'quota-remaining' + (remainingPct == null ? ' empty-number' : ''), text: remainingPct == null ? '—' : remainingPct.toFixed(1) }, remainingPct == null ? [] : [el('small', { text: '%' })]);
+    const heroTone = !stale && !waiting && report
+      ? (report.used >= 90 ? ' critical' : pressured(report) ? ' warning' : '')
+      : '';
+    const value = el('div', { class: 'quota-remaining' + (remainingPct == null ? ' empty-number' : heroTone), text: remainingPct == null ? '—' : remainingPct.toFixed(1) }, remainingPct == null ? [] : [el('small', { text: '%' })]);
     const windowLabel = account.five && account.week ? '当前较低窗口' : report === account.week ? '周额度' : '5 小时额度';
-    const hero = el('div', { class: 'quota-hero-text' }, [
-      el('span', { class: 'quota-hero-label', text: `${stale ? '上次' : ''}${windowLabel}剩余` }),
-      el('span', { class: 'quota-hero-value', 'data-reset-at': !waiting && report?.resetAt ? report.resetAt : null, 'data-reset-format': 'short', text: resetShortText(report?.resetAt, waiting) }),
-      el('span', { class: 'quota-hero-sub', text: waiting ? '旧窗口已结束' : report?.resetAt ? `${date(report.resetAt)} · 本地时间` : '接口未提供重置时间' })
-    ]);
-    const ringNode = ring({ five: account.five, week: account.week, account });
-    ringNode.append(el('div', { class: 'ring-center' }, [value]));
-    body.push(el('div', { class: 'quota-hero' }, [ringNode, hero]));
+    const resetSub = waiting ? '旧窗口已结束' : report?.resetAt ? `${date(report.resetAt)} 重置` : '接口未提供重置时间';
+    body.push(el('div', { class: 'quota-hero' }, [
+      el('div', { class: 'quota-hero-main' }, [
+        value,
+        el('span', { class: 'quota-hero-reset', 'data-reset-at': !waiting && report?.resetAt ? report.resetAt : null, 'data-reset-format': 'short', text: resetShortText(report?.resetAt, waiting) }),
+      ]),
+      el('div', { class: 'quota-hero-sub', text: `${stale ? '上次' : ''}${windowLabel}剩余 · ${resetSub}` }),
+    ]));
     const both = Boolean(account.five && account.week);
-    for (const [name, label, ring, win] of [['five', '5 小时', '外环', account.five], ['week', '周额度', '内环', account.week]]) {
+    const tracks = [];
+    for (const [name, label, win] of [['five', '5 小时', account.five], ['week', '周额度', account.week]]) {
       if (!win) continue;
       const pending = waitingReset(account, win);
-      // 双环时标题前的圆点就是图例：颜色和对应的环一致。
-      const title = both ? el('span', { class: 'mini-label' }, [el('i', { class: `win-dot ${name}`, 'aria-hidden': true }), label, el('small', { text: ring })]) : el('span', { text: label });
+      const title = both ? el('span', { class: 'mini-label' }, [el('i', { class: `win-dot ${name}`, 'aria-hidden': true }), label]) : el('span', { class: 'mini-label', text: label });
       const usedClass = 'num' + (!pending && win.used < 90 && pressured(win) ? ' warn-text' : '');
       const left = !pending && !stale ? byCapacity(win, 100 - win.used) : null;
       const usedText = el('span', { class: 'mini-used' }, [
         el('span', { class: usedClass, text: pending ? '等待确认' : `已用 ${percent(win.used)}` }),
         left ? el('span', { class: 'mini-left num', text: ` · 剩约 ${tokens(left.tokens)}`, title: `按整窗容量折算：剩余约 ${tokens(left.tokens)} Tokens · ${money(left.costUsd)}` }) : null
       ]);
-      body.push(el('div', { class: 'quota-mini' }, [
+      tracks.push(el('div', { class: 'quota-mini' }, [
         el('div', { class: 'quota-mini-head' }, [title, usedText]),
         pending ? el('div', { class: 'track' }) : track(win.used, pressured(win), '已用额度', both ? name : ''),
         el('div', { class: 'mini-reset' }, [icon('clock'), el('span', { 'data-reset-at': !pending && win.resetAt ? win.resetAt : null, 'data-reset-format': 'full', text: resetFullText(win.resetAt, pending) })])
       ]));
     }
-    for (const row of account.modelWeeks || []) body.push(modelWeekMini(row));
+    for (const row of account.modelWeeks || []) tracks.push(modelWeekMini(row));
+    if (tracks.length) body.push(el('div', { class: 'quota-tracks' }, tracks));
   } else {
-    const ringNode = ring({});
-    ringNode.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining empty-number', text: '—' })]));
-    body.push(el('div', { class: 'quota-hero' }, [ringNode, el('div', { class: 'quota-hero-text' }, [el('span', { class: 'quota-hero-label', text: '额度剩余' }), el('span', { class: 'quota-hero-value', text: '尚未取得官方额度' })])]));
+    body.push(el('div', { class: 'quota-hero' }, [
+      el('div', { class: 'quota-hero-main' }, [
+        el('div', { class: 'quota-remaining empty-number', text: '—' }),
+        el('span', { class: 'quota-hero-reset', text: '尚未取得官方额度' }),
+      ]),
+      el('div', { class: 'quota-hero-sub', text: '额度剩余' }),
+    ]));
     body.push(el('div', { class: 'quota-missing' }, [el('p', { text: '可能尚未登录、凭据过期或网络未连通。本机用量仍正常记录。' })]));
   }
   if (multi) body.push(poolQueue(pool, key));
@@ -1304,10 +1312,14 @@ function windowAnalysis() {
   result.hours = data?.cur?.hours || null;
   return result;
 }
-function delta(now, previous) {
-  if (!previous) return [now ? '上一时段无记录' : '暂无变化'];
+function deltaInfo(now, previous) {
+  if (!previous) return { badge: null, sub: [now ? '上一时段无记录' : '暂无变化'] };
   const pct = ((now - previous) / previous) * 100;
-  return [el('span', { class: 'delta ' + (pct >= 0 ? 'up' : 'down'), text: `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%` }), '较上一时段'];
+  const up = pct >= 0;
+  return {
+    badge: el('span', { class: 'stat-delta-top ' + (up ? 'up' : 'down'), text: `${up ? '+' : ''}${pct.toFixed(1)}%` }),
+    sub: ['较上一时段']
+  };
 }
 function renderStats() {
   if ((state.page === 'usage' || state.page === 'overview') && (analysis.loading || analysis.error)) {
@@ -1319,17 +1331,29 @@ function renderStats() {
   const cache = t.input ? t.cacheRead / t.input * 100 : null;
   const offCost = Number(t.officialCostUsd) || 0;
   const apiCost = Number(t.apiCostUsd) || 0;
+  const splitSum = offCost + apiCost;
   const showCostSplit = state.page === 'usage' || offCost > 0 || apiCost > 0;
+  const tokDelta = deltaInfo(t.tokens, p.tokens);
+  const costDelta = analysis.unpriced ? { badge: null, sub: [`${number(analysis.unpriced)} 次请求未定价`] } : deltaInfo(t.costUsd, p.costUsd);
+  const reqDelta = deltaInfo(t.requests, p.requests);
   const stats = [
-    ['tokens', '总 Tokens', t.tokens, amount, delta(t.tokens, p.tokens), '输入 + 输出'],
-    ['cost', '参考费用', t.costUsd, money, analysis.unpriced ? [`${number(analysis.unpriced)} 次请求未定价`] : delta(t.costUsd, p.costUsd), 'USD'],
-    ['requests', state.page === 'usage' ? '模型调用次数' : '请求次数', t.requests, amount, delta(t.requests, p.requests), '次'],
-    ['cache', '缓存读取占比', cache, percent, [`${tokens(t.cacheRead)} 缓存读取 / ${tokens(t.input)} 输入`], '输入口径']
+    ['tokens', '总 Tokens', t.tokens, amount, tokDelta.badge, tokDelta.sub, '输入 + 输出'],
+    ['cost', '参考费用', t.costUsd, money, costDelta.badge, costDelta.sub, 'USD'],
+    ['requests', state.page === 'usage' ? '模型调用次数' : '请求次数', t.requests, amount, reqDelta.badge, reqDelta.sub, '次'],
+    ['cache', '缓存读取占比', cache, percent, null, [`${tokens(t.cacheRead)} 缓存读取 / ${tokens(t.input)} 输入`], '输入口径']
   ];
-  $('tiles').replaceChildren(...stats.map(([name, label, value, format, sub, unit]) => {
+  $('tiles').replaceChildren(...stats.map(([name, label, value, format, topRight, sub, unit]) => {
     const valueNode = el('span', { class: 'num' });
     countTo(valueNode, 'stat:' + name, value, format);
     const approx = format === amount ? cnApprox(value) : '';
+    let costBar = null;
+    if (name === 'cost' && showCostSplit && splitSum > 0) {
+      const subSeg = el('span', { class: 'seg-sub' });
+      const apiSeg = el('span', { class: 'seg-api' });
+      subSeg.style.width = `${(offCost / splitSum * 100).toFixed(1)}%`;
+      apiSeg.style.width = `${(apiCost / splitSum * 100).toFixed(1)}%`;
+      costBar = el('div', { class: 'stat-cost-bar', 'aria-hidden': 'true' }, [subSeg, apiSeg]);
+    }
     const costSplit = name === 'cost' && showCostSplit
       ? el('div', {
           class: 'stat-cost-split num',
@@ -1339,9 +1363,14 @@ function renderStats() {
           el('span', { class: 'cost-pill api-pay', text: `API 实付 ${money(apiCost)}` }),
         ])
       : null;
-    const card = el('article', { class: 'stat' }, [
-      el('div', { class: 'stat-label' }, [el('span', { class: 'stat-icon' }, [icon(name)]), el('span', { text: label }), el('span', { class: 'stat-unit', text: unit })]),
+    const accentTile = name === 'cache' && cache != null && cache >= 50;
+    const card = el('article', { class: 'stat' + (accentTile ? ' is-accent' : '') }, [
+      el('div', { class: 'stat-label' }, [
+        el('span', { text: label }),
+        topRight || el('span', { class: 'stat-unit', text: unit })
+      ]),
       el('div', { class: 'stat-value' + (format === amount && numberMode === 'exact' && value >= 1e9 ? ' long' : ''), title: format === amount ? number(value) : '' }, [valueNode, approx ? el('small', { class: 'cn-approx', text: approx }) : null]),
+      costBar,
       costSplit,
       el('div', { class: 'stat-sub' }, sub)
     ].filter(Boolean));
@@ -1435,43 +1464,97 @@ function syncDailyChartWidth(animate = false) {
   const drawn = Number(host.dataset.drawnWidth || 0);
   if (next > 0 && Math.abs(next - drawn) > 2) dailyChart(animate);
 }
+let chartGradSeq = 0;
 function chart(host, rows, metric = 'tokens', hourly = false, animate = entering()) {
   host.replaceChildren();
   if (!rows.length) { unwatchChartHost(host); host.dataset.drawnWidth = ''; host.append(empty('所选范围暂无记录')); return; }
   const measured = Math.round(host.clientWidth);
   host.dataset.drawnWidth = String(measured);
-  const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 720), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
-  const peak = Math.max(0, ...rows.map(row => row[metric] || 0));
-  const max = metric === 'costUsd' ? (peak > 0 ? peak : 1) : Math.max(1, peak);
+  const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 720), h = host.clientHeight || 224, left = 48, right = 8, bottom = 26, top = 16;
+  const vals = rows.map(row => row[metric] || 0);
+  const peak = Math.max(0, ...vals);
+  const max = metric === 'costUsd' ? (peak > 0 ? peak * 1.12 : 1) : Math.max(1, peak * 1.12);
+  const avg = vals.reduce((a, b) => a + b, 0) / rows.length;
+  const lineMode = host.id === 'daily-chart' && state.chartStyle === 'line' && rows.length > 1;
   const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': hourly ? (state.days === '24h' ? '最近24小时用量柱状图' : '按小时用量柱状图') : '每日用量柱状图' });
+  const gradId = `tp-cg-${++chartGradSeq}`;
+  const defs = svg('defs');
+  const barGrad = svg('linearGradient', { id: gradId + '-bar', x1: '0', y1: '0', x2: '0', y2: '1' });
+  barGrad.append(svg('stop', { offset: '0%', 'stop-color': 'var(--accent)', 'stop-opacity': '0.92' }), svg('stop', { offset: '100%', 'stop-color': 'var(--accent)', 'stop-opacity': '0.32' }));
+  const areaGrad = svg('linearGradient', { id: gradId + '-area', x1: '0', y1: '0', x2: '0', y2: '1' });
+  areaGrad.append(svg('stop', { offset: '0%', 'stop-color': 'var(--accent)', 'stop-opacity': '0.22' }), svg('stop', { offset: '100%', 'stop-color': 'var(--accent)', 'stop-opacity': '0.01' }));
+  defs.append(barGrad, areaGrad);
+  node.append(defs);
   const fmt = metric === 'costUsd' ? money : metric === 'requests' ? number : tokens;
+  const plotH = h - top - bottom;
   for (let i = 0; i <= 2; i++) {
-    const y = top + (h - top - bottom) * i / 2;
-    node.append(svg('line', { class: 'grid', x1: left, x2: w - 5, y1: y, y2: y }));
+    const y = top + plotH * i / 2;
+    node.append(svg('line', { class: i === 2 ? 'grid base' : 'grid', x1: left, x2: w - right, y1: y, y2: y }));
     const label = svg('text', { class: 'axis', x: left - 9, y: y + 4, 'text-anchor': 'end' });
-    label.textContent = metric !== 'costUsd' && max === 1 && i === 1 ? '' : fmt(max * (1 - i / 2)); node.append(label);
+    label.textContent = metric !== 'costUsd' && max <= 1.2 && i === 1 ? '' : fmt(max * (1 - i / 2)); node.append(label);
   }
-  const slot = (w - left - 8) / rows.length, barWidth = Math.max(.5, Math.min(slot * .62, 30));
+  const slot = (w - left - right) / rows.length, barWidth = Math.max(.5, Math.min(slot * .58, 28));
   const step = Math.min(16, 700 / rows.length);
   const today = D.dayKey(Date.now());
   const multiDayHourly = hourly && rows.length > 24 && D.dayKey(rows[0].hour) !== D.dayKey(rows[rows.length - 1].hour);
-  rows.forEach((row, i) => {
-    const barHeight = Math.max(row[metric] > 0 ? 2 : 0, ((row[metric] || 0) / max) * (h - top - bottom));
-    const x = left + i * slot + (slot - barWidth) / 2;
+  const tipFor = (row) => {
     const hourDate = hourly ? new Date(row.hour) : null;
     const label = hourly ? (multiDayHourly ? `${hourDate.getMonth() + 1}/${hourDate.getDate()} ${hourDate.getHours()}:00` : `${hourDate.getHours()}:00`) : row.label || row.day;
-    const text = `${hourly ? date(row.hour) : label}\n${tokens(row.tokens)} Tokens\n${money(row.costUsd)} · ${number(row.requests)} 次请求`;
-    const rect = svg('rect', { class: 'col' + (row.current || row.day === today ? ' today' : ''), x, y: h - bottom - barHeight, width: barWidth, height: barHeight, rx: Math.min(4, barWidth / 2), tabindex: 0, 'aria-label': text });
-    rect.style.animationDelay = `${Math.round(i * step)}ms`;
-    rect.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
-    rect.addEventListener('pointerleave', () => { $('tip').hidden = true; });
-    rect.addEventListener('focus', () => { const box = rect.getBoundingClientRect(); tipAt(text, box.x, box.y); });
-    rect.addEventListener('blur', () => { $('tip').hidden = true; });
-    node.append(rect);
-    if (i % Math.max(1, Math.ceil(rows.length / 7)) === 0 || i === rows.length - 1) {
-      const tick = svg('text', { class: 'axis', x: x + barWidth / 2, y: h - 6, 'text-anchor': 'middle' }); tick.textContent = hourly ? label : row.tick || row.day.slice(5); node.append(tick);
+    return { label, text: `${hourly ? date(row.hour) : label}\n${tokens(row.tokens)} Tokens\n${money(row.costUsd)} · ${number(row.requests)} 次请求` };
+  };
+  if (lineMode) {
+    const pts = rows.map((row, i) => [left + i * slot + slot / 2, top + (1 - (row[metric] || 0) / max) * plotH]);
+    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+      const cx = ((x0 + x1) / 2).toFixed(1);
+      d += ` C${cx},${y0.toFixed(1)} ${cx},${y1.toFixed(1)} ${x1.toFixed(1)},${y1.toFixed(1)}`;
     }
-  });
+    const baseY = (h - bottom).toFixed(1);
+    const area = svg('path', { class: 'line-area trend-area', d: `${d} L${pts.at(-1)[0].toFixed(1)},${baseY} L${pts[0][0].toFixed(1)},${baseY} Z`, fill: `url(#${gradId}-area)` });
+    const line = svg('path', { class: 'line-path trend-line', d, pathLength: 1, 'stroke-dasharray': 1 });
+    node.append(area, line);
+    rows.forEach((row, i) => {
+      const [cx, cy] = pts[i];
+      const { label, text } = tipFor(row);
+      const hit = svg('rect', { class: 'line-hit', x: left + i * slot, y: top, width: slot, height: plotH, tabindex: 0, 'aria-label': text });
+      hit.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
+      hit.addEventListener('pointerleave', () => { $('tip').hidden = true; });
+      hit.addEventListener('focus', () => { const box = hit.getBoundingClientRect(); tipAt(text, box.x, box.y); });
+      hit.addEventListener('blur', () => { $('tip').hidden = true; });
+      node.append(hit);
+      if (row.current || row.day === today || (peak > 0 && (row[metric] || 0) === peak)) {
+        node.append(svg('circle', { class: 'line-dot trend-dot', cx: cx.toFixed(1), cy: cy.toFixed(1), r: row.current || row.day === today ? 4.5 : 3.5 }));
+      }
+      if (i % Math.max(1, Math.ceil(rows.length / 7)) === 0 || i === rows.length - 1) {
+        const tick = svg('text', { class: 'axis', x: cx.toFixed(1), y: h - 6, 'text-anchor': 'middle' }); tick.textContent = hourly ? label : row.tick || row.day.slice(5); node.append(tick);
+      }
+    });
+  } else {
+    rows.forEach((row, i) => {
+      const barHeight = Math.max(row[metric] > 0 ? 2 : 0, ((row[metric] || 0) / max) * plotH);
+      const x = left + i * slot + (slot - barWidth) / 2;
+      const { label, text } = tipFor(row);
+      const isToday = Boolean(row.current || row.day === today);
+      const rect = svg('rect', { class: 'col' + (isToday ? ' today' : ' has-grad'), x, y: h - bottom - barHeight, width: barWidth, height: barHeight, rx: Math.min(3.5, barWidth / 2), fill: isToday ? null : `url(#${gradId}-bar)`, tabindex: 0, 'aria-label': text });
+      rect.style.animationDelay = `${Math.round(i * step)}ms`;
+      rect.addEventListener('pointermove', e => tipAt(text, e.clientX, e.clientY));
+      rect.addEventListener('pointerleave', () => { $('tip').hidden = true; });
+      rect.addEventListener('focus', () => { const box = rect.getBoundingClientRect(); tipAt(text, box.x, box.y); });
+      rect.addEventListener('blur', () => { $('tip').hidden = true; });
+      node.append(rect);
+      if (i % Math.max(1, Math.ceil(rows.length / 7)) === 0 || i === rows.length - 1) {
+        const tick = svg('text', { class: 'axis', x: x + barWidth / 2, y: h - 6, 'text-anchor': 'middle' }); tick.textContent = hourly ? label : row.tick || row.day.slice(5); node.append(tick);
+      }
+    });
+  }
+  if (avg > 0 && peak > 0) {
+    const avgY = top + (1 - avg / max) * plotH;
+    node.append(svg('line', { class: 'avg-line', x1: left, x2: w - right, y1: avgY.toFixed(1), y2: avgY.toFixed(1) }));
+    const avgLabel = svg('text', { class: 'avg-label', x: w - right, y: Math.max(top + 10, avgY - 6).toFixed(1), 'text-anchor': 'end' });
+    avgLabel.textContent = `${hourly ? '时均' : '日均'} ${fmt(avg)}`;
+    node.append(avgLabel);
+  }
   host.append(node);
   playChart(host, animate);
   const redraw = () => {
@@ -1506,33 +1589,83 @@ function renderOverview() {
   $('chart-summary').replaceChildren(
     el('span', {}, [hourly ? '每小时平均' : '日均', el('b', { text: tokens(t.tokens / n) + ' Tokens' })]),
     el('span', {}, [hourly ? '活跃小时' : '活跃天数', el('b', { text: hourly ? `${active} / ${n} 小时` : `${active} / ${n} 天` })]));
+  if ($('rhythm-tag')) $('rhythm-tag').textContent = hourly ? `活跃 ${active} / ${n} 小时` : `活跃 ${active} / ${n} 天`;
   const rhythms = [
+    [hourly ? '每小时平均' : '日均消耗', `${tokens(t.tokens / n)} Tokens`, true],
     [hourly ? '每小时平均请求' : '日均请求', `${number(t.requests / n)} 次`],
     ['单次平均用量', t.requests ? `${tokens(t.tokens / t.requests)} Tokens` : '—'],
     [hourly ? '用量最高的一小时' : '用量最高的一天', peak?.tokens ? (hourly ? date(peak.hour) : peak.day.slice(5).replace('-', ' / ')) : '—'],
     ['峰值用量', peak?.tokens ? amount(peak.tokens) : '—']
   ];
-  $('rhythm').replaceChildren(...rhythms.map(([label, value], i) => stagger(el('div', { class: 'rhythm-row' }, [el('span', { text: label }), el('b', { text: value })]), i)),
+  const pulseSlice = slots.slice(-24);
+  const pulseMax = Math.max(0, ...pulseSlice.map(row => row.tokens || 0));
+  const pulseWrap = pulseSlice.length ? el('div', { class: 'rhythm-pulse-wrap' }, [
+    el('div', { class: 'rhythm-pulse-title' }, [
+      el('span', { text: hourly ? '小时活跃脉搏' : '近期活跃脉搏' }),
+      el('span', { class: 'num', text: peak?.tokens ? tokens(peak.tokens) : '—' }),
+    ]),
+    el('div', { class: 'rhythm-pulse', role: 'img', 'aria-label': hourly ? '小时活跃脉搏' : '近期活跃脉搏' }, pulseSlice.map(row => {
+      const v = row.tokens || 0;
+      const pct = pulseMax > 0 ? Math.max(v > 0 ? 14 : 8, Math.round(v / pulseMax * 100)) : 10;
+      const bar = el('span', { class: 'rhythm-pulse-bar' + (v === 0 ? ' zero' : pulseMax > 0 && v === pulseMax ? ' peak' : '') });
+      bar.style.height = `${pct}%`;
+      const when = hourly ? date(row.hour) : (row.day || '');
+      const tipText = `${when}\n${tokens(v)} Tokens · ${number(row.requests || 0)} 次请求`;
+      bar.addEventListener('pointermove', e => tipAt(tipText, e.clientX, e.clientY));
+      bar.addEventListener('pointerleave', () => { $('tip').hidden = true; });
+      return bar;
+    })),
+    el('div', { class: 'rhythm-pulse-axis' }, [
+      el('span', { text: hourly ? new Date(pulseSlice[0].hour).getHours() + ':00' : (pulseSlice[0].day || '').slice(5) }),
+      el('span', { text: hourly ? new Date(pulseSlice.at(-1).hour).getHours() + ':00' : (pulseSlice.at(-1).day || '').slice(5) }),
+    ]),
+  ]) : null;
+  $('rhythm').replaceChildren(...rhythms.map(([label, value, primary], i) => stagger(el('div', { class: 'rhythm-row' + (primary ? ' primary' : '') }, [el('span', { text: label }), el('b', { text: value })]), i)),
+    pulseWrap,
     el('p', { class: 'rhythm-note', text: hourly ? (state.days === 1 ? '今天从零点到现在，按小时统计；平均值按已经过去的小时算，对比昨天全天。' : state.days === '24h' ? '过去 24 小时，按小时统计，对比再往前的 24 小时。' : '所选时段按小时统计，对比紧邻的上一段等长时间。') : '平均值包含没有使用的日期。对比上一段等长时间，今天的记录仍在累积。' }));
   const sources = [...analysis.sources].sort((a, b) => b.tokens - a.tokens);
-  $('sources').replaceChildren(...(sources.length ? sources.map((row, i) => {
-    const share = t.tokens ? row.tokens / t.tokens * 100 : 0;
-    return stagger(el('div', { class: 'source-row ' + (BRAND_OF_SOURCE[row.source] || '') }, [
-      sourceLogo(row.source),
-      el('div', {}, [
-        el('div', { class: 'source-top' }, [el('span', { text: row.source }), el('span', { class: 'share', text: percent(share) })]),
-        track(share, false, '工具 token 占比'),
-        el('div', { class: 'source-bottom' }, [el('span', { text: `${tokens(row.tokens)} Tokens · ${number(row.requests)} 次` }), el('span', { text: money(row.costUsd) })])
-      ])
-    ]), i);
-  }) : [empty('所选范围还没有工具用量')]));
+  if (sources.length) {
+    const stack = el('div', { class: 'source-stack', role: 'img', 'aria-label': '工具 token 占比' }, sources.map(row => {
+      const share = t.tokens ? row.tokens / t.tokens * 100 : 0;
+      const seg = el('span', { class: 'source-stack-seg ' + (BRAND_OF_SOURCE[row.source] || '') });
+      seg.style.width = `${Math.max(1, share).toFixed(2)}%`;
+      const tipText = `${row.source}\n${percent(share)} · ${tokens(row.tokens)} Tokens\n${number(row.requests)} 次请求 · ${money(row.costUsd)}`;
+      seg.addEventListener('pointermove', e => tipAt(tipText, e.clientX, e.clientY));
+      seg.addEventListener('pointerleave', () => { $('tip').hidden = true; });
+      return seg;
+    }));
+    $('sources').replaceChildren(stack, ...sources.map((row, i) => {
+      const share = t.tokens ? row.tokens / t.tokens * 100 : 0;
+      const brand = BRAND_OF_SOURCE[row.source] || '';
+      return stagger(el('div', { class: 'source-row ' + brand }, [
+        el('span', { class: 'source-dot ' + brand, 'aria-hidden': 'true' }),
+        el('div', { class: 'source-main' }, [
+          el('div', { class: 'source-top', text: row.source }),
+          el('div', { class: 'source-bottom', text: `${number(row.requests)} 次 · ${money(row.costUsd)}` })
+        ]),
+        el('div', { class: 'source-figures' }, [
+          el('span', { class: 'share', text: percent(share) }),
+          el('small', { text: amount(row.tokens) })
+        ])
+      ]), i);
+    }));
+  } else {
+    $('sources').replaceChildren(empty('所选范围还没有工具用量'));
+  }
   const models = [...analysis.models].sort((a, b) => b.tokens - a.tokens).slice(0, 5);
-  $('model-ranking').replaceChildren(...(models.length ? models.map((row, i) => stagger(el('div', { class: 'rank-row' }, [
-    el('span', { class: 'rank-number', text: String(i + 1).padStart(2, '0') }),
-    sourceLogo(row.source),
-    el('div', { class: 'rank-body' }, [el('div', { class: 'rank-name', text: row.model, title: row.model }), el('div', { class: 'rank-meta', text: row.source })]),
-    el('div', { class: 'rank-value', title: number(row.tokens) }, [...qty(row.tokens), el('div', { class: 'rank-meta', text: row.unpriced ? '部分未定价' : money(row.costUsd) })])
-  ]), i)) : [empty('所选范围还没有模型用量')]));
+  const topModelTokens = models[0]?.tokens || 0;
+  $('model-ranking').replaceChildren(...(models.length ? models.map((row, i) => {
+    const brand = BRAND_OF_SOURCE[row.source] || '';
+    const fill = el('span', { class: 'rank-fill', 'aria-hidden': 'true' });
+    fill.style.width = `${topModelTokens ? Math.max(8, Math.round(row.tokens / topModelTokens * 100)) : 0}%`;
+    return stagger(el('div', { class: 'rank-row ' + brand }, [
+      fill,
+      el('span', { class: 'rank-number', text: String(i + 1).padStart(2, '0') }),
+      sourceLogo(row.source),
+      el('div', { class: 'rank-body' }, [el('div', { class: 'rank-name', text: row.model, title: row.model }), el('div', { class: 'rank-meta', text: row.source })]),
+      el('div', { class: 'rank-value', title: number(row.tokens) }, [...qty(row.tokens), el('div', { class: 'rank-meta', text: row.unpriced ? '部分未定价' : money(row.costUsd) })])
+    ]), i);
+  }) : [empty('所选范围还没有模型用量')]));
 }
 function stagger(node, i) { node.style.setProperty('--i', i); return node; }
 
@@ -3806,11 +3939,11 @@ function renderKnowledgeGaps() {
 function loadKnowledge() { api.knowledgeState?.().then(renderKnowledge).catch(() => {}); }
 
 const NUMBER_OPTIONS = [
-  { value: 'exact', label: '精确到个位', hint: '默认。例如 3,031,245,120' },
-  { value: 'compact', label: '简写', hint: '例如 3.03B、240.3M' }
+  { value: 'compact', label: '简写', hint: '默认。例如 3.03B、240.3M' },
+  { value: 'exact', label: '精确到个位', hint: '例如 3,031,245,120' }
 ];
 function setNumberMode(mode) {
-  numberMode = mode === 'compact' ? 'compact' : 'exact';
+  numberMode = mode === 'exact' ? 'exact' : 'compact';
   try { localStorage.setItem(NUMBER_KEY, numberMode); } catch { /* 存不下就只对这次生效 */ }
   if (current) render(current);
 }
@@ -4302,6 +4435,13 @@ $('export-requests').addEventListener('click', async () => {
     if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
   } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
   finally { button.disabled = !requestPage?.total; }
+});
+$('chart-style')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-chart-style]'); if (!button) return;
+  state.chartStyle = button.dataset.chartStyle === 'line' ? 'line' : 'bar';
+  for (const item of $('chart-style').querySelectorAll('button')) { item.classList.toggle('on', item === button); item.setAttribute('aria-pressed', String(item === button)); }
+  syncSeg($('chart-style'));
+  if (analysis) dailyChart(true);
 });
 $('chart-metric').addEventListener('click', event => {
   const button = event.target.closest('[data-metric]'); if (!button) return;
