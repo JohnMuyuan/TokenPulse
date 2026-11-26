@@ -1295,8 +1295,15 @@ function buildWindowInsight(
       curAttrResult = { ...attr, coUsedPoints, coUsedIntervals };
     }
 
-    // 若只有单次采样（尚无相邻采样点差值），且窗口起始本机就有完整记录，退回整段观察值
-    if (cleanPct < MIN_CAPACITY_PCT && segment.points.length === 1 && targetPt.used >= MIN_CAPACITY_PCT) {
+    // 若只有单次采样（尚无相邻采样点差值），且未产出污染/异常区间、窗口起始本机就有完整记录，退回整段观察值
+    if (
+      cleanPct < MIN_CAPACITY_PCT &&
+      segment.points.length === 1 &&
+      targetPt.used >= MIN_CAPACITY_PCT &&
+      attr.localIntervals.length === 0 &&
+      attr.offPoints === 0 &&
+      coUsedPoints === 0
+    ) {
       const endBound = Math.min(segment.endAt, targetPt.at + 60_000, now);
       const cRows = sortedRows.filter((r) => r.at >= segment.startAt && r.at <= endBound);
       const cSum = summarizeRows(cRows);
@@ -2012,7 +2019,7 @@ export class AntigravityQuota {
       this.stored.last = slot.last;
       this.stored.history = slot.history;
       this.stored.notified = { ...slot.notified };
-    } else if (!remaining.length) {
+    } else if (!remaining.length || hadSlot) {
       delete this.stored.last;
       this.stored.history = [];
       this.stored.notified = {};
@@ -2527,7 +2534,7 @@ export class AntigravityQuota {
     const now = this.now();
     const since = days > 0 ? now - days * DAY : 0;
     const baseRows =
-      days <= 30
+      days > 0 && days <= 30
         ? this.recentRows(now)
         : (() => {
             try {
@@ -2717,7 +2724,6 @@ export class AntigravityQuota {
         // 多账号模式：先自动续期快过期的 OAuth 账号，并顺带探一次本机运行中的 Antigravity
         await renewAgyCredentials(at).catch(() => 0);
         const refreshedVisible = visibleAgyAccounts();
-        const legacyOwner = this.legacyOwnerId(refreshedVisible);
         const names = agyDisplayNames(refreshedVisible);
 
         let localSession: { status: AgyStatus; email: string } | null = null;
@@ -2737,6 +2743,8 @@ export class AntigravityQuota {
             this.activeLocalAccountId = "";
           }
         }
+        // 在本机登录身份确认并写入 antigravity-logins.json 之后再判定零配置历史原主，防止首轮误丢历史
+        const legacyOwner = this.legacyOwnerId(refreshedVisible);
 
         if (localSession?.status) {
           this.recordLocalCatalog(localSession.status, at);

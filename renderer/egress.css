@@ -168,7 +168,7 @@ dialog.egress-dialog[open]::backdrop { opacity: 1; }
 @media (max-width: 1180px) { .egress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 860px) { .egress-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) {
-  .egress-pulse::after { animation: none !important; }
+  .egress-pulse::after, .egress-loading::before { animation: none !important; }
   dialog.egress-dialog, dialog.egress-dialog::backdrop, .egress-settings-btn, .egress-rules::details-content, .egress-meter i, .egress-field input, .egress-field select, .egress-field textarea { transition: none !important; }
 }
 
@@ -178,4 +178,4 @@ body[data-page="egress"] #refresh, body[data-page="egress"] #stamp, body[data-pa
 .egress-interval { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 12.5px; }
 .egress-interval input { width: 58px; height: 32px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-variant-numeric: tabular-nums; text-align: center; }
 .egress-interval input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.egress-interval input:invalid { border-color: var(--bad, #d9534f); }
+.egress-interval input:invalid { border-color: var(--danger); }

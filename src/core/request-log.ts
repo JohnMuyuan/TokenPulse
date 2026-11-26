@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { StringDecoder } from "node:string_decoder";
+import { threadId } from "worker_threads";
 import { contextWindowOf, estimateCost, priceOf } from "./model-pricing";
 import { analyzeCache, type CacheAnalysis } from "./cache-analysis";
 import { dataFile, readJson } from "./paths";
@@ -243,10 +244,31 @@ export function compactRequests(replayed: RequestRecord[] = []) {
     }
     if (unique.size === records.length) continue;
     const file = path.join(requestDir(), name);
-    const tmp = `${file}.${process.pid}.tmp`;
+    const tmp = `${file}.${process.pid}.${threadId}.tmp`;
     const sorted = [...unique.values()].sort((a, b) => a.at - b.at);
-    fs.writeFileSync(tmp, sorted.map((record) => JSON.stringify(record)).join("\n") + "\n");
-    fs.renameSync(tmp, file);
+    try {
+      fs.writeFileSync(tmp, sorted.map((record) => JSON.stringify(record)).join("\n") + "\n", { mode: 0o600 });
+      for (let attempt = 0; ; attempt++) {
+        try {
+          fs.renameSync(tmp, file);
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException)?.code;
+          if (process.platform === "win32" && (code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < 4) {
+            if (code !== "EBUSY") {
+              try { fs.chmodSync(file, 0o600); } catch { /* 忽略 */ }
+            }
+            const waitUntil = Date.now() + 15 * (attempt + 1);
+            while (Date.now() < waitUntil) { /* short backoff */ }
+            continue;
+          }
+          throw error;
+        }
+      }
+    } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
+      throw error;
+    }
   }
 }
 
@@ -876,7 +898,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
     group.tokens += row.tokens;
     group.costUsd += row.costUsd;
     if (row.official === true) group.officialCostUsd += row.costUsd;
-    else if (row.official === false || row.source === "DeepSeek Harness" || row.source === "pi") group.apiCostUsd += row.costUsd;
+    else if (row.official === false || row.source === "DeepSeek Harness" || row.source === "pi" || row.key.startsWith("cc-switch\u0000")) group.apiCostUsd += row.costUsd;
     // 和统计页一个口径：请求数算模型调用次数（Grok 一轮会调好几次）
     group.requests += row.calls;
     group.priced &&= row.priced;
@@ -1071,8 +1093,9 @@ export function queryRequests(query: RequestQuery): RequestPage {
     if (query.sort === "cache_low") {
       const ha = a.input > 0 ? Math.min(1, Math.max(0, a.cacheRead / a.input)) : 1;
       const hb = b.input > 0 ? Math.min(1, Math.max(0, b.cacheRead / b.input)) : 1;
-      const diff = ha - hb;
-      return (Math.abs(diff) > 1e-4 ? diff : 0) || b.input - a.input || b.at - a.at;
+      const qa = Math.round(ha * 10_000);
+      const qb = Math.round(hb * 10_000);
+      return (qa - qb) || b.input - a.input || b.at - a.at;
     }
     if (query.sort === "latency") {
       const la = latencyScore(a), lb = latencyScore(b);

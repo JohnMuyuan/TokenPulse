@@ -78,7 +78,7 @@ export function authFile(kind: OfficialAccountKind, home = os.homedir()) {
 
 function readJsonFile(file: string): any {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
   } catch {
     return undefined;
   }

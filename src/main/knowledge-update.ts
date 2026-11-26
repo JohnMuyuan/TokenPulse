@@ -40,9 +40,35 @@ export function checkKnowledge(onUpdated?: () => void): Promise<KnowledgeState> 
         writeKnowledgeCheck({ checkedAt, error });
         return { ...knowledgeInfo(), checkedAt, error };
       }
-      // 限个大小：正常的知识库几 KB
-      const body = await response.text();
-      if (body.length > 1024 * 1024) throw new Error("知识库文件太大");
+      // 流式限流 1 MiB：避免超大响应先整段缓冲进内存再拒
+      const MAX_BYTES = 1024 * 1024;
+      const cl = Number(response.headers.get("content-length") || 0);
+      if (Number.isFinite(cl) && cl > MAX_BYTES) throw new Error("知识库文件太大");
+      let body: string;
+      if (response.body) {
+        const reader = response.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+            total += value.byteLength;
+            if (total > MAX_BYTES) {
+              await reader.cancel().catch(() => undefined);
+              throw new Error("知识库文件太大");
+            }
+            chunks.push(value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        body = Buffer.concat(chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength))).toString("utf8");
+      } else {
+        body = await response.text();
+        if (Buffer.byteLength(body, "utf8") > MAX_BYTES) throw new Error("知识库文件太大");
+      }
       const result = acceptKnowledge(JSON.parse(body));
       writeKnowledgeCheck({ checkedAt, error: result.error });
       if (result.updated) onUpdated?.();

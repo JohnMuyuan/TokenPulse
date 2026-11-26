@@ -9,9 +9,10 @@
   const Desk = window.PulsePetDesk;
   const pet = api.deskPet;
   // 带数字、名字的句子按语言直接拼好（节点标 translate=no）；固定的文字交给 i18n.js 的词典
-  const EN = window.PulseI18n?.lang?.() === 'en';
-  const L = (zh, en) => EN ? en : zh;
-  const T = text => (EN && window.PulseI18n?.t ? window.PulseI18n.t(text) : text);
+  const isEn = () => window.PulseI18n?.lang?.() === 'en';
+  const L = (zh, en) => isEn() ? en : zh;
+  const T = text => (isEn() && window.PulseI18n?.t ? window.PulseI18n.t(text) : text);
+  const currentTheme = () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
   const BUILT_IN = [
     { id: 'squirrel', name: '松鼠 · 栗栗', line: '额度是身边的橡果堆，干活时侧过身来回搬橡果。' },
     { id: 'hamster', name: '仓鼠 · 豆豆', line: '腮帮子越鼓额度越多，干活时在跑轮里冲刺。' },
@@ -19,7 +20,7 @@
   ];
   const S = { prefs: null, packs: [], deskPacks: [], deskPackData: {}, accounts: [], view: null, visible: false, images: {}, sounds: {} };
   const N = {};
-  let built = false, frameTimer = 0, statusTimer = 0;
+  let built = false, frameTimer = 0, statusTimer = 0, loadSeq = 0, saving = 0, lastDeskTheme = '';
   let previews = [], deskPreviews = [];
 
   function build() {
@@ -80,7 +81,10 @@
     const toggle = el('button', { type: 'button', id: 'dps-toggle', class: 'dps-switch' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on), 'aria-label': '在桌面上显示桌宠' }, [el('span', { class: 'dps-knob' })]);
     toggle.addEventListener('click', () => save({ deskPet: !on }));
     const reset = el('button', { type: 'button', class: 'btn', id: 'dps-reset', disabled: on ? null : '' }, [icon('refresh'), el('span', { text: '放回屏幕右下角' })]);
-    reset.addEventListener('click', async () => { await pet.resetPosition(); toast('已把桌宠放回屏幕右下角'); });
+    reset.addEventListener('click', async () => {
+      try { await pet.resetPosition(); toast('已把桌宠放回屏幕右下角'); }
+      catch { toast(api.isDemo?.() ? '演示模式下不能更改' : '保存失败，请检查数据目录权限', { kind: 'warning' }); }
+    });
     N.status = el('p', { class: 'dps-status', id: 'dps-status', translate: 'no', text: statusText() });
     N.hero.replaceChildren(
       el('div', { class: 'dps-stage' }, [preview(S.prefs.deskPetKind, 3)]),
@@ -128,7 +132,7 @@
           setTimeout(() => { if (remove.isConnected) { remove.classList.remove('armed'); remove.textContent = '删除'; } }, 3000);
           return;
         }
-        pet.removePack(pack.id).then(packs => { S.packs = packs; delete S.images[pack.id]; return load(); }).catch(() => toast('删除失败，请检查数据目录权限', { kind: 'warning' }));
+        pet.removePack(pack.id).then(packs => { S.packs = packs; delete S.images[pack.id]; return load(); }).catch(() => toast(api.isDemo?.() ? '演示模式下不能更改' : '删除失败，请检查数据目录权限', { kind: 'warning' }));
       });
       const by = pack.author ? L(`作者：${pack.author}`, `By ${pack.author}`) : pack.kind === 'theme' ? L('导入的主题包', 'Imported theme') : L('自己导入的宠物', 'Your imported pet');
       return choiceCard(pack.id, pack.name, by, current === pack.id, [remove]);
@@ -188,6 +192,13 @@
 
   /* ---------- 键鼠样式选择与导入 ---------- */
 
+  function deskPackForPreview(pack) {
+    if (!pack?.id) return null;
+    if (S.deskPackData[pack.id]) return S.deskPackData[pack.id];
+    if (pack.images && Object.keys(pack.images).length) return { ...pack, images: null };
+    return pack;
+  }
+
   function deskPreview(styleId, pack) {
     const canvas = el('canvas', { class: 'dps-desk-canvas', 'aria-hidden': 'true' });
     const dpr = Math.max(2, window.devicePixelRatio || 1);
@@ -196,14 +207,13 @@
     canvas.height = Math.round(cssH * dpr);
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
-    const theme = S.prefs?.theme === 'dark' ? 'dark' : 'light';
     const item = { canvas, styleId, pack: pack || null, animated: false };
     const paintNow = () => {
       if (!Desk?.paintDeskPreview) return;
-      const data = item.pack?.id ? (S.deskPackData[item.pack.id] || item.pack) : null;
+      const data = deskPackForPreview(item.pack);
       item.animated = Boolean(Desk.isAnimatedStyle?.(styleId, data));
       Desk.paintDeskPreview(canvas, styleId, data, {
-        theme,
+        theme: currentTheme(),
         now: Date.now(),
         reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
         onImageLoad: paintNow,
@@ -211,7 +221,7 @@
     };
     if (pack?.id && pack.images && Object.keys(pack.images).length && !S.deskPackData[pack.id] && pet.deskPackData) {
       pet.deskPackData(pack.id).then(data => {
-        if (data) { S.deskPackData[pack.id] = data; paintNow(); }
+        if (data) { S.deskPackData[pack.id] = data; if (canvas.isConnected) paintNow(); }
       }).catch(() => undefined);
     }
     paintNow();
@@ -258,7 +268,7 @@
           S.deskPacks = packs || [];
           delete S.deskPackData[pack.id];
           return load();
-        }).catch(() => toast('删除失败，请检查数据目录权限', { kind: 'warning' }));
+        }).catch(() => toast(api.isDemo?.() ? '演示模式下不能更改' : '删除失败，请检查数据目录权限', { kind: 'warning' }));
       });
       const baseMeta = builtIns.find(b => b.id === pack.base);
       const by = pack.author
@@ -316,7 +326,7 @@
       const at = S.sounds[kind]?.at;
       if (at === loadedSounds[kind]) continue;
       if (!at) Sound.setCustom(kind, null);
-      else pet.soundData(kind).then(data => Sound.setCustom(kind, data?.data || null)).catch(() => undefined);
+      else pet.soundData(kind).then(data => { if (S.sounds[kind]?.at === at) return Sound.setCustom(kind, data?.data || null); }).catch(() => undefined);
     }
     loadedSounds = Object.fromEntries(SOUNDS.map(({ kind }) => [kind, S.sounds[kind]?.at]));
   }
@@ -364,8 +374,10 @@
     // 解码好了试听一下；解不出来（文件头对但内容坏了）提醒换一个，播放时照样用默认的
     const Sound = window.PulsePetSound;
     if (!Sound) return;
-    loadedSounds[kind] = S.sounds[kind]?.at;
+    const at = S.sounds[kind]?.at;
+    loadedSounds[kind] = at;
     const data = await pet.soundData(kind).catch(() => null);
+    if (S.sounds[kind]?.at !== at) return;
     if (await Sound.setCustom(kind, data?.data || null) && Sound.hasCustom(kind)) play(kind);
     else toast('这个音频放不出来，换一个试试', { kind: 'warning' });
   }
@@ -466,8 +478,19 @@
   }
 
   async function save(patch) {
-    try { S.prefs = await api.writePrefs(patch); S.view = (await pet.status())?.view || S.view; render(); return true; }
-    catch { toast('保存失败，请检查数据目录权限', { kind: 'warning' }); return false; }
+    saving++;
+    const seq = ++loadSeq;
+    try {
+      const nextPrefs = await api.writePrefs(patch);
+      const nextStatus = await pet.status();
+      if (seq === loadSeq) {
+        S.prefs = nextPrefs;
+        S.view = nextStatus?.view || S.view;
+        render();
+      }
+      return true;
+    } catch { toast('保存失败，请检查数据目录权限', { kind: 'warning' }); return false; }
+    finally { saving--; }
   }
 
   async function importPack() {
@@ -481,6 +504,7 @@
   }
 
   async function load() {
+    const seq = ++loadSeq;
     const [prefs, packs, deskPacks, accounts, status, sounds] = await Promise.all([
       api.readPrefs(),
       pet.packs(),
@@ -489,7 +513,9 @@
       pet.status(),
       pet.sounds(),
     ]);
+    if (seq !== loadSeq) return;
     S.prefs = prefs; S.packs = packs || []; S.deskPacks = deskPacks || []; S.accounts = accounts || []; S.view = status?.view || null; S.sounds = sounds || {};
+    lastDeskTheme = currentTheme();
     loadSounds();
     render();
   }
@@ -502,13 +528,17 @@
       item.ctl.tick(context);
       Pet.paint(item.canvas, item.ctl.frame(context), item.pixel);
     }
-    if (Desk?.paintDeskPreview && deskPreviews.length && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (Desk?.paintDeskPreview && deskPreviews.length) {
       const now = Date.now();
-      const theme = S.prefs?.theme === 'dark' ? 'dark' : 'light';
+      const theme = currentTheme();
+      const themeChanged = theme !== lastDeskTheme;
+      if (themeChanged) lastDeskTheme = theme;
+      const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
       for (const item of deskPreviews) {
-        if (!item.animated || !item.canvas.isConnected) continue;
-        const data = item.pack?.id ? (S.deskPackData[item.pack.id] || item.pack) : null;
-        Desk.paintDeskPreview(item.canvas, item.styleId, data, { theme, now, reducedMotion: false });
+        if (!item.canvas.isConnected) continue;
+        if (!themeChanged && (!item.animated || reduced)) continue;
+        const data = deskPackForPreview(item.pack);
+        Desk.paintDeskPreview(item.canvas, item.styleId, data, { theme, now, reducedMotion: reduced });
       }
     }
   }
@@ -533,6 +563,6 @@
   }
 
   // 在宠物的右键菜单里点了「隐藏桌宠」这类：页面开着就重新读一遍
-  pet.onChanged(() => { if (S.visible) load().catch(() => undefined); });
+  pet.onChanged(() => { if (S.visible && !saving) load().catch(() => undefined); });
   window.PulseDeskPet = { show, hide };
 })();

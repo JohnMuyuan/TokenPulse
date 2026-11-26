@@ -10,7 +10,8 @@ import type { AccountKind } from "./quota";
  * 不再显示共享额度的说明和校准入口。存在 prefs.json（主进程的设置页写，worker 里直接读）。
  */
 export function localOnlyAccounts(): string[] {
-  const prefs = readJson<{ localOnlyAccounts?: unknown }>(dataFile("prefs.json"), {});
+  const raw = readJson<unknown>(dataFile("prefs.json"), null);
+  const prefs = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as { localOnlyAccounts?: unknown }) : {};
   return Array.isArray(prefs.localOnlyAccounts) ? prefs.localOnlyAccounts.filter((id): id is string => typeof id === "string" && id.length <= 400) : [];
 }
 

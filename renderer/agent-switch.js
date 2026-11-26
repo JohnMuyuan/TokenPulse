@@ -166,6 +166,7 @@
       }
       if (!result?.ok) { showFeedback(result?.error || '操作失败，请重试。', 'error'); return null; }
       success = true;
+      backups = null;
       if (result.state) { view = result.state; signature = sig(view); }
       const text = result.state?.notice || (typeof okText === 'function' ? okText(result) : okText);
       if (text) showFeedback(text, result.feedbackKind || (result.state?.notice ? 'warning' : 'success'));
@@ -174,8 +175,7 @@
       clearPending();
       unlock(); pending = false; stateTicket++;
       working.forEach(button => { button.classList.remove('pv-working'); button.removeAttribute('aria-busy'); });
-      const fetch = root.querySelector('[data-action=fetch-models]');
-      if (fetch) fetch.disabled = !!editor?.fetching;
+      for (const fetch of root.querySelectorAll('[data-action=fetch-models], [data-action=fetch-pool-models]')) fetch.disabled = !!editor?.fetching;
       root.removeAttribute('aria-busy');
       // Never recreate an editor from its saved provider while a live draft exists.
       if (success && !editor && !dragging) render(false);
@@ -210,6 +210,7 @@
     if (next === section) return;
     section = next;
     if (next === 'logs') logPage = 0; // 转发记录每次从最新的第一页看起
+    if (next === 'safety') backups = null;
     try { localStorage.setItem(SECTION_KEY, next); } catch { /* 记不住就算了 */ }
     render(true);
     window.PulseScroll?.top();
@@ -383,7 +384,11 @@
   /* 拖动排序：放下时按新顺序提交；当前那家不在列表里，拼回最前面，保持它原来的位置不变 */
   function dragHandlers(row, p) {
     row.addEventListener('dragstart', e => { dragging = p.id; row.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', p.id); } catch { /* 有的环境不让写 */ } });
-    row.addEventListener('dragend', () => { dragging = null; row.classList.remove('dragging'); root.querySelectorAll('.pv-row.drop-before, .pv-row.drop-after').forEach(n => n.classList.remove('drop-before', 'drop-after')); });
+    row.addEventListener('dragend', () => {
+      dragging = null; row.classList.remove('dragging');
+      root.querySelectorAll('.pv-row.drop-before, .pv-row.drop-after').forEach(n => n.classList.remove('drop-before', 'drop-after'));
+      if (view && !editor && !pending && sig(view) !== signature) { signature = sig(view); render(false); }
+    });
     row.addEventListener('dragover', e => {
       if (!dragging || dragging === p.id) return;
       e.preventDefault();
@@ -396,8 +401,10 @@
       const after = row.classList.contains('drop-after');
       row.classList.remove('drop-before', 'drop-after');
       if (!dragging || dragging === p.id) return;
-      const ids = othersOf(p.app).filter(id => id !== dragging);
-      ids.splice(ids.indexOf(p.id) + (after ? 1 : 0), 0, dragging);
+      const draggedId = dragging;
+      dragging = null;
+      const ids = othersOf(p.app).filter(id => id !== draggedId);
+      ids.splice(ids.indexOf(p.id) + (after ? 1 : 0), 0, draggedId);
       reorder(p.app, ids);
     });
   }
@@ -547,12 +554,11 @@
   async function loadOlderLogs(want = LOG_PAGE) {
     if (logLoading || logMore === false) return;
     logLoading = true;
-    const shown = [...(view.logs || []), ...logOlder];
     try {
       // 第一批顺便数一下总数；直接跳到很后面的页时一次多读一些，少跑几趟
       const asked = Date.now();
       const page = await api.agentRouteLog({ limit: Math.max(LOG_PAGE, Math.min(LOG_MAX_BATCH, want)), cursor: logCursor || undefined, ...(logTotal === null ? { total: true } : {}) });
-      const have = new Set(shown.map(logKey));
+      const have = new Set(logOlder.map(logKey));
       logOlder = [...logOlder, ...(page?.rows || []).filter(item => !have.has(logKey(item)))];
       logMore = !!page?.more;
       logCursor = page?.nextCursor || null;
@@ -647,7 +653,7 @@
    */
   const PRISM_PHASE = { running: '运行中', starting: '启动中', stopped: '已停止' };
   let prism = null, prismLogOpen = null, prismUsage = null, prismUsageLoading = false;
-  const prismKey = s => JSON.stringify([s.available, s.deps, s.login, s.phase, s.task, s.port, s.autoStart, s.error, s.provider, s.installed, s.proxyIssue]);
+  const prismKey = s => JSON.stringify([s.available, s.deps, s.login, s.phase, s.task, s.port, s.autoStart, s.error, s.provider, s.providerStale, s.modelSwap, s.models, s.installed, s.proxyIssue]);
   /*
    * Prism 桥下线。Prism 把能用的模型一个个撤掉，2026-10-07 只剩 6 Luna，这个功能解决不了「降智」了。
    * 没装过的人看不到这一页；装过的（数据目录还在，或者 Codex 里还留着那家供应商）还能看到，用来继续用 6 Luna 或一键删除。
@@ -935,10 +941,10 @@
   }
   function slotRow(slot, primary) {
     const roleName = (CLAUDE_ROLES.find(item => item[0] === slot.role) || DESKTOP_ROLES.find(item => item[0] === slot.role) || [, ''])[1];
-    const model = el('input', { autocomplete: 'off', spellcheck: 'false', translate: 'no', value: slot.model, placeholder: '实际请求模型', 'aria-label': (roleName ? roleName + ' ' : '') + '实际请求模型' });
+    const model = el('input', { autocomplete: 'off', spellcheck: 'false', translate: 'no', value: slot.model, 'data-slot-field': 'model', placeholder: '实际请求模型', 'aria-label': (roleName ? roleName + ' ' : '') + '实际请求模型' });
     if (primary) model.name = 'model';
     model.addEventListener('input', () => { slot.model = model.value; });
-    const name = el('input', { autocomplete: 'off', spellcheck: 'false', value: slot.displayName, placeholder: '菜单显示名', 'aria-label': (roleName ? roleName + ' ' : '') + '菜单显示名' });
+    const name = el('input', { autocomplete: 'off', spellcheck: 'false', value: slot.displayName, 'data-slot-field': 'name', placeholder: '菜单显示名', 'aria-label': (roleName ? roleName + ' ' : '') + '菜单显示名' });
     name.addEventListener('input', () => { slot.displayName = name.value; });
     const role = slot.role && slot.role !== 'catalog';
     const context = role ? el('input', { type: 'number', min: '1', value: slot.contextWindow || contextPreset(editor?.app, slot), placeholder: '上下文', 'aria-label': (roleName || '') + ' 上下文窗口' }) : null;
@@ -995,6 +1001,7 @@
     if (app === 'desktop') return JSON.stringify({ cli: 'Claude Desktop', provider: common, profile: { inferenceProvider: 'gateway', inferenceGatewayBaseUrl: common.baseUrl, inferenceGatewayApiKey: common.apiKey, inferenceModels: models.map(row => ({ name: row.role === 'catalog' ? row.model : 'claude-' + row.role + '-5', labelOverride: row.displayName, supports1m: row.oneM })) }, mode: editor?.desktopMode || 'map' }, null, 2);
     if (app === 'codex') return JSON.stringify({ cli: 'Codex', provider: common, config: { model_provider: 'tokenpulse_route', model: common.model, model_reasoning_effort: models[0]?.defaultReasoningLevel || 'auto', ...(editor?.codexContextWindow ? { model_context_window: editor.codexContextWindow } : {}), ...(editor?.codexAutoCompact ? { model_auto_compact_token_limit: editor.codexAutoCompact } : {}), model_catalog: models, model_providers: { tokenpulse_route: { base_url: common.baseUrl, wire_api: editor?.upstream === 'openai-chat' ? 'chat' : 'responses', experimental_bearer_token: common.apiKey, requires_openai_auth: false } } } }, null, 2);
     if (app === 'pi') return JSON.stringify({ cli: 'pi', models: { providers: { tokenpulse_route: { baseUrl: common.baseUrl, apiKey: common.apiKey, api: editor.upstream === 'anthropic' ? 'anthropic-messages' : editor.upstream === 'openai-responses' ? 'openai-responses' : 'openai-completions', models: [{ id: common.model }] } } }, settings: { defaultProvider: 'tokenpulse_route', defaultModel: common.model } }, null, 2);
+    if (app === 'deepseek') return JSON.stringify({ cli: 'DeepSeek Harness', provider: common, config: { defaultModel: common.model, api: editor?.upstream || 'openai-chat', baseUrl: common.baseUrl, apiKey: common.apiKey, models: models.map(row => ({ id: row.model, name: row.displayName, contextWindow: row.contextWindow })) } }, null, 2);
     return JSON.stringify({ cli: 'Grok CLI', provider: common, config: { models: { default: 'tokenpulse_route' }, model: { tokenpulse_route: { model: common.model, base_url: common.baseUrl, api_backend: editor?.upstream === 'openai-chat' ? 'chat' : 'responses', context_window: editor?.contextWindow || contextPreset('grok') } } } }, null, 2);
   }
   function advancedSection(app, provider, field) {
@@ -1049,7 +1056,8 @@
    * 问的是编辑页里当前勾选的成员，还没保存的也算。
    */
   function poolModelField(app, provider, field) {
-    const label = field('model', app === 'grok' ? '模型' : '默认模型（可选）', { value: provider?.model || '', translate: 'no', placeholder: app === 'grok' ? '例如 grok-4.7-build' : '留空就由工具自己选模型' }, app === 'grok' ? 'Grok CLI 的配置表必须写一个模型名。' : '留空时工具照常发自己选的模型，号池原样转给官方。');
+    const needModel = app === 'grok' || app === 'deepseek';
+    const label = field('model', needModel ? '模型' : '默认模型（可选）', { value: provider?.model || '', translate: 'no', placeholder: app === 'grok' ? '例如 grok-4.7-build' : app === 'deepseek' ? '例如 deepseek-chat' : '留空就由工具自己选模型' }, app === 'grok' ? 'Grok CLI 的配置表必须写一个模型名。' : app === 'deepseek' ? 'DeepSeek Harness 的号池必须写一个模型名。' : '留空时工具照常发自己选的模型，号池原样转给官方。');
     const input = label.querySelector('input');
     const list = el('div', { class: 'pv-fetched pv-pool-models' });
     const misses = el('ul', { class: 'pv-pool-misses' });
@@ -1092,14 +1100,16 @@
   }
   function modelSection(app, provider) {
     const box = el('div', { class: 'pv-models' });
-    const hint = app === 'pi' ? 'pi 支持三种接口直连；新会话用这里选择的模型，旧会话请在 /model 中切换。' : app === 'codex'
-      ? '每一行是 Codex 菜单里的一个模型。点击勾选或取消思考等级，再从下拉菜单选择默认等级。'
-      : app === 'desktop'
-        ? '直连只接受 claude-sonnet / opus / haiku / fable 开头的模型名。映射模式把这些角色转到真实模型，请求走本地路由。'
-        : app === 'grok'
-          ? 'Grok CLI 用一个上游模型。上下文窗口写进它的模型表。接口是 Chat 时，可以声明上游支不支持思考。'
-          : 'Claude Code 按角色用不同模型。留空的角色会沿用 Sonnet。1M 会写成模型名后面的 [1M]。';
-    const head = el('div', { class: 'pv-model-head' }, [el('span', { text: app === 'codex' ? '模型目录' : '模型候选' }), el('small', { text: hint })]);
+    const hint = app === 'pi' ? 'pi 支持三种接口直连；新会话用这里选择的模型，旧会话请在 /model 中切换。' : app === 'deepseek'
+      ? '每一行是 DeepSeek Harness 的一个模型目录项，第一行作为新会话默认模型。'
+      : app === 'codex'
+        ? '每一行是 Codex 菜单里的一个模型。点击勾选或取消思考等级，再从下拉菜单选择默认等级。'
+        : app === 'desktop'
+          ? '直连只接受 claude-sonnet / opus / haiku / fable 开头的模型名。映射模式把这些角色转到真实模型，请求走本地路由。'
+          : app === 'grok'
+            ? 'Grok CLI 用一个上游模型。上下文窗口写进它的模型表。接口是 Chat 时，可以声明上游支不支持思考。'
+            : 'Claude Code 按角色用不同模型。留空的角色会沿用 Sonnet。1M 会写成模型名后面的 [1M]。';
+    const head = el('div', { class: 'pv-model-head' }, [el('span', { text: app === 'codex' || app === 'deepseek' ? '模型目录' : '模型候选' }), el('small', { text: hint })]);
     const fetch = button('获取模型', async () => {
       if (pending || editor.fetching) return;
       const draft = editor, form = root.querySelector('.pv-editor');
@@ -1126,9 +1136,9 @@
             const index = draft.slots.findIndex(slot => !slot.model);
             if (index < 0) { showFeedback('没有空模型行，请先清空目标行或添加模型。', 'warning'); return; }
             const row = box.querySelectorAll('.pv-slot:not(.pv-slot-head)')[index];
-            const input = row?.querySelector('input[placeholder="实际请求模型"]');
+            const input = row?.querySelector('[data-slot-field="model"]');
             if (input) { input.value = id; input.dispatchEvent(new Event('input', { bubbles: true })); }
-            const name = row?.querySelector('input[placeholder="菜单显示名"]');
+            const name = row?.querySelector('[data-slot-field="name"]');
             if (name && !name.value) { name.value = id; name.dispatchEvent(new Event('input', { bubbles: true })); }
           });
           return chip;
@@ -1169,16 +1179,17 @@
       return box;
     }
     const rows = el('div', { class: 'pv-slot-list', 'data-app': app });
-    const columns = app === 'codex' ? ['菜单显示名', '实际请求模型', '上下文', '思考等级', ''] : ['角色', '菜单显示名', '实际请求模型', '上下文', '1M'];
+    const columns = app === 'codex' ? ['菜单显示名', '实际请求模型', '上下文', '思考等级', ''] : app === 'deepseek' ? ['菜单显示名', '实际请求模型', '上下文', ''] : ['角色', '菜单显示名', '实际请求模型', '上下文', '1M'];
     const header = el('div', { class: 'pv-slot pv-slot-head', 'data-app': app, 'aria-hidden': 'true' }, columns.map(text => el('span', { text })));
     const drawRows = () => {
       closeLevels();
       rows.replaceChildren(header, ...editor.slots.map((slot, index) => {
         const row = slotRow(slot, index === 0);
-        if (app === 'codex') {
+        if (app === 'codex' || app === 'deepseek') {
           const context = el('input', { type: 'number', min: '1', value: slot.contextWindow || contextPreset(app, slot), placeholder: '上下文', 'aria-label': '上下文窗口 ' + (index + 1) });
           context.addEventListener('input', () => { slot.contextWindow = Number(context.value) || null; });
-          row.append(context, levelChips(slot));
+          row.append(context);
+          if (app === 'codex') row.append(levelChips(slot));
           const remove = button('', () => { editor.slots.splice(index, 1); if (!editor.slots.length) editor.slots.push(blankSlot('catalog')); drawRows(); const left = rows.querySelectorAll('.pv-slot:not(.pv-slot-head)'); left[Math.min(index, left.length - 1)]?.querySelector('input')?.focus(); }, 'pv-icon-btn', 'close');
           remove.setAttribute('aria-label', '删除模型行 ' + (index + 1)); remove.title = '删除模型行 ' + (index + 1);
           row.append(remove);
@@ -1190,10 +1201,10 @@
     const tools = el('div', { class: 'pv-model-tools' });
     if (app === 'codex') box.append(codexContextBox(drawRows));
     box.append(rows, el('div', { class: 'pv-fetched' }), tools);
-    if (app === 'codex') tools.append(button('添加模型', () => {
+    if (app === 'codex' || app === 'deepseek') tools.append(button('添加模型', () => {
       if (editor.slots.length >= 24) { showFeedback('最多支持 24 个模型；请编辑已有模型行。', 'warning'); return; }
       editor.slots.push(blankSlot('catalog')); drawRows();
-      rows.lastElementChild?.querySelector('input[placeholder="实际请求模型"]')?.focus();
+      rows.lastElementChild?.querySelector('[data-slot-field="model"]')?.focus();
     }, 'btn', 'plus'));
     if (app === 'claude') tools.append(button('一键填到全部角色', () => {
       const value = editor.slots.find(slot => slot.model)?.model;
@@ -1211,8 +1222,8 @@
    */
   const ONE_M = 1000000, ONE_M_COMPACT = 900000;
   function codexContextBox(redrawSlots) {
-    const windowInput = el('input', { type: 'number', min: '1000', max: '10000000', step: '1000', name: 'codexContextWindow', placeholder: '不写（跟随 Codex 默认）', value: editor.codexContextWindow || '', 'aria-label': '上下文窗口 model_context_window' });
-    const compactInput = el('input', { type: 'number', min: '1000', max: '10000000', step: '1000', name: 'codexAutoCompact', placeholder: '不写（跟随 Codex 默认）', value: editor.codexAutoCompact || '', 'aria-label': '自动压缩阈值 model_auto_compact_token_limit' });
+    const windowInput = el('input', { type: 'number', min: '1000', max: '10000000', step: '1', name: 'codexContextWindow', placeholder: '不写（跟随 Codex 默认）', value: editor.codexContextWindow || '', 'aria-label': '上下文窗口 model_context_window' });
+    const compactInput = el('input', { type: 'number', min: '1000', max: '10000000', step: '1', name: 'codexAutoCompact', placeholder: '不写（跟随 Codex 默认）', value: editor.codexAutoCompact || '', 'aria-label': '自动压缩阈值 model_auto_compact_token_limit' });
     const oneM = el('button', { type: 'button', class: 'pv-level pv-onem pv-codex-onem', text: '1M 上下文', 'aria-pressed': 'false', 'data-action': 'codex-1m', title: '写入 model_context_window = 1000000，并把自动压缩阈值设为 900000' });
     const sync = () => {
       const on = editor.codexContextWindow === ONE_M;
@@ -1511,7 +1522,7 @@
       const data = Object.fromEntries([...new FormData(form).entries()].map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value]));
       if (editor.pool) {
         if (!data.name) { showFeedback('请填写号池名称。', 'error'); showEditorPane('basic'); return; }
-        if (app === 'grok' && !data.model) { showFeedback('Grok 号池要填一个模型名。', 'error'); showEditorPane('basic'); return; }
+        if ((app === 'grok' || app === 'deepseek') && !data.model) { showFeedback(app === 'grok' ? 'Grok 号池要填一个模型名。' : 'DeepSeek 号池要填一个模型名。', 'error'); showEditorPane('basic'); return; }
         if (!editor.pool.members.length) { showFeedback('号池至少要选一个成员。', 'error'); showEditorPane('members'); return; }
         const poolInput = { app, name: data.name, notes: data.notes, model: data.model, ...(app === 'grok' ? { contextWindow: editor.contextWindow } : {}), icon: editor.icon, avatar: editor.avatar, iconColor: provider?.iconColor || '', pool: editor.pool, ...(provider ? { id: provider.id } : {}) };
         saving = true;
@@ -1591,8 +1602,10 @@
       const done = value => {
         document.removeEventListener('keydown', onKey, true);
         modal.remove();
-        document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = false;
-        document.body.classList.remove('modal-open');
+        if (!document.querySelector('.modal:not([hidden])')) {
+          document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = false;
+          document.body.classList.remove('modal-open');
+        }
         if (last?.isConnected) last.focus?.();
         resolve(value);
       };
@@ -1620,7 +1633,7 @@
     backupsLoading = true;
     try { backups = await api.agentBackups(); } catch (error) { backups = { error: error?.message || '读取失败' }; }
     backupsLoading = false;
-    if (section === 'safety' && !editor && document.body.dataset.page === 'providers') render(false);
+    if (section === 'safety' && !editor && !pending && document.body.dataset.page === 'providers') render(false);
   }
   async function restore(kind, id) {
     const done = await run(() => api.agentRestore(kind, id), r => `已还原 ${r.result || 0} 个配置文件。请重新打开对应工具，让配置生效。`, '正在还原配置…');
@@ -1652,7 +1665,7 @@
 
     const list = [];
     if (!backups || backupsLoading) list.push(el('p', { class: 'pv-empty', text: '正在读取配置备份…' }));
-    else if (backups.error) list.push(el('p', { class: 'pv-empty', text: '配置备份读取失败：' + backups.error }));
+    else if (backups.error) list.push(el('div', { class: 'pv-empty' }, [el('p', { text: '配置备份读取失败：' + backups.error }), button('重试', () => { backups = null; loadBackups(); render(false); }, 'btn')]));
     else {
       list.push(el('h3', { class: 'pv-safety-title', text: '接管前的原件' }));
       if (!backups.originals.length) list.push(el('p', { class: 'pv-empty', text: 'TokenPulse 还没有改动过任何工具配置。' }));
@@ -1707,19 +1720,31 @@
 
   // 托盘里点了切换：到供应商页走同样的确认流程
   api.onAgentActivateRequest?.(async id => {
-    window.navigate?.('providers');
+    if (pending) return;
+    window.navigate?.('providers', { force: true });
     if (!view) { try { view = await api.agentState(); } catch { return; } }
+    if (editor) {
+      closeDrawer();
+      if (editor) return;
+    }
+    if (!root.querySelector('.pv') && view) { signature = sig(view); render(false); entered = true; }
     const p = view.providers.find(x => x.id === id);
     if (p && !p.active) activate(p);
   });
   // 设置 → 数据 里的入口
   document.getElementById('open-config-backups')?.addEventListener('click', () => {
+    if (pending) return;
     window.closeModal?.('settings');
-    window.navigate?.('providers');
+    window.navigate?.('providers', { force: true });
+    if (editor) {
+      closeDrawer();
+      if (editor) return;
+    }
     section = 'safety';
     try { localStorage.setItem(SECTION_KEY, section); } catch { /* 记不住就算了 */ }
     backups = null;
-    render(true);
+    if (view) render(true);
+    else show();
   });
 
   /* ---------------- 刷新 ---------------- */

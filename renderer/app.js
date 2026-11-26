@@ -211,16 +211,17 @@ function infoTip(content, label = '说明', cls = '', iconName = 'notice') {
       if (!pinned && !tip.matches(':hover') && !pop.matches(':hover') && !tip.contains(document.activeElement) && !pop.contains(document.activeElement)) close();
     }, 140);
   };
+  let suppressFocusOpen = false;
   tip.addEventListener('mouseenter', open); tip.addEventListener('mouseleave', later);
   pop.addEventListener('mouseenter', () => clearTimeout(timer)); pop.addEventListener('mouseleave', later);
-  button.addEventListener('focus', open);
+  button.addEventListener('focus', () => { if (!suppressFocusOpen) open(); });
   button.addEventListener('click', e => {
     e.stopPropagation();
     if (pinned && pop.classList.contains('open')) { close(); }
     else { pinned = true; open(); }
   });
   tip.addEventListener('focusout', later); pop.addEventListener('focusout', later);
-  const onKey = e => { if (e.key === 'Escape' && pop.classList.contains('open')) { e.stopPropagation(); close(); button.focus(); } };
+  const onKey = e => { if (e.key === 'Escape' && pop.classList.contains('open')) { e.stopPropagation(); suppressFocusOpen = true; close(); button.focus(); suppressFocusOpen = false; } };
   tip.addEventListener('keydown', onKey); pop.addEventListener('keydown', onKey);
   return tip;
 }
@@ -427,6 +428,7 @@ function renderAgyAccounts(agyStatus) {
     const shareSelect = account.hidden ? null : el('select', {
       class: 'oauth-auto-at agy-share-select',
       'data-agy-share-mode': account.id,
+      'data-prev-mode': account.shareMode || 'auto',
       'aria-label': `额度共享校准：${name}`,
       title: '选择如何处理家庭组共享或其他设备的额度消耗',
     }, [
@@ -650,6 +652,7 @@ function autoSwitchRow(status) {
   return el('div', { class: 'oauth-auto' }, [toggle, select, note]);
 }
 async function saveAutoSwitch(kind, patch, control) {
+  const prevAt = autoSwitchRules[kind]?.at ?? 95;
   const next = { ...autoSwitchRules, [kind]: { on: false, at: 95, ...autoSwitchRules[kind], ...patch } };
   control.disabled = true;
   try {
@@ -658,7 +661,11 @@ async function saveAutoSwitch(kind, patch, control) {
     const rule = autoSwitchRules[kind];
     settingsDone(rule.on ? `已开启自动切换：${CLI_OF_KIND[kind]} 的账号${rule.at === 99 ? '用满' : `用到 ${rule.at}%`}时换号` : `已关闭 ${CLI_OF_KIND[kind]} 的自动切换`);
     renderOfficialAccounts(await api.officialAccounts());
-  } catch (error) { $('prefs-status').textContent = cleanRemoteError(error, '设置没保存上，请重试'); control.disabled = false; }
+  } catch (error) {
+    $('prefs-status').textContent = cleanRemoteError(error, '设置没保存上，请重试');
+    if (control.tagName === 'SELECT') control.value = String(prevAt);
+    control.disabled = false;
+  }
 }
 async function toggleLocalOnly(button) {
   const id = button.dataset.localOnly, next = new Set(localOnly);
@@ -673,13 +680,23 @@ async function toggleLocalOnly(button) {
   } catch (error) { $('prefs-status').textContent = cleanRemoteError(error, '设置没保存上，请重试'); }
   finally { button.disabled = false; }
 }
+let officialAccountsSeq = 0;
 async function loadOfficialAccounts() {
+  const seq = ++officialAccountsSeq;
   $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '正在读取账号状态…' }));
-  try { const prefs = await api.readPrefs(); localOnly = new Set(prefs.localOnlyAccounts || []); autoSwitchRules = prefs.cliAutoSwitch || {}; } catch { /* 读不到就按都没打开显示 */ }
+  $('antigravity-accounts')?.replaceChildren();
+  try { const prefs = await api.readPrefs(); if (seq !== officialAccountsSeq) return; localOnly = new Set(prefs.localOnlyAccounts || []); autoSwitchRules = prefs.cliAutoSwitch || {}; } catch { /* 读不到就按都没打开显示 */ }
   const agyPromise = api.antigravityQuota?.accounts?.().catch(() => null);
-  try { renderOfficialAccounts(await api.officialAccounts()); }
-  catch { $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' })); }
+  try {
+    const statuses = await api.officialAccounts();
+    if (seq !== officialAccountsSeq) return;
+    renderOfficialAccounts(statuses);
+  } catch {
+    if (seq !== officialAccountsSeq) return;
+    $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' }));
+  }
   const agyStatus = await agyPromise;
+  if (seq !== officialAccountsSeq) return;
   renderAgyAccounts(agyStatus);
 }
 
@@ -726,6 +743,16 @@ function duration(ms) {
   if (mins < 60) return `${mins} 分钟`;
   if (hours < 24) return `${hours} 小时 ${mins % 60} 分`;
   return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
+}
+function resetShortText(at, waiting = false) {
+  if (waiting) return '等待新采样';
+  if (!at) return '重置时间未知';
+  return at <= Date.now() ? '旧窗口已结束，正在等待新数据' : `${duration(at - Date.now())}后重置`;
+}
+function resetFullText(at, waiting = false) {
+  if (waiting) return '旧窗口已结束，正在等待新数据';
+  if (!at) return '接口未提供重置时间';
+  return at <= Date.now() ? '旧窗口已结束，正在等待新数据' : `${duration(at - Date.now())}后重置 · ${date(at)}`;
 }
 
 /* ---------------- 动效 ---------------- */
@@ -809,7 +836,8 @@ function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms
   const stack = document.getElementById('toast-stack') || (() => { const node = el('div', { id: 'toast-stack', 'aria-live': 'polite' }); document.body.append(node); return node; })();
   const loud = kind === 'error' || kind === 'warning';
   const old = key ? toastKeys.get(key) : null;
-  if (old?.node.isConnected) old.dispose();
+  const replaceNode = old?.node.isConnected ? old.node : null;
+  if (old) old.dispose(false);
   const icon = { error: '!', warning: '!', pending: '', success: '✓' }[kind] ?? '✓';
   const node = el('div', { class: `tp-toast ${kind}${actions.length ? ' has-actions' : ''}${cls ? ' ' + cls : ''}`, role: loud || actions.length ? 'alert' : 'status', 'data-toast': String(++toastSeq), 'data-kind': kind }, [
     el('span', { class: 'tp-toast-icon', text: icon, 'aria-hidden': 'true' }),
@@ -823,7 +851,7 @@ function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms
   ]);
   const sticky = kind === 'pending' || (actions.length > 0 && keep !== false);
   let left = ms ?? (kind === 'error' ? 6500 : kind === 'warning' ? 5000 : 3600), since = Date.now(), timer = sticky ? 0 : setTimeout(() => close(), left);
-  function dispose() { clearTimeout(timer); node.remove(); if (key && toastKeys.get(key)?.node === node) toastKeys.delete(key); }
+  function dispose(removeNode = true) { clearTimeout(timer); if (removeNode) node.remove(); if (key && toastKeys.get(key)?.node === node) toastKeys.delete(key); }
   function close() {
     clearTimeout(timer);
     if (key && toastKeys.get(key)?.node === node) toastKeys.delete(key);
@@ -836,7 +864,7 @@ function toast(message, { kind = 'success', key = '', actions = [], cls = '', ms
     node.addEventListener('mouseleave', () => { since = Date.now(); timer = setTimeout(() => close(), Math.max(800, left)); });
   }
   // 原地替换：新提示放在旧提示的位置，免得跳来跳去
-  if (old?.node.isConnected) old.node.replaceWith(node); else stack.append(node);
+  if (replaceNode) replaceNode.replaceWith(node); else stack.append(node);
   if (old) node.classList.add('visible'); else requestAnimationFrame(() => node.classList.add('visible'));
   if (key) toastKeys.set(key, { node, dispose });
   return { close, node };
@@ -860,7 +888,7 @@ function modelWeekMini(row) {
   return el('div', { class: 'quota-mini model-week', 'data-model': row.model }, [
     el('div', { class: 'quota-mini-head' }, [modelWeekTitle(row), el('span', { class: 'mini-used' }, [el('span', { class: 'num', text: ended ? '等待确认' : `已用 ${percent(row.used)}` })])]),
     ended ? el('div', { class: 'track' }) : track(row.used, row.used >= 75, '已用额度'),
-    el('div', { class: 'mini-reset', 'data-reset-at': row.resetAt, 'data-reset-format': 'full' }, [icon('clock'), modelWeekReset(row)])
+    el('div', { class: 'mini-reset' }, [icon('clock'), el('span', { 'data-reset-at': !ended && row.resetAt ? row.resetAt : null, 'data-reset-format': 'full', text: modelWeekReset(row) })])
   ]);
 }
 function track(pct, warning = false, label = '已用额度', identity = '') {
@@ -882,7 +910,10 @@ function prediction(window, account) {
   if (isStale(account)) return '采样已过期，刷新后再判断';
   if (window.used >= 100) return '额度已用完，请等待重置';
   // 只差一点点就用完（pressure = watch）：说清楚只差多少，稍微放慢就能撑到重置，不用警示色。
-  if (window.runsOutBeforeReset && window.etaAt) return pressured(window) ? `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限` : `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限，距重置只差 ${duration(window.resetAt - window.etaAt)}，稍微放慢即可`;
+  if (window.runsOutBeforeReset && window.etaAt) {
+    if (window.etaAt <= Date.now()) return '按最近趋势，可能已接近上限，刷新确认';
+    return pressured(window) ? `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限` : `按最近趋势，预计约 ${duration(window.etaAt - Date.now())} 后达到上限，距重置只差 ${duration(window.resetAt - window.etaAt)}，稍微放慢即可`;
+  }
   if (window.ratePerH === 0) return '近期没有新增用量，暂不估计达到上限的时间';
   if (window.projectedAtReset != null) return `按最近趋势，重置时预计使用 ${percent(window.projectedAtReset)}`;
   return '采样跨度还不够，暂不估计达到上限的时间';
@@ -1063,8 +1094,8 @@ function quotaCard({ kind, key, account }, pool = null) {
     const windowLabel = account.five && account.week ? '当前较低窗口' : report === account.week ? '周额度' : '5 小时额度';
     const hero = el('div', { class: 'quota-hero-text' }, [
       el('span', { class: 'quota-hero-label', text: `${stale ? '上次' : ''}${windowLabel}剩余` }),
-      el('span', { class: 'quota-hero-value', 'data-reset-at': report?.resetAt, 'data-reset-format': 'short', text: waiting ? '等待新采样' : report?.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' }),
-      el('span', { class: 'quota-hero-sub', text: report?.resetAt && !waiting ? `${date(report.resetAt)} · 本地时间` : '旧窗口已结束' })
+      el('span', { class: 'quota-hero-value', 'data-reset-at': !waiting && report?.resetAt ? report.resetAt : null, 'data-reset-format': 'short', text: resetShortText(report?.resetAt, waiting) }),
+      el('span', { class: 'quota-hero-sub', text: waiting ? '旧窗口已结束' : report?.resetAt ? `${date(report.resetAt)} · 本地时间` : '接口未提供重置时间' })
     ]);
     const ringNode = ring({ five: account.five, week: account.week, account });
     ringNode.append(el('div', { class: 'ring-center' }, [value]));
@@ -1084,7 +1115,7 @@ function quotaCard({ kind, key, account }, pool = null) {
       body.push(el('div', { class: 'quota-mini' }, [
         el('div', { class: 'quota-mini-head' }, [title, usedText]),
         pending ? el('div', { class: 'track' }) : track(win.used, pressured(win), '已用额度', both ? name : ''),
-        el('div', { class: 'mini-reset', 'data-reset-at': win.resetAt, 'data-reset-format': 'full' }, [icon('clock'), pending ? '旧窗口已结束，正在等待新数据' : win.resetAt ? `${duration(win.resetAt - Date.now())}后重置 · ${date(win.resetAt)}` : '接口未提供重置时间'])
+        el('div', { class: 'mini-reset' }, [icon('clock'), el('span', { 'data-reset-at': !pending && win.resetAt ? win.resetAt : null, 'data-reset-format': 'full', text: resetFullText(win.resetAt, pending) })])
       ]));
     }
     for (const row of account.modelWeeks || []) body.push(modelWeekMini(row));
@@ -1099,7 +1130,7 @@ function quotaCard({ kind, key, account }, pool = null) {
   link.hidden = navHidden('quota');
   link.addEventListener('click', () => { state.account = key; navigate('quota'); });
   const forecast = !stale && !waiting && report?.used >= 100 ? '额度已用完，等待重置'
-    : !stale && !waiting && report?.etaAt && report.runsOutBeforeReset ? `约 ${duration(report.etaAt - Date.now())} 后达到上限`
+    : !stale && !waiting && report?.etaAt && report.runsOutBeforeReset ? (report.etaAt <= Date.now() ? '可能已接近上限，刷新确认' : `约 ${duration(report.etaAt - Date.now())} 后达到上限`)
     : !stale && !waiting && report?.ratePerH === 0 ? '近期没有新增用量，暂不估计'
     : !stale && !waiting && report?.projectedAtReset != null ? `重置时预计使用 ${percent(report.projectedAtReset)}`
     : `${date(checkedAt(account))} 更新`;
@@ -1178,8 +1209,9 @@ function startOfToday(now) { const d = new Date(now); d.setHours(0, 0, 0, 0); re
 function rangeHourSeries(hours) {
   if (!hours) return null;
   if (state.days === 1) {
-    const first = startOfToday(current.now);
-    return fillHours(hours, first, Math.floor((current.now - first) / 3600000) + 1);
+    const first = Math.floor(startOfToday(current.now) / 3600000) * 3600000;
+    const last = Math.floor(current.now / 3600000) * 3600000;
+    return fillHours(hours, first, Math.floor((last - first) / 3600000) + 1);
   }
   if (state.days === '24h') {
     const first = Math.floor(current.now / 3600000) * 3600000 - 23 * 3600000;
@@ -1203,62 +1235,71 @@ function rangeHourSeries(hours) {
 const todayCache = new Map();
 let lastToday = null;
 function todayHourly() {
-  const now = current.now, day = D.dayKey(now), start = startOfToday(now);
-  const key = `${now}|${state.source}`;
+  const now = current.now, day = D.dayKey(now), start = startOfToday(now), source = state.source;
+  const first = Math.floor(start / 3600000) * 3600000, last = Math.floor(now / 3600000) * 3600000;
+  const key = `${now}|${source}`;
   if (!todayCache.has(key)) {
     todayCache.set(key, null);
-    api.requests({ source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true, from: day, to: day, since: start, until: now })
+    api.requests({ source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true, from: day, to: day, since: start, until: now })
       .then(page => {
+        if (!page || !page.aggregate) { todayCache.delete(key); return; }
         todayCache.set(key, page.aggregate.hours);
-        lastToday = { day, source: state.source, hours: page.aggregate.hours };
+        lastToday = { day, source, hours: page.aggregate.hours };
         while (todayCache.size > 6) todayCache.delete(todayCache.keys().next().value);
-        if (state.days === 1 && current) render(current);
+        if (state.days === 1 && state.source === source && current) render(current);
       })
       .catch(() => { todayCache.delete(key); });
   }
-  const hours = todayCache.get(key) ?? (lastToday?.day === day && lastToday.source === state.source ? lastToday.hours : null);
-  // 零点到现在这一小时（含）
-  return hours ? fillHours(hours, start, Math.floor((now - start) / 3600000) + 1) : null;
+  const hours = todayCache.get(key) ?? (lastToday?.day === day && lastToday.source === source ? lastToday.hours : null);
+  // 零点到现在这一小时（含），对齐到后端 3600000ms 整点桶
+  return hours ? fillHours(hours, first, Math.floor((last - first) / 3600000) + 1) : null;
 }
 
 /*
  * 精确到时分的时间范围（「一天」= 过去 24 小时，或自定义了小时/分钟）：按天记的账切不出来，
  * 改由 worker 从逐条流水里汇总当前时段与紧邻的上一段等长时间（算环比）。
- * 结果按「范围 + 工具 + 快照」缓存；还没回来时先给一份空的，回来后重画。
+ * 结果按「范围 + 工具 + 快照」缓存；还没回来时先用同范围上一份结果顶着，免得定时刷新时闪回 0。
  */
 const windowCache = new Map();
+let lastWindowData = null;
 function windowAnalysis() {
   const curSince = state.since;
   const curUntil = state.until ?? current.now;
+  const source = state.source;
   const span = Math.max(60_000, curUntil - curSince + 1);
   const prevUntil = curSince - 1;
   const prevSince = curSince - span;
-  const key = `${state.days}|${state.from}|${state.to}|${curSince}|${curUntil}|${state.source}|${current.scannedAt || ''}`;
+  const scope = state.days === '24h' ? `24h|${source}` : `custom|${state.from}|${state.to}|${state.fromTime}|${state.toTime}|${state.follow ? 1 : 0}|${source}`;
+  const key = `${state.days}|${state.from}|${state.to}|${curSince}|${curUntil}|${source}|${current.scannedAt || ''}`;
   if (!windowCache.has(key)) {
     windowCache.set(key, null);
-    const base = { source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true };
+    const base = { source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true };
     Promise.all([
       api.requests({ ...base, from: state.from, to: state.to, since: curSince, until: curUntil }),
       api.requests({ ...base, from: D.dayKey(prevSince), to: D.dayKey(prevUntil), since: prevSince, until: prevUntil })
     ]).then(([cur, prev]) => {
-      windowCache.set(key, { cur: cur.aggregate, prev: prev.aggregate });
+      if (!cur || !prev || !cur.aggregate || !prev.aggregate) { windowCache.delete(key); return; }
+      const entry = { cur: cur.aggregate, prev: prev.aggregate };
+      windowCache.set(key, entry);
+      lastWindowData = { scope, ...entry };
       while (windowCache.size > 8) windowCache.delete(windowCache.keys().next().value);
-      if (current && isPreciseRange() && state.since === curSince && (state.until ?? current.now) === curUntil) render(current);
+      if (current && isPreciseRange() && state.source === source && state.since === curSince && (state.until ?? current.now) === curUntil) render(current);
     }).catch(() => {
       windowCache.set(key, { error: true });
-      if (current && isPreciseRange() && state.since === curSince && (state.until ?? current.now) === curUntil) {
+      if (current && isPreciseRange() && state.source === source && state.since === curSince && (state.until ?? current.now) === curUntil) {
         render(current);
         showStatus(state.days === '24h' ? '过去 24 小时的数据读取失败，请重试。' : '所选时间段的数据读取失败，请重试。', true);
       }
     });
   }
-  const data = windowCache.get(key);
-  const result = D.analyze(data?.cur?.rows || [], state.from, state.to, state.source);
-  result.previous = D.sum(D.select(data?.prev?.rows || [], '0000-00-00', '9999-99-99', state.source));
+  const hit = windowCache.get(key);
+  const data = hit ?? (lastWindowData?.scope === scope ? lastWindowData : null);
+  const result = D.analyze(data?.cur?.rows || [], state.from, state.to, source);
+  result.previous = D.sum(D.select(data?.prev?.rows || [], '0000-00-00', '9999-99-99', source));
   const hourly = rangeHourSeries(data?.cur?.hours || []);
   if (hourly) result.hourly = hourly;
   result.loading = !data;
-  result.error = Boolean(data?.error);
+  result.error = Boolean(hit?.error);
   // 分布图（一天中的时段 / 星期）要用的逐小时数据
   result.hours = data?.cur?.hours || null;
   return result;
@@ -1269,8 +1310,9 @@ function delta(now, previous) {
   return [el('span', { class: 'delta ' + (pct >= 0 ? 'up' : 'down'), text: `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%` }), '较上一时段'];
 }
 function renderStats() {
-  if (state.page === 'usage' && (analysis.loading || analysis.error)) {
-    $('tiles').replaceChildren(...['总 Tokens', '参考费用', '模型调用次数', '缓存读取占比'].map(label => el('article', { class: 'stat' }, [el('div', { class: 'stat-label', text: label }), el('div', { class: 'stat-value', text: '—' }), el('div', { class: 'stat-sub', text: analysis.error ? '筛选统计读取失败，请重试。' : '正在读取请求记录…' })])));
+  if ((state.page === 'usage' || state.page === 'overview') && (analysis.loading || analysis.error)) {
+    const labels = ['总 Tokens', '参考费用', state.page === 'usage' ? '模型调用次数' : '请求次数', '缓存读取占比'];
+    $('tiles').replaceChildren(...labels.map(label => el('article', { class: 'stat' }, [el('div', { class: 'stat-label', text: label }), el('div', { class: 'stat-value', text: '—' }), el('div', { class: 'stat-sub', text: analysis.error ? '筛选统计读取失败，请重试。' : '正在读取请求记录…' })])));
     return;
   }
   const t = analysis.total, p = analysis.previous;
@@ -1367,17 +1409,25 @@ function watchChartHost(host, draw) {
   if (!host || typeof ResizeObserver !== 'function') return;
   const existing = chartWatchers.get(host);
   if (existing) { existing.draw = draw; return; }
-  const entry = { draw };
+  const entry = { draw, ro: null };
   const ro = new ResizeObserver(() => {
     if (!host.isConnected) { ro.disconnect(); chartWatchers.delete(host); return; }
     const next = Math.round(host.clientWidth);
     const drawn = Number(host.dataset.drawnWidth || 0);
     if (next > 0 && Math.abs(next - drawn) > 2) entry.draw();
   });
+  entry.ro = ro;
   ro.observe(host);
   chartWatchers.set(host, entry);
 }
+function unwatchChartHost(host) {
+  const existing = chartWatchers.get(host);
+  if (!existing) return;
+  existing.ro?.disconnect();
+  chartWatchers.delete(host);
+}
 window.watchChartHost = watchChartHost;
+window.unwatchChartHost = unwatchChartHost;
 function syncDailyChartWidth(animate = false) {
   const host = $('daily-chart');
   if (!host || !analysis || state.page !== 'overview') return;
@@ -1387,18 +1437,19 @@ function syncDailyChartWidth(animate = false) {
 }
 function chart(host, rows, metric = 'tokens', hourly = false, animate = entering()) {
   host.replaceChildren();
-  if (!rows.length) { host.dataset.drawnWidth = ''; host.append(empty('所选范围暂无记录')); return; }
+  if (!rows.length) { unwatchChartHost(host); host.dataset.drawnWidth = ''; host.append(empty('所选范围暂无记录')); return; }
   const measured = Math.round(host.clientWidth);
   host.dataset.drawnWidth = String(measured);
   const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 720), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
-  const max = Math.max(1, ...rows.map(row => row[metric] || 0));
+  const peak = Math.max(0, ...rows.map(row => row[metric] || 0));
+  const max = metric === 'costUsd' ? (peak > 0 ? peak : 1) : Math.max(1, peak);
   const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': hourly ? (state.days === '24h' ? '最近24小时用量柱状图' : '按小时用量柱状图') : '每日用量柱状图' });
   const fmt = metric === 'costUsd' ? money : metric === 'requests' ? number : tokens;
   for (let i = 0; i <= 2; i++) {
     const y = top + (h - top - bottom) * i / 2;
     node.append(svg('line', { class: 'grid', x1: left, x2: w - 5, y1: y, y2: y }));
     const label = svg('text', { class: 'axis', x: left - 9, y: y + 4, 'text-anchor': 'end' });
-    label.textContent = max === 1 && i === 1 ? '' : fmt(max * (1 - i / 2)); node.append(label);
+    label.textContent = metric !== 'costUsd' && max === 1 && i === 1 ? '' : fmt(max * (1 - i / 2)); node.append(label);
   }
   const slot = (w - left - 8) / rows.length, barWidth = Math.max(.5, Math.min(slot * .62, 30));
   const step = Math.min(16, 700 / rows.length);
@@ -1526,7 +1577,7 @@ function modelWeekDetail(win, account) {
   const willRunOut = !unknown && win.used < 100 && win.etaAt && win.runsOutBeforeReset;
   const limit = unknown ? metric('预计达到上限', '—', { sub: waitText })
     : win.used >= 100 ? metric('预计达到上限', '已用完', { sub: '等待重置', tone: 'warn' })
-    : willRunOut ? metric('预计达到上限', date(win.etaAt), { sub: `约 ${duration(win.etaAt - Date.now())}后`, tone: pressured(win) ? 'warn' : '' })
+    : willRunOut ? metric('预计达到上限', date(win.etaAt), { sub: win.etaAt <= Date.now() ? '可能已接近上限，刷新确认' : `约 ${duration(win.etaAt - Date.now())}后`, tone: pressured(win) ? 'warn' : '' })
     : metric('预计达到上限', win.ratePerH === 0 ? '暂无新增' : '不会', { sub: win.ratePerH === 0 ? '近期没有新增用量' : '重置前不会达到上限' });
   return el('div', { class: 'model-week-detail' }, [
     el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(win, account)]),
@@ -1545,7 +1596,7 @@ function windowPanel(label, report, account) {
   const pending = waitingReset(account, report), stale = isStale(account), unknown = stale || pending;
   panel.append(el('div', { class: 'window-number' }, [el('strong', { text: pending ? '—' : percent(Math.max(0, 100 - report.used)) }), el('span', { text: stale ? '上次采样剩余' : '剩余额度' })]));
   const bar = pending ? el('div', { class: 'track' }) : track(report.used, pressured(report)); bar.classList.add('window-track'); panel.append(bar);
-  panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { 'data-reset-at': report.resetAt, 'data-reset-format': 'short', text: report.resetAt ? `${duration(report.resetAt - Date.now())}后重置` : '重置时间未知' })]));
+  panel.append(el('div', { class: 'window-meta' }, [el('span', { text: pending ? '等待采样确认' : `已用 ${percent(report.used)}` }), el('span', { 'data-reset-at': !pending && report.resetAt ? report.resetAt : null, 'data-reset-format': 'short', text: resetShortText(report.resetAt, pending) })]));
   const caution = pressured(report) || unknown;
   panel.append(el('div', { class: 'prediction-line' + (caution ? ' caution' : '') }, [icon(caution ? 'alert' : 'trend'), prediction(report, account)]));
   // 周额度窗口里再列按型号单独算的周额度（Claude Max 的 Fable）：和总的周额度分开计，哪个先用完都会被限制
@@ -1557,7 +1608,7 @@ function windowPanel(label, report, account) {
         return el('div', { class: 'model-week-row', 'data-model': row.model }, [
           el('div', { class: 'model-week-line' }, [modelWeekTitle(row), el('span', { class: 'num', text: ended ? '等待确认' : `剩余 ${percent(Math.max(0, 100 - row.used))}` })]),
           ended ? el('div', { class: 'track' }) : track(row.used, row.used >= 75, '已用额度'),
-          el('div', { class: 'mini-reset', 'data-reset-at': row.resetAt, 'data-reset-format': 'full' }, [icon('clock'), ...(ended ? [modelWeekReset(row)] : [el('span', { text: `已用 ${percent(row.used)}` }), ' · ', el('span', { text: modelWeekReset(row) })])]),
+          el('div', { class: 'mini-reset' }, [icon('clock'), ...(ended ? [el('span', { text: modelWeekReset(row) })] : [el('span', { text: `已用 ${percent(row.used)}` }), ' · ', el('span', { 'data-reset-at': row.resetAt || null, 'data-reset-format': 'full', text: modelWeekReset(row) })])]),
           ended || !row.window ? null : modelWeekDetail(row.window, account)
         ]);
       })
@@ -1576,7 +1627,7 @@ function windowPanel(label, report, account) {
   const willRunOut = !unknown && report.used < 100 && report.etaAt && report.runsOutBeforeReset;
   const limit = unknown ? metric('预计达到上限', '—', { sub: waitText })
     : report.used >= 100 ? metric('预计达到上限', '已用完', { sub: '等待重置', tone: 'warn' })
-    : willRunOut ? metric('预计达到上限', date(report.etaAt), { sub: pressured(report) ? `约 ${duration(report.etaAt - Date.now())}后` : `约 ${duration(report.etaAt - Date.now())}后 · 距重置只差 ${duration(report.resetAt - report.etaAt)}`, tone: pressured(report) ? 'warn' : '' })
+    : willRunOut ? metric('预计达到上限', date(report.etaAt), { sub: report.etaAt <= Date.now() ? '可能已接近上限，刷新确认' : pressured(report) ? `约 ${duration(report.etaAt - Date.now())}后` : `约 ${duration(report.etaAt - Date.now())}后 · 距重置只差 ${duration(report.resetAt - report.etaAt)}`, tone: pressured(report) ? 'warn' : '' })
     : metric('预计达到上限', report.ratePerH === 0 ? '暂无新增' : '不会', { sub: report.ratePerH === 0 ? '近期没有新增用量' : '重置前不会达到上限' });
   panel.append(metricGroup('预测', 'trend', [
     limit,
@@ -1590,7 +1641,7 @@ function windowPanel(label, report, account) {
     metric('窗口平均速度', speed(report.averagePerH), { unit: report.averagePerH == null || unknown ? '' : '点 / 时', sub: '整个窗口，含休息时间' }),
     metric(label.startsWith('5') ? '最近 1 小时速度' : '最近 24 小时速度', speed(report.recentPerH), { unit: report.recentPerH == null || unknown ? '' : '点 / 时', sub: '预测主要依据' }),
     metric('窗口开始', report.startAt ? date(report.startAt) : '未知', { sub: report.startAt ? new Date(report.startAt).getFullYear() + ' 年 · 本地时间' : '' }),
-    metric('重置时间', report.resetAt ? date(report.resetAt) : '未知', { sub: report.resetAt ? `${duration(report.resetAt - Date.now())}后` : '' })
+    metric('重置时间', report.resetAt ? date(report.resetAt) : '未知', { sub: report.resetAt ? (report.resetAt <= Date.now() ? '旧窗口已结束' : `${duration(report.resetAt - Date.now())}后`) : '' })
   ], 'two'));
   return panel;
 }
@@ -1601,7 +1652,7 @@ function capacityChart(host, history, windowName, metric, animate) {
   host.replaceChildren();
   host.classList.toggle('week', windowName === 'week');
   const points = history?.points || [];
-  if (!points.length) { host.dataset.drawnWidth = ''; host.append(empty('还没有能折算的历史窗口：需要窗口已用 ≥ 2%，并且本机在这个窗口里有用量')); return; }
+  if (!points.length) { unwatchChartHost(host); host.dataset.drawnWidth = ''; host.append(empty('还没有能折算的历史窗口：需要窗口已用 ≥ 2%，并且本机在这个窗口里有用量')); return; }
   const value = p => metric === 'costUsd' ? p.capacityCostUsd : p.capacityTokens;
   const fmt = metric === 'costUsd' ? money : tokens;
   const measured = Math.round(host.clientWidth);
@@ -1664,6 +1715,8 @@ function capacityPanel(account) {
   const draw = animate => {
     const history = account.capacityHistory?.[state.capWindow];
     if (history?.unavailableReason === 'unattributed') {
+      unwatchChartHost(host);
+      host.dataset.drawnWidth = '';
       // 共享额度保护下不折算容量：模块留着，说明为什么空、怎么打开（以前整块改名成「历史容量来源保护」，看起来像被删了）
       const open = el('button', { type: 'button', class: 'btn', text: '在设置里打开「只在本机用 Code」' });
       open.addEventListener('click', () => openSettings('accounts'));
@@ -1700,7 +1753,7 @@ function capacityPanel(account) {
 }
 function trendChart(host, points, animate) {
   host.replaceChildren();
-  if (points.length < 3 || points.at(-1).at - points[0].at < 3600000) { host.dataset.drawnWidth = ''; host.append(empty('采样跨度不足 1 小时，继续记录后显示趋势')); return; }
+  if (points.length < 3 || points.at(-1).at - points[0].at < 3600000) { unwatchChartHost(host); host.dataset.drawnWidth = ''; host.append(empty('采样跨度不足 1 小时，继续记录后显示趋势')); return; }
   const measured = Math.round(host.clientWidth);
   host.dataset.drawnWidth = String(measured);
   const w = Math.max(320, measured || Math.round(host.parentElement?.clientWidth || 0) || 460), h = host.clientHeight || 190, left = 38, right = 12, top = 16, bottom = 28;
@@ -1757,10 +1810,13 @@ function drawAccountTabs(slots) {
   const extra = [...(window.AntigravityQuota?.tabs() || []), ...(window.DeepSeekBalance?.tabs() || []), ...(window.PoolQuota?.tabs() || [])];
   const all = orderQuotaTabs([...slots.map(slot => ({ key: slot.key, kind: slot.kind, who: accountWho(slot.account), slot })), ...extra.map(tab => ({ key: tab.key, kind: tab.kind, who: tab.who, tab }))]);
   tabLabels.clear();
-  for (const item of all) tabLabels.set(item.key, [META[item.kind]?.name || (item.kind === 'antigravity' ? 'Antigravity' : item.kind === 'pool' ? '号池' : item.kind === 'deepseek' ? 'DeepSeek' : item.kind === 'relay' ? '第三方 Key' : ''), item.who].filter(Boolean).join(' · ') || item.key);
+  for (const item of all) {
+    const displayWho = item.who ? String(item.who).split('|')[0] : '';
+    tabLabels.set(item.key, [META[item.kind]?.name || (item.kind === 'antigravity' ? 'Antigravity' : item.kind === 'pool' ? '号池' : item.kind === 'deepseek' ? 'DeepSeek' : item.kind === 'relay' ? '第三方 Key' : ''), displayWho].filter(Boolean).join(' · ') || item.key);
+  }
   // 0.3.49：编辑布局里藏起来的标签平时不画，编辑时画成占位
   const items = layoutEdit ? all : all.filter(item => !tabHidden(item.key));
-  const signature = items.map(item => `${item.key}:${item.who}:${tabHidden(item.key) ? 'h' : ''}`).join('|') + (layoutEdit ? '|edit' : '');
+  const signature = items.map(item => `${item.key}:${item.tab?.sig ?? item.who}:${tabHidden(item.key) ? 'h' : ''}`).join('|') + (layoutEdit ? '|edit' : '');
   if (tabs.dataset.signature !== signature) {
     tabs.dataset.signature = signature;
     tabs.replaceChildren(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }), ...items.map(({ slot, tab, who }) => {
@@ -2090,7 +2146,7 @@ function speedPanel(account, kind, custom = null) {
       speedCache.set(key, data || null);
       if (speedCache.size > 24) speedCache.delete(speedCache.keys().next().value);
       if (panel.isConnected && key === [kind, account.accountId || '', state.speedRange].join('|')) keepScroll(() => drawSpeed(body, data, kind, custom));
-    }).catch(() => { if (panel.isConnected) body.replaceChildren(empty('速度记录读取失败，请重试。')); });
+    }).catch(() => { if (panel.isConnected && key === [kind, account.accountId || '', state.speedRange].join('|')) body.replaceChildren(empty('速度记录读取失败，请重试。')); });
   };
   seg.addEventListener('click', event => {
     const button = event.target.closest('[data-speed-range]');
@@ -2301,6 +2357,7 @@ function accountRequestsPanel(account, meta) {
     api.requests({ ...base, since: weekStart, pageSize: 8, account: account.accountId || 'none' }),
     fiveStart ? api.requests({ ...base, since: fiveStart, pageSize: 1, account: account.accountId || 'none' }) : Promise.resolve(null)
   ]).then(([week, five]) => {
+    if (!week) return;
     accountPanelCache.set(key, { week, five });
     if (accountPanelCache.size > 12) accountPanelCache.delete(accountPanelCache.keys().next().value);
     if (panel.isConnected) keepScroll(() => draw({ week, five }));
@@ -2340,7 +2397,7 @@ function drawAccountRequests(panel, account, meta, data) {
       el('thead', {}, [el('tr', {}, ['时间', '项目', '型号', 'Tokens', '参考费用', '核验'].map((text, i) => el('th', { class: i === 3 || i === 4 ? 'n' : '', text })))]),
       el('tbody', {}, week.rows.map(row => { const t = clock(row.at); return el('tr', { class: `request-row ${row.status}` }, [
         el('td', { class: 'request-time', title: t.full }, [el('b', { text: `${t.day} ${t.time}` })]),
-        el('td', { class: 'project-cell', text: projectOf(row.cwd), title: row.cwd || '' }),
+        el('td', { class: 'project-cell', text: projectOf(row.cwd), title: row.cwd || '', translate: row.cwd ? 'no' : null }),
         modelCell(row),
         el('td', { class: 'n token-strong', title: number(row.tokens) }, qty(row.tokens)),
         el('td', { class: 'n', text: row.priced ? money(row.costUsd) : '未定价' }),
@@ -2401,6 +2458,7 @@ function detailAnalysis() {
       previous.since = undefined; previous.until = undefined;
     }
     Promise.all([api.requests(query), api.requests(previous)]).then(([cur, prev]) => {
+      if (!cur || !prev || !cur.aggregate || !prev.aggregate) { detailCache.delete(key); return; }
       detailCache.set(key, { cur: cur.aggregate, prev: prev.aggregate });
       while (detailCache.size > 8) detailCache.delete(detailCache.keys().next().value);
       if (current && state.page === 'usage' && JSON.stringify(requestQuery({ page: 0, pageSize: 1, sort: 'time', aggregate: true, filteredAggregate: true })) === JSON.stringify(query)) render(current);
@@ -2458,6 +2516,7 @@ async function loadRequests() {
   try {
     const page = await api.requests(query);
     if (seq !== requestSeq) return;
+    if (!page) { requestKey = ''; return; }
     requestPage = page; state.reqPage = page.page; syncDetailOptions(page); syncAccountOptions(page);
     // 查询是异步回来的，不在 render() 的滚动锁里；定时刷新时整表重画，同样要锁
     keepScroll(drawRequests);
@@ -2542,9 +2601,9 @@ const ACCOUNT_BASIS_HINT = {
 /** 项目和账号放一格：上面项目，下面是发出这次请求的账号。 */
 function projectAccountCell(row) {
   const account = row.account
-    ? el('small', { class: 'account-line', title: `${row.account.label}\n${ACCOUNT_BASIS_HINT[row.account.basis]}` }, [icon('user'), el('span', { text: row.account.label }), row.account.basis === 'inferred' ? el('em', { text: '推断' }) : null])
+    ? el('small', { class: 'account-line', title: `${row.account.label}\n${ACCOUNT_BASIS_HINT[row.account.basis]}` }, [icon('user'), el('span', { text: row.account.label, translate: 'no' }), row.account.basis === 'inferred' ? el('em', { text: '推断' }) : null])
     : el('small', { class: 'account-line muted', text: row.official === false ? 'API Key / 中转站' : '账号未知' });
-  return el('td', { class: 'account-cell' }, [el('span', { class: 'project-name', text: projectOf(row.cwd), title: row.cwd || '' }), account]);
+  return el('td', { class: 'account-cell' }, [el('span', { class: 'project-name', text: projectOf(row.cwd), title: row.cwd || '', translate: row.cwd ? 'no' : null }), account]);
 }
 
 /**
@@ -2629,8 +2688,8 @@ function requestDetail(row) {
     ['Tokens', number(row.tokens)], ['缓存命中率', cacheHitText(row)],
     ['上下文水位', ctxPct != null ? `${number(row.input)} / ${tokens(row.contextLimit)}（${ctxPct.toFixed(1)}%）${row.compaction ? ' · 自动压缩' : ''}` : `${number(row.input)}${row.compaction ? '（自动压缩）' : '（窗口未知）'}`],
     ['推理占比', reaPct != null ? `${number(row.reasoning)} / ${number(row.output)}（占输出 ${reaPct.toFixed(1)}%）` : number(row.reasoning)],
-    ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.sessionTitle ? `${row.sessionTitle} (${row.session})` : row.session, true, subagentTagNode(row, 'detail-sub-tag')],
-    ['工作目录', row.cwd || '—'], ['缓存写入', number(row.cacheWrite)],
+    ['响应 ID', row.responseId || '—', true], ['请求 ID', row.requestId || '—', true], ['会话', row.sessionTitle ? `${row.sessionTitle} (${row.session})` : row.session, true, subagentTagNode(row, 'detail-sub-tag'), true],
+    ['工作目录', row.cwd || '—', false, null, Boolean(row.cwd)], ['缓存写入', number(row.cacheWrite)],
     ...(auto >= 2 ? [['连续自动轮次', `第 ${number(auto)} 步${auto >= 8 ? '（无人工介入长连跑）' : ''}`]] : []),
     ...(row.calls > 1 ? [['模型调用', `${number(row.calls)} 次（Grok 按轮记录）`]] : []),
     ...(row.effort ? [['思考等级', row.effort]] : []),
@@ -2663,9 +2722,9 @@ function requestDetail(row) {
   ].filter(Boolean)) : null;
   return el('tr', { class: `request-detail ${row.status}` }, [el('td', { colspan: 10 }, [
     sessionActions,
-    el('div', { class: 'detail-grid' }, fields.map(([label, value, mono, badge]) => el('div', {}, [
+    el('div', { class: 'detail-grid' }, fields.map(([label, value, mono, badge, raw]) => el('div', {}, [
       badge ? el('small', { class: 'detail-label-row' }, [el('span', { text: label }), badge]) : el('small', { text: label }),
-      el('span', { class: mono ? 'mono' : '', text: value, title: value })
+      el('span', { class: mono ? 'mono' : '', text: value, title: value, translate: raw || (label === '账号' && row.account) ? 'no' : null })
     ]))),
     row.reasons.length ? el('div', { class: 'detail-reasons' }, row.reasons.map(reason => {
       const problem = (row.status === 'mismatch' || row.status === 'suspect') && !NOTE_PREFIX.test(reason);
@@ -2934,7 +2993,7 @@ const LAYOUT = [
   ['usage:models', '模型排行', '卡片'], ['usage:speed', '模型速度走势', '卡片'], ['usage:tokensci', 'tokens.ci 上传', '卡片'], ['usage:records', '用量明细', '卡片'],
   ['egress:chatgpt', 'ChatGPT 出口', '卡片'], ['egress:claude', 'Claude 出口', '卡片'], ['egress:grok', 'Grok 出口', '卡片'], ['egress:history', '变化与告警', '卡片'],
   ['sessions:list', '会话列表', '卡片'], ['sessions:detail', '会话内容', '卡片'],
-  ['providers:status', '本地路由状态', '概览'], ['providers:claude', 'Claude Code', '概览'], ['providers:desktop', 'Claude 桌面端', '概览'], ['providers:codex', 'Codex', '概览'], ['providers:grok', 'Grok CLI', '概览'], ['providers:deepseek', 'DeepSeek Harness', '概览'],
+  ['providers:status', '本地路由状态', '概览'], ['providers:claude', 'Claude Code', '概览'], ['providers:desktop', 'Claude 桌面端', '概览'], ['providers:codex', 'Codex', '概览'], ['providers:grok', 'Grok CLI', '概览'], ['providers:deepseek', 'DeepSeek Harness', '概览'], ['providers:pi', 'pi', '概览'],
 ];
 const LAYOUT_BY_KEY = Object.fromEntries(LAYOUT.map(([key, label]) => [key, label]));
 const LAYOUT_INDEX = Object.fromEntries(LAYOUT.map(([key], i) => [key, i]));
@@ -2994,12 +3053,12 @@ function writeLayout() {
 }
 function setLayoutEdit(on) {
   layoutEdit = Boolean(on);
-  if (!layoutEdit) closeOptionMenu();
-  if (!layoutEdit && state.page && navHidden(state.page)) { applyLayout(); return; }
+  if (!layoutEdit) { layoutDragEnd(null, false); closeOptionMenu(); }
   // 账号标签要重画（编辑时藏起来的标签显示成占位）
   if (current && state.page === 'quota') renderQuota();
   applyLayout();
 }
+window.exitLayoutEdit = () => { if (layoutEdit) setLayoutEdit(false); };
 /** 藏 / 显示一样东西。fromPage：在页面上点的，藏了给一个能撤销的提示。 */
 function setLayoutHidden(key, hide, { fromPage = false } = {}) {
   if (hide === layoutHidden.has(key)) return;
@@ -3203,7 +3262,9 @@ function layoutDragStart(grip, event) {
   const zone = item?.parentElement;
   if (!item || !zone || event.button !== 0) return;
   event.preventDefault();
-  layoutDragging = { item, zone, grip, id: event.pointerId, moved: false };
+  const onLost = () => layoutDragEnd(null, false);
+  layoutDragging = { item, zone, grip, id: event.pointerId, moved: false, onLost };
+  grip.addEventListener('lostpointercapture', onLost);
   grip.setPointerCapture?.(event.pointerId);
   item.classList.add('layout-dragging');
   document.documentElement.classList.add('layout-drag-active');
@@ -3227,9 +3288,10 @@ function layoutDragEnd(event, commit) {
   const drag = layoutDragging;
   if (!drag || (event && event.pointerId !== drag.id)) return;
   layoutDragging = null;
+  drag.grip?.removeEventListener('lostpointercapture', drag.onLost);
   drag.item.classList.remove('layout-dragging');
   document.documentElement.classList.remove('layout-drag-active');
-  if (drag.moved && commit) saveZoneOrder(drag.zone);
+  if (drag.moved && commit && drag.zone.isConnected) saveZoneOrder(drag.zone);
   applyLayout();
 }
 /** 键盘：把手上按方向键，和前一张 / 后一张换位置。 */
@@ -3308,9 +3370,9 @@ document.addEventListener('click', event => {
   if (target.dataset.layoutReset !== undefined) { resetLayout(target.dataset.layoutReset || ''); return; }
   event.preventDefault();
   event.stopPropagation();
-  if (target.dataset.tabToggle) { const key = 'tab:' + target.dataset.tabToggle; setLayoutHidden(key, !layoutHidden.has(key), { fromPage: !layoutHidden.has(key) }); return; }
   if (target.dataset.layoutToggle) { const key = target.dataset.layoutToggle; setLayoutHidden(key, !layoutHidden.has(key)); $('layout-panel')?.querySelector(`[data-layout-toggle="${CSS.escape(key)}"]`)?.focus(); return; }
   if (!layoutEdit) return;
+  if (target.dataset.tabToggle) { const key = 'tab:' + target.dataset.tabToggle; setLayoutHidden(key, !layoutHidden.has(key), { fromPage: !layoutHidden.has(key) }); return; }
   if (target.dataset.layoutHide) setLayoutHidden(target.dataset.layoutHide, true, { fromPage: true });
   else setLayoutHidden(target.dataset.layoutShow, false);
 }, true);
@@ -3322,6 +3384,7 @@ document.addEventListener('pointerdown', event => {
 document.addEventListener('pointermove', layoutDragMove);
 document.addEventListener('pointerup', event => layoutDragEnd(event, true));
 document.addEventListener('pointercancel', event => layoutDragEnd(event, false));
+window.addEventListener('blur', () => layoutDragEnd(null, false));
 document.addEventListener('keydown', event => {
   const grip = event.target.closest?.('[data-layout-grip]');
   if (grip && layoutEdit) layoutDragKey(grip, event);
@@ -3527,10 +3590,14 @@ function prefToggle({ id, label, value, onLabel, offLabel, onChange }) {
   });
 
   button.addEventListener('click', async () => {
+    if (button.disabled) return;
     const next = button.getAttribute('aria-checked') !== 'true';
     button.checked = next;
-    if (await onChange(next) === false) {
-      button.checked = !next;
+    button.disabled = true;
+    try {
+      if (await onChange(next) === false) button.checked = !next;
+    } finally {
+      button.disabled = false;
     }
   });
 
@@ -3675,7 +3742,11 @@ function renderCcSwitch(status = current?.ccSwitch, prefs) {
         { value: true, label: '自动导入', hint: '默认。检测到 CC Switch 就补上缺的记录' },
         { value: false, label: '不导入', hint: '只统计 TokenPulse 自己扫描到的' }
       ],
-      onChange: async next => { if (await savePref('ccSwitch', next)) { render(await api.refresh()); renderCcSwitch(); } }
+      onChange: async next => {
+        if (!await savePref('ccSwitch', next)) return false;
+        try { render(await api.refresh()); renderCcSwitch(); } catch { $('prefs-status').textContent = '同步失败，请重试'; }
+        return true;
+      }
     })));
   }
 }
@@ -4130,23 +4201,24 @@ function revealDetailResults() {
 function renderDetailChips() {
   const host = $('detail-filter-chips'), chips = [];
   const existing = new Map([...host.children].map(node => [node.dataset.key, node]));
-  function chip(key, text, remove) {
+  function chip(key, text, remove, raw = false) {
     let button = existing.get(key);
     if (!button) button = el('button', { class: 'btn', type: 'button', title: '移除此筛选' });
     if (button.dataset.leaving) { delete button.dataset.leaving; button.disabled = false; detailMotion(button, { opacity: 0, transform: 'scale(.97)' }, { opacity: 1, transform: 'none' }); }
     button.dataset.key = key;
-    const label = (window.PulseI18n?.lang() === 'en' ? window.PulseI18n.t(text) : text) + ' ×';
+    if (raw) button.setAttribute('translate', 'no'); else button.removeAttribute('translate');
+    const label = (!raw && window.PulseI18n?.lang() === 'en' ? window.PulseI18n.t(text) : text) + ' ×';
     if (button.textContent !== label) button.textContent = label;
     button.onclick = () => { remove(); requeryRequests(); };
     chips.push(button);
   }
-  for (const model of state.models) chip('model:' + model, model, () => { state.models = state.models.filter(m => m !== model); });
-  if (state.project) chip('project', state.project === '__missing__' ? '项目未知' : state.project, () => { state.project = ''; $('request-project').value = ''; });
+  for (const model of state.models) chip('model:' + model, model, () => { state.models = state.models.filter(m => m !== model); }, true);
+  if (state.project) chip('project', state.project === '__missing__' ? '项目未知' : state.project, () => { state.project = ''; $('request-project').value = ''; }, state.project !== '__missing__');
   if (state.channel !== 'all') chip('channel', { official: '官方订阅', api: 'API Key / 中转站', unknown: '归属未知' }[state.channel], () => { state.channel = 'all'; $('request-channel').value = 'all'; });
-  if (state.reqAccount) chip('account', $('request-account').selectedOptions[0]?.textContent || state.reqAccount, () => { state.reqAccount = ''; $('request-account').value = ''; });
-  if (state.reqSession) chip('session', `会话：${state.reqSessionLabel || state.reqSession}`, () => { state.reqSession = ''; state.reqSessionLabel = ''; });
+  if (state.reqAccount) chip('account', $('request-account').selectedOptions[0]?.textContent || state.reqAccount, () => { state.reqAccount = ''; $('request-account').value = ''; }, true);
+  if (state.reqSession) chip('session', (window.PulseI18n?.lang() === 'en' ? 'Session: ' : '会话：') + (state.reqSessionLabel || state.reqSession), () => { state.reqSession = ''; state.reqSessionLabel = ''; }, true);
   if (state.reqStatus !== 'all') chip('status', $('request-status').selectedOptions[0]?.textContent || state.reqStatus, () => { state.reqStatus = 'all'; $('request-status').value = 'all'; });
-  if (state.reqSearch.trim()) chip('search', state.reqSearch.trim(), () => { state.reqSearch = ''; $('request-search').value = ''; });
+  if (state.reqSearch.trim()) chip('search', state.reqSearch.trim(), () => { state.reqSearch = ''; $('request-search').value = ''; }, true);
   for (const node of chips) if (!node.isConnected) {
     host.append(node);
     detailMotion(node, { opacity: 0, transform: 'scale(.97)' }, { opacity: 1, transform: 'none' });
@@ -4366,7 +4438,9 @@ $('refresh').addEventListener('click', async () => {
 });
 
 function openModal(id) {
-  lastFocus = document.activeElement; $(id).hidden = false; document.body.classList.add('modal-open');
+  if (layoutEdit) setLayoutEdit(false);
+  if ($(id).hidden) lastFocus = document.activeElement;
+  $(id).hidden = false; document.body.classList.add('modal-open');
   document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = true;
   $(id + '-close').focus();
 }
@@ -4439,6 +4513,7 @@ $('antigravity-accounts')?.addEventListener('change', async event => {
   const select = event.target.closest('[data-agy-share-mode]');
   if (!select) return;
   const id = select.dataset.agyShareMode;
+  const prevMode = select.dataset.prevMode || 'auto';
   const mode = select.value;
   const modeNames = { auto: '自动防偏移', family: '家庭组共享', solo: '仅本机独享' };
   select.disabled = true;
@@ -4449,6 +4524,7 @@ $('antigravity-accounts')?.addEventListener('change', async event => {
     settingsDone(`已设为「${modeNames[mode] || mode}」`);
   } catch (error) {
     $('prefs-status').textContent = cleanRemoteError(error, '设置没保存上，请重试');
+    select.value = prevMode;
     select.disabled = false;
   }
 });
@@ -4547,10 +4623,13 @@ async function runAccountAction(action, kind, id, button) {
       } else if (action === 'login' || action === 'reauthorize') {
         const result = await api.antigravityQuota.login(action === 'reauthorize' ? id : undefined);
         if (!result?.ok) throw new Error(result?.error || 'Google OAuth 登录失败');
-        renderAgyAccounts(result.status);
-        const fresh = await api.antigravityQuota.refresh();
-        window.AntigravityQuota?.apply?.(fresh);
-        renderAgyAccounts(await api.antigravityQuota.accounts());
+        let latestStatus = result.status;
+        try {
+          const fresh = await api.antigravityQuota.refresh();
+          window.AntigravityQuota?.apply?.(fresh);
+          latestStatus = await api.antigravityQuota.accounts();
+        } catch { /* 登录已经成功，额度稍后再刷 */ }
+        renderAgyAccounts(latestStatus);
         settingsDone(action === 'reauthorize' ? '重新授权成功，Antigravity 凭据已更新并刷新额度' : '登录成功，已添加 Antigravity 账号并刷新额度');
       } else {
         renderAgyAccounts(await api.antigravityQuota.manage(action, id));
@@ -4572,9 +4651,9 @@ async function runAccountAction(action, kind, id, button) {
     } else if (action === 'login' || action === 'reauthorize') {
       const result = await api.loginOfficialAccount(kind, action === 'reauthorize' ? id : undefined);
       if (!result?.ok) throw new Error(result?.error || 'OAuth 登录失败');
+      // 主进程已经在后台刷新额度；这里等它的结果，好让提示和界面同步，刷新失败不影响登录成功。
+      try { render(await api.refresh()); } catch { /* 登录已经成功，额度稍后再刷 */ }
       renderOfficialAccounts(result.statuses);
-      // 主进程已经在后台刷新额度；这里等它的结果，好让提示和界面同步。
-      render(await api.refresh());
       settingsDone(action === 'reauthorize' ? '重新授权成功，账号凭据已更新并刷新额度' : '登录成功，已添加账号并刷新额度');
     } else {
       // 删除、完全删除、恢复：主进程会重新汇总并把新快照推过来，这里不用再等一轮额度查询
@@ -4615,7 +4694,8 @@ document.addEventListener('keydown', event => {
     if (event.key === 'Tab') {
       const controls = [...$('agy-switch-modal').querySelectorAll('button:not(:disabled)')].filter(item => item.offsetParent);
       if (controls.length) {
-        if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+        if (!$('agy-switch-modal').contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? controls.at(-1) : controls[0]).focus(); }
+        else if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
         else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
       }
     }
@@ -4624,8 +4704,10 @@ document.addEventListener('keydown', event => {
   const modal = ['settings'].find(id => !$(id).hidden); if (!modal || menuOwner) return;
   if (event.key === 'Escape') { event.preventDefault(); closeModal(modal); }
   if (event.key === 'Tab') {
-    const controls = [...$(modal).querySelectorAll('button:not(:disabled), input:not(:disabled), a[href]')].filter(item => item.offsetParent);
-    if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+    const controls = [...$(modal).querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex]:not([tabindex="-1"])')].filter(item => item.offsetParent);
+    if (!controls.length) return;
+    if (!$(modal).contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? controls.at(-1) : controls[0]).focus(); }
+    else if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
     else if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
   }
 });

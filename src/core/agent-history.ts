@@ -83,10 +83,22 @@ function maskValue(value: string) {
 }
 /** 把一行里的密钥换成 sk-a••••9z：JSON "xxx_key": "..."、TOML xxx_key = "..."、环境变量 XXX_TOKEN=...、裸的 sk- / Bearer 串。 */
 export function maskSecrets(line: string) {
-  let out = line.replace(/("([^"]*)"\s*:\s*")([^"]*)(")/g, (all, head, key, value, tail) => (SECRET_KEY.test(key) ? head + maskValue(value) + tail : all));
-  out = out.replace(/^(\s*(?:export\s+)?([A-Za-z0-9_.-]+)\s*=\s*)(?:(["'])([^"']*)\3|([^\s#]+))/, (all, head, key, quote, qval, uval) => (SECRET_KEY.test(key) ? head + (quote ? quote + maskValue(qval) + quote : maskValue(uval)) : all));
+  let out = line.replace(/("((?:\\.|[^"\\])*)"\s*:\s*")((?:\\.|[^"\\])*)(")/g, (all, head, key, value, tail) => (SECRET_KEY.test(key) ? head + maskValue(value) + tail : all));
+  out = out.replace(/^(\s*(?:export\s+)?(?:"((?:\\.|[^"\\])+)"|'([^']+)'|([A-Za-z0-9_.-]+))\s*=\s*)(?:"((?:\\.|[^"\\])*)"|'([^']*)'|([^\s#]+))/, (all, head, dk, sk, bk, dq, sq, uval) => {
+    const key = dk ?? sk ?? bk ?? "";
+    if (!SECRET_KEY.test(key)) return all;
+    if (dq !== undefined) return head + '"' + maskValue(dq) + '"';
+    if (sq !== undefined) return head + "'" + maskValue(sq) + "'";
+    return head + maskValue(uval);
+  });
   // YAML 键值行（如 DeepSeek Harness 的 .credentials.yaml）：仅匹配带实际值的行，不误伤 `refs:` 分组头
-  out = out.replace(/^(\s*([A-Za-z0-9_.-]+)\s*:\s*)(?:(["'])([^"']*)\3|([^\s#]+))/, (all, head, key, quote, qval, uval) => (SECRET_KEY.test(key) ? head + (quote ? quote + maskValue(qval) + quote : maskValue(uval)) : all));
+  out = out.replace(/^(\s*(?:"((?:\\.|[^"\\])+)"|'((?:''|[^'])+)'|([A-Za-z0-9_.-]+))\s*:\s*)(?:"((?:\\.|[^"\\])*)"|'((?:''|[^'])*)'|([^\s#]+))/, (all, head, dk, sk, bk, dq, sq, uval) => {
+    const key = dk ?? sk ?? bk ?? "";
+    if (!SECRET_KEY.test(key)) return all;
+    if (dq !== undefined) return head + '"' + maskValue(dq) + '"';
+    if (sq !== undefined) return head + "'" + maskValue(sq) + "'";
+    return head + maskValue(uval);
+  });
   out = out.replace(/\b(sk-[A-Za-z0-9_-]{6,}|xai-[A-Za-z0-9_-]{6,}|Bearer\s+[A-Za-z0-9._-]{8,})/g, (value) => maskValue(value));
   return out;
 }

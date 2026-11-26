@@ -14,6 +14,7 @@ import path from "path";
  */
 type DemoProcess = {
   proc: UtilityProcess;
+  root: string;
   pending: Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>;
 };
 let child: DemoProcess | null = null;
@@ -41,8 +42,23 @@ function spawn(): DemoProcess {
   sweepStale();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `tokenpulse-demo-${process.pid}-`));
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) if (value != null) env[key] = value;
-  for (const key of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "GROK_HOME"]) delete env[key];
+  const stripKeys = new Set([
+    "codex_home",
+    "claude_config_dir",
+    "grok_home",
+    "tokenpulse_dsh_home",
+    "pi_coding_agent_dir",
+    "tokenpulse_antigravity_dir",
+    "tokenpulse_data_dir",
+    "home",
+    "userprofile",
+    "agent_switch_home",
+    "appdata",
+    "localappdata",
+  ]);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value != null && !stripKeys.has(key.toLowerCase())) env[key] = value;
+  }
   Object.assign(env, {
     TOKENPULSE_DATA_DIR: path.join(root, "data"),
     HOME: path.join(root, "home"),
@@ -59,7 +75,7 @@ function spawn(): DemoProcess {
     removeDemoRoot(root);
     throw error;
   }
-  const instance: DemoProcess = { proc, pending: new Map() };
+  const instance: DemoProcess = { proc, root, pending: new Map() };
   const { pending } = instance;
   proc.on("message", (message: { id: number; result?: unknown; error?: string }) => {
     const job = pending.get(message.id);
@@ -93,7 +109,9 @@ export function demoCall(op: "snapshot" | "study" | "requests", query?: unknown)
 export function endDemo() {
   const instance = child;
   child = null;
-  instance?.proc.kill();
+  if (!instance) return;
+  try { instance.proc.kill(); } catch { /* ignore */ }
+  removeDemoRoot(instance.root);
 }
 
 export function demoRunning() {

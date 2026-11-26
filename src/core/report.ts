@@ -6,7 +6,7 @@ import { accountLabels } from "./login-timeline";
 import { readOfficialAccountStore } from "./accounts";
 import { localOnlyAccounts } from "./quota-calibration";
 import { readPressurePrefs } from "./quota-pressure";
-import { accountRows, cleanCapacity, readMarks } from "./quota-offmachine";
+import { accountRows, cleanCapacity, FAMILY, readMarks } from "./quota-offmachine";
 import { queryRequests } from "./request-log";
 import type { QuotaSample } from "./quota-history";
 import { ccSwitchBuckets, ccSwitchEnabled, coveredDays, readCcSwitch, type CcSwitchStatus } from "./cc-switch";
@@ -94,9 +94,12 @@ function relativeDay(now: number, offset: number) {
   return dayKey(d.getTime());
 }
 
-/** 花费：自己报过的优先，没有的按型号估（Claude / Codex 的会话文件里没有钱）。 */
+/** 花费：自己报过的优先，没有的按型号估（Claude / Codex 的会话文件里没有钱）；混合桶两段相加。 */
 function costOf(model: string, bucket: UsageBucket) {
-  return bucket.costUsd || estimateCost(model, bucket);
+  if (bucket.costUsd > 0) {
+    return bucket.unreported ? bucket.costUsd + estimateCost(model, bucket.unreported) : bucket.costUsd;
+  }
+  return estimateCost(model, bucket);
 }
 
 const ACCOUNT_OF_KIND: Record<string, AccountKind> = {
@@ -303,8 +306,16 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   for (const [day, sources] of Object.entries(days)) {
     for (const [source, models] of Object.entries(sources)) {
       for (const [model, bucket] of Object.entries(models)) {
-        // 估价一次，后面所有口径共用。
-        const priced: UsageBucket = { ...bucket, costUsd: costOf(model, bucket) };
+        // 估价一次，后面所有口径共用（已折算 unreported，不再向下传递）。
+        const priced: UsageBucket = {
+          input: bucket.input,
+          output: bucket.output,
+          cacheRead: bucket.cacheRead,
+          cacheWrite: bucket.cacheWrite,
+          reasoning: bucket.reasoning,
+          requests: bucket.requests,
+          costUsd: costOf(model, bucket),
+        };
         const offB = officialDays[day]?.[source]?.[model];
         const apiB = apiDays[day]?.[source]?.[model];
         const officialCostUsd = offB ? Math.min(priced.costUsd, costOf(model, offB)) : 0;
@@ -363,11 +374,11 @@ export function buildSnapshot(now = Date.now()): Snapshot {
         if (!Number.isFinite(hour)) continue;
         for (const [model, bucket] of Object.entries(models)) {
           /*
-           * Claude Code 的归属看的是全局 settings.json，可别的程序（AllAi）会给单个进程另配环境变量，
-           * 让 Claude Code 去接 gpt / grok（本机实测 grok-4.6 186 次、gpt-5.6-sol 75 次）。
-           * 这些不占 Claude 订阅额度，算进来会把「整窗容量」估大。
+           * 各 CLI 的归属看的是全局配置，但单个进程可能被环境变量或第三方桥接指向别家模型
+           *（例如 Claude Code 跑 gpt / grok，或 Codex / Grok 跑 deepseek）。
+           * 不属于本家型号族的流量不占官方订阅额度，过滤掉以免把「整窗容量」估大。
            */
-          if (account === "claude" && !/claude/i.test(model)) continue;
+          if (!FAMILY[account].test(model)) continue;
           rows[account].push({
             hour,
             model,

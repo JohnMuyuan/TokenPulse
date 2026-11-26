@@ -14,7 +14,7 @@
     items: [], loaded: false, loading: false, listAt: 0,
     search: '', kind: 'all', project: 'all',
     showSubagents: false, expandedParents: new Set(), subBarOpen: false,
-    key: '', detail: null, detailLoading: false, openKey: '',
+    key: '', detail: null, detailLoading: false, detailSeq: 0, detailError: '', openKey: '',
     /** 会话列表当前渲染数量（分批分块渲染，初始 40 项）。 */
     listLimit: LIST_CHUNK,
     /** 从最后往前显示多少个「块」（一段工具调用算一块，初始 40 块）。 */
@@ -30,6 +30,8 @@
   };
   let treeCache = { items: null, data: null };
   let searchTimer = 0;
+  let closeNewModal = null;
+  let newModalSeq = 0;
   const AGENTS = {
     claude: { name: 'Claude Code', short: 'Claude', brand: 'claude' },
     codex: { name: 'Codex CLI', short: 'Codex', brand: 'openai' },
@@ -307,10 +309,13 @@
    * folder：预先选好的文件夹（「新项目」选完文件夹后传进来）。
    */
   async function openNew(folder) {
+    const seq = ++newModalSeq;
+    closeNewModal?.();
     document.getElementById('sw-new')?.remove();
     const last = document.activeElement;
     let clis = {};
     try { clis = await api.sessionClis?.() || {}; } catch { /* 查不到就当都没装，下面会提示 */ }
+    if (seq !== newModalSeq) return;
     const folders = knownFolders();
     let chosen = folder || currentFolder() || folders[0]?.cwd || '';
     const currentKind = S.detail?.kind || S.items.find(item => item.key === S.key)?.kind;
@@ -354,7 +359,8 @@
       el('footer', { class: 'sw-new-foot' }, [cancel, start]),
     ]);
     const modal = el('div', { class: 'modal', id: 'sw-new' }, [card]);
-    const shut = () => { modal.remove(); document.removeEventListener('keydown', onKey, true); last?.focus?.(); };
+    const shut = () => { if (closeNewModal === shut) closeNewModal = null; modal.remove(); document.removeEventListener('keydown', onKey, true); last?.focus?.(); };
+    closeNewModal = shut;
     const onKey = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); shut(); } };
     select.addEventListener('change', () => { chosen = select.value; path.textContent = chosen; path.title = chosen; sync(); });
     browse.addEventListener('click', async () => {
@@ -544,7 +550,7 @@
     if (q.replace(/\s+/g, '').length < 2) {
       S.hits = null; S.terms = []; S.searching = false; S.searchNote = '';
       S.listLimit = LIST_CHUNK;
-      setJump(); drawList(); return;
+      setJump(); drawList(); drawMain(false); return;
     }
     S.searching = true; S.searchNote = '正在搜索对话内容…';
     drawList();
@@ -802,15 +808,20 @@
     drawList();
     const item = S.items.find(entry => entry.key === key);
     if (!item) return;
+    const seq = ++S.detailSeq;
+    S.detailError = '';
     if (changed || !S.detail) { S.detail = null; S.detailLoading = true; drawMain(); }
     try {
       const detail = await api.sessionDetail(item.kind, item.id);
-      if (S.key !== key) return;
+      if (seq !== S.detailSeq || S.key !== key) return;
       S.detail = detail;
+      if (!detail) S.detailError = '对话读取失败，请重试。';
     } catch {
-      if (S.key === key) showStatus('这个会话读取失败，请重试。', true);
+      if (seq !== S.detailSeq || S.key !== key) return;
+      S.detailError = '对话读取失败，请重试。';
+      showStatus('这个会话读取失败，请重试。', true);
     } finally {
-      if (S.key === key) { S.detailLoading = false; drawMain(!keepScroll); }
+      if (seq === S.detailSeq && S.key === key) { S.detailLoading = false; drawMain(!keepScroll); }
     }
   }
 
@@ -1339,15 +1350,16 @@
       const more = button(hidden ? `显示更早的 ${number(hidden)} 段` : '', 'up', 'btn sw-earlier');
       if (hidden) more.addEventListener('click', () => {
         if (!N.scroller) return;
-        const prevScrollHeight = N.scroller.scrollHeight;
-        const prevScrollTop = N.scroller.scrollTop;
+        const scroller = N.scroller;
+        const prevScrollHeight = scroller.scrollHeight;
+        const prevScrollTop = scroller.scrollTop;
         S.visible = Math.min(all.length, S.visible + MSG_CHUNK);
         drawMessages(d, host);
         highlightIn(host);
         requestAnimationFrame(() => {
-          if (N.scroller) {
-            const newScrollHeight = N.scroller.scrollHeight;
-            N.scroller.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+          if (N.scroller === scroller && scroller.isConnected) {
+            const newScrollHeight = scroller.scrollHeight;
+            scroller.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
           }
         });
       });
@@ -1398,6 +1410,12 @@
     }
     const d = S.detail;
     if (!d) {
+      if (!S.detailLoading && S.detailError) {
+        const retry = el('button', { type: 'button', class: 'btn', text: '重试' });
+        retry.addEventListener('click', () => select(S.key));
+        N.main.replaceChildren(header({ ...item, messages: [] }), el('div', { class: 'sw-scroll' }, [el('div', { class: 'sw-list-note' }, [S.detailError, retry])]));
+        return;
+      }
       N.main.replaceChildren(header({ ...item, messages: [] }), el('div', { class: 'sw-scroll' }, [el('div', { class: 'sw-list-note' }, [el('span', { class: 'sw-spinner' }), '正在读取对话…'])]));
       return;
     }
@@ -1416,15 +1434,16 @@
         const all = blocks(d.messages);
         if (S.visible < all.length) {
           loadingEarlier = true;
-          const prevScrollHeight = N.scroller.scrollHeight;
-          const prevScrollTop = N.scroller.scrollTop;
+          const scroller = N.scroller;
+          const prevScrollHeight = scroller.scrollHeight;
+          const prevScrollTop = scroller.scrollTop;
           S.visible = Math.min(all.length, S.visible + MSG_CHUNK);
           drawMessages(d, inner);
           highlightIn(inner);
           requestAnimationFrame(() => {
-            if (N.scroller) {
-              const newScrollHeight = N.scroller.scrollHeight;
-              N.scroller.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+            if (N.scroller === scroller && scroller.isConnected) {
+              const newScrollHeight = scroller.scrollHeight;
+              scroller.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
             }
             loadingEarlier = false;
           });
@@ -1434,9 +1453,12 @@
     drawMessages(d, inner);
     highlightIn(inner);
     N.main.replaceChildren(...[header(d), jump ? jumpBar(d, jump) : null, N.scroller].filter(Boolean));
+    const hitNode = jump && jump.index >= 0 ? markHit(jump.ids[jump.index]) : null;
+    const activeScroller = N.scroller;
     requestAnimationFrame(() => {
-      if (jump && jump.index >= 0 && scrollToHit(jump.ids[jump.index])) return;
-      N.scroller.scrollTop = toBottom ? N.scroller.scrollHeight : N.scroller.scrollHeight - offsetFromBottom;
+      if (N.scroller !== activeScroller || !activeScroller?.isConnected) return;
+      if (hitNode?.isConnected) { hitNode.scrollIntoView({ block: 'center' }); return; }
+      activeScroller.scrollTop = toBottom ? activeScroller.scrollHeight : activeScroller.scrollHeight - offsetFromBottom;
     });
   }
 
@@ -1448,11 +1470,17 @@
     if (index < all.length - S.visible) S.visible = all.length - index + 4;
     if (all[index].role === 'tools') S.openGroups.add(all[index].id);
   }
-  function scrollToHit(id) {
+  function markHit(id) {
     const node = id && N.scroller?.querySelector(`[data-mid="${CSS.escape(id)}"]`);
-    if (!node) return false;
+    const hiddenAncestor = node?.closest('[hidden]');
+    if (!node || (hiddenAncestor && N.scroller.contains(hiddenAncestor))) return null;
     N.scroller.querySelectorAll('.sw-hit-now').forEach(other => other.classList.remove('sw-hit-now'));
     node.classList.add('sw-hit-now');
+    return node;
+  }
+  function scrollToHit(id) {
+    const node = markHit(id);
+    if (!node) return false;
     node.scrollIntoView({ block: 'center' });
     return true;
   }
@@ -1520,7 +1548,7 @@
       const value = String(key || ''), split = value.indexOf(':');
       const kind = split > 0 ? value.slice(0, split) : '', id = split > 0 ? value.slice(split + 1) : '';
       if (!['claude', 'codex', 'grok', 'deepseek', 'pi', 'antigravity'].includes(kind) || !id) return;
-      S.kind = kind; S.project = 'all'; S.search = ''; S.hits = null; S.terms = []; S.openKey = value;
+      S.kind = kind; S.project = 'all'; S.search = ''; S.hits = null; S.terms = []; S.searchSeq++; S.searching = false; S.searchNote = ''; S.jump = null; S.openKey = value;
       clearTimeout(searchTimer);
       if (N.search) N.search.value = '';
       navigate('sessions', { force: true });

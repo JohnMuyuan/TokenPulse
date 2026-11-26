@@ -46,6 +46,8 @@ export type UsageBucket = {
   reasoning: number;
   costUsd: number;
   requests: number;
+  /** 仅在同一个桶同时混入「自报费用」与「未报费用（costUsd=0）」记录时出现，防止估算被自报费用吞掉。 */
+  unreported?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 };
 
 /**
@@ -175,6 +177,8 @@ type FileState = {
   agyUnlabeled?: string[];
   /** Antigravity 单独的扫描结构版本（升级只重扫 Antigravity SQLite，不重扫其他 CLI）。 */
   agyV?: number;
+  /** Antigravity 上次扫完仍有未完成步骤（next < total），即使 mtime 未变下次也要继续检查 STUCK_MS。 */
+  agyPending?: boolean;
   /** 同一条真实用户指令下无人工介入已连续调用模型的次数（>= 2 时写入请求流水 autoStep）。 */
   autoStep?: number;
 };
@@ -281,6 +285,24 @@ function splitByWeight(usage: UsageBucket, weights: number[]): UsageBucket[] {
 }
 
 export function addUsage(into: UsageBucket, usage: UsageBucket) {
+  const intoHadReported = into.costUsd > 0;
+  const usageHasReported = usage.costUsd > 0;
+  const addUnreported = (t: { input: number; output: number; cacheRead: number; cacheWrite: number }) => {
+    if (!(t.input > 0 || t.output > 0)) return;
+    const u = (into.unreported ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    u.input += t.input;
+    u.output += t.output;
+    u.cacheRead += t.cacheRead;
+    u.cacheWrite += t.cacheWrite;
+  };
+  if (!intoHadReported && usageHasReported && !into.unreported) {
+    addUnreported(into);
+  }
+  if (usage.unreported) {
+    addUnreported(usage.unreported);
+  } else if (!usageHasReported && (intoHadReported || into.unreported)) {
+    addUnreported(usage);
+  }
   into.input += usage.input;
   into.output += usage.output;
   into.cacheRead += usage.cacheRead;
@@ -1345,9 +1367,17 @@ function scanFile(
       } else pieces.push({ at: row.at, usage: row.usage, id: baseId, ...(routed ? { account: routed.id, basis: "response-id" as const } : {}) });
       const evidence = effectiveEvidence(state, parentEvidence);
       if (!metadataOnly) {
-        addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
-        const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
-        addUsage((byModel[model] ??= emptyBucket()), row.usage);
+        if (poolSplit) {
+          for (const piece of pieces) {
+            addUsage(bucket(state.days, dayOf(piece.at), source, model), piece.usage);
+            const byModel = ((state.hours ??= {})[String(Math.floor(piece.at / HOUR_MS) * HOUR_MS)] ??= {});
+            addUsage((byModel[model] ??= emptyBucket()), piece.usage);
+          }
+        } else {
+          addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
+          const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
+          addUsage((byModel[model] ??= emptyBucket()), row.usage);
+        }
         const addAccountHour = (account: string, at: number, usage: UsageBucket) => {
           const byAccountHour = (((state.accountHours ??= {})[account] ??= {})[String(Math.floor(at / HOUR_MS) * HOUR_MS)] ??= {});
           addUsage((byAccountHour[model] ??= emptyBucket()), usage);
@@ -1410,6 +1440,7 @@ function scanFile(
         });
       }
       if (!row.compaction && kind === "claude-code") state.apiRequestModel = undefined;
+      if (kind === "deepseek-harness") state.turnStartAt = undefined;
       // 估算速度（0.3.53）：只给一条一次调用的（号池拆开的、压缩估算的不算）
       if (!row.compaction && pieces.length === 1 && callStart && (kind === "claude-code" || kind === "codex")) {
         const record = out.records[out.records.length - 1];
@@ -1511,6 +1542,8 @@ function scanAntigravity(file: string, state: FileState, out: ScanOutput, worksp
     out.records.push(record);
   }
   state.offset = read.next;
+  if (read.next < read.total) state.agyPending = true;
+  else delete state.agyPending;
   state.size = stamp.size;
   state.mtimeMs = stamp.mtimeMs;
   return read.rows.length > 0;
@@ -1612,7 +1645,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
       state.official = official.antigravity;
       const stamp = antigravityStamp(file);
       if (!stamp) continue;
-      if (state.v === STATE_VERSION && state.agyV === ANTIGRAVITY_STATE_VERSION && stamp.size === state.size && stamp.mtimeMs === state.mtimeMs && !antigravityNeedsRelabel(state, labels)) {
+      if (state.v === STATE_VERSION && state.agyV === ANTIGRAVITY_STATE_VERSION && stamp.size === state.size && stamp.mtimeMs === state.mtimeMs && !state.agyPending && !antigravityNeedsRelabel(state, labels)) {
         agyRollupFiles.set(conversationKey(file), file);
         continue;
       }

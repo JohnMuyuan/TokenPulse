@@ -94,7 +94,7 @@ let scanner: ActivityScanner | null = null;
 let activity: ActivityState | null = null;
 let scanTimer: NodeJS.Timeout | null = null, cursorTimer: NodeJS.Timeout | null = null, dragTimer: NodeJS.Timeout | null = null, bubbleTimer: NodeJS.Timeout | null = null, flyTimer: NodeJS.Timeout | null = null, topTimer: NodeJS.Timeout | null = null;
 /** menuOpen：右键菜单开着（菜单也是置顶窗口，这时不把宠物提上去盖住菜单）。 */
-let listening = false, interactive = false, bubbleShown = false, menuOpen = false;
+let listening = false, interactive = false, bubbleShown = false, bubbleReady = false, bubbleWantOpen = false, menuOpen = false;
 /** 盯着会话目录的 watcher；soonTimer 是文件变了以后那次扫描；scanGen 每次 stopTimers 加一，旧的扫描循环看到就不再排下一次。 */
 let watchers: fs.FSWatcher[] = [], soonTimer: NodeJS.Timeout | null = null, scanGen = 0;
 let lastView = "", lastCursor = "", lastQuota: { id: string; quota: number; mood: PetMood } | null = null, lastKind = "", lastDeskStyle = "";
@@ -113,9 +113,12 @@ function handleInputEvent(event: DeskPetInputEvent) {
   if (event.type === "password") autoPasswordActive = event.active;
   if (!pet || pet.isDestroyed() || !options) return;
   const prefs = options.prefs();
-  if (!prefs.deskPetDesk || prefs.deskPetMini) return;
-  // 双保险：手动隐私捂眼或自动密码框激活期间，主进程边界绝不向渲染层转发任何按键
-  if (event.type === "key" && (prefs.deskPetPrivacy || autoPasswordActive)) return;
+  if (!prefs.deskPetDesk || prefs.deskPetMini) {
+    if (event.type === "password" && !event.active) pet.webContents.send("desk-pet-input", event);
+    return;
+  }
+  // 双保险：手动隐私捂眼或自动密码框激活期间，主进程边界绝不向渲染层转发任何按键（含 keyup）
+  if ((event.type === "key" || event.type === "keyup") && (prefs.deskPetPrivacy || autoPasswordActive)) return;
   pet.webContents.send("desk-pet-input", event);
 }
 
@@ -129,6 +132,9 @@ function syncInputMonitor() {
   } else if (inputMonitor) {
     inputMonitor.stop();
     inputMonitor = null;
+    if (autoPasswordActive && pet && !pet.isDestroyed()) {
+      pet.webContents.send("desk-pet-input", { type: "password", active: false });
+    }
     autoPasswordActive = false;
   }
 }
@@ -182,12 +188,23 @@ function createPet() {
   });
   pet = next;
   interactive = false;
+  menuOpen = false;
   next.setIgnoreMouseEvents(true);
   next.setMenuBarVisibility(false);
   next.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   next.loadFile(path.join(__dirname, "..", "..", "renderer", "desk-pet.html"), { query: { theme: prefs.theme } });
   next.once("ready-to-show", () => { if (next.isDestroyed()) return; placePet(); applyLook(); next.showInactive(); });
-  next.on("closed", () => { if (pet === next) { pet = null; stopTimers(); } });
+  next.on("closed", () => {
+    if (pet === next) {
+      pet = null;
+      stopTimers();
+      menuOpen = false;
+      if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null; }
+      if (bubble && !bubble.isDestroyed()) bubble.destroy();
+      bubble = null; bubblePlace = null; bubbleShown = false; bubbleReady = false; bubbleWantOpen = false;
+      closeAsk();
+    }
+  });
   placePet();
   startTimers();
 }
@@ -660,7 +677,7 @@ export function deskPetBubbleData(): DeskPetBubbleData | null {
 let bubbleSent = { json: "", at: 0 };
 /** 把气泡要画的东西发过去。changedOnly：扫描完顺手更新的，内容没变、离上次不到 4 秒就不发（扫描现在可能一秒一次）。 */
 function pushBubble(changedOnly = false) {
-  if (!bubble || bubble.isDestroyed()) return;
+  if (!bubble || bubble.isDestroyed() || bubble.webContents.isDestroyed()) return;
   const data = deskPetBubbleData(), json = JSON.stringify({ ...data, now: 0 }), now = Date.now();
   if (changedOnly && json === bubbleSent.json && now - bubbleSent.at < SCAN_EVERY_MS) return;
   bubbleSent = { json, at: now };
@@ -682,6 +699,12 @@ function toggleBubble(view: BubbleView, open = false) {
   if (bubbleTimer) { clearTimeout(bubbleTimer); bubbleTimer = null; }
   bubbleView = view; bubbleOpened++;
   const fresh = !bubble || bubble.isDestroyed();
+  if (!fresh && !bubbleReady) {
+    if (!open && bubbleWantOpen) { hideBubble(); return; }
+    bubbleWantOpen = true;
+    return;
+  }
+  bubbleWantOpen = true;
   if (fresh) {
     const next = new BrowserWindow({
       width: bubbleBox.width, height: bubbleBox.height, show: false, frame: false, transparent: true, backgroundColor: "#00000000", hasShadow: false,
@@ -695,12 +718,15 @@ function toggleBubble(view: BubbleView, open = false) {
     // 点宠物会先让气泡失焦：记下时间，紧接着的那一下点击是要关，不是再打开
     // 自己 hide() 也会触发 blur，而且在 Windows 上会晚一点到、那时 isVisible() 还是 true：按自己记的「开着」判断
     next.on("blur", () => { if (bubbleShown) { bubbleHiddenAt = Date.now(); hideBubble(); } });
-    next.on("closed", () => { if (bubble === next) { bubble = null; bubblePlace = null; bubbleShown = false; } });
+    next.on("closed", () => { if (bubble === next) { bubble = null; bubblePlace = null; bubbleShown = false; bubbleReady = false; bubbleWantOpen = false; } });
     bubble = next;
+    bubbleReady = false;
   }
   const target = bubble!;
   const show = () => {
-    if (target.isDestroyed()) return;
+    if (target.isDestroyed() || bubble !== target) return;
+    bubbleReady = true;
+    if (!bubbleWantOpen || drag || flyTimer) return;
     placeBubble(); pushBubble();
     target.setAlwaysOnTop(true, TOP_LEVEL);
     target.show(); target.focus(); bubbleShown = true;
@@ -710,7 +736,12 @@ function toggleBubble(view: BubbleView, open = false) {
 }
 
 export function hideBubble() {
-  if (!bubble || bubble.isDestroyed() || !bubble.isVisible()) return;
+  bubbleWantOpen = false;
+  if (!bubble || bubble.isDestroyed()) return;
+  if (!bubble.isVisible()) {
+    bubbleShown = false;
+    return;
+  }
   bubbleShown = false;
   bubble.hide();
   sendEvent({ type: "bubble", open: false });
@@ -823,8 +854,8 @@ export function destroyDeskPet() {
   if (bubble && !bubble.isDestroyed()) bubble.destroy();
   if (pet && !pet.isDestroyed()) pet.destroy();
   closeAsk(); dismissed.clear();
-  bubble = pet = null; bubbleShown = false;
-  activity = null; scanner = null; lastView = ""; lastCursor = ""; lastQuota = null; lastKind = ""; interactive = false; bubblePlace = null;
+  bubble = pet = null; bubbleShown = false; bubbleReady = false; bubbleWantOpen = false; menuOpen = false;
+  activity = null; scanner = null; lastView = ""; lastCursor = ""; lastQuota = null; lastKind = ""; lastDeskStyle = ""; interactive = false; bubblePlace = null; bubbleSent = { json: "", at: 0 };
 }
 
 export function deskPetWindows() { return { pet, bubble, ask: askWin }; }

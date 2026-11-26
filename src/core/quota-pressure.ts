@@ -37,7 +37,8 @@ export function isPressureLevel(value: unknown): value is PressureLevel {
 
 /** 从 prefs.json 读两个窗口的宽松程度；缺的、不认识的用默认值。 */
 export function readPressurePrefs(): PressurePrefs {
-  const prefs = readJson<{ pressureWeek?: unknown; pressureFive?: unknown }>(dataFile("prefs.json"), {});
+  const raw = readJson<unknown>(dataFile("prefs.json"), null);
+  const prefs = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as { pressureWeek?: unknown; pressureFive?: unknown }) : {};
   return {
     week: isPressureLevel(prefs.pressureWeek) ? prefs.pressureWeek : PRESSURE_DEFAULTS.week,
     five: isPressureLevel(prefs.pressureFive) ? prefs.pressureFive : PRESSURE_DEFAULTS.five,

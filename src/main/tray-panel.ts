@@ -48,6 +48,7 @@ const WIDTH = 340;
 const MARGIN = 10;
 const IDLE_DESTROY_MS = 2 * 60_000;
 let panel: BrowserWindow | null = null;
+let panelReady = false;
 let options: Options | null = null;
 let hiddenAt = 0;
 let height = 260;
@@ -107,8 +108,9 @@ function create() {
   next.loadFile(path.join(__dirname, "..", "..", "renderer", "tray-panel.html"), { query: { theme: options.data().theme } });
   next.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   next.on("blur", () => hideTrayPanel());
-  next.on("closed", () => { if (panel === next) panel = null; });
+  next.on("closed", () => { if (panel === next) { panel = null; panelReady = false; } });
   panel = next;
+  panelReady = false;
   return next;
 }
 
@@ -128,16 +130,24 @@ export function toggleTrayPanel() {
   if (Date.now() - hiddenAt < 300) return;
   if (destroyTimer) { clearTimeout(destroyTimer); destroyTimer = null; }
   const fresh = !panel || panel.isDestroyed();
+  if (!fresh && !panelReady) return;
   const target = fresh ? create() : panel;
   if (!target) return;
-  const show = () => { if (target.isDestroyed()) return; place(); target.show(); target.focus(); pushTrayPanel(); };
+  const show = () => {
+    if (target.isDestroyed() || panel !== target) return;
+    panelReady = true;
+    place();
+    target.show();
+    target.focus();
+    pushTrayPanel();
+  };
   if (fresh) target.once("ready-to-show", show);
   else show();
 }
 
 /** 有新快照、或者设置变了：面板开着就把最新的数据送过去。 */
 export function pushTrayPanel() {
-  if (!options || !panel || panel.isDestroyed()) return;
+  if (!options || !panel || panel.isDestroyed() || panel.webContents.isDestroyed()) return;
   panel.webContents.send("tray-panel", options.data());
 }
 
@@ -152,4 +162,5 @@ export function destroyTrayPanel() {
   if (destroyTimer) { clearTimeout(destroyTimer); destroyTimer = null; }
   if (panel && !panel.isDestroyed()) panel.destroy();
   panel = null;
+  panelReady = false;
 }

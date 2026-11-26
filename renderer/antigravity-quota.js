@@ -27,6 +27,7 @@
     kept: '窗口已提前重置，重置日期不变',
   };
   let quota = null;
+  let lastSyncedScanAt = 0;
   let activeId = KEY;
   let studyWindow = 'five';
   let capWindow = 'five';
@@ -171,7 +172,7 @@
 
   /** 这一组在当前窗口（同一个重置时间）里的采样：算每小时用掉几个百分点，预测重置时用到多少。 */
   function forecast(group, windowKind = 'five') {
-    const target = windowKind === 'week' ? group?.week : group;
+    const target = windowKind === 'week' ? (group?.week || groupInsightOf(group)?.week) : group;
     if (!target?.resetAt || ended(target)) return null;
     const wIns = groupInsightOf(group)?.[windowKind];
     if (wIns && wIns.ratePerHour != null) {
@@ -200,13 +201,13 @@
     return { ratePerH, projected, etaAt: etaAt && etaAt < reset ? etaAt : null };
   }
   function forecastText(group, windowKind = 'five') {
-    const target = windowKind === 'week' ? group?.week : group;
+    const target = windowKind === 'week' ? (group?.week || groupInsightOf(group)?.week) : group;
     if (!target) return '暂未获取到这一窗口的数据';
     if (ended(target)) return '已经重置，等待下一次查询';
     if (target.used >= 100) return '这一组已经用完，等待重置';
     const f = forecast(group, windowKind);
     if (!f) return '采样还不够，暂不估计';
-    if (f.etaAt) return `按最近的速度，约 ${duration(f.etaAt - Date.now())}后用完`;
+    if (f.etaAt) return f.etaAt <= Date.now() ? '按最近的速度，可能已接近用完，刷新确认' : `按最近的速度，约 ${duration(f.etaAt - Date.now())}后用完`;
     if (f.ratePerH === 0) return '这个窗口里还没有新增用量';
     return `按最近的速度，重置时大约用到 ${percent(Math.min(100, f.projected))}`;
   }
@@ -215,14 +216,15 @@
 
   function localUsage() {
     const ins = insight()?.localUsage;
-    if (ins && (ins.d30?.requests > 0 || ins.today?.requests > 0 || ins.models?.length > 0)) {
+    if (ins) {
+      const any = Boolean(ins.d30?.requests > 0 || ins.today?.requests > 0 || ins.models?.length > 0);
       return {
-        today: ins.today,
-        week: ins.d7,
-        d30: ins.d30,
+        today: ins.today || { tokens: 0, requests: 0, costUsd: 0 },
+        week: ins.d7 || { tokens: 0, requests: 0, costUsd: 0 },
+        d30: ins.d30 || { tokens: 0, requests: 0, costUsd: 0 },
         hourly: ins.hourly || [],
-        models: ins.models.slice(0, 8),
-        any: true,
+        models: (ins.models || []).slice(0, 8),
+        any,
       };
     }
     if (typeof current === 'undefined' || !current?.usage) return null;
@@ -1026,7 +1028,13 @@
     go.addEventListener('click', () => {
       const select = document.getElementById('source-filter');
       if (select && [...select.options].some(option => option.value === 'Antigravity')) select.value = 'Antigravity';
-      state.source = 'Antigravity'; state.tablePage = 0; state.reqPage = 0;
+      state.source = 'Antigravity';
+      const accId = curAcc()?.id || activeId;
+      state.reqAccount = typeof accId === 'string' && accId.startsWith('antigravity:') ? accId : '';
+      state.reqStatus = 'all'; state.tablePage = 0; state.reqPage = 0;
+      const statusSel = document.getElementById('request-status');
+      if (statusSel) statusSel.value = 'all';
+      if (typeof showUsageView === 'function') showUsageView('requests');
       navigate('usage');
     });
     panel.append(el('div', { class: 'agy-local-foot' }, [go]));
@@ -1654,7 +1662,9 @@
     const leadLast = last(lead);
     const canQuery = lead ? (lead.cloudAuth || lead.inLocal || quota?.running) : Boolean(quota?.running);
     const level = !leadLast ? '' : isStaleLead ? '' : worst ? levelOf(worst) : '';
-    const badge = !leadLast?.at ? [isBusy(lead) ? '正在查询…' : canQuery ? '还没查询过' : '没有开着', '']
+    const badge = lead?.needsLogin ? ['需重登', 'critical']
+      : !leadLast?.at ? [isBusy(lead) ? '正在查询…' : canQuery ? '还没查询过' : '没有开着', '']
+      : !leadLast.ok && lead?.cloudAuth ? ['查询失败', 'critical']
       : !canQuery ? ['没有开着', ''] : !leadLast.ok ? ['查询失败', 'critical'] : isStaleLead ? ['采样已过期', '']
       : worstUsed >= 100 ? ['有一组用完了', 'critical'] : worstUsed >= 90 ? ['快用完了', 'critical'] : worstUsed >= 75 ? ['用量偏高', 'warning'] : ['节奏正常', 'good'];
     const whoText = lead ? ([displayNameOf(lead), planText(lead)].filter(Boolean).join(' · ') || 'Google') : (planText(null) || 'Google');
@@ -1670,12 +1680,14 @@
     ringNode.title = live.length > 1 ? `外环：${groupTitleOf(live[0])}（${live[0].models.join(' · ')}）　内环：${groupTitleOf(live[1])}（${live[1].models.join(' · ')}）` : '';
     const left = live.length ? Math.min(...live.map(group => Math.max(0, 100 - effectiveUsed(group)))) : null;
     ringNode.append(el('div', { class: 'ring-center' }, [el('div', { class: 'quota-remaining' + (left == null ? ' empty-number' : ''), text: left == null ? '—' : left.toFixed(1) }, left == null ? [] : [el('small', { text: '%' })])]));
-    const worstReset = worst?.resetAt || worst?.week?.resetAt;
+    const worstWeek = worst?.week && !ended(worst.week);
+    const worstReset = !worst ? null : (ended(worst) || (worstWeek && (worst.week.used || 0) > (worst.used || 0))) ? worst.week.resetAt : worst.resetAt;
+    const worstResetMs = worstReset ? Date.parse(worstReset) : NaN;
     const subFallback = lead?.cloudAuth ? '已开启独立授权自动查询' : '额度只能问本机开着的 Antigravity';
     body.push(el('div', { class: 'quota-hero' }, [ringNode, el('div', { class: 'quota-hero-text' }, [
       el('span', { class: 'quota-hero-label', text: `${isStaleLead ? '上次' : ''}${live.length > 1 ? '较低一组' : '额度'}剩余` }),
-      el('span', { class: 'quota-hero-value', text: worstReset ? `${duration(Date.parse(worstReset) - Date.now())}后重置` : list.length ? '重置时间未知' : '尚未取得额度' }),
-      el('span', { class: 'quota-hero-sub', text: worstReset ? `${date(Date.parse(worstReset))} · ${lead?.familyShared ? '家庭组共享额度' : '本地时间'}` : subFallback }),
+      el('span', { class: 'quota-hero-value', text: Number.isFinite(worstResetMs) ? (worstResetMs <= Date.now() ? '已经重置，等待下一次查询' : `${duration(worstResetMs - Date.now())}后重置`) : list.length ? '重置时间未知' : '尚未取得额度' }),
+      el('span', { class: 'quota-hero-sub', text: Number.isFinite(worstResetMs) ? `${date(worstResetMs)} · ${lead?.familyShared ? '家庭组共享额度' : '本地时间'}` : subFallback }),
     ])]));
     list.forEach((group, index) => {
       const done = ended(group);
@@ -1724,11 +1736,22 @@
     next.style.setProperty('--i', String(old ? [...host.children].indexOf(old) : host.children.length));
     if (old) old.replaceWith(next); else if (host.children.length) host.append(next);
   }
+  function syncWithScan() {
+    if (demo() || typeof current === 'undefined' || !current?.scannedAt || current.scannedAt === lastSyncedScanAt) return;
+    lastSyncedScanAt = current.scannedAt;
+    api.state().then(next => { if (next && typeof next === 'object') apply(next); }).catch(() => {});
+  }
   function render() {
+    syncWithScan();
     renderCard();
     if (typeof current !== 'undefined' && current && !document.getElementById('page-quota').hidden) keepScroll(() => window.renderQuota());
   }
-  function apply(next) { if (!next || typeof next !== 'object') return; quota = next; render(); }
+  function apply(next) {
+    if (!next || typeof next !== 'object') return;
+    if (typeof current !== 'undefined' && current?.scannedAt) lastSyncedScanAt = current.scannedAt;
+    quota = next;
+    render();
+  }
 
   function accountLabel(id) {
     const acc = typeof id === 'string' ? accountsList().find(a => a.id === id) : null;

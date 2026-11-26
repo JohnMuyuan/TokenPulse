@@ -65,7 +65,10 @@ const run: Probe = (exe, catalogJson) => new Promise((resolve) => {
       'model_provider = "tokenpulse_probe"', 'model = "probe"', `model_catalog_json = ${JSON.stringify(catalog)}`,
       "[model_providers.tokenpulse_probe]", 'name = "TokenPulse"', 'base_url = "http://127.0.0.1:9/v1"', 'wire_api = "responses"', 'experimental_bearer_token = "probe"', "requires_openai_auth = false", "",
     ].join("\n"));
-    execFile(exe, ["features", "list"], { env: { ...process.env, CODEX_HOME: dir }, timeout: TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, _stdout, stderr) => {
+    const probeEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(probeEnv)) if (key.toUpperCase() === "CODEX_HOME") delete probeEnv[key];
+    probeEnv.CODEX_HOME = dir;
+    execFile(exe, ["features", "list"], { env: probeEnv, timeout: TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (error, _stdout, stderr) => {
       if (!error) return done("ok");
       // 只有 Codex 明确说目录解析不了才算数；别的失败（老版本没有这个子命令、超时、被安全软件拦了）不下结论
       done(/model_catalog_json/i.test(String(stderr || "")) ? "rejected" : "unknown");

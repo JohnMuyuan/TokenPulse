@@ -36,7 +36,7 @@
 .tokens-ci-steps li span { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-strong); font-size: 11px; font-weight: 650; }
 .tokens-ci-steps li b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tokens-ci-steps li.on { background: var(--accent-soft); color: var(--accent); }
-.tokens-ci-steps li.on span { border-color: var(--accent); background: var(--accent); color: #fff; }
+.tokens-ci-steps li.on span { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast, #fff); }
 .tokens-ci-steps li.done { color: var(--muted); }
 .tokens-ci-steps li.done span { border-color: var(--accent); color: var(--accent); }
 .tokens-ci-step { margin-top: 16px; display: grid; gap: 12px; }

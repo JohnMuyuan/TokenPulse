@@ -77,14 +77,19 @@ function rotate(file: string): boolean {
   } catch {
     return false;
   }
+  const rollback = () => {
+    try { fs.renameSync(staging, file); } catch { /* 已尽力回滚 */ }
+    return false;
+  };
   for (let i = KEEP; i >= 2; i--) {
     const from = file.replace(/\.log$/, `.${i - 1}.log`);
     const to = file.replace(/\.log$/, `.${i}.log`);
+    if (!fs.existsSync(from)) continue;
     try {
-      if (i === KEEP) fs.rmSync(to, { force: true });
-      if (fs.existsSync(from)) fs.renameSync(from, to);
+      // 直接覆盖 rename，避免先删 .2.log 后 .1.log 被占用导致旧备份丢失
+      fs.renameSync(from, to);
     } catch {
-      // 保留已有备份，继续把 staging 挪到 .1.log
+      return rollback();
     }
   }
   const firstBackup = file.replace(/\.log$/, ".1.log");
@@ -92,8 +97,7 @@ function rotate(file: string): boolean {
     fs.renameSync(staging, firstBackup);
     return true;
   } catch {
-    try { fs.renameSync(staging, file); } catch { /* 已尽力回滚 */ }
-    return false;
+    return rollback();
   }
 }
 

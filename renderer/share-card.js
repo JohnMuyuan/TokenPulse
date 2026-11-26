@@ -23,7 +23,7 @@
   /** 「12.3 亿」「4,860 万」；不到一万照写。 */
   const big = value => english ? value >= 1e9 ? [(value / 1e9).toFixed(1), 'B'] : value >= 1e6 ? [(value / 1e6).toFixed(1), 'M'] : value >= 1e3 ? [(value / 1e3).toFixed(1), 'K'] : [n(value), ''] : value >= 1e8 ? [(value / 1e8).toFixed(value >= 1e10 ? 0 : 1), '亿'] : value >= 1e4 ? [(value / 1e4).toFixed(value >= 1e6 ? 0 : 1), '万'] : [n(value), ''];
   const bigText = value => big(value).join(' ').trim();
-  const usd = value => '$' + n(value);
+  const usd = value => (value < 0 ? '-$' : '$') + n(Math.abs(value));
   const day = key => { const [, m, d] = key.split('-').map(Number); return english ? new Date(key + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : `${m} 月 ${d} 日`; };
   const stamp = () => { const d = new Date(); return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`; };
   const TOOL_COLOR = { 'Claude Code': 'var(--claude)', 'Codex CLI': 'var(--openai)', 'Grok Build': 'var(--grok)', 'DeepSeek Harness': 'var(--deepseek)', pi: '#64748b', Antigravity: 'var(--antigravity)' };
@@ -171,7 +171,7 @@
   function fastPanel(r) {
     const top = r.fastest[0];
     if (!top) return el('div', { class: 'panel mini' }, [el('h3', { text: '⚡ 最快的模型' }), el('b', { text: '—' }), el('p', { text: r.week ? '这周还没有量到速度。打开透明转发，或者用本地路由，就能量到。' : '这个月还没有量到速度。打开透明转发，或者用本地路由，就能量到。' })]);
-    const max = Math.max(...r.fastest.map(item => item.tokensPerSec));
+    const max = Math.max(1, ...r.fastest.map(item => item.tokensPerSec));
     const rows = el('div', { class: 'speeds' }, r.fastest.map((item, i) => { const bar = el('i'); bar.style.width = `${item.tokensPerSec / max * 100}%`; bar.style.background = ['var(--accent)', 'var(--week)', 'var(--claude)'][i]; return el('div', {}, [el('span', { text: item.model + (item.effort ? ` ${item.effort}` : '') }), bar, el('b', { class: 'num', text: String(item.tokensPerSec) })]); }));
     return el('div', { class: 'panel mini' }, [el('h3', { text: '⚡ 最快的模型' }), el('b', { class: 'num' }, [String(top.tokensPerSec), el('small', { text: ' Token/秒' })]), el('p', { text: top.model + (top.effort ? ` ${top.effort}` : '') + (top.firstTokenMs ? ` · 首字 ${(top.firstTokenMs / 1000).toFixed(1)} 秒` : '') }), rows]);
   }
@@ -192,7 +192,8 @@
         el('div', { class: 'cache-legend' }, [el('span', {}, [legendDot('var(--accent)'), `缓存读取 ${bigText(r.cacheRead)}`]), el('span', {}, [legendDot('#cfe7db'), `新内容 ${bigText(Math.max(0, r.input - r.cacheRead))}`])]),
       ]);
     }
-    return el('div', { class: 'panel mini' }, [el('h3', { text: '♻️ 缓存帮你省下' }), el('b', { class: 'num', text: usd(r.cacheSavingsUsd) }), el('p', { text: `${(share * 100).toFixed(0)}% 的输入来自缓存读取` }), el('div', { class: 'cache' }, [used, fresh]),
+    const neg = r.cacheSavingsUsd < 0;
+    return el('div', { class: 'panel mini' }, [el('h3', { text: neg ? '♻️ 缓存净省下' : '♻️ 缓存帮你省下' }), el('b', { class: 'num', text: usd(r.cacheSavingsUsd) }), el('p', { text: neg ? `缓存命中率 ${(share * 100).toFixed(0)}% · 缓存写入成本高于读取节省` : `${(share * 100).toFixed(0)}% 的输入来自缓存读取` }), el('div', { class: 'cache' }, [used, fresh]),
       el('div', { class: 'cache-legend' }, [el('span', {}, [legendDot('var(--accent)'), `缓存读取 ${bigText(r.cacheRead)}`]), el('span', {}, [legendDot('#cfe7db'), `新内容 ${bigText(Math.max(0, r.input - r.cacheRead))}`])])]);
   }
 
@@ -309,8 +310,9 @@
         for (let d = start; d.getTime() <= t1; d.setMonth(d.getMonth() + 1)) { const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; chart.append(text({ x: x(key), y: H - 8, 'text-anchor': 'middle', fill: '#9aa2ae', 'font-size': 11.5 }, english ? d.toLocaleDateString('en-US', { month: 'short' }) : `${d.getMonth() + 1}月`)); }
         const marks = s.marks.slice(-4);
         for (const mark of marks) {
-          chart.append(svg('circle', { cx: x(mark.day), cy: y(mark.value), r: mark.current ? 8 : 5, fill: mark.current ? '#d19a00' : '#fff', stroke: mark.current ? '#fff' : '#14855f', 'stroke-width': 3 }));
-          chart.append(text({ x: x(mark.day) - 10, y: y(mark.value) - 10, 'text-anchor': 'end', fill: mark.current ? '#b66d0d' : '#3f4652', 'font-size': 12.5, 'font-weight': 700 }, mark.current ? `${badgeName(mark)} · ${T(`第 ${m.dayIndex} 天`, `day ${m.dayIndex}`)}` : badgeName(mark)));
+          const mx = x(mark.day), flip = mx < L + 180;
+          chart.append(svg('circle', { cx: mx, cy: y(mark.value), r: mark.current ? 8 : 5, fill: mark.current ? '#d19a00' : '#fff', stroke: mark.current ? '#fff' : '#14855f', 'stroke-width': 3 }));
+          chart.append(text({ x: flip ? mx + 10 : mx - 10, y: y(mark.value) - 10, 'text-anchor': flip ? 'start' : 'end', fill: mark.current ? '#b66d0d' : '#3f4652', 'font-size': 12.5, 'font-weight': 700 }, mark.current ? `${badgeName(mark)} · ${T(`第 ${m.dayIndex} 天`, `day ${m.dayIndex}`)}` : badgeName(mark)));
         }
       }
     }
@@ -356,7 +358,7 @@
     if (points.length >= 2) {
       const t0 = Date.parse(points[0].day + 'T12:00:00'), t1 = Date.parse(points.at(-1).day + 'T12:00:00');
       const span = Math.max(1, t1 - t0) * 1.06;
-      const max = Math.max(points.at(-1).tokens, state.next ? Math.min(state.next.target, points.at(-1).tokens * 1.15) : 0) * 1.08;
+      const max = Math.max(1, points.at(-1).tokens, state.next ? Math.min(state.next.target, points.at(-1).tokens * 1.15) : 0) * 1.08;
       const x = key => L + (Date.parse(key + 'T12:00:00') - t0) / span * (W - L - R), y = v => T + (1 - v / max) * (H - T - B);
       for (const g of [0, .25, .5, .75, 1]) { const v = max / 1.08 * g; chart.append(svg('line', { x1: L, x2: W - R, y1: y(v), y2: y(v), stroke: '#eef0f3' }), text({ x: L - 8, y: y(v) + 4, 'text-anchor': 'end', fill: '#9aa2ae', 'font-size': 11.5 }, bigText(v) || '0')); }
       const defs = svg('defs'); const grad = svg('linearGradient', { id: 'jg', x1: 0, x2: 0, y1: 0, y2: 1 }); grad.append(svg('stop', { offset: 0, 'stop-color': '#14855f', 'stop-opacity': .25 }), svg('stop', { offset: 1, 'stop-color': '#14855f', 'stop-opacity': 0 })); defs.append(grad); chart.append(defs);
@@ -370,8 +372,9 @@
       marks.forEach((item, i) => {
         const last = i === marks.length - 1, at = points.find(p => p.day >= item.achievedAt) || points.at(-1);
         const [v, u] = big(item.target);
-        chart.append(svg('circle', { cx: x(at.day), cy: y(at.tokens), r: last ? 8 : 5, fill: last ? '#d19a00' : '#fff', stroke: last ? '#fff' : '#14855f', 'stroke-width': 3 }));
-        if (last || i >= marks.length - 3) chart.append(text({ x: x(at.day) - 10, y: y(at.tokens) - 10, 'text-anchor': 'end', fill: last ? '#b66d0d' : '#3f4652', 'font-size': 12.5, 'font-weight': 700 }, `${v} ${u}`.trim()));
+        const mx = x(at.day), flip = mx < L + 180;
+        chart.append(svg('circle', { cx: mx, cy: y(at.tokens), r: last ? 8 : 5, fill: last ? '#d19a00' : '#fff', stroke: last ? '#fff' : '#14855f', 'stroke-width': 3 }));
+        if (last || i >= marks.length - 3) chart.append(text({ x: flip ? mx + 10 : mx - 10, y: y(at.tokens) - 10, 'text-anchor': flip ? 'start' : 'end', fill: last ? '#b66d0d' : '#3f4652', 'font-size': 12.5, 'font-weight': 700 }, `${v} ${u}`.trim()));
       });
     }
     const next = state.next;

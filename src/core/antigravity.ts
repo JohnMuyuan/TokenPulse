@@ -1166,21 +1166,25 @@ function removeSummaryRow(dir: string, id: string) {
 /** 请开着的 Antigravity 删掉一段对话（或直接清理 Antigravity CLI 的本机对话记录）。 */
 export async function deleteAntigravityConversation(id: string) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("对话 ID 不对");
+  const ideRoot = antigravityDir();
   const cliRoot = antigravityCliDir();
   const inCli = fs.existsSync(path.join(cliRoot, "conversations", `${id}.db`));
   // 从桌面端导入 CLI 的对话两边都有：只删 CLI 那份的话，桌面端那份还会出现在列表里
-  const sameRoot = path.resolve(cliRoot).toLowerCase() === path.resolve(antigravityDir()).toLowerCase();
-  const inIde = !sameRoot && fs.existsSync(path.join(antigravityDir(), "conversations", `${id}.db`));
-  const hub = antigravityHub();
-  if (!hub && (!inCli || inIde)) throw new Error("Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）");
-  if (hub) {
-    try {
-      await postLocal(hub.httpPort, hub.csrfToken, "DeleteCascadeTrajectory", { cascadeId: id });
-    } catch (error) {
-      if (!inCli || inIde) throw error;
-    }
+  const sameRoot = path.resolve(cliRoot).toLowerCase() === path.resolve(ideRoot).toLowerCase();
+  const inIde = !sameRoot && fs.existsSync(path.join(ideRoot, "conversations", `${id}.db`));
+  const needIde = inIde || !inCli;
+  const ideHub = needIde ? antigravityHub([ideRoot]) : null;
+  if (needIde && !ideHub) throw new Error("Antigravity 没有在运行。请先打开 Antigravity，再删除这段对话（由它自己删，它的对话列表才不会留下坏掉的记录）");
+  if (ideHub) {
+    await postLocal(ideHub.httpPort, ideHub.csrfToken, "DeleteCascadeTrajectory", { cascadeId: id });
   }
   if (inCli) {
+    const cliHub = !sameRoot ? antigravityHub([cliRoot]) : ideHub ? null : antigravityHub([cliRoot]);
+    if (cliHub && (!ideHub || cliHub.httpPort !== ideHub.httpPort)) {
+      try {
+        await postLocal(cliHub.httpPort, cliHub.csrfToken, "DeleteCascadeTrajectory", { cascadeId: id });
+      } catch { /* CLI 对话下面会兜底本地清理 */ }
+    }
     const subFiles = antigravitySubagentFilesByRoot().get(id) ?? [];
     const targetIds = new Set<string>([id, ...subFiles.map((f) => path.basename(f, ".db"))]);
     for (const targetId of targetIds) {
@@ -1917,9 +1921,9 @@ export type AgyStatus = {
 type Hub = { pid: number; httpPort: number; csrfToken: string; at: number };
 
 /** 还活着的 language server。hub 文件可能是上次没删掉的，按进程还在不在挑最新的一个。 */
-export function antigravityHub(): Hub | null {
+export function antigravityHub(dirs: string[] = antigravityDirs()): Hub | null {
   const hubs: Hub[] = [];
-  for (const root of antigravityDirs()) {
+  for (const root of dirs) {
     const dir = path.join(root, "daemon");
     let names: string[] = [];
     try { names = fs.readdirSync(dir).filter((name) => /^hub_\d+\.json$/.test(name)); } catch { continue; }
@@ -1987,6 +1991,9 @@ function postLocal(port: number, token: string, method: string, body: unknown, t
   const http = require("http") as typeof import("http");
   const data = JSON.stringify(body);
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const resolveOnce = (val: unknown) => { if (settled) return; settled = true; resolve(val); };
+    const rejectOnce = (err: unknown) => { if (settled) return; settled = true; reject(err instanceof Error ? err : new Error(String(err))); };
     const req = http.request({
       // 不复用连接：Antigravity 重启、端口换了以后，留着的长连接会让下一次请求挂到超时
       host: "127.0.0.1", port, method: "POST", path: `/exa.language_server_pb.LanguageServerService/${method}`, timeout: timeoutMs, agent: false,
@@ -1994,14 +2001,17 @@ function postLocal(port: number, token: string, method: string, body: unknown, t
     }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("error", rejectOnce);
+      res.on("aborted", () => rejectOnce(new Error("Antigravity 本机接口连接中断")));
+      res.on("close", () => { if (!res.complete) rejectOnce(new Error("Antigravity 本机接口响应中断")); });
       res.on("end", () => {
         const text = Buffer.concat(chunks).toString("utf8");
-        if ((res.statusCode ?? 0) >= 400) { reject(new Error(`Antigravity 本机接口返回 HTTP ${res.statusCode}`)); return; }
-        try { resolve(JSON.parse(text)); } catch { reject(new Error("Antigravity 本机接口返回的不是 JSON")); }
+        if ((res.statusCode ?? 0) >= 400) { rejectOnce(new Error(`Antigravity 本机接口返回 HTTP ${res.statusCode}`)); return; }
+        try { resolveOnce(JSON.parse(text)); } catch { rejectOnce(new Error("Antigravity 本机接口返回的不是 JSON")); }
       });
     });
     req.on("timeout", () => req.destroy(new Error("Antigravity 本机接口超时")));
-    req.on("error", reject);
+    req.on("error", rejectOnce);
     req.end(data);
   });
 }

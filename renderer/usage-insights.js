@@ -88,23 +88,33 @@
    */
   const hourCache = new Map();
   let lastHours = null;
+  let activeHourKey = '';
+  function hourKeyOf() { return `${state.from}|${state.to}|${state.since ?? ''}|${state.until ?? ''}|${state.source}|${current.now}`; }
   function rangeHours(analysis) {
     if (analysis.hours) return { hours: analysis.hours, loading: false };
-    const key = `${state.from}|${state.to}|${state.since ?? ''}|${state.until ?? ''}|${state.source}|${current.now}`;
+    const key = hourKeyOf();
     const scope = `${state.from}|${state.to}|${state.since ?? ''}|${state.until ?? ''}|${state.source}`;
+    activeHourKey = key;
     if (!hourCache.has(key)) {
       hourCache.set(key, null);
       api.requests({ from: state.from, to: state.to, since: state.since, until: state.until, source: state.source, status: 'all', search: '', sort: 'time', page: 0, pageSize: 1, aggregate: true })
         .then(page => {
+          if (!page || !page.aggregate) {
+            if (hourCache.get(key) === null) hourCache.delete(key);
+            return;
+          }
           hourCache.set(key, { hours: page.aggregate.hours, firstAt: page.firstAt });
-          lastHours = { scope, hours: page.aggregate.hours, firstAt: page.firstAt };
+          if (key === activeHourKey) lastHours = { scope, hours: page.aggregate.hours, firstAt: page.firstAt };
           while (hourCache.size > 6) hourCache.delete(hourCache.keys().next().value);
-          if (state.page === 'usage' && current) render(current);
+          if (key === activeHourKey && state.page === 'usage' && current) render(current);
         })
-        .catch(() => { hourCache.set(key, { error: true }); });
+        .catch(() => {
+          hourCache.set(key, { error: true });
+          if (key === activeHourKey && state.page === 'usage' && current) render(current);
+        });
     }
     const hit = hourCache.get(key) ?? (lastHours?.scope === scope ? lastHours : null);
-    return hit ? { hours: hit.hours || [], firstAt: hit.firstAt, error: hit.error, loading: false } : { hours: [], loading: true };
+    return hit ? { key, hours: hit.hours || [], firstAt: hit.firstAt, error: hit.error, loading: false } : { key, hours: [], loading: true };
   }
 
   /* ---------------- 图 ---------------- */
@@ -120,7 +130,7 @@
   function trendChart(host, data, order, metric, animate) {
     host.replaceChildren();
     const rows = data.rows;
-    if (!rows.length || rows.every(r => !r[metric])) { host.dataset.drawnWidth = ''; host.append(empty('这段时间没有用量。')); return; }
+    if (!rows.length || rows.every(r => !r[metric])) { window.unwatchChartHost?.(host); host.dataset.drawnWidth = ''; host.append(empty('这段时间没有用量。')); return; }
     const measured = Math.round(host.clientWidth);
     host.dataset.drawnWidth = String(measured);
     const w = Math.max(360, measured || Math.round(host.parentElement?.clientWidth || 0) || 800), h = 260, left = 58, right = 12, top = 14, bottom = 28;
@@ -170,7 +180,7 @@
     host.replaceChildren();
     const totals = Array.from({ length: 24 }, () => ({ tokens: 0, costUsd: 0, requests: 0 }));
     for (const row of hours) { const hr = new Date(row.hour).getHours(); totals[hr].tokens += row.tokens; totals[hr].costUsd += row.costUsd; totals[hr].requests += row.requests; }
-    if (totals.every(t => !t[metric])) { host.dataset.drawnWidth = ''; host.append(empty('这段时间没有逐条请求记录。')); return totals; }
+    if (totals.every(t => !t[metric])) { window.unwatchChartHost?.(host); host.dataset.drawnWidth = ''; host.append(empty('这段时间没有逐条请求记录。')); return totals; }
     const measured = Math.round(host.clientWidth);
     host.dataset.drawnWidth = String(measured);
     const w = Math.max(320, measured || Math.round(host.parentElement?.clientWidth || 0) || 520), h = 170, left = 8, right = 8, top = 8, bottom = 22;
@@ -227,7 +237,7 @@
       ...options.map(([id, label]) => el('button', { type: 'button', [`data-${attr}`]: id, class: value === id ? 'on' : null, 'aria-pressed': String(value === id), text: label }))]);
     // data-insight-sort 在 dataset 里叫 insightSort
     const prop = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-    group.addEventListener('click', event => { const b = event.target.closest(`[data-${attr}]`); if (b && b.dataset[prop] !== value) { value = b.dataset[prop]; onPick(value); } });
+    group.addEventListener('click', event => { const b = event.target.closest(`[data-${attr}]`); if (b && !b.classList.contains('on')) { value = b.dataset[prop]; onPick(value); } });
     return group;
   }
 
@@ -331,7 +341,7 @@
     const labels = [];
     days.forEach((d, i) => { if (d.inRange && (d.key.endsWith('-01') || !labels.length)) labels.push({ column: Math.floor(i / 7) + 1, key: d.key }); });
     if (labels.length > 1 && labels[1].column - labels[0].column < 3) labels.shift();
-    for (const { column, key } of labels) months.append(paint(el('span', { text: at(key).toLocaleDateString(dateLocale(), { month: 'short' }) }), { gridColumn: `${column + 1} / span 3` }));
+    for (const { column, key } of labels) months.append(paint(el('span', { text: at(key).toLocaleDateString(dateLocale(), { month: 'short' }) }), { gridColumn: `${column + 1} / span ${Math.max(1, Math.min(3, weeks - column + 1))}` }));
     days.forEach(d => {
       if (!d.inRange) { grid.append(el('i', { class: 'year-cell out', 'aria-hidden': 'true' })); return; }
       const cell = el('i', { class: `year-cell l${level(d[metric])}` + (d.key === picked ? ' picked' : '') + (d.key === today ? ' today' : ''), 'data-day': d.key });
@@ -484,11 +494,11 @@
     }
     return [...groups.values()].sort((a, b) => b.count - a.count || b.lastAt - a.lastAt);
   }
-  /** 单调三次样条（Fritsch–Carlson）：圆润平滑且严格不越界、不产生假波峰。 */
-  function monotonePath(pts) {
+  /** 单调三次样条（Fritsch–Carlson）：计算各段控制点，圆润平滑且严格不越界、不产生假波峰。 */
+  function monotoneSegments(pts) {
     const n = pts.length;
-    if (n < 2) return '';
-    if (n === 2) return `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}L${pts[1][0].toFixed(1)},${pts[1][1].toFixed(1)}`;
+    if (n < 2) return null;
+    if (n === 2) return { start: pts[0], segs: [{ linear: true, p0: pts[0], p1: pts[1] }] };
     const dx = [], dy = [], m = [];
     for (let i = 0; i < n - 1; i++) {
       dx.push(Math.max(0.5, pts[i + 1][0] - pts[i][0]));
@@ -510,22 +520,48 @@
       const a = t[i] / m[i], b = t[i + 1] / m[i], h = Math.hypot(a, b);
       if (h > 3) { const s = 3 / h; t[i] = s * a * m[i]; t[i + 1] = s * b * m[i]; }
     }
-    let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+    const segs = [];
     for (let i = 0; i < n - 1; i++) {
       const step = dx[i] / 3;
-      const c1x = pts[i][0] + step, c1y = pts[i][1] + t[i] * step;
-      const c2x = pts[i + 1][0] - step, c2y = pts[i + 1][1] - t[i + 1] * step;
-      d += `C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${pts[i + 1][0].toFixed(1)},${pts[i + 1][1].toFixed(1)}`;
+      segs.push({
+        p0: pts[i],
+        p1: pts[i + 1],
+        c1x: pts[i][0] + step,
+        c1y: pts[i][1] + t[i] * step,
+        c2x: pts[i + 1][0] - step,
+        c2y: pts[i + 1][1] - t[i + 1] * step,
+      });
+    }
+    return { start: pts[0], segs };
+  }
+  function monotonePath(pts) {
+    const info = monotoneSegments(pts);
+    if (!info) return '';
+    let d = `M${info.start[0].toFixed(1)},${info.start[1].toFixed(1)}`;
+    for (const s of info.segs) {
+      d += s.linear
+        ? `L${s.p1[0].toFixed(1)},${s.p1[1].toFixed(1)}`
+        : `C${s.c1x.toFixed(1)},${s.c1y.toFixed(1)} ${s.c2x.toFixed(1)},${s.c2y.toFixed(1)} ${s.p1[0].toFixed(1)},${s.p1[1].toFixed(1)}`;
     }
     return d;
   }
   function bandAreaPath(upper, lower) {
     if (upper.length < 2 || lower.length !== upper.length) return '';
     const topPath = monotonePath(upper);
-    const revLower = monotonePath(lower.slice().reverse());
-    return `${topPath}L${revLower.slice(1)}Z`;
+    const lowInfo = monotoneSegments(lower);
+    if (!lowInfo) return '';
+    const last = lower.at(-1);
+    let d = `${topPath}L${last[0].toFixed(1)},${last[1].toFixed(1)}`;
+    for (let i = lowInfo.segs.length - 1; i >= 0; i--) {
+      const s = lowInfo.segs[i];
+      d += s.linear
+        ? `L${s.p0[0].toFixed(1)},${s.p0[1].toFixed(1)}`
+        : `C${s.c2x.toFixed(1)},${s.c2y.toFixed(1)} ${s.c1x.toFixed(1)},${s.c1y.toFixed(1)} ${s.p0[0].toFixed(1)},${s.p0[1].toFixed(1)}`;
+    }
+    return `${d}Z`;
   }
   let speedBody = null;
+  let speedResize = null;
   let speedRequest = 0;
   function loadSpeedLines(force = false) {
     if ((!force && speedView.loading && speedView.loadingRange === speedView.range) || (!force && speedView.key === speedView.range && Date.now() - speedView.at < 60_000)) return;
@@ -539,13 +575,16 @@
       .catch(() => { if (request === speedRequest) speedView.error = true; })
       .finally(() => {
         if (request !== speedRequest) return;
-        speedView.loading = false; speedView.key = range; speedView.at = Date.now();
+        speedView.loading = false;
+        if (speedView.error) { speedView.key = ''; speedView.at = 0; }
+        else { speedView.key = range; speedView.at = Date.now(); }
         // 请求失败时仍保留原图；成功时一次换上新图，不经过加载占位。
         const draw = () => speedView.error && speedView.data ? syncSpeedState() : fillSpeed();
         typeof keepScroll === "function" ? keepScroll(draw) : draw();
       });
   }
   function speedPanel() {
+    speedResize?.disconnect();
     speedBody = el('div', { class: 'speed-lines-body' });
     const metricSeg = seg(SPEED_METRICS, speedView.metric, 'speed-metric', value => { speedView.metric = value; fillSpeed(true); });
     const rangeSeg = seg(SPEED_RANGES, speedView.range, 'speed-range', value => { speedView.range = value; loadSpeedLines(true); syncSpeedState(true); });
@@ -556,7 +595,7 @@
         el('div', {}, [el('h2', { text: '模型速度走势' }), el('p', { text: '经过 TokenPulse 转发与本机实测（Antigravity、DeepSeek Harness）量到的真实流式速度。看速度时默认把同一型号的不同思考等级合成一条线，切到「首字」自动拆开，也可随时点下方开关切换；未经过转发的请求按会话日志估算并标「≈」。' })]),
         el('div', { class: 'speed-lines-tools' }, [metricSeg, rangeSeg]),
       ]),
-      el('div', { class: 'speed-lines-status', role: 'status' }, [el('span'), retry]),
+      el('div', { class: 'speed-lines-status', role: 'status', hidden: '' }, [el('span'), retry]),
       speedBody,
     ]);
     loadSpeedLines();
@@ -564,22 +603,25 @@
     fillSpeed(false, true);
     // 折线按画的那一刻的宽度算坐标：窗口宽度变了重画一次，不然会被等比缩小、两边留白
     const body = speedBody;
-    let drawnWidth = 0;
-    const resize = new ResizeObserver(() => {
-      if (!body.isConnected) { resize.disconnect(); return; }
+    let drawnWidth = speedView.width || 820;
+    speedResize = new ResizeObserver(() => {
+      if (!body.isConnected) { speedResize?.disconnect(); return; }
       const width = body.clientWidth;
       if (width && Math.abs(width - drawnWidth) > 2) { drawnWidth = width; speedView.width = width; fillSpeed(); }
     });
-    resize.observe(body);
+    speedResize.observe(body);
     return panel;
   }
   function syncSpeedState(resync = false) {
     const body = speedBody, panel = body?.closest('.speed-lines-panel');
     if (!panel) return;
-    if (resync) for (const group of panel.querySelectorAll('.seg')) { for (const b of group.querySelectorAll('button')) { const on = b.dataset.speedMetric === speedView.metric || b.dataset.speedRange === speedView.range; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); } syncSeg(group); }
+    if (resync) for (const group of panel.querySelectorAll('.speed-lines-tools .seg')) { for (const b of group.querySelectorAll('button')) { const on = b.dataset.speedMetric === speedView.metric || b.dataset.speedRange === speedView.range; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); } syncSeg(group); }
     body.setAttribute('aria-busy', String(speedView.loading));
-    panel.querySelector('.speed-lines-status span').textContent = speedView.loading && speedView.data ? '正在读取所选范围，暂显示上次结果。' : speedView.error && speedView.data ? '读取所选范围失败，仍显示上次结果。' : '';
+    const statusText = speedView.loading && speedView.data ? '正在读取所选范围，暂显示上次结果。' : speedView.error && speedView.data ? '读取所选范围失败，仍显示上次结果。' : '';
+    const statusRow = panel.querySelector('.speed-lines-status');
+    statusRow.querySelector('span').textContent = statusText;
     panel.querySelector('[data-action=speed-lines-retry]').hidden = !speedView.error;
+    statusRow.hidden = !statusText && !speedView.error;
   }
   function makeSpeedSwitch(label, checked, action, title, onToggle) {
     const btn = el('button', {
@@ -674,7 +716,7 @@
     const xOf = at => left + Math.min(1, Math.max(0, (at + data.bucketMs / 2 - data.from) / spanMs)) * (w - left - right);
     const peakVal = visible.reduce((max, line) => line.buckets.reduce((val, bucket) => {
       const v = valueOf(bucket);
-      if (v == null) return max;
+      if (v == null) return val;
       const hi = visible.length <= 2 ? (highOf(bucket) ?? v) : v;
       return Math.max(val, v, hi);
     }, max), 0);
@@ -967,6 +1009,7 @@
       ...(pctSection ? [pctSection] : []),
       el('p', { class: 'sample-caption', text: `${first ? '首字 = 从请求发出到回复里第一段内容出现。' : '速度 = 流式输出 Token ÷ 纯出字耗时（扣掉首包排队等待；虚线「≈」为日志时间戳估算）。'}每个点是那段时间（${unitLabel}）的${statLabel}，悬停图例可查看 P25–P90 波动区间带。` }),
     );
+    if (!detached) for (const group of body.querySelectorAll('.seg')) syncSeg(group);
   }
 
   /** 供应商 / 模型的速度分位榜：并列对比各渠道与模型的 P50 / P90 首字延迟与平均吐字速度（t/s）。 */
@@ -1065,7 +1108,6 @@
       wrap,
       ...(toggle ? [toggle] : []),
     ]);
-    syncSeg(sortSeg);
     return sec;
   }
   /** 纵轴上限取个整：37 → 40，140 → 150。 */
@@ -1138,7 +1180,11 @@
     for (const group of host.querySelectorAll('.seg')) syncSeg(group);
     trendChart(trendHost, trend, order, view.metric, animate);
     if (hourData.loading) { hodHost.append(empty('正在读取逐条请求记录…')); distNote.textContent = ''; }
-    else if (hourData.error) { hodHost.append(empty('逐条请求记录读取失败。')); }
+    else if (hourData.error) {
+      const retry = el('button', { type: 'button', class: 'btn', text: '重试' });
+      retry.addEventListener('click', () => { if (hourData.key) hourCache.delete(hourData.key); if (current) render(current); });
+      hodHost.append(el('div', { class: 'empty pj-error' }, [el('span', { text: '逐条请求记录读取失败。' }), retry]));
+    }
     else {
       const totals = hourOfDayChart(hodHost, hourData.hours, view.metric);
       heatmap(heatHost, hourData.hours, view.metric);

@@ -81,7 +81,8 @@ function dataState(): HealthInputs["data"] {
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isFile() || !/\.tmp$/i.test(entry.name) || entry.name.startsWith(".health-")) continue;
-      const stat = fs.statSync(path.join(dir, entry.name));
+      let stat: fs.Stats;
+      try { stat = fs.statSync(path.join(dir, entry.name)); } catch { continue; }
       if (Date.now() - stat.mtimeMs < 3600_000) continue; // 正在写的不算
       tmpFiles += 1;
       tmpBytes += stat.size;

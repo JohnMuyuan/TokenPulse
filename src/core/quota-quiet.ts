@@ -41,16 +41,18 @@ const tried = new Map<string, number>();
 
 /**
  * 这一轮要不要查这个账号：在用的照查；后台的离上次查到（checks，quota-checked.json 里每个账号的时间）
- * 或上次去查都满 QUIET_EVERY_MS 才查。返回 true 时记下这次去查的时间。
+ * 或上次去查都满 QUIET_EVERY_MS 才查。判定本身无副作用；由 fetchOfficialQuota 在实际派发请求时调 mark() 记录尝试时间。
  */
 export function quietPick(foreground: Set<string>, checks: Record<string, number> = {}, now = Date.now()) {
-  return (_kind: OfficialAccountKind, id: string) => {
+  const pick = ((_kind: OfficialAccountKind, id: string) => {
     if (foreground.has(id)) return true;
     const last = Math.max(checks[id] ?? 0, tried.get(id) ?? 0);
-    if (now - last < QUIET_EVERY_MS) return false;
-    tried.set(id, now);
-    return true;
+    return now - last >= QUIET_EVERY_MS;
+  }) as ((kind: OfficialAccountKind, id: string) => boolean) & { mark: (id: string) => void };
+  pick.mark = (id: string) => {
+    if (!foreground.has(id)) tried.set(id, now);
   };
+  return pick;
 }
 
 /** 测试用：清掉内存里的「上次去查」。 */

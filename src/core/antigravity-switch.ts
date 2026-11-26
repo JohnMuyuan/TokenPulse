@@ -1,10 +1,12 @@
 import { randomBytes } from "crypto";
-import { execFile, execFileSync, spawn } from "child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { antigravityHub, fetchAntigravityLocalSession } from "./antigravity";
 import {
+  agyAccountIdOf,
+  agyRefFromIdentity,
   listAgyAccountStatus,
   normalizeAgyEmail,
   readAgyAccountStore,
@@ -417,12 +419,17 @@ $payload = [Console]::In.ReadToEnd()
   }
   if (platform === "darwin") {
     const hex = Buffer.from(rawUtf8, "utf8").toString("hex");
-    // 通过 interactive stdin 传 hex，避免凭据出现在命令行参数中
-    execFileSync("security", ["-i"], {
+    // 通过 interactive stdin 传 hex，避免凭据出现在命令行参数中；security -i 出错时可能仍返回 0，需检查 stderr
+    const res = spawnSync("security", ["-i"], {
       input: `add-generic-password -U -s ${AGY_KEYRING_SERVICE} -a ${AGY_KEYRING_ACCOUNT} -X ${hex}\n`,
       encoding: "utf8",
       timeout: 10_000,
     });
+    if (res.error) throw res.error;
+    const stderr = (res.stderr || "").trim();
+    if (res.status !== 0 || /security:/i.test(stderr)) {
+      throw new Error(stderr || `security -i exited with code ${res.status ?? "unknown"}`);
+    }
     return;
   }
   execFileSync(
@@ -563,8 +570,12 @@ export function findAntigravityDesktopExe(
 ): string | null {
   const rawFs = getRawFs();
   for (const proc of procs) {
-    if (proc.isDesktop && proc.executablePath && rawFs.existsSync(proc.executablePath)) {
-      return proc.executablePath;
+    if (proc.isDesktop && proc.executablePath) {
+      if (platform === "darwin") {
+        const bundle = proc.executablePath.match(/^(.*\.app)\/Contents\/MacOS\/[^/]+$/i)?.[1];
+        if (bundle && rawFs.existsSync(bundle)) return bundle;
+      }
+      if (rawFs.existsSync(proc.executablePath)) return proc.executablePath;
     }
   }
   const envExe = (process.env.TOKENPULSE_AGY_DESKTOP_EXE || "").trim();
@@ -603,6 +614,31 @@ export function findAntigravityDesktopExe(
   return null;
 }
 
+/** 解析 Unix `ps -eo pid=,args=` 输出，兼容 macOS 路径中含空格（例如 `/Users/Jane Doe/Applications/Antigravity.app/...`）。 */
+export function parseUnixAntigravityProcesses(out: string): AgyRunningProcess[] {
+  const res: AgyRunningProcess[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const args = m[2];
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || /tokenpulse/i.test(args)) continue;
+    const appMatch = args.match(/^(\/[^\n]*?\.app\/Contents\/MacOS\/Antigravity)(?:\s|$)/i);
+    const appExe = appMatch && !/\s(?:\/|-)/.test(appMatch[1]) ? appMatch[1] : "";
+    const firstToken = args.split(/\s+/)[0] || "";
+    const isDesktop = Boolean(appExe) || /(?:^|\/)antigravity$/i.test(firstToken);
+    const langMatch = args.match(/^((?:\/[^\n]*?\/)?language_server[^\s/]*)(?:\s|$)/i);
+    const langExe = langMatch && !/\s(?:\/|-)/.test(langMatch[1]) ? langMatch[1] : "";
+    const isLangSrv = !isDesktop && Boolean(langExe) && /antigravity/i.test(args);
+    if (isDesktop || isLangSrv) {
+      const executablePath = isDesktop ? (appExe || firstToken) : langExe;
+      const name = path.posix.basename(executablePath) || firstToken;
+      res.push({ pid, name, executablePath, isDesktop });
+    }
+  }
+  return res;
+}
+
 export function listRunningAntigravityProcesses(platform: NodeJS.Platform = process.platform): AgyRunningProcess[] {
   if (platform === "win32") {
     try {
@@ -635,26 +671,8 @@ if ($null -eq $rows) { '[]' } else { ConvertTo-Json -InputObject @($rows) -Compr
   }
   if (platform === "darwin" || platform === "linux") {
     try {
-      const out = execFileSync("ps", ["-eo", "pid=,comm=,args="], { encoding: "utf8", timeout: 5_000 });
-      const res: AgyRunningProcess[] = [];
-      for (const line of out.split(/\r?\n/)) {
-        const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
-        if (!m) continue;
-        const pid = Number(m[1]);
-        const name = m[2];
-        const args = m[3];
-        if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || /tokenpulse/i.test(args)) continue;
-        const argv0 = args.split(/\s+/)[0] || "";
-        const isDesktop =
-          /Antigravity\.app\/Contents\/MacOS\/Antigravity(?:\s|$)/i.test(args) ||
-          /(?:^|\/)antigravity$/i.test(argv0) ||
-          /^antigravity$/i.test(name);
-        const isLangSrv = /language_server/i.test(name) && /antigravity/i.test(args);
-        if (isDesktop || isLangSrv) {
-          res.push({ pid, name, executablePath: argv0, isDesktop });
-        }
-      }
-      return res;
+      const out = execFileSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: 5_000 });
+      return parseUnixAntigravityProcesses(out);
     } catch {
       return [];
     }
@@ -694,26 +712,8 @@ if ($null -eq $rows) { '[]' } else { ConvertTo-Json -InputObject @($rows) -Compr
   }
   if (platform === "darwin" || platform === "linux") {
     try {
-      const out = await execFileAsync("ps", ["-eo", "pid=,comm=,args="], undefined, 5_000);
-      const res: AgyRunningProcess[] = [];
-      for (const line of out.split(/\r?\n/)) {
-        const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
-        if (!m) continue;
-        const pid = Number(m[1]);
-        const name = m[2];
-        const args = m[3];
-        if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid || /tokenpulse/i.test(args)) continue;
-        const argv0 = args.split(/\s+/)[0] || "";
-        const isDesktop =
-          /Antigravity\.app\/Contents\/MacOS\/Antigravity(?:\s|$)/i.test(args) ||
-          /(?:^|\/)antigravity$/i.test(argv0) ||
-          /^antigravity$/i.test(name);
-        const isLangSrv = /language_server/i.test(name) && /antigravity/i.test(args);
-        if (isDesktop || isLangSrv) {
-          res.push({ pid, name, executablePath: argv0, isDesktop });
-        }
-      }
-      return res;
+      const out = await execFileAsync("ps", ["-eo", "pid=,args="], undefined, 5_000);
+      return parseUnixAntigravityProcesses(out);
     } catch {
       return [];
     }
@@ -785,12 +785,17 @@ async function stopAntigravityProcessesDefault(
 }
 
 export function launchAntigravityDesktopDefault(exePath: string, platform: NodeJS.Platform = process.platform): void {
-  if (platform === "darwin" && exePath.endsWith(".app")) {
-    const child = spawn("open", ["-a", exePath], { detached: true, stdio: "ignore" });
-    // 启动失败（权限、文件刚被卸载）是异步的 error 事件：不接住就是主进程的未捕获异常
-    child.on("error", (error) => log.warn("antigravity", "重新启动 Antigravity 失败：" + errorText(error)));
-    child.unref();
-    return;
+  if (platform === "darwin") {
+    const bundle = exePath.endsWith(".app")
+      ? exePath
+      : exePath.match(/^(.*\.app)\/Contents\/MacOS\/[^/]+$/i)?.[1] ?? "";
+    if (bundle) {
+      const child = spawn("open", ["-a", bundle], { detached: true, stdio: "ignore" });
+      // 启动失败（权限、文件刚被卸载）是异步的 error 事件：不接住就是主进程的未捕获异常
+      child.on("error", (error) => log.warn("antigravity", "重新启动 Antigravity 失败：" + errorText(error)));
+      child.unref();
+      return;
+    }
   }
   const child = spawn(exePath, [], {
     detached: true,
@@ -855,6 +860,9 @@ function rescueOutgoingKeyringAccount(outgoing: AgyKeyringPayload | null, now: n
   if (!norm) return;
   const store = readAgyAccountStore();
   const existing = store.accounts.find((a) => normalizeAgyEmail(a.email) === norm);
+  const outId = existing?.id || agyAccountIdOf(agyRefFromIdentity(norm));
+  // 用户明确隐藏或彻底删除过的账号绝不在切号时重新收存复活
+  if (existing?.hidden || store.removed?.includes(outId)) return;
   // 已有健康凭据的账号无需覆写；只为「仅登记了本机身份」或「已过期/需重登」的换下账号补齐凭据，方便随时切回
   if (existing?.credential?.refreshToken && !existing.renewFailed && !isExpired(existing.credential, now)) return;
   const expiryMs = Date.parse(outgoing.token.expiry);
@@ -926,7 +934,8 @@ async function doSwitchAntigravity(id: string, deps: AgySwitchDeps): Promise<Agy
       throw new Error(`目标账号 OAuth 续期失败（${refreshed.error}），请先点「重新授权」后再切换。`);
     }
     store = readAgyAccountStore();
-    target = store.accounts.find((a) => a.id === id)!;
+    target = store.accounts.find((a) => a.id === id);
+    if (!target || target.hidden) throw new Error("找不到这个 Antigravity 账号");
     target.credential = { ...refreshed.credential, ...(target.credential?.projectId ? { projectId: target.credential.projectId } : {}) };
     delete target.renewFailed;
     delete target.renewTrouble;

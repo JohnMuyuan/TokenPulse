@@ -1,5 +1,5 @@
 /* 托盘小面板：窗口本身就是这张卡片，宽度固定，高度跟着内容走（由 tray-panel.js 量出来告诉主进程）。 */
-html.tp-html, body.tp-body { height: auto; min-height: 0; overflow: hidden; margin: 0; background: var(--surface); }
+html.tp-html, body.tp-body { height: auto; min-height: 0; overflow-x: hidden; overflow-y: auto; margin: 0; background: var(--surface); }
 body.tp-body { display: block; font-family: var(--font); color: var(--text); -webkit-user-select: none; user-select: none; }
 .tp { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; padding: 10px 11px 10px; }
 
@@ -27,8 +27,10 @@ body.tp-body { display: block; font-family: var(--font); color: var(--text); -we
 .tp-name { display: flex; align-items: center; gap: 6px; min-width: 0; margin-bottom: 1px; }
 .tp-avatar { display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 5px; background: var(--tile-neutral, var(--surface)); color: var(--text); }
 .tp-avatar svg { width: 12px; height: 12px; fill: currentColor; }
-.tp-avatar.claude { color: var(--claude); background: var(--claude-soft); }
+.tp-avatar.claude, .tp-avatar.desktop { color: var(--claude); background: var(--claude-soft); }
 .tp-avatar.antigravity { color: var(--antigravity); background: color-mix(in srgb, var(--antigravity) 14%, transparent); }
+.tp-avatar.deepseek { color: #4d6bfe; background: color-mix(in srgb, #4d6bfe 14%, transparent); }
+.tp-avatar.pi { color: var(--pi); background: color-mix(in srgb, var(--pi) 14%, transparent); }
 .tp-name b { overflow: hidden; font-size: 12.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .tp-plan { flex: none; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 10px; line-height: 1.55; letter-spacing: .02em; text-transform: uppercase; }
 
@@ -56,7 +58,9 @@ body.tp-body { display: block; font-family: var(--font); color: var(--text); -we
 .tp-agent b { overflow: hidden; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .tp-caret { width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
 .tp-agent.open .tp-caret { transform: rotate(45deg); }
-.tp-options { display: grid; gap: 1px; padding: 2px 0 4px 25px; }
+.tp-options { display: grid; gap: 1px; max-height: 168px; overflow-y: auto; padding: 2px 0 4px 25px; }
+.tp-options::-webkit-scrollbar { width: 4px; }
+.tp-options::-webkit-scrollbar-thumb { border-radius: 2px; background: var(--line-strong); }
 .tp-option { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 6px; align-items: center; width: 100%; height: 24px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text-2); font-size: 11.5px; text-align: left; cursor: pointer; }
 .tp-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tp-option:hover:not(:disabled), .tp-option:focus-visible { background: var(--accent-soft); color: var(--accent-strong); outline: none; }

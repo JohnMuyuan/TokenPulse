@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { recordCliLogins } from "./login-timeline";
-import { accountIdOf, fresherCredential, readOfficialAccountStore, renewStoredCredentials, writeOfficialAccountStore, type StoredOfficialAccount } from "./accounts";
+import { accountIdOf, fresherCredential, readOfficialAccountStore, renewStoredCredentials, runWithKindRenewalLock, writeOfficialAccountStore, type StoredOfficialAccount } from "./accounts";
 import { authFile, claudeProfileFile, isExpired, readCliAccounts, type OfficialAccountKind, type OfficialCredential } from "./credentials";
 import { setClaudeCliSwitching, waitCliRenewIdle } from "./cli-renew";
 import { dataDir } from "./paths";
@@ -24,12 +24,37 @@ export type CliAuthSnapshot = Record<string, unknown>;
 function readJsonFile(file: string): any {
   try { return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch { return undefined; }
 }
+const WIN_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+function sleepSync(ms: number) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* fallback */ }
+  }
+}
 export function writeAtomic(file: string, text: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tokenpulse-${process.pid}.tmp`;
-  fs.writeFileSync(tmp, text, { mode: 0o600 });
+  const tmp = `${file}.tokenpulse-${process.pid}-${Date.now().toString(36)}.tmp`;
   try {
-    fs.renameSync(tmp, file);
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    const maxAttempts = process.platform === "win32" ? 6 : 1;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        fs.renameSync(tmp, file);
+        return;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException | null)?.code ?? "";
+        if (attempt + 1 < maxAttempts && WIN_RETRY_CODES.has(code)) {
+          if (code === "EPERM" || code === "EACCES") {
+            try { fs.chmodSync(file, 0o600); } catch { /* ignore */ }
+          }
+          sleepSync(15 * (attempt + 1));
+          continue;
+        }
+        throw err;
+      }
+    }
   } catch (error) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
     throw error;
@@ -144,30 +169,47 @@ async function doSwitch(id: string, home: string): Promise<SwitchResult> {
     }
     let snap = target.cliAuth as CliAuthSnapshot | undefined;
     if (kind === "chatgpt" && !snap?.id_token) {
-      // 没记下 Codex 要的 id_token：用这个账号自己的 refresh token 换一次，官方会一起给回来
-      const result = await refreshCredential(kind, credential);
-      store = readOfficialAccountStore();
-      target = store.accounts.find((item) => item.id === id);
-      if (result.ok && target && target.credential?.refreshToken === credential.refreshToken) {
-        // 单次 refresh token 已轮换：无论 id_token 是否存在都必须立刻落盘，避免丢失新 refresh token
-        target.credential = credential = result.credential;
-        delete target.renewFailed;
-        delete target.renewTrouble;
-        if (typeof result.raw?.id_token === "string") {
-          snap = { ...(snap || {}), id_token: result.raw.id_token };
-          target.cliAuth = snap;
+      // 没记下 Codex 要的 id_token：在同 kind 续期互斥锁内换一次，防止与 renewStoredCredentials 并发消费单次 refresh token
+      await runWithKindRenewalLock(kind, async () => {
+        store = readOfficialAccountStore();
+        target = store.accounts.find((item) => item.id === id);
+        if (!target || target.hidden) throw new Error("找不到这个官方账号");
+        credential = target.credential;
+        snap = target.cliAuth as CliAuthSnapshot | undefined;
+        if (snap?.id_token) return;
+        if (!credential?.refreshToken || target.renewFailed) {
+          throw new Error("TokenPulse 里没有这个账号可用的登录（只是读过 CLI 的账号，或者登录已失效）。请先在设置里点「登录一个新账号」登录它一次，之后就能一键切换。");
         }
-        writeOfficialAccountStore(store);
-      } else if (!result.ok && result.permanent && target && target.credential?.refreshToken === credential.refreshToken) {
-        target.renewFailed = result.error;
-        delete target.renewTrouble;
-        writeOfficialAccountStore(store);
-      }
-      if (!target) throw new Error("找不到这个官方账号");
-      if (!result.ok || typeof result.raw?.id_token !== "string") throw new Error("没有拿到 Codex 需要的身份信息，请稍后再试，或在设置里重新登录这个账号。");
+        const beforeRt = credential.refreshToken;
+        const result = await refreshCredential(kind, credential);
+        store = readOfficialAccountStore();
+        target = store.accounts.find((item) => item.id === id);
+        const tokenMatched = Boolean(target && !target.hidden && target.credential?.refreshToken === beforeRt);
+        const idToken = result.ok && typeof result.raw?.id_token === "string" && result.raw.id_token ? result.raw.id_token : "";
+        if (result.ok && tokenMatched && target) {
+          // 单次 refresh token 已轮换：无论 id_token 是否存在都必须立刻落盘，避免丢失新 refresh token
+          target.credential = credential = result.credential;
+          delete target.renewFailed;
+          delete target.renewTrouble;
+          if (idToken) {
+            snap = { ...(snap || {}), id_token: idToken };
+            target.cliAuth = snap;
+          }
+          writeOfficialAccountStore(store);
+        } else if (!result.ok && result.permanent && tokenMatched && target) {
+          target.renewFailed = result.error;
+          delete target.renewTrouble;
+          writeOfficialAccountStore(store);
+        }
+        if (!target || target.hidden) throw new Error("找不到这个官方账号");
+        if (!tokenMatched) throw new Error("切换期间账号凭据已更新，请重试切换");
+        if (!result.ok || !idToken) throw new Error("没有拿到 Codex 需要的身份信息，请稍后再试，或在设置里重新登录这个账号。");
+      });
     }
 
-    const writes = plan(kind, target, credential, snap, home);
+    if (!credential) throw new Error("TokenPulse 里没有这个账号可用的登录");
+    const activeCredential = credential;
+    const writes = plan(kind, target, activeCredential, snap, home);
     const saved = backup(kind, writes.map((item) => item.file));
     const before = JSON.stringify(readOfficialAccountStore());
     const readLogin: typeof readCliAccounts = (which) => readCliAccounts(which, home);
@@ -179,7 +221,7 @@ async function doSwitch(id: string, home: string): Promise<SwitchResult> {
     const removedSet = new Set(store.removed ?? []);
     const outgoingSnap = kind === "grok" ? undefined : readCliSnapshot(kind, home);
     const grokAuthBefore = kind === "grok" ? (readJsonFile(authFile("grok", home)) as Record<string, any> | undefined) : undefined;
-    const grokTargetKey = kind === "grok" ? ((snap?.rowKey as string) || `${credential.issuer}::${credential.clientId}`) : "";
+    const grokTargetKey = kind === "grok" ? ((snap?.rowKey as string) || `${activeCredential.issuer}::${activeCredential.clientId}`) : "";
     const now = Date.now();
     for (const live of readCliAccounts(kind, home)) {
       const outId = accountIdOf(kind, live.ref);
@@ -187,7 +229,7 @@ async function doSwitch(id: string, home: string): Promise<SwitchResult> {
       let rowSnap = outgoingSnap;
       if (kind === "grok") {
         const hitEntry = grokAuthBefore && typeof grokAuthBefore === "object"
-          ? Object.entries<any>(grokAuthBefore).find(([k, row]) => row?.key === live.credential.token && (k === grokTargetKey || row?.oidc_issuer === credential.issuer))
+          ? Object.entries<any>(grokAuthBefore).find(([k, row]) => row?.key === live.credential.token && (k === grokTargetKey || row?.oidc_issuer === activeCredential.issuer))
           : undefined;
         if (!hitEntry) continue;
         rowSnap = { rowKey: hitEntry[0], row: without(hitEntry[1], ["key", "refresh_token", "expires_at"]) };

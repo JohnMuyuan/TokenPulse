@@ -121,7 +121,10 @@ export class EgressTracker {
       if (region === "unsupported") reasons.push("unsupported_region");
       if (region === "partial") reasons.push("partial_region");
       if (region === "unknown" && ruleFor(probe.provider, probe.host)?.status === "verified") reasons.push("region_unknown");
-      if (config.allowedRegions.length && (!probe.region || !config.allowedRegions.includes(probe.region)) && !reasons.includes("region_unknown")) reasons.push(probe.region ? "region_mismatch" : "region_unknown");
+      if (config.allowedRegions.length) {
+        if (probe.region && !config.allowedRegions.includes(probe.region)) reasons.push("region_mismatch");
+        else if (!probe.region && !reasons.includes("region_unknown")) reasons.push("region_unknown");
+      }
     }
     const fingerprint = reasons.length ? reasons.join(",") + (probe.error ? "" : `|${probe.ip}|${probe.region}`) : "safe";
     this.streak = this.candidate === fingerprint ? this.streak + 1 : 1;

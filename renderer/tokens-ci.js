@@ -38,11 +38,16 @@
   /* ---------------- 用量明细里的状态栏 ---------------- */
 
   function render() {
-    try {
     const demo = window.tokenpulse?.isDemo?.();
     const s = state?.settings;
     const setUp = s && (s.enabled || s.version || s.lastRunAt);
-    if (!state || demo || (!s.enabled && s.dismissed)) { host.hidden = true; host.replaceChildren(); return; }
+    if (!state || demo || (!s.enabled && s.dismissed)) {
+      host.hidden = true;
+      delete host.dataset.layout;
+      delete host.dataset.layoutHidden;
+      host.replaceChildren();
+      return;
+    }
     host.hidden = false;
     if (!setUp) {
       host.className = 'panel tokens-ci tokens-ci-intro';
@@ -56,6 +61,7 @@
           button('开始设置', () => openWizard('env'), { cls: 'btn btn-accent', action: 'tokens-setup' }),
           button('不需要', () => call(() => api.save({ dismissed: true }), '保存失败'), { action: 'tokens-dismiss' }),
         ]));
+      if (window.markLayout) window.markLayout(host, 'usage:tokensci');
       return;
     }
     const running = state.running === 'submit', last = state.last;
@@ -82,7 +88,7 @@
         button('预览', () => openWizard('preview', { single: true }), { action: 'tokens-preview', disabled: !!state.running && state.running !== 'preview' }),
         button('设置', () => openWizard('settings'), { glyph: 'settings', action: 'tokens-settings' }),
       ]));
-    } finally { if (window.markLayout) window.markLayout(host, 'usage:tokensci'); }
+    if (window.markLayout) window.markLayout(host, 'usage:tokensci');
   }
 
   /** 上传有了新结果：手动的告诉一声成功 / 失败；自动的只在连续失败的第一次提醒（之后状态栏上一直写着）。 */
@@ -108,37 +114,49 @@
   const STEPS = [['env', '运行环境'], ['account', '账号'], ['preview', '预览'], ['schedule', '自动上传']];
 
   function openWizard(step, { single = false } = {}) {
+    if (!state) return;
     closeWizard(true);
     const overlay = el('div', { class: 'modal tokens-ci-modal', id: 'tokens-ci-dialog' });
     const card = el('section', { class: 'modal-card tokens-ci-card', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'tokens-ci-title' });
     overlay.append(card);
     overlay.addEventListener('click', event => { if (event.target === overlay) closeWizard(); });
-    overlay.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closeWizard(); } });
+    const onDocKey = event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeWizard(); return; }
+      if (event.key !== 'Tab') return;
+      const focusable = [...card.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])')].filter(n => !n.hidden && n.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (!card.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+      else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onDocKey, true);
     document.body.append(overlay);
     document.body.classList.add('modal-open');
     for (const selector of ['.workspace', '.sidebar']) { const node = document.querySelector(selector); if (node) node.inert = true; }
     const s = state?.settings || {};
-    wizard = { overlay, card, step, single, from: step, relogin: step === 'account', lastFocus: document.activeElement, privacy: null, interval: s.intervalMin || 60, onLaunch: s.onLaunch !== false, channel: s.channel || 'pinned' };
+    wizard = { overlay, card, onDocKey, step, single, from: step, relogin: step === 'account', lastFocus: document.activeElement, privacy: null, interval: s.intervalMin || 60, onLaunch: s.onLaunch !== false, channel: s.channel || 'pinned' };
     if (step === 'env' && !state?.tools?.checked) call(() => api.check(), '检查失败');
     drawWizard();
-    card.querySelector('button, input, select')?.focus();
+    (card.querySelector('button:not(:disabled), input:not(:disabled), select:not(:disabled)') || card.querySelector('[data-action="tokens-close"]'))?.focus();
   }
   function closeWizard(silent = false) {
     if (!wizard) return;
-    const { overlay, lastFocus } = wizard;
+    const { overlay, onDocKey, lastFocus } = wizard;
     // 登录还在等浏览器授权就关了窗口：停掉登录，不在后台挂着
-    if (!silent && state?.running === 'login') api.cancel();
-    if (state?.login) api.clearLogin();
-    if (state?.preview) api.clearPreview();
+    if (!silent && state?.running === 'login') api.cancel().catch(() => {});
+    if (state?.login) api.clearLogin().catch(() => {});
+    if (state?.preview) api.clearPreview().catch(() => {});
     wizard = null;
+    document.removeEventListener('keydown', onDocKey, true);
     overlay.remove();
     if (!document.querySelector('.modal:not([hidden])')) {
       document.body.classList.remove('modal-open');
       for (const selector of ['.workspace', '.sidebar']) { const node = document.querySelector(selector); if (node) node.inert = false; }
     }
-    lastFocus?.focus?.();
+    if (lastFocus?.isConnected) lastFocus.focus?.();
   }
-  function go(step) { wizard.step = step; if (step === 'env' && !state?.tools?.checked) call(() => api.check(), '检查失败'); drawWizard(); wizard.card.querySelector('.tokens-ci-step button, .tokens-ci-step input')?.focus(); }
+  function go(step) { wizard.step = step; if (step === 'env' && !state?.tools?.checked) call(() => api.check(), '检查失败'); drawWizard(); (wizard.card.querySelector('.tokens-ci-step button:not(:disabled), .tokens-ci-step input:not(:disabled)') || wizard.card.querySelector('[data-action="tokens-close"]'))?.focus(); }
 
   function drawWizard() {
     if (!wizard || !state) return;
@@ -151,27 +169,39 @@
     ]);
     const steps = settingsView || single ? null : el('ol', { class: 'tokens-ci-steps' }, STEPS.map(([id, label], i) => el('li', { class: id === step ? 'on' : STEPS.findIndex(([x]) => x === step) > i ? 'done' : '' }, [el('span', { text: String(i + 1) }), el('b', { text: label })])));
     const body = { env: envStep, account: accountStep, preview: previewStep, schedule: scheduleStep, settings: settingsStep }[step]();
-    const focused = document.activeElement && card.contains(document.activeElement) ? document.activeElement.dataset.action || document.activeElement.name : null;
+    const active = document.activeElement && card.contains(document.activeElement) ? document.activeElement : null;
+    const focusKey = active ? { action: active.dataset.action || '', name: active.name || '', value: active.type === 'radio' ? active.value : '' } : null;
     card.replaceChildren(...[head, steps, el('div', { class: 'tokens-ci-step' }, body)].filter(Boolean));
-    if (focused) (card.querySelector(`[data-action="${focused}"]`) || card.querySelector(`[name="${focused}"]`))?.focus();
+    if (focusKey) {
+      const target = (focusKey.action ? card.querySelector(`[data-action="${CSS.escape(focusKey.action)}"]`) : null)
+        || (focusKey.name && focusKey.value ? card.querySelector(`[name="${CSS.escape(focusKey.name)}"][value="${CSS.escape(focusKey.value)}"]`) : null)
+        || (focusKey.name ? card.querySelector(`[name="${CSS.escape(focusKey.name)}"]`) : null)
+        || card.querySelector('[data-action="tokens-close"]');
+      if (target && !target.disabled) target.focus();
+      else card.querySelector('[data-action="tokens-close"]')?.focus();
+    }
   }
   const footer = (...buttons) => el('div', { class: 'tokens-ci-foot' }, buttons.filter(Boolean));
   const row = (ok, text, extra) => el('li', { class: ok === null ? 'wait' : ok ? 'ok' : 'bad' }, [el('span', { class: 'tokens-ci-dot', 'aria-hidden': 'true' }), el('span', { text }), extra || null]);
 
   function envStep() {
-    const tools = state.tools, checking = state.running === 'check' || !tools.checked;
+    const tools = state.tools, checking = state.running === 'check';
     const s = state.settings;
     const version = s.channel === 'installed' ? '本机安装的 tokens 命令' : s.channel === 'latest' ? 'tokens-cli 最新版（每次运行都用最新的）' : s.version ? `tokens-cli ${s.version}（固定版本，不会自己换成新代码）` : '';
-    const ready = !checking && tools.npx && (s.channel !== 'pinned' || s.version);
+    const ready = !checking && tools.checked && tools.npx && (s.channel !== 'pinned' || s.version);
     return [
       el('p', { class: 'tokens-ci-lead', text: 'tokens.ci 的工具要靠 Node.js 运行。先看看这台电脑能不能跑。' }),
-      el('ul', { class: 'tokens-ci-checks' }, [
-        row(checking ? null : tools.npx, checking ? '正在检查 Node.js（npx）…' : tools.npx ? '已找到 Node.js（npx）' : '没有找到 Node.js（npx）'),
-        checking ? null : row(!!version, version ? `将使用 ${version}` : tools.error || '查不到 tokens-cli 的版本'),
+      el('ul', { class: 'tokens-ci-checks' }, checking ? [
+        row(null, '正在检查 Node.js（npx）…'),
+      ] : !tools.checked ? [
+        row(null, '当前未检查，点击重新检查。'),
+      ] : [
+        row(tools.npx, tools.npx ? '已找到 Node.js（npx）' : '没有找到 Node.js（npx）'),
+        row(!!version, version ? `将使用 ${version}` : tools.error || '查不到 tokens-cli 的版本'),
       ]),
-      !checking && !tools.npx ? el('p', { class: 'tokens-ci-hint', text: '请先安装 Node.js（选 LTS 版本），装好后点「重新检查」。用 Claude Code 或 Codex 的电脑一般已经装过。' }) : null,
+      !checking && tools.checked && !tools.npx ? el('p', { class: 'tokens-ci-hint', text: '请先安装 Node.js（选 LTS 版本），装好后点「重新检查」。用 Claude Code 或 Codex 的电脑一般已经装过。' }) : null,
       footer(
-        !checking && !tools.npx ? button('下载 Node.js', () => api.open(NODE_URL), { glyph: 'external', action: 'tokens-node' }) : null,
+        !checking && tools.checked && !tools.npx ? button('下载 Node.js', () => api.open(NODE_URL), { glyph: 'external', action: 'tokens-node' }) : null,
         button('重新检查', () => call(() => api.check(), '检查失败'), { action: 'tokens-recheck', disabled: checking }),
         button('下一步', () => go('account'), { cls: 'btn btn-accent', action: 'tokens-next', disabled: !ready }),
       ),
@@ -190,7 +220,7 @@
         el('p', { class: 'tokens-ci-hint' }, [el('span', { class: 'tokens-ci-spin', 'aria-hidden': 'true' }), el('span', { text: ' 正在等你在浏览器里授权，完成后这里会自动继续。浏览器没打开的话，点「打开授权页」。' })]),
         footer(
           login.url ? button('打开授权页', () => api.open(login.url), { glyph: 'external', action: 'tokens-open-auth' }) : null,
-          button('取消', () => api.cancel(), { action: 'tokens-cancel-login' }),
+          button('取消', () => api.cancel().catch(() => {}), { action: 'tokens-cancel-login' }),
         ),
       ];
     }
@@ -221,7 +251,7 @@
   function afterLogin() {
     const back = wizard.from === 'settings', done = wizard.from === 'account';
     return button(done ? '完成' : back ? '返回设置' : '下一步', () => {
-      if (state.login) api.clearLogin();
+      if (state.login) api.clearLogin().catch(() => {});
       wizard.relogin = false;
       // 从状态栏「重新登录」进来的：登录好了马上补传一次，状态栏不再挂着上次「登录已失效」的失败
       if (done) { closeWizard(); if (state.settings.enabled && state.loggedIn) call(() => api.upload(), '上传失败'); }
@@ -244,7 +274,7 @@
       el('p', { class: 'tokens-ci-hint', text: '点登录后浏览器会打开 tokens.ci 的授权页，用 GitHub 登录并输入 TokenPulse 显示的码即可，不用打开终端。' }),
       footer(
         state.loggedIn && !state.paused ? button('返回', () => { wizard.relogin = false; drawWizard(); }, { action: 'tokens-back' }) : null,
-        button('登录 tokens.ci', () => { if (state.login) api.clearLogin(); call(() => api.login(wizard.privacy), '登录失败'); }, { cls: 'btn btn-accent', glyph: 'external', action: 'tokens-login', disabled: !wizard.privacy || !!state.running }),
+        button('登录 tokens.ci', async () => { if (state.login) await api.clearLogin().catch(() => {}); call(() => api.login(wizard.privacy), '登录失败'); }, { cls: 'btn btn-accent', glyph: 'external', action: 'tokens-login', disabled: !wizard.privacy || !!state.running }),
       ),
     ];
   }
@@ -269,16 +299,30 @@
     const hours = minutes % 60 === 0;
     const amount = el('input', { type: 'number', name: 'tokens-interval', min: hours ? '1' : '10', max: hours ? '24' : '1440', step: '1', value: String(hours ? minutes / 60 : minutes), 'aria-label': '间隔' });
     const unit = el('select', { name: 'tokens-unit', 'aria-label': '单位' }, [el('option', { value: 'min', text: '分钟', selected: hours ? null : '' }), el('option', { value: 'hour', text: '小时', selected: hours ? '' : null })]);
-    const sync = () => {
-      const value = Math.round(Number(amount.value) || 0) * (unit.value === 'hour' ? 60 : 1);
+    const hint = el('small', { text: `最少 10 分钟，最多一天一次。现在是${every(wizard.interval)}。` });
+    const sync = (normalize = false) => {
+      const isHour = unit.value === 'hour';
+      const value = Math.round(Number(amount.value) || 0) * (isHour ? 60 : 1);
       wizard.interval = Math.min(1440, Math.max(10, value || 60));
+      if (normalize) {
+        const displayHours = wizard.interval % 60 === 0;
+        unit.value = displayHours ? 'hour' : 'min';
+        amount.min = displayHours ? '1' : '10';
+        amount.max = displayHours ? '24' : '1440';
+        amount.value = String(displayHours ? wizard.interval / 60 : wizard.interval);
+      } else {
+        amount.min = isHour ? '1' : '10';
+        amount.max = isHour ? '24' : '1440';
+      }
+      hint.textContent = `最少 10 分钟，最多一天一次。现在是${every(wizard.interval)}。`;
     };
-    amount.addEventListener('change', () => { sync(); drawWizard(); });
-    unit.addEventListener('change', () => { sync(); drawWizard(); });
+    amount.addEventListener('input', () => sync(false));
+    amount.addEventListener('change', () => sync(true));
+    unit.addEventListener('change', () => sync(true));
     const launch = el('input', { type: 'checkbox', name: 'tokens-launch', checked: wizard.onLaunch ? '' : null });
     launch.addEventListener('change', () => { wizard.onLaunch = launch.checked; });
     return [
-      el('label', { class: 'tokens-ci-field' }, [el('span', { text: '每隔' }), amount, unit, el('small', { text: `最少 10 分钟，最多一天一次。现在是${every(wizard.interval)}。` })]),
+      el('label', { class: 'tokens-ci-field' }, [el('span', { text: '每隔' }), amount, unit, hint]),
       el('label', { class: 'tokens-ci-check' }, [launch, el('span', { text: '每次打开 TokenPulse 时先上传一次' })]),
     ];
   }
@@ -351,10 +395,12 @@
   // 「下次」的时间每分钟刷新一下；进出演示模式时 app.js 的 render 会调 refresh
   setInterval(() => { if (state && !document.hidden) render(); }, 60_000);
   document.getElementById('open-tokens-ci')?.addEventListener('click', async () => {
-    await call(() => api.save({ dismissed: false }), '保存失败');
+    if (window.tokenpulse?.isDemo?.()) { toast('演示数据不能修改', { kind: 'warning' }); return; }
+    const next = await call(() => api.save({ dismissed: false }), '保存失败');
+    if (!next || !state) return;
     window.closeModal?.('settings');
-    window.navigate?.('usage');
-    openWizard(state?.settings?.enabled || state?.settings?.version ? 'settings' : 'env');
+    window.navigate?.('usage', { force: true });
+    openWizard(state.settings?.enabled || state.settings?.version ? 'settings' : 'env');
   });
   window.PulseTokensCi = { open: openWizard, state: () => state, refresh: render };
 })();

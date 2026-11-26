@@ -83,7 +83,7 @@
   .pq-member-head { display: none; }
   .pq-member { grid-template-columns: 12px minmax(0, 1fr); }
   .pq-member > div:not(.pq-member-name) { grid-column: 2; }
-  .pq-req { grid-template-columns: 100px minmax(0, 1fr) 70px; }
+  .pq-req { grid-template-columns: 100px minmax(0, 1fr) 88px 70px; }
   .pq-req > span:nth-child(3), .pq-req > span:nth-child(6) { display: none; }
 }
 
@@ -155,7 +155,7 @@
 .pq-sv-weeks span { flex: 1; text-align: center; color: var(--faint); font-size: 11px; }
 .pq-sv-weeks i { display: grid; place-items: center; height: 30px; margin-bottom: 4px; border-radius: 8px; font-style: normal; font-weight: 800; font-size: 13px; background: var(--accent-soft); color: var(--accent); }
 .pq-sv-weeks .out i { background: var(--danger-soft); color: var(--danger); }
-.pq-sv-weeks .now i { background: var(--accent); color: #fff; font-size: 11.5px; }
+.pq-sv-weeks .now i { background: var(--accent); color: var(--accent-contrast, #fff); font-size: 11.5px; }
 @media (max-width: 900px) {
   .pq-sv-hero, .pq-sv-grid { grid-template-columns: 1fr; }
   .pq-sv-member { grid-template-columns: 90px minmax(0, 1fr) 76px; }

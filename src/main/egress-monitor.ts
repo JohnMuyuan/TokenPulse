@@ -54,7 +54,15 @@ export class ExitMonitor {
     this.timer = setInterval(() => { if (this.config.enabled) void this.check(); }, this.config.intervalSeconds * 1000);
     this.timer.unref();
   }
-  stop() { this.stopped = true; this.epoch++; this.abort?.abort(); if (this.timer) clearInterval(this.timer); this.timer = undefined; }
+  stop() {
+    this.stopped = true;
+    this.epoch++;
+    this.abort?.abort();
+    for (const ac of this.gateAborts) ac.abort();
+    this.gateAborts.clear();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
   save(value: unknown) {
     const next = validateConfig(value);
     writeJson(dataFile("egress-settings.json"), next);
@@ -103,7 +111,16 @@ export class ExitMonitor {
    *   探测失败也不放行 —— 确认不了从哪儿出去，就别拿账号去问官方。
    * 被拦时记一条告警、按设置弹通知（同一种情况只弹一次），放行后记一条恢复。
    */
+  private gateAborts = new Set<AbortController>();
+  private async probeForGate(provider: Provider, host: string): Promise<Probe> {
+    const ac = new AbortController();
+    this.gateAborts.add(ac);
+    try { return await (this.options.probe ?? probeExit)(provider, host, ac.signal); }
+    catch { return { provider, host, checkedAt: this.now(), latencyMs: 0, error: "network" }; }
+    finally { this.gateAborts.delete(ac); }
+  }
   async gateQuota(provider: Provider): Promise<boolean> {
+    if (this.stopped) return false;
     const settings = this.config;
     if (!settings.enabled) {
       if (this.quotaBlocks.delete(provider)) this.publish();
@@ -116,9 +133,8 @@ export class ExitMonitor {
     }
     const row = this.trackers.get(provider)?.row;
     const recent = row && !row.error && row.host === config.host && this.now() - row.checkedAt < 10_000;
-    let probe: Probe;
-    try { probe = recent ? row! : await (this.options.probe ?? probeExit)(provider, config.host); }
-    catch { probe = { provider, host: config.host, checkedAt: this.now(), latencyMs: 0, error: "network" }; }
+    const probe = recent ? row! : await this.probeForGate(provider, config.host);
+    if (this.stopped) return false;
     if (this.config !== settings) return this.gateQuota(provider);
     const ok = !probe.error && probe.ip != null && config.allowedIps.includes(probe.ip);
     const previous = this.quotaBlocks.get(provider);
@@ -154,13 +170,13 @@ export class ExitMonitor {
    * 这里的 curl 和接下来启动的 CLI 用的是同一份环境变量，走的是同一条路。被拦时记一条告警。
    */
   async gateLaunch(provider: Provider, what: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (this.stopped) return { ok: false, message: `出口监控已停止，已拒绝启动 ${what}。` };
     const settings = this.config;
     const rule = this.launchRule(provider);
     if (!rule) return { ok: true };
     const byIp = rule.allowedIps.length > 0;
-    let probe: Probe;
-    try { probe = await (this.options.probe ?? probeExit)(provider, rule.host); }
-    catch { probe = { provider, host: rule.host, checkedAt: this.now(), latencyMs: 0, error: "network" }; }
+    const probe = await this.probeForGate(provider, rule.host);
+    if (this.stopped) return { ok: false, message: `出口监控已停止，已拒绝启动 ${what}。` };
     if (this.config !== settings) return this.gateLaunch(provider, what);
     const seen = probe.error ? undefined : byIp ? probe.ip : probe.region;
     if (seen != null && (byIp ? rule.allowedIps : rule.allowedRegions).includes(seen)) return { ok: true };
@@ -171,6 +187,7 @@ export class ExitMonitor {
   }
   /** 记一条变化 / 告警：进历史、按设置弹通知、推给界面。 */
   private record(event: EgressEvent, notify: boolean) {
+    if (this.stopped) return;
     this.events.unshift(event);
     this.events = this.events.slice(0, 50);
     try { writeJson(dataFile("egress-history.json"), this.events); this.storageError = false; } catch { this.storageError = true; }

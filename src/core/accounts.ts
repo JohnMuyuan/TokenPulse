@@ -321,6 +321,19 @@ export const RENEW_GIVE_UP = 6;
 export const RENEW_GIVE_UP_MS = 60 * 60_000;
 
 const renewing = new Map<OfficialAccountKind, Promise<number>>();
+const kindLocks = new Map<OfficialAccountKind, Promise<unknown>>();
+
+/** 按 provider 串行化刷新操作，避免 cli-switch 等直接刷新与 renewStoredCredentials 同时消费同一个单次 refresh token。 */
+export async function runWithKindRenewalLock<T>(kind: OfficialAccountKind, work: () => Promise<T>): Promise<T> {
+  const prev = kindLocks.get(kind);
+  const run = (prev ? prev.catch(() => undefined) : Promise.resolve()).then(work);
+  kindLocks.set(kind, run);
+  try {
+    return await run;
+  } finally {
+    if (kindLocks.get(kind) === run) kindLocks.delete(kind);
+  }
+}
 
 /**
  * 给快过期的 **TokenPulse 登录的账号**续期，返回续期成功的个数。查额度前、打开账号列表前都会调。
@@ -341,13 +354,17 @@ export async function renewStoredCredentials(
   const runKind = (kind: OfficialAccountKind): Promise<number> => {
     let task = renewing.get(kind);
     if (!task) {
-      task = (async () => {
+      task = runWithKindRenewalLock(kind, async () => {
         let renewed = 0;
         const due = readOfficialAccountStore().accounts.filter(
           (item) => item.kind === kind && !item.hidden && item.credential?.refreshToken && !item.renewFailed && item.credential.expiresAt != null && item.credential.expiresAt - now < RENEW_BEFORE_MS,
         );
         for (const account of due) {
-          const result: RefreshResult = await refresh(account.kind, account.credential!, now);
+          // 前一个账号在网络请求期间，后续账号可能已被删除、隐藏或重新登录：发请求前重读确认
+          const beforeStore = readOfficialAccountStore();
+          const current = beforeStore.accounts.find((item) => item.id === account.id);
+          if (!current || current.hidden || current.renewFailed || current.credential?.refreshToken !== account.credential!.refreshToken) continue;
+          const result: RefreshResult = await refresh(account.kind, current.credential!, now);
           const rejected = !result.ok && !result.permanent && result.status != null && result.status >= 400 && result.status < 500 && result.status !== 429;
           if (!result.ok && !result.permanent && !rejected) {
             logRenew({ at: now, kind: account.kind, accountId: account.id, source: "stored", ok: false, status: result.status, code: result.code, error: result.error });
@@ -363,6 +380,9 @@ export async function renewStoredCredentials(
           let note: string | undefined;
           if (result.ok) {
             target.credential = result.credential;
+            if (account.kind === "chatgpt" && typeof result.raw?.id_token === "string" && result.raw.id_token) {
+              target.cliAuth = { ...(target.cliAuth || {}), id_token: result.raw.id_token };
+            }
             delete target.renewFailed;
             delete target.renewTrouble;
             renewed += 1;
@@ -386,7 +406,7 @@ export async function renewStoredCredentials(
           writeOfficialAccountStore(store);
         }
         return renewed;
-      })().finally(() => {
+      }).finally(() => {
         if (renewing.get(kind) === task) renewing.delete(kind);
       });
       renewing.set(kind, task);

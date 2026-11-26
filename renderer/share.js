@@ -56,8 +56,16 @@
       try {
         const name = kind === 'month' ? `TokenPulse-${month}` : kind === 'week' ? `TokenPulse-week-${week}` : `TokenPulse-${id}`;
         const result = action === 'save' ? await api.save(png, name) : await api.copy(png);
-        if (result.saved || result.copied) toast(tr(result.saved ? '分享卡片已保存' : '分享卡片已复制'));
-      } catch (error) { toast(tr('导出失败') + ': ' + errorText(error), { kind: 'error' }); }
+        if (result.saved || result.copied) {
+          const msg = tr(result.saved ? '分享卡片已保存' : '分享卡片已复制');
+          status.textContent = msg;
+          toast(msg);
+        }
+      } catch (error) {
+        const msg = tr('导出失败') + ': ' + errorText(error);
+        status.textContent = msg;
+        toast(msg, { kind: 'error' });
+      }
       finally { exporting = false; if (node.isConnected) setReady(Boolean(png)); }
     }
     async function renderPreview() {
@@ -65,9 +73,12 @@
       png = ''; setReady(false); retry.hidden = true; preview.setAttribute('aria-busy', 'true');
       status.textContent = tr('正在生成预览…');
       try {
-        const value = Number(subscription.value);
-        if (!Number.isFinite(value) || value < 0 || value > 1000000) throw new Error(tr('订阅费请填 0 到 1000000 之间的数'));
-        write('tokenpulse-share-subscription', subscription.value);
+        let value = 0;
+        if (kind === 'month') {
+          value = Number(subscription.value);
+          if (!Number.isFinite(value) || value < 0 || value > 1000000) throw new Error(tr('订阅费请填 0 到 1000000 之间的数'));
+          write('tokenpulse-share-subscription', subscription.value);
+        }
         const image = await api.render(kind, data, { id, subscriptionUsd: value, showNames: showNames.checked, lang: window.PulseI18n?.lang() || 'zh' });
         if (!node.isConnected || token !== generation) return;
         png = image;
@@ -91,7 +102,7 @@
           select.value = month;
           select.addEventListener('change', () => { month = select.value; refresh(); });
           controls.append(field('月份', select), field('订阅费 $/月（可选）', subscription), field('在卡片里显示号池名／供应商名', showNames));
-          write('tokenpulse-share-month-seen', month);
+          if (month && month > read('tokenpulse-share-month-seen', '')) write('tokenpulse-share-month-seen', month);
         } else if (kind === 'week') {
           data = result.report; week = data?.week || '';
           if (!data) { status.textContent = tr('还没有用量记录，周报会在有用量后出现。'); return; }
@@ -138,10 +149,10 @@
       if (now.getDate() <= 7) {
         const previous = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         const month = `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`;
-        if (read('tokenpulse-share-month-seen', '') !== month) {
+        if (read('tokenpulse-share-month-seen', '') < month) {
           const result = await api.month(month);
           if (result.report?.tokens > 0) {
-            write('tokenpulse-share-month-seen', month);
+            if (month && month > read('tokenpulse-share-month-seen', '')) write('tokenpulse-share-month-seen', month);
             toast(tr('月报出炉了：') + month, { key: 'share-month', actions: [{ label: tr('生成分享卡'), primary: true, onClick: () => open('month', month) }] });
           }
         }

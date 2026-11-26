@@ -18,15 +18,14 @@
   /** 低沉的两种用三角波，听起来更「提醒」；做完、在问你、等你用正弦波加一点高八度，像铃铛。 */
   const SOFT = new Set(['done', 'ask', 'waiting']);
   const CUSTOM_MAX_S = 5, FADE_S = 0.3;
-  let audio = null;
+  let audio = null, pendingPlay = null;
   /** 自己选的音频：种类 → 解码好的 AudioBuffer。 */
   const custom = {}, tokens = {};
 
   function context() {
     const Ctx = root.AudioContext || root.webkitAudioContext;
     if (!Ctx) return null;
-    audio ??= new Ctx();
-    if (audio.state === 'suspended') audio.resume().catch(() => undefined);
+    if (!audio || audio.state === 'closed') audio = new Ctx();
     return audio;
   }
 
@@ -51,6 +50,19 @@
     source.start(start); source.stop(start + length);
   }
 
+  function schedule(ctx, kind, tune, level) {
+    if (custom[kind]) { playCustom(ctx, custom[kind], level); return; }
+    const out = ctx.createGain(), start = ctx.currentTime + 0.02;
+    out.gain.value = 0.3 * level;
+    out.connect(ctx.destination);
+    for (const [freq, at, length] of tune) {
+      if (SOFT.has(kind)) {
+        note(ctx, out, freq, start + at, length, 'sine', 1);
+        note(ctx, out, freq * 2, start + at, length * 0.6, 'sine', 0.25);
+      } else note(ctx, out, freq, start + at, length, 'triangle', 0.9);
+    }
+  }
+
   /** 播一种提示音；volume 0～1。换过音频的放自己的。放不出来（没有声卡之类）返回 false，不抛错。 */
   function play(kind, volume = 0.7) {
     const tune = TUNES[kind];
@@ -58,17 +70,23 @@
     try {
       const ctx = context();
       if (!ctx) return false;
-      const level = Math.max(0, Math.min(1, volume));
-      if (custom[kind]) { playCustom(ctx, custom[kind], level); return true; }
-      const out = ctx.createGain(), start = ctx.currentTime + 0.02;
-      out.gain.value = 0.3 * level;
-      out.connect(ctx.destination);
-      for (const [freq, at, length] of tune) {
-        if (SOFT.has(kind)) {
-          note(ctx, out, freq, start + at, length, 'sine', 1);
-          note(ctx, out, freq * 2, start + at, length * 0.6, 'sine', 0.25);
-        } else note(ctx, out, freq, start + at, length, 'triangle', 0.9);
+      const numeric = Number(volume);
+      const level = Math.max(0, Math.min(1, Number.isFinite(numeric) ? numeric : 0.7));
+      if (ctx.state === 'suspended') {
+        const hadPending = !!pendingPlay;
+        pendingPlay = { kind, tune, level };
+        if (!hadPending) {
+          ctx.resume().then(() => {
+            const next = pendingPlay;
+            pendingPlay = null;
+            if (next && ctx.state === 'running') {
+              try { schedule(ctx, next.kind, next.tune, next.level); } catch { /* ignore */ }
+            }
+          }).catch(() => { pendingPlay = null; });
+        }
+        return true;
       }
+      schedule(ctx, kind, tune, level);
       return true;
     } catch { return false; }
   }

@@ -77,8 +77,18 @@ export function setTableKey(blocks: Block[], name: string, key: string, value: s
  */
 export function dropEmptyTable(blocks: Block[], name: string) {
   const index = blocks.findIndex(block => block.header && headerName(block.header) === name);
-  if (index < 0 || blocks[index].lines.some(line => line.trim())) return false;
-  blocks.splice(index, 1);
+  if (index < 0) return false;
+  const text = blocks[index].lines.join("\n");
+  if (parseTOML(text).body[0].body.length > 0) return false;
+  const comments = blocks[index].lines.filter(line => line.trim().startsWith("#"));
+  const [removed] = blocks.splice(index, 1);
+  if (comments.length && index > 0) {
+    const prev = blocks[index - 1];
+    // Preserve trailing comment lines that sat above the next table header.
+    const trailing = removed.lines.slice(removed.lines.findIndex(line => line.trim().startsWith("#")));
+    if (prev.lines.length && prev.lines[prev.lines.length - 1] !== "") prev.lines.push("");
+    prev.lines.push(...trailing);
+  }
   return true;
 }
 /** TokenPulse 自己建的表（Codex 的 model_providers.tokenpulse_route、Grok 的 model.tokenpulse_route）。 */

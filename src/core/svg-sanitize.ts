@@ -44,8 +44,8 @@ const squash = (text: string) => text.replace(/[\u0000- \u007f]+/g, "").toLowerC
 /** CSS（<style> 的内容或 style 属性）：去掉能引外部东西、能改到 Shadow DOM 外面的写法。 */
 export function sanitizeCss(css: string) {
   let current = css;
-  // 反复清洗直到收敛，防止 `@im@namespace;port` 这类嵌套构造在单趟删完后重新拼出禁用指令
-  for (let pass = 0; pass < 5; pass++) {
+  // 反复清洗直到收敛，防止 `@im@namespace;port` 这类嵌套构造在单趟删完后重新拼出禁用指令；超过轮次仍未收敛按 fail-closed 整段丢弃
+  for (let pass = 0; pass < 10; pass++) {
     const local: string[] = [];
     const next = current
       .replace(/\/\*[\s\S]*?(\*\/|$)/g, "")
@@ -65,7 +65,7 @@ export function sanitizeCss(css: string) {
     if (next === current) return next;
     current = next;
   }
-  return current;
+  return "";
 }
 
 /** 属性值里的 url(...)：只能指向自己文件里的 #id。 */
@@ -74,6 +74,12 @@ function urlsLocal(value: string) {
   for (let m = re.exec(value); m; m = re.exec(value)) if (!m[2].trim().startsWith("#")) return false;
   return true;
 }
+
+const CSS_PRESENTATION_ATTRS = new Set([
+  "fill", "stroke", "filter", "clip-path", "mask", "cursor",
+  "marker", "marker-start", "marker-mid", "marker-end",
+  "values", "from", "to", "by",
+]);
 
 function keepAttr(element: string, name: string, raw: string): string | null {
   if (!/^[A-Za-z_][\w.:-]*$/.test(name) || raw.length > LIMITS.attribute) return null;
@@ -84,11 +90,22 @@ function keepAttr(element: string, name: string, raw: string): string | null {
   if (lower === "style") { const css = sanitizeCss(value).trim(); return css || null; }
   const flat = squash(value);
   if (lower === "href" || lower === "xlink:href") {
-    if (flat.startsWith("#")) return value;
-    return element === "image" && IMAGE_DATA.test(value.trim()) ? value.trim() : null;
+    const trimmed = value.trim();
+    if (trimmed.startsWith("#") && !/[\u0000-\u001f\u007f]/.test(trimmed)) return trimmed;
+    return element === "image" && IMAGE_DATA.test(trimmed) ? trimmed : null;
   }
   if (/(javascript|vbscript|data):/.test(flat)) return null;
-  if (/url\s*\(/i.test(value) && !urlsLocal(value)) return null;
+  const cssStripped = value.replace(/\/\*[\s\S]*?(\*\/|$)/g, "");
+  if (CSS_PRESENTATION_ATTRS.has(lower) && value.includes("\\")) return null;
+  const unescapedCss = cssStripped
+    .replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_whole, hex: string) => {
+      const n = parseInt(hex, 16);
+      return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : "";
+    })
+    .replace(/\\(.)/g, "$1");
+  if (/(javascript|vbscript|data):/.test(squash(unescapedCss))) return null;
+  if (/(?:-webkit-)?image-set\s*\(/i.test(unescapedCss)) return null;
+  if (/url\s*\(/i.test(unescapedCss) && !urlsLocal(unescapedCss)) return null;
   return value;
 }
 

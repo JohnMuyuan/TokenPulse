@@ -115,7 +115,7 @@ export function initUpdater(options: { window: () => BrowserWindow | null; autoU
   if (reason) return;
 
   autoUpdater.autoDownload = options.autoUpdate;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = options.autoUpdate;
   autoUpdater.allowPrerelease = false;
   autoUpdater.logger = null;
   autoUpdater.on("checking-for-update", () => { log.info("update", "检查更新"); publish({ status: "checking", error: undefined }); });
@@ -133,8 +133,16 @@ export function initUpdater(options: { window: () => BrowserWindow | null; autoU
   autoUpdater.on("error", (error: Error) => publish({ status: "error", error: friendlyError(error), checkedAt: Date.now() }));
 
   if (options.force) return;
-  setTimeout(() => void checkForUpdates(false), FIRST_CHECK_MS);
-  setInterval(() => void checkForUpdates(false), CHECK_EVERY_MS);
+  setTimeout(() => void checkForUpdates(false), FIRST_CHECK_MS).unref?.();
+  setInterval(() => void checkForUpdates(false), CHECK_EVERY_MS).unref?.();
+}
+
+/** 退出前取消待执行的静默安装定时器，避免在关机/退出途中撞上 quitAndInstall。 */
+export function cancelPendingInstall() {
+  if (installTimer) {
+    clearTimeout(installTimer);
+    installTimer = null;
+  }
 }
 
 /** 窗口收起来 / 最小化时调：下载好了就趁这个时候装。 */
@@ -176,7 +184,7 @@ export function checkForUpdates(manual: boolean): Promise<UpdateState> {
 
 /** 手动下载（自动更新关着、但用户想装这个版本）。 */
 export function downloadUpdate() {
-  if (state.status === "unsupported" || !state.version || state.status === "downloading" || state.status === "downloaded") return Promise.resolve(state);
+  if (state.status === "unsupported" || !state.version || state.status === "checking" || state.status === "downloading" || state.status === "downloaded") return Promise.resolve(state);
   publish({ status: "downloading", progress: 0 });
   return autoUpdater
     .downloadUpdate()
@@ -193,6 +201,7 @@ export function setAutoUpdate(on: boolean) {
   publish({ autoUpdate: on });
   if (state.status === "unsupported") return;
   autoUpdater.autoDownload = on;
+  autoUpdater.autoInstallOnAppQuit = on;
   if (on) {
     if (state.status === "downloaded") scheduleInstall();
     else void checkForUpdates(false);

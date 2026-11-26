@@ -98,7 +98,8 @@ export function readDeepSeekMarks(accountId: string): DeepSeekAttributionMark[] 
 export function setDeepSeekMark(accountId: string, from: number, to: number, mode: DeepSeekMarkMode | "auto", note?: string): DeepSeekAttributionMark[] {
   const file = readMarkFile();
   const prev = Array.isArray(file.accounts[accountId]) ? file.accounts[accountId] : [];
-  const next = prev.filter((item) => !(item.from === from && item.to === to));
+  // 归属读取支持按 `to` 兜底匹配，因此更新或恢复自动时一并清掉同 `to` 的旧标注
+  const next = prev.filter((item) => item.to !== to);
   if (mode === "local" || mode === "off") {
     const cleanNote = typeof note === "string" ? note.trim().slice(0, 80) : "";
     next.push({ from, to, mode, ...(cleanNote ? { note: cleanNote } : {}), updatedAt: Date.now() });
@@ -166,13 +167,20 @@ export type DeepSeekDropItem = {
   note: string;
 };
 
+function pickPrimaryCurrency(samples: BalanceSample[]): string {
+  const latestAt = samples.at(-1)?.at;
+  if (latestAt == null) return "";
+  const batch = samples.filter((sample) => sample.at === latestAt);
+  return (batch.find((sample) => sample.total > 0) ?? batch[0])?.currency ?? "";
+}
+
 export function analyzeDeepSeek(input: { accountId: string; local: boolean; samples: BalanceSample[]; rows: RequestRow[]; now: number; marks?: DeepSeekAttributionMark[] }) {
   const { now } = input;
   const marks = input.marks ?? [];
-  const latest = input.samples.at(-1);
-  const currency = latest?.currency ?? "";
-  // 一个账号可能同时有人民币和美元余额：分析最近查到的第一种，另一种只在上面的卡片里显示数字
+  const currency = pickPrimaryCurrency(input.samples);
+  // 一个账号可能同时有人民币和美元余额：优先分析最近一次采样里有余额的币种，另一种只在上面的卡片里显示数字
   const primary = input.samples.filter((sample) => sample.currency === currency);
+  const latest = primary.at(-1);
   const samples = primary.filter((sample) => sample.at >= now - 366 * DAY && sample.at <= now + 60_000);
   const rows = input.local ? input.rows.filter((row) => row.at >= now - DEEPSEEK_DAYS * DAY && row.at <= now) : [];
   const steps = stepsOf(samples);
@@ -373,7 +381,7 @@ export function queryDeepSeek(query: DeepSeekQuery) {
   const samples = readBalanceHistory(query.accountId);
   const rows = query.local ? deepseekRows(DEEPSEEK_DAYS, now) : [];
   if (query.op === "insight") return analyzeDeepSeek({ accountId: query.accountId, local: query.local, samples, rows, now, marks: readDeepSeekMarks(query.accountId) });
-  const currency = samples.at(-1)?.currency ?? "";
+  const currency = pickPrimaryCurrency(samples);
   const primary = samples.filter((sample) => sample.currency === currency);
   const one = (window: "five" | "week") => timelineStudy(query.accountId, window, query.cycles?.[window], rows, primary, now);
   return { kind: "deepseek", accountId: query.accountId, labels: { five: "单日", week: "7 天" }, five: one("five"), week: one("week") };

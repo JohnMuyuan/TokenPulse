@@ -124,7 +124,7 @@ function readText(file: string) {
   try { return fs.readFileSync(file, "utf8"); } catch { return ""; }
 }
 function parse(text: string): any {
-  try { return JSON.parse(text); } catch { return undefined; }
+  try { return JSON.parse(text.replace(/^\uFEFF/, "")); } catch { return undefined; }
 }
 
 /**

@@ -37,7 +37,7 @@ import { demoCall, endDemo } from "./demo";
 import { envProxyFor, setSystemProxyResolver } from "../core/upstream-proxy";
 import { tr } from "./i18n";
 import { trayIcon, windowIcon } from "./icon";
-import { checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
+import { cancelPendingInstall, checkForUpdates, consumeRelaunchHidden, downloadUpdate, initUpdater, installUpdate, onWindowAway, setAutoUpdate, updateState } from "./updater";
 import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf, switchCliLogin } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
@@ -191,12 +191,14 @@ function createWindow() {
   if (process.platform === "win32") next.setIcon(windowIcon());
   next.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"));
   next.once("ready-to-show", () => {
-    if (!process.argv.includes("--hidden") && !readPrefs().startMinimized && !relaunchHidden) next.show();
+    const hidden = relaunchHidden;
+    relaunchHidden = false;
+    if (!process.argv.includes("--hidden") && !readPrefs().startMinimized && !hidden) next.show();
   });
   // 外链走系统浏览器，别在应用里开一个没有地址栏的窗口。
   next.webContents.setWindowOpenHandler(({ url }) => {
     // 只放行网页链接：别让页面里的内容拿 file: / 自定义协议去启动本机程序
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url).catch(() => undefined);
     return { action: "deny" };
   });
   next.on("close", (event) => {
@@ -358,12 +360,18 @@ async function agentWrite(reason: string, work: () => unknown, restoring = false
   confirms.set(token, { work, reason, signature: changeSignature(changes), at: Date.now() });
   return { ok: false as const, confirm: { token, reason, files: changes.map(fileDiff) } };
 }
+let agentConfirmBusy = false;
 async function agentConfirm(token: unknown) {
   const item = typeof token === "string" ? confirms.get(token) : undefined;
-  if (!item) return { ok: false as const, error: "这次确认已经过期，请重新操作" };
+  if (!item || Date.now() - item.at > 10 * 60_000) {
+    if (typeof token === "string") confirms.delete(token);
+    return { ok: false as const, error: "这次确认已经过期，请重新操作" };
+  }
+  if (agentConfirmBusy) return { ok: false as const, error: "上一次配置确认正在执行，请稍候重试" };
+  agentConfirmBusy = true;
   confirms.delete(token as string);
   configExpect(item.signature);
-  try { return await agentCall(item.work, item.reason); } finally { configExpect(null); }
+  try { return await agentCall(item.work, item.reason); } finally { configExpect(null); agentConfirmBusy = false; }
 }
 
 /*
@@ -751,7 +759,7 @@ function publishSnapshot(snapshot: Snapshot): Snapshot {
   if (snapshot.scannedAt) {
     try {
       maybeWeeklySummary({
-        now: snapshot.now, usage: snapshot.usage, enabled: readPrefs().weeklySummary,
+        now: snapshot.now, usage: snapshot.usage, enabled: readPrefs().weeklySummary, scannedAt: snapshot.scannedAt,
         notify: notice => {
           if (!Notification.isSupported()) return;
           const notification = new Notification({ title: tr(notice.title), body: tr(notice.body), icon: windowIcon() });
@@ -823,11 +831,12 @@ function getInitialSnapshot(): Promise<Snapshot> {
  * 手动刷新、登录 / 切换 / 恢复账号之后的那轮照常全查（后发起的会把它清掉）。
  */
 let quotaScheduled = false;
+let queuedNotify = false;
+let queuedScheduled = true;
 
 function backgroundRefresh(withQuota: boolean, notifyQuota = false, scheduled = false) {
   lastScanAt = Date.now();
-  if (withQuota) quotaScheduled = scheduled;
-  void refresh(withQuota, notifyQuota).catch((error) => {
+  void refresh(withQuota, notifyQuota, scheduled).catch((error) => {
     console.error("[TokenPulse] 刷新失败", error);
     sendToWin("refresh-error", tr("刷新失败，请重试并检查数据目录是否可写。"));
   });
@@ -873,6 +882,7 @@ async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snap
   await getInitialSnapshot();
   let snapshot = publishSnapshot(await loadSnapshot(true));
   notifyRequests(snapshot);
+  antigravityQuota.publish();
   if (withQuota) {
     if (notifyQuota) void antigravityQuota.refresh(false).catch(() => {});
     const tell = notifyQuota || quotaNoticePending;
@@ -915,31 +925,49 @@ let queuedQuota: Promise<Snapshot> | null = null;
  * 但正在跑的那轮只扫本地、而这次要问额度时不能共用：手动「刷新数据」
  * 正好撞上 1 分钟的本地扫描，就会拿回一份没问过额度的快照。这种情况排一轮在后面。
  */
-function refresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
+function refresh(withQuota: boolean, notifyQuota = false, scheduled = false): Promise<Snapshot> {
   if (notifyQuota) {
     if (!quotaNoticePending) quotaNoticeSent = undefined;
     quotaNoticePending = true;
-    // 手动刷新排进了定时的那轮：那轮也要全查
+  }
+  if (withQuota && !scheduled) {
+    // 非定时发起的查额度（手动刷新、登录 / 切换 / 恢复）清掉 scheduled，不被并发的定时 tick 覆盖回去
     quotaScheduled = false;
+    queuedScheduled = false;
   }
   if (refreshing) {
     if (!withQuota || refreshingQuota) {
       if (notifyQuota) {
-        return refreshing.then((snapshot) => {
-          if (quotaNoticePending && lastQuotaNotice) emitQuotaNotice(lastQuotaNotice, lastQuotaNoticeKind);
-          return snapshot;
-        });
+        return refreshing.then(
+          (snapshot) => {
+            if (quotaNoticePending && lastQuotaNotice) emitQuotaNotice(lastQuotaNotice, lastQuotaNoticeKind);
+            quotaNoticePending = false;
+            return snapshot;
+          },
+          (error) => {
+            quotaNoticePending = false;
+            throw error;
+          },
+        );
       }
       return refreshing;
     }
+    if (notifyQuota) queuedNotify = true;
+    if (!queuedQuota) queuedScheduled = scheduled;
+    else if (!scheduled) queuedScheduled = false;
     queuedQuota ??= refreshing
       .catch(() => undefined)
       .then(() => {
+        const nextNotify = queuedNotify;
+        const nextScheduled = queuedScheduled;
         queuedQuota = null;
-        return refresh(true, notifyQuota);
+        queuedNotify = false;
+        queuedScheduled = true;
+        return refresh(true, nextNotify, nextScheduled);
       });
     return queuedQuota;
   }
+  if (withQuota) quotaScheduled = scheduled;
   refreshingQuota = withQuota;
   // finally 里清状态，排在后面的那轮挂在它之后，看到的一定是已经空出来的 refreshing。
   refreshing = runRefresh(withQuota, notifyQuota).finally(() => {
@@ -1171,6 +1199,12 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     /*
+     * 代理必须最先注册：在日志、出口监控、知识库/更新检查和首轮网络请求之前生效，
+     * 避免首轮请求绕过系统代理或忽略环境变量代理。
+     */
+    setSystemProxyResolver((url) => session.defaultSession.resolveProxy(url));
+    void alignElectronProxy().catch(() => undefined);
+    /*
      * 任务栏按这个 ID 分组，图标取「开始」菜单里带同一个 ID 的快捷方式的图标。Electron 为了发通知，
      * 发现没有这样的快捷方式就自己建一个，指向当前的 exe。开发 / 测试时跑的是 node_modules 里的 electron.exe，
      * 用同一个 ID 就会建出指向它的「Electron.lnk」，正式版的任务栏图标从此变成 Electron 的原子图标。
@@ -1232,7 +1266,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("tokens-ci:clear-login", () => tokensUploader.clearLogin());
     ipcMain.handle("tokens-ci:clear-preview", () => tokensUploader.clearPreview());
     ipcMain.handle("tokens-ci:resume", () => tokensUploader.resume());
-    ipcMain.handle("tokens-ci:open", (_event, url: unknown) => { if (typeof url === "string" && /^https:\/\/[^\s]+$/i.test(url)) void shell.openExternal(url); });
+    ipcMain.handle("tokens-ci:open", (_event, url: unknown) => { if (typeof url === "string" && /^https:\/\/[^\s]+$/i.test(url)) void shell.openExternal(url).catch(() => undefined); });
     tokensUploader.start();
     ipcMain.handle("deepseek-balance:state", () => deepseekBalance.state());
     ipcMain.handle("deepseek-balance:add", (_event, value: unknown) => deepseekBalance.add(value));
@@ -1311,7 +1345,7 @@ if (!app.requestSingleInstanceLock()) {
         id,
         typeof value === "string" ? value : "",
       );
-      if (action === "purge") antigravityQuota.forgetAccount(id);
+      if (action === "purge" || (action === "remove" && !status.accounts.some((a) => a.id === id))) antigravityQuota.forgetAccount(id);
       else if (action === "restore") void antigravityQuota.refresh(true, id).catch(() => {});
       else antigravityQuota.publish();
       return status;
@@ -1322,7 +1356,8 @@ if (!app.requestSingleInstanceLock()) {
       }
       reorderAgyAccounts(ids as string[]);
       antigravityQuota.publish();
-      return listAgyAccountStatus();
+      const localEmail = antigravityHub() ? undefined : await readAgyKeyringEmailAsync();
+      return listAgyAccountStatus(Date.now(), localEmail);
     });
     antigravityQuota.start();
     // 额度详情的号池页（0.3.44）：号池定义从供应商数据里取（不带凭据），汇总在 worker 里读转发记录和额度采样
@@ -1533,8 +1568,15 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("agent:drift", () => { try { return agentDrift(); } catch { return []; } });
     setInterval(checkDrift, 5000);
     ipcMain.handle("agent:readonly", (_event, on: unknown) => { applyPrefs({ agentReadOnly: on === true }); publishAgent(); return agentView(); });
-    ipcMain.handle("agent:models", (_event, input: unknown) => agentCall(() => listProviderModels(input)));
-    ipcMain.handle("agent:pool-models", (_event, input: unknown) => agentCall(() => listPoolModels(input)));
+    const readOnlyAgentCall = async <T>(work: () => T | Promise<T>) => {
+      try {
+        return { ok: true as const, result: await work(), state: agentView() };
+      } catch (error) {
+        return { ok: false as const, error: error instanceof Error ? error.message : "操作失败" };
+      }
+    };
+    ipcMain.handle("agent:models", (_event, input: unknown) => readOnlyAgentCall(() => listProviderModels(input)));
+    ipcMain.handle("agent:pool-models", (_event, input: unknown) => readOnlyAgentCall(() => listPoolModels(input)));
     ipcMain.handle("agent:probe", async (_event, id: unknown) => {
       try {
         return { ok: true, result: await probeProvider(String(id || "")) };
@@ -1580,15 +1622,6 @@ if (!app.requestSingleInstanceLock()) {
       notes: "经 TokenPulse 的 Prism 桥访问你自己的 Prism 账号。要先在「Prism 桥」里启动服务。",
       slots: prismModels().map(([model, displayName]) => ({ role: "catalog", model, displayName, contextWindow: 128000, reasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "high" })),
     })));
-    /*
-     * 代理：让软件里所有往外发的请求走同一套规则（环境变量里的代理优先，没有就用系统代理）。
-     * - Node 自己发的（本地路由转发、获取模型列表、检测地址）和 curl 发的（查额度、续期、出口检测、IP 数据库）：
-     *   通过下面这个解析器问系统代理（见 upstream-proxy.ts）；
-     * - Electron 内核发的（自动更新、模型知识库更新）：本来只认系统代理、不认环境变量。只设了环境变量、系统代理没开的机器上，
-     *   把环境变量里的代理告诉它（alignElectronProxy）。
-     */
-    setSystemProxyResolver((url) => session.defaultSession.resolveProxy(url));
-    void alignElectronProxy().catch(() => undefined);
     resumePrism();
     configReason("启动时恢复本地路由");
     // 0.3.15：启动时会顺手修复旧版本留下的坏配置（见 repairAgentConfigs）。修复说明等界面来取，免得界面还没加载好就发过去丢了
@@ -1664,7 +1697,7 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(() => { if (!windowAway || Date.now() - lastScanAt >= AWAY_SCAN_EVERY_MS - 1000) backgroundRefresh(false); }, SCAN_EVERY_MS);
 
     app.on("activate", () => {
-      if (!BrowserWindow.getAllWindows().length) createWindow();
+      revealWindow();
     });
   });
 
@@ -1679,6 +1712,7 @@ if (!app.requestSingleInstanceLock()) {
 
   let agentQuitReady = false, agentQuitPending = false;
   app.on('before-quit', event => {
+    cancelPendingInstall();
     if (agentQuitReady) {
       destroyTrayPanel();
       destroyDeskPet();

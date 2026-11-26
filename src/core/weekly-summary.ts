@@ -11,13 +11,17 @@ function localDay(week: string) { const [y, m, d] = week.split("-").map(Number);
 function shiftWeek(week: string, days: number) { const date = localDay(week); date.setDate(date.getDate() + days); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; }
 function stateFile() { return dataFile("weekly-summary.json"); }
 
-export function weeklyDue(now: Date | number, state: WeeklySummaryState | null, enabled: boolean): string | null {
+export function weeklyDue(now: Date | number, state: WeeklySummaryState | null, enabled: boolean, scannedAt?: number): string | null {
   if (!enabled) return null;
   const at = new Date(now);
   if (!Number.isFinite(at.getTime())) return null;
   const currentMonday = weekStartOf(at);
   const dueAt = localDay(currentMonday); dueAt.setHours(9, 0, 0, 0);
   if (at.getTime() < dueAt.getTime()) return null;
+  if (scannedAt != null) {
+    const weekEnd = localDay(currentMonday); weekEnd.setHours(0, 0, 0, 0);
+    if (!Number.isFinite(scannedAt) || scannedAt < weekEnd.getTime()) return null;
+  }
   const week = shiftWeek(currentMonday, -7);
   return state?.week === week ? null : week;
 }
@@ -68,14 +72,14 @@ export function describeWeekly(report: WeekReport): { title: string; body: strin
 let inFlight = false;
 /** 同步处理状态后再交给通知函数，避免同一轮扫描重入时重复发送。 */
 export function maybeWeeklySummary(input: {
-  now: Date | number; usage: UsageDetail[]; enabled: boolean;
+  now: Date | number; usage: UsageDetail[]; enabled: boolean; scannedAt?: number;
   notify: (notice: WeeklyNotice) => void; openPage: (target: OpenPageTarget) => void;
 }) {
   if (inFlight) return null;
   inFlight = true;
   try {
     const state = readWeeklyState();
-    const week = weeklyDue(input.now, state, input.enabled);
+    const week = weeklyDue(input.now, state, input.enabled, input.scannedAt);
     if (!week) return null;
     const report = weekReport({ usage: input.usage, week });
     const sent = report.tokens > 0;

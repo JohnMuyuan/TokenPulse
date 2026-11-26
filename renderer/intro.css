@@ -30,7 +30,7 @@
 :root[data-theme=dark] .tour.no-target { background: #0000008c; }
 :root[data-theme=dark] .tour-spot { box-shadow: 0 0 0 2px var(--accent), 0 0 0 9999px #0000008c; }
 .tour-card {
-  position: fixed; width: min(360px, calc(100vw - 24px)); padding: 16px 18px 14px;
+  position: fixed; width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - var(--titlebar-h) - 24px); overflow-y: auto; padding: 16px 18px 14px;
   border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-lg);
   transition: left .35s var(--ease), top .35s var(--ease);
 }

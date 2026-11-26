@@ -42,18 +42,31 @@ const RELAY_KEY = /^[\x21-\x7e]{8,300}$/;
 const INVALID_KEY = "API Key 无效或已被删除，请换一个";
 
 /** 带着 Key 发一个 GET。不跟随跳转：Key 只发给这个地址。 */
+const HTTP_GET_MAX_BYTES = 512 * 1024;
 const httpGet: HttpGet = async (target, key) => {
   const url = new URL(target);
   const proxy = await proxyFor(url);
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (fn: () => void) => { if (settled) return; settled = true; fn(); };
     const request: http.ClientRequest = upstreamRequest(url, proxy, { method: "GET", headers: { authorization: `Bearer ${key}`, accept: "application/json" }, timeout: 15_000 }, (response) => {
       const chunks: Buffer[] = []; let size = 0;
-      response.on("data", (chunk: Buffer) => { size += chunk.length; if (size <= 65_536) chunks.push(chunk); });
-      response.on("end", () => resolve({ status: response.statusCode || 0, body: Buffer.concat(chunks).toString("utf8") }));
-      response.on("error", reject);
+      response.on("data", (chunk: Buffer) => {
+        if (settled) return;
+        size += chunk.length;
+        if (size > HTTP_GET_MAX_BYTES) {
+          request.destroy(new Error("响应体过大"));
+          done(() => reject(new Error("响应体过大")));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on("end", () => done(() => resolve({ status: response.statusCode || 0, body: Buffer.concat(chunks).toString("utf8") })));
+      response.on("aborted", () => done(() => reject(new Error("连接中断"))));
+      response.on("error", (err) => done(() => reject(err)));
     });
     request.on("timeout", () => request.destroy(new Error("timeout")));
-    request.on("error", (error) => reject(new Error(describeNetError(error, Boolean(proxy)))));
+    request.on("error", (error) => done(() => reject(new Error(describeNetError(error, Boolean(proxy))))));
     request.end();
   });
 };
@@ -212,7 +225,7 @@ export class DeepSeekBalance {
     const previous = this.edits.get(id);
     const task = (async () => {
       if (previous) await previous.catch(() => {});
-      if (typeof id === "string") await this.pending.get(id);
+      if (typeof id === "string" && this.pending.has(id)) await this.pending.get(id)!.catch(() => {});
       return this.updateNow(id, value);
     })();
     this.edits.set(id, task);
@@ -240,18 +253,21 @@ export class DeepSeekBalance {
       if (alertBelow !== account.alertBelow) { if (alertBelow) account.alertBelow = alertBelow; else delete account.alertBelow; account.alerted = false; delete account.alertedCurrencies; }
     };
     if (key && key !== account.apiKey) {
+      let accepted = false;
       let refused: string | undefined;
       const state = await this.refreshAccount(account.id, true, true, { key, accept: (result) => {
-        if (result.error === INVALID_KEY) refused = INVALID_KEY;
+        if (!result.ok) refused = result.error || INVALID_KEY;
         else if (duplicate()) refused = "这个 API Key 已经添加过了";
         if (refused) return false;
         account.apiKey = key;
         account.alerted = false;
         delete account.alertedCurrencies;
         apply();
+        accepted = true;
         return true;
       } });
       if (refused) throw new Error(refused);
+      if (!accepted) throw new Error("账号状态已变化，请重试");
       return state;
     }
     apply();
@@ -289,8 +305,13 @@ export class DeepSeekBalance {
     return this.refreshAccount(id, manual, force);
   }
   private async refreshAccount(id: string, manual: boolean, force: boolean, edit?: KeyEdit) {
-    const previous = this.pending.get(id);
-    if (previous) return previous;
+    if (edit) {
+      // 换 Key 绝不合并到旧 Key 的普通查询上，必须等在途查询结束后用新 Key 独立验证
+      while (this.pending.has(id)) await this.pending.get(id)!.catch(() => {});
+    } else {
+      const previous = this.pending.get(id);
+      if (previous) return previous;
+    }
     const task = this.refreshNow(id, manual, force, edit);
     this.pending.set(id, task);
     try { return await task; }

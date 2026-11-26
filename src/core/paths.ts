@@ -29,8 +29,8 @@ export function writeJson(file: string, value: unknown) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   // 几个 worker 线程共用一个 pid（比如扫描顺手预热会话索引时，用户正好打开会话页），临时文件名要带上线程号
   const tmp = `${file}.${process.pid}.${threadId}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value));
   try {
+    fs.writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
     for (let attempt = 0; ; attempt++) {
       try {
         fs.renameSync(tmp, file);
@@ -39,7 +39,7 @@ export function writeJson(file: string, value: unknown) {
         const code = (error as NodeJS.ErrnoException)?.code;
         if (process.platform === "win32" && (code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < 4) {
           if (code !== "EBUSY") {
-            try { fs.chmodSync(file, 0o666); } catch { /* 忽略 */ }
+            try { fs.chmodSync(file, 0o600); } catch { /* 忽略 */ }
           }
           // Windows 杀软/索引器或并发读句柄的瞬时占用：短暂退避重试
           const waitUntil = Date.now() + 15 * (attempt + 1);
@@ -61,9 +61,9 @@ export function writeJson(file: string, value: unknown) {
  * 目标已经是只读的旧副本时先改可写再覆盖。
  */
 export function copyIntoData(source: string, target: string) {
-  try { fs.chmodSync(target, 0o666); } catch { /* 目标还不存在 */ }
+  try { fs.chmodSync(target, 0o600); } catch { /* 目标还不存在 */ }
   fs.copyFileSync(source, target);
-  fs.chmodSync(target, 0o666);
+  fs.chmodSync(target, 0o600);
 }
 
 /** 删数据目录里自己的文件 / 文件夹。碰到只读（旧版本复制进来的）先改可写再删，其他错误照常抛出。 */

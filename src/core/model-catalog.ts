@@ -41,12 +41,21 @@ export function modelCandidates(kind: AccountKind, family: RegExp): ModelCandida
   const doc = capabilities()?.[kind as "claude" | "chatgpt" | "grok"];
   for (const model of doc?.models ?? []) if (family.test(model)) ids.add(model.toLowerCase());
   for (const model of Object.keys(knowledge.effortUsage?.models ?? {})) if (family.test(model)) ids.add(model);
-  for (const entry of modelCatalog(kind, [])) if (family.test(entry.model)) ids.add(entry.model);
+  const catalogEfforts = new Map<string, Set<string>>();
+  for (const entry of modelCatalog(kind, [])) {
+    if (!family.test(entry.model)) continue;
+    ids.add(entry.model);
+    if (entry.effort && entry.effort !== "unknown") {
+      let set = catalogEfforts.get(entry.model);
+      if (!set) { set = new Set(); catalogEfforts.set(entry.model, set); }
+      set.add(entry.effort);
+    }
+  }
   return [...ids].map((model) => {
     const price = priceOf(model);
     const rule = doc?.rules.find((r) => new RegExp(r.match, "i").test(model));
     const usage = knowledge.effortUsage?.models[model]?.perTask;
-    const efforts = [...new Set([...(rule?.efforts ?? []), ...Object.keys(usage ?? {})])];
+    const efforts = [...new Set([...(rule?.efforts ?? []), ...(catalogEfforts.get(model) ?? []), ...Object.keys(usage ?? {})])];
     return { model, input: price?.input ?? null, output: price?.output ?? null, efforts, usage: Boolean(usage) };
   }).sort((a, b) => a.model.localeCompare(b.model, undefined, { numeric: true }));
 }

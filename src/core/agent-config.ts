@@ -139,7 +139,6 @@ export function configTransaction<T>(work: () => T): T {
     }
     if (changes.length) {
       for (const item of changes) backup(item);
-      if (tools.length) recordHistory(reason, tools.map(item => ({ file: item.file, before: item.before, after: item.after })));
       atomicRaw(journalFile(), JSON.stringify({ version: 1, committed: false, files: changes }));
       try {
         for (const item of changes) {
@@ -151,6 +150,7 @@ export function configTransaction<T>(work: () => T): T {
         try { recoverLocked(); } catch { throw new Error('配置写入失败，自动回滚未完成；恢复日志已保留，请解除占用后重试'); }
         throw error;
       }
+      if (tools.length) recordHistory(reason, tools.map(item => ({ file: item.file, before: item.before, after: item.after })));
       // Once committed, failure to remove the journal is harmless; startup finishes cleanup.
       try { fs.unlinkSync(journalFile()); } catch { /* recovered on next entry */ }
     }

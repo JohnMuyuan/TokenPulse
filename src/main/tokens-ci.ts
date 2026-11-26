@@ -7,6 +7,7 @@
  * - 只保存设置、上一次的时间和结果、输出的最后一小段（令牌已遮掉）。隐私模式的只读令牌只在内存里交给界面显示一次。
  */
 import { spawn } from "child_process";
+import { StringDecoder } from "string_decoder";
 import { dataFile, readJson, writeJson } from "../core/paths";
 import { authProblem, commandLine, defaultSettings, loggedIn, nextDue, normalizeSettings, plain, readLogin, redact, summaryOf, tail, validVersion, type TokensSettings } from "../core/tokens-ci";
 import { envHasProxy, proxyFor } from "../core/upstream-proxy";
@@ -36,13 +37,17 @@ export const defaultRunner: Runner = (line, { env, timeoutMs, onData }) => {
       try { process.kill(-child.pid, "SIGTERM"); } catch { try { child.kill("SIGTERM"); } catch { /* already dead */ } }
     }
   };
-  const take = (chunk: Buffer) => { const text = chunk.toString("utf8"); output = tail(output + text, 200_000); onData?.(output); };
-  child.stdout?.on("data", take);
-  child.stderr?.on("data", take);
+  const outDec = new StringDecoder("utf8");
+  const errDec = new StringDecoder("utf8");
+  const append = (text: string) => { if (!text) return; output = tail(output + text, 200_000); onData?.(output); };
+  child.stdout?.on("data", (chunk: Buffer) => append(outDec.write(chunk)));
+  child.stdout?.on("end", () => append(outDec.end()));
+  child.stderr?.on("data", (chunk: Buffer) => append(errDec.write(chunk)));
+  child.stderr?.on("end", () => append(errDec.end()));
   const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
   const done = new Promise<Exit>((resolve) => {
-    child.once("error", (error) => { clearTimeout(timer); resolve({ code: null, output, timedOut, error: error.message }); });
-    child.once("close", (code) => { clearTimeout(timer); resolve({ code, output, timedOut }); });
+    child.once("error", (error) => { clearTimeout(timer); append(outDec.end() + errDec.end()); resolve({ code: null, output, timedOut, error: error.message }); });
+    child.once("close", (code) => { clearTimeout(timer); append(outDec.end() + errDec.end()); resolve({ code, output, timedOut }); });
   });
   return { done, kill };
 };
@@ -52,6 +57,7 @@ export class TokensUploader {
   private last: RunRecord | null = null;
   private preview: { at: number; ok: boolean; output: string } | null = null;
   private loginState: LoginState | null = null;
+  private loginSeq = 0;
   private job: { kind: Job; kill: () => void } | null = null;
   private paused = false;
   private failures = 0;
@@ -66,7 +72,8 @@ export class TokensUploader {
   constructor(private options: { publish?: (state: unknown) => void; runner?: Runner; now?: () => number; launchDelayMs?: number; tickMs?: number } = {}) {
     this.runner = options.runner ?? defaultRunner;
     this.now = options.now ?? Date.now;
-    const stored = readJson<Record<string, unknown>>(this.file, {});
+    const rawStored = readJson<unknown>(this.file, null);
+    const stored = rawStored && typeof rawStored === "object" && !Array.isArray(rawStored) ? (rawStored as Record<string, unknown>) : {};
     this.settings = normalizeSettings(stored.settings);
     const last = stored.last as RunRecord | undefined;
     if (last && typeof last.at === "number" && typeof last.ok === "boolean") this.last = { at: last.at, trigger: last.trigger, ok: last.ok, ms: Number(last.ms) || 0, summary: String(last.summary || "").slice(0, 200), ...(last.error ? { error: String(last.error).slice(0, 300) } : {}), output: tail(String(last.output || ""), KEEP_OUTPUT) };
@@ -214,11 +221,14 @@ export class TokensUploader {
     if (this.job || this.stopped) return this.state();
     const mode = privacy === "private" ? "private" : privacy === "public" ? "public" : null;
     if (!mode) throw new Error("请先选公开上榜还是隐私模式");
+    const seq = ++this.loginSeq;
     this.loginState = { privacy: mode, startedAt: this.now(), url: "", code: "", done: false, ok: false };
     const result = await this.run("login", mode === "private" ? ["login", "--private"] : ["login"], LOGIN_TIMEOUT_MS, (output) => {
+      if (this.loginSeq !== seq || !this.loginState) return;
       const seen = readLogin(output);
-      if (this.loginState && (seen.url !== this.loginState.url || seen.code !== this.loginState.code)) { this.loginState = { ...this.loginState, url: seen.url, code: seen.code }; this.publish(); }
+      if (seen.url !== this.loginState.url || seen.code !== this.loginState.code) { this.loginState = { ...this.loginState, url: seen.url, code: seen.code }; this.publish(); }
     });
+    if (this.loginSeq !== seq) return this.state();
     if (!result) {
       if (this.loginState && !this.loginState.done) { this.loginState = null; this.publish(); }
       return this.state();

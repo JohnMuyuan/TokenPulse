@@ -29,6 +29,15 @@ export function priceOf(modelId: string): ModelPrice | null {
   const id = (modelId || "").trim();
   if (!id) return null;
   const rules = priceRules();
+  const grokBuildBase = /^(?:[\w.-]+\/)?(?:[a-z]{2}\.)?(?:xai\.)?(grok-[\d.]+)-build(?=$|\[)/i.test(id)
+    ? id.replace(/(grok-[\d.]+)-build(?=$|\[)/i, "$1")
+    : "";
+  if (grokBuildBase) {
+    for (const row of rules) {
+      if (row.test.test(id) && row.price.match !== "grok.*(code|build)" && row.price.match !== "grok") return row.price;
+    }
+    for (const row of rules) if (row.test.test(grokBuildBase)) return row.price;
+  }
   for (const row of rules) if (row.test.test(id)) return row.price;
   if (/orchestrator/i.test(id)) {
     for (const row of rules) if (row.test.test("gemini-pro")) return row.price;

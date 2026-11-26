@@ -36,7 +36,9 @@
     const seq = ++view.seq;
     api.requests(query).then(page => {
       if (seq !== view.seq) return;
-      view.page = page; view.loading = false;
+      view.loading = false;
+      if (!page) { view.key = ''; if (visible()) draw(); return; }
+      view.page = page;
       if (visible()) keepScroll(draw);
     }).catch(() => {
       if (seq !== view.seq) return;
@@ -144,13 +146,13 @@
     const all = totals(projects);
     const list = sorted([...projects]);
     const colors = colorMap(projects);
-    const quota = projects.reduce((t, p) => { const q = quotaOf(p); return { week: t.week + q.week, uncovered: t.uncovered + q.uncovered, official: t.official + q.official }; }, { week: 0, uncovered: 0, official: 0 });
+    const quota = projects.reduce((t, p) => { const q = quotaOf(p); return { week: t.week + q.week, covered: t.covered + q.covered, uncovered: t.uncovered + q.uncovered, official: t.official + q.official }; }, { week: 0, covered: 0, uncovered: 0, official: 0 });
     $('project-count').textContent = `${number(projects.length)} 个项目`;
     nodes.summary.replaceChildren(
       summaryCell('folder', '项目', number(projects.length), projects.some(p => !p.cwd) ? '含未记录目录的一组' : '按工作目录归并'),
       summaryCell('sessions', 'Agent 对话', number(all.sessions), `${number(projects.reduce((n, p) => n + p.records, 0))} 条请求记录`),
       summaryCell('tokens', 'Tokens', tokens(all.tokens), cnApprox(all.tokens) || '所选范围合计'),
-      summaryCell('quota', '折合周额度', quota.official ? '≈ ' + quotaPct(quota.week) : '—', quota.official ? (quota.uncovered ? `${tokens(quota.uncovered)} Tokens 没有同期额度采样` : '按同期额度涨幅分摊') : '没有官方账号的用量')
+      summaryCell('quota', '折合周额度', quota.official && quota.covered ? '≈ ' + quotaPct(quota.week) : '—', quota.official ? (quota.uncovered ? `${tokens(quota.uncovered)} Tokens 没有同期额度采样` : '按同期额度涨幅分摊') : '没有官方账号的用量')
     );
     if (view.error) nodes.summary.append(el('div', { class: 'pj-stale', role: 'status' }, [el('span', { text: '刷新失败，显示的是上一次的结果。' }), retryButton()]));
     const shownList = list.slice(0, view.limit);

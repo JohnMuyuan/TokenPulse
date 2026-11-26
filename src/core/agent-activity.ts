@@ -515,7 +515,7 @@ export function piHead(lines: string[]) {
 type Entry = {
   file: string; kind: TaskKind; size: number; mtimeMs: number; auxSize?: number; auxMtimeMs?: number;
   task: AgentTask | null; inferred: Inferred | null; read: boolean; last?: TaskStatus | null; lastAsk?: string;
-  knownChildren?: Set<string>; childNames?: Map<string, string>;
+  knownChildren?: Set<string>; finishedChildren?: Set<string>; childNames?: Map<string, string>;
 };
 /** 子代理的会话文件（Claude / Codex / Grok / DeepSeek）；parent 为主会话文件路径，parentKey 为主会话 key。 */
 type SubEntry = {
@@ -620,6 +620,7 @@ async function list(dir: string) { try { return await fs.readdir(dir, { withFile
 export class ActivityScanner {
   private entries = new Map<string, Entry>();
   private subs = new Map<string, SubEntry>();
+  private finishedGrokChildren = new Set<string>();
   private lastFull = 0;
   private titles = { mtimeMs: -1, map: new Map<string, string>() };
   /** Antigravity 的对话：上一次的状态（和上面 entries 的 last / lastAsk 一个意思，另记 Swarm 阶段交接状态）。 */
@@ -785,7 +786,7 @@ export class ActivityScanner {
             } catch { /* 没有 events.jsonl */ }
             sub.inferred = inferred;
           }
-        } catch { sub.read = false; sub.inferred = null; }
+        } catch { sub.read = false; }
       }
       const staleLimit = sub.inferred?.ask ? ASK_STALE_MS : SUB_STALE_MS;
       if (now - sub.mtimeMs > staleLimit) { this.subs.delete(sub.file); continue; }
@@ -852,6 +853,10 @@ export class ActivityScanner {
       const id = path.basename(dir);
       if (summary.session_kind === "subagent") {
         entry.inferred = null; entry.task = null;
+        if (this.finishedGrokChildren.has(entry.file)) {
+          this.subs.delete(entry.file);
+          return;
+        }
         const name = clip(str(summary.generated_title) || str(summary.agent_name) || grokHead(head).prompt || id.slice(0, 12), 36);
         const parentId = str(summary.parent_session_id);
         const existing = this.subs.get(entry.file);
@@ -881,14 +886,25 @@ export class ActivityScanner {
       entry.task = { key: `grok:${id}`, kind: "grok", agent: AGENT.grok, id, title: clip(str(summary.generated_title) || grokHead(head).prompt || "未命名会话"), project: path.basename(cwd), status: "thinking", since: 0, updatedAt: 0 };
       // 子代理是同一工作目录下的另一个会话（保留已见过的子代理直到 subagent_finished，避免父尾巴滚出 64 KB 后丢跟踪）
       entry.knownChildren ??= new Set();
+      entry.finishedChildren ??= new Set();
       entry.childNames ??= new Map();
       const ev = grokChildEvents(tail);
-      for (const doneChild of ev.finished) entry.knownChildren.delete(doneChild);
+      for (const doneChild of ev.finished) {
+        entry.knownChildren.delete(doneChild);
+        entry.finishedChildren.add(doneChild);
+        const doneFile = path.join(path.dirname(dir), doneChild, "updates.jsonl");
+        this.finishedGrokChildren.add(doneFile);
+        this.subs.delete(doneFile);
+      }
       for (const [child, label] of ev.spawned) {
+        entry.finishedChildren.delete(child);
+        this.finishedGrokChildren.delete(path.join(path.dirname(dir), child, "updates.jsonl"));
         entry.knownChildren.add(child);
         if (label) entry.childNames.set(child, clip(label, 36));
       }
-      for (const child of entry.inferred?.children ?? []) entry.knownChildren.add(child);
+      for (const child of entry.inferred?.children ?? []) {
+        if (!entry.finishedChildren.has(child)) entry.knownChildren.add(child);
+      }
       for (const child of entry.knownChildren) {
         const file = path.join(path.dirname(dir), child, "updates.jsonl");
         const label = entry.childNames.get(child) || "";
@@ -982,7 +998,7 @@ export class ActivityScanner {
       const mtimeMs = Math.max(stat.mtimeMs, auxMtimeMs ?? 0);
       if (!entry.read || stat.size !== entry.size || mtimeMs !== entry.mtimeMs || auxSize !== entry.auxSize) {
         entry.size = stat.size; entry.mtimeMs = mtimeMs; entry.auxSize = auxSize; entry.auxMtimeMs = auxMtimeMs;
-        try { await this.load(entry); } catch { entry.read = false; entry.inferred = null; entry.task = null; }
+        try { await this.load(entry); } catch { entry.read = false; }
       }
     }
     const { byFile, byKey } = await this.scanSubs(now);

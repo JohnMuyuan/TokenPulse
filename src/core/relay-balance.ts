@@ -91,12 +91,15 @@ export function parseSub2api(body: string): RelayBalance | null {
     const daily = json.daily_usage.slice(-90).map((raw) => { const row = record(raw), usageRow = usageOf(raw); return row && usageRow && /^\d{4}-\d{2}-\d{2}/.test(text(row.date, 10)) ? { date: text(row.date, 10), ...usageRow } : null; });
     extra.daily = daily.filter((row): row is { date: string } & RelayUsage => row !== null);
   }
-  // remaining：钱包余额 / Key 剩余额度 / 订阅里最紧的那个限额还剩多少；-1 = 订阅没有配上限
-  const remaining = num(json.remaining) ?? num(json.balance);
-  if (remaining != null && remaining < 0) extra.unlimited = true;
-  const left = remaining != null && remaining >= 0 ? remaining : null;
+  // remaining：钱包余额 / Key 剩余额度 / 订阅里最紧的那个限额还剩多少；-1（且无明确钱包余额）= 订阅没有配上限
+  const walletBalance = num(json.balance);
+  const remaining = num(json.remaining) ?? walletBalance;
+  const unlimited = remaining === -1 && walletBalance == null;
+  if (unlimited) extra.unlimited = true;
+  const left = unlimited ? null : remaining != null ? Math.max(0, remaining) : null;
   const unit = text(json.unit, 16);
-  return { available: json.isValid === true && left !== 0, remaining: left, currency: /^[A-Z]{3}$/.test(unit) ? unit : "USD", extra };
+  const overdrawn = !unlimited && remaining != null && remaining <= 0;
+  return { available: json.isValid === true && !overdrawn, remaining: left, currency: /^[A-Z]{3}$/.test(unit) ? unit : "USD", extra };
 }
 
 /** new-api / one-api 的账单接口：subscription 给总额度，usage 给已用（美分）。 */

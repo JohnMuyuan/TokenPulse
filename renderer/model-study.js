@@ -189,9 +189,9 @@
 
   /** 只看实测：主数字换成实测值，调用次数和还剩多少按同样的比例换；这个窗口没有实测就空着。 */
   function measuredView(c) {
-    if (c.estimatedTokens == null) return { ...c, capacityTokens: null, callsPerWindow: null, remainingTokens: null, relative: null, capacityBasis: null, noMeasured: true };
+    if (c.estimatedTokens == null) return { ...c, capacityTokens: null, capacityCostUsd: null, callsPerWindow: null, remainingTokens: null, relative: null, capacityBasis: null, noMeasured: true };
     const k = c.capacityTokens ? c.estimatedTokens / c.capacityTokens : null;
-    return { ...c, capacityTokens: c.estimatedTokens, capacityBasis: 'measured', callsPerWindow: c.tokensPerCall ? c.estimatedTokens / c.tokensPerCall : null, remainingTokens: c.remainingTokens != null && k != null ? c.remainingTokens * k : null };
+    return { ...c, capacityTokens: c.estimatedTokens, capacityCostUsd: c.estimatedCostUsd ?? null, capacityBasis: 'measured', callsPerWindow: c.tokensPerCall ? c.estimatedTokens / c.tokensPerCall : null, remainingTokens: c.remainingTokens != null && k != null ? c.remainingTokens * k : null };
   }
 
   /** 五小时、周两份排行按组合对齐成一行。未记录等级的没法「全用这一档」，不进排行。 */
@@ -375,6 +375,8 @@
         const share = freshShare(x.priceMix);
         const stats = [x.callsPerWindow ? `约 ${number(x.callsPerWindow)} 次调用` : null, x.remainingTokens != null ? `本周期还剩约 ${tokens(x.remainingTokens)}` : null, share && share.cacheRead >= .5 ? `其中新内容约 ${tokens(x.capacityTokens * share.fresh)}` : null].filter(Boolean);
         if (stats.length) body.push(el('div', { class: 'ms-dw-stats' }, stats.map(t => el('span', { text: t }))));
+      } else if (x.noMeasured) {
+        body.push(el('div', { class: 'ms-dw-value' }, [el('strong', { class: 'muted', text: '—' }), el('small', { text: '这个窗口没有实测' })]));
       } else if (x.relative != null) {
         body.push(el('div', { class: 'ms-dw-value' }, [el('strong', { text: `×${x.relative.toFixed(2)}` }), el('small', { text: 'API 价格参考比' })]));
         if (b.costUsd == null) body.push(el('div', { class: 'ms-dw-stats' }, [el('span', { text: '样本不足，暂不折算绝对容量' })]));
@@ -580,17 +582,28 @@
     const b = el('button', { type: 'button', class: 'ms-user-remove', 'aria-label': `从表格里移除 ${row.model}`, title: '从表格里移除' }, [icon('close')]);
     b.addEventListener('click', async e => {
       e.stopPropagation();
-      const kind = Q.report?.kind; if (!kind) return;
-      const prefs = await api.readPrefs();
-      await saveStudyModels(kind, (prefs.studyModels?.[kind] || []).filter(m => m.model !== row.model));
-      showStatus(`已移除 ${row.model}`);
+      const kind = Q.report?.kind; if (!kind || b.disabled) return;
+      b.disabled = true;
+      try {
+        const prefs = await api.readPrefs();
+        await saveStudyModels(kind, (prefs.studyModels?.[kind] || []).filter(m => m.model !== row.model));
+        showStatus(`已移除 ${row.model}`);
+      } catch {
+        showStatus('移除失败，请重试。', true);
+        if (b.isConnected) b.disabled = false;
+      }
     });
     return b;
   }
+  let openingAddModels = false;
   async function openAddModels() {
-    const kind = Q.report?.kind; if (!kind) return;
+    const kind = Q.report?.kind; if (!kind || openingAddModels || document.getElementById('ms-add')) return;
+    openingAddModels = true;
     let prefs, candidates;
-    try { [prefs, candidates] = await Promise.all([api.readPrefs(), api.modelCandidates(kind)]); } catch { showStatus('候选型号读取失败，请重试。', true); return; }
+    try { [prefs, candidates] = await Promise.all([api.readPrefs(), api.modelCandidates(kind)]); }
+    catch { showStatus('候选型号读取失败，请重试。', true); return; }
+    finally { openingAddModels = false; }
+    if (document.getElementById('ms-add')) return;
     let mine = (prefs.studyModels?.[kind] || []).map(m => ({ model: m.model, efforts: [...m.efforts] }));
     const shown = new Set((Q.loader.view.data?.five.capacities || []).map(c => c.model));
     let picked = null, chosen = new Set();
@@ -670,7 +683,15 @@
       chosen = new Set(existing ? existing.efforts : pool.length ? pool : ['not_supported']);
       drawList(); drawDetail();
     };
-    const finish = () => { document.removeEventListener('keydown', onKey, true); modal.remove(); document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = false; document.body.classList.remove('modal-open'); last?.focus?.(); };
+    const finish = () => {
+      document.removeEventListener('keydown', onKey, true);
+      modal.remove();
+      if (!document.querySelector('.modal:not([hidden])')) {
+        document.querySelector('.workspace').inert = document.querySelector('.sidebar').inert = false;
+        document.body.classList.remove('modal-open');
+      }
+      last?.focus?.();
+    };
     const onKey = e => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); return; }
       if (e.key !== 'Tab') return;
@@ -732,7 +753,7 @@
     T.snapshot = snapshot;
     const accounts = timelineAccounts(snapshot);
     const next = accounts.find(a => a.accountId === preferred)?.accountId || '';
-    if (next !== T.accountId) { T.accountId = next; T.cycles = {}; T.focus = ''; T.zoom = {}; T.edit = null; }
+    if (next !== T.accountId) { T.accountId = next; T.cycles = {}; T.focus = ''; T.zoom = {}; T.edit = null; T.pick = null; T.split = false; }
     const report = accounts.find(a => a.accountId === T.accountId);
     if (!report) { T.loader.reset(); drawTimeline('none'); return; }
     // 选过的历史周期：键是窗口 id（普通账号 five / week；Antigravity 每个额度池各一对，如 g0-five、g1-week）
@@ -885,7 +906,7 @@
     const step = delta => {
       const next = study.cycles[index + delta];
       if (!next) return;
-      T.zoom[w] = null; if (T.edit?.w === w) T.edit = null;
+      T.zoom[w] = null; if (T.edit?.w === w) T.edit = null; if (T.pick?.w === w) { T.pick = null; T.split = false; }
       T.cycles = { ...T.cycles, [w]: index + delta === 0 ? '' : next.id }; reloadTimeline();
     };
     const older = el('button', { type: 'button', class: 'btn ms-step', 'aria-label': `上一个${label}周期`, title: `上一个${label}周期`, disabled: index < 0 || index >= study.cycles.length - 1 ? '' : null, text: '‹' });
@@ -913,9 +934,9 @@
       ]),
       zoom,
       chart,
-      T.pick?.w === w && sel ? offTools(w, study) : null,
+      T.pick?.w === w && sel && !plain ? offTools(w, study) : null,
       sel && !plain ? offMachineSummary(w, study, combos) : null,
-      T.edit?.w === w && sel ? markEditor(w, study, data) : null,
+      T.edit?.w === w && sel && !plain ? markEditor(w, study, data) : null,
       combos.length ? comboList(combos, study.totals.tokens, colors, study.query.kind, sel ? sel.endAt - sel.startAt : 0, study.source) : null,
       study.totals.unknownEffort ? el('p', { class: 'ms-note', text: `其中 ${number(study.totals.unknownEffort)} 条请求没记录思考等级（旧日志或客户端没写），单独放在「未记录等级」轨道。` }) : null
     ]);
@@ -1165,7 +1186,7 @@
     const hit = svg('rect', { class: 'ms-hit', x: left, y: bandTop, width: right - left, height: bandH });
     hit.addEventListener('pointermove', e => { if (!host._dragging) tipAt(`${date(toTime(e.clientX))}\n${isBalance(study) ? `余额 ${balanceText(study, balanceAt(study, toTime(e.clientX)))}` : isPool(study) ? (study.track.length ? `成员平均周额度已用 ${pctAt(study, toTime(e.clientX)).toFixed(0)}%` : '号池里没有官方账号成员的额度采样') : `官方额度已用 ${pctAt(study, toTime(e.clientX)).toFixed(0)}%`}`, e.clientX, e.clientY); });
     hit.addEventListener('pointerleave', hideTip);
-    node.insertBefore(hit, node.querySelector('.ms-lane'));
+    node.insertBefore(hit, bands);
 
     /*
      * 鼠标（0.3.13）：左键拖动 = 左右平移（放大后才有意义）；按住右键拖 = 选一段（放大 / 标注）；
@@ -1175,12 +1196,13 @@
     node.append(selection);
     node.classList.toggle('pannable', Boolean(T.zoom[w]));
     node.addEventListener('contextmenu', e => e.preventDefault());
-    const splitting = T.split && T.pick?.w === w ? T.pick.item : null;
+    const splitting = !isPlain(study) && T.split && T.pick?.w === w ? T.pick.item : null;
     if (splitting) {
       node.classList.add('splitting');
       const guide = svg('line', { class: 'ms-split-line', x1: 0, x2: 0, y1: laneTop, y2: h - 22, hidden: '' });
       node.append(guide);
-      const clampSplit = t => Math.min(splitting.to - 60000, Math.max(splitting.from + 60000, t));
+      const pad = Math.min(60000, Math.max(1, Math.floor((splitting.to - splitting.from) / 4)));
+      const clampSplit = t => Math.min(splitting.to - pad, Math.max(splitting.from + pad, t));
       node.addEventListener('pointermove', e => { const t = clampSplit(toTime(e.clientX)); guide.removeAttribute('hidden'); guide.setAttribute('x1', String(x(t))); guide.setAttribute('x2', String(x(t))); tipAt(`在 ${date(t)} 分割`, e.clientX, e.clientY); });
       node.addEventListener('pointerleave', () => { guide.setAttribute('hidden', ''); hideTip(); });
       node.addEventListener('pointerdown', e => { if (e.button !== 0) return; e.preventDefault(); hideTip(); splitOff(w, study, clampSplit(toTime(e.clientX))); });
@@ -1342,7 +1364,8 @@
       tool('恢复', 'restore', () => offCall(study, { action: 'restore', id: item.id }, '已恢复这一段'), 'btn btn-accent');
     } else {
       tool(item.model ? '修改标注' : '标注', 'label', () => { T.pick = null; openEditor(w, study, marked ? item : { from: item.from, to: item.to }); }, 'btn btn-accent');
-      tool('分割', 'split', () => { T.split = true; drawTimeline('refresh'); });
+      const splitBtn = tool('分割', 'split', () => { T.split = true; drawTimeline('refresh'); });
+      if (item.to - item.from < 2000) splitBtn.disabled = true;
       tool('删除', 'ignore', () => offCall(study, marked ? { action: 'ignore', id: item.id } : { action: 'ignore', from: item.from, to: item.to }, '已删除这一段（不算本机以外）；可以在时间线上点它恢复'));
       if (marked && item.model) tool('清除标注', 'unlabel', () => offCall(study, { action: 'delete', id: item.id }, '标注已清除'));
     }
@@ -1378,7 +1401,7 @@
     const source = el('select', { 'aria-label': '在哪里用的' }, SOURCES.map(([id, label]) => el('option', { value: id, text: label, selected: id === e.source ? '' : null })));
     const model = el('select', { 'aria-label': '用了什么模型' }, [...models.map(m => el('option', { value: m, text: m, selected: m === e.model ? '' : null })), el('option', { value: '__custom', text: '其他（自己填）' })]);
     model.setAttribute('translate', 'no');
-    const custom = el('input', { type: 'text', placeholder: '模型名，例如 claude-opus-5', maxlength: '120', 'aria-label': '自己填写模型名', hidden: models.includes(e.model) || !e.model ? '' : null, value: models.includes(e.model) ? '' : e.model });
+    const custom = el('input', { type: 'text', placeholder: '模型名，例如 claude-opus-5', maxlength: '120', 'aria-label': '自己填写模型名', hidden: model.value !== '__custom' ? '' : null, value: models.includes(e.model) ? '' : e.model });
     const effort = el('select', { 'aria-label': '思考等级' });
     const note = el('input', { type: 'text', maxlength: '300', placeholder: '可选：例如「网页上让它改文档」', value: e.note, 'aria-label': '备注' });
     const info = el('p', { class: 'ms-mark-info', role: 'status' });

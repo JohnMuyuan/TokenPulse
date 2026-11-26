@@ -2,7 +2,8 @@
  * 问题卡片（desk-pet-ask.html）：和对话气泡同一套像素风（颜色变量、描边、阶梯投影都来自 desk-pet-bubble.css），没有尾巴。
  * 一个窗口里竖着摆几张卡片，最新的在下面、挨着屏幕右下角。窗口四周留 6 像素给描边和投影。
  */
-.ak { position: absolute; left: 6px; top: 6px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; width: 320px; }
+body.ak-body { overflow-y: auto; overflow-x: hidden; }
+.ak { position: relative; margin: 6px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; width: 320px; }
 
 .ak-card {
   box-sizing: border-box; min-width: 0; padding: 9px 11px 8px;

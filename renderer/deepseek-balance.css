@@ -83,7 +83,7 @@
 .ds-balance-look[hidden] { display: none; }
 .ds-balance-look .pv-avatar-grid { max-height: 132px; overflow-y: auto; padding: 2px; }
 .ds-balance-look .account-avatar { width: 44px; height: 44px; border-radius: 13px; flex: none; }
-.ds-balance-card { max-height: calc(100vh - 48px); overflow-y: auto; }
+.ds-balance-card { max-height: calc(100vh - var(--titlebar-h) - 48px); overflow-y: auto; }
 .ds-limits { display: grid; gap: 14px; margin: 18px 0 4px; }
 .ds-limit .quota-mini-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .ds-balance-field[hidden], .ds-balance-check[hidden], .ds-balance-field small[hidden] { display: none; }
@@ -146,8 +146,9 @@
 .ds-mark-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); gap: 2px; }
 .ds-mark-btn { padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 11.5px; font-weight: 550; cursor: pointer; transition: background .15s, color .15s; }
 .ds-mark-btn:hover { color: var(--text); }
-.ds-mark-btn.on { background: var(--accent); color: #fff; }
+.ds-mark-btn.on { background: var(--accent); color: var(--accent-contrast, #fff); }
 .ds-mark-btn.on.warn { background: var(--ds-warn); color: #fff; }
+:root[data-theme="dark"] .ds-mark-btn.on.warn { color: var(--accent-contrast, #1c1204); }
 .ds-mark-reset { font-size: 11.5px; color: var(--muted); }
 
 @media (max-width: 900px) {

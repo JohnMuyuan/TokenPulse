@@ -16,14 +16,14 @@
   const Pet = window.PulsePet, Theme = window.PulsePetTheme, Desk = window.PulsePetDesk;
   const $ = id => document.getElementById(id);
   const canvas = $('dp-canvas'), deskCanvas = $('dp-desk'), img = $('dp-img'), hint = $('dp-hint'), badge = $('dp-badge'), stage = $('dp-stage'), svgHost = $('dp-svg');
-  const EN = window.PulseI18n?.lang?.() === 'en';
-  const L = (zh, en) => EN ? en : zh;
+  const isEn = () => window.PulseI18n?.lang?.() === 'en';
+  const L = (zh, en) => isEn() ? en : zh;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const BUILT_IN = ['squirrel', 'hamster', 'octopus'];
 
-  let view = null, pack = null, deskPack = null, ctl = null, grid = null, scale = 2, pixel = 2, hovering = false, shownKey = '';
+  let view = null, pack = null, deskPack = null, ctl = null, grid = null, scale = 2, pixel = 2, lastDpr = window.devicePixelRatio || 1, hovering = false, shownKey = '';
   /** xf：极简模式下舞台的变换（轴 o、变换的逆矩阵），判断鼠标位置时用；平时是 null。 */
-  let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, peeking = false, peekUntil = 0, xf = null, customBox = null;
+  let press = null, dragging = false, idleSec = 0, landTimer = 0, tuckTimer = 0, tapTimer = 0, peeking = false, peekUntil = 0, xf = null, customBox = null;
   let customColor = '', crabHint = false, deskTimer = 0, lastDeskPaintAt = 0, lastDeskSig = '', themeMetrics = null, lastCursorIn = null;
   const desk = Desk ? new Desk.DeskState() : null;
   const clicks = new Pet.Clicks(300);
@@ -41,7 +41,8 @@
 
   function size() {
     scale = view.scale;
-    pixel = Math.max(1, Math.round(scale * (window.devicePixelRatio || 1)));
+    lastDpr = window.devicePixelRatio || 1;
+    pixel = Math.max(1, Math.round(scale * lastDpr));
     canvas.width = Pet.W * pixel; canvas.height = Pet.H * pixel;
     if (deskCanvas) {
       const deskPx = Math.max(2, Math.round(scale * Math.max(2, window.devicePixelRatio || 1)));
@@ -464,7 +465,7 @@
       subagents: view.subagents || 0,
       now,
       reducedMotion: reduced.matches,
-      en: EN,
+      en: isEn(),
       onImageLoad: () => { lastDeskSig = ''; draw(true); },
     });
   }
@@ -484,7 +485,8 @@
         // 状态切换（例如刚进入/退出方案 A、捂眼或切换接管双手）时完整重绘一次宠物本体
         const prevDeskState = stage.dataset.desk || '';
         const prevHands = stage.dataset.deskHands === '1';
-        if ((prevDeskState === 'hidden') !== (!dm.show) || (prevDeskState === 'privacy') !== (dm.state === 'privacy') || prevHands !== (dm.show && dm.hands)) draw(true);
+        const nextShowHands = dm.show && dm.hands !== false && (!themed() || Boolean(getThemeMetrics()?.hands) || desk.covering);
+        if ((prevDeskState === 'hidden') !== (!dm.show) || (prevDeskState === 'privacy') !== (dm.state === 'privacy') || prevHands !== nextShowHands) draw(true);
         else paintDeskLayer(dm, now, true);
       }
       if (busy) wakeDeskAnim();
@@ -586,6 +588,7 @@
     if (!next) return;
     const changedPet = !view || view.pet !== next.pet, changedScale = !view || view.scale !== next.scale, wasEdge = edgeOf(), wasWork = view?.mode === 'work';
     view = next;
+    if (next.desk !== true || next.mini) desk?.resetInput(Date.now());
     desk?.setManualPrivacy(next.privacy === true, Date.now());
     setFrameCap(view.fps);
     document.documentElement.dataset.theme = view.theme === 'dark' ? 'dark' : 'light';
@@ -664,6 +667,7 @@
     if (dragging) return;
     if (Math.hypot(event.screenX - press.x, event.screenY - press.y) < 5) return;
     dragging = true;
+    clearTimeout(tapTimer); tapTimer = 0;
     document.body.classList.add('dragging');
     ctl?.trigger('drag');
     api.drag('start');
@@ -708,8 +712,10 @@
     if (n === 4) ctl?.trigger('lookaround');
     else if (n >= 2) ctl?.trigger('poke');
     draw();
-    setTimeout(() => {
-      if (clicks.settle(Date.now()) !== 1) return;
+    clearTimeout(tapTimer);
+    tapTimer = setTimeout(() => {
+      tapTimer = 0;
+      if (dragging || press || clicks.settle(Date.now()) !== 1) return;
       api.click();
       // 主题包写了点左边 / 右边的反应：气泡照开，宠物顺便往被点的那边缩一下
       const side = x < stage.getBoundingClientRect().left + stage.offsetWidth / 2 ? 'clickLeft' : 'clickRight';
@@ -781,6 +787,7 @@
   });
   api.onInput?.(event => {
     if (!event || !desk) return;
+    if (view && (view.desk !== true || view.mini) && !(event.type === 'password' && !event.active)) return;
     const now = Date.now();
     let dirty = false;
     if (event.type === 'password') dirty = desk.setPassword(event.active, now);
@@ -799,7 +806,10 @@
       }
     }
   });
-  window.addEventListener('resize', layout);
+  window.addEventListener('resize', () => {
+    if (view && (window.devicePixelRatio || 1) !== lastDpr) { size(); draw(true); }
+    layout();
+  });
   api.onIdle(seconds => { idleSec = seconds; ctl?.idle(seconds); });
   api.onEvent(event => {
     if (!event) return;

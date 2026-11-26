@@ -133,7 +133,7 @@ function resolveCli(kind: OfficialAccountKind) {
 }
 
 function quoteWin(value: string) {
-  return /[\s&<>^|()"]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+  return /[\s&<>^|()",;=]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
 }
 
 /** .cmd / .bat 不能直接 spawn，要经 cmd.exe。 */
@@ -192,13 +192,16 @@ export function isolatedEnv(tempHome: string, base: NodeJS.ProcessEnv = process.
 }
 
 /** Windows 上 proc.kill() 只杀 cmd.exe，里面的 codex 登录服务会活下来、继续占着回调端口。 */
-function killTree(proc: ChildProcess) {
-  if (proc.exitCode != null || proc.pid == null) return;
+function killTree(proc: ChildProcess): Promise<void> {
+  if (proc.exitCode != null || proc.pid == null) return Promise.resolve();
   if (process.platform === "win32") {
-    execFile("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true }, () => undefined);
-  } else {
-    proc.kill();
+    return new Promise((resolve) => {
+      const killer = execFile("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true, timeout: 4_000 }, () => resolve());
+      killer.once("error", () => resolve());
+    });
   }
+  try { proc.kill(); } catch { /* ignore */ }
+  return Promise.resolve();
 }
 
 function signature(kind: OfficialAccountKind, home: string) {
@@ -215,7 +218,7 @@ const TOKEN_URL: Record<OfficialAccountKind, string> = {
 };
 const PROXY_KEYS = ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"];
 /** 日志里的代理只记地址，去掉账号密码。 */
-const proxyHost = (value: string) => value.replace(/\/\/[^@/]*@/, "//***@");
+const proxyHost = (value: string) => value.replace(/\/\/[^/]*@/, "//***@");
 
 function appVersion() {
   try { return String(JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "package.json"), "utf8")).version || "?"); } catch { return "?"; }
@@ -244,7 +247,7 @@ export function describeLoginDir(kind: OfficialAccountKind, tempHome: string) {
   let authState = "不存在";
   if (fs.existsSync(auth)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(auth, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(auth, "utf8").replace(/^\uFEFF/, ""));
       const hasToken = kind === "claude" ? Boolean(parsed?.claudeAiOauth?.accessToken)
         : kind === "chatgpt" ? Boolean(parsed?.tokens?.access_token)
         : Object.values<any>(parsed || {}).some((row) => typeof row?.key === "string" && row.key);
@@ -253,7 +256,7 @@ export function describeLoginDir(kind: OfficialAccountKind, tempHome: string) {
   }
   let profile = "";
   if (kind === "claude") {
-    try { profile = `；账号资料 oauthAccount：${JSON.parse(fs.readFileSync(claudeProfileFile(tempHome, true), "utf8"))?.oauthAccount ? "有" : "没有"}`; } catch { profile = "；账号资料 .claude.json：读不到"; }
+    try { profile = `；账号资料 oauthAccount：${JSON.parse(fs.readFileSync(claudeProfileFile(tempHome, true), "utf8").replace(/^\uFEFF/, ""))?.oauthAccount ? "有" : "没有"}`; } catch { profile = "；账号资料 .claude.json：读不到"; }
   }
   return `凭据文件 ${path.relative(tempHome, auth).replace(/\\/g, "/")}：${authState}${profile}；临时目录文件：${files.join(", ") || "（空）"}`;
 }
@@ -361,8 +364,7 @@ async function runLogin(kind: OfficialAccountKind, replaceId?: string): Promise<
     throw error;
   } finally {
     if (proc && proc.exitCode == null && proc.pid != null) log.write("登录命令还在运行，结束它");
-    if (proc) killTree(proc);
-    if (verProc) killTree(verProc);
+    await Promise.all([proc ? killTree(proc) : Promise.resolve(), verProc ? killTree(verProc) : Promise.resolve()]);
     // 临时目录里是明文 token，不管成功失败都要删。CLI 进程刚被杀时文件可能还占着，重试几次。
     fs.rm(tempHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }, () => undefined);
   }
@@ -439,7 +441,7 @@ export async function addCliAccounts(kind: OfficialAccountKind) {
   if (!live.length) throw new Error(`本机的 ${LABELS[kind]} CLI 还没有登录账号。请先在终端里用它的 CLI 登录，或者改用「登录一个新账号」。`);
   let added = 0;
   for (const account of live) if (adoptCliAccount(account).added) added += 1;
-  return { ok: true as const, added, total: live.length, statuses: await listOfficialOAuthStatus() };
+  return { ok: true as const, added, total: live.length, statuses: await listOfficialOAuthStatus(Date.now(), { skipRenew: true }) };
 }
 
 /**
@@ -458,17 +460,17 @@ export async function manageOfficialAccount(action: "remove" | "purge" | "restor
     forgetCalibrations(id);
     forgetMarks(id);
   } else removeOfficialAccount(id, readCliAccounts(target.kind).some((item) => accountIdOf(target.kind, item.ref) === id));
-  return listOfficialOAuthStatus();
+  return listOfficialOAuthStatus(Date.now(), { skipRenew: true });
 }
 
 /** 一键把 CLI 的登录切到这个账号（0.3.49，见 cli-switch.ts）。 */
 export async function switchCliLogin(id: string) {
   const result = await switchCliAccount(id);
-  return { ...result, statuses: await listOfficialOAuthStatus() };
+  return { ...result, statuses: await listOfficialOAuthStatus(Date.now(), { skipRenew: true }) };
 }
 
 /** 拖拽排序：这一家账号的新顺序。 */
 export async function reorderOfficialAccountsOf(kind: OfficialAccountKind, ids: string[]) {
   reorderOfficialAccounts(kind, ids);
-  return listOfficialOAuthStatus();
+  return listOfficialOAuthStatus(Date.now(), { skipRenew: true });
 }

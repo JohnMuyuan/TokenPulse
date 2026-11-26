@@ -55,10 +55,10 @@ function flat(text: string) {
   return text.replace(/[\t\r\n]+/g, " ").trim();
 }
 
-/** 一个会话文件 → 缓存文字。 */
-function extract(kind: AgentKind, file: string) {
+/** 一个会话文件 → 缓存文字。解析失败（含锁冲突）返回 null，不写空缓存以便下次重试。 */
+function extract(kind: AgentKind, file: string): string | null {
   const parsed = parseSessionFile(kind, file);
-  if (!parsed) return "";
+  if (!parsed) return null;
   const lines: string[] = [];
   for (const message of parsed.messages) {
     if (message.role === "user" || message.role === "assistant") lines.push(`${message.id}\t${message.role}\t${flat(message.text)}`);
@@ -98,24 +98,41 @@ export function searchSessions(query: unknown, kind?: unknown): SearchResult {
     const hit = cache.files[item.file];
     const target = sessionTextFile(item.file);
     if (hit && hit.size === item.size && hit.mtimeMs === item.mtimeMs && fs.existsSync(target)) continue;
-    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const extracted = extract(item.summary.kind, item.file);
+    if (extracted === null) continue;
     const tmp = `${target}.${process.pid}.${threadId}.tmp`;
-    fs.writeFileSync(tmp, extract(item.summary.kind, item.file), { mode: 0o600 });
     try {
-      fs.renameSync(tmp, target);
-    } catch (error) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(tmp, extracted, { mode: 0o600 });
+      for (let attempt = 0; ; attempt++) {
+        try {
+          fs.renameSync(tmp, target);
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException)?.code;
+          if (process.platform === "win32" && (code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < 4) {
+            if (code !== "EBUSY") {
+              try { fs.chmodSync(target, 0o666); } catch { /* 忽略 */ }
+            }
+            const waitUntil = Date.now() + 15 * (attempt + 1);
+            while (Date.now() < waitUntil) { /* short backoff */ }
+            continue;
+          }
+          throw error;
+        }
+      }
+      cache.files[item.file] = { size: item.size, mtimeMs: item.mtimeMs };
+      changed = true;
+      indexed += 1;
+    } catch {
       try { fs.rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
-      throw error;
     }
-    cache.files[item.file] = { size: item.size, mtimeMs: item.mtimeMs };
-    changed = true;
-    indexed += 1;
   }
   // 会话文件已经没了（在 CLI 里删掉了）：缓存的文字一起删
   const alive = new Set(all.map((item) => item.file));
   for (const file of Object.keys(cache.files)) {
     if (alive.has(file)) continue;
-    fs.rmSync(sessionTextFile(file), { force: true });
+    try { fs.rmSync(sessionTextFile(file), { force: true }); } catch { /* 忽略 */ }
     delete cache.files[file];
     changed = true;
   }

@@ -284,9 +284,9 @@ export function milestoneState(usage: UsageDetail[], now = Date.now()): Mileston
   const today = dayOf(now);
   const spanDays = firstDay ? Math.max(1, Math.round((Date.parse(today + "T12:00:00") - Date.parse(firstDay + "T12:00:00")) / DAY) + 1) : 0;
   const sumRange = (from: string, to: string) => days.filter((day) => day >= from && day <= to).reduce((total, day) => total + byDay.get(day)!.tokens, 0);
-  const recentFrom = dayOf(now - 29 * DAY);
+  const recentFrom = shiftDay(today, -29);
   const recentRate = sumRange(recentFrom, today) / 30;
-  const firstRate = firstDay ? sumRange(firstDay, dayOf(Date.parse(firstDay + "T12:00:00") + 29 * DAY)) / 30 : 0;
+  const firstRate = firstDay ? sumRange(firstDay, shiftDay(firstDay, 29)) / 30 : 0;
   const nextToken = MILESTONES.find((item) => item.group === "tokens" && !reached.has(item.id));
   return {
     analogy: analogyOf(tokens, spanDays),

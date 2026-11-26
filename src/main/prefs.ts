@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { dataFile, readJson, writeJson } from "../core/paths";
-import { PRESSURE_DEFAULTS, type PressureLevel } from "../core/quota-pressure";
-import { DESK_PET_DEFAULTS, type DeskPetPrefs } from "../core/desk-pet-model";
+import { isPressureLevel, PRESSURE_DEFAULTS, type PressureLevel } from "../core/quota-pressure";
+import { DESK_PET_DEFAULTS, normalizeDeskPet, type DeskPetPrefs } from "../core/desk-pet-model";
 
 /** 桌宠的设置（0.3.61）见 core/desk-pet-model.ts 的 DeskPetPrefs。 */
 export type Prefs = DeskPetPrefs & {
@@ -76,15 +76,51 @@ export function prefsExist(): boolean {
   return fs.existsSync(file());
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizePrefs(raw: Record<string, unknown>): Prefs {
+  const bool = <K extends keyof Prefs>(key: K): boolean =>
+    typeof raw[key] === "boolean" ? (raw[key] as boolean) : (DEFAULTS[key] as boolean);
+  const notifyNum = Number(raw.notifyAt);
+  const notifyAt = "notifyAt" in raw && Number.isFinite(notifyNum) ? Math.max(0, Math.min(100, Math.round(notifyNum))) : DEFAULTS.notifyAt;
+  return {
+    ...DEFAULTS,
+    ...normalizeDeskPet(raw),
+    autoLaunch: bool("autoLaunch"),
+    closeToTray: bool("closeToTray"),
+    startMinimized: bool("startMinimized"),
+    notifyAt,
+    weeklySummary: bool("weeklySummary"),
+    theme: raw.theme === "dark" ? "dark" : raw.theme === "light" ? "light" : DEFAULTS.theme,
+    autoUpdate: bool("autoUpdate"),
+    notifyAccountExpiry: bool("notifyAccountExpiry"),
+    notifyMismatch: bool("notifyMismatch"),
+    ccSwitch: bool("ccSwitch"),
+    language: raw.language === "zh" || raw.language === "en" || raw.language === "system" ? raw.language : DEFAULTS.language,
+    localOnlyAccounts: Array.isArray(raw.localOnlyAccounts) ? raw.localOnlyAccounts.filter((item): item is string => typeof item === "string") : [],
+    seenVersion: typeof raw.seenVersion === "string" ? raw.seenVersion : DEFAULTS.seenVersion,
+    onboarding: raw.onboarding === "pending" || raw.onboarding === "done" || raw.onboarding === "" ? raw.onboarding : DEFAULTS.onboarding,
+    agentReadOnly: bool("agentReadOnly"),
+    studyModels: isPlainObject(raw.studyModels) ? (raw.studyModels as Prefs["studyModels"]) : {},
+    quotaEverySeconds: quotaEverySeconds(raw.quotaEverySeconds),
+    quotaQuietBackground: bool("quotaQuietBackground"),
+    cliAutoSwitch: isPlainObject(raw.cliAutoSwitch) ? (raw.cliAutoSwitch as Prefs["cliAutoSwitch"]) : {},
+    pressureWeek: isPressureLevel(raw.pressureWeek) ? raw.pressureWeek : PRESSURE_DEFAULTS.week,
+    pressureFive: isPressureLevel(raw.pressureFive) ? raw.pressureFive : PRESSURE_DEFAULTS.five,
+  };
+}
+
 export function readPrefs(): Prefs {
-  const stored = readJson<Partial<Prefs> | null>(file(), null);
-  const raw = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
-  return { ...DEFAULTS, ...raw, quotaEverySeconds: quotaEverySeconds(raw.quotaEverySeconds) };
+  const stored = readJson<unknown>(file(), null);
+  const raw = isPlainObject(stored) ? stored : {};
+  return normalizePrefs(raw);
 }
 
 export function writePrefs(patch: Partial<Prefs>): Prefs {
   const current = readPrefs();
-  const next = { ...current, ...patch, quotaEverySeconds: quotaEverySeconds("quotaEverySeconds" in patch ? patch.quotaEverySeconds : current.quotaEverySeconds) };
+  const next = normalizePrefs({ ...current, ...(isPlainObject(patch) ? patch : {}) });
   writeJson(file(), next);
   return next;
 }

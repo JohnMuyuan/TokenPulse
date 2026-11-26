@@ -316,7 +316,7 @@ export function agentView(): AgentView {
           failover: provider.failover,
           active: provider.id === activeId,
           direct: provider.id === store.direct[provider.app],
-          cross: provider.app !== "pi" && !!endpoint && endpoint.upstream !== NATIVE_UPSTREAM[provider.app],
+          cross: provider.app !== "pi" && provider.app !== "deepseek" && !!endpoint && endpoint.upstream !== NATIVE_UPSTREAM[provider.app],
           baseUrl: endpoint?.baseUrl || "",
           model: endpoint?.model || "",
           upstream: endpoint?.upstream || "",
@@ -443,7 +443,7 @@ function saveProviderImpl(input: unknown) {
   if (existing?.official || existing?.locked) throw new Error("官方供应商不能改成第三方配置");
   if (existing && existing.app !== parsed.app) throw new Error("不能改变供应商所属工具，请在目标工具下新增");
   if (existing && !!existing.pool !== !!parsed.pool) throw new Error("号池和普通供应商不能互相转换，请新建");
-  const needsProxy = !!parsed.pool || (parsed.app !== "pi" && parsed.upstream !== NATIVE_UPSTREAM[parsed.app]) || (parsed.app === "desktop" && parsed.desktopMode === "map");
+  const needsProxy = !!parsed.pool || (parsed.app !== "pi" && parsed.app !== "deepseek" && parsed.upstream !== NATIVE_UPSTREAM[parsed.app]) || (parsed.app === "desktop" && parsed.desktopMode === "map");
   if (existing && !store.proxy.apps[parsed.app] && currentId(store, parsed.app) === existing.id && needsProxy) {
     throw new Error("当前供应商正在直连。请先开启本地路由，再修改接口格式或模型映射。");
   }
@@ -1311,7 +1311,7 @@ function grokEffort(item: Provider) {
   return GROK_EFFORTS.includes(effort) ? { reasoningEffort: effort } : {};
 }
 function plainTarget(item: Provider): ProxyTarget {
-  return { ...grokEffort(item), id: item.id, name: item.name, upstream: item.endpoint!.upstream, baseUrl: item.endpoint!.baseUrl, apiKey: item.endpoint!.apiKey, model: item.endpoint!.model, modelMap: desktopModelMap(item.slots, item.desktopMode), requestHeaders: item.requestHeaders, requestBody: item.requestBody };
+  return { ...grokEffort(item), id: item.id, name: item.name, upstream: item.endpoint!.upstream, baseUrl: item.endpoint!.baseUrl, apiKey: item.endpoint!.apiKey, model: item.endpoint!.model, modelMap: item.app === "desktop" ? desktopModelMap(item.slots, "map") : undefined, requestHeaders: item.requestHeaders, requestBody: item.requestBody };
 }
 /**
  * 号池展开成一串目标：轮询时每个请求从下一个成员开始，其余成员依次排在后面当作这次请求的备选；
@@ -1576,6 +1576,10 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
   for (const key of CODEX_EXCLUSIVE) {
     if (previous[key] !== undefined && readValue(root.lines, key) === previous[key]) upsertKey(root.lines, key, null);
   }
+  const tpBlock = blocks.find((block) => block.header && headerName(block.header) === "model_providers.tokenpulse_route");
+  if (tpBlock && readKey(tpBlock.lines, "name") === CODEX_LEGACY_NAME) {
+    replaceTable(blocks, "model_providers.tokenpulse_route", null);
+  }
   for (const key of ['name', 'base_url', 'wire_api', 'experimental_bearer_token', 'requires_openai_auth']) setTableKey(blocks, 'model_providers.tokenpulse_route', key, null);
   const exclusive: Record<string, string | number | boolean> = {};
   if (!provider.official && baseUrl) {
@@ -1584,14 +1588,14 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
     const modelName = primary?.model || provider.endpoint?.model || "";
     if (modelName) upsertKey(root.lines, "model", quote(modelName));
     const effort = primary?.defaultReasoningLevel || canonicalLevels(primary?.reasoningLevels || [])[0];
+    for (const key of ["model_reasoning_effort", "plan_mode_reasoning_effort", "disable_response_storage", "review_model"]) {
+      if (provider.extra[key] !== undefined) upsertKey(root.lines, key, quote(provider.extra[key]));
+    }
     if (effort) upsertKey(root.lines, "model_reasoning_effort", quote(effort));
     // 0.3.15：本机的 Codex 试读过这份目录、明确读不了，就不写目录（写了 Codex 整份配置都读取失败，进不了界面）
     const catalogJson = codexCatalogJson(provider);
     if (catalogJson && catalogVerdict(catalogJson) === "rejected") configNotice = CATALOG_REJECTED;
     else if (catalogJson) upsertKey(root.lines, "model_catalog_json", quote(writeCodexCatalog(catalogJson)));
-    for (const key of ["model_reasoning_effort", "plan_mode_reasoning_effort", "disable_response_storage", "review_model"]) {
-      if (provider.extra[key] !== undefined) upsertKey(root.lines, key, quote(provider.extra[key]));
-    }
     for (const key of CODEX_EXCLUSIVE) if (provider.extra[key] !== undefined) {
       exclusive[key] = provider.extra[key];
       upsertKey(root.lines, key, quote(provider.extra[key]));
@@ -1600,6 +1604,10 @@ function writeCodex(store: Store, provider: Provider, baseUrl: string, apiKey: s
     for (const [key, value] of Object.entries({ name: 'TokenPulse', base_url: baseUrl, wire_api: 'responses', experimental_bearer_token: apiKey, requires_openai_auth: false })) {
       setTableKey(blocks, 'model_providers.tokenpulse_route', key, quote(value));
     }
+  } else {
+    // 切回官方 / 关掉路由时 tokenpulse_route 已清掉 name；若表里仍残留扩展键或外部复制键，留着无 name 的表会让 Codex 报「provider name must not be empty」
+    const leftover = blocks.find((block) => block.header && headerName(block.header) === "model_providers.tokenpulse_route");
+    if (leftover && readKey(leftover.lines, "name") === null) replaceTable(blocks, "model_providers.tokenpulse_route", null);
   }
   // 切回官方 / 关掉路由后表里一个键都不剩：整张表删掉。空表会让 Codex 报「provider name must not be empty」，进不了界面
   dropEmptyTable(blocks, 'model_providers.tokenpulse_route');
@@ -1616,13 +1624,21 @@ function deepseekPatchFile() { return path.join(deepseekDir(), "cordis.patch.yml
 function deepseekCredFile() { return path.join(deepseekDir(), ".credentials.yaml"); }
 function deepseekDesktopPatch() { return path.join(deepseekDir(), "profiles", "desktop", "cordis.patch.yml"); }
 function yamlQuote(value: string) {
-  if (/^[A-Za-z0-9._:/+-]+$/.test(value) && !/^(true|false|null|yes|no|~)$/i.test(value)) return value;
+  if (/[\r\n\0-\x1f\x7f]/.test(value)) return JSON.stringify(value);
+  if (
+    /^[A-Za-z0-9._:/+-]+$/.test(value)
+    && !value.endsWith(":")
+    && !/^[-+.]/.test(value)
+    && !/^(?:true|false|null|yes|no|on|off|y|n|~|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[+-]?\.(?:inf|nan))$/i.test(value)
+  ) return value;
   return "'" + value.replace(/'/g, "''") + "'";
 }
 function yamlUnquote(value: string) {
   const text = value.trim();
   if (text.startsWith("'") && text.endsWith("'") && text.length >= 2) return text.slice(1, -1).replace(/''/g, "'");
-  if (text.startsWith('"') && text.endsWith('"') && text.length >= 2) return text.slice(1, -1).replace(/\\"/g, '"');
+  if (text.startsWith('"') && text.endsWith('"') && text.length >= 2) {
+    try { return String(JSON.parse(text)); } catch { return text.slice(1, -1).replace(/\\"/g, '"'); }
+  }
   return text;
 }
 function deepseekNewline(text: string) { return text.includes("\r\n") ? "\r\n" : "\n"; }
@@ -1687,6 +1703,7 @@ function credentialTopKeys(text: string) {
 }
 /** 在 refs 里写或删 TOKENPULSE_ROUTE。别的行保持原样。重复的顶层键、空的这一行都不落盘。 */
 function editCredentialRef(text: string, value: string | null) {
+  text = text.replace(/^\uFEFF/, "");
   const nl = deepseekNewline(text);
   const lines = text.length ? text.split(/\r?\n/) : [];
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
@@ -1710,14 +1727,16 @@ function editCredentialRef(text: string, value: string | null) {
     }
   } else {
     if (!value.trim()) throw new Error("DeepSeek 的路由密钥不能是空的");
-    const row = "  " + DS_REF + ": " + yamlQuote(value);
     if (refsAt < 0) {
       if (lines.length) lines.push("");
-      lines.push("refs:", row);
+      lines.push("refs:", "  " + DS_REF + ": " + yamlQuote(value));
     } else {
       if (/^refs\s*:\s*\{\s*\}\s*(?:#.*)?$/.test(lines[refsAt])) lines[refsAt] = "refs:";
       const end = refsEnd(refsAt);
-      const next = lines.slice(refsAt + 1, end).filter((line) => !/^\s*TOKENPULSE_ROUTE\s*:/.test(line));
+      const body = lines.slice(refsAt + 1, end);
+      const existingIndent = body.map((line) => /^([ \t]+)(?!#)[^\s]/.exec(line)?.[1]).find(Boolean) || "  ";
+      const row = existingIndent + DS_REF + ": " + yamlQuote(value);
+      const next = body.filter((line) => !/^\s*TOKENPULSE_ROUTE\s*:/.test(line));
       next.push(row);
       lines.splice(refsAt + 1, end - refsAt - 1, ...next);
     }
@@ -1997,6 +2016,14 @@ function endpointFromLive(app: AgentApp): Endpoint | null {
 
 function liveMarker(app: AgentApp) {
   try {
+    if (app === "desktop") {
+      const dir = path.join(desktopDir(), "configLibrary");
+      if (readObject(path.join(dir, "_meta.json")).appliedId !== DESKTOP_PROFILE_ID) return null;
+      const profile = readObject(path.join(dir, DESKTOP_PROFILE_ID + ".json"));
+      const base = str(profile.inferenceGatewayBaseUrl);
+      if (!base) return null;
+      return { base, managed: profile.inferenceGatewayApiKey === PROXY_MANAGED || /127\.0\.0\.1:\d+\/desktop(\/|$)/.test(base) };
+    }
     const endpoint = endpointFromLive(app);
     if (!endpoint?.baseUrl) return null;
     return { base: endpoint.baseUrl, managed: endpoint.apiKey === PROXY_MANAGED || /127\.0\.0\.1:\d+\/(claude|desktop|codex|grok|deepseek|pi)(\/|$)/.test(endpoint.baseUrl) };
@@ -2198,10 +2225,12 @@ function restoreProxy(store: Store, app: AgentApp) {
   // Grok 只是自己换了默认模型、路由表还是我们的：照常还原，路由开关留着，下次启动接回来
   if (!proxyIsOurs(app) && !(app === 'grok' && grokRouteTableOurs())) {
     delete store.restore[app]; delete store.proxyWritten[app]; delete store.owned[app];
+    if (app === 'pi') delete store.piDefaults;
     store.proxy.apps[app] = false;
     if (app === 'codex') ensureCodexLegacyProviders();
     configNotice = '连接已在外部修改，保留外部配置，未自动覆盖。'; return;
   }
+  const parseJson = (text: string) => JSON.parse(text.replace(/^\uFEFF/, ""));
   for (const file of filesForApp(app)) {
     if (!Object.hasOwn(before, file) || !Object.hasOwn(written, file)) throw new Error('接管恢复快照不完整，已停止写入');
     const live = configRead(file), original = before[file], ours = written[file];
@@ -2216,7 +2245,7 @@ function restoreProxy(store: Store, app: AgentApp) {
       };
       const restoreRef = (src: string | null) => {
         if (!src) return null;
-        const ls = src.split(/\r?\n/);
+        const ls = src.replace(/^\uFEFF/, "").split(/\r?\n/);
         const at = ls.findIndex((line) => /^refs\s*:(?:\s*\{\s*\})?\s*(?:#.*)?$/.test(line));
         if (at < 0) return null;
         for (let k = at + 1; k < ls.length; k++) {
@@ -2233,10 +2262,10 @@ function restoreProxy(store: Store, app: AgentApp) {
       configWrite(file, stripped.trim() ? stripped : null);
     }
     else if (file.endsWith('settings.json') || file.endsWith('claude.json') || app === 'pi') {
-      const restored = reverseJson(JSON.parse(live), original === null ? undefined : JSON.parse(original), JSON.parse(ours));
+      const restored = reverseJson(parseJson(live), original === null ? undefined : parseJson(original), parseJson(ours));
       configWrite(file, restored === undefined ? null : JSON.stringify(restored, null, 2) + '\n');
     } else if (app === 'desktop' && file.endsWith('_meta.json')) {
-      const meta = JSON.parse(live), old = original === null ? {} : JSON.parse(original);
+      const meta = parseJson(live), old = original === null ? {} : parseJson(original);
       if (meta.appliedId === DESKTOP_PROFILE_ID) { if (old.appliedId === undefined) delete meta.appliedId; else meta.appliedId = old.appliedId; }
       if (Array.isArray(meta.entries)) { meta.entries = meta.entries.filter((item: { id?: string }) => item.id !== DESKTOP_PROFILE_ID); const previous = old.entries?.find((item: { id?: string }) => item.id === DESKTOP_PROFILE_ID); if (previous) meta.entries.push(previous); }
       configWrite(file, JSON.stringify(meta, null, 2) + '\n');
@@ -2244,6 +2273,12 @@ function restoreProxy(store: Store, app: AgentApp) {
   }
   // 还原之后 tokenpulse_route 那张表没了，用它聊过的对话在 Codex 桌面端会打不开，补上
   if (app === 'codex') ensureCodexLegacyProviders();
+  if (app === 'pi') {
+    try {
+      const models = readObject(piFiles()[0]);
+      if (!Object.hasOwn(asObj(models.providers), PI_PROVIDER)) delete store.piDefaults;
+    } catch { delete store.piDefaults; }
+  }
   delete store.restore[app]; delete store.proxyWritten[app]; store.owned[app] = snapshotFiles(app);
 }
 

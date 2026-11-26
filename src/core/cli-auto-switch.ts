@@ -83,10 +83,15 @@ function tightest(quota: MemberQuota) {
   return windows.sort((a, b) => b.used - a.used)[0];
 }
 
-/** 能切过去的账号：TokenPulse 存着能续期的登录、没隐藏、不是现在这个。 */
+/** 能切过去的账号：TokenPulse 存着能续期的登录、没隐藏、不是现在这个，且具备 CLI 切换必需字段。 */
 function candidatesOf(kind: AutoSwitchKind, from: string) {
   return readOfficialAccountStore().accounts
-    .filter((item) => item.kind === kind && item.id !== from && !item.hidden && item.credential?.refreshToken && !item.renewFailed)
+    .filter((item) => {
+      if (item.kind !== kind || item.id === from || item.hidden || !item.credential?.refreshToken || item.renewFailed) return false;
+      if (kind === "claude" && item.ref.startsWith("token:")) return false;
+      if (kind === "grok" && (!item.credential.issuer || !item.credential.clientId)) return false;
+      return true;
+    })
     .map((item) => item.id);
 }
 

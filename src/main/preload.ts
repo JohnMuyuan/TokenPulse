@@ -78,7 +78,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     upload: () => mutate("tokens-ci:upload"),
     preview: () => mutate("tokens-ci:preview"),
     login: (privacy: string) => mutate("tokens-ci:login", privacy),
-    cancel: () => ipcRenderer.invoke("tokens-ci:cancel"),
+    cancel: () => mutate("tokens-ci:cancel"),
     clearLogin: () => mutate("tokens-ci:clear-login"),
     clearPreview: () => mutate("tokens-ci:clear-preview"),
     resume: () => mutate("tokens-ci:resume"),
@@ -94,7 +94,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   checkEgress: () => mutate("egress:check"),
   clearEgressHistory: () => mutate("egress:clear"),
   /** 出口 IP 的归属 / 风险重新查一次（同一个 IP 一分钟一次）。 */
-  refreshEgressIntel: (ip: string) => ipcRenderer.invoke("egress:intel", ip),
+  refreshEgressIntel: (ip: string) => mutate("egress:intel", ip),
   onEgressState: (handler: (state: unknown) => void) => {
     const listener = (_event: unknown, state: unknown) => { if (!demo) handler(state); };
     ipcRenderer.on("egress-state", listener);
@@ -168,7 +168,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     deskPackData: (id: string) => ipcRenderer.invoke("desk-pet:desk-pack-data", id),
     importDeskPack: () => (demo ? blocked() : ipcRenderer.invoke("desk-pet:import-desk-pack")),
     removeDeskPack: (id: string) => (demo ? blocked() : ipcRenderer.invoke("desk-pet:remove-desk-pack", id)),
-    resetPosition: () => ipcRenderer.invoke("desk-pet:reset-position"),
+    resetPosition: () => mutate("desk-pet:reset-position"),
     /** 问题卡片（desk-pet-ask.html）：Agent 在问你的问题和选项。 */
     askData: () => ipcRenderer.invoke("desk-pet:ask-data"),
     askSize: (width: number, height: number) => ipcRenderer.send("desk-pet:ask-size", width, height),
@@ -208,7 +208,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
   exportCsv: (content: string, kind?: "requests") => (demo ? blocked() : ipcRenderer.invoke("export-csv", content, kind)),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */
-  modelCalibration: (query: unknown) => ipcRenderer.invoke("models:calibration", query),
+  modelCalibration: (query: unknown) => mutate("models:calibration", query),
   /** 「添加模型」的候选（知识库里这一家有单价的型号，带已知的思考等级）。 */
   modelCandidates: (kind: string) => ipcRenderer.invoke("models:candidates", kind),
   modelStudy: (query: unknown) => ipcRenderer.invoke(demo ? "demo:study" : "models:study", query),
@@ -223,9 +223,9 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   sessionDetail: (kind: string, id: string) => ipcRenderer.invoke("sessions:detail", kind, id),
   copySessionProject: (kind: string, id: string) => ipcRenderer.invoke("sessions:copy-project", kind, id),
   copyText: (text: string) => ipcRenderer.invoke("sessions:copy-text", text),
-  openSessionTerminal: (kind: string, id: string) => ipcRenderer.invoke("sessions:terminal", kind, id),
+  openSessionTerminal: (kind: string, id: string) => mutate("sessions:terminal", kind, id),
   /** 复制继续命令前的准备（Antigravity 桌面端对话导入 CLI）。 */
-  prepareSessionResume: (kind: string, id: string) => ipcRenderer.invoke("sessions:prepare-resume", kind, id),
+  prepareSessionResume: (kind: string, id: string) => mutate("sessions:prepare-resume", kind, id),
   /** 新对话 / 新项目（0.3.16）：装了哪些 CLI、选文件夹、在文件夹里用某个 CLI 开新对话。 */
   sessionClis: () => ipcRenderer.invoke("sessions:clis"),
   pickProjectFolder: (start?: string) => (demo ? Promise.resolve(null) : ipcRenderer.invoke("sessions:pick-folder", start)),
@@ -233,7 +233,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
   deleteSession: (kind: string, id: string) => mutate("sessions:delete", kind, id),
   /** 模型知识库（型号单价和等价规则）：当前版本、上次检查；手动检查更新。 */
   knowledgeState: () => ipcRenderer.invoke("knowledge:state"),
-  checkKnowledge: () => ipcRenderer.invoke("knowledge:check"),
+  checkKnowledge: () => mutate("knowledge:check"),
   /** 立刻从 CC Switch 的库同步一次，返回新快照。 */
   syncCcSwitch: () => mutate("ccswitch:sync"),
   /** 供应商切换和本地路由。列表里的密钥已打码。 */

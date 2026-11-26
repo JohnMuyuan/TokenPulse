@@ -99,7 +99,7 @@ export async function saveShareCard(win: BrowserWindow | null, dataUrl: unknown,
   const image = imageOf(dataUrl);
   const safe = (typeof name === "string" ? name : "TokenPulse").replace(/[\\/:*?"<>|]/g, "").slice(0, 80) || "TokenPulse";
   const options = { title: tr("保存分享卡片"), defaultPath: `${safe}.png`, filters: [{ name: tr("PNG 图片"), extensions: ["png"] }] };
-  const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+  const result = win && !win.isDestroyed() ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
   if (result.canceled || !result.filePath) return { saved: false };
   await fs.writeFile(result.filePath, image.toPNG());
   return { saved: true, file: path.basename(result.filePath) };

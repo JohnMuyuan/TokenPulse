@@ -891,7 +891,10 @@ export function renewAgyCredentials(
         }
         let note: string | undefined;
         if (result.ok) {
-          target.credential = result.credential;
+          target.credential = {
+            ...result.credential,
+            ...(target.credential?.projectId && !result.credential.projectId ? { projectId: target.credential.projectId } : {}),
+          };
           delete target.renewFailed;
           delete target.renewTrouble;
           renewed += 1;
@@ -987,18 +990,24 @@ async function startOAuthLoopback(expectedState: string, timeoutMs = LOGIN_TIMEO
       const errParam = url.searchParams.get("error");
       const stateParam = url.searchParams.get("state");
       const codeParam = url.searchParams.get("code");
+      if (!stateParam || stateParam !== expectedState) {
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
+        res.end(callbackHtml(false, "授权回调校验失败", "状态参数不匹配，请回到 TokenPulse 重新发起登录。"));
+        return;
+      }
       if (errParam) {
+        const safeErr = errParam.replace(/[\r\n\0-\x1f\x7f]/g, " ").trim().slice(0, 80) || "unknown_error";
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
         res.end(callbackHtml(false, "Google 授权未完成", "你在浏览器里取消或拒绝了授权，请回到 TokenPulse 重试。"));
         if (!settled) {
           settled = true;
-          resolveWait({ ok: false, error: `浏览器授权未通过（${errParam}）` });
+          resolveWait({ ok: false, error: `浏览器授权未通过（${safeErr}）` });
         }
         return;
       }
-      if (!stateParam || stateParam !== expectedState || !codeParam) {
+      if (!codeParam) {
         res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
-        res.end(callbackHtml(false, "授权回调校验失败", "状态参数不匹配或缺少授权码，请回到 TokenPulse 重新发起登录。"));
+        res.end(callbackHtml(false, "授权回调校验失败", "缺少授权码，请回到 TokenPulse 重新发起登录。"));
         return;
       }
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });

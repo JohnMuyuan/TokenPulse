@@ -9,8 +9,8 @@
   const api = window.tokenpulse.deskPet;
   const $ = id => document.getElementById(id);
   const box = $('bb'), tail = $('bb-tail');
-  const EN = window.PulseI18n?.lang?.() === 'en';
-  const L = (zh, en) => EN ? en : zh;
+  const isEn = () => window.PulseI18n?.lang?.() === 'en';
+  const L = (zh, en) => isEn() ? en : zh;
   const EDGE = 6, TAIL = 12, U = 2, AUTO_CLOSE_MS = 8000;
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs = {}, children = []) => {
@@ -105,11 +105,11 @@
   /* ---------- 任务列表 ---------- */
 
   const SUB_LIMIT = 4;
-  const STATUS = { thinking: L('思考中', 'Thinking'), tool: L('执行工具', 'Running a tool'), waiting: L('可能在等你', 'May need you'), done: L('刚完成', 'Done') };
-  const SUB_STATUS = { working: L('运行中', 'Working'), waiting: L('等你确认', 'Waiting'), idle: L('待命', 'Idle') };
+  const statusLabel = status => ({ thinking: L('思考中', 'Thinking'), tool: L('执行工具', 'Running a tool'), waiting: L('可能在等你', 'May need you'), done: L('刚完成', 'Done') })[status] || '';
+  const subStatusLabel = status => ({ working: L('运行中', 'Working'), waiting: L('等你确认', 'Waiting'), idle: L('待命', 'Idle') })[status] || '';
   function subRow(child) {
     const waiting = child.status === 'waiting' || !!child.asking;
-    const chip = child.asking ? L('在问你', 'Asking') : child.tool || SUB_STATUS[child.status] || '';
+    const chip = child.asking ? L('在问你', 'Asking') : child.tool || subStatusLabel(child.status);
     const row = el('button', {
       type: 'button',
       class: 'bb-subtask' + (waiting ? ' waiting' : '') + (child.swarm ? ' swarm' : ''),
@@ -138,7 +138,7 @@
         subBadge ? el('span', { class: 'bb-task-title' }, [el('b', { text: task.title }), subBadge]) : el('b', { text: task.title }),
         el('small', { text: [task.agent, task.project, when].filter(Boolean).join(' · ') }),
       ]),
-      el('i', { class: 'bb-chip', text: task.asking ? L('在问你', 'Asking you') : STATUS[task.status] || '' }),
+      el('i', { class: 'bb-chip', text: task.asking ? L('在问你', 'Asking you') : statusLabel(task.status) }),
     ]);
     row.addEventListener('click', () => api.bubbleAction('sessions', task.key));
     const kids = !done && Array.isArray(task.children) ? task.children : [];
@@ -198,11 +198,15 @@
     box.style.left = (data.place.side === 'left' ? EDGE + TAIL : EDGE) + 'px';
     box.classList.toggle('tasks', data.view === 'tasks');
     box.setAttribute('aria-label', data.view === 'tasks' ? L('任务', 'Tasks') : L('额度', 'Quota'));
+    const prevScroll = box.querySelector('.bb-list')?.scrollTop || 0;
     box.replaceChildren(...(data.view === 'tasks' ? tasksView(data) : quotaView(data)).filter(Boolean));
+    const nextList = box.querySelector('.bb-list');
+    if (nextList && prevScroll) nextList.scrollTop = prevScroll;
     drawTail(data.place);
     report();
     if (data.opened !== opened) {
       opened = data.opened;
+      hovering = false;
       box.classList.remove('pop'); void box.offsetWidth; box.classList.add('pop');
       armClose();
     }
@@ -214,6 +218,12 @@
   }
   document.documentElement.addEventListener('mouseenter', () => { hovering = true; armClose(); });
   document.documentElement.addEventListener('mouseleave', () => { hovering = false; armClose(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      hovering = false;
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+    }
+  });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') api.bubbleAction('close'); });
   // 内容换了行数（英文、长账号名）大小会变：变了就再告诉主进程
   new ResizeObserver(() => { if (last) { report(); drawTail(last.place); } }).observe(box);

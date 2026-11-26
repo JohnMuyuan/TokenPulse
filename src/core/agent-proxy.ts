@@ -148,7 +148,7 @@ function keepEdges(seen: { head: string; tail: string }, text: string) {
 function requestFacts(body: Buffer): { model?: string; effort?: string; tier?: string } {
   if (!body.length || !looksJson(body)) return {};
   try {
-    const json = JSON.parse(body.toString("utf8")) as { model?: unknown; reasoning?: { effort?: unknown }; reasoning_effort?: unknown; output_config?: { effort?: unknown }; service_tier?: unknown; speed?: unknown };
+    const json = JSON.parse(utf8NoBom(body)) as { model?: unknown; reasoning?: { effort?: unknown }; reasoning_effort?: unknown; output_config?: { effort?: unknown }; service_tier?: unknown; speed?: unknown };
     // OpenAI 的 reasoning.effort / reasoning_effort；Anthropic Messages 的 output_config.effort（Claude Code 的 /effort）
     const effort = json?.reasoning?.effort ?? json?.reasoning_effort ?? json?.output_config?.effort;
     const tier = tierOf(json?.service_tier) || tierOf(json?.speed);
@@ -175,7 +175,14 @@ export function startAgentProxy(options: Options) {
   });
 
   async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
-    const url = new URL(req.url || "/", "http://127.0.0.1");
+    let url: URL;
+    try {
+      url = new URL(req.url || "/", "http://127.0.0.1");
+    } catch {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Invalid request URL" } }));
+      return;
+    }
     if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, service: "tokenpulse-route" }));
@@ -254,7 +261,13 @@ export function startAgentProxy(options: Options) {
   // Message-aware transparent relay; authentication and application payloads are preserved.
   const tunnels = new Set<Duplex>();
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url || "/", "http://127.0.0.1");
+    let url: URL;
+    try {
+      url = new URL(req.url || "/", "http://127.0.0.1");
+    } catch {
+      socket.end("HTTP/1.1 400 Bad Request\r\nconnection: close\r\ncontent-length: 0\r\n\r\n");
+      return;
+    }
     const passed = PASS_PATH.exec(url.pathname);
     const app = passed ? passed[1] as AgentApp : null, base = app ? options.pass?.(app, req.headers) ?? null : null;
     if (!app || !base) { socket.end("HTTP/1.1 404 Not Found\r\nconnection: close\r\ncontent-length: 0\r\n\r\n"); return; }
@@ -670,11 +683,12 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
     if (ended) { res.destroy(); return; }
     opened = true;
     const status = res.statusCode || 502;
-    let raw = 'HTTP/1.1 ' + status + ' ' + res.statusMessage + '\r\n';
+    let raw = 'HTTP/1.1 ' + status + ' ' + (res.statusMessage || '') + '\r\n';
     for (let i = 0; i < res.rawHeaders.length; i += 2) if (!['transfer-encoding', 'connection', 'keep-alive'].includes(res.rawHeaders[i].toLowerCase())) raw += res.rawHeaders[i] + ': ' + res.rawHeaders[i + 1] + '\r\n';
     socket.write(raw + 'connection: close\r\n\r\n');
     res.on('data', chunk => socket.write(chunk));
     res.once('end', () => { log(entry({ status, error: 'HTTP ' + status })); ended = true; socket.end(); remote.terminate(); });
+    res.once('aborted', close);
     res.once('error', close);
   });
   remote.once('open', () => {
@@ -739,24 +753,28 @@ export async function tunnelPass(req: http.IncomingMessage, socket: Duplex, head
   });
 }
 
+function utf8NoBom(body: Buffer) {
+  return body.toString("utf8").replace(/^\uFEFF/, "");
+}
+
 function wantsStream(body: Buffer, rest: string) {
   if (!looksJson(body)) return false;
   try {
-    return JSON.parse(body.toString("utf8")).stream === true;
+    return JSON.parse(utf8NoBom(body)).stream === true;
   } catch {
     return false;
   }
 }
 
 function looksJson(body: Buffer) {
-  const start = body.toString("utf8", 0, 1);
-  return start === "{" || start === "[";
+  const head = body.toString("utf8", 0, Math.min(body.length, 64)).replace(/^\uFEFF/, "").trimStart();
+  return head.startsWith("{") || head.startsWith("[");
 }
 
 function resolvedModel(body: Buffer, target: ProxyTarget) {
   let requested = "";
   try {
-    const json = JSON.parse(body.toString("utf8")) as { model?: string };
+    const json = JSON.parse(utf8NoBom(body)) as { model?: string };
     requested = typeof json.model === "string" ? json.model : "";
   } catch { /* 非 JSON 请求用默认模型 */ }
   if (requested && target.modelMap?.[requested]) return target.modelMap[requested];
@@ -766,7 +784,7 @@ function resolvedModel(body: Buffer, target: ProxyTarget) {
 
 function rewriteModel(raw: string, model: string) {
   try {
-    const json = JSON.parse(raw) as { model?: unknown };
+    const json = JSON.parse(raw.replace(/^\uFEFF/, "")) as { model?: unknown };
     if (!json || typeof json !== "object" || Array.isArray(json) || typeof json.model !== "string") return raw;
     json.model = model;
     return JSON.stringify(json);
@@ -782,7 +800,7 @@ function rewriteModel(raw: string, model: string) {
 export function applyReasoningEffort(payload: Buffer, effort: string) {
   if (!payload.length || !looksJson(payload)) return payload;
   try {
-    const json = JSON.parse(payload.toString("utf8"));
+    const json = JSON.parse(utf8NoBom(payload));
     if (!json || typeof json !== "object" || Array.isArray(json) || typeof json.model !== "string") return payload;
     if (Array.isArray(json.messages)) { if (json.reasoning_effort != null) return payload; json.reasoning_effort = effort; }
     else {
@@ -796,7 +814,7 @@ export function applyReasoningEffort(payload: Buffer, effort: string) {
 
 function applyRequestBodyOverrides(payload: Buffer, overrides?: Record<string, unknown>) {
   if (!overrides || !Object.keys(overrides).length || !looksJson(payload)) return payload;
-  try { const json = JSON.parse(payload.toString("utf8")); if (!json || typeof json !== "object" || Array.isArray(json)) return payload; return Buffer.from(JSON.stringify({ ...json, ...overrides })); } catch { return payload; }
+  try { const json = JSON.parse(utf8NoBom(payload)); if (!json || typeof json !== "object" || Array.isArray(json)) return payload; return Buffer.from(JSON.stringify({ ...json, ...overrides })); } catch { return payload; }
 }
 
 function forwardHeaders(req: http.IncomingMessage, target: ProxyTarget, length: number) {
@@ -904,7 +922,8 @@ function pipeConverted(upstream: http.IncomingMessage, res: http.ServerResponse,
       else chunks.push(Buffer.from(chunk));
     });
     input.on("end", () => {
-      if (done || res.destroyed) return;
+      if (done) return;
+      if (res.destroyed) { finish({ kind: "fail", status: 499, error: "客户端连接已关闭", terminal: true }); return; }
       if (bridge) {
         res.write(bridge.push(utf8.end()));
         res.write(bridge.end());

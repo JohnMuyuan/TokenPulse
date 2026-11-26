@@ -20,6 +20,24 @@
 
   /* ---------------- 整句 ---------------- */
   const EN = {
+    "可能已接近上限，刷新确认": "May be near the limit; refresh to confirm",
+    "按最近趋势，可能已接近上限，刷新确认": "At the recent pace, it may be near the limit; refresh to confirm",
+    "按最近的速度，可能已接近用完，刷新确认": "At the recent pace, it may be nearly used up; refresh to confirm",
+    "官方账号成员周额度已全部用完，等待重置": "Official account members' weekly quota is used up; waiting for reset",
+    "已经重置，等待下一次查询": "Already reset; waiting for the next check",
+    "旧窗口已结束": "Previous window ended",
+    "对话读取失败，请重试。": "Couldn't read this conversation. Please try again.",
+    "移除失败，请重试。": "Couldn't remove it. Please try again.",
+    "已用完": "Used up",
+    "这个窗口没有实测": "No measured data for this window",
+    "已保存到本地": "Saved to disk",
+    "已复制图片": "Image copied",
+    "当前未检查，点击重新检查。": "Not checked yet. Click Check again.",
+    "没有找到有效的最近检测 IP，请先点击「立即检测」。": "No fresh exit IP found. Click “Check now” first.",
+    "每一行是 DeepSeek Harness 的一个模型目录项，第一行作为新会话默认模型。": "Each row is a model entry for DeepSeek Harness; the first row is used as the default model for new sessions.",
+    "DeepSeek Harness 的号池必须写一个模型名。": "A DeepSeek Harness pool requires a model name.",
+    "DeepSeek 号池要填一个模型名。": "DeepSeek pools require a model name.",
+    "例如 deepseek-chat": "e.g. deepseek-chat",
     // 0.3.51 分享卡片与号池生存分析
     // 0.3.61 桌宠
     "侧栏新增「桌宠」页：打开后桌面上会有一只像素小动物（松鼠、仓鼠或章鱼），用样子表现剩余额度和本机的 Claude Code、Codex 有没有在干活；点一下冒出像素对话气泡，告诉你正在用的账号还剩多少额度，按住可以拖到任何地方，右键可以查看任务。默认关闭。": "A new Desk pet page in the sidebar: turn it on and a little pixel animal (squirrel, hamster or octopus) lives on your desktop, showing your remaining quota and whether Claude Code or Codex is working on this computer. Click it and a pixel speech bubble shows how much quota the account you're using has left; drag it anywhere, and right-click to see tasks. Off by default.",
@@ -3461,7 +3479,15 @@
     '修复用量扫描、请求去重、Antigravity 多账号隔离与 DeepSeek 归因偏差': 'Usage Scanning, Deduplication, Antigravity Isolation & DeepSeek Attribution Fixes',
     '修复超长 zstd 帧与 Skippable Frame 扫描、会话原地替换重算、Grok 透明转发与 Codex 行内注释识别、请求流水未整理前旧重复覆盖、缓存分析受排序截断、DeepSeek 60 秒窗口重叠双计、模型速度过滤中转行及 Antigravity 多账号遗留历史隔离与周线绘制问题。': 'Fixes oversized zstd & RFC 8878 skippable frame scanning, in-place session replacement recounts, Grok pass-through & Codex inline-comment recognition, pre-compaction last-wins request deduplication, cache analysis truncation under sort filters, DeepSeek 60-second overlap double-counting, relay filtering in account speed charts, and Antigravity multi-account legacy history isolation & weekly timeline plotting.',
     '加固主进程安全边界、SVG 主题包清洗、日志轮换与演示模式隔离': 'Main-Process Security, SVG Sanitization, Log Rotation & Demo Mode Hardening',
-    '修复演示模式写操作与后台推送隔离、设置白名单校验、会话 ID 参数校验、主题包 SVG 嵌套 CSS 清洗与目录链接逃逸防护、Windows 锁文件轮换不误删旧日志备份、UTF-8 BOM 兼容以及窗口销毁/退出与桌宠后台扫描竞态问题。': 'Hardens demo-mode write & background-push isolation, strict preference key whitelisting, session ID argument validation, multi-pass SVG `<style>` CSS sanitization & symlink/junction escape blocking, Windows-safe log rotation preserving backups under file locks, UTF-8 BOM compatibility, and window-lifecycle/desk-pet background scan race safety.'
+    '修复演示模式写操作与后台推送隔离、设置白名单校验、会话 ID 参数校验、主题包 SVG 嵌套 CSS 清洗与目录链接逃逸防护、Windows 锁文件轮换不误删旧日志备份、UTF-8 BOM 兼容以及窗口销毁/退出与桌宠后台扫描竞态问题。': 'Hardens demo-mode write & background-push isolation, strict preference key whitelisting, session ID argument validation, multi-pass SVG `<style>` CSS sanitization & symlink/junction escape blocking, Windows-safe log rotation preserving backups under file locks, UTF-8 BOM compatibility, and window-lifecycle/desk-pet background scan race safety.',
+    '全量前端与第五轮后端深度排查修复（v0.4.1）': 'Full Frontend Audit & Round-5 Backend Hardening (v0.4.1)',
+    '完成 55 个前端渲染文件与 94 个后端源码文件的系统性安全与逻辑审计，集中修复 38 个前端文件与 55 个后端文件中的边界缺陷、竞态与异常恢复问题，并通过全部 76 项 Node 回归测试与 24 项 Electron 界面自动化测试。': 'Completed a full security and logic audit across all 55 frontend renderer files and 94 backend source files, fixing edge-case bugs, race conditions, and recovery issues across 38 frontend and 55 backend files, verified by all 76 Node regression suites and 24 Electron UI test suites.',
+    '修复图表曲线失真、Antigravity 首屏同步与多页面状态竞态': 'Fix Chart Curves, Antigravity Initial Sync & Cross-Page State Races',
+    '修复用量置信带贝塞尔曲线逆向失真、峰值计算错误、Antigravity 首屏本地扫描与额度状态同步竞态、DeepSeek 多账号刷新覆盖与归零显示、号池成员额度匹配错误及会话搜索折叠工具组未自动展开问题。': 'Fixes reversed Bezier confidence bands and peak-hour reducers in usage charts, Antigravity startup scan/quota sync race, DeepSeek multi-account refresh overwrite and depleted display, pool member quota lookup, and collapsed tool-group expansion during session search jumps.',
+    '优化桌宠、供应商切换、出口监控与 tokens.ci 交互可靠性': 'Improve Desk Pet, Provider Switch, Egress & tokens.ci Reliability',
+    '修复桌宠关闭互动桌面后密码捂眼残留、高刷空转、HTML 主题图片识别与音频重叠播放；补齐 DeepSeek Harness 模型目录/预览与号池校验、出口监控单供应商弹窗保存、tokens.ci 环境检查可重试及全站无障碍焦点环。': 'Fixes stuck password eye-cover on desk disable, high-refresh redraw loops, HTML theme image checks, and stacked audio chimes in Desk Pet; adds DeepSeek Harness model catalog/preview/pool validation, scoped egress dialog saving, retryable tokens.ci env checks, and accessible focus rings.',
+    '进一步加固本地代理、账号续期换号与主进程安全边界': 'Further Hardening for Local Proxy, Account Switching & Main-Process Security',
+    '修复畸形代理请求防崩溃、SSE 尾帧与长度截断、TOML/YAML 脱敏与回滚事务、多账号协同续期换号、zstd/Codex/Antigravity 扫描边界、SVG 样式嵌套清洗 fail-closed 及演示模式全量写隔离。': 'Hardens malformed proxy URL handling, SSE trailing-frame flushing & length finish reasons, TOML/YAML secret masking & transaction rollbacks, coordinated account renewal/switching, zstd/Codex/Antigravity scan edges, fail-closed SVG CSS sanitization, and full demo-mode write isolation.'
   };
 
   /* ---------------- 带变量的句子 ---------------- */
@@ -4329,6 +4355,7 @@
     P('([^：。·\\n]{1,20})：([^。·\\n]+)', m => `${v(m[1])}: ${v(m[2])}`)
   ];
 
+  const SEMI_PATTERNS = PATTERNS.filter(([re]) => re.source.includes('；'));
   /** 一段文字可能由几段拼起来（「… · …」「…；…」「A → B」、多行提示）：整句查不到时拆开逐段翻。 */
   const SEPARATORS = ['\n', ' · ', '；', ' → ', '，'];
   function translate(text) {
@@ -4337,6 +4364,13 @@
     const core = text.trim();
     const done = value => lead + value + tail;
     if (Object.prototype.hasOwnProperty.call(EN, core)) return done(EN[core]);
+    // 明确包含「；」的完整句模板先匹配，避免被后面的分号拆分截断
+    if (core.includes('；')) {
+      for (const [re, render] of SEMI_PATTERNS) {
+        const m = core.match(re);
+        if (m) return done(render(m, ...m.slice(1)));
+      }
+    }
     // 分号、换行是硬分隔，先拆：不然「(.+) 同步」这种宽模板会把整段吞掉
     for (const sep of ['\n', '；']) {
       if (core.includes(sep)) return done(core.split(sep).map(part => translate(part)).join(sep === '；' ? '; ' : sep));
@@ -4390,7 +4424,7 @@
     }
     // 碰到 translate="no" 整棵子树跳过（长对话几千个文本节点，不必逐个判断）
     const walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
-      acceptNode: node => (node.nodeType === 1 && node.getAttribute('translate') === 'no' ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+      acceptNode: node => (node.nodeType === 1 && (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.getAttribute('translate') === 'no') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
     });
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       if (node.nodeType === 3) translateText(node);

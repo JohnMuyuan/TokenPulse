@@ -136,9 +136,9 @@
   function parseColor(raw) {
     if (!raw || typeof raw !== 'string') return null;
     const s = raw.trim();
-    let m = /^#([0-9a-f]{3})$/i.exec(s);
+    let m = /^#([0-9a-f]{3,4})$/i.exec(s);
     if (m) return [parseInt(m[1][0] + m[1][0], 16), parseInt(m[1][1] + m[1][1], 16), parseInt(m[1][2] + m[1][2], 16)];
-    m = /^#([0-9a-f]{6})$/i.exec(s);
+    m = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/i.exec(s);
     if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
     m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
     if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
@@ -437,6 +437,17 @@
       this.keyPress.clear();
       this.leftTap = null;
       this.rightTap = null;
+    }
+
+    resetInput(now = Date.now()) {
+      this.passwordActive = false;
+      this.mouseLeft = false;
+      this.mouseRight = false;
+      this.mouseLeftPress = 0;
+      this.mouseRightPress = 0;
+      this.activeUntil = 0;
+      this._clearInputs();
+      this.lastFrameAt = now;
     }
 
     onMouseMove(mx, my, now = Date.now()) {

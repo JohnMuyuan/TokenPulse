@@ -60,8 +60,15 @@ function grokTokenEndpoint(issuer: string) {
   let hit = discovery.get(issuer);
   if (!hit) {
     hit = curlJson(`${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`, ["Accept: application/json"]).then((json) => {
-      if (typeof json.token_endpoint !== "string") throw new Error("发现文档里没有 token_endpoint");
-      return json.token_endpoint;
+      const raw = typeof json?.token_endpoint === "string" ? json.token_endpoint.trim() : "";
+      if (!raw) throw new Error("发现文档里没有有效的 token_endpoint");
+      let parsed: URL;
+      try { parsed = new URL(raw); } catch { throw new Error("发现文档里的 token_endpoint 不是有效的网址"); }
+      const allowHttp = /^http:\/\//i.test(issuer.trim());
+      if (parsed.protocol !== "https:" && !(allowHttp && parsed.protocol === "http:")) {
+        throw new Error("发现文档里的 token_endpoint 协议无效");
+      }
+      return parsed.href;
     });
     // 失败不缓存，下一轮重新发现。
     hit.catch(() => discovery.delete(issuer));

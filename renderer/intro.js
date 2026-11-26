@@ -14,6 +14,12 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.4.1': [
+      ['check', '全量前端与第五轮后端深度排查修复（v0.4.1）', '完成 55 个前端渲染文件与 94 个后端源码文件的系统性安全与逻辑审计，集中修复 38 个前端文件与 55 个后端文件中的边界缺陷、竞态与异常恢复问题，并通过全部 76 项 Node 回归测试与 24 项 Electron 界面自动化测试。'],
+      ['usage', '修复图表曲线失真、Antigravity 首屏同步与多页面状态竞态', '修复用量置信带贝塞尔曲线逆向失真、峰值计算错误、Antigravity 首屏本地扫描与额度状态同步竞态、DeepSeek 多账号刷新覆盖与归零显示、号池成员额度匹配错误及会话搜索折叠工具组未自动展开问题。'],
+      ['pet', '优化桌宠、供应商切换、出口监控与 tokens.ci 交互可靠性', '修复桌宠关闭互动桌面后密码捂眼残留、高刷空转、HTML 主题图片识别与音频重叠播放；补齐 DeepSeek Harness 模型目录/预览与号池校验、出口监控单供应商弹窗保存、tokens.ci 环境检查可重试及全站无障碍焦点环。'],
+      ['settings', '进一步加固本地代理、账号续期换号与主进程安全边界', '修复畸形代理请求防崩溃、SSE 尾帧与长度截断、TOML/YAML 脱敏与回滚事务、多账号协同续期换号、zstd/Codex/Antigravity 扫描边界、SVG 样式嵌套清洗 fail-closed 及演示模式全量写隔离。'],
+    ],
     '0.4.0': [
       ['check', '全量后端深度加固与 73 项自动化回归验证（v0.4.0）', '围绕本地路由与协议转换、官方账号认证与额度查询、Antigravity 多账号、本机用量扫描与主进程安全开展四轮系统性后端审计，集中修复数十处边界缺陷、竞态与异常恢复问题，并新增 4 组共 42 项专项回归测试。'],
       ['quota', '修复本地路由、跨协议转换与账号额度查询多项边界问题', '修复跨协议请求改写、SSE 流式拆包与并行工具调用转换、WebSocket 透传关闭截断、客户端取消误触熔断、DeepSeek 路由恢复、IPv6 代理/NO_PROXY、CLI 与存储凭据协同续期/换号、出口监控白名单同步、余额双接口回退及 tokens.ci 上传状态管理问题。'],
@@ -561,6 +567,7 @@
   let version = '';
   let tour = null;
   let notesOpen = null;
+  let demoChain = Promise.resolve();
 
   /** 1.2.3 形式的版本比较，a 比 b 新返回正数。 */
   function compare(a, b) {
@@ -589,6 +596,8 @@
   function showNotes(v = version, { fromSettings = false, since } = {}) {
     const versions = Object.keys(NOTES).filter(x => compare(x, v) <= 0 && (since === undefined ? x === v : compare(x, since) > 0)).sort((a, b) => compare(b, a));
     if (!versions.length || notesOpen || tour) return false;
+    window.exitLayoutEdit?.();
+    if ($('settings') && !$('settings').hidden) window.closeModal?.('settings');
     const items = versions.flatMap((x, n) => [...(n ? [['', 'v' + x, '']] : []), ...NOTES[x]]);
     const last = document.activeElement;
     const close = el('button', { type: 'button', class: 'icon-circle', 'aria-label': '关闭' }, [icon('close')]);
@@ -617,7 +626,7 @@
       notesOpen = null;
       document.removeEventListener('keydown', onKey, true);
       modal.remove();
-      lockPage(false);
+      if (!document.querySelector('.modal:not([hidden])')) lockPage(false);
       // 只有自动弹出的那次需要记版本；从设置里打开的本来就看过
       if (!fromSettings) save({ seenVersion: v });
       if (startTour) startGuide();
@@ -642,10 +651,11 @@
   /* ---------------- 新手引导 ---------------- */
 
   /** 等某个元素出现并且有尺寸（异步加载的面板），最多等 ms 毫秒。 */
-  function waitFor(selector, ms = 3000) {
+  function waitFor(selector, ms = 3000, cancelled = () => false) {
     return new Promise(resolve => {
       const end = Date.now() + ms;
       const check = () => {
+        if (cancelled()) { resolve(null); return; }
         const node = document.querySelector(selector);
         if (node && node.getClientRects().length) resolve(node);
         else if (Date.now() > end) resolve(null);
@@ -673,6 +683,7 @@
   }
   async function startGuide() {
     if (tour) return;
+    window.exitLayoutEdit?.();
     const steps = tourSteps();
     notesOpen?.done(false);
     if (!$('settings').hidden) window.closeModal?.('settings');
@@ -698,7 +709,7 @@
       el('div', { class: 'tour-foot' }, [bar, el('div', { class: 'tour-actions' }, [prev, next])]),
     ]);
     layer.append(spot, card);
-    const self = tour = { index: 0, layer, spot, card, target: null, frame: 0, last, token: 0, demo: false };
+    const self = tour = { index: 0, layer, spot, card, target: null, frame: 0, placeTimer: 0, last, token: 0, demo: false };
 
     const place = () => {
       if (tour !== self) return;
@@ -724,8 +735,8 @@
       } else {
         x = (vw - cw) / 2; y = top0 + (vh - top0 - ch) / 2;
       }
-      card.style.left = Math.round(Math.min(Math.max(margin, x), vw - cw - margin)) + 'px';
-      card.style.top = Math.round(Math.min(Math.max(top0 + margin, y), vh - ch - margin)) + 'px';
+      card.style.left = Math.round(Math.max(margin, Math.min(x, vw - cw - margin))) + 'px';
+      card.style.top = Math.round(Math.max(top0 + margin, Math.min(y, vh - ch - margin))) + 'px';
     };
     const closeToc = () => { toc.hidden = true; tocButton.setAttribute('aria-expanded', 'false'); };
     const openToc = () => {
@@ -744,6 +755,7 @@
 
     const show = async i => {
       const step = steps[i], token = ++self.token;
+      clearTimeout(self.placeTimer); self.placeTimer = 0;
       self.index = i;
       count.textContent = `${i + 1} / ${steps.length}`;
       chapter.textContent = step.chapter || '';
@@ -760,10 +772,11 @@
       layer.classList.toggle('waiting', Boolean(step.target));
       if (!step.target) { self.target = null; place(); }
       next.focus({ preventScroll: true });
+      const cancelled = () => tour !== self || token !== self.token;
       if (step.target) {
-        const target = await waitFor(step.target);
-        if (target && step.wait) await waitFor(step.wait, 2000);
-        if (tour !== self || token !== self.token) return;
+        const target = await waitFor(step.target, 3000, cancelled);
+        if (target && step.wait) await waitFor(step.wait, 2000, cancelled);
+        if (cancelled()) return;
         if (target) reveal(target);
         self.target = target;
       }
@@ -771,22 +784,33 @@
       place();
       // 切页后布局可能还在变（图表入场、字体）：下一帧、稍后各再对一次位置
       schedule();
-      setTimeout(schedule, 400);
+      self.placeTimer = setTimeout(schedule, 400);
     };
     const finish = async () => {
       if (tour !== self) return;
       cancelAnimationFrame(self.frame);
+      clearTimeout(self.placeTimer);
       window.removeEventListener('resize', schedule);
       document.removeEventListener('scroll', schedule, true);
       document.removeEventListener('keydown', onKey, true);
       self.layer.remove();
       tour = null;
-      // 换回真实数据：结束演示进程，账号和明细视图恢复成引导前的样子，再重读一次真实快照
-      if (self.demo) {
-        try { await api.demo(false); } catch { /* 进程已经退了也没关系 */ }
-        if (saved) { state.account = saved.account; window.showUsageView?.(saved.usageView); }
-        try { window.render?.(await api.snapshot()); } catch { /* 读不到就等下一次推送 */ }
-      } else if (saved && state.usageView !== saved.usageView) { window.showUsageView?.(saved.usageView); if (current) window.render?.(current); }
+      // 换回真实数据：串行等待演示模式开关队列，防止快速关/开竞态误杀新引导或卡在演示态
+      const restore = demoChain.then(async () => {
+        if (tour) return;
+        if (self.demo || api.isDemo?.()) {
+          try { await api.demo?.(false); } catch { /* 进程已经退了也没关系 */ }
+          if (tour) return;
+          if (saved) { state.account = saved.account; window.showUsageView?.(saved.usageView); }
+          try { const snap = await api.snapshot(); if (!tour) window.render?.(snap); } catch { /* 读不到就等下一次推送 */ }
+        } else if (saved && state.usageView !== saved.usageView) {
+          window.showUsageView?.(saved.usageView);
+          if (current) window.render?.(current);
+        }
+      });
+      demoChain = restore.catch(() => {});
+      await restore;
+      if (tour) return;
       lockPage(false);
       save({ onboarding: 'done', seenVersion: version });
       const home = window.layoutHidesPage?.('overview') ? window.layoutFirstPage?.() : 'overview';
@@ -812,19 +836,27 @@
     document.body.append(layer);
     show(0);
     // 换上演示数据（看欢迎页的时候在后台准备好）；失败就用真实数据继续引导
-    try {
-      const snapshot = await api.demo?.(true);
-      if (tour !== self) { api.demo(false).catch(() => {}); return; }
-      if (snapshot) {
-        self.demo = true;
-        badge.hidden = false;
-        if (typeof state !== 'undefined') state.account = 'claude:demo';
-        window.render?.(snapshot);
-        schedule();
+    const enterDemo = demoChain.then(async () => {
+      if (tour !== self) return;
+      try {
+        const snapshot = await api.demo?.(true);
+        if (tour !== self) {
+          if (!tour) await api.demo?.(false)?.catch(() => {});
+          return;
+        }
+        if (snapshot) {
+          self.demo = true;
+          badge.hidden = false;
+          if (typeof state !== 'undefined') state.account = 'claude:demo';
+          window.render?.(snapshot);
+          schedule();
+        }
+      } catch {
+        if (!tour) await api.demo?.(false)?.catch(() => {});
       }
-    } catch {
-      api.demo?.(false)?.catch(() => {});
-    }
+    });
+    demoChain = enterDemo.catch(() => {});
+    await enterDemo;
   }
 
   /* ---------------- 启动 ---------------- */

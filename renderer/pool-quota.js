@@ -37,7 +37,7 @@
   /* ---------------- 额度详情顶上的标签 ---------------- */
 
   function tabs() {
-    return pools().map(provider => ({ key: PREFIX + ':' + provider.id, kind: PREFIX, who: provider.name + '|' + provider.app, provider }));
+    return pools().map(provider => ({ key: PREFIX + ':' + provider.id, kind: PREFIX, who: provider.name, sig: provider.name + '|' + provider.app, provider }));
   }
   function tabButton(tab) {
     const app = appOf(tab.provider);
@@ -61,7 +61,8 @@
   /** 这个号池的汇总。本机刚扫过、号池刚转发过请求、或者过了一分钟才重新取；新的回来之前继续显示上一份。 */
   function summaryOf(provider) {
     const last = Math.max(0, ...provider.pool.members.map(member => member.lastAt || 0));
-    const stamp = [typeof current !== 'undefined' ? current?.scannedAt || 0 : 0, last, provider.pool.members.length, Math.floor(Date.now() / 60000)].join('|');
+    const memberSig = provider.pool.members.map(member => `${member.id}:${member.quota?.at || 0}:${member.quota?.weekLeft ?? member.quota?.fiveLeft ?? ''}`).join(',');
+    const stamp = [typeof current !== 'undefined' ? current?.scannedAt || 0 : 0, last, provider.pool.strategy, provider.pool.members.length, memberSig, Math.floor(Date.now() / 60000)].join('|');
     let entry = summaries.get(provider.id);
     if (!entry) summaries.set(provider.id, entry = { stamp: '', data: null, pending: false, failed: false });
     if (entry.stamp !== stamp && !entry.pending) {
@@ -95,7 +96,7 @@
     const d = Math.floor(h / 24), hh = h % 24;
     return hh ? `${d} 天 ${hh} 小时` : `${d} 天`;
   }
-  const daysText = days => days >= 365 ? '一年以上' : days >= 10 ? `${Math.round(days)} 天` : days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(1, Math.round(days * 24))} 小时`;
+  const daysText = days => days <= 0 ? '已用完' : days >= 365 ? '一年以上' : days >= 10 ? `${Math.round(days)} 天` : days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(1, Math.round(days * 24))} 小时`;
   const resetText = at => at ? `${date(at)} 重置` : '';
   const pct = value => value == null ? '—' : `${value.toFixed(value >= 10 ? 0 : 1)}%`;
   const colorOf = (data, key) => { const i = data.members.findIndex(member => member.key === key); return HUES[(i < 0 ? data.members.length : i) % HUES.length]; };
@@ -114,7 +115,7 @@
   /** 按成员叠起来的柱子。rows：{ at, tokens, requests, byMember, label, tick, current }。 */
   function stackChart(host, data, rows, animate) {
     host.replaceChildren();
-    if (!rows.some(row => row.tokens > 0)) { host.dataset.drawnWidth = ''; host.append(empty('这段时间号池没有转发过请求。')); return; }
+    if (!rows.some(row => row.tokens > 0)) { window.unwatchChartHost?.(host); host.dataset.drawnWidth = ''; host.append(empty('这段时间号池没有转发过请求。')); return; }
     const measured = Math.round(host.clientWidth);
     host.dataset.drawnWidth = String(measured);
     const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 680), h = host.clientHeight || 220, left = 48, bottom = 28, top = 14;
@@ -185,10 +186,10 @@
     ]));
     const daysLeft = quota?.daysLeft;
     panel.append(el('div', { class: 'prediction-line' + (daysLeft != null && daysLeft < 2 ? ' caution' : '') }, [icon(daysLeft != null && daysLeft < 2 ? 'alert' : 'trend'), daysLeft != null
-      ? span(`按最近 7 天每天用掉 ${quota.perDay.toFixed(2)} 个号的速度，不算之后的重置，大约还能用 ${daysText(daysLeft)}`)
+      ? (daysLeft <= 0 ? span('官方账号成员周额度已全部用完，等待重置') : span(`按最近 7 天每天用掉 ${quota.perDay.toFixed(2)} 个号的速度，不算之后的重置，大约还能用 ${daysText(daysLeft)}`))
       : span(!data ? '正在读取…' : '额度采样还不够，或者最近 7 天额度没有涨，估不出还能用多久。')]));
     const rows = el('div', { class: 'pq-rings' }, accounts.map(member => {
-      const info = data?.members.find(item => item.key === member.key)?.quota ?? member.quota ?? null;
+      const info = data?.members.find(item => item.type === 'account' && item.id === member.id)?.quota ?? member.quota ?? null;
       const lines = [info?.weekLeft != null ? `每周剩 ${pct(info.weekLeft)}` : '', info?.fiveLeft != null ? `5 小时剩 ${pct(info.fiveLeft)}` : ''].filter(Boolean);
       const node = el('div', { class: 'pq-ring-row' + (provider.pool.next === member.id ? ' next' : '') + (member.quota?.limited ? ' limited' : '') }, [
         memberRing(info),
@@ -330,12 +331,19 @@
     const ahead = (s.projection?.points || []).filter(p => p.at <= weekEnd);
     if (ahead.length && s.left != null) chart.append(svg('polyline', { class: 'pq-sv-ahead', points: [`${x(s.now)},${y(s.left)}`, ...ahead.map(p => `${x(p.at)},${y(p.left)}`)].join(' ') }));
     const mark = (at, v, cls, label, anchor = 'middle', offset = -12) => {
-      chart.append(svg('circle', { cx: x(at), cy: y(v), r: 6, class: cls }));
-      const t = svg('text', { x: x(at) + (anchor === 'end' ? -10 : anchor === 'start' ? 10 : 0), y: y(v) + offset, 'text-anchor': anchor, class: cls + '-label' }); t.textContent = label; chart.append(t);
+      const cx = x(at), cy = y(v);
+      const safeOffset = cy + offset < 16 ? 20 : offset;
+      const safeAnchor = anchor === 'middle' && cx < L + 70 ? 'start' : anchor;
+      chart.append(svg('circle', { cx, cy, r: 6, class: cls }));
+      const t = svg('text', { x: cx + (safeAnchor === 'end' ? -10 : safeAnchor === 'start' ? 10 : 0), y: cy + safeOffset, 'text-anchor': safeAnchor, class: cls + '-label' }); t.textContent = label; chart.append(t);
     };
     if (s.danger && s.curve.length > 3) mark(s.danger.at, s.danger.left, 'pq-sv-danger', `最惊险 ${s.danger.left.toFixed(1)}`, x(s.danger.at) > W - 160 ? 'end' : 'start');
     if (s.left != null) mark(s.now, s.left, 'pq-sv-now', `现在 ${s.left.toFixed(1)}`, x(s.now) > W - 120 ? 'end' : 'middle', s.danger && Math.abs(x(s.now) - x(s.danger.at)) < 130 && Math.abs(y(s.left) - y(s.danger.left)) < 30 ? 22 : -12);
-    if (out != null && out <= weekEnd) { const t = svg('text', { x: Math.min(W - R - 4, x(out)), y: y(0) - 8, 'text-anchor': 'end', class: 'pq-sv-out-label' }); t.textContent = '断粮'; chart.append(t, svg('circle', { cx: x(out), cy: y(0), r: 5, class: 'pq-sv-out' })); }
+    if (out != null && out <= weekEnd) {
+      const outX = x(out), leftEdge = outX < L + 40;
+      const t = svg('text', { x: leftEdge ? outX + 8 : Math.min(W - R - 4, outX), y: y(0) - 8, 'text-anchor': leftEdge ? 'start' : 'end', class: 'pq-sv-out-label' });
+      t.textContent = '断粮'; chart.append(t, svg('circle', { cx: outX, cy: y(0), r: 5, class: 'pq-sv-out' }));
+    }
     const legendItem = (cls, label) => el('span', {}, [el('i', { class: 'pq-sv-key ' + cls, 'aria-hidden': 'true' }), span(label)]);
     panel.append(el('div', { class: 'pq-sv-chart' }, [chart, el('div', { class: 'pq-sv-legend' }, [legendItem('line', '本周'), legendItem('ahead', '照最近 7 天的速度往后推'), s.past.length ? legendItem('past', `前 ${s.past.length} 周`) : null, legendItem('zero', '断粮线')])]));
     // 每个号的寿命 + 这周的数字

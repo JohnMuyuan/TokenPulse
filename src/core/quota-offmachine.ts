@@ -247,7 +247,7 @@ export function cleanCapacity(kind: AccountKind, samples: QuotaSample[], rows: R
     const final = segment.points.at(-1);
     if (!final) continue;
     const clean = cleanSegment(segment, rows, marks, now, plans);
-    const isCurrent = index === segments.length - 1 && segment.startAt <= now && segment.endAt > now;
+    const isCurrent = index === segments.length - 1 && segment.endAt > now;
     if (isCurrent) active = clean;
     if (final.pct <= 0) continue;
     if (clean.points < MIN_CLEAN_POINTS || clean.tokens <= 0) {

@@ -32,7 +32,9 @@
     const seq = ++cacheView.seq;
     api.requests(query).then(page => {
       if (seq !== cacheView.seq) return;
-      cacheView.page = page; cacheView.loading = false;
+      cacheView.loading = false;
+      if (!page) { cacheView.key = ''; if (visible()) draw(); return; }
+      cacheView.page = page;
       if (visible()) keepScroll(draw);
     }).catch(() => {
       if (seq !== cacheView.seq) return;
@@ -78,6 +80,11 @@
     if (tip) card.setAttribute('aria-label', title);
     return card;
   }
+  function retryButton() {
+    const retry = el('button', { type: 'button', class: 'btn', text: '重试' });
+    retry.addEventListener('click', () => { cacheView.key = ''; load(); draw(); });
+    return retry;
+  }
   function drawSummary(data) {
     nodes.summary.replaceChildren(
       summaryCell('命中率', pct(data.totals.hitRate), '缓存读取 ÷ 输入', '输入含缓存读取和写入。'),
@@ -85,12 +92,13 @@
       summaryCell('缓存断档', number(data.breaks.count), `多花 ≈ ${money(data.breaks.extraUsd)}`, '断档额外花费按当前型号参考标价估算。'),
       summaryCell('冷启动', number(data.coldStarts.count), `${number(data.coldStarts.tokens)} 缓存写入 Tokens`, `写入花费 ≈ ${money(data.coldStarts.costUsd)}`)
     );
+    if (cacheView.error) nodes.summary.append(el('div', { class: 'pj-stale', role: 'status' }, [el('span', { text: '刷新失败，显示的是上一次的结果。' }), retryButton()]));
     $('cache-count').textContent = `${number(data.breaks.count)} 次断档`;
   }
 
   function drawChart(host, daily) {
     host.replaceChildren();
-    if (!daily.length) { host.dataset.drawnWidth = ''; host.append(el('div', { class: 'empty', text: '这段时间、这些筛选条件下没有请求记录。' })); return; }
+    if (!daily.length) { window.unwatchChartHost?.(host); host.dataset.drawnWidth = ''; host.append(el('div', { class: 'empty', text: '这段时间、这些筛选条件下没有请求记录。' })); return; }
     const measured = Math.round(host.clientWidth);
     host.dataset.drawnWidth = String(measured);
     const width = Math.max(360, measured || Math.round(host.parentElement?.clientWidth || 0) || 800), height = 260, left = 52, right = 38, top = 14, bottom = 34;
@@ -104,7 +112,7 @@
       const y = top + plotHeight * step;
       chart.append(svg('line', { class: 'cc-grid', x1: left, x2: width - right, y1: y, y2: y }));
       const tokensLabel = svg('text', { class: 'cc-axis', x: left - 7, y: y + 4, 'text-anchor': 'end' });
-      tokensLabel.textContent = number(maxInput * (1 - step)); chart.append(tokensLabel);
+      tokensLabel.textContent = step === 1 ? '0' : tokens(maxInput * (1 - step)); chart.append(tokensLabel);
       const rateLabel = svg('text', { class: 'cc-axis', x: width - right + 7, y: y + 4, 'text-anchor': 'start' });
       rateLabel.textContent = `${Math.round((1 - step) * 100)}%`; chart.append(rateLabel);
     }
@@ -310,11 +318,7 @@
     if (!cacheView.page) {
       nodes.summary.replaceChildren();
       const children = [el('div', { class: 'empty', text: cacheView.error ? '缓存分析读取失败，请重试。' : '正在读取缓存分析…' })];
-      if (cacheView.error) {
-        const retry = el('button', { type: 'button', class: 'btn', text: '重试' });
-        retry.addEventListener('click', () => { cacheView.key = ''; load(); draw(); });
-        children.push(retry);
-      }
+      if (cacheView.error) children.push(retryButton());
       nodes.chart.replaceChildren(...children);
       nodes.ttl?.replaceChildren(); nodes.causes.replaceChildren(); nodes.tools.replaceChildren(); nodes.models.replaceChildren(); nodes.sessions.replaceChildren(); nodes.recent.replaceChildren();
       $('cache-count').textContent = '';

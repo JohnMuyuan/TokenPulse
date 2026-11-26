@@ -197,11 +197,14 @@ const CLI_LABEL: Record<AgentKind, string> = { claude: "Claude Code", codex: "Co
  * 测不出来（没有 curl、超时、返回的不是 trace）一律不启动——确认不了从哪儿出去，就别启动。
  * 脚本里的域名、IP、地区都来自已经校验过的出口监控配置，仍然按 PowerShell 字符串规则加引号。
  */
-export function exitGuardScript(kind: AgentKind, guard: ExitGuard) {
+export function exitGuardScript(kind: AgentKind, guard: ExitGuard, options?: { allowedEnvVar?: string }) {
   const label = CLI_LABEL[kind], byIp = guardMode(guard) === "ip";
   const refuse = (message: string) => [`  Write-Host ${message} -ForegroundColor Red`];
+  const allowedLine = options?.allowedEnvVar
+    ? `$tpAllowed = @(([string][Environment]::GetEnvironmentVariable(${quotePs(options.allowedEnvVar)})) -split ',' | Where-Object { $_ }); [Environment]::SetEnvironmentVariable(${quotePs(options.allowedEnvVar)}, $null)`
+    : (byIp ? `$tpAllowed = @(${guard.allowedIps.map(quotePs).join(", ")})` : `$tpAllowed = @(${guard.allowedRegions.map((code) => quotePs(code.toUpperCase())).join(", ")})`);
   return [
-    byIp ? `$tpAllowed = @(${guard.allowedIps.map(quotePs).join(", ")})` : `$tpAllowed = @(${guard.allowedRegions.map((code) => quotePs(code.toUpperCase())).join(", ")})`,
+    allowedLine,
     `$tpHost = ${quotePs(guard.host)}`,
     `Write-Host ('[TokenPulse] 正在这个终端里检测出口${byIp ? " IP" : "地区"}（' + $tpHost + '）…') -ForegroundColor DarkGray`,
     `$tpNorm = { param($v) try { [System.Net.IPAddress]::Parse(([string]$v).Trim()).ToString().ToLowerInvariant() } catch { ([string]$v).Trim().ToLowerInvariant() } }`,
@@ -243,7 +246,7 @@ export function exitGuardScript(kind: AgentKind, guard: ExitGuard) {
   ].join("\n");
 }
 
-export function terminalScript(kind: AgentKind, id: string | null, cwd?: string, fallbackExe?: string, guard?: ExitGuard | null) {
+export function terminalScript(kind: AgentKind, id: string | null, cwd?: string, fallbackExe?: string, guard?: ExitGuard | null, options?: { allowedEnvVar?: string }) {
   // Antigravity IDE 安装时会在 PATH 里放一个 agy.cmd（启动 Electron 桌面端），真正的 CLI 是 agy.exe
   const name = kind === "pi" ? "pi" : kind === "claude" ? "claude" : kind === "codex" ? "codex" : kind === "antigravity" ? "agy.exe" : "grok";
   // id 为 null：开一个新对话（0.3.16），不带任何参数，和用户自己在这个目录里敲命令一样
@@ -251,7 +254,7 @@ export function terminalScript(kind: AgentKind, id: string | null, cwd?: string,
   return [
     cwd ? `Set-Location -LiteralPath ${quotePs(cwd)}` : "",
     // 设了出口白名单（IP 优先，没有 IP 就看地区）：先测，不符合就到此为止（脚本里的 return），下面两行不会执行
-    guard && guardMode(guard) ? exitGuardScript(kind, guard) : "",
+    guard && guardMode(guard) ? exitGuardScript(kind, guard, options) : "",
     `$cli = if (Get-Command ${name} -ErrorAction SilentlyContinue) { ${quotePs(name)} } else { ${quotePs(fallbackExe || name)} }`,
     `& $cli ${args}`.trimEnd(),
   ].filter(Boolean).join("\n");
@@ -265,15 +268,23 @@ export function terminalScript(kind: AgentKind, id: string | null, cwd?: string,
 export function openTerminal(kind: AgentKind, id: string | null, cwd?: string, guard?: ExitGuard | null) {
   const cli = resolveCli(kind);
   const fallbackExe = cli && cli.prefix.length === 0 ? cli.file : undefined;
-  const encoded = Buffer.from(terminalScript(kind, id, cwd, fallbackExe, guard), "utf16le").toString("base64");
+  const env = cleanAgentEnv();
+  let encoded = Buffer.from(terminalScript(kind, id, cwd, fallbackExe, guard), "utf16le").toString("base64");
+  // cmd.exe 命令行上限约 8191 字符；出口白名单很长时改为通过环境变量传给脚本并由脚本立刻清掉
+  if (encoded.length > 7000 && guard && guardMode(guard)) {
+    const mode = guardMode(guard);
+    env.TP_EXIT_GUARD_ALLOWED = (mode === "ip" ? guard.allowedIps : guard.allowedRegions.map((c) => c.toUpperCase())).join(",");
+    encoded = Buffer.from(terminalScript(kind, id, cwd, fallbackExe, guard, { allowedEnvVar: "TP_EXIT_GUARD_ALLOWED" }), "utf16le").toString("base64");
+  }
   const child = spawn("cmd.exe", ["/d", "/c", "start", '""', "powershell.exe", "-NoExit", "-NoProfile", "-EncodedCommand", encoded], {
-    env: cleanAgentEnv(),
+    env,
     // 不指定的话终端继承 TokenPulse 自己的工作目录（安装目录 / 打包目录），窗口开着那个目录就删不掉、改不了名：
     // 脚本里的 Set-Location 只改 PowerShell 自己的位置，不改进程的工作目录
     cwd: terminalHome(cwd),
     stdio: "ignore",
     windowsHide: true,
   });
+  child.on("error", (err) => console.error("[TokenPulse] openTerminal failed:", err.message));
   child.unref();
 }
 /** 新终端进程的工作目录：会话的项目目录还在就用它，否则用用户的主目录。 */
@@ -553,6 +564,8 @@ export function stopAllReplies() {
   for (const [runId, run] of [...runs.entries()]) {
     stopped.add(runId);
     killTree(run.child);
-    if (run.cleanup) fs.rmSync(run.cleanup, { force: true });
+    if (run.cleanup) {
+      try { fs.rmSync(run.cleanup, { force: true }); } catch { /* 忽略 */ }
+    }
   }
 }

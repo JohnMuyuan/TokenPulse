@@ -105,7 +105,7 @@ function normFrom(client: Upstream, raw: unknown): Norm {
         if (prev && prev.role === "assistant") (prev.calls ??= []).push(call);
         else norm.turns.push({ role: "assistant", text: "", calls: [call] });
       } else if (row.type === "function_call_output") {
-        norm.turns.push({ role: "tool", text: textOf(row.output), callId: textOf(row.call_id) });
+        norm.turns.push({ role: "tool", text: textBlocks(row.output), callId: textOf(row.call_id) });
       } else if (row.role === "system" || row.role === "developer") {
         norm.system = [norm.system, textBlocks(row.content) || textOf(row.text)].filter(Boolean).join("\n\n");
       } else if (row.role === "user" || row.role === "assistant" || row.type === "message") {
@@ -202,7 +202,7 @@ function responsesBody(norm: Norm, model: string) {
 
 /** 把客户端请求写成上游的 JSON，并给出要拼到供应商地址后面的路径。 */
 export function convertRequest(client: Upstream, upstream: Upstream, raw: string, model: string): { path: string; json: Obj } {
-  const parsed = JSON.parse(raw) as unknown;
+  const parsed = JSON.parse(raw.replace(/^\uFEFF/, "")) as unknown;
   const norm = normFrom(client, parsed);
   if (upstream === "anthropic") return { path: "/v1/messages", json: anthropicBody(norm, model) };
   if (upstream === "openai-chat") return { path: "/v1/chat/completions", json: chatBody(norm, model) };
@@ -264,9 +264,11 @@ export function deltasOf(upstream: Upstream, event: string, payload: unknown): D
       if (Object.keys(usage).length) out.push({ kind: "usage", input: Number(usage.input_tokens) || 0, output: Number(usage.output_tokens) || 0 });
       return out;
     }
-    if (type === "response.completed") {
-      const usage = asObj(asObj(body.response).usage);
-      out.push({ kind: "stop", reason: "end_turn" });
+    if (type === "response.completed" || type === "response.incomplete") {
+      const resp = asObj(body.response);
+      const usage = asObj(resp.usage);
+      const incomplete = type === "response.incomplete" || resp.status === "incomplete";
+      out.push({ kind: "stop", reason: incomplete ? "max_tokens" : "end_turn" });
       if (Object.keys(usage).length) out.push({ kind: "usage", input: Number(usage.input_tokens) || 0, output: Number(usage.output_tokens) || 0 });
     }
     return out.filter((delta) => delta.kind !== "text" || delta.text);
@@ -382,7 +384,7 @@ class Emitter {
     if (this.client === "openai-chat") {
       const message: Obj = { role: "assistant", content: this.text || null };
       if (this.calls.length) message.tool_calls = this.calls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.args || "{}" } }));
-      return { id: "chatcmpl_tokenpulse", object: "chat.completion", model: this.model, choices: [{ index: 0, message, finish_reason: this.calls.length ? "tool_calls" : "stop" }], usage: { prompt_tokens: this.usage.input, completion_tokens: this.usage.output, total_tokens: this.usage.input + this.usage.output } };
+      return { id: "chatcmpl_tokenpulse", object: "chat.completion", model: this.model, choices: [{ index: 0, message, finish_reason: this.calls.length ? "tool_calls" : this.stop === "max_tokens" ? "length" : "stop" }], usage: { prompt_tokens: this.usage.input, completion_tokens: this.usage.output, total_tokens: this.usage.input + this.usage.output } };
     }
     if (this.client === "openai-responses") {
       const output: Obj[] = [];
@@ -435,7 +437,7 @@ class Emitter {
     if (!this.started) this.started = true;
     let out = this.open ? this.sse("content_block_stop", { type: "content_block_stop", index: Math.max(this.index, 0) }) : "";
     if (!this.open && this.index < 0) {
-      out += this.sse("message_start", { type: "message_start", message: { id: "msg_tokenpulse", type: "message", role: "assistant", model: this.model, content: [], usage: { input_tokens: 0, output_tokens: 0 } } });
+      out += this.sse("message_start", { type: "message_start", message: { id: "msg_tokenpulse", type: "message", role: "assistant", model: this.model, content: [], usage: { input_tokens: this.usage.input, output_tokens: 0 } } });
     }
     out += this.sse("message_delta", { type: "message_delta", delta: { stop_reason: this.calls.length ? "tool_use" : this.stop }, usage: { output_tokens: this.usage.output } });
     out += this.sse("message_stop", { type: "message_stop" });
@@ -450,7 +452,7 @@ class Emitter {
   }
 
   private chatEnd() {
-    return `data: ${JSON.stringify({ id: "chatcmpl_tokenpulse", object: "chat.completion.chunk", model: this.model, choices: [{ index: 0, delta: {}, finish_reason: this.calls.length ? "tool_calls" : "stop" }], usage: { prompt_tokens: this.usage.input, completion_tokens: this.usage.output } })}\n\ndata: [DONE]\n\n`;
+    return `data: ${JSON.stringify({ id: "chatcmpl_tokenpulse", object: "chat.completion.chunk", model: this.model, choices: [{ index: 0, delta: {}, finish_reason: this.calls.length ? "tool_calls" : this.stop === "max_tokens" ? "length" : "stop" }], usage: { prompt_tokens: this.usage.input, completion_tokens: this.usage.output } })}\n\ndata: [DONE]\n\n`;
   }
 
   private responses(delta: Delta) {
@@ -499,7 +501,15 @@ export class StreamBridge {
   }
 
   end(): string {
-    return this.emitter.end();
+    const tail = this.buffer.flush();
+    let out = "";
+    for (const frame of tail) {
+      if (frame.data === "[DONE]") continue;
+      let payload: unknown = frame.data;
+      try { payload = JSON.parse(frame.data); } catch { continue; }
+      for (const delta of deltasOf(this.upstream, frame.event, payload)) out += this.emitter.push(delta);
+    }
+    return out + this.emitter.end();
   }
 
   usage() {
@@ -510,6 +520,16 @@ export class StreamBridge {
 class SseBuffer {
   private buf = "";
 
+  private parseFrame(raw: string): { event: string; data: string } | null {
+    let event = "";
+    const data: string[] = [];
+    for (const line of raw.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    }
+    return data.length ? { event, data: data.join("\n") } : null;
+  }
+
   push(chunk: string) {
     this.buf = (this.buf + chunk).replace(/\r\n/g, "\n");
     const frames: { event: string; data: string }[] = [];
@@ -517,16 +537,19 @@ class SseBuffer {
     while (split >= 0) {
       const raw = this.buf.slice(0, split);
       this.buf = this.buf.slice(split + 2);
-      let event = "";
-      const data: string[] = [];
-      for (const line of raw.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
-      }
-      if (data.length) frames.push({ event, data: data.join("\n") });
+      const parsed = this.parseFrame(raw);
+      if (parsed) frames.push(parsed);
       split = this.buf.indexOf("\n\n");
     }
     return frames;
+  }
+
+  flush() {
+    if (!this.buf.trim()) { this.buf = ""; return []; }
+    const raw = this.buf.replace(/\r\n/g, "\n");
+    this.buf = "";
+    const parsed = this.parseFrame(raw);
+    return parsed ? [parsed] : [];
   }
 }
 

@@ -304,9 +304,13 @@ export function analyzeCache(rows: RequestRow[]): CacheAnalysis {
           break;
         }
         if (lastHoldIdx < 0) {
-          status = "volatile";
-          ttlMinMs = 0;
-          ttlMaxMs = 60_000;
+          if (firstDropIdx === 0) {
+            status = "volatile";
+            ttlMinMs = 0;
+            ttlMaxMs = 60_000;
+          } else {
+            status = "insufficient";
+          }
         } else if (firstDropIdx < 0) {
           if ((maxHitGapMs ?? 0) < 60_000) {
             status = "short-gaps-only";

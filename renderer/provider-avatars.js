@@ -99,12 +99,15 @@
         const img = new Image();
         img.onerror = () => reject(new Error('这张图片打不开'));
         img.onload = () => {
-          const size = 128, canvas = document.createElement('canvas');
-          canvas.width = canvas.height = size;
-          const ctx = canvas.getContext('2d');
-          const w = img.naturalWidth || size, h = img.naturalHeight || size, scale = Math.max(size / w, size / h);
-          ctx.drawImage(img, (size - w * scale) / 2, (size - h * scale) / 2, w * scale, h * scale);
-          resolve(canvas.toDataURL('image/png'));
+          try {
+            const size = 128, canvas = document.createElement('canvas');
+            canvas.width = canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('no-2d');
+            const w = img.naturalWidth || size, h = img.naturalHeight || size, scale = Math.max(size / w, size / h);
+            ctx.drawImage(img, (size - w * scale) / 2, (size - h * scale) / 2, w * scale, h * scale);
+            resolve(canvas.toDataURL('image/png'));
+          } catch { reject(new Error('这张图片打不开')); }
         };
         img.src = String(reader.result);
       };

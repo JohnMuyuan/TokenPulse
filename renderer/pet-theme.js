@@ -78,11 +78,12 @@
     }
 
     place(node, file) {
-      const vb = this.viewBoxOf(file, node.tagName === 'img' ? null : node), p = this.at(vb.x, vb.y);
+      const isImg = node.localName === 'img';
+      const vb = this.viewBoxOf(file, isImg ? null : node), p = this.at(vb.x, vb.y);
       const s = node.style;
       s.position = 'absolute'; s.left = p.x + 'px'; s.top = p.y + 'px'; s.width = vb.width * this.k + 'px'; s.height = vb.height * this.k + 'px';
       s.overflow = 'visible'; s.pointerEvents = 'none'; s.userSelect = 'none';
-      if (node.tagName === 'img') { s.objectFit = 'contain'; s.imageRendering = 'pixelated'; }
+      if (isImg) { s.objectFit = 'contain'; s.imageRendering = 'pixelated'; }
       else { node.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.width} ${vb.height}`); node.removeAttribute('width'); node.removeAttribute('height'); }
     }
 
@@ -114,7 +115,7 @@
       return (e.states.includes('idle') && t.idle?.[0] === file) || (e.states.includes('dozing') && !!t.dozing?.includes(file)) || (e.states.includes('mini-idle') && !!mini?.['mini-idle']?.includes(file));
     }
     findEyes(node) {
-      if (node.tagName === 'img') return null;
+      if (node.localName === 'img') return null;
       const ids = this.theme.eyeTracking.ids, get = id => node.querySelector('#' + CSS.escape(id));
       const found = { eyes: get(ids.eyes) || get(ids.dozeEyes), body: get(ids.body), shadow: get(ids.shadow) };
       if (found.shadow && this.theme.eyeTracking.shadowOrigin) found.shadow.style.transformOrigin = this.theme.eyeTracking.shadowOrigin;

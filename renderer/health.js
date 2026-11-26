@@ -10,7 +10,7 @@
   const GROUPS = [['tools', '工具配置', 'route'], ['accounts', '官方账号', 'user'], ['network', '网络', 'globe'], ['data', '数据', 'folder']];
   const LEVEL = { bad: ['有问题', 'alert'], warn: ['建议看看', 'alert'], info: ['提示', 'info'], ok: ['正常', 'check'] };
   const ORDER = { bad: 0, warn: 1, info: 2, ok: 3 };
-  const S = { report: null, running: false, error: '' };
+  const S = { report: null, running: false, error: '', demo: null };
   let built = false;
   const N = {};
 
@@ -26,7 +26,7 @@
       const hit = event.target.closest('[data-go-page], [data-go-settings]');
       if (!hit) return;
       if (hit.dataset.goSettings) openSettings(hit.dataset.goSettings);
-      else navigate(hit.dataset.goPage);
+      else navigate(hit.dataset.goPage, { force: true });
     });
   }
 
@@ -80,20 +80,26 @@
         el('div', { class: 'panel-heading' }, [el('h2', {}, [icon(iconName), title]), el('span', { class: `section-tag hc-tag ${worst}`, text: LEVEL[worst][0] })]),
         el('div', { class: 'hc-items' }, items.map(itemRow))
       ]);
-    }));
+    }).filter(Boolean));
   }
 
   function syncNav() {
     const alert = $('nav-health-alert');
-    if (alert) alert.hidden = !(S.report?.summary.bad > 0);
+    const bad = S.report?.summary?.bad || 0;
+    if (alert) {
+      alert.textContent = bad > 0 ? String(bad) : '';
+      alert.hidden = !(bad > 0);
+    }
   }
 
   async function run() {
     if (S.running) return;
     S.running = true; S.error = '';
+    const isDemo = Boolean(api.isDemo?.());
     drawSummary();
     try {
       S.report = await api.runHealthCheck();
+      S.demo = isDemo;
     } catch (error) {
       S.error = '体检没做完，请重试。';
       showStatus(S.error, true);
@@ -106,6 +112,8 @@
   window.PulseHealth = {
     show() {
       build();
+      const isDemo = Boolean(api.isDemo?.());
+      if (S.demo !== null && S.demo !== isDemo) { S.report = null; S.error = ''; }
       drawSummary(); drawGroups();
       if (!S.running && (!S.report || Date.now() - S.report.at > STALE_MS)) run();
     }

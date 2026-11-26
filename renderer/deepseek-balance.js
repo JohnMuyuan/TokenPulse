@@ -95,7 +95,7 @@
     // 还没填 DeepSeek 的 Key、本机又装了 DeepSeek Harness：留一个空的 DeepSeek 标签当入口
     const intro = balance.detected && !list.some(account => !isRelay(account)) ? [{ key: PREFIX, kind: PREFIX, who: '', title: null }] : [];
     return [...intro, ...list.map(account => isRelay(account)
-      ? { key: PREFIX + ':' + account.id, kind: 'relay', account, who: nameOf(account) + '|' + (account.icon || '') + '|' + (account.avatar ? account.avatar.length : 0), name: nameOf(account), title: `${nameOf(account)} · ${account.host} · ${account.keyHint}` }
+      ? { key: PREFIX + ':' + account.id, kind: 'relay', account, who: nameOf(account), sig: nameOf(account) + '|' + (account.icon || '') + '|' + (account.avatar ? account.avatar.length : 0), name: nameOf(account), title: `${nameOf(account)} · ${account.host} · ${account.keyHint}` }
       : { key: PREFIX + ':' + account.id, kind: PREFIX, who: nameOf(account), title: account.label ? `${account.label} · ${account.keyHint}` : account.keyHint })];
   }
   /** data-kind 是 deepseek 或 relay（第三方中转站）：和官方账号一样可以按住拖动调整顺序（app.js 的拖动排序，存顺序走 reorder）。 */
@@ -119,14 +119,21 @@
   const dropOpen = new Map();
   const quotaShowing = id => typeof current !== 'undefined' && current && !document.getElementById('page-quota').hidden && state.account === PREFIX + ':' + id;
   /** 这个账号的分析。数据变了（余额刚查过、本机刚扫过、换了本机归属、手动标注了归属）才重新取；新的回来之前继续显示上一份。 */
+  function resetInsight(id) {
+    const entry = insights.get(id);
+    if (entry) { entry.stamp = ''; entry.retryAt = 0; }
+  }
   function insightOf(account) {
     const stamp = [account.last?.at || 0, account.harness ? 1 : 0, typeof current !== 'undefined' ? current?.scannedAt || 0 : 0, markSeq].join('|');
     let entry = insights.get(account.id);
-    if (!entry) insights.set(account.id, entry = { stamp: '', data: null, pending: false, failed: false });
-    if (entry.stamp !== stamp && !entry.pending) {
+    if (!entry) insights.set(account.id, entry = { stamp: '', data: null, pending: false, failed: false, retryAt: 0 });
+    const retryDue = entry.failed && Date.now() >= (entry.retryAt || 0);
+    if ((entry.stamp !== stamp || retryDue) && !entry.pending) {
       entry.pending = true;
-      api.insight(account.id).then(data => { entry.data = data; entry.failed = false; }).catch(() => { entry.failed = true; }).finally(() => {
-        entry.pending = false; entry.stamp = stamp;
+      let ok = false;
+      api.insight(account.id).then(data => { entry.data = data; entry.failed = false; entry.retryAt = 0; ok = true; }).catch(() => { entry.failed = true; entry.retryAt = Date.now() + 5000; }).finally(() => {
+        entry.pending = false;
+        if (ok) entry.stamp = stamp;
         renderCard();
         if (quotaShowing(account.id)) keepScroll(() => renderQuota_());
       });
@@ -146,7 +153,7 @@
       toast(clean(error) || '标注失败', { kind: 'error' });
     }
   }
-  const daysText = days => days >= 365 ? '一年以上' : days >= 10 ? `${Math.round(days)} 天` : days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(1, Math.round(days * 24))} 小时`;
+  const daysText = days => days <= 0 ? '已用完' : days >= 365 ? '一年以上' : days >= 10 ? `${Math.round(days)} 天` : days >= 1 ? `${days.toFixed(1)} 天` : `${Math.max(1, Math.round(days * 24))} 小时`;
   const dayLabel = at => new Date(at).toLocaleDateString(locale(), { month: 'numeric', day: 'numeric' });
   const hideTip = () => { $('tip').hidden = true; };
   const tipOn = (node, text) => {
@@ -208,12 +215,12 @@
   /** 余额走势：余额是一段一段平的，画成阶梯。纵轴只取这段时间里的范围（从 0 画起的话花掉的那一点看不出来）。 */
   function balanceChart(host, points, currency, now, animate) {
     host.replaceChildren();
-    if (points.length < 2) { host.dataset.drawnWidth = ''; host.append(empty('余额记录还不够画走势。TokenPulse 开着的时候按设置里的间隔记一次。')); return; }
+    if (points.length < 2) { window.unwatchChartHost?.(host); host.dataset.drawnWidth = ''; host.append(empty('余额记录还不够画走势。TokenPulse 开着的时候按设置里的间隔记一次。')); return; }
     const measured = Math.round(host.clientWidth);
     host.dataset.drawnWidth = String(measured);
     const w = Math.max(280, measured || Math.round(host.parentElement?.clientWidth || 0) || 520), h = host.clientHeight || 190, left = 62, right = 12, top = 14, bottom = 28;
     const low = Math.min(...points.map(p => p.total)), high = Math.max(...points.map(p => p.total));
-    const pad = Math.max((high - low) * .18, high * .002, .01), min = Math.max(0, low - pad), max = high + pad;
+    const pad = Math.max((high - low) * .18, Math.abs(high) * .002, .01), min = low >= 0 ? Math.max(0, low - pad) : low - pad, max = high + pad;
     const from = points[0].at, span = Math.max(1, now - from);
     const x = at => left + (at - from) / span * (w - left - right), y = value => top + (1 - (value - min) / (max - min)) * (h - top - bottom);
     const node = svg('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', 'aria-label': '余额走势' });
@@ -248,7 +255,7 @@
   function spendBlocks(panel, spend, data, info) {
     const left = spend.daysLeft;
     panel.append(el('div', { class: 'prediction-line' + (left != null && left < 3 ? ' caution' : '') }, [icon(left != null && left < 3 ? 'alert' : 'trend'), left != null
-      ? el('span', {}, [el('span', { text: '按最近 7 天的速度，大约还能用' }), el('span', { class: 'num', text: ' ' }), el('span', { text: daysText(left) })])
+      ? (left <= 0 ? el('span', { text: '余额用完' }) : el('span', {}, [el('span', { text: '按最近 7 天的速度，大约还能用' }), el('span', { class: 'num', text: ' ' }), el('span', { text: daysText(left) })]))
       : el('span', { text: data.since == null ? '还没有余额记录，查到几次之后开始估算。' : spend.coveredDays < .25 ? '刚开始记录余额，过几个小时就能估算还能用多久。' : '最近 7 天余额没有减少，估不出还能用多久。' })]));
     const none = data.since == null;
     panel.append(metricGroup('花掉的', 'cost', [
@@ -258,8 +265,8 @@
     ]));
     panel.append(metricGroup('预测', 'trend', [
       metric('平均每天', spend.perDay == null ? '—' : cash(spend.perDay, info.currency), { sub: spend.perDay == null ? '暂无法估计' : '按最近 7 天' }),
-      metric('还能用', left == null ? '—' : daysText(left), { sub: left == null ? '暂无法估计' : '按最近 7 天的速度', tone: left != null && left < 3 ? 'warn' : left != null ? 'accent' : '' }),
-      metric('预计用完', spend.emptyAt == null ? '—' : left >= 365 ? '很久以后' : dayLabel(spend.emptyAt), { sub: spend.emptyAt == null ? '暂无法估计' : left >= 365 ? '' : String(new Date(spend.emptyAt).getFullYear()), tone: left != null && left < 3 ? 'warn' : '' }),
+      metric('还能用', left == null ? '—' : daysText(left), { sub: left == null ? '暂无法估计' : left <= 0 ? '' : '按最近 7 天的速度', tone: left != null && left < 3 ? 'warn' : left != null ? 'accent' : '' }),
+      metric('预计用完', left != null && left <= 0 ? '已用完' : spend.emptyAt == null ? '—' : left >= 365 ? '很久以后' : dayLabel(spend.emptyAt), { sub: left != null && left <= 0 ? '' : spend.emptyAt == null ? '暂无法估计' : left >= 365 ? '' : String(new Date(spend.emptyAt).getFullYear()), tone: left != null && left < 3 ? 'warn' : '' }),
     ]));
   }
   /** 余额和预测：对应官方账号的「额度窗口」那一块。 */
@@ -552,7 +559,7 @@
         return el('div', { class: 'quota-mini ds-limit', 'data-window': bar.name }, [
           el('div', { class: 'quota-mini-head' }, [el('span', { text: WINDOW_NAME[bar.name] || bar.name }), el('span', { class: 'num' + (pct >= 90 ? ' warn-text' : ''), text: `${cash(bar.used, currency)} / ${cash(bar.limit, currency)}` })]),
           track(pct, pct >= 90, '已用额度'),
-          el('div', { class: 'mini-reset' }, [icon('clock'), bar.resetAt ? el('span', { class: 'num', text: `${duration(bar.resetAt - Date.now())}后重置 · ${date(bar.resetAt)}` })
+          el('div', { class: 'mini-reset' }, [icon('clock'), bar.resetAt ? el('span', { class: bar.resetAt <= Date.now() ? null : 'num', text: bar.resetAt <= Date.now() ? '已经重置，等待下一次查询' : `${duration(bar.resetAt - Date.now())}后重置 · ${date(bar.resetAt)}` })
             : el('span', { text: bar.name === 'quota' ? '这个 Key 的总额度，用完为止' : '站点没有给重置时间' })]),
         ]);
       })));
@@ -602,7 +609,7 @@
       el('div', { class: 'context-meta ds-context-meta' }, [
         el('div', {}, [last ? el('span', { class: 'num', text: clock(last.at) + ' ' }) : null, el('span', { text: last ? (last.ok ? '更新' : '查询失败') : account.loading ? '正在查询…' : '还没查询过' }), el('span', { text: ' · ' }), el('span', { text: autoEvery() })]),
         el('div', { class: 'ds-context-actions' }, [
-          button('刷新', () => call(() => api.refresh(account.id), '查询失败'), { glyph: 'refresh', action: 'ds-refresh', disabled: account.loading, cls: 'btn' + (account.loading ? ' is-busy' : '') }),
+          button('刷新', () => { resetInsight(account.id); return call(() => api.refresh(account.id), '查询失败'); }, { glyph: 'refresh', action: 'ds-refresh', disabled: account.loading, cls: 'btn' + (account.loading ? ' is-busy' : '') }),
           button('设置', () => openDialog(account.id), { glyph: 'settings', action: 'ds-settings' }),
           button('添加账号', () => openDialog(null, 'relay'), { glyph: 'plus', action: 'ds-add' }),
         ]),
@@ -659,7 +666,7 @@
       el('div', { class: 'context-meta ds-context-meta' }, [
         el('div', {}, [last ? el('span', { class: 'num', text: clock(last.at) + ' ' }) : null, el('span', { text: last ? (last.ok ? '更新' : '查询失败') : account.loading ? '正在查询…' : '还没查询过' }), el('span', { text: ' · ' }), el('span', { text: autoEvery() })]),
         el('div', { class: 'ds-context-actions' }, [
-          button('刷新', () => call(() => api.refresh(account.id), '查询失败'), { glyph: 'refresh', action: 'ds-refresh', disabled: account.loading, cls: 'btn' + (account.loading ? ' is-busy' : '') }),
+          button('刷新', () => { resetInsight(account.id); return call(() => api.refresh(account.id), '查询失败'); }, { glyph: 'refresh', action: 'ds-refresh', disabled: account.loading, cls: 'btn' + (account.loading ? ' is-busy' : '') }),
           button('设置', () => openDialog(account.id), { glyph: 'settings', action: 'ds-settings' }),
           button('添加账号', () => openDialog(null), { glyph: 'plus', action: 'ds-add' }),
         ]),
@@ -720,8 +727,8 @@
     const center = el('div', { class: 'ring-center' });
     if (left == null) center.append(el('div', { class: 'quota-remaining empty-number', text: '—' }));
     else {
-      const [value, unit] = left >= 365 ? ['>1', '年'] : left >= 1 ? [String(left >= 10 ? Math.round(left) : left.toFixed(1)), '天'] : [String(Math.max(1, Math.round(left * 24))), '时'];
-      node.firstChild.append(svg('circle', { class: 'ring-value ring-five' + (left < 3 ? ' critical' : ''), cx: 50, cy: 50, r: 44, 'stroke-dasharray': RING, 'stroke-dashoffset': RING * (1 - Math.min(1, left / 30)) }));
+      const [value, unit] = left <= 0 ? ['0', '时'] : left >= 365 ? ['>1', '年'] : left >= 1 ? [String(left >= 10 ? Math.round(left) : left.toFixed(1)), '天'] : [String(Math.max(1, Math.round(left * 24))), '时'];
+      node.firstChild.append(svg('circle', { class: 'ring-value ring-five' + (left < 3 ? ' critical' : ''), cx: 50, cy: 50, r: 44, 'stroke-dasharray': RING, 'stroke-dashoffset': RING * (1 - Math.max(0, Math.min(1, left / 30))) }));
       center.append(el('div', { class: 'quota-remaining' }, [el('span', { class: 'num', text: value }), el('small', { text: unit })]));
     }
     node.append(center);
@@ -796,7 +803,10 @@
     }
     const loading = list.some(account => account.loading);
     const refresh = el('button', { type: 'button', class: 'text-btn' + (loading ? ' is-busy' : ''), 'data-action': 'refresh', disabled: loading ? '' : null }, [icon('refresh'), el('span', { text: '刷新' })]);
-    refresh.addEventListener('click', () => call(() => Promise.all(list.map(account => api.refresh(account.id))).then(states => states.at(-1)), '查询失败'));
+    refresh.addEventListener('click', () => {
+      for (const account of list) resetInsight(account.id);
+      return call(() => Promise.allSettled(list.map(account => api.refresh(account.id))).then(() => api.state()), '查询失败');
+    });
     const link = el('button', { type: 'button', class: 'text-btn', 'data-action': 'detail', 'aria-label': relay ? '第三方 Key 额度详情' : 'DeepSeek 额度详情' }, [el('span', { text: '详情' }), icon('arrow')]);
     link.addEventListener('click', () => goQuota(PREFIX + ':' + lead.id));
     body.push(el('div', { class: 'quota-card-foot' }, [updated(lead) || el('span'), el('span', { class: 'ds-card-actions' }, [refresh, link])]));
@@ -869,7 +879,17 @@
     label.addEventListener('input', () => { if (!look.icon && !look.avatar) syncLook(); });
     url.addEventListener('input', () => { if (!look.icon && !look.avatar) syncLook(); });
     const save = button(account ? '保存' : '添加', () => submit(), { cls: 'btn btn-accent', action: 'save' });
-    const remove = account ? button('删除这个账号', async () => { const next = await call(() => api.remove(account.id), '删除失败'); if (next) { toast(relay ? '已删除这个 Key' : '已删除这个 DeepSeek 账号'); closeDialog(); } }, { glyph: 'trash', action: 'remove' }) : null;
+    const remove = account ? button('删除这个账号', async () => {
+      if (!dialog || dialog.busy) return;
+      const now = dialog;
+      now.busy = true; syncDialog();
+      try {
+        const next = await call(() => api.remove(account.id), '删除失败');
+        if (next && dialog === now) { toast(relay ? '已删除这个 Key' : '已删除这个 DeepSeek 账号'); closeDialog(); }
+      } finally {
+        if (dialog === now) { now.busy = false; syncDialog(); }
+      }
+    }, { glyph: 'trash', action: 'remove' }) : null;
     const link = el('button', { type: 'button', class: 'ds-balance-link', text: KEYS_URL.replace('https://', ''), title: '复制网址' });
     link.addEventListener('click', async () => { try { await navigator.clipboard.writeText(KEYS_URL); toast('已复制网址'); } catch { toast('复制失败，请手动选中复制', { kind: 'error' }); } });
     const close = button('', () => closeDialog(), { cls: 'btn icon-only ds-balance-close', glyph: 'close', action: 'close' });
@@ -911,11 +931,13 @@
       el('div', { class: 'ds-balance-foot' }, [remove, el('span', { class: 'ds-balance-gap' }), button('取消', () => closeDialog(), { action: 'cancel' }), save]),
     );
     overlay.append(card);
+    const onDocKey = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeDialog(); } };
+    document.addEventListener('keydown', onDocKey, true);
     overlay.addEventListener('click', event => { if (event.target === overlay) closeDialog(); });
-    overlay.addEventListener('keydown', event => { if (event.key === 'Escape') { event.stopPropagation(); closeDialog(); } else if (event.key === 'Enter' && event.target.tagName === 'INPUT') { event.preventDefault(); submit(); } });
+    overlay.addEventListener('keydown', event => { if (event.key === 'Enter' && event.target.tagName === 'INPUT') { event.preventDefault(); submit(); } });
     document.body.append(overlay);
     document.body.classList.add('modal-open');
-    dialog = { overlay, id: account?.id || null, relay, look, label, key, url, alert, harness, error, save, remove, busy: false, lastFocus: document.activeElement };
+    dialog = { overlay, onDocKey, id: account?.id || null, relay, look, label, key, url, alert, harness, error, save, remove, busy: false, lastFocus: document.activeElement };
     syncKind();
     (account ? label : relay ? url : key).focus();
   }
@@ -926,8 +948,9 @@
   }
   function closeDialog() {
     if (!dialog) return;
-    const { overlay, lastFocus } = dialog;
+    const { overlay, onDocKey, lastFocus } = dialog;
     dialog = null;
+    document.removeEventListener('keydown', onDocKey, true);
     overlay.remove();
     if (!document.querySelector('.modal:not([hidden])')) document.body.classList.remove('modal-open');
     if (lastFocus?.isConnected) lastFocus.focus?.();

@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { promisify } from "util";
-import { accountIdOf, rememberOfficialAccount, renewStoredCredentials, visibleAccounts } from "./accounts";
+import { accountIdOf, readOfficialAccountStore, rememberOfficialAccount, renewStoredCredentials, visibleAccounts } from "./accounts";
 import { log, errorText, logUrl } from "./app-log";
 import { renewCliCredential, type CliRenewResult } from "./cli-renew";
 import { curlBin, curlJson, HttpError } from "./curl";
@@ -221,33 +221,46 @@ function tmpName(prefix: string) {
 async function curlBinary(url: string, headers: string[], bodyFile: string) {
   const out = tmpName("tokenpulse-quota");
   const hdr = tmpName("tokenpulse-quota-hdr");
-  const args = ["-sS", "-m", "15", ...(await curlProxyArgs(url)), "-X", "POST", "-D", hdr, "-o", out, "-w", "%{http_code}", "--data-binary", `@${bodyFile}`, url];
+  const args = ["-sS", "-m", "15", "--max-filesize", String(4 * 1024 * 1024), ...(await curlProxyArgs(url)), "-X", "POST", "-D", hdr, "-o", out, "-w", "%{http_code}", "--data-binary", `@${bodyFile}`, url];
   for (const header of headers) args.push("-H", header);
   const started = Date.now();
+  const readLastHeaderBlock = () => {
+    try {
+      const rawHdr = fs.readFileSync(hdr, "utf8");
+      const blocks = rawHdr.split(/\r?\n\r?\n/).filter((b) => b.trim());
+      return blocks[blocks.length - 1] || "";
+    } catch {
+      return "";
+    }
+  };
+  const parseRetry = (block: string): number | undefined => {
+    const m = /^retry-after\s*:\s*(.+)$/im.exec(block);
+    if (!m) return undefined;
+    const val = m[1].trim();
+    const sec = Number(val);
+    if (Number.isFinite(sec) && sec >= 0) return sec * 1000;
+    const at = Date.parse(val);
+    return Number.isFinite(at) && at > Date.now() ? at - Date.now() : undefined;
+  };
   try {
     const { stdout } = await execFileAsync(curlBin(), args, { timeout: 18000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
     const status = Number(String(stdout).trim());
     const buf = fs.readFileSync(out);
     const line = `POST ${logUrl(url)} → ${Number.isFinite(status) ? status : "?"}（${Date.now() - started} ms，${buf.length} 字节）`;
-    if (status >= 400) log.warn("net", line);
+    if (status < 200 || status >= 300) log.warn("net", line);
     else log.info("net", line);
     if (status === 401 || status === 403) throw new Error("auth");
-    if (status >= 400) {
-      let retryAfterMs: number | undefined;
-      try {
-        const rawHdr = fs.readFileSync(hdr, "utf8");
-        const m = /^retry-after\s*:\s*(.+)$/im.exec(rawHdr);
-        if (m) {
-          const val = m[1].trim();
-          const sec = Number(val);
-          if (Number.isFinite(sec) && sec >= 0) retryAfterMs = sec * 1000;
-          else {
-            const at = Date.parse(val);
-            if (Number.isFinite(at) && at > Date.now()) retryAfterMs = at - Date.now();
-          }
-        }
-      } catch { /* ignore */ }
-      throw new HttpError(status, retryAfterMs);
+    const lastBlock = readLastHeaderBlock();
+    if (!Number.isFinite(status) || status < 200 || status >= 300) {
+      throw new HttpError(Number.isFinite(status) ? status : 0, parseRetry(lastBlock));
+    }
+    // gRPC-Web Trailers-Only 错误：HTTP 200 且 body 为空，但响应头里带有 grpc-status
+    const grpcStatus = /^grpc-status\s*:\s*(\d+)/im.exec(lastBlock);
+    if (grpcStatus) {
+      const code = Number(grpcStatus[1]);
+      if (code === 16 || code === 7) throw new Error("auth");
+      if (code === 8) throw new HttpError(429, parseRetry(lastBlock));
+      if (code !== 0) throw new Error(`grpc ${code}`);
     }
     return buf;
   } catch (error) {
@@ -273,13 +286,16 @@ function windowPct(raw: unknown): { pct: number; reset?: string } | null {
 function readVarint(buf: Buffer, i: number): [number, number] {
   let n = 0n;
   let s = 0n;
-  while (i < buf.length) {
+  let count = 0;
+  while (i < buf.length && count < 10) {
     const b = BigInt(buf[i++]);
+    count += 1;
+    if (count === 10 && (b & 0xfen) !== 0n) return [0, -1];
     n |= (b & 0x7fn) << s;
-    if ((b & 0x80n) === 0n) break;
+    if ((b & 0x80n) === 0n) return [Number(n), i];
     s += 7n;
   }
-  return [Number(n), i];
+  return [0, -1];
 }
 
 type ProtoField = { field: number; wire: number; varint?: number; bytes?: Buffer; float?: number };
@@ -291,7 +307,7 @@ function readFields(chunk: Buffer): ProtoField[] {
     const [tag, ni] = readVarint(chunk, i);
     if (ni <= i) break;
     i = ni;
-    const field = tag >> 3;
+    const field = tag >>> 3;
     const wire = tag & 7;
     if (wire === 0) {
       const [v, nj] = readVarint(chunk, i);
@@ -672,7 +688,7 @@ function quotaLine(quota: OfficialQuota) {
 }
 
 /** 这一轮查不查这个账号（「后台账号少查一点」，见 quota-quiet.ts）。没传就全查；不查的账号这一轮不发请求、也不报问题。 */
-export type QuotaPick = (kind: AccountKind, accountId: string) => boolean;
+export type QuotaPick = ((kind: AccountKind, accountId: string) => boolean) & { mark?: (accountId: string) => void };
 
 export async function fetchOfficialQuota(force = false, gate?: QuotaGate, pick?: QuotaPick): Promise<QuotaFetchResult> {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return { ...cache.value, issues: [] };
@@ -683,16 +699,26 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate, pick?:
     return picked.get(id)!;
   };
   const allKinds: AccountKind[] = ["claude", "chatgpt", "grok"];
-  // 传入 pick 时只门控和续期本轮真正需要查询的 provider，避免对后台静默账号或无关 provider 误发探测/重复报 blocked
+  const candidateAccountIds = (kind: AccountKind) => {
+    const ids = new Set(visibleAccounts(kind).map((account) => account.id));
+    const store = readOfficialAccountStore();
+    const blocked = new Set([...(store.removed ?? []), ...store.accounts.filter((item) => item.hidden).map((item) => item.id)]);
+    for (const live of readCliAccounts(kind)) {
+      const id = accountIdOf(kind, live.ref);
+      if (!blocked.has(id)) ids.add(id);
+    }
+    return [...ids];
+  };
+  // 传入 pick 时只门控和续期本轮真正需要查询的 provider（同时纳入尚未登记的新 CLI 登录账号），避免对后台静默账号或无关 provider 误发探测/重复报 blocked
   const kinds: AccountKind[] = pick
-    ? allKinds.filter((kind) => visibleAccounts(kind).some((account) => wanted(kind, account.id)))
+    ? allKinds.filter((kind) => candidateAccountIds(kind).some((id) => wanted(kind, id)))
     : allKinds;
   const issues: QuotaIssue[] = [];
   // 检查本身出错也按「不放行」处理：宁可这一轮没有额度，也不从没确认过的出口去问官方
   const passed = gate ? await Promise.all(kinds.map((kind) => gate(kind).catch(() => false))) : kinds.map(() => true);
   const allowed = kinds.filter((_, i) => passed[i]);
   for (let i = 0; i < kinds.length; i++) {
-    if (passed[i] || !visibleAccounts(kinds[i]).length) continue;
+    if (passed[i] || !candidateAccountIds(kinds[i]).length) continue;
     issues.push({ kind: kinds[i], who: KIND_LABEL[kinds[i]], reason: "blocked" });
   }
   // TokenPulse 自己登录的账号需要由本软件负责续期，额度查询仍只使用各账号自己的凭据。
@@ -720,6 +746,8 @@ export async function fetchOfficialQuota(force = false, gate?: QuotaGate, pick?:
         issues.push({ kind, accountId: target.accountId, who, reason: "rate-limited", retryAt: cooling.until, detail: "冷却中" });
         continue;
       }
+      // 真正派发请求时才登记本轮后台尝试时间，避免被出口拦截或 429 冷却跳过却白等 30 分钟
+      pick?.mark?.(target.accountId);
       jobs.push(
         query[kind](target).then(
           (quota) => {

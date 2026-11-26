@@ -296,11 +296,20 @@ function commandOf(kind: AgentKind, id: string) {
 
 const AGENT_NAMES: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex CLI", grok: "Grok Build", deepseek: "DeepSeek Harness", pi: "pi", antigravity: "Antigravity" };
 
+class ReadTransientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReadTransientError";
+  }
+}
+
 function readLines(file: string) {
   try {
     return fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").split(/\r?\n/);
-  } catch {
-    return [];
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw new ReadTransientError(`read failed: ${code || String(error)}`);
   }
 }
 
@@ -537,6 +546,7 @@ class Builder {
     mergeKeyOrTiming?: string | MessageTiming,
     timing?: MessageTiming,
   ) {
+    this.close();
     const text = clean(raw);
     if (!text) return;
 
@@ -600,23 +610,29 @@ class Builder {
   /** Grok 的消息是一小块一小块流出来的，直接接在后面，不加空行。 */
   chunk(role: "user" | "assistant", raw: string, at?: number, timing?: MessageTiming) {
     if (!raw) return;
-    const last = this.messages.at(-1);
-    if (last && last.role === role && (last as { open?: boolean }).open) {
-      (last as { text: string }).text = clip((last as { text: string }).text + raw, MAX_TEXT);
+    const last = this.messages.at(-1) as (SessionMessage & { open?: boolean; clipped?: number }) | undefined;
+    if (last && last.role === role && last.open) {
+      const current = (last as { text: string }).text;
+      const remaining = Math.max(0, MAX_TEXT - current.length);
+      if (remaining > 0) (last as { text: string }).text = current + raw.slice(0, remaining);
+      if (raw.length > remaining) last.clipped = (last.clipped ?? 0) + (raw.length - remaining);
       if (at != null) last.at = at;
       if (timing?.model && !(last as any).model) (last as any).model = timing.model;
       return;
     }
+    this.close();
     const idx = this.messages.length;
+    const clipped = raw.length > MAX_TEXT ? raw.length - MAX_TEXT : 0;
     const message = {
       id: `m${this.seq++}`,
       role,
-      text: raw,
+      text: clipped ? raw.slice(0, MAX_TEXT) : raw,
       at,
       open: true,
+      ...(clipped ? { clipped } : {}),
       ...(timing?.model ? { model: timing.model } : {}),
       ...(timing?.durationMs != null ? { durationMs: timing.durationMs, latencyEstimated: timing.latencyEstimated } : {}),
-    } as SessionMessage & { open?: boolean; responseId?: string };
+    } as SessionMessage & { open?: boolean; clipped?: number; responseId?: string };
 
     this.messages.push(message);
 
@@ -628,6 +644,16 @@ class Builder {
     } else if (role === "assistant") {
       this.currentTurnAssistantIndices.push(idx);
     }
+  }
+
+  /** 将稍后出现的 response_id 回填到本轮最近一条尚未带 responseId 的 assistant 消息。 */
+  attachResponseId(responseId: string): boolean {
+    if (!responseId || !this.currentTurnAssistantIndices.length) return false;
+    const idx = this.currentTurnAssistantIndices.at(-1)!;
+    const target = this.messages[idx] as (SessionMessage & { responseId?: string }) | undefined;
+    if (!target || target.role !== "assistant" || target.responseId) return false;
+    target.responseId = responseId;
+    return true;
   }
 
   private closeTurn() {
@@ -663,10 +689,15 @@ class Builder {
   }
 
   close() {
-    const last = this.messages.at(-1) as { open?: boolean; text?: string } | undefined;
+    const last = this.messages.at(-1) as { open?: boolean; clipped?: number; text?: string } | undefined;
     if (last?.open) {
+      const clipped = last.clipped ?? 0;
       delete last.open;
-      if (typeof last.text === "string") last.text = clean(last.text);
+      delete last.clipped;
+      if (typeof last.text === "string") {
+        const cleaned = clean(last.text);
+        last.text = clipped > 0 ? `${cleaned}…（已截断 ${clipped} 个字符）` : cleaned;
+      }
     }
   }
 
@@ -705,6 +736,7 @@ class Builder {
     for (const message of this.messages) {
       delete (message as { mergeKey?: string }).mergeKey;
       delete (message as { open?: boolean }).open;
+      delete (message as { clipped?: number }).clipped;
       delete (message as { responseId?: string }).responseId;
       if (message.role !== "tool" && !message.text) message.text = "";
     }
@@ -938,7 +970,9 @@ function parseCodex(file: string): Parsed | null {
     }
     if (row.type === "token_usage_record" && payload.usage && typeof payload.usage === "object") {
       hasTokenRecords = true;
-      if (typeof payload.response_id === "string" && payload.response_id) lastResponseId = payload.response_id;
+      if (typeof payload.response_id === "string" && payload.response_id) {
+        if (!b.attachResponseId(payload.response_id)) lastResponseId = payload.response_id;
+      }
       const u = payload.usage as Record<string, unknown>;
       b.addUsage(currentModel || "未知模型", {
         input: num(u.input_tokens),
@@ -980,11 +1014,16 @@ function parseCodex(file: string): Parsed | null {
           if (cleaned.text) parts.push(cleaned.text);
         }
         const text = parts.join("\n\n").trim();
-        if (text && text !== "[图片]") b.text("user", text, at);
+        if (text && text !== "[图片]") {
+          lastResponseId = "";
+          b.text("user", text, at);
+        }
       } else if (payload.role === "assistant") {
+        const rid = lastResponseId;
+        lastResponseId = "";
         b.text("assistant", textOf(payload.content), at, undefined, {
           model: currentModel || undefined,
-          responseId: lastResponseId || undefined,
+          responseId: rid || undefined,
         });
       }
     } else if (payload.type === "function_call" || payload.type === "custom_tool_call") {
@@ -1097,7 +1136,13 @@ function blockText(content: unknown, keep: (type: string) => boolean) {
 
 function parseDeepseek(file: string): Parsed | null {
   let raw: Buffer;
-  try { raw = fs.readFileSync(file); } catch { return null; }
+  try {
+    raw = fs.readFileSync(file);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw new ReadTransientError(`read failed: ${code || String(error)}`);
+  }
   const b = new Builder();
   let id = path.basename(path.dirname(file)).replace(/^session-/, "");
   let cwd: string | undefined;
@@ -1299,7 +1344,13 @@ function parseAntigravity(
   if (!summary) return null;
   const isSub = Boolean(summary.nested || swarmWorker);
   let read: ReturnType<typeof readAntigravityConversation>;
-  try { read = readAntigravityConversation(file, { includeIncoming: isSub }); } catch { return null; }
+  try {
+    read = readAntigravityConversation(file, { includeIncoming: isSub });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw new ReadTransientError(`sqlite read failed: ${code || String(error)}`);
+  }
   const labels = preloadedLabels ?? readModelLabels();
   const b = new Builder();
 
@@ -1676,7 +1727,12 @@ export function sessionTextFile(file: string) {
 
 /** 全文搜索（0.3.55，session-search.ts）用：解析一个会话文件，消息 id 和详情里的一致。 */
 export function parseSessionFile(kind: AgentKind, file: string) {
-  return parseFile(kind, file);
+  try {
+    return parseFile(kind, file);
+  } catch (error) {
+    if (error instanceof ReadTransientError) return null;
+    throw error;
+  }
 }
 
 /** 全文搜索用：先刷新列表索引，再给出每个会话文件和它的摘要（同一个会话可能有几份文件）。 */
@@ -1801,8 +1857,22 @@ export function listSessions(): SessionSummary[] {
         next.files[file] = entry;
         continue;
       }
+      if (kind === "antigravity" && agySummaries === null) {
+        // Antigravity SQLite 汇总临时读取失败：保留旧缓存条目，未缓存的不写入 summary: null，下次扫描重试
+        if (hit) next.files[file] = { ...hit, summary: hit.summary ? { ...hit.summary } : null };
+        continue;
+      }
       if (kind === "antigravity" && !agyLabels) agyLabels = readModelLabels();
-      const parsed = kind === "antigravity" ? parseAntigravity(file, agySummary, agyLabels, agySwarmMeta) : parseFile(kind, file);
+      let parsed: Parsed | null;
+      try {
+        parsed = kind === "antigravity" ? parseAntigravity(file, agySummary, agyLabels, agySwarmMeta) : parseFile(kind, file);
+      } catch (error) {
+        if (error instanceof ReadTransientError) {
+          if (hit) next.files[file] = { ...hit, summary: hit.summary ? { ...hit.summary } : null };
+          continue;
+        }
+        throw error;
+      }
       next.files[file] = {
         size: stat.size,
         mtimeMs: stat.mtimeMs,
@@ -1920,7 +1990,8 @@ export function listSessions(): SessionSummary[] {
 
 function filesOf(kind: AgentKind, id: string) {
   const index = readJson<SessionIndex | null>(indexFile(), null);
-  return Object.entries(index?.files ?? {})
+  if (index?.version !== INDEX_VERSION) return [];
+  return Object.entries(index.files ?? {})
     .filter(([, entry]) => entry.summary?.kind === kind && entry.summary.id === id)
     .sort((a, b) => (b[1].summary?.updatedAt ?? 0) - (a[1].summary?.updatedAt ?? 0))
     .map(([file]) => file);
@@ -1948,7 +2019,9 @@ function removalPaths(kind: AgentKind, id: string, file: string): string[] {
   if (kind === "pi") {
     // pi 自己在 /resume 里删除时也只删这一个文件。文件名可能被改过，以第一行 header 里的会话 id 为准
     if (!isInside(path.resolve(path.join(piDir(), "sessions")), target)) return [];
-    const header = parseLine(readLines(target)[0] ?? "");
+    let firstLine = "";
+    try { firstLine = readLines(target)[0] ?? ""; } catch { return []; }
+    const header = parseLine(firstLine);
     return header?.type === "session" && header.id === id ? [target] : [];
   }
   if (kind === "deepseek") {
@@ -2081,7 +2154,13 @@ export function getSession(kind: unknown, id: unknown): SessionDetail | null {
     file = fileOf(kind, id);
   }
   if (!file) return null;
-  const parsed = parseFile(kind, file);
+  let parsed: Parsed | null;
+  try {
+    parsed = parseFile(kind, file);
+  } catch (error) {
+    if (error instanceof ReadTransientError) return null;
+    throw error;
+  }
   if (!parsed) return null;
   const { file: _file, spawnedChildren: _spawned, ...detail } = parsed;
   const index = readJson<SessionIndex | null>(indexFile(), null);

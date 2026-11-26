@@ -34,7 +34,9 @@
     const seq = ++view.seq;
     api.requests(query).then(page => {
       if (seq !== view.seq) return;
-      view.page = page; view.loading = false;
+      view.loading = false;
+      if (!page) { view.key = ''; if (visible()) draw(); return; }
+      view.page = page;
       if (visible()) keepScroll(draw);
     }).catch(() => {
       if (seq !== view.seq) return;
@@ -129,7 +131,7 @@
       return;
     }
     const sessions = page.sessions || [];
-    if (!view.warmed && sessions.length > 0 && !sessions.some(s => s.sessionKey) && typeof api?.sessions === 'function') {
+    if (!view.warmed && !api.isDemo?.() && sessions.some(s => s.sessionKey && !s.title) && typeof api?.sessions === 'function') {
       view.warmed = true;
       api.sessions().then(() => { view.key = ''; if (visible()) load(); }).catch(() => {});
     }
@@ -151,6 +153,7 @@
       summaryCell('requests', '最长自动连跑', maxAuto ? `${number(maxAuto)} 步` : '—', runawayCount ? `${number(runawayCount)} 个会话出现 ≥8 步连跑` : '无 ≥8 步无人工暴走'),
       summaryCell('cost', '参考费用', money(totalCost), hasOfficial && weekQuota > 0 ? `折合周额度 ≈ ${quotaPct(weekQuota)}` : '所选范围合计'),
     );
+    if (view.error) nodes.summary.append(el('div', { class: 'pj-stale', role: 'status' }, [el('span', { text: '刷新失败，显示的是上一次的结果。' }), retryButton()]));
 
     if (!list.length) {
       nodes.tableWrap.replaceChildren(el('div', { class: 'empty', text: sessions.length ? '没有匹配的会话。' : '这段时间、这些筛选条件下没有请求记录。' }));

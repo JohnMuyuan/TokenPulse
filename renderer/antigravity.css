@@ -9,7 +9,6 @@
 /* 额度详情：官方单池的模型容量排行隐藏，改由 #quota-detail 内的分组双窗口 .agy-model-study 渲染 */
 #page-quota.agy-mode #quota-model-study { display: none; }
 #page-quota.agy-mode #quota-detail > * { scroll-margin-block-start: 80px; }
-#quota-detail button, #quota-cards [data-antigravity] button { color: inherit; }
 
 .agy-dot { display: inline-block; flex: none; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--agy-color, var(--antigravity)); vertical-align: middle; }
 .agy-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -191,8 +190,8 @@
 .agy-model-study .agy-study-pool .ms-meter { height: 6px; background: var(--tile-neutral); }
 .agy-model-study .agy-study-pool .five .ms-meter .full { background: color-mix(in srgb, var(--agy-color, var(--accent)) 32%, transparent); }
 .agy-model-study .agy-study-pool .five .ms-meter .left { background: var(--agy-color, var(--accent)); }
-.agy-model-study .agy-study-pool .week .ms-meter .full { background: color-mix(in srgb, var(--agy-color, var(--brand-claude)) 32%, transparent); }
-.agy-model-study .agy-study-pool .week .ms-meter .left { background: var(--agy-color, var(--brand-claude)); }
+.agy-model-study .agy-study-pool .week .ms-meter .full { background: color-mix(in srgb, var(--agy-color, var(--claude)) 32%, transparent); }
+.agy-model-study .agy-study-pool .week .ms-meter .left { background: var(--agy-color, var(--claude)); }
 .agy-model-study .agy-study-pool .ms-meter .full:only-child { background: color-mix(in srgb, var(--agy-color, var(--accent)) 72%, transparent); }
 .agy-model-study .agy-study-pool .ms-meter .full.relative { background: color-mix(in srgb, var(--agy-color, var(--accent)) 56%, transparent); }
 .agy-requests .table-scroll {
