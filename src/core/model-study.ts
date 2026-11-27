@@ -322,8 +322,8 @@ export function queryModelStudy(value: ModelStudyQuery): ModelStudies {
   const samples = Array.isArray(history.accounts[q.kind]) ? history.accounts[q.kind] : [];
   const stored = store.accounts.find(a => a.id === q.accountId && a.kind === q.kind);
   if (stored?.hidden || store.removed?.includes(q.accountId) || (!stored && !samples.some(s => s.account === q.accountId))) throw new Error("找不到可分析的官方账号。");
-  const source = { chatgpt: "Codex CLI", claude: "Claude Code", grok: "Grok Build" }[q.kind];
-  const all = queryRequests({ from: day(now - TRAINING_DAYS * DAY), to: day(now), since: now - TRAINING_DAYS * DAY, until: now, source, account: q.accountId, status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true, channel: "official" });
+  // source 用 "all"：同官方账号从 pi（anthropic / openai-codex / openai / xai OAuth）发出的请求也一并纳入周期与容量分析
+  const all = queryRequests({ from: day(now - TRAINING_DAYS * DAY), to: day(now), since: now - TRAINING_DAYS * DAY, until: now, source: "all", account: q.accountId, status: "all", search: "", sort: "time", page: 0, pageSize: 1, all: true, channel: "official" });
   const rows = all.rows.filter(r => FAMILY[q.kind].test(r.model));
   const catalog = modelCatalog(q.kind, rows);
   // 用户自己加的型号：同名同等级已经在目录里的，只补上「你添加的」来源

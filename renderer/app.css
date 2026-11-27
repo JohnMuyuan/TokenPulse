@@ -633,6 +633,7 @@ body[data-page="overview"] .subtitle { display: none; }
 .account-avatar .brand-svg { width: 19px; height: 19px; }
 .account-avatar.claude { background: var(--claude-soft); }
 .account-avatar.chatgpt { background: color-mix(in oklab, var(--openai) 12%, transparent); color: var(--openai); }
+.account-avatar.pi { background: color-mix(in oklab, var(--pi) 14%, transparent); color: var(--pi); }
 .brand-glyph { display: inline-grid; width: 16px; height: 16px; flex: none; }
 .brand-glyph .brand-svg { width: 16px; height: 16px; }
 .source-logo { width: 26px; height: 26px; border-radius: 8px; flex: none; }
@@ -1620,6 +1621,8 @@ body.modal-open { overflow: hidden; }
 .oauth-account .btn.oauth-switch .icon { width: 13px; height: 13px; }
 .oauth-account.hidden-account .oauth-account-name { color: var(--faint); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--faint) 60%, transparent); }
 .oauth-renew { flex: none; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 12px; }
+.pi-official-list { margin-top: 8px; }
+.oauth-pi-linked { flex: none; padding: 1px 8px; border-radius: 99px; border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line)); background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
 .account-security-note { display: flex; align-items: flex-start; gap: 6px; margin: 12px 1px 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 .account-security-note .icon { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--accent); }
 

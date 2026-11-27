@@ -48,6 +48,7 @@ function spawn(): DemoProcess {
     "grok_home",
     "tokenpulse_dsh_home",
     "pi_coding_agent_dir",
+    "pi_coding_agent_session_dir",
     "tokenpulse_antigravity_dir",
     "tokenpulse_data_dir",
     "home",

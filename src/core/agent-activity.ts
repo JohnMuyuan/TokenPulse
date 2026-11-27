@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { cliDir } from "./credentials";
-import { dshRoot, piDir } from "./paths";
+import { dshRoot, piSessionsDir } from "./paths";
 import { antigravityCliDir, antigravityDir, readAntigravityActivity } from "./antigravity";
 import { claudeUserText, codexUserText } from "./sessions";
 import { zstdFrames } from "./zstd-frames";
@@ -591,7 +591,7 @@ export type ActivityRoots = { claude: string; codex: string; codexIndex: string;
 export function defaultRoots(): ActivityRoots {
   return {
     claude: path.join(cliDir("claude"), "projects"), codex: path.join(cliDir("chatgpt"), "sessions"), codexIndex: path.join(cliDir("chatgpt"), "session_index.jsonl"),
-    grok: path.join(cliDir("grok"), "sessions"), deepseek: path.join(dshRoot(), "sessions"), pi: path.join(piDir(), "sessions"),
+    grok: path.join(cliDir("grok"), "sessions"), deepseek: path.join(dshRoot(), "sessions"), pi: piSessionsDir(),
     antigravity: antigravityDir(), antigravityCli: antigravityCliDir(),
   };
 }

@@ -14,8 +14,19 @@ const OAUTH_META = {
   chatgpt: { name: 'ChatGPT', brand: 'openai' },
   claude: { name: 'Claude', brand: 'claude' },
   grok: { name: 'Grok', brand: 'grok' },
-  antigravity: { name: 'Antigravity', brand: 'antigravity' }
+  antigravity: { name: 'Antigravity', brand: 'antigravity' },
+  pi: { name: 'pi', brand: 'pi' }
 };
+const PI_FALLBACK_ACCOUNT_LABELS = new Set([
+  'Google AI Plan 账号',
+  'Anthropic 账号',
+  'OpenAI Codex 账号',
+  'OpenAI ChatGPT 账号',
+  'xAI 账号',
+  'GitHub Copilot 账号',
+  'Kimi Code 账号',
+  'Meta 账号',
+]);
 const BRAND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'openai', 'Grok Build': 'grok', 'DeepSeek Harness': 'deepseek', pi: 'pi', Antigravity: 'antigravity',
   // CC Switch 导入的工具（core/cc-switch.ts 的 CC_SOURCES），图标来自 lobe-icons；认不出的还是首字母
   'Gemini CLI': 'geminicli', OpenCode: 'opencode', Hermes: 'hermes', 'Copilot CLI': 'githubcopilot' };
@@ -481,6 +492,102 @@ function renderAgyAccounts(agyStatus) {
   ]));
 }
 
+const PI_LINKED_KIND_BADGE = { claude: '已联动 Claude 额度', chatgpt: '已联动 ChatGPT 额度', grok: '已联动 Grok 额度' };
+/** pi 的 OAuth 只读识别卡片（独立挂载在 #pi-accounts，不触碰 ~/.pi/agent/auth.json）。 */
+function renderPiAccounts(piStatus) {
+  const host = $('pi-accounts');
+  if (!host) return;
+  if (!piStatus || typeof piStatus !== 'object' || (!piStatus.installed && !(piStatus.accounts || []).length)) {
+    host.replaceChildren();
+    return;
+  }
+  const items = piStatus.accounts || [];
+  const activeCount = items.filter(a => a.inAuth).length;
+  const summaryText = activeCount > 0
+    ? `${activeCount} 个活跃登录 · 只读识别`
+    : items.length > 0 ? '仅历史记录 · 只读识别' : null;
+  const summary = summaryText ? el('span', { class: 'oauth-pool-summary', text: summaryText }) : null;
+  const syncBtn = el('button', {
+    type: 'button',
+    class: 'btn',
+    'data-account-action': 'pi-sync',
+    'data-account-kind': 'pi',
+    title: '只读扫描 ~/.pi/agent/auth.json 并识别邮箱，不改写凭据也不刷新令牌',
+  }, [icon('refresh'), '同步识别']);
+  const rows = items.map(account => {
+    const email = account.email || account.label;
+    const name = account.alias || email;
+    const isFallbackName = !account.alias && PI_FALLBACK_ACCOUNT_LABELS.has(name);
+    const subParts = [account.providerName || account.provider];
+    if (account.alias && email) subParts.push(email);
+    else if (account.email && account.login && account.label !== account.email) subParts.push(`@${account.login}`);
+    const stateText = account.status === 'resolved' ? '当前登录'
+      : account.status === 'expired' ? '待 pi 刷新'
+      : account.status === 'provisional' ? '待识别邮箱'
+      : '已登出（历史）';
+    const stateClass = 'oauth-card-state' + (account.status === 'resolved' ? ' ok' : account.status === 'expired' || account.status === 'provisional' ? ' warn' : '');
+    const stateTitle = account.status === 'expired'
+      ? 'access 令牌已过期，TokenPulse 不触发刷新；等 pi 下次发起请求自动刷新后即可补齐真实邮箱'
+      : account.status === 'provisional'
+        ? '等待识别真实邮箱，点右上角「同步识别」可立即尝试'
+        : '';
+    const linkedBadge = account.linkedKind && PI_LINKED_KIND_BADGE[account.linkedKind]
+      ? el('span', {
+          class: 'oauth-pi-linked',
+          text: PI_LINKED_KIND_BADGE[account.linkedKind],
+          title: '与本机官方账号同一身份：pi 中发出的请求已自动并入该账号的额度容量与模型研究',
+        })
+      : null;
+    const renameTargetId = account.linkedOfficialId || account.id;
+    const renameTargetKind = account.linkedOfficialId ? (account.linkedKind || 'pi') : 'pi';
+    const actions = [
+      el('button', {
+        type: 'button',
+        class: 'btn icon-only oauth-tool',
+        'data-account-action': 'rename',
+        'data-account-kind': renameTargetKind,
+        'data-account-id': renameTargetId,
+        title: '重命名',
+        'aria-label': `重命名：${name}`,
+      }, [icon('edit')]),
+      el('button', {
+        type: 'button',
+        class: 'btn icon-only oauth-tool' + (account.inAuth ? '' : ' danger'),
+        'data-account-action': account.inAuth ? 'pi-reset' : 'remove',
+        'data-account-kind': 'pi',
+        'data-account-id': account.id,
+        title: account.inAuth ? '清除本地缓存并重新读取 auth.json 识别，不改动 pi 凭据' : '删除历史记录',
+        'aria-label': `${account.inAuth ? '重新识别缓存' : '删除历史记录'}：${name}`,
+      }, [icon(account.inAuth ? 'refresh' : 'trash')]),
+    ];
+    return el('div', {
+      class: 'oauth-account' + (account.status === 'expired' ? ' expired' : '') + (!account.inAuth ? ' hidden-account' : ''),
+      'data-account-row': renameTargetId,
+    }, [
+      el('span', { class: 'oauth-grip placeholder', 'aria-hidden': 'true' }),
+      el('span', { class: 'oauth-account-who' }, [
+        el('span', {
+          class: 'oauth-account-name',
+          text: name,
+          title: name,
+          translate: isFallbackName ? null : 'no',
+          'data-alias': account.alias || '',
+          'data-email': email,
+        }),
+        el('small', { class: 'oauth-account-email', text: subParts.filter(Boolean).join(' · '), translate: 'no' }),
+      ]),
+      linkedBadge,
+      el('span', { class: stateClass, text: stateText, ...(stateTitle ? { title: stateTitle } : {}) }),
+      el('span', { class: 'oauth-actions' }, actions),
+    ]);
+  });
+  const emptyText = '当前未在 ~/.pi/agent/auth.json 中检测到 OAuth 订阅登录；在 pi 中运行 /login 后点「同步识别」即可只读识别。';
+  host.replaceChildren(el('div', { class: 'oauth-card', 'data-pi-oauth-card': '' }, [
+    el('div', { class: 'oauth-card-head' }, [avatar('pi'), el('span', { class: 'oauth-card-title', text: 'pi OAuth 登录' }), summary, syncBtn]),
+    rows.length ? el('div', { class: 'oauth-account-list', 'data-kind': 'pi' }, rows) : el('p', { class: 'oauth-empty', text: emptyText }),
+  ]));
+}
+
 /* ---- 拖拽排序 ----
  * 按住把手上下拖：被拖的那行跟着鼠标走，其余的行让出位置（transform 动画，不改 DOM）；松手时才真的改 DOM 顺序并保存。
  * 用 pointer 事件自己做而不用 HTML5 拖放：原生拖放拖的是一张半透明截图，别的行也不会让位，手感差。
@@ -585,7 +692,7 @@ function startRename(button) {
   const row = button.closest('.oauth-account'), label = row.querySelector('.oauth-account-name');
   if (row.querySelector('.oauth-rename')) return;
   const id = button.dataset.accountId, kind = button.dataset.accountKind, email = label.dataset.email;
-  const container = kind === 'antigravity' ? $('antigravity-accounts') : $('official-accounts');
+  const container = kind === 'antigravity' ? $('antigravity-accounts') : (kind === 'pi' || String(id).startsWith('pi:')) ? $('pi-accounts') : $('official-accounts');
   const input = el('input', { class: 'oauth-rename', type: 'text', maxlength: '40', value: label.dataset.alias || '', placeholder: email || '给这个账号起个名字', 'aria-label': '账号名字（留空就显示邮箱）', translate: 'no' });
   label.replaceWith(input);
   input.focus(); input.select();
@@ -600,8 +707,11 @@ function startRename(button) {
       if (kind === 'antigravity' || String(id).startsWith('antigravity:')) {
         renderAgyAccounts(await api.antigravityQuota.manage('rename', id, value));
         api.antigravityQuota.state().then(s => window.AntigravityQuota?.apply?.(s)).catch(() => {});
+      } else if (kind === 'pi' || String(id).startsWith('pi:')) {
+        renderPiAccounts(await api.piAccounts.manage('rename', id, value));
       } else {
         renderOfficialAccounts(await api.manageOfficialAccount('rename', id, value));
+        api.piAccounts?.list?.().then(renderPiAccounts).catch(() => {});
       }
       settingsDone(value ? '已改名' : '已去掉名字，显示邮箱');
       container?.querySelector(`[data-account-row="${CSS.escape(id)}"] [data-account-action="rename"]`)?.focus();
@@ -685,8 +795,10 @@ async function loadOfficialAccounts() {
   const seq = ++officialAccountsSeq;
   $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '正在读取账号状态…' }));
   $('antigravity-accounts')?.replaceChildren();
+  $('pi-accounts')?.replaceChildren();
   try { const prefs = await api.readPrefs(); if (seq !== officialAccountsSeq) return; localOnly = new Set(prefs.localOnlyAccounts || []); autoSwitchRules = prefs.cliAutoSwitch || {}; } catch { /* 读不到就按都没打开显示 */ }
   const agyPromise = api.antigravityQuota?.accounts?.().catch(() => null);
+  const piPromise = api.piAccounts?.list?.().catch(() => null);
   try {
     const statuses = await api.officialAccounts();
     if (seq !== officialAccountsSeq) return;
@@ -695,9 +807,10 @@ async function loadOfficialAccounts() {
     if (seq !== officialAccountsSeq) return;
     $('official-accounts').replaceChildren(el('div', { class: 'account-loading', text: '账号状态读取失败，请重新打开设置。' }));
   }
-  const agyStatus = await agyPromise;
+  const [agyStatus, piStatus] = await Promise.all([agyPromise, piPromise]);
   if (seq !== officialAccountsSeq) return;
   renderAgyAccounts(agyStatus);
+  renderPiAccounts(piStatus);
 }
 
 
@@ -1341,7 +1454,7 @@ function renderStats() {
     const costSplit = name === 'cost' && showCostSplit
       ? el('div', {
           class: 'stat-cost-split num',
-          title: `官方订阅等价：走 Claude / ChatGPT / Grok / Antigravity 官方登录账号的 API 标价折算（${money(offCost)}）\nAPI 按量实付：走 API Key、中转站、DeepSeek 或 pi 按量计费的估算花费（${money(apiCost)}）`,
+          title: `官方订阅等价：走 Claude / ChatGPT / Grok / Antigravity / pi 官方 OAuth 账号的 API 标价折算（${money(offCost)}）\nAPI 按量实付：走 API Key、中转站、DeepSeek 或 pi 按量计费的估算花费（${money(apiCost)}）`,
         }, [
           el('span', { class: 'cost-pill sub-eq', text: `订阅等价 ${money(offCost)}` }),
           el('span', { class: 'cost-pill api-pay', text: `API 实付 ${money(apiCost)}` }),
@@ -2537,7 +2650,7 @@ function drawAccountRequests(panel, account, meta, data) {
 /* ---------------- 请求记录与型号核验 ---------------- */
 
 const VERIFY_TONE = { match: 'good', mismatch: 'critical', suspect: 'warning', unverified: 'neutral' };
-const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['contextRate', '上下文水位'], ['output', '输出 tokens'], ['reasoningRate', '推理占比'], ['cacheRead', '缓存读取'], ['cacheHitRate', '缓存命中率'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['autoStepText', '连续自动轮次'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话'], ['firstTokenMs', '首字延迟（毫秒）'], ['totalMs', '总耗时（毫秒）'], ['tokensPerSec', '输出速度（Token/秒）'], ['routeVia', '经由']];
+const REQUEST_COLUMNS = [['time', '时间'], ['source', '工具'], ['provider', '供应商'], ['accountLabel', '账号'], ['accountBasis', '账号依据'], ['project', '项目'], ['cwd', '工作目录'], ['requested', '请求型号'], ['returned', '返回型号'], ['effort', '思考等级'], ['effortSource', '等级来源'], ['statusLabel', '核验'], ['reason', '核验说明'], ['channel', '响应格式'], ['input', '输入 tokens（含缓存）'], ['contextRate', '上下文水位'], ['output', '输出 tokens'], ['reasoningRate', '推理占比'], ['cacheRead', '缓存读取'], ['cacheHitRate', '缓存命中率'], ['cacheWrite', '缓存写入'], ['reasoning', '推理 tokens'], ['autoStepText', '连续自动轮次'], ['tokens', '总 tokens'], ['quotaFive', '5 小时额度占用（估算）'], ['quotaWeek', '周额度占用（估算）'], ['costUsd', '参考费用 USD'], ['responseId', '响应 ID'], ['requestId', '请求 ID'], ['session', '会话'], ['firstTokenMs', '首字延迟（毫秒）'], ['totalMs', '总耗时（毫秒）'], ['tokensPerSec', '输出速度（Token/秒）'], ['routeVia', '经由']];
 let requestPage = null, requestSeq = 0, requestKey = '', requestError = false;
 const openRequests = new Set();
 function projectOf(cwd) { return cwd ? cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd : '—'; }
@@ -2710,7 +2823,6 @@ const ACCOUNT_BASIS_HINT = {
   route: '经 TokenPulse 的号池发出，按本地路由的记录对上号池里的这个账号',
   'route-window': '这次转发交给了这个账号。Grok 的会话按一整轮汇总，TokenPulse 按转发记录把这一轮拆开，记到每次实际用的账号上'
 };
-const PI_FALLBACK_ACCOUNT_LABELS = new Set(['Google AI Plan 账号', 'Anthropic 账号', 'OpenAI Codex 账号', 'OpenAI ChatGPT 账号', 'xAI 账号', 'GitHub Copilot 账号']);
 /** 项目和账号放一格：上面项目，下面是发出这次请求的账号。 */
 function projectAccountCell(row) {
   const keepAccount = row.account && !PI_FALLBACK_ACCOUNT_LABELS.has(row.account.label);
@@ -2727,8 +2839,10 @@ function projectAccountCell(row) {
 const KIND_OF_SOURCE = { 'Claude Code': 'claude', 'Codex CLI': 'chatgpt', 'Grok Build': 'grok' };
 function quotaShare(row) {
   if (row.source === 'Antigravity') return window.AntigravityQuota?.quotaShare?.(row) || null;
-  // 同一家可能有好几个账号在查额度：找这条请求所属账号的那份
-  const reports = current?.accounts?.filter(item => item.kind === KIND_OF_SOURCE[row.source]) || [];
+  // 同一家可能有好几个账号在查额度：找这条请求所属账号的那份；pi 联动到三家官方账号的同样参与折算
+  const kind = KIND_OF_SOURCE[row.source] || (row.account?.id ? row.account.id.split(':')[0] : '');
+  if (kind !== 'claude' && kind !== 'chatgpt' && kind !== 'grok') return null;
+  const reports = current?.accounts?.filter(item => item.kind === kind) || [];
   const report = reports.find(item => item.accountId && item.accountId === row.account?.id) || (reports.length === 1 && !reports[0].accountId ? reports[0] : null);
   if (!report || !row.account) return null;
   const share = name => {
@@ -2795,6 +2909,7 @@ function requestDetail(row) {
   const auto = row.autoStep || (row.calls >= 2 ? row.calls : 0);
   const fields = [
     ['时间', t.full], ['请求型号', row.requested || '未记录'], ['返回型号', row.returned || '未记录'], ['响应格式', row.channel],
+    ...(row.provider ? [['供应商', row.provider, true, null, true]] : []),
     ['账号', row.account ? row.account.label : row.official === false ? 'API Key / 中转站' : '对不上'],
     ['账号依据', row.account ? `${ACCOUNT_BASIS[row.account.basis]}：${ACCOUNT_BASIS_HINT[row.account.basis]}` : '—'],
     ['账号类型', row.official === true ? '官方登录账号' : row.official === false ? 'API Key / 中转站' : '未知'],
@@ -4412,7 +4527,7 @@ $('export-requests').addEventListener('click', async () => {
   const button = $('export-requests'); button.disabled = true;
   try {
     const page = await api.requests(requestQuery({ all: true }));
-    const rows = page.rows.map(row => ({ ...row, contextRate: contextFillText(row), reasoningRate: reasoningText(row), autoStepText: (row.autoStep || row.calls) >= 2 ? String(row.autoStep || row.calls) : '', cacheHitRate: cacheHitText(row), firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? (row.timing.avgTokensPerSec != null ? '≈' + row.timing.avgTokensPerSec : '')) : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
+    const rows = page.rows.map(row => ({ ...row, provider: row.provider || '', contextRate: contextFillText(row), reasoningRate: reasoningText(row), autoStepText: (row.autoStep || row.calls) >= 2 ? String(row.autoStep || row.calls) : '', cacheHitRate: cacheHitText(row), firstTokenMs: row.timing?.firstTokenMs ?? row.timing?.firstByteMs ?? '', totalMs: row.timing?.ms ?? '', tokensPerSec: row.timing ? (row.timing.tokensPerSec ?? (row.timing.avgTokensPerSec != null ? '≈' + row.timing.avgTokensPerSec : '')) : (row.estimate && row.source !== 'Antigravity' && row.source !== 'DeepSeek Harness' ? '≈' + row.estimate.tokensPerSec : ''), routeVia: row.timing ? (row.timing.provider === 'Antigravity' ? 'Antigravity 本地记录' : row.timing.pass ? '透明转发' : `本地路由 · ${row.timing.provider || ''}`) : '', time: clock(row.at).full, project: projectOf(row.cwd), reason: row.reasons.join('；'), requested: row.requested || '', returned: row.returned || '', accountLabel: row.account?.label || (row.official === false ? 'API Key / 中转站' : ''), accountBasis: row.account ? ACCOUNT_BASIS[row.account.basis] : '', ...(share => ({ quotaFive: share?.five ? share.five.pct.toFixed(4) + '%' : '', quotaWeek: share?.week ? share.week.pct.toFixed(4) + '%' : '' }))(quotaShare(row)) }));
     if (await api.exportCsv(D.csv(rows, REQUEST_COLUMNS), 'requests')) showStatus(`已导出 ${number(rows.length)} 次请求。`);
   } catch { showStatus('导出失败，请检查保存位置是否可写。', true); }
   finally { button.disabled = !requestPage?.total; }
@@ -4707,19 +4822,31 @@ $('antigravity-accounts')?.addEventListener('click', event => {
   }
   return runAccountAction(button.dataset.accountAction, kind, id, button);
 });
+api.piAccounts?.onChanged?.(status => {
+  if (!$('settings').hidden) renderPiAccounts(status);
+});
+$('pi-accounts')?.addEventListener('click', event => {
+  const button = event.target.closest('[data-account-action]');
+  if (!button || button.disabled) return;
+  return runAccountAction(button.dataset.accountAction, button.dataset.accountKind, button.dataset.accountId, button);
+});
 async function runAccountAction(action, kind, id, button) {
   if (action === 'rename') { disarmRemove(); startRename(button); return; }
   if ((action === 'remove' || action === 'purge') && removeArmed?.button !== button) { armRemove(button); return; }
   const hiding = action === 'remove' && button.dataset.inCli === '1';
   disarmRemove();
+  const isPi = kind === 'pi' || String(id || '').startsWith('pi:');
   const isAgy = kind === 'antigravity' || String(id || '').startsWith('antigravity:');
   const buttons = [
     ...$('official-accounts').querySelectorAll('button'),
     ...($('antigravity-accounts')?.querySelectorAll('button') || []),
+    ...($('pi-accounts')?.querySelectorAll('button') || []),
   ];
   const disabledBefore = new Set(buttons.filter(item => item.disabled));
   buttons.forEach(item => { item.disabled = true; });
-  $('prefs-status').textContent = action === 'switch-cli'
+  $('prefs-status').textContent = action === 'pi-sync'
+    ? '正在同步 pi 账号…'
+    : action === 'switch-cli'
     ? '正在切换 CLI 的登录…'
     : action === 'switch-agy'
       ? (button?.dataset?.agyRunning === '1' ? '正在切换 Antigravity 登录并重启客户端…' : '正在切换 Antigravity 登录…')
@@ -4729,7 +4856,15 @@ async function runAccountAction(action, kind, id, button) {
           ? (isAgy ? '正在读取本机 Antigravity 的登录…' : '正在读取 CLI 的登录…')
           : '正在保存…';
   try {
-    if (isAgy) {
+    if (isPi) {
+      if (action === 'pi-sync') {
+        renderPiAccounts(await api.piAccounts.sync());
+        settingsDone('已同步 pi 账号');
+      } else if (action === 'pi-reset' || action === 'remove') {
+        renderPiAccounts(await api.piAccounts.manage('remove', id));
+        settingsDone(action === 'pi-reset' ? '已重置缓存并重新同步 pi 账号' : '已删除 pi 历史账号记录');
+      }
+    } else if (isAgy) {
       if (action === 'switch-agy') {
         const result = await api.antigravityQuota.switchLocal(id);
         renderAgyAccounts(result.status);

@@ -63,6 +63,17 @@ contextBridge.exposeInMainWorld("tokenpulse", {
       return () => ipcRenderer.off("antigravity-quota-state", listener);
     },
   },
+  /** pi OAuth 账号只读识别与本地别名管理（绝不改写 ~/.pi/agent/auth.json，也不暴露任何凭据）。 */
+  piAccounts: {
+    list: () => ipcRenderer.invoke("pi-accounts:list"),
+    sync: () => mutate("pi-accounts:sync"),
+    manage: (action: "rename" | "remove", id: string, value?: string) => mutate("pi-accounts:manage", action, id, value),
+    onChanged: (handler: (status: unknown) => void) => {
+      const listener = (_event: unknown, status: unknown) => { if (!demo) handler(status); };
+      ipcRenderer.on("pi-accounts-changed", listener);
+      return () => ipcRenderer.off("pi-accounts-changed", listener);
+    },
+  },
   /** 额度详情的号池页（0.3.44）：汇总、时间线、速度。只读。 */
   poolInsight: {
     summary: (id: string) => ipcRenderer.invoke("pool-insight:summary", id),

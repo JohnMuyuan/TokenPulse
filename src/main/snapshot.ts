@@ -34,6 +34,7 @@ function envSignature() {
     process.env.TOKENPULSE_ANTIGRAVITY_DIR || "",
     process.env.TOKENPULSE_DSH_HOME || "",
     process.env.PI_CODING_AGENT_DIR || "",
+    process.env.PI_CODING_AGENT_SESSION_DIR || "",
     process.env.TZ || "",
   ].join("\u0000");
 }

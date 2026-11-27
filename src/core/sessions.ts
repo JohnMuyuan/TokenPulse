@@ -2,7 +2,7 @@ import { createHash } from "crypto";
 import fs from "fs";
 import path from "path";
 import { cliDir } from "./credentials";
-import { dataFile, dshRoot, piDir, readJson, writeJson } from "./paths";
+import { dataFile, dshRoot, piSessionsDir, readJson, writeJson } from "./paths";
 import { zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
 import { estimateCost } from "./model-pricing";
@@ -1708,7 +1708,7 @@ function sources(): { kind: AgentKind; files: string[] }[] {
     { kind: "codex", files: walk(path.join(cliDir("chatgpt"), "sessions"), (file) => file.endsWith(".jsonl")) },
     { kind: "grok", files: walk(path.join(cliDir("grok"), "sessions"), (file) => path.basename(file) === "updates.jsonl") },
     { kind: "deepseek", files: walk(path.join(dshRoot(), "sessions"), (file) => path.basename(file) === "session.v4.jsonl.zstd") },
-    { kind: "pi", files: walk(path.join(piDir(), "sessions"), file => file.endsWith(".jsonl")) },
+    { kind: "pi", files: walk(piSessionsDir(), file => file.endsWith(".jsonl")) },
     { kind: "antigravity", files: antigravityConversationFiles() },
   ];
 }
@@ -2018,7 +2018,7 @@ function removalPaths(kind: AgentKind, id: string, file: string): string[] {
   }
   if (kind === "pi") {
     // pi 自己在 /resume 里删除时也只删这一个文件。文件名可能被改过，以第一行 header 里的会话 id 为准
-    if (!isInside(path.resolve(path.join(piDir(), "sessions")), target)) return [];
+    if (!isInside(path.resolve(piSessionsDir()), target)) return [];
     let firstLine = "";
     try { firstLine = readLines(target)[0] ?? ""; } catch { return []; }
     const header = parseLine(firstLine);

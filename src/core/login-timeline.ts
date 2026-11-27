@@ -139,7 +139,8 @@ export function accountLabels(): AccountLabels {
     for (const span of spans ?? []) {
       if (!span?.id) continue;
       const email = span.email || "";
-      const alias = email ? aliasByEmail.get(email.toLowerCase()) : undefined;
+      const ownAlias = piStore.aliases?.[span.id];
+      const alias = ownAlias || (email ? aliasByEmail.get(email.toLowerCase()) : undefined);
       labels.set(span.id, alias || email || span.label || span.id);
       if (email) emails.set(span.id, email);
     }

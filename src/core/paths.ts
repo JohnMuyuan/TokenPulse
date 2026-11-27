@@ -17,6 +17,11 @@ export function piDir() {
   return process.env.PI_CODING_AGENT_DIR || path.join(process.env.AGENT_SWITCH_HOME || os.homedir(), ".pi", "agent");
 }
 
+/** pi 会话目录：支持 PI_CODING_AGENT_SESSION_DIR 独立覆盖，否则位于 piDir()/sessions。 */
+export function piSessionsDir() {
+  return process.env.PI_CODING_AGENT_SESSION_DIR || path.join(piDir(), "sessions");
+}
+
 export function dshRoot() {
   return process.env.TOKENPULSE_DSH_HOME || path.join(os.homedir(), ".dsh");
 }

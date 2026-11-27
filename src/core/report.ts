@@ -10,6 +10,7 @@ import { accountRows, cleanCapacity, FAMILY, readMarks } from "./quota-offmachin
 import { queryRequests } from "./request-log";
 import type { QuotaSample } from "./quota-history";
 import { ccSwitchBuckets, ccSwitchEnabled, coveredDays, readCcSwitch, type CcSwitchStatus } from "./cc-switch";
+import { isPiProviderOfficialAt, readPiLoginStore } from "./pi-accounts";
 import { readRollups, emptyBucket, addUsage, type DayBuckets, type UsageBucket } from "./usage-scan";
 
 /**
@@ -207,6 +208,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   const rollups = readRollups();
   const history = readQuotaHistory();
   const checks = readQuotaChecks();
+  const piStore = readPiLoginStore();
 
   /* ---- 1. 全量：按天 / 来源 / 型号 ---- */
   const days: DayBuckets = {};
@@ -222,6 +224,22 @@ export function buildSnapshot(now = Date.now()): Snapshot {
   };
   for (const file of Object.values(rollups.files)) {
     mergeDays(days, file.days);
+    // pi：有按 provider 拆分的账时逐 provider × 日期精确拆分订阅等价 vs API 实付，避免混合会话全部误落入 API 实付
+    if (file.kind === "pi" && file.piByProvider && Object.keys(file.piByProvider).length) {
+      for (const [provider, provDays] of Object.entries(file.piByProvider)) {
+        for (const [day, bySource] of Object.entries(provDays)) {
+          const dayAt = Date.parse(`${day}T12:00:00`) || now;
+          const off = isPiProviderOfficialAt(provider || undefined, dayAt, piStore);
+          const target = off === true ? officialDays : apiDays;
+          const dayBucket = (target[day] ??= {});
+          for (const [s, byModel] of Object.entries(bySource)) {
+            const models = (dayBucket[s] ??= {});
+            for (const [m, b] of Object.entries(byModel)) addUsage((models[m] ??= emptyBucket()), b);
+          }
+        }
+      }
+      continue;
+    }
     const isOfficialFile = file.official === true || file.kind === "antigravity";
     const isApiFile = file.official === false || file.kind === "deepseek-harness" || file.kind === "pi";
     if (isOfficialFile) {
@@ -366,9 +384,7 @@ export function buildSnapshot(now = Date.now()): Snapshot {
     grok: { included: 0, excluded: 0 },
   };
   for (const file of Object.values(rollups.files)) {
-    const account = file.kind ? ACCOUNT_OF_KIND[file.kind] : undefined;
-    if (!account) continue;
-    const addHours = (hours: Record<string, Record<string, UsageBucket>> | undefined, accountId?: string) => {
+    const pushHours = (targetKind: AccountKind, hours: Record<string, Record<string, UsageBucket>> | undefined, accountId?: string) => {
       for (const [key, models] of Object.entries(hours ?? {})) {
         const hour = Number(key);
         if (!Number.isFinite(hour)) continue;
@@ -378,8 +394,8 @@ export function buildSnapshot(now = Date.now()): Snapshot {
            *（例如 Claude Code 跑 gpt / grok，或 Codex / Grok 跑 deepseek）。
            * 不属于本家型号族的流量不占官方订阅额度，过滤掉以免把「整窗容量」估大。
            */
-          if (!FAMILY[account].test(model)) continue;
-          rows[account].push({
+          if (!FAMILY[targetKind].test(model)) continue;
+          rows[targetKind].push({
             hour,
             model,
             // 口径同统计页：input 已含缓存读写
@@ -391,6 +407,19 @@ export function buildSnapshot(now = Date.now()): Snapshot {
         }
       }
     };
+    if (file.kind === "pi") {
+      // pi 里已联动到 Claude / ChatGPT / Grok 官方账号的 OAuth 请求，并入对应官方账号的小时账与额度折算
+      for (const [accountId, hours] of Object.entries(file.accountHours ?? {})) {
+        const targetKind = accountId.split(":")[0] as AccountKind;
+        if (targetKind === "claude" || targetKind === "chatgpt" || targetKind === "grok") {
+          pushHours(targetKind, hours, accountId);
+        }
+      }
+      continue;
+    }
+    const account = file.kind ? ACCOUNT_OF_KIND[file.kind] : undefined;
+    if (!account) continue;
+    const addHours = (hours: Record<string, Record<string, UsageBucket>> | undefined, accountId?: string) => pushHours(account, hours, accountId);
     if (file.official !== true) {
       if (file.official === false) sessions[account].excluded += 1;
       // 文件整体不是官方的（配置里填的是本地路由），但经号池发出去的那部分实际用的是官方账号：算到号池成员名下（0.3.42）

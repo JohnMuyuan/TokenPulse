@@ -3,10 +3,21 @@ import { normalizeModel } from "./request-verify";
 import fs from "fs";
 import path from "path";
 import { cliDir, authFile } from "./credentials";
-import { dataFile, dshRoot, piDir, readJson, writeJson } from "./paths";
+import { dataFile, dshRoot, piSessionsDir, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type AccountEvidence, type AccountLabels, type LoginTimeline } from "./login-timeline";
-import { isPiProviderOfficial, readPiLoginStore, type PiLoginStore } from "./pi-accounts";
+import {
+  buildOfficialAccountIndex,
+  isPiProviderOfficial,
+  isPiProviderOfficialAt,
+  linkedOfficialAccountId,
+  normalizePiProvider,
+  piOfficialKindOf,
+  readPiLoginStore,
+  resolvePiAccount,
+  type OfficialAccountIndex,
+  type PiLoginStore,
+} from "./pi-accounts";
 import { routeEvents, type RouteEvent } from "./route-ledger";
 import { readLargeZstdFrame, zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
@@ -172,10 +183,14 @@ type FileState = {
   routedHours?: Record<string, Record<string, Record<string, UsageBucket>>>;
   /** pi：这个文件是分叉出来的，这个时间之前的记录都是从原会话复制来的（见 piRow）。 */
   piForkAt?: number;
-  /** pi 单独的扫描结构版本（升级只重扫 pi 会话以补齐 provider，不重扫其他 CLI）。 */
+  /** pi 单独的扫描结构版本（升级只重扫 pi 会话以补齐 provider / piByProvider / responseModel，不重扫其他 CLI）。 */
   piV?: number;
   /** pi：同一会话文件里混用了不同渠道的 provider 时标记，避免整份文件被错误归成单一渠道。 */
   piMixed?: boolean;
+  /** pi：按 provider 拆分后的按日汇总，保证总览与明细在混合会话里订阅等价 vs API 实付完全一致。 */
+  piByProvider?: Record<string, DayBuckets>;
+  /** pi：已尝试联动三家官方账号（Claude / ChatGPT / Grok）的上下文签名，防止重复重扫。 */
+  piLinkSig?: string;
   /** Antigravity：型号的数字 id → 型号名和思考档位（见 antigravity.ts）。offset 在这种来源里是下一次从哪一步读。 */
   agyModels?: Record<string, AgyModel>;
   /** Antigravity：扫的时候还没有显示名的 model_enum。等有了标签整份重算（见 antigravityNeedsRelabel）。 */
@@ -229,7 +244,7 @@ export type UsageRollups = {
  */
 const STATE_VERSION = 20;
 const GROK_ROUTE_VERSION = 1;
-const PI_STATE_VERSION = 1;
+const PI_STATE_VERSION = 2;
 const HOUR_MS = 3_600_000;
 /** 常规批次大小。单个 JSONL 事件超出时，续读到该行结束。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -547,7 +562,22 @@ function applyAttribution(
 ) {
   state.kind = kind;
   if (kind === "pi") {
-    state.official = state.piMixed ? undefined : isPiProviderOfficial(state.provider, piStore);
+    const byProv = state.piByProvider;
+    if (byProv && Object.keys(byProv).length) {
+      const classes = new Set<boolean | undefined>();
+      for (const prov of Object.keys(byProv)) {
+        classes.add(isPiProviderOfficial(prov || undefined, piStore));
+      }
+      if (classes.size > 1) {
+        state.piMixed = true;
+        state.official = undefined;
+      } else {
+        state.piMixed = undefined;
+        state.official = [...classes][0];
+      }
+    } else {
+      state.official = state.piMixed ? undefined : isPiProviderOfficial(state.provider, piStore);
+    }
     return;
   }
   if (kind !== "codex") {
@@ -585,7 +615,7 @@ function roots(): { kind: Kind; dir: string }[] {
     { kind: "grok-build", dir: path.join(cliDir("grok"), "sessions") },
     // DeepSeek Harness（0.3.42）：~/.dsh/sessions/<工作目录>/session-<id>/session.v4.jsonl.zstd
     { kind: "deepseek-harness", dir: path.join(dshRoot(), "sessions") },
-    { kind: "pi", dir: path.join(piDir(), "sessions") },
+    { kind: "pi", dir: piSessionsDir() },
   ];
 }
 
@@ -867,13 +897,18 @@ function piRow(obj: Record<string, unknown>, session: string, state: FileState):
   // 出错、中断的那几条没有用量
   if (!input && !output) return null;
   const named = message?.model ?? obj.model;
-  const model = typeof named === "string" && named ? displayModel(named) : state.model || "";
+  const explicitModel = typeof named === "string" && named ? displayModel(named) : "";
+  const model = explicitModel || state.model || "";
+  const rawRespModel = message?.responseModel;
+  const returned = typeof rawRespModel === "string" && rawRespModel.trim() ? displayModel(rawRespModel.trim()) : undefined;
   const rawProvider = message?.provider ?? obj.provider;
   const provider = typeof rawProvider === "string" && rawProvider.trim() ? rawProvider.trim() : state.provider || undefined;
   const reported = Number((usage.cost as Record<string, unknown> | undefined)?.total);
   const costUsd = reported > 0 ? reported : /deepseek/i.test(model) ? estimateCost(model, { input, output, cacheRead, cacheWrite }) * (deepseekPeak(at) ? 1 : 0.5) : 0;
   return {
     at, id: `${session}:${String(obj.id || at)}`, model,
+    ...(explicitModel ? { requested: explicitModel } : {}),
+    ...(returned ? { returned } : {}),
     ...(provider ? { provider } : {}),
     responseId: typeof message?.responseId === "string" && message.responseId ? message.responseId : undefined,
     usage: { input, output, cacheRead, cacheWrite, reasoning: num(usage.reasoning), costUsd, requests: 1 },
@@ -1038,6 +1073,32 @@ function canResolveUnattributed(kind: Kind, state: FileState, accountContext: Ac
   return false;
 }
 
+function piOfficialLinkSignature(state: FileState, piStore: PiLoginStore, officialIndex: OfficialAccountIndex): string {
+  const providers = Object.keys(state.piByProvider ?? {});
+  if (!providers.length) return "";
+  const linked: string[] = [];
+  for (const prov of providers) {
+    const p = normalizePiProvider(prov);
+    if (!p || !piOfficialKindOf(p)) continue;
+    for (const span of piStore.providers[p] ?? []) {
+      if (!span.id) continue;
+      const cached = span.fingerprint ? piStore.identities[span.fingerprint] : undefined;
+      const id = linkedOfficialAccountId(
+        p,
+        {
+          email: span.email || cached?.email,
+          sub: span.sub || cached?.sub,
+          accountId: span.accountId || cached?.accountId,
+          userId: span.userId || cached?.userId,
+        },
+        officialIndex,
+      );
+      if (id) linked.push(`${p}=${id}`);
+    }
+  }
+  return [...new Set(linked)].sort().join("|");
+}
+
 function scanFile(
   file: string,
   kind: Kind,
@@ -1046,6 +1107,7 @@ function scanFile(
   accountContext: AccountContext = { timeline: readLoginTimeline(), labels: accountLabels() },
   parentEvidence?: AccountEvidence,
   piStore?: PiLoginStore,
+  officialIndex?: OfficialAccountIndex,
 ) {
   let stat: fs.Stats;
   try {
@@ -1082,6 +1144,8 @@ function scanFile(
     state.callStartAt = undefined;
     state.piForkAt = undefined;
     state.piMixed = undefined;
+    if (!metadataOnly) state.piByProvider = undefined;
+    delete state.piLinkSig;
     if (kind === "pi") { state.provider = undefined; state.official = undefined; }
     state.autoStep = undefined;
   };
@@ -1232,10 +1296,11 @@ function scanFile(
       const replied = message?.role === "assistant";
       if (replied && typeof message?.model === "string" && message.model) state.model = displayModel(message.model);
       if (replied && typeof message?.provider === "string" && message.provider.trim()) state.provider = message.provider.trim();
-      else if (obj.type === "usage" && typeof obj.provider === "string" && obj.provider.trim()) state.provider = obj.provider.trim();
-      // 思考等级每条回复自己带，别的行不沿用
-      state.effort = replied ? normalizeEffort(message?.thinkingLevel) : undefined;
-      state.effortSource = state.effort ? "message.thinkingLevel" : undefined;
+      // 思考等级每条回复自己带，别的行不沿用；优先 thinkingLevel，缺省回退 providerThinkingLevel
+      const piThinking = replied ? normalizeEffort(message?.thinkingLevel) : undefined;
+      const piProviderThinking = replied && !piThinking ? normalizeEffort(message?.providerThinkingLevel) : undefined;
+      state.effort = piThinking ?? piProviderThinking;
+      state.effortSource = piThinking ? "message.thinkingLevel" : piProviderThinking ? "message.providerThinkingLevel" : undefined;
     }
     if (kind === "grok-build") {
       const update = (obj.params as Record<string, unknown> | undefined)?.update as Record<string, unknown> | undefined;
@@ -1391,12 +1456,12 @@ function scanFile(
         if (otherWeight > 0) pieces.push({ at: row.at, usage: parts[parts.length - 1], id: `${baseId}~other` });
       } else pieces.push({ at: row.at, usage: row.usage, id: baseId, ...(routed ? { account: routed.id, basis: "response-id" as const } : {}) });
       const evidence = effectiveEvidence(state, parentEvidence);
+      const piRowOff = kind === "pi" ? isPiProviderOfficialAt(row.provider, row.at, piStore) : undefined;
       if (kind === "pi" && !state.piMixed) {
-        const rowOff = isPiProviderOfficial(row.provider, piStore);
         const hadRows = Object.keys(state.days).length > 0;
         if (!hadRows) {
-          state.official = rowOff;
-        } else if (state.official !== rowOff) {
+          state.official = piRowOff;
+        } else if (state.official !== piRowOff) {
           state.piMixed = true;
           state.official = undefined;
         }
@@ -1412,6 +1477,10 @@ function scanFile(
           addUsage(bucket(state.days, dayOf(row.at), source, model), row.usage);
           const byModel = ((state.hours ??= {})[String(Math.floor(row.at / HOUR_MS) * HOUR_MS)] ??= {});
           addUsage((byModel[model] ??= emptyBucket()), row.usage);
+          if (kind === "pi") {
+            const provKey = normalizePiProvider(row.provider);
+            addUsage(bucket(((state.piByProvider ??= {})[provKey] ??= {}), dayOf(row.at), source, model), row.usage);
+          }
         }
         const addAccountHour = (account: string, at: number, usage: UsageBucket) => {
           const byAccountHour = (((state.accountHours ??= {})[account] ??= {})[String(Math.floor(at / HOUR_MS) * HOUR_MS)] ??= {});
@@ -1429,6 +1498,12 @@ function scanFile(
           );
           if (routed) addRouted(routed.id, row.at, model, row.usage);
           addAccountHour(account?.id ?? "", row.at, row.usage);
+        } else if (kind === "pi" && piRowOff === true && piOfficialKindOf(row.provider) && piStore) {
+          // pi 里走 Anthropic / OpenAI / xAI OAuth 且已联动到三家官方账号：并入该官方账号的小时账与额度容量折算
+          const piAcc = resolvePiAccount(row.provider, row.at, piStore, accountContext.labels, officialIndex);
+          if (piAcc && (piAcc.id.startsWith("claude:") || piAcc.id.startsWith("chatgpt:") || piAcc.id.startsWith("grok:"))) {
+            addAccountHour(piAcc.id, row.at, row.usage);
+          }
         }
       }
       if (row.cwd) state.cwd = row.cwd;
@@ -1451,7 +1526,9 @@ function scanFile(
           effortSource: piece.effortSource ?? (kind === "claude-code" ? (responseEffort ? "assistant." + responseEffort.source : state.effortSource) : effortMatchesModel ? state.effortSource : undefined),
           requested: kind === "claude-code"
             ? (row.requested ?? state.apiRequestModel ?? state.requested)
-            : (kind === "codex" || kind === "pi" ? state.model : state.requested),
+            : kind === "pi"
+              ? (row.requested ?? state.model)
+              : (kind === "codex" ? state.model : state.requested),
           returned: row.returned,
           responseId: row.responseId,
           requestId: row.requestId,
@@ -1613,6 +1690,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     const official = configOfficial();
     const codex = codexAuthContext((rollups.codexProviders ??= {}));
     const piStore = readPiLoginStore();
+    const officialIndex = buildOfficialAccountIndex();
     const accountContext: AccountContext = { timeline: readLoginTimeline(), labels: accountLabels() };
     let changed = 0;
     let files = 0;
@@ -1658,11 +1736,23 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
             retryUnattributed
           );
         const needsGrokReplay = kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION;
-        const needsPiReplay = kind === "pi" && state.piV !== PI_STATE_VERSION;
+        const piLinkSig = kind === "pi" ? piOfficialLinkSignature(state, piStore, officialIndex) : "";
+        const needsPiLinkReplay = Boolean(
+          kind === "pi" &&
+          state.piV === PI_STATE_VERSION &&
+          piLinkSig &&
+          state.piLinkSig !== piLinkSig,
+        );
+        const needsPiReplay = kind === "pi" && (state.piV !== PI_STATE_VERSION || needsPiLinkReplay);
         if (stat && state.v === STATE_VERSION && state.offset >= stat.size && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours && !needsGrokReplay && !needsPiReplay) continue;
-        // 缺按账号的小时账（含历史上记在空键 "" 现已可归属的账）：得从头重读这个文件才补得出来。
-        if (needsAccountHours) state.v = 0;
-        if (scanFile(file, kind, state, out, accountContext, parentEvidence, piStore)) changed += 1;
+        // 缺按账号的小时账（含历史上记在空键 "" 现已可归属的账，以及 pi 新联动官方账号的账）：得从头重读这个文件才补得出来。
+        if (needsAccountHours || needsPiLinkReplay) state.v = 0;
+        if (scanFile(file, kind, state, out, accountContext, parentEvidence, piStore, officialIndex)) changed += 1;
+        if (kind === "pi") {
+          const nextSig = piOfficialLinkSignature(state, piStore, officialIndex);
+          if (nextSig) state.piLinkSig = nextSig;
+          else delete state.piLinkSig;
+        }
         if (isQuotaCli && state.official === true && hasUnattributedAccountHours(state)) {
           state.unattributedSig = unattributedSignature(kind, state, accountContext, parentEvidence);
         } else {

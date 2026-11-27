@@ -10,7 +10,15 @@ import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-sw
 import { routeEvents, routeLogDir, routeReturned, type RouteTiming } from "./route-ledger";
 import { accountLabels, ACCOUNT_KIND_OF_SOURCE, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type AccountLabels, type LoginTimeline, type RequestAccount } from "./login-timeline";
 import { readAgyLoginTimeline, type AgyLoginSpan } from "./antigravity-accounts";
-import { isPiProviderOfficial, readPiLoginStore, resolvePiAccount, type PiLoginStore } from "./pi-accounts";
+import {
+  buildOfficialAccountIndex,
+  isPiProviderOfficialAt,
+  piOfficialKindOf,
+  readPiLoginStore,
+  resolvePiAccount,
+  type OfficialAccountIndex,
+  type PiLoginStore,
+} from "./pi-accounts";
 import { quotaAttribution } from "./quota-attribution";
 import { readQuotaHistory } from "./quota-history";
 import { windowSegments } from "./quota-monitor";
@@ -625,12 +633,21 @@ export function clearRequestLogCaches() {
 }
 
 /** 对账号要用到的：登录时间线和账号名，一次查询读一次。 */
-type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; piStore: PiLoginStore; labels: AccountLabels; sessions?: ReturnType<typeof sessionMetaIndex>; internedAccounts?: Map<string, RequestAccount> };
+type AccountContext = {
+  timeline: LoginTimeline;
+  agyTimeline: AgyLoginSpan[];
+  piStore: PiLoginStore;
+  officialIndex: OfficialAccountIndex;
+  labels: AccountLabels;
+  sessions?: ReturnType<typeof sessionMetaIndex>;
+  internedAccounts?: Map<string, RequestAccount>;
+};
 function accountContext(skipSessionMeta = false): AccountContext {
   return {
     timeline: readLoginTimeline(),
     agyTimeline: readAgyLoginTimeline(),
     piStore: readPiLoginStore(),
+    officialIndex: buildOfficialAccountIndex(),
     labels: accountLabels(),
     ...(skipSessionMeta ? {} : { sessions: sessionMetaIndex() }),
     internedAccounts: new Map<string, RequestAccount>(),
@@ -650,6 +667,36 @@ const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，�
 const EMPTY_REASONS: string[] = [];
 
 function toCapacityRow(record: RequestRecord, fileOfficial: boolean | undefined, accounts: AccountContext): RequestRow | null {
+  if (record.kind === "pi") {
+    const piKind = piOfficialKindOf(record.provider);
+    if (!piKind) return null;
+    if (isPiProviderOfficialAt(record.provider, record.at, accounts.piStore) !== true) return null;
+    const resolved = resolvePiAccount(record.provider, record.at, accounts.piStore, accounts.labels, accounts.officialIndex);
+    if (!resolved || !resolved.id.startsWith(`${piKind}:`)) return null;
+    const account = internAccount(resolved, accounts.internedAccounts);
+    const usage = { input: record.input, output: record.output, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite };
+    return {
+      key: "",
+      at: record.at,
+      source: sourceOf(record),
+      model: record.model,
+      effort: record.effort,
+      session: "",
+      ...usage,
+      reasoning: record.reasoning,
+      tokens: record.input + record.output,
+      costUsd: record.costUsd || estimateCost(record.model, usage),
+      priced: record.costUsd > 0 || priceOf(record.model) !== null,
+      calls: record.calls ?? 1,
+      official: true,
+      ...(record.provider ? { provider: record.provider } : {}),
+      account,
+      status: "unverified",
+      statusLabel: "",
+      reasons: EMPTY_REASONS,
+      channel: "",
+    };
+  }
   const kind = KIND_OF_SOURCE[sourceOf(record)];
   if (!kind) return null;
   const routed: RequestAccount | null =
@@ -693,14 +740,14 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     // Grok：这一轮的请求在转发记录里全部交给了同一个号池账号（见 usage-scan.ts）
     : record.routedAccount && record.routedAccountBasis === "route-window" ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route-window" }
     : routedAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, accounts.labels, record.responseId);
-  const piOfficial = record.kind === "pi" ? isPiProviderOfficial(record.provider, accounts.piStore) : undefined;
+  const piOfficial = record.kind === "pi" ? isPiProviderOfficialAt(record.provider, record.at, accounts.piStore) : undefined;
   const official = routed ? true : record.kind === "antigravity" ? (fileOfficial ?? true) : record.kind === "pi" ? (record.provider ? piOfficial : fileOfficial) : fileOfficial;
   // 走中转 / API Key 的不是官方账号发的；CC Switch 导入的走它代理的也一样
   const account = routed ? routed :
     official === false || (record.kind === "cc-switch" && record.viaProxy)
       ? null
       : record.kind === "pi"
-        ? resolvePiAccount(record.provider, record.at, accounts.piStore, accounts.labels)
+        ? resolvePiAccount(record.provider, record.at, accounts.piStore, accounts.labels, accounts.officialIndex)
         : resolveAccount(ACCOUNT_KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt, org: record.accountOrg, orgAt: record.accountOrgAt }, accounts.timeline, accounts.labels, accounts.agyTimeline);
   const verdict: { status: VerifyStatus; reasons: string[]; channel: string } = record.compaction
     ? { status: "unverified", reasons: [COMPACTION_REASON], channel: "压缩上下文（估算）" }
@@ -1170,7 +1217,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (month < fromMonth || month > toMonth) continue;
       const latest = new Map<string, RequestRecord>();
       for (const raw of streamMonth(name, hint, Boolean(query.capacityOnly))) {
-        if (query.capacityOnly && raw.kind !== "claude-code" && raw.kind !== "codex" && raw.kind !== "grok-build") continue;
+        if (query.capacityOnly && raw.kind !== "claude-code" && raw.kind !== "codex" && raw.kind !== "grok-build" && raw.kind !== "pi") continue;
         if (query.source !== "all" && sourceOf(raw) !== query.source) continue;
         if (raw.at < preMinAt || raw.at > preMaxAt) continue;
         latest.set(keyOf(raw), raw);
@@ -1182,7 +1229,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const seenRouteEvents = new Set<string>();
   const take = (raw: RequestRecord) => {
       if (raw.routeEventId) seenRouteEvents.add(raw.routeEventId);
-      if (query.capacityOnly && raw.kind !== "claude-code" && raw.kind !== "codex" && raw.kind !== "grok-build") return;
+      if (query.capacityOnly && raw.kind !== "claude-code" && raw.kind !== "codex" && raw.kind !== "grok-build" && raw.kind !== "pi") return;
       if (query.source !== "all" && sourceOf(raw) !== query.source) return;
       if (query.since != null && raw.at < query.since) return;
       if (query.until != null && raw.at > query.until) return;
@@ -1228,6 +1275,8 @@ export function queryRequests(query: RequestQuery): RequestPage {
       }
       const accountId = row.account?.id ?? "none";
       const bucket = byAccount.get(accountId) ?? { id: accountId, label: row.account?.label ?? "", source: row.source, requests: 0, tokens: 0, costUsd: 0, lastAt: 0, inferred: 0 };
+      // 同一个三家官方账号既在原 CLI 又在 pi 里出现时，下拉框来源标签优先显示原官方 CLI 名称
+      if (bucket.source === "pi" && KIND_OF_SOURCE[row.source]) bucket.source = row.source;
       bucket.requests += 1;
       bucket.tokens += row.tokens;
       bucket.costUsd += row.costUsd;

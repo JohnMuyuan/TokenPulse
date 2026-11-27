@@ -14,6 +14,11 @@
 
   /* 每个版本的新内容：只写用户看得见、用得上的变化，一条一句话。以后发版在这里加一项。 */
   const NOTES = {
+    '0.4.6': [
+      ['quota', 'pi 全量 OAuth 深度适配与三家官方额度自动联动（v0.4.6）', '完整覆盖 pi 全部内置 OAuth 订阅供应商（Google AI Plan、Anthropic、OpenAI Codex、OpenAI ChatGPT、xAI、GitHub Copilot、Kimi Code、Meta），支持 Anthropic / GitHub Copilot / OIDC 只读身份识别与出口白名单门控；同身份的 Claude / ChatGPT / Grok 请求自动并入官方额度容量折算、单次扣额占比与模型研究，消除 pi 消耗被误判为「本机以外」的问题。'],
+      ['usage', '修复 pi 混合会话总览拆账、刷新裂变与历史认证模式归属', '按供应商与日期精细拆分 pi 会话的订阅等价与 API 实付，总览与明细口径完全一致；引入时间线化认证模式（OAuth / API Key / 登出）避免切换凭据或环境变量 API Key 污染历史账单，防止轮换型 refresh 刷新裂变出假账号，并补齐 responseModel 型号核验、providerThinkingLevel 与全渠道展示。'],
+      ['settings', '设置页新增「pi OAuth 登录」只读管理卡片与实时换号监听', '在「设置 → 官方账号」中直观查看 pi 活跃/历史 OAuth 账号、官方额度联动徽章与令牌刷新状态，支持原地重命名、手动同步与清理历史记录（严格只读 auth.json）；主进程实时监听 ~/.pi/agent/auth.json 变更秒级更新时间线，请求详情与 CSV 导出同步展示供应商字段并支持 PI_CODING_AGENT_SESSION_DIR。'],
+    ],
     '0.4.5': [
       ['quota', '适配 pi 的 Google AI Plan 官方登录账号识别（v0.4.5）', '针对 Google 官方接入 pi 的 google-ai-plan（Google AI Ultra plan），严格只读 ~/.pi/agent/auth.json（绝不修改凭据也不触发 DPoP 刷新），按单向凭据指纹在本地缓存 Google 邮箱与登录时间线，不再把 pi 的 Google 官方请求显示为「账号未知」，并同步支持换号、登出与同邮箱别名复用。'],
       ['usage', 'pi 请求逐条记录供应商，自动区分订阅等价与 API 实付', '扫描 pi 会话时按条记录 provider 并自动一次性重扫老账本补齐历史归属：google-ai-plan 请求归入官方订阅等价并标注「Google AI Plan」通道，tokenpulse_route 与 API Key 请求归入 API 实付且不误归到官方账号，同时支持按账号筛选与搜索 google-ai-plan。'],

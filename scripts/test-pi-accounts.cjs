@@ -24,6 +24,8 @@ const piAccounts = require(path.join(build, 'pi-accounts.js'));
 const { scanLocalUsage, readRollups, writeRollups } = require(path.join(build, 'usage-scan.js'));
 const { queryRequests } = require(path.join(build, 'request-log.js'));
 const { buildSnapshot } = require(path.join(build, 'report.js'));
+const { queryModelStudy } = require(path.join(build, 'model-study.js'));
+const { listSessions } = require(path.join(build, 'sessions.js'));
 
 const piDir = path.join(process.env.HOME, '.pi', 'agent');
 const authPath = path.join(piDir, 'auth.json');
@@ -241,11 +243,11 @@ const lines = (rows) => rows.map((row) => JSON.stringify(row)).join('\n') + '\n'
     assert.equal(scan1.records.length, 6);
     const rollups = readRollups();
     assert.equal(rollups.files[pureFile].official, true, '纯 google-ai-plan 会话文件标记为 official: true');
-    assert.equal(rollups.files[pureFile].piV, 1);
+    assert.equal(rollups.files[pureFile].piV, 2);
     assert.equal(rollups.files[mixedFile].piMixed, true, '混合会话文件标记 piMixed');
     assert.equal(rollups.files[mixedFile].official, undefined);
-    assert.equal(Object.keys(rollups.files[pureFile].accountHours ?? {}).length, 0, 'pi 不写入 accountHours');
-    assert.equal(Object.keys(rollups.files[mixedFile].accountHours ?? {}).length, 0, 'pi 不写入 accountHours');
+    assert.equal(Object.keys(rollups.files[pureFile].accountHours ?? {}).length, 0, '非三家官方账号的 pi 不写入 accountHours');
+    assert.equal(Object.keys(rollups.files[mixedFile].accountHours ?? {}).length, 0, '非三家官方账号的 pi 不写入 accountHours');
 
     const page = queryRequests({
       from: '2026-11-01',
@@ -307,11 +309,13 @@ const lines = (rows) => rows.map((row) => JSON.stringify(row)).join('\n') + '\n'
     assert.equal(page.projects?.length, 2);
     assert.equal(page.sessions?.length, 2);
 
-    // buildSnapshot 中纯 google-ai-plan 文件归入 officialCostUsd
+    // buildSnapshot 与明细聚合口径完全一致：混合会话中的 google-ai-plan 也精准归入 officialCostUsd，而非整份落入 apiCostUsd
     const snap = buildSnapshot(tLogout + 3600_000);
     const piOfficialSnap = snap.usage.filter((r) => r.source === 'pi').reduce((s, r) => s + r.officialCostUsd, 0);
-    assert.ok(Math.abs(piOfficialSnap - 0.8) < 1e-6, `snapshot officialCostUsd=${piOfficialSnap}`);
-    pass('end-to-end scan, mixed session attribution, cost split, filters, projects/sessions, and snapshot official rollup');
+    const piApiSnap = snap.usage.filter((r) => r.source === 'pi').reduce((s, r) => s + r.apiCostUsd, 0);
+    assert.ok(Math.abs(piOfficialSnap - 1.4) < 1e-6, `snapshot officialCostUsd=${piOfficialSnap} (expected 1.4)`);
+    assert.ok(Math.abs(piApiSnap - 0.1) < 1e-6, `snapshot apiCostUsd=${piApiSnap} (expected 0.1)`);
+    pass('end-to-end scan, mixed session attribution, cost split, filters, projects/sessions, and exact snapshot official/api rollup');
 
     // 7. 同邮箱别名共享：在 antigravity-accounts.json 给 alice@gmail.com 起别名后，pi 请求立即显示该别名
     fs.writeFileSync(
@@ -337,6 +341,228 @@ const lines = (rows) => rows.map((row) => JSON.stringify(row)).join('\n') + '\n'
     assert.ok(rescan.records.every((r) => r.provider === 'google-ai-plan'));
     assert.equal(scanLocalUsage().records.length, 0, '升级完成后不再重复扫描');
     pass('legacy pi rollups without piV rescan once automatically and stabilize');
+
+    // 9. 全量内置 pi OAuth provider 分类（openai / kimi-coding / meta 为订阅；openrouter OAuth 为 API 实付且不入时间线）
+    const tAll = tLogout + 2 * 3600_000;
+    writeAuth({
+      openai: { type: 'oauth', access: makeJwt({ email: 'chatgpt-pi@example.com', 'https://api.openai.com/auth': { chatgpt_account_id: 'ws-oa-1', chatgpt_user_id: 'user-oa-1' } }), refresh: 'rt-oa-1', expires: tAll + 3600_000 },
+      'kimi-coding': { type: 'oauth', access: 'kimi-access-1', refresh: 'kimi-refresh-1', expires: tAll + 3600_000 },
+      meta: { type: 'oauth', access: 'meta-key-1', refresh: 'meta-id-1', expires: tAll + 3600_000 },
+      openrouter: { type: 'oauth', access: 'sk-or-v1-fake', refresh: '', expires: Number.MAX_SAFE_INTEGER },
+      'github-copilot': { type: 'oauth', access: 'tid=fake;exp=1;proxy-ep=proxy.individual.githubcopilot.com', refresh: 'gho_fake_refresh_token', expires: tAll - 3600_000 },
+    });
+    const ghUrls = [];
+    const syncAll = await piAccounts.syncPiAccounts({
+      now: tAll,
+      getJson: async (url) => {
+        ghUrls.push(url);
+        if (url === piAccounts.PI_GITHUB_USER_URL) return { id: 42, login: 'octocat', name: 'Octo Cat' };
+        return {};
+      },
+    });
+    assert.deepEqual(ghUrls, [piAccounts.PI_GITHUB_USER_URL], '仅向需要在线解析的 github-copilot 发请求（openai 已离线解出邮箱）');
+    assert.ok(syncAll.resolved.includes('octocat'));
+    store = piAccounts.readPiLoginStore();
+    assert.equal(piAccounts.isPiProviderOfficial('openai', store), true, 'pi 的 openai OAuth 属于 ChatGPT 订阅');
+    assert.equal(piAccounts.isPiProviderOfficial('kimi-coding', store), true, 'kimi-coding 属于订阅');
+    assert.equal(piAccounts.isPiProviderOfficial('meta', store), true, 'meta 属于订阅');
+    assert.equal(piAccounts.isPiProviderOfficial('openrouter', store), false, 'openrouter OAuth 实质是按量 API Key');
+    assert.equal(store.providers.openrouter, undefined, 'openrouter 不写入订阅账号时间线');
+    assert.equal(store.providers['github-copilot']?.[0]?.label, '@octocat', 'GitHub Copilot 即使短 access 过期也通过 refresh 识别出 @login');
+    pass('classifies openai / kimi-coding / meta / openrouter accurately and resolves GitHub Copilot user via refresh token');
+
+    // 10. 轮换型 refresh_token（anthropic / kimi-coding）防裂变 + 出口白名单 gate + Anthropic /api/oauth/profile 解析
+    const tAnt1 = tAll + 3600_000;
+    writeAuth({
+      anthropic: { type: 'oauth', access: 'sk-ant-oat01-a1', refresh: 'sk-ant-ort01-r1', expires: tAnt1 + 3600_000 },
+      'kimi-coding': { type: 'oauth', access: 'kimi-access-2', refresh: 'kimi-refresh-rotated-2', expires: tAnt1 + 3600_000 },
+    });
+    // kimi-coding 轮换了 refresh 但仍未解析出邮箱：不得裂变出第二段占位账号
+    piAccounts.recordPiLogins(tAnt1);
+    store = piAccounts.readPiLoginStore();
+    assert.equal(store.providers['kimi-coding'].length, 1, '无离线身份的轮换型 provider 刷新时不裂变出新占位账号');
+
+    // 出口白名单拒绝 claude 时，不得请求 Anthropic profile
+    let antCalls = 0;
+    await piAccounts.syncPiAccounts({
+      now: tAnt1,
+      gate: async (kind) => kind !== 'claude',
+      getJson: async () => { antCalls += 1; return {}; },
+    });
+    assert.equal(antCalls, 0, '受出口白名单 gate 保护，放行失败时不发请求');
+
+    // 出口白名单放行后解析 Anthropic profile
+    await piAccounts.syncPiAccounts({
+      now: tAnt1 + 1000,
+      gate: async () => true,
+      getJson: async (url) => {
+        if (url === piAccounts.PI_ANTHROPIC_PROFILE_URL) {
+          return { account: { uuid: 'acct-claude-uuid-1', email: 'claude-pro@example.com', display_name: 'Claude Pro' }, organization: { uuid: 'org-claude-1' } };
+        }
+        return {};
+      },
+    });
+    store = piAccounts.readPiLoginStore();
+    assert.equal(store.providers.anthropic.length, 1);
+    assert.equal(store.providers.anthropic[0].email, 'claude-pro@example.com');
+    assert.equal(store.providers.anthropic[0].sub, 'acct-claude-uuid-1');
+
+    // Anthropic token 自动刷新（access & refresh 同时轮换，但仍是同一账号）：合并折叠回同一段，不裂变！
+    const tAnt2 = tAnt1 + 1800_000;
+    writeAuth({
+      anthropic: { type: 'oauth', access: 'sk-ant-oat01-a2-rotated', refresh: 'sk-ant-ort01-r2-rotated', expires: tAnt2 + 3600_000 },
+    });
+    await piAccounts.syncPiAccounts({
+      now: tAnt2,
+      getJson: async (url) => {
+        if (url === piAccounts.PI_ANTHROPIC_PROFILE_URL) {
+          return { account: { uuid: 'acct-claude-uuid-1', email: 'claude-pro@example.com' }, organization: { uuid: 'org-claude-1' } };
+        }
+        return {};
+      },
+    });
+    store = piAccounts.readPiLoginStore();
+    assert.equal(store.providers.anthropic.length, 1, 'refresh 轮换后解析为同一账号时折叠为单段，不产生假换号');
+    pass('prevents rotating-refresh account fission, enforces egress gate, and resolves Anthropic OAuth profile');
+
+    // 11. providerTypes 时间线感知：api_key -> OAuth -> 登出(环境变量 API Key) 不回溯污染历史，登出后清掉旧 oauth 类型
+    const tDual1 = tAnt2 + 1000_000;
+    const tDual2 = tDual1 + 1000_000;
+    const tDual3 = tDual2 + 1000_000;
+    writeAuth({ xai: { type: 'api_key', key: 'xai-raw-key' } });
+    piAccounts.recordPiLogins(tDual1);
+    writeAuth({ xai: { type: 'oauth', access: makeJwt({ email: 'grok-pi@example.com', sub: 'xai-sub-1' }), refresh: 'rt-xai-1', expires: tDual2 + 3600_000 } });
+    piAccounts.recordPiLogins(tDual2);
+    writeAuth({}); // 登出，改用环境变量 XAI_API_KEY
+    piAccounts.recordPiLogins(tDual3);
+    store = piAccounts.readPiLoginStore();
+    assert.equal(store.providerTypes.xai, undefined, '登出后清除旧 providerTypes，避免环境变量 API Key 永久被判成 oauth');
+    assert.equal(piAccounts.isPiProviderOfficialAt('xai', tDual1 + 100, store), false, 'API Key 期间的历史请求不被后来 OAuth 污染');
+    assert.equal(piAccounts.isPiProviderOfficialAt('xai', tDual2 + 100, store), true, 'OAuth 期间准确归为订阅');
+    assert.equal(piAccounts.isPiProviderOfficialAt('xai', tDual3 + 100, store), false, '登出后走环境变量 API Key 准确归为 API 实付');
+    pass('timeline-aware auth mode prevents api_key <-> oauth and post-logout env-key attribution pollution');
+
+    // 12. 深度联动三家官方账号 + 额度容量折算 + 模型研究（Claude 账号在 pi 中消耗不再误判为本机以外）
+    const nowStudy = Date.now();
+    const wStart = nowStudy - 15 * 60_000;
+    const wMid = nowStudy - 8 * 60_000;
+    const wReset = nowStudy + 4 * 3600_000;
+    const claudeOfficialId = 'claude:acct-claude-uuid-1';
+    fs.writeFileSync(
+      path.join(process.env.TOKENPULSE_DATA_DIR, 'official-accounts.json'),
+      JSON.stringify({
+        version: 2,
+        accounts: [{
+          id: claudeOfficialId,
+          kind: 'claude',
+          ref: 'acct-claude-uuid-1',
+          email: 'claude-pro@example.com',
+          label: 'claude-pro@example.com',
+          alias: 'Claude 共享主力',
+          createdAt: wStart - 86_400_000,
+          lastSeenAt: nowStudy,
+        }],
+        active: { claude: claudeOfficialId },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(process.env.TOKENPULSE_DATA_DIR, 'quota-history.json'),
+      JSON.stringify({
+        version: 1,
+        accounts: {
+          claude: [
+            { at: wStart, account: claudeOfficialId, five: 0, fiveReset: new Date(wReset).toISOString(), week: 0, weekReset: new Date(nowStudy + 5 * 86_400_000).toISOString() },
+            { at: nowStudy - 60_000, account: claudeOfficialId, five: 10, fiveReset: new Date(wReset).toISOString(), week: 5, weekReset: new Date(nowStudy + 5 * 86_400_000).toISOString() },
+          ],
+          chatgpt: [],
+          grok: [],
+        },
+      }),
+    );
+    // 确保 anthropic 在该时段处于 OAuth 登录
+    writeAuth({
+      anthropic: { type: 'oauth', access: 'sk-ant-oat01-a2-rotated', refresh: 'sk-ant-ort01-r2-rotated', expires: nowStudy + 3600_000 },
+    });
+    piAccounts.recordPiLogins(wStart - 600_000);
+    // 更新 anthropic 时间线首段确保覆盖 wStart（测试环境里 tAnt1 在未来 2026-11，这里以当前真实时间构造一段会话）
+    const curStore = piAccounts.readPiLoginStore();
+    curStore.providers.anthropic = [{ from: wStart - 600_000, id: piAccounts.piAccountIdOf('anthropic', 'claude-pro@example.com', 'acct-claude-uuid-1'), email: 'claude-pro@example.com', label: 'claude-pro@example.com', sub: 'acct-claude-uuid-1', mode: 'oauth' }];
+    piAccounts.writePiLoginStore(curStore);
+
+    const claudePiFile = path.join(sessionsDir, `${isoAt(wMid).replace(/[:.]/g, '-')}_sess-pi-claude.jsonl`);
+    fs.writeFileSync(claudePiFile, lines([
+      { type: 'session', version: 3, id: 'sess-pi-claude', timestamp: isoAt(wMid - 10_000), cwd: 'D:\\qa\\pi-claude' },
+      { type: 'model_change', id: 'cmc1', parentId: null, timestamp: isoAt(wMid - 5_000), provider: 'anthropic', modelId: 'claude-sonnet-4-5' },
+      // 带 responseModel & providerThinkingLevel，验证模型核验和思考等级回退
+      { type: 'message', id: 'ca1', parentId: 'cmc1', timestamp: isoAt(wMid), message: { role: 'assistant', provider: 'anthropic', model: 'claude-sonnet-4-5', responseModel: 'claude-sonnet-4-5-20250929', providerThinkingLevel: 'high', responseId: 'msg_0123456789abcdefghijkl', usage: usage(50000, 10000, 20000, 0, 0.8), stopReason: 'stop' } },
+      // 中间插入一条 usage 条目（provider 不同）：不得污染后续 toolResult 的 provider，且自身 requested 用自身 model
+      { type: 'usage', id: 'cu1', parentId: 'ca1', timestamp: isoAt(wMid + 5_000), kind: 'cache_warm', provider: 'tokenpulse_route', model: 'deepseek-chat', usage: usage(100, 20, 0, 0, 0.01) },
+      { type: 'message', id: 'ct1', parentId: 'cu1', timestamp: isoAt(wMid + 10_000), message: { role: 'toolResult', toolCallId: 'tc1', content: [], usage: usage(1000, 500, 0, 0, 0.05) } },
+      // 末尾仅切换 model_change 不发请求：不得把纯文件归属改坏
+      { type: 'model_change', id: 'cmc2', parentId: 'ct1', timestamp: isoAt(wMid + 20_000), provider: 'tokenpulse_route', modelId: 'deepseek-chat' },
+    ]));
+
+    scanLocalUsage();
+    const afterClaudeRollup = readRollups().files[claudePiFile];
+    assert.ok(afterClaudeRollup.accountHours?.[claudeOfficialId], 'pi 联动 Claude 官方账号后自动写入该官方账号的 accountHours');
+
+    const claudePage = queryRequests({ from: '2020-01-01', to: '2030-12-31', source: 'pi', status: 'all', search: '', sort: 'time', page: 0, pageSize: 50, all: true, session: 'sess-pi-claude' });
+    const ca1 = claudePage.rows.find((r) => r.key.endsWith(':ca1'));
+    const cu1 = claudePage.rows.find((r) => r.key.endsWith(':cu1'));
+    const ct1 = claudePage.rows.find((r) => r.key.endsWith(':ct1'));
+    assert.equal(ca1.account?.id, claudeOfficialId, 'pi Anthropic 请求自动联动到 Claude 官方账号 ID');
+    assert.equal(ca1.account?.label, 'Claude 共享主力', '自动复用 Claude 官方账号别名');
+    assert.equal(ca1.returned, 'claude-sonnet-4-5-20250929', '读取 pi AssistantMessage.responseModel');
+    assert.equal(ca1.status, 'match', '有 responseModel 时正常核验型号一致');
+    assert.equal(ca1.effort, 'high', '回退读取 providerThinkingLevel');
+    assert.equal(cu1.requested, 'deepseek-chat', 'usage 条目使用自身 model 作为 requested');
+    assert.equal(ct1.provider, 'anthropic', 'usage 条目不污染后续 toolResult 继承的 provider');
+
+    const capRows = queryRequests({ from: '2020-01-01', to: '2030-12-31', source: 'all', status: 'all', search: '', sort: 'time', page: 0, pageSize: 50, all: true, channel: 'official', capacityOnly: true }).rows;
+    assert.ok(capRows.some((r) => r.source === 'pi' && r.account?.id === claudeOfficialId), 'capacityOnly 查询包含联动到官方账号的 pi 请求');
+
+    const study = queryModelStudy({ kind: 'claude', accountId: claudeOfficialId });
+    assert.ok(study.five.totals.records >= 2, `模型研究纳入 pi 的 Claude 请求（got ${study.five.totals.records}）`);
+    assert.equal(study.five.attribution.localCoincidentPoints, 10, `pi 请求参与额度归因、不再被误判为本机以外（got ${JSON.stringify(study.five.attribution)}）`);
+    assert.equal(study.five.attribution.unmatchedPoints, 0);
+    const snapWithPiQuota = buildSnapshot(nowStudy);
+    const claudeAccReport = snapWithPiQuota.accounts.find((a) => a.accountId === claudeOfficialId);
+    assert.ok(claudeAccReport?.five?.capacity?.tokens > 0, `buildSnapshot 用 pi 的 Claude 请求成功折算整窗容量（got ${JSON.stringify(claudeAccReport?.five)}）`);
+    pass('links pi Anthropic/OpenAI/xAI accounts to official quota capacity, model study, responseModel & providerThinkingLevel');
+
+    // 13. 设置页只读视图、独立别名与删除历史记录 + PI_CODING_AGENT_SESSION_DIR 独立目录支持
+    const status1 = piAccounts.listPiAccountStatus(nowStudy);
+    assert.equal(status1.installed, true);
+    assert.ok(status1.accounts.some((a) => a.provider === 'anthropic' && a.linkedOfficialId === claudeOfficialId));
+    assert.ok(status1.accounts.some((a) => a.id === aliceId && a.inAuth === false));
+
+    const renamed = piAccounts.renamePiAccount(aliceId, '我的 Google Ultra');
+    assert.equal(renamed.accounts.find((a) => a.id === aliceId)?.alias, '我的 Google Ultra');
+    const aliasedOwn = queryRequests({ from: '2026-11-01', to: '2026-11-30', source: 'pi', status: 'all', search: '', sort: 'time', page: 0, pageSize: 50, all: true, account: aliceId });
+    assert.ok(aliasedOwn.rows.every((r) => r.account?.label === '我的 Google Ultra'), '独立的 pi 别名优先级高于共享别名并立即生效');
+
+    const rawAuthPreRemove = fs.readFileSync(authPath, 'utf8');
+    const removed = piAccounts.removePiAccount(aliceId);
+    assert.equal(removed.accounts.some((a) => a.id === aliceId), false, '已登出历史记录可安全清理');
+    assert.equal(fs.readFileSync(authPath, 'utf8'), rawAuthPreRemove, '清理历史记录绝不触碰 auth.json');
+
+    const customSessDir = path.join(root, 'custom-pi-sessions', '--D--custom--');
+    fs.mkdirSync(customSessDir, { recursive: true });
+    const customSessFile = path.join(customSessDir, `${isoAt(nowStudy - 30_000).replace(/[:.]/g, '-')}_sess-custom-dir.jsonl`);
+    fs.writeFileSync(customSessFile, lines([
+      { type: 'session', version: 3, id: 'sess-custom-dir', timestamp: isoAt(nowStudy - 30_000), cwd: 'D:\\custom-dir' },
+      { type: 'message', id: 'cd1', parentId: null, timestamp: isoAt(nowStudy - 20_000), message: { role: 'user', content: 'hello custom dir' } },
+      { type: 'message', id: 'cd2', parentId: 'cd1', timestamp: isoAt(nowStudy - 15_000), message: { role: 'assistant', provider: 'kimi-coding', model: 'kimi-k2', usage: usage(200, 100, 0, 0, 0.05), stopReason: 'stop' } },
+    ]));
+    process.env.PI_CODING_AGENT_SESSION_DIR = path.join(root, 'custom-pi-sessions');
+    try {
+      const customScan = scanLocalUsage();
+      assert.equal(customScan.records.length, 1, 'PI_CODING_AGENT_SESSION_DIR 覆盖生效于用量扫描');
+      assert.ok(listSessions().some((s) => s.kind === 'pi' && s.id === 'sess-custom-dir'), 'PI_CODING_AGENT_SESSION_DIR 覆盖生效于会话列表');
+    } finally {
+      delete process.env.PI_CODING_AGENT_SESSION_DIR;
+    }
+    pass('supports Settings read-only status/rename/remove and PI_CODING_AGENT_SESSION_DIR override');
 
     console.log(`${checks}/${checks} pi account checks passed`);
   } finally {

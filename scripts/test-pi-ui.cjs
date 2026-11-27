@@ -4,10 +4,29 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenpulse-pi-ui-'));
 Object.assign(process.env, { TOKENPULSE_DATA_DIR: path.join(root, 'data'), AGENT_SWITCH_HOME: path.join(root, 'home'), HOME: path.join(root, 'home'), USERPROFILE: path.join(root, 'home'), PI_CODING_AGENT_DIR: path.join(root, 'pi'), TOKENPULSE_DSH_HOME: path.join(root, 'dsh'), CLAUDE_CONFIG_DIR: path.join(root, 'claude'), CODEX_HOME: path.join(root, 'codex'), GROK_HOME: path.join(root, 'grok'), AGENT_SWITCH_CC_DB: path.join(root, 'missing.db') });
 const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
 write(path.join(root, 'data', 'prefs.json'), JSON.stringify({ autoLaunch: false, autoUpdate: false, closeToTray: true, startMinimized: true, language: 'zh', notifyAt: 0, notifyMismatch: false, ccSwitch: false, seenVersion: require('../package.json').version, onboarding: 'done' }));
+const makeJwt = payload => `${Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.sig`;
+write(path.join(root, 'pi', 'auth.json'), JSON.stringify({
+  'google-ai-plan': { type: 'oauth', access: 'ya29.fake-ui-demo-token', refresh: '1//fake-ui-refresh', expires: Date.now() + 3600_000, dpopKey: { kty: 'EC', crv: 'P-256', x: 'demo-x', y: 'demo-y', d: 'demo-d-secret' } },
+  'openai-codex': { type: 'oauth', access: makeJwt({ email: 'demo-codex@example.com', 'https://api.openai.com/auth': { chatgpt_account_id: 'ws-demo-1', chatgpt_user_id: 'user-demo-1' } }), refresh: 'rt-demo-codex', expires: Date.now() + 3600_000 },
+}));
+const { createHash } = require('node:crypto');
+const demoFp = createHash('sha256').update('pi:google-ai-plan:demo-x.demo-y').digest('hex').slice(0, 24);
+const demoGoogleId = 'pi:google-ai-plan:' + createHash('sha256').update('email:demo-ultra@example.com').digest('hex').slice(0, 16);
+write(path.join(root, 'data', 'pi-logins.json'), JSON.stringify({
+  version: 1,
+  providers: { 'google-ai-plan': [{ from: Date.now() - 3600_000, id: demoGoogleId, email: 'demo-ultra@example.com', label: 'demo-ultra@example.com', mode: 'oauth', fingerprint: demoFp }] },
+  identities: { [demoFp]: { provider: 'google-ai-plan', email: 'demo-ultra@example.com', label: 'demo-ultra@example.com', updatedAt: Date.now() } },
+  providerTypes: { 'google-ai-plan': 'oauth' },
+}));
+write(path.join(root, 'data', 'official-accounts.json'), JSON.stringify({
+  version: 2,
+  accounts: [{ id: 'chatgpt:user-demo-1@ws-demo-1', kind: 'chatgpt', ref: 'user-demo-1@ws-demo-1', email: 'demo-codex@example.com', label: 'demo-codex@example.com', createdAt: Date.now() - 86_400_000, lastSeenAt: Date.now() }],
+  active: { chatgpt: 'chatgpt:user-demo-1@ws-demo-1' },
+}));
 write(path.join(root, 'pi', 'sessions', '--Demo--', 'pi-ui.jsonl'), [
   { type: 'session', version: 3, id: 'pi-ui', cwd: root },
   { type: 'message', id: 'a', parentId: null, message: { role: 'user', content: '检查 pi 合成演示项目' } },
-  { type: 'message', id: 'b', parentId: 'a', message: { role: 'assistant', model: 'pi-demo-model', usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 0, totalTokens: 60, cost: { total: 0.5 } }, content: [{ type: 'text', text: 'pi-search-demo：测试项目检查完成。' }] } },
+  { type: 'message', id: 'b', parentId: 'a', message: { role: 'assistant', provider: 'google-ai-plan', model: 'pi-demo-model', usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 0, totalTokens: 60, cost: { total: 0.5 } }, content: [{ type: 'text', text: 'pi-search-demo：测试项目检查完成。' }] } },
 ].map(row => JSON.stringify({ timestamp: new Date().toISOString(), ...row }) + '\n').join(''));
 process.env.TOKENPULSE_DSH_HOME = path.join(root, 'dsh');
 const dshFile = path.join(root, 'dsh', 'sessions', '--Demo--', 'session-ui', 'session.v4.jsonl.zstd');
@@ -90,8 +109,39 @@ app.on('web-contents-created', (_event, wc) => wc.once('did-finish-load', async 
     assert.equal(await e("document.querySelectorAll('#records tr').length"), 1);
     assert.equal(await e("current.sources.find(s => s.source === 'pi')?.tokens"), 60, '输入 10 + 缓存读 30 + 输出 20');
     assert.ok(await e("!!document.querySelector('#records tr .brand-svg path') || !!document.querySelector('#records tr .mini-logo svg')"), 'pi 有自己的图标，不是首字母');
+    // 请求详情显示 provider（google-ai-plan）与真实账号邮箱
+    await e("showUsageView('requests')");
+    await until("document.querySelector('#request-rows .request-row')?.textContent.includes('demo-ultra@example.com')");
+    await e("document.querySelector('#request-rows .request-row').click()");
+    await until("document.querySelector('#request-rows .request-detail')?.textContent.includes('google-ai-plan')");
     await shot('pi-usage');
-    console.log('PASS pi UI: pi appears in the source filter and usage details');
+    console.log('PASS pi UI: pi appears in the source filter, usage details, and request detail shows provider + account');
+
+    // 设置 → 官方账号：展示 pi OAuth 只读识别卡片、官方额度联动徽章、原地改名，零原始凭据、英文零中文残留
+    await e("openSettings('accounts')");
+    await until("document.querySelectorAll('#pi-accounts .oauth-account').length >= 2");
+    const piCardHtml = await e("document.getElementById('pi-accounts').innerHTML");
+    assert.doesNotMatch(piCardHtml, /fake-ui-demo-token|fake-ui-refresh|demo-d-secret|rt-demo-codex|\beyJ[\w-]{10,}/i, '设置页不得暴露任何 pi 原始凭据');
+    assert.ok(await e("document.querySelector('#pi-accounts .oauth-pi-linked')?.textContent.includes('Linked to ChatGPT quota')"), '联动官方账号显示英文额度联动徽章');
+    const enLeftover = await e(`(() => {
+      const out = [];
+      const w = document.createTreeWalker(document.getElementById('pi-accounts'), NodeFilter.SHOW_TEXT, {
+        acceptNode: n => n.parentElement?.closest('[translate="no"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+      });
+      for (let n; (n = w.nextNode()); ) if (/[\\u4e00-\\u9fff]/.test(n.nodeValue)) out.push(n.nodeValue.trim());
+      return out;
+    })()`);
+    assert.deepEqual(enLeftover, [], '英文模式下 pi OAuth 卡片零中文残留');
+    // 原地重命名独立的 pi Google AI Plan 账号
+    await e(`document.querySelector('#pi-accounts [data-account-row="${demoGoogleId}"] [data-account-action="rename"]').click()`);
+    await until("document.querySelector('#pi-accounts .oauth-rename')");
+    await e("(() => { const i = document.querySelector('#pi-accounts .oauth-rename'); i.value = 'My Ultra Plan'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
+    await until("document.querySelector('#pi-accounts')?.textContent.includes('My Ultra Plan')");
+    await shot('pi-accounts-en-dark');
+    await e("setThemeMode('light'); document.documentElement.classList.remove('theme-anim')");
+    await shot('pi-accounts-en-light');
+    await e("closeModal('settings')");
+    console.log('PASS pi UI: Settings pi OAuth card, linked quota badge, rename, zero secrets, and clean EN i18n');
     await e("document.getElementById('source-filter').value = 'all'; document.getElementById('source-filter').dispatchEvent(new Event('change')); navigate('sessions')");
     await until("document.querySelector('#page-sessions .sw-item')");
     // 删除对话：确认框选取消什么都不动；选删除后文件和列表项都没了，提示没有报错

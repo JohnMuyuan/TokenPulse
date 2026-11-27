@@ -19,6 +19,7 @@
  */
 
 import { aliasRules } from "./knowledge";
+import { normalizePiProvider, piProviderDisplayName } from "./pi-accounts";
 
 export type VerifyStatus = "match" | "mismatch" | "suspect" | "unverified";
 
@@ -109,9 +110,15 @@ export function idShape(id?: string) {
 /** 从响应 ID 看是哪种接口回的。 */
 export function channelOf(kind: VerifyInput["kind"], responseId?: string, provider?: string) {
   if (kind === "antigravity") return "Google Antigravity";
-  if (kind === "pi" && provider === "google-ai-plan") return "Google AI Plan";
+  const piProv = kind === "pi" ? normalizePiProvider(provider) : "";
+  if (kind === "pi" && piProv === "google-ai-plan") return "Google AI Plan";
   const id = responseId || "";
-  if (!id) return kind === "grok-build" ? "xAI（Grok Build）" : kind === "deepseek-harness" ? "DeepSeek" : "未知";
+  if (!id) {
+    if (kind === "grok-build") return "xAI（Grok Build）";
+    if (kind === "deepseek-harness") return "DeepSeek";
+    if (kind === "pi" && piProv) return piProviderDisplayName(provider);
+    return "未知";
+  }
   if (/^msg_bdrk_/.test(id)) return "AWS Bedrock";
   if (/^msg_vrtx_/.test(id)) return "Google Vertex";
   if (ANTHROPIC_MESSAGE.test(id)) return "Anthropic 官方格式";
@@ -120,6 +127,7 @@ export function channelOf(kind: VerifyInput["kind"], responseId?: string, provid
   if (/^chatcmpl-/.test(id)) return "OpenAI Chat 格式";
   if (/^msg_/.test(id)) return "非标准 msg_ 格式";
   if (UUID.test(id)) return "UUID（第三方接口）";
+  if (kind === "pi" && piProv) return piProviderDisplayName(provider);
   return "其他格式";
 }
 

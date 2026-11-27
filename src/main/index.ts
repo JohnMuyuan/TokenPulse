@@ -19,7 +19,7 @@ import fs from "fs/promises";
 import path from "path";
 import v8 from "v8";
 import vm from "vm";
-import { dataDir } from "../core/paths";
+import { dataDir, piDir } from "../core/paths";
 import { appLogFile, errorText, log } from "../core/app-log";
 import { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, type QuotaGlance } from "../core/quota";
 import type { Snapshot } from "../core/report";
@@ -43,7 +43,7 @@ import { cancelPendingInstall, checkForUpdates, consumeRelaunchHidden, downloadU
 import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf, switchCliLogin } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
-import { hasUnresolvedPiOAuth, syncPiAccounts } from "../core/pi-accounts";
+import { hasUnresolvedPiOAuth, listPiAccountStatus, removePiAccount, renamePiAccount, syncPiAccounts } from "../core/pi-accounts";
 import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
 import { autoSwitchCli, autoSwitchStale, describeAutoSwitch, normalizeRule, type AutoSwitchDeps, type AutoSwitchEvent } from "../core/cli-auto-switch";
 import { foregroundAccounts, quietPick } from "../core/quota-quiet";
@@ -948,8 +948,9 @@ function quotaGlances(snapshot: Snapshot | null): QuotaGlance[] {
  * 手动点刷新时 `notifyQuota` 为 true：额度没查到要说出来，不能当成刷新成功。
  */
 async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
+  const piSyncGate = (kind: OfficialAccountKind) => exitMonitor.gateQuota(kind);
   if (withQuota) await antigravityQuota.syncLocalLogin().catch(() => {});
-  if (withQuota || hasUnresolvedPiOAuth()) await syncPiAccounts({ force: notifyQuota }).catch(() => {});
+  if (withQuota || hasUnresolvedPiOAuth()) await syncPiAccounts({ force: notifyQuota, gate: piSyncGate }).catch(() => {});
   // 先展示已有统计，再更新本地文件；网络慢或断网时仍然可以使用界面。
   await getInitialSnapshot();
   let snapshot = publishSnapshot(await loadSnapshot(true));
@@ -1438,6 +1439,24 @@ if (!app.requestSingleInstanceLock()) {
       const localEmail = antigravityHub() ? undefined : await readAgyKeyringEmailAsync();
       return listAgyAccountStatus(Date.now(), localEmail);
     });
+    ipcMain.handle("pi-accounts:list", () => listPiAccountStatus());
+    ipcMain.handle("pi-accounts:sync", async () => {
+      await syncPiAccounts({ force: true, gate: (kind) => exitMonitor.gateQuota(kind) }).catch(() => {});
+      backgroundRefresh(false);
+      return listPiAccountStatus();
+    });
+    ipcMain.handle("pi-accounts:manage", async (_event, action: unknown, id: unknown, value?: unknown) => {
+      if ((action !== "rename" && action !== "remove") || typeof id !== "string" || !id.startsWith("pi:") || id.length > 200) {
+        throw new Error("pi 账号参数无效");
+      }
+      if (action === "rename" && (typeof value !== "string" || value.length > 200)) throw new Error("名字无效");
+      const status = action === "rename" ? renamePiAccount(id, String(value ?? "")) : removePiAccount(id);
+      if (action === "remove") {
+        await syncPiAccounts({ force: true, gate: (kind) => exitMonitor.gateQuota(kind) }).catch(() => {});
+      }
+      backgroundRefresh(false);
+      return action === "remove" ? listPiAccountStatus() : status;
+    });
     antigravityQuota.start();
     // 额度详情的号池页（0.3.44）：号池定义从供应商数据里取（不带凭据），汇总在 worker 里读转发记录和额度采样
     const poolOf = (id: unknown) => {
@@ -1771,6 +1790,44 @@ if (!app.requestSingleInstanceLock()) {
       return true;
     });
 
+    let piAuthWatcher: fsSync.FSWatcher | null = null;
+    let piAuthDebounce: ReturnType<typeof setTimeout> | null = null;
+    const stopPiAuthWatcher = () => {
+      if (piAuthDebounce) { clearTimeout(piAuthDebounce); piAuthDebounce = null; }
+      if (piAuthWatcher) {
+        try { piAuthWatcher.close(); } catch { /* ignore */ }
+        piAuthWatcher = null;
+      }
+    };
+    const startPiAuthWatcher = () => {
+      stopPiAuthWatcher();
+      const dir = piDir();
+      if (!fsSync.existsSync(dir)) return;
+      try {
+        piAuthWatcher = fsSync.watch(dir, { persistent: false }, (_eventType, filename) => {
+          if (quitting) return;
+          if (filename && String(filename).toLowerCase() !== "auth.json") return;
+          if (piAuthDebounce) clearTimeout(piAuthDebounce);
+          piAuthDebounce = setTimeout(() => {
+            piAuthDebounce = null;
+            if (quitting) return;
+            void syncPiAccounts({ gate: (kind) => exitMonitor.gateQuota(kind) })
+              .then((res) => {
+                if (quitting) return;
+                sendToWin("pi-accounts-changed", listPiAccountStatus());
+                if (res.changed) backgroundRefresh(false);
+              })
+              .catch(() => {});
+          }, 1200);
+          piAuthDebounce.unref?.();
+        });
+        piAuthWatcher.on("error", () => stopPiAuthWatcher());
+      } catch {
+        stopPiAuthWatcher();
+      }
+    };
+    startPiAuthWatcher();
+
     scheduleQuotaChecks();
     backgroundRefresh(true);
     void deepseekBalance.refreshAll(false);
@@ -1780,6 +1837,7 @@ if (!app.requestSingleInstanceLock()) {
     app.on("activate", () => {
       revealWindow();
     });
+    app.once("before-quit", stopPiAuthWatcher);
   });
 
   /*
