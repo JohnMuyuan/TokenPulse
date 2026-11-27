@@ -1,6 +1,29 @@
-# 当前接手入口 · `v0.4.2`（已发布至 GitHub Releases）
+# 当前接手入口 · `v0.4.3`（已发布至 GitHub Releases）
 
-## 最新已发布版本 · `v0.4.2` · 2026-11-26
+## 最新已发布版本 · `v0.4.3` · 2026-11-26
+
+- **Git 与发布**。[TokenPulse v0.4.3](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.3) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460186137`，发布时间 `2026-11-27T05:01:43Z`）。发布提交 `bb5ab1dabc8e07e23a6086ac0e23b514af102399` 与签注标签 `v0.4.3`（`b7afe38df373d700385ed276c27d4d0f12445975`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
+- **实测内存前后对比**（以用户本机真实数据规模隔离拷贝压测：46.57 MB `requests/*.jsonl`、5.98 MB `quota-history.json`、2.81 MB `antigravity-quota.json`、开启桌宠 `pet-f62c2c82` 与 60fps 互动桌面）：
+  - **优化前**（用户实机 `v0.4.2` `--hidden` 7 进程）：总 Working Set **1,074–1,176 MB**（约 1.07–1.18 GB），任务管理器专用工作集（PrivWS）**517–620 MB**，Private Commit **711–815 MB**。
+  - **优化后**（隔离同规模实测 5 进程，托盘 + 桌宠 + 原生 C# 输入助手）：总 Working Set **448.2 MB**（下降 **58%–62%**，减少 626–728 MB），任务管理器专用工作集 **149.8 MB**（下降 **71%–76%**，减少 367–470 MB），Private Commit **267.7 MB**（下降 **62%–67%**，减少 443–547 MB）；且每分钟后台扫描不再在主进程产生 +100 MB 周期性内存尖峰。
+- **发布内容（客户端全进程树运行内存深度优化）**：
+  1. **替换常驻 PowerShell + WPF 桌宠输入监听进程（-152 MB WS / -113 MB PrivWS）**：[desk-pet-input.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet-input.ts) 改为通过 Windows 自带 `.NET Framework 4 csc.exe` 一次性编译并按 SHA-256 缓存纯 C# 控制台助手 `<dataDir>/bin/tp-pet-input-<hash>.exe`（仅直接调用原生 COM `UIAutomationCore.dll` 与 `GetAsyncKeyState`，零 PowerShell/WPF 依赖，含 `Marshal.ReleaseComObject`、`SetProcessWorkingSetSizeEx` 与 `startSeq` 竞态保护，缺少 `csc.exe` 时自动回退 PowerShell）。
+  2. **主窗口 `--hidden` 懒创建 + 关至托盘 2 分钟闲置回收（-218 MB 主渲染器 + ~40 MB GPU 显存面）**：[index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)、[preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts)、[app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)。正式打包态（或 `TOKENPULSE_LAZY_WINDOW=1`）随开机 `--hidden`/`startMinimized`/`relaunchHidden` 启动时延迟创建主窗口并以 `windowAway = true` 运行；关闭到托盘（不含任务栏最小化）满 2 分钟自动销毁隐藏主窗口释放渲染器与 GPU 合成层，唤起时按需无缝重建；通过 `v8.setFlagsFromString("--expose-gc")` + `vm.runInNewContext("gc")` 为主进程真正开启 GC，新增 `trimMainMemory()` 与 `memory:trim` IPC 并在窗口离开/手工清缓存时释放。
+  3. **重度日志扫描与查询隔离至短驻 Electron `utilityProcess` + `request-log` 瘦身（消除主进程 +100 MB 周期尖峰）**：[report-worker.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/report-worker.ts)、[snapshot.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/snapshot.ts)、[request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts)。将快照与大查询从主进程内 `worker_threads` 迁出至单个短驻（闲置 3 秒自动退出，并随环境变更或 `before-quit` 回收）的独立 `utilityProcess` 串行执行（纯 Node 测试环境保留 `worker_threads` 回退），避免 V8 堆与峰值内存滞留主进程；`request-log.ts` 新增 `skipSessionMeta`、`clearRequestLogCaches()`、`RequestAccount` 对象驻留复用及去重 Map 前置过滤。
+  4. **Antigravity 后台刷新零重扫与轻量桌宠摘要**：[antigravity-quota.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/antigravity-quota.ts)、[index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)。为 `recentRows()`/`speed()` 启用 `skipSessionMeta: true`、为 `rowCache` 加 15 秒自动逐出定时器与 `trimMemory()`；新增零 JSONL 磁盘读取的 `lightPetAccounts()`/`localAccountId()` 供托盘与桌宠使用；窗口离开时后台刷新跳过全量 `state()` 与 40+ MB JSONL 扫描，窗口恢复后补推。
+  5. **音频服务、桌宠画布/定时器与 i18n 渲染层瘦身（-104 MB AudioService + -48 MB 桌宠渲染器）**：[pet-sound.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/pet-sound.js) 播放结束闲置 8 秒自动 `close()` `AudioContext` 释放 Chromium `AudioService` 进程（保留自定义音效原始字节按需重解码）；[desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js) 将未使用的 `<canvas>` 缓冲区清零并在无活跃动画时停止 `capTimer` 60fps `setInterval`；[i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js) 惰性初始化 4,000+ 条英文词典与正则表（中文模式与主进程零构建开销）；[usage-projects.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/usage-projects.js) 在后台快照重绘时保留 `.pj-head` 键盘焦点；新增专项回归 [test-memory-optimizations.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-memory-optimizations.cjs) 与 [test-memory-lifecycle-ui.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-memory-lifecycle-ui.cjs)。
+- **Windows 构建与线上资产校验**：`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 `0`，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.4.3.0`（FileVersion `0.4.3`）；`app.asar` 头部核验 `ASAR_MISSING=[]`、`ASAR_PKG_VERSION=0.4.3`；`dist/latest.yml`（349 B）SHA512 与大小同 `TokenPulse-0.4.3-Setup.exe` 完全一致（`LATEST_YML_SHA512_MATCH=true`、`LATEST_YML_SIZE_MATCH=true`）。发布说明在 [release-0.4.3.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.4.3.md)。4 项附件均已上传至 Release `460186137`（远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/latest.yml`：`349` B，SHA256 `6be8ca05588caa877f69aa3bd2d5d889f8e39c5ba9512f610100c951c59ce40c`
+  - `dist/TokenPulse-0.4.3-Setup.exe`：`113,010,581` B，SHA256 `313da61fdbed542999d34efa93095873961eb5aa3f3a2c981135f5df65b39148`
+  - `dist/TokenPulse-0.4.3-Setup.exe.blockmap`：`119,792` B，SHA256 `4932fa53e66d2e616cdc33a7d9c16b72e80208e2be5e3e37b3c18b2d167cbfe8`
+  - `dist/TokenPulse-0.4.3-Portable.exe`：`112,753,376` B，SHA256 `0f905a71c678d14427df55467765ec3a9d129a2830e7af95a0babb3d9368bb1a`
+- **验证与收尾**：
+  - 升版后复跑 `npm test`（**77/77** Node 套件，含 `test-features.cjs` 英文零漏翻 46/46、`test-audit-frontend.cjs` 9/9、`test-memory-optimizations.cjs` 5/5）、`test-intro-ui.cjs`（3/3）、`test-memory-lifecycle-ui.cjs`（5/5），叠加升版前全量 **25/25** Electron UI 套件与 `npm run test:update`（13/13）全部退出 `0`；`git diff --check` 退出 `0`。未做真实上游在线服务联调；未触碰用户已安装版软件。
+  - 打包与发布后本仓库关联进程 `REPO_PROCS=0`；`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}`、4 项 `v0.4.3` 发行产物及 4 项 `build/` 编译产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，全部句柄已在 `finally` 立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.4.2` · 2026-11-26
 
 - **Git 与发布**。[TokenPulse v0.4.2](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.2) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `459284969`，发布时间 `2026-11-26T10:56:10Z`）。发布提交 `4e878535aa8ec9e255e28c342f691a13b9290ba5` 与签注标签 `v0.4.2`（`ee52421d10bd84a9493d543f65d4318ee9cec302`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前差异扫描 `CACHED_SECRET_HITS=0`。
 - **发布内容（总览页「瑞士精密仪表 × 柔和展示字重」视觉重设计）**：
