@@ -1,6 +1,24 @@
-# 当前接手入口 · `v0.4.3`（已发布至 GitHub Releases）
+# 当前接手入口 · `v0.4.4`（已发布至 GitHub Releases）
 
-## 最新已发布版本 · `v0.4.3` · 2026-11-26
+## 最新已发布版本 · `v0.4.4` · 2026-11-26
+
+- **Git 与发布**。[TokenPulse v0.4.4](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.4) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460221523`，发布时间 `2026-11-27T06:01:30Z`）。发布提交 `7e622d8cdcf766e755f4e556ef82ba168c79e800` 与签注标签 `v0.4.4`（`f37d8ce587ee1987c49222e9e7bb5ae811ffa88f`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
+- **发布内容（四格统计卡与全站字体/字重回退至 `v0.4.2` 前，保留 `v0.4.2` 总览排版）**：
+  1. **四格统计指标卡（`#tiles`）恢复 `v0.4.2` 前独立卡片样式**：[app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js) 与 [app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 将总览与用量明细共用的 `#tiles` 从 1px 竖线通栏恢复为 4 张独立圆角卡片（`gap: 18px`、`.stat:hover` 悬浮阴影、左上角 `.stat-icon` 淡绿圆角图标、右上角 `.stat-unit`、底部 `.delta.up`/`.delta.down` 胶囊涨跌幅与 `.cost-pill` 胶囊费用拆分；移除 `.stat-delta-top`、`.stat-cost-bar` 进度条与 `.is-accent` 绿色数字高亮），同步更新 `@media (forced-colors: active)` 规则。
+  2. **保留 `v0.4.2` 首页总览排版，全站字体、字重与字号层级回归 `v0.4.2` 之前**：保留 `#usage-filters` + `#usage-summary` 前置于 `#page-overview` 的首屏顺序、大数字 + 精密双轨额度/余额卡片结构、融合趋势与节奏面板（柱状/曲线切换、均值线、24 格脉搏）、工具堆叠条及模型排行行内占比底纹；在 [app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css)、[deepseek-balance.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/deepseek-balance.css)、[antigravity.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/antigravity.css) 中将 `--font` / `--font-display` 字体栈恢复为 `Microsoft YaHei UI` 优先于 `PingFang SC`（移除 `SF Pro`、`font-optical-sizing: auto` 与 `lining-nums`），并将全站标题、大数字、卡片名称与列表的字重（`590`→`650`、`600`→`550`/`650`）、字号、字距及次要文字对比度（`--faint`→`--muted`）恢复为 `v0.4.2` 之前风格。
+  3. **修复 `#scroll-floor` 小数 DPI 滚动锚定偏移**：[app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css) 为 `#scroll-floor` 增加 `overflow-anchor: none`，避免 150% 等小数 DPI 缩放下内容高度变化被浏览器锚定到垫片导致 2px 偏移。
+- **Windows 构建与线上资产校验**：`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 `0`，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.4.4.0`（FileVersion `0.4.4`）；`app.asar` 头部核验 `ASAR_MISSING=[]`、`ASAR_PKG_VERSION=0.4.4`；`dist/latest.yml`（349 B）SHA512 与大小同 `TokenPulse-0.4.4-Setup.exe` 完全一致（`LATEST_YML_SHA512_MATCH=true`、`LATEST_YML_SIZE_MATCH=true`）。发布说明在 [release-0.4.4.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.4.4.md)。4 项附件均已上传至 Release `460221523`（远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/latest.yml`：`349` B，SHA256 `f78ae8949b45b2102d128faac2399b8b2ae9e5d81ba223f213561871d2fb7ab6`
+  - `dist/TokenPulse-0.4.4-Setup.exe`：`113,010,860` B，SHA256 `427d2b97093bbbaafa45fbbe480c521c628b9114bc3525cb606710264ad69e4b`
+  - `dist/TokenPulse-0.4.4-Setup.exe.blockmap`：`119,807` B，SHA256 `cb74fc08e3c7da81de6cc51b87aa2abca4cc643708fbd35a9091839752c81099`
+  - `dist/TokenPulse-0.4.4-Portable.exe`：`112,753,697` B，SHA256 `ba3eff58fd3c433936867ae495e38f74db155b51417bd191461857e5cbf4f4c0`
+- **验证与收尾**：
+  - 升版后复跑 `npm test`（`tsc` + **77/77** Node 套件，含 `test-features.cjs` 英文零漏翻 46/46 与 `test-audit-frontend.cjs` 9/9）、`test-intro-ui.cjs`（3/3）及 `git diff --check` 全部退出 `0`；叠加升版前 **7/7** 组相关 Electron UI 套件（`test-ui.cjs`、`test-layout-ui.cjs`、`test-antigravity-ui.cjs` 8/8、`test-deepseek-balance-ui.cjs`、`test-intro-ui.cjs` 3/3、`test-cache-ui.cjs`、`test-usage-projects-ui.cjs`）全部通过，并使用隔离临时目录与纯合成演示数据完成 4 张日/夜实机截图视觉核查。未跑 `npm run test:ui` 中其余无关子页脚本及 `npm run test:update`；未做真实上游在线联调；未触碰用户已安装版软件。
+  - 打包与发布后本仓库关联进程 `REPO_PROCS=0`；`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}`、4 项 `v0.4.4` 发行产物及 4 项 `build/` 编译产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，全部句柄已在 `finally` 立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.4.3` · 2026-11-26
 
 - **Git 与发布**。[TokenPulse v0.4.3](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.3) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460186137`，发布时间 `2026-11-27T05:01:43Z`）。发布提交 `bb5ab1dabc8e07e23a6086ac0e23b514af102399` 与签注标签 `v0.4.3`（`b7afe38df373d700385ed276c27d4d0f12445975`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
 - **实测内存前后对比**（以用户本机真实数据规模隔离拷贝压测：46.57 MB `requests/*.jsonl`、5.98 MB `quota-history.json`、2.81 MB `antigravity-quota.json`、开启桌宠 `pet-f62c2c82` 与 60fps 互动桌面）：
