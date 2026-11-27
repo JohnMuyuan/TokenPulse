@@ -1,6 +1,36 @@
-# 当前接手入口 · `v0.4.5`（已发布至 GitHub Releases）
+# 当前接手入口 · `v0.4.6`（已发布至 GitHub Releases）
 
-## 最新已发布版本 · `v0.4.5` · 2026-11-27
+## 最新已发布版本 · `v0.4.6` · 2026-11-27
+
+- **Git 与发布**。[TokenPulse v0.4.6](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.6) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460852175`，发布时间 `2026-11-27T16:45:17Z`）。发布提交 `3ceb6acd044cff12476dcddfdbaa13f51c5b2c76` 与签注标签 `v0.4.6`（`5cca83d589d8b8ca752757d2fa99905533f61b29`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
+- **发布内容（`pi` 全量 OAuth 账号识别、混合会话拆账修复与三家官方额度深度联动）**：
+  1. **全量 `pi` OAuth provider 识别、防刷新裂变与时间线化认证模式**（[pi-accounts.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/pi-accounts.ts)、[login-timeline.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/login-timeline.ts)）：
+     - 完整覆盖 `pi-ai` 全部内置 OAuth 订阅 provider：`google-ai-plan`、`anthropic`、`openai-codex`、`openai`（修正旧版仅写 `openai-chatgpt` 遗漏真实 `openai` ChatGPT 订阅的问题）、`xai`、`github-copilot`、`kimi-coding`、`meta`，并将 `openrouter`（OAuth 换取按量 API Key）显式归为 API 实付且不写入订阅时间线。
+     - 修复 `fingerprintOf()` 优先级（稳定离线身份 > DPoP 公钥坐标 > `refresh` > `access`），并对轮换型 `refresh_token` provider 实现占位延续与同账号折叠合并，消除令牌自动刷新裂变假账号的问题。
+     - 引入时间线化认证模式 `PiLoginSpan.mode`（`oauth` / `api_key` / `none`）与 `isPiProviderOfficialAt(provider, at, store)`，登出时清除旧 `providerTypes`，防止 API Key ↔ OAuth 切换或改用环境变量 API Key 污染历史与后续归属。
+     - 严格只读在线资料识别（绝不改写 `auth.json`、不触发刷新、不落盘任何原始令牌），扩展支持 Anthropic（`GET /api/oauth/profile`）、GitHub Copilot（用长期 `refresh` 查 GitHub `/user` 拿 `@login`/邮箱，不受短 Copilot access 过期影响）、OpenAI / xAI OIDC UserInfo，并接入出口白名单 `gate` 门控。
+     - 新增 `buildOfficialAccountIndex()` / `linkedOfficialAccountId()`、`listPiAccountStatus()`、`renamePiAccount()`、`removePiAccount()`，支持独立别名与三家官方账号自动联动。
+  2. **修复混合会话拆账打架 + 打通三家官方账号额度容量与模型研究**（[usage-scan.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/usage-scan.ts)、[report.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/report.ts)、[request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts)、[request-verify.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-verify.ts)、[model-study.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/model-study.ts)）：
+     - `PI_STATE_VERSION` 升至 `2`，为 `pi` 文件按供应商记录 `piByProvider`，[report.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/report.ts) `buildSnapshot()` 逐 `provider × 日期` 精确拆分 `officialDays` / `apiDays`，根治混合会话在总览页整份误算进 API 实付的 Bug；同时修复 `usage` 条目污染 `state.provider` / `requested` 以及末尾空 `model_change` 改坏整份文件归属的问题。
+     - `piRow()` 新增读取 `AssistantMessage.responseModel`（启用真实型号核验）与 `providerThinkingLevel` 回退；`channelOf()` 为全部内置 `pi` provider 补齐通道名称。
+     - 对 `pi` 里确切联动到本机 `claude:*` / `chatgpt:*` / `grok:*` 官方账号的请求，自动写入对应 `accountHours`、放行 `capacityOnly` 与 `toCapacityRow`、纳入整窗容量折算与模型研究（`source: "all"`），消除 `pi` 消耗被误判为「本机以外」的问题，并在账号筛选下拉框合并计数。
+  3. **目录覆盖、`auth.json` 实时监听、IPC 与设置页/请求详情 UI**（[paths.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/paths.ts)、[sessions.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/sessions.ts)、[agent-activity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/agent-activity.ts)、[demo.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/demo.ts)、[snapshot.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/snapshot.ts)、[index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)、[preload.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/preload.ts)、[index.html](file:///d:/CodePorject/Tools/TokenPulse/renderer/index.html)、[app.css](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.css)、[app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)、[i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js)、[intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js)）：
+     - 新增 `piSessionsDir()` 支持 `PI_CODING_AGENT_SESSION_DIR` 独立覆盖，同步接入 `demo.ts` 环境变量隔离与 `snapshot.ts` 环境签名。
+     - 主进程对 `piDir()/auth.json` 增加 `persistent: false`、1.2s 防抖的只读 `fs.watch`（退出 `before-quit` 时关闭并清定时器）；新增 `pi-accounts:list` / `sync` / `manage` IPC（受演示模式保护）并接入出口白名单门控。
+     - 设置 → 官方账号下方新增 `#pi-accounts` 独立只读卡片（展示活跃/历史 OAuth 登录、三家额度联动徽章、原地重命名、缓存重置/历史删除与「同步识别」）；请求详情与 CSV 导出新增「供应商（`provider`）」列，`quotaShare()` 支持 `pi` 联动官方账号显示单次额度占比；补齐全部中英文词典与更新说明翻译。
+- **Windows 构建与线上资产校验**：`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 `0`，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.4.6.0`（FileVersion `0.4.6`）；`app.asar` 头部核验 `ASAR_MISSING=[]`、`ASAR_PKG_VERSION=0.4.6`；`dist/latest.yml`（349 B）SHA512 与大小同 `TokenPulse-0.4.6-Setup.exe` 完全一致（`LATEST_YML_SHA512_MATCH=true`、`LATEST_YML_SIZE_MATCH=true`）。发布说明在 [release-0.4.6.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.4.6.md)。4 项附件均已上传至 Release `460852175`（远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/latest.yml`：`349` B，SHA256 `db93f838093a0e6cc0f6ff85978ee1fdb37826f7dc7481a6cf09efac0fc0f078`
+  - `dist/TokenPulse-0.4.6-Setup.exe`：`113,027,361` B，SHA256 `9f4ea5825e6152ea03d6ea43c473dd7eda48ce84386666d3a57813398e116acd`
+  - `dist/TokenPulse-0.4.6-Setup.exe.blockmap`：`119,851` B，SHA256 `6f758a4cce4e30ac3e4e26f1480c7b90c08b01b47751266fd18d2db0ed67a5b7`
+  - `dist/TokenPulse-0.4.6-Portable.exe`：`112,770,214` B，SHA256 `f2f89681c06699d3dc3e3af66d3fa37f9e406bacd9a89a214818c8effb3b2e6e`
+- **验证与收尾**：
+  - 升版后复跑 `npm test`（`tsc` + **78/78** Node 套件，含 `test-pi-accounts.cjs` 13/13、`test-pi-usage.cjs` 6/6、`test-pi.cjs` 5/5、`test-features.cjs` 46/46 与 `test-audit-frontend.cjs` 9/9）、`test-intro-ui.cjs`（3/3）与 `test-pi-ui.cjs`（6/6）均退出 `0`；叠加升版前 `test-ui.cjs`、`test-model-study-ui.cjs` 全部通过与合成演示数据日/夜截图视觉核查。未跑 `npm run test:ui` 其余无关子页脚本及 `npm run test:update`；未做真实上游在线联调；未触碰用户已安装版软件。
+  - 已知客观限制：`pi` 会话 JSONL 本身不写账号信息、`auth.json` 单槽位且丢弃 `id_token`，时间线开始前的老请求仍按最早观察账号标为「推断」；`google-ai-plan` 官方暂无剩余额度百分比 API，仅覆盖账号识别、订阅等价口径与通道标注。
+  - 打包与发布后本仓库关联进程 `REPO_PROCS=0`；`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}`、4 项 `v0.4.6` 发行产物及 4 项 `build/` 核心产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，全部句柄已在 `finally` 立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.4.5` · 2026-11-27
 
 - **Git 与发布**。[TokenPulse v0.4.5](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.5) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460786357`，发布时间 `2026-11-27T15:38:57Z`）。发布提交 `be4134a058c149cbdf6289484eb6d4163ad57761` 与签注标签 `v0.4.5`（`0879005e988dbad6ce20a5a09a2211746e26c38c`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
 - **发布内容（`pi` Google AI Plan 官方登录账号识别与订阅/API 拆账适配，对应 [earendil-works/pi#12614](https://github.com/earendil-works/pi/pull/12614)）**：
