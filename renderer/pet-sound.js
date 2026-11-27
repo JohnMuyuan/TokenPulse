@@ -17,10 +17,39 @@
   };
   /** 低沉的两种用三角波，听起来更「提醒」；做完、在问你、等你用正弦波加一点高八度，像铃铛。 */
   const SOFT = new Set(['done', 'ask', 'waiting']);
-  const CUSTOM_MAX_S = 5, FADE_S = 0.3;
-  let audio = null, pendingPlay = null;
-  /** 自己选的音频：种类 → 解码好的 AudioBuffer。 */
-  const custom = {}, tokens = {};
+  const CUSTOM_MAX_S = 5, FADE_S = 0.3, IDLE_CLOSE_MS = 8000;
+  let audio = null, pendingPlay = null, idleCloseTimer = null;
+  /** 自己选的音频：种类 → 解码好的 AudioBuffer（空闲关闭 AudioContext 后释放）与原始字节（按需再解码）。 */
+  const custom = {}, customBytes = {}, tokens = {};
+
+  function cancelIdleClose() {
+    if (idleCloseTimer != null) {
+      if (typeof clearTimeout === 'function') clearTimeout(idleCloseTimer);
+      idleCloseTimer = null;
+    }
+  }
+
+  /** 提示音播完空闲一段时间后关闭 AudioContext，让 Chromium 回收 ~100 MB 的 AudioService 进程。 */
+  function closeIdleContext() {
+    if (!audio || pendingPlay) return;
+    const ctx = audio;
+    audio = null;
+    for (const k of Object.keys(custom)) delete custom[k];
+    try {
+      const p = ctx.close?.();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch { /* ignore */ }
+  }
+
+  function scheduleIdleClose(extraMs = 0) {
+    cancelIdleClose();
+    if (!audio || audio.state === 'closed' || typeof setTimeout !== 'function') return;
+    idleCloseTimer = setTimeout(() => {
+      idleCloseTimer = null;
+      closeIdleContext();
+    }, IDLE_CLOSE_MS + Math.max(0, extraMs));
+    if (idleCloseTimer && typeof idleCloseTimer.unref === 'function') idleCloseTimer.unref();
+  }
 
   function context() {
     const Ctx = root.AudioContext || root.webkitAudioContext;
@@ -48,19 +77,50 @@
     if (buffer.duration > CUSTOM_MAX_S) { out.gain.setValueAtTime(level, start + length - FADE_S); out.gain.linearRampToValueAtTime(0.0001, start + length); }
     source.connect(out); out.connect(ctx.destination);
     source.start(start); source.stop(start + length);
+    return length * 1000 + 200;
   }
 
-  function schedule(ctx, kind, tune, level) {
-    if (custom[kind]) { playCustom(ctx, custom[kind], level); return; }
+  function scheduleTune(ctx, kind, tune, level) {
     const out = ctx.createGain(), start = ctx.currentTime + 0.02;
     out.gain.value = 0.3 * level;
     out.connect(ctx.destination);
+    let endS = 0.6;
     for (const [freq, at, length] of tune) {
+      if (at + length > endS) endS = at + length;
       if (SOFT.has(kind)) {
         note(ctx, out, freq, start + at, length, 'sine', 1);
         note(ctx, out, freq * 2, start + at, length * 0.6, 'sine', 0.25);
       } else note(ctx, out, freq, start + at, length, 'triangle', 0.9);
     }
+    return endS * 1000 + 200;
+  }
+
+  function schedule(ctx, kind, tune, level) {
+    if (custom[kind]) {
+      scheduleIdleClose(playCustom(ctx, custom[kind], level));
+      return;
+    }
+    if (customBytes[kind] && typeof ctx.decodeAudioData === 'function') {
+      const token = tokens[kind] || 0;
+      const raw = customBytes[kind];
+      cancelIdleClose();
+      Promise.resolve()
+        .then(() => ctx.decodeAudioData(raw.slice().buffer))
+        .then(buffer => {
+          if (tokens[kind] !== token || !customBytes[kind]) return;
+          custom[kind] = buffer;
+          if (audio === ctx && ctx.state !== 'closed') {
+            scheduleIdleClose(playCustom(ctx, buffer, level));
+          }
+        })
+        .catch(() => {
+          if (audio === ctx && ctx.state !== 'closed') {
+            scheduleIdleClose(scheduleTune(ctx, kind, tune, level));
+          }
+        });
+      return;
+    }
+    scheduleIdleClose(scheduleTune(ctx, kind, tune, level));
   }
 
   /** 播一种提示音；volume 0～1。换过音频的放自己的。放不出来（没有声卡之类）返回 false，不抛错。 */
@@ -68,6 +128,7 @@
     const tune = TUNES[kind];
     if (!tune) return false;
     try {
+      cancelIdleClose();
       const ctx = context();
       if (!ctx) return false;
       const numeric = Number(volume);
@@ -81,8 +142,10 @@
             pendingPlay = null;
             if (next && ctx.state === 'running') {
               try { schedule(ctx, next.kind, next.tune, next.level); } catch { /* ignore */ }
+            } else {
+              scheduleIdleClose();
             }
-          }).catch(() => { pendingPlay = null; });
+          }).catch(() => { pendingPlay = null; scheduleIdleClose(); });
         }
         return true;
       }
@@ -95,19 +158,35 @@
   async function setCustom(kind, bytes) {
     if (!TUNES[kind]) return false;
     delete custom[kind];
+    delete customBytes[kind];
     // 前后脚换了两次：只认最后一次
     const token = (tokens[kind] = (tokens[kind] || 0) + 1);
-    if (!bytes) return true;
+    if (!bytes) { scheduleIdleClose(); return true; }
     try {
       const ctx = context();
       if (!ctx) return false;
       const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      const copy = view.slice();
       // decodeAudioData 会占用（detach）传进去的缓冲区：给它一份副本
-      const buffer = await ctx.decodeAudioData(view.slice().buffer);
-      if (tokens[kind] === token) custom[kind] = buffer;
+      const buffer = await ctx.decodeAudioData(copy.slice().buffer);
+      if (tokens[kind] === token) {
+        custom[kind] = buffer;
+        customBytes[kind] = copy;
+      }
+      scheduleIdleClose();
       return true;
-    } catch { return false; }
+    } catch {
+      scheduleIdleClose();
+      return false;
+    }
   }
 
-  root.PulsePetSound = { play, setCustom, hasCustom: kind => !!custom[kind], KINDS: Object.keys(TUNES), CUSTOM_MAX_S };
+  root.PulsePetSound = {
+    play,
+    setCustom,
+    hasCustom: kind => Boolean(custom[kind] || customBytes[kind]),
+    closeIdle: closeIdleContext,
+    KINDS: Object.keys(TUNES),
+    CUSTOM_MAX_S,
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

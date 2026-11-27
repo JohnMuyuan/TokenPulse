@@ -4815,6 +4815,8 @@ $('data-trim-cache')?.addEventListener('click', async () => {
   btn.disabled = true;
   try {
     window.PulseSessions?.hide?.();
+    filteredRecords = [];
+    await api.trimMemory?.();
     if (window.gc) window.gc();
     settingsDone('渲染缓存已清理，内存已释放');
   } catch {
@@ -4910,6 +4912,8 @@ api.onRefreshWarn?.(message => { toast(message, { kind: 'warning', key: 'refresh
 api.onWindowAway?.(away => {
   if (away) {
     window.PulseSessions?.hide?.();
+    filteredRecords = [];
+    if (window.gc) window.gc();
   } else {
     if (state.page === 'sessions') window.PulseSessions?.show?.();
     requestAnimationFrame(() => syncDailyChartWidth(false));

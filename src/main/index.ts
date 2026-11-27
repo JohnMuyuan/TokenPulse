@@ -17,6 +17,8 @@ import { deskPackData, importDeskPack, listDeskPacks, removeDeskPack } from "../
 import fsSync from "fs";
 import fs from "fs/promises";
 import path from "path";
+import v8 from "v8";
+import vm from "vm";
 import { dataDir } from "../core/paths";
 import { appLogFile, errorText, log } from "../core/app-log";
 import { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, type QuotaGlance } from "../core/quota";
@@ -56,8 +58,8 @@ import { readFileSync } from "fs";
 import { TokensUploader } from "./tokens-ci";
 import { DeepSeekBalance } from "./deepseek-balance";
 import { setDeepSeekMark } from "../core/deepseek-insight";
-import { AntigravityQuota, agyQuotaAccounts, type AgyQuotaState } from "./antigravity-quota";
-import { addLocalAgyAccount, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts, resolveAgyLocalOwner } from "../core/antigravity-accounts";
+import { AntigravityQuota } from "./antigravity-quota";
+import { addLocalAgyAccount, listAgyAccountStatus, loginAntigravityOAuth, manageAgyAccount, reorderAgyAccounts } from "../core/antigravity-accounts";
 import { readAgyKeyringEmailAsync, switchAntigravityAccount } from "../core/antigravity-switch";
 import { antigravityHub } from "../core/antigravity";
 import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
@@ -77,12 +79,56 @@ import { AGENT_APPS, AGENT_LABEL, isAgentApp } from "../core/agent-types";
 const SCAN_EVERY_MS = 60_000;
 /** 窗口收进托盘或最小化时，用量扫描放慢到这个间隔（0.3.21）。额度查询仍按设置里的间隔，不放慢。 */
 const AWAY_SCAN_EVERY_MS = 3 * 60_000;
+/** 主窗口关闭收进托盘后，闲置这么久销毁渲染进程释放 ~200 MB 内存（再次点托盘/通知即刻重建）。 */
+const DEFAULT_MAIN_IDLE_DESTROY_MS = 2 * 60_000;
+function mainIdleDestroyMs() {
+  const override = Number(process.env.TOKENPULSE_MAIN_IDLE_DESTROY_MS);
+  return Number.isFinite(override) && override >= 50 ? override : DEFAULT_MAIN_IDLE_DESTROY_MS;
+}
 
 let win: BrowserWindow | null = null;
+let mainIdleDestroyTimer: ReturnType<typeof setTimeout> | null = null;
 /** 上次是在托盘里被自动更新重启的：这次启动也只进托盘，别弹窗口打扰用户。 */
 let relaunchHidden = false;
 let tray: Tray | null = null;
 let quitting = false;
+
+/**
+ * 真正暴露主进程 V8 GC：app.commandLine.appendSwitch("js-flags", "--expose-gc") 只作用于渲染进程，
+ * 主进程需通过 v8.setFlagsFromString("--expose-gc") 才能拿到可调用的 gc()。
+ */
+let mainGc: (() => void) | null = null;
+try {
+  v8.setFlagsFromString("--expose-gc");
+  const gcFn = vm.runInNewContext("gc");
+  if (typeof gcFn === "function") mainGc = gcFn as () => void;
+} catch { /* ignore */ }
+
+function runMainGc() {
+  try {
+    if (mainGc) mainGc();
+    else if (typeof global.gc === "function") global.gc();
+  } catch { /* ignore */ }
+}
+
+function cancelMainIdleDestroy() {
+  if (mainIdleDestroyTimer) {
+    clearTimeout(mainIdleDestroyTimer);
+    mainIdleDestroyTimer = null;
+  }
+}
+
+function scheduleMainIdleDestroy(target: BrowserWindow) {
+  cancelMainIdleDestroy();
+  mainIdleDestroyTimer = setTimeout(() => {
+    mainIdleDestroyTimer = null;
+    if (quitting || !readPrefs().closeToTray) return;
+    if (win !== target || target.isDestroyed() || target.isVisible() || target.isMinimized()) return;
+    target.destroy();
+    trimMainMemory();
+  }, mainIdleDestroyMs());
+  mainIdleDestroyTimer.unref?.();
+}
 
 /** 安全向主窗口发 IPC；若窗口刚重建仍在加载首帧，延后到 did-finish-load，避免导航/提醒事件丢失或已销毁窗口报错。 */
 function sendToWin(channel: string, ...args: unknown[]) {
@@ -116,11 +162,39 @@ const deepseekBalance = new DeepSeekBalance({
     note.on("click", () => { revealWindow(); sendToWin("open-page", { page: "quota" }); }); note.show();
   },
 });
-let agyStateCache: AgyQuotaState | null = null;
+let agyStateHeld = false;
+function hasVisibleMainWindow(): boolean {
+  return Boolean(win && !win.isDestroyed() && !windowAway);
+}
+function syncAgyLight() {
+  if (lastSnapshot) updateTrayTip(lastSnapshot);
+  pushTrayPanel();
+  deskPetSnapshotChanged();
+  if (hasVisibleMainWindow()) sendToWin("desk-pet-changed");
+}
+/** 主动释放主进程可重建缓存与 V8 堆内存（隐藏到托盘、销毁闲置窗口或系统空闲时调用）。 */
+function trimMainMemory() {
+  antigravityQuota.trimMemory();
+  if (win && !win.isDestroyed()) {
+    win.webContents.session.clearCache().catch(() => {});
+  }
+  session.defaultSession.clearCache().catch(() => {});
+  runMainGc();
+}
 /** Google Antigravity 的多账号与本机额度监控，见 antigravity-quota.ts。提醒线和官方订阅共用。 */
 const antigravityQuota = new AntigravityQuota({
+  hasListener: hasVisibleMainWindow,
+  onBackgroundUpdated: () => {
+    agyStateHeld = true;
+    syncAgyLight();
+  },
   publish: state => {
-    agyStateCache = state;
+    if (!hasVisibleMainWindow()) {
+      agyStateHeld = true;
+      syncAgyLight();
+      return;
+    }
+    agyStateHeld = false;
     sendToWin("antigravity-quota-state", state);
     if (lastSnapshot) updateTrayTip(lastSnapshot);
     pushTrayPanel();
@@ -142,13 +216,8 @@ const antigravityQuota = new AntigravityQuota({
     note.on("click", () => { revealWindow(); sendToWin("open-page", { page: "quota" }); }); note.show();
   },
 });
-function currentAgyState(): AgyQuotaState {
-  if (!agyStateCache) agyStateCache = antigravityQuota.state();
-  return agyStateCache;
-}
 function currentAgyLocalAccountId(): string {
-  const state = currentAgyState();
-  return state.accounts.find((acc) => acc.inLocal)?.id || resolveAgyLocalOwner(Date.now()) || state.accounts[0]?.id || "antigravity";
+  return antigravityQuota.localAccountId();
 }
 /** tokens.ci 自动上传（0.3.38）：由 TokenPulse 自己计时，见 tokens-ci.ts。 */
 const tokensUploader = new TokensUploader({ publish: state => { sendToWin("tokens-ci-state", state); } });
@@ -205,8 +274,10 @@ function createWindow() {
     if (quitting || !readPrefs().closeToTray) return;
     event.preventDefault();
     next.hide();
+    scheduleMainIdleDestroy(next);
   });
   next.on("closed", () => {
+    cancelMainIdleDestroy();
     if (win === next) win = null;
     // 「关窗口就退出」：桌宠或托盘面板窗口还开着的话，window-all-closed 不会来，软件就退不掉
     if (!quitting && !readPrefs().closeToTray) {
@@ -220,8 +291,8 @@ function createWindow() {
   // 0.3.21：没人看窗口的时候少干活（见 setWindowAway）
   next.on("hide", () => setWindowAway(true));
   next.on("minimize", () => setWindowAway(true));
-  next.on("show", () => setWindowAway(false));
-  next.on("restore", () => setWindowAway(false));
+  next.on("show", () => { cancelMainIdleDestroy(); setWindowAway(false); });
+  next.on("restore", () => { cancelMainIdleDestroy(); setWindowAway(false); });
   const sendState = () => {
     if (!next.isDestroyed() && !next.webContents.isDestroyed()) next.webContents.send("window-state", { maximized: next.isMaximized() });
   };
@@ -231,8 +302,9 @@ function createWindow() {
 }
 
 function revealWindow() {
+  cancelMainIdleDestroy();
   if (!win || win.isDestroyed()) {
-    // 窗口已经被销毁过（关窗口即退出关掉了、或者 macOS 上全关了）：重新建一个。
+    // 窗口已经被销毁过（关窗口即退出、闲置收进托盘释放内存、开机延迟建窗或 macOS 全关）：按需重建。
     const next = createWindow();
     next.once("ready-to-show", () => { if (!next.isDestroyed()) next.show(); });
     return;
@@ -438,7 +510,7 @@ function trayPanelView() {
       return { app, label: AGENT_LABEL[app], current: rows.find((item) => item.active)?.name ?? "", readOnly: view.readOnly, providers: rows.map((item) => ({ id: item.id, name: item.name, active: !!item.active })) };
     }).filter((item) => item.providers.length > 0);
   } catch { /* 供应商读不出来：面板只显示额度 */ }
-  return trayPanelData(lastSnapshot, readPrefs().theme, accountTitle, agents, agyQuotaAccounts(currentAgyState()));
+  return trayPanelData(lastSnapshot, readPrefs().theme, accountTitle, agents, antigravityQuota.lightPetAccounts());
 }
 function setTrayMenu() { if (!TRAY_PANEL) tray?.setContextMenu(buildTrayMenu()); }
 
@@ -463,7 +535,7 @@ function clipTip(text: string, max: number) {
 function updateTrayTip(snapshot: Snapshot) {
   if (!tray) return;
   const head = tr(`TokenPulse · 今日 ${formatTokens(snapshot.totals.today.tokens)} tokens`);
-  const allAccounts = [...snapshot.accounts, ...agyQuotaAccounts(currentAgyState())];
+  const allAccounts = [...snapshot.accounts, ...antigravityQuota.lightPetAccounts()];
   const lines = allAccounts.map((account) => {
     const week = account.week ? tr(`周 ${Math.round(account.week.used)}%`) : "";
     const five = account.five ? `5h ${Math.round(account.five.used)}%` : "";
@@ -802,17 +874,15 @@ function setWindowAway(away: boolean) {
   windowAway = away;
   sendToWin("window-away", away);
   if (away) {
-    if (win && !win.isDestroyed()) {
-      win.webContents.session.clearCache().catch(() => {});
-    }
-    session.defaultSession.clearCache().catch(() => {});
-    if (typeof global.gc === "function") {
-      global.gc();
-    }
+    trimMainMemory();
     return;
   }
   if (snapshotHeld && lastSnapshot) sendToWin("snapshot", lastSnapshot);
   snapshotHeld = false;
+  if (agyStateHeld) {
+    agyStateHeld = false;
+    antigravityQuota.publish();
+  }
   if (Date.now() - lastScanAt >= SCAN_EVERY_MS) backgroundRefresh(false);
 }
 
@@ -882,7 +952,11 @@ async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snap
   await getInitialSnapshot();
   let snapshot = publishSnapshot(await loadSnapshot(true));
   notifyRequests(snapshot);
-  antigravityQuota.publish();
+  if (hasVisibleMainWindow()) antigravityQuota.publish();
+  else {
+    agyStateHeld = true;
+    syncAgyLight();
+  }
   if (withQuota) {
     if (notifyQuota) void antigravityQuota.refresh(false).catch(() => {});
     const tell = notifyQuota || quotaNoticePending;
@@ -1176,11 +1250,7 @@ function setupIdleMonitor() {
       if (idleSeconds >= IDLE_THRESHOLD_SECONDS) {
         if (!idleTrimmed) {
           idleTrimmed = true;
-          session.defaultSession.clearCache().catch(() => {});
-          if (win && !win.isDestroyed()) win.webContents.session.clearCache().catch(() => {});
-          if (typeof global.gc === "function") {
-            global.gc();
-          }
+          trimMainMemory();
         }
       } else {
         idleTrimmed = false;
@@ -1228,7 +1298,14 @@ if (!app.requestSingleInstanceLock()) {
 
     relaunchHidden = consumeRelaunchHidden();
     initTray();
-    createWindow();
+    const startHidden = process.argv.includes("--hidden") || readPrefs().startMinimized || relaunchHidden;
+    const lazyMainWindow = startHidden && (app.isPackaged || process.env.TOKENPULSE_LAZY_WINDOW === "1");
+    if (lazyMainWindow) {
+      relaunchHidden = false;
+      windowAway = true;
+    } else {
+      createWindow();
+    }
     // 桌宠（0.3.61）：默认关；开着时建宠物窗口、开始看会话状态
     setupDeskPet({
       preload: path.join(__dirname, "preload.js"),
@@ -1238,7 +1315,7 @@ if (!app.requestSingleInstanceLock()) {
       savePrefs: (patch) => { applyPrefs(patch); sendToWin("desk-pet-changed"); },
       hide: () => applyPrefs({ deskPet: false }),
       snapshot: () => lastSnapshot,
-      extraAccounts: () => agyQuotaAccounts(currentAgyState()),
+      extraAccounts: () => antigravityQuota.lightPetAccounts(),
       antigravityLogin: () => currentAgyLocalAccountId(),
       title: accountTitle,
       openMain: (target) => { revealWindow(); if (target) sendToWin("open-page", target); },
@@ -1463,9 +1540,11 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.on("desk-pet:bubble-action", (_event, action: unknown, value: unknown) => deskPetBubbleAction(action, value));
     ipcMain.handle("desk-pet:status", () => ({ on: readPrefs().deskPet, view: deskPetView(), shown: !!deskPetWindows().pet }));
     ipcMain.handle("desk-pet:accounts", () => {
-      const state = antigravityQuota.state();
-      agyStateCache = state;
-      return [...(lastSnapshot?.accounts ?? []), ...agyQuotaAccounts(state)].filter((account) => account.five || account.week).map((account) => ({ id: accountKey(account), name: accountTitle(account) }));
+      return [...(lastSnapshot?.accounts ?? []), ...antigravityQuota.lightPetAccounts()].filter((account) => account.five || account.week).map((account) => ({ id: accountKey(account), name: accountTitle(account) }));
+    });
+    ipcMain.handle("memory:trim", () => {
+      trimMainMemory();
+      return true;
     });
     ipcMain.handle("desk-pet:packs", () => listPetPacks());
     ipcMain.handle("desk-pet:pack-images", (_event, id: unknown) => petPackImages(id));

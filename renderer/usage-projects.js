@@ -162,9 +162,15 @@
     // 入场播完就摘掉，免得展开某一张卡时整列跟着重播
     clearTimeout(view.enterTimer);
     if (animate) view.enterTimer = setTimeout(() => nodes.list.classList.remove('chart-enter'), 1400);
+    const activeHead = document.activeElement?.closest?.('.pj-head');
+    const focusedKey = activeHead && nodes.list.contains(activeHead) ? activeHead.closest('.pj-card')?.dataset.key ?? null : null;
     nodes.list.replaceChildren(...(shownList.length
       ? shownList.map((p, i) => card_(p, i + 1, all, colors, false))
       : [el('div', { class: 'empty', text: projects.length ? '没有匹配的项目。' : '这段时间、这些筛选条件下没有请求记录。' })]));
+    if (focusedKey !== null) {
+      const targetCard = [...nodes.list.querySelectorAll('.pj-card')].find(card => card.dataset.key === focusedKey);
+      targetCard?.querySelector('.pj-head')?.focus({ preventScroll: true });
+    }
     const rest = list.length - shownList.length;
     const more = rest > 0 ? el('button', { type: 'button', class: 'btn', text: `显示更多（还有 ${number(rest)} 个）` }) : null;
     more?.addEventListener('click', () => { view.limit += PAGE; draw(); });

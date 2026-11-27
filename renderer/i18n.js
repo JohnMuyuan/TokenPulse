@@ -18,8 +18,11 @@
   // 含中文句号：说明文字里徽章后面单独剩下的「。」也要换掉
   const HAN = /[一-鿿。]/;
 
-  /* ---------------- 整句 ---------------- */
-  const EN = {
+  /* ---------------- 整句（中文模式下懒构建，避免主进程/主窗口/桌宠/托盘各占一份词典堆内存） ---------------- */
+  let _en = null;
+  function getEn() {
+    if (_en) return _en;
+    _en = {
     "可能已接近上限，刷新确认": "May be near the limit; refresh to confirm",
     "按最近趋势，可能已接近上限，刷新确认": "At the recent pace, it may be near the limit; refresh to confirm",
     "按最近的速度，可能已接近用完，刷新确认": "At the recent pace, it may be nearly used up; refresh to confirm",
@@ -3500,16 +3503,29 @@
     '用量趋势新增柱状 / 曲线切换、均值参考线与活跃脉搏': 'Bar/Curve Trend Switch, Average Line & Activity Pulse',
     '普通视图下将「用量趋势」与「使用节奏」无缝融合为一张面板（布局编辑与窄屏自动适配），新增渐变柱图、平滑面积曲线切换、日均/时均虚线参考线以及 24 格近期活跃脉搏条。': 'Merges Usage Trend and Usage Rhythm into one unified panel in standard view (automatically adapting in layout edit and narrow windows), adding gradient bars, a smooth area curve toggle, a dashed daily/hourly average reference line, and a 24-slot activity pulse strip.',
     '工具分布升级全宽堆叠比例条，模型排行新增行内占比底色': 'Stacked Tool Proportion Bar & Inline Model Ranking Bars',
-    '「工具分布」顶部新增多品牌全宽堆叠比例条与细线列表，「模型用量排行」为每行模型加入柔和品牌色行内比例底纹，信息层级更清晰克制，同时同步更新新手引导顺序与全量英文翻译。': 'Adds a full-width multi-brand stacked proportion bar with hairline rows to Tool Distribution and subtle brand-tinted inline proportion fills to Model Ranking, alongside updated onboarding tour steps and complete English translations.'
-  };
+    '「工具分布」顶部新增多品牌全宽堆叠比例条与细线列表，「模型用量排行」为每行模型加入柔和品牌色行内比例底纹，信息层级更清晰克制，同时同步更新新手引导顺序与全量英文翻译。': 'Adds a full-width multi-brand stacked proportion bar with hairline rows to Tool Distribution and subtle brand-tinted inline proportion fills to Model Ranking, alongside updated onboarding tour steps and complete English translations.',
+    '客户端运行内存深度优化，后台总占用直降约 60%（v0.4.3）': 'Deep Memory Optimization: ~60% Lower Background RAM Usage (v0.4.3)',
+    '针对客户端后台与桌宠运行时的全进程内存占用完成系统性重构：开机静默与关闭到托盘后主窗口按需懒加载并在闲置 2 分钟后自动销毁回收，实测同规模后台总工作集从约 1.1 GB 降至约 448 MB，任务管理器专用内存从约 520–620 MB 降至约 150 MB。': 'Overhauls multi-process memory usage across background and desk-pet operation: defers main window creation on hidden startup and auto-destroys hidden tray windows after 2 minutes of idle time, cutting real-scale background working set from ~1.1 GB to ~448 MB and Task Manager private working set from ~520–620 MB to ~150 MB.',
+    '桌宠输入监听改用轻量原生助手，音频服务与闲置动画自动释放': 'Lightweight Native Desk-Pet Input Helper & Auto-Reclaimed Audio/Idle Loops',
+    '用直接调用原生 COM 接口的轻量单文件 C# 助手替代常驻 PowerShell + WPF 进程（单进程内存从约 172 MB 降至约 20 MB）；提示音播完闲置 8 秒自动关闭音频上下文释放 AudioService 进程，并清零闲置画布与空转帧率定时器。': 'Replaces the persistent PowerShell + WPF desk-pet input monitor with a cached single-file native COM C# helper (~172 MB down to ~20 MB), closes AudioContext 8 seconds after chimes to let Chromium terminate AudioService, and clears idle canvas buffers and frame-capper timers.',
+    '重度用量扫描隔离至短驻独立子进程，消除主进程周期性内存尖峰': 'Isolated Short-Lived Scan Utility Process Eliminates Main-Process Memory Spikes',
+    '将大日志扫描与报告计算迁至闲置 3 秒即自动退出的独立子进程串行执行，同步优化请求流水对象复用、前置过滤与 Antigravity 后台轻量刷新，消除每分钟后台扫描导致的主进程 +100 MB 周期性内存上涨。': 'Moves heavy JSONL scans and report queries into a serialized short-lived Electron utility process that exits after 3 seconds idle, combined with request-log object interning, pre-filtering, and zero-scan background Antigravity refreshes to eliminate periodic +100 MB main-process spikes.',
+    '主进程启用主动内存回收，中文界面跳过英文大词典加载': 'Active Main-Process Memory Trimming & Lazy English i18n Dictionary',
+    '为主进程补齐原生 V8 GC 与主动缓存清理能力（兼容「设置 → 数据」清理缓存入口），同时将 4,000+ 条英文界面词典与正则表改为按需惰性初始化，进一步降低常驻内存与启动开销。': 'Enables native V8 GC and active cache trimming in the main process (wired to Settings → Data cache cleanup) and lazily initializes the 4,000+ entry English i18n dictionary and regex tables on demand to further cut steady-state RAM and startup overhead.'
+    };
+    return _en;
+  }
 
-  /* ---------------- 带变量的句子 ---------------- */
+  /* ---------------- 带变量的句子（按需懒编译正则） ---------------- */
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const N = '([\\d,.]+[KMB]?)';
   const P = (source, render) => [new RegExp('^' + source + '$', 's'), render];
   // 变量里也可能有中文（「5 小时」「接口未提供」），递归翻一下
   const v = text => translate(text);
-  const PATTERNS = [
+  let _patterns = null, _semiPatterns = null;
+  function getPatterns() {
+    if (_patterns) return _patterns;
+    _patterns = [
     // Google Antigravity 的额度与多账号家庭组归因
     P('按最近的速度，约 (.+)后用完', m => `At the recent pace, runs out in about ${v(m[1])}`),
     P('按最近的速度，重置时大约用到 (.+)', m => `At the recent pace, about ${m[1]} used at reset`),
@@ -4371,20 +4387,24 @@
     P('(\\d+) 时', m => `${m[1]} h`),
     P('(.+) 重置', m => `Resets ${m[1]}`),
     P('([^：。·\\n]{1,20})：([^。·\\n]+)', m => `${v(m[1])}: ${v(m[2])}`)
-  ];
+    ];
+    _semiPatterns = _patterns.filter(([re]) => re.source.includes('；'));
+    return _patterns;
+  }
 
-  const SEMI_PATTERNS = PATTERNS.filter(([re]) => re.source.includes('；'));
   /** 一段文字可能由几段拼起来（「… · …」「…；…」「A → B」、多行提示）：整句查不到时拆开逐段翻。 */
   const SEPARATORS = ['\n', ' · ', '；', ' → ', '，'];
   function translate(text) {
     if (!text || !HAN.test(text)) return text;
+    const EN = getEn();
     const lead = text.match(/^\s*/)[0], tail = text.match(/\s*$/)[0];
     const core = text.trim();
     const done = value => lead + value + tail;
     if (Object.prototype.hasOwnProperty.call(EN, core)) return done(EN[core]);
+    const PATTERNS = getPatterns();
     // 明确包含「；」的完整句模板先匹配，避免被后面的分号拆分截断
     if (core.includes('；')) {
-      for (const [re, render] of SEMI_PATTERNS) {
+      for (const [re, render] of _semiPatterns) {
         const m = core.match(re);
         if (m) return done(render(m, ...m.slice(1)));
       }
@@ -4470,6 +4490,7 @@
     mode: () => mode,
     t: translate,
     apply: translateTree,
+    _loaded: () => Boolean(_en || _patterns),
     /** 切语言：存起来、告诉主进程、重新加载。 */
     setMode(next) {
       try { localStorage.setItem(KEY, next); } catch { /* 存不下就只对这一次生效 */ }
@@ -4477,7 +4498,14 @@
     }
   };
   root.PulseI18n = api;
-  if (typeof module !== 'undefined') module.exports = { translate, EN, PATTERNS };
+  if (typeof module !== 'undefined') {
+    module.exports = {
+      translate,
+      get EN() { return getEn(); },
+      get PATTERNS() { return getPatterns(); },
+      _loaded: () => Boolean(_en || _patterns),
+    };
+  }
   else if (document.body) start();
   else document.addEventListener('DOMContentLoaded', start, { once: true });
 })(typeof window !== 'undefined' ? window : globalThis);

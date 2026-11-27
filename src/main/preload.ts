@@ -205,6 +205,7 @@ contextBridge.exposeInMainWorld("tokenpulse", {
     ipcRenderer.on("window-away", listener);
     return () => ipcRenderer.off("window-away", listener);
   },
+  trimMemory: () => ipcRenderer.invoke("memory:trim"),
   setTheme: (theme: "light" | "dark") => ipcRenderer.invoke("theme", theme),
   exportCsv: (content: string, kind?: "requests") => (demo ? blocked() : ipcRenderer.invoke("export-csv", content, kind)),
   /** 请求流水：按时间 / 工具 / 核验结论 / 关键词查询，分页返回，核验结论现算。 */

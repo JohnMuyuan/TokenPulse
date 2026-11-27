@@ -43,7 +43,7 @@ import { dataFile, readJson, writeJson } from "../core/paths";
 import type { PetAccount, PetQuotaWindow } from "../core/desk-pet-model";
 import { robustRecencyEstimate } from "../core/quota-monitor";
 import { pressureRule, readPressurePrefs, type PressurePrefs, type PressureRule } from "../core/quota-pressure";
-import { queryRequests, type RequestRow } from "../core/request-log";
+import { clearRequestLogCaches, queryRequests, type RequestRow } from "../core/request-log";
 
 export { robustRecencyEstimate, weightedMedian } from "../core/quota-monitor";
 
@@ -1936,11 +1936,16 @@ export class AntigravityQuota {
   private readonly cloudFetcher: (account: StoredAgyAccount) => Promise<{ status: AgyStatus; projectId?: string }>;
   private readonly now: () => number;
   private rowCache?: { rollupMtime: number; at: number; rows: RequestRow[] };
+  private rowCacheTimer?: ReturnType<typeof setTimeout>;
   private insightCache = new Map<string, { stamp: string; at: number; insight: AgyInsight }>();
 
   constructor(
     private options: {
       publish?: (state: AgyQuotaState) => void;
+      /** 是否存在需要完整分析面板（insight/history）的可见主窗口；为 false 时后台定时刷新跳过全量流水扫描。 */
+      hasListener?: () => boolean;
+      /** 后台静默刷新完成且主窗口不可见时回调，用于轻量更新托盘提示/面板与桌宠。 */
+      onBackgroundUpdated?: () => void;
       notify?: (models: string[], used: number, resetAt?: string, accountLabel?: string) => void;
       notifyAt?: () => number;
       fetcher?: () => Promise<AgyStatus | null>;
@@ -2030,6 +2035,64 @@ export class AntigravityQuota {
     }
   }
 
+  private scheduleRowCacheEvict() {
+    if (this.rowCacheTimer) clearTimeout(this.rowCacheTimer);
+    this.rowCacheTimer = setTimeout(() => {
+      this.rowCacheTimer = undefined;
+      this.rowCache = undefined;
+    }, 15_000);
+    this.rowCacheTimer.unref?.();
+  }
+
+  /** 主动释放 30 天原始请求行缓存与分析缓存（窗口收进托盘或空闲修剪时调用）。 */
+  trimMemory() {
+    if (this.rowCacheTimer) {
+      clearTimeout(this.rowCacheTimer);
+      this.rowCacheTimer = undefined;
+    }
+    this.rowCache = undefined;
+    this.insightCache.clear();
+    clearRequestLogCaches();
+  }
+
+  /** 轻量获取当前本机活跃 Antigravity 账号 ID（不触发 30 天 JSONL 流水扫描）。 */
+  localAccountId(): string {
+    const visible = visibleAgyAccounts();
+    if (visible.length) {
+      const local = visible.find((acc) =>
+        this.activeLocalEmail
+          ? normalizeAgyEmail(acc.email) === this.activeLocalEmail
+          : Boolean(this.running && this.activeLocalAccountId && acc.id === this.activeLocalAccountId),
+      );
+      if (local) return local.id;
+    }
+    return resolveAgyLocalOwner(this.now()) || visible[0]?.id || "antigravity";
+  }
+
+  /**
+   * 托盘提示、托盘小面板与桌宠专用的轻量账号摘要：
+   * 直接读取内存中的 `stored.last` 与已命中的 `insightCache`，绝不触发几十 MB 请求流水文件的同步扫描。
+   */
+  lightPetAccounts(now = this.now(), pressurePrefs = readPressurePrefs()): PetAccount[] {
+    const visible = visibleAgyAccounts();
+    if (!visible.length) {
+      const effLast = this.effectiveLastOf(this.stored.last);
+      const cached = this.insightCache.get("antigravity")?.insight;
+      const single = slotToPetAccount("antigravity", "", effLast, cached, now, pressurePrefs);
+      return single ? [single] : [];
+    }
+    const legacyOwner = this.legacyOwnerId(visible);
+    const names = agyDisplayNames(visible);
+    return visible
+      .map((acc, index) => {
+        const slot = this.slotOf(acc.id, acc.id === legacyOwner);
+        const effLast = this.effectiveLastOf(slot.last);
+        const cached = this.insightCache.get(acc.id)?.insight;
+        return slotToPetAccount(acc.id, names[index] || "", effLast, cached, now, pressurePrefs);
+      })
+      .filter((item): item is PetAccount => item !== null);
+  }
+
   recentRows(now = this.now()): RequestRow[] {
     let rollupMtime = 0;
     try {
@@ -2052,9 +2115,11 @@ export class AntigravityQuota {
         page: 0,
         pageSize: 1,
         all: true,
+        skipSessionMeta: true,
       });
       const rows = [...res.rows].sort((a, b) => a.at - b.at);
       this.rowCache = { rollupMtime, at: now, rows };
+      this.scheduleRowCacheEvict();
       return rows;
     } catch {
       return [];
@@ -2550,6 +2615,7 @@ export class AntigravityQuota {
                 page: 0,
                 pageSize: 1,
                 all: true,
+                skipSessionMeta: true,
               }).rows;
             } catch {
               return this.recentRows(now);
@@ -2592,6 +2658,9 @@ export class AntigravityQuota {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    if (this.rowCacheTimer) clearTimeout(this.rowCacheTimer);
+    this.rowCacheTimer = undefined;
+    this.rowCache = undefined;
   }
   reschedule(everyMs: number) {
     if (this.timer) clearInterval(this.timer);
@@ -2659,6 +2728,9 @@ export class AntigravityQuota {
     }
     const hasAccounts = visibleAgyAccounts().length > 0;
     if (!manual && !hasAccounts && !antigravityDirs().some((dir) => fs.existsSync(dir))) {
+      if (this.options.hasListener && !this.options.hasListener()) {
+        return Promise.resolve({ installed: this.installed(), running: this.running, loading: false, history: [], registeredCount: 0, multiAccount: false, accounts: [] });
+      }
       return Promise.resolve(this.state());
     }
     const promise = Promise.resolve().then(() => this.refreshNow(manual, targetAccountId)).finally(() => {
@@ -2852,8 +2924,23 @@ export class AntigravityQuota {
       this.loading = false;
       this.loadingAccounts.clear();
       this.save();
-      nextState = this.state();
-      if (!this.stopped) this.options.publish?.(nextState);
+      const skipFull = !manual && Boolean(this.options.hasListener && !this.options.hasListener());
+      if (skipFull) {
+        const visibleNow = visibleAgyAccounts();
+        nextState = {
+          installed: this.installed(),
+          running: this.running,
+          loading: false,
+          history: [],
+          registeredCount: visibleNow.length,
+          multiAccount: visibleNow.length > 1,
+          accounts: [],
+        };
+        if (!this.stopped) this.options.onBackgroundUpdated?.();
+      } else {
+        nextState = this.state();
+        if (!this.stopped) this.options.publish?.(nextState);
+      }
     }
     return nextState;
   }

@@ -79,7 +79,7 @@ app.on('web-contents-created', (_, contents) => contents.once('did-finish-load',
   const tabTexts = () => evaluate(`[...document.querySelectorAll('${TABS}')].map(b => b.textContent.replace(/\\s+/g, ' ').trim())`);
   const saved = () => { try { return fs.readFileSync(path.join(root, 'data', 'deepseek-balance.json'), 'utf8'); } catch { return ''; } };
   try {
-    await until("document.querySelector('#tiles')");
+    await until("document.querySelectorAll('#tiles .stat').length === 4");
     // 装过 DeepSeek Harness（~/.dsh 存在）但没填 Key：总览一条介绍，额度详情一个空标签
     await until(`document.querySelector('${STRIP}')`);
     assert.match(await text(STRIP), /DeepSeek\s*按量付费\s*还没填 Key.*DeepSeek 余额监控.*没有订阅额度.*填写 API Key/);

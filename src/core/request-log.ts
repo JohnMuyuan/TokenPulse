@@ -325,6 +325,8 @@ export type RequestQuery = {
   quotaWindows?: QuotaWindowHint[];
   /** 内部容量折算快速通道：只读取 Claude / Codex / Grok 的官方账号请求，跳过代理核验与全量分面统计。 */
   capacityOnly?: boolean;
+  /** 内部快速通道：调用方不需要会话标题/子代理元信息时跳过读取与缓存 sessions-index.json。 */
+  skipSessionMeta?: boolean;
 };
 
 /** 一个项目里某个「型号 × 思考等级 × 工具」组合的用量。effort 没记录的为 "unknown"。 */
@@ -610,10 +612,32 @@ function sessionMetaIndex() {
   return sessionMetaCache;
 }
 
+/** 释放模块级缓存（主进程空闲或窗口隐藏时调用，避免 usage-rollups / sessions-index 索引常驻堆内存）。 */
+export function clearRequestLogCaches() {
+  attributionCache = null;
+  sessionMetaCache = null;
+  firstAtCache = null;
+}
+
 /** 对账号要用到的：登录时间线和账号名，一次查询读一次。 */
-type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; labels: AccountLabels; sessions?: ReturnType<typeof sessionMetaIndex> };
-function accountContext(): AccountContext {
-  return { timeline: readLoginTimeline(), agyTimeline: readAgyLoginTimeline(), labels: accountLabels(), sessions: sessionMetaIndex() };
+type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; labels: AccountLabels; sessions?: ReturnType<typeof sessionMetaIndex>; internedAccounts?: Map<string, RequestAccount> };
+function accountContext(skipSessionMeta = false): AccountContext {
+  return {
+    timeline: readLoginTimeline(),
+    agyTimeline: readAgyLoginTimeline(),
+    labels: accountLabels(),
+    ...(skipSessionMeta ? {} : { sessions: sessionMetaIndex() }),
+    internedAccounts: new Map<string, RequestAccount>(),
+  };
+}
+
+function internAccount(account: RequestAccount, cache?: Map<string, RequestAccount>): RequestAccount {
+  if (!cache) return account;
+  const key = `${account.id}\u0000${account.basis}\u0000${account.label}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  cache.set(key, account);
+  return account;
 }
 
 const COMPACTION_REASON = "压缩上下文的那次调用：CLI 没写用量，按压缩前的上下文大小和摘要长度估算";
@@ -630,8 +654,9 @@ function toCapacityRow(record: RequestRecord, fileOfficial: boolean | undefined,
         : routedAccount(kind, record.at, accounts.labels, record.responseId);
   const official = routed ? true : fileOfficial;
   if (official !== true) return null;
-  const account = routed ?? resolveAccount(kind, record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt, org: record.accountOrg, orgAt: record.accountOrgAt }, accounts.timeline, accounts.labels);
-  if (!account) return null;
+  const resolved = routed ?? resolveAccount(kind, record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt, org: record.accountOrg, orgAt: record.accountOrgAt }, accounts.timeline, accounts.labels);
+  if (!resolved) return null;
+  const account = internAccount(resolved, accounts.internedAccounts);
   const usage = { input: record.input, output: record.output, cacheRead: record.cacheRead, cacheWrite: record.cacheWrite };
   return {
     key: "",
@@ -883,7 +908,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const official = attribution();
   const skipCc = Boolean(query.capacityOnly || query.source === "Antigravity");
   const cc = ccSwitchRecords(official.covered, skipCc);
-  const accountCtx = accountContext();
+  const accountCtx = accountContext(Boolean(query.capacityOnly || query.skipSessionMeta));
   const byAccount = new Map<string, RequestPage["accounts"][number]>();
   const groups = new Map<string, NonNullable<RequestPage["aggregate"]>["rows"][number]>();
   const hours = new Map<number, HourAggregate>();
@@ -1113,6 +1138,18 @@ export function queryRequests(query: RequestQuery): RequestPage {
   const keepLimit = query.all || query.cache || needStandaloneQuota ? Infinity : Math.max(64, (Math.max(0, query.page || 0) + 1) * pageSize);
   let totalMatched = 0;
   const hint = query.source === "Antigravity" ? '"antigravity"' : undefined;
+  // 按天/时间窗做保守预过滤（留 1 天缓冲防止时区/重放边界误杀），避免 7 天小查询把整月几十 MB 全塞进 dedup Map
+  const DAY_PAD_MS = 86_400_000;
+  const fromBoundMs = Date.parse(`${query.from}T00:00:00`);
+  const toBoundMs = Date.parse(`${query.to}T23:59:59.999`);
+  const preMinAt = Math.max(
+    query.since != null ? query.since - DAY_PAD_MS : -Infinity,
+    Number.isFinite(fromBoundMs) ? fromBoundMs - DAY_PAD_MS : -Infinity,
+  );
+  const preMaxAt = Math.min(
+    query.until != null ? query.until + DAY_PAD_MS : Infinity,
+    Number.isFinite(toBoundMs) ? toBoundMs + DAY_PAD_MS : Infinity,
+  );
 
   const inMonths = function* () {
     // 倒序遍历月份并在单月内按「后写覆盖前写」去重，与 compactRequests() 保持一致（避免整理前读到旧重复行）
@@ -1122,6 +1159,9 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (month < fromMonth || month > toMonth) continue;
       const latest = new Map<string, RequestRecord>();
       for (const raw of streamMonth(name, hint, Boolean(query.capacityOnly))) {
+        if (query.capacityOnly && raw.kind !== "claude-code" && raw.kind !== "codex" && raw.kind !== "grok-build") continue;
+        if (query.source !== "all" && sourceOf(raw) !== query.source) continue;
+        if (raw.at < preMinAt || raw.at > preMaxAt) continue;
         latest.set(keyOf(raw), raw);
       }
       yield* latest.values();

@@ -39,18 +39,33 @@
     return { state: view.mode, phase: view.phase || null, quota: view.quota ?? 100, mood: view.mood, tasks: view.tasks, subagents: view.subagents || 0, mini: !!view.mini, fidget: !deskBusy && view.fidget && !reduced.matches && (BUILT_IN.includes(view.pet) || idleAnims), fidgetAfter: theme ? theme.timings.mouseIdleTimeout : 0 };
   }
 
+  function syncCanvasBuffers() {
+    if (!view) return;
+    if (custom()) {
+      if (canvas.width !== 0 || canvas.height !== 0) { canvas.width = 0; canvas.height = 0; }
+    } else {
+      const w = Pet.W * pixel, h = Pet.H * pixel;
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    }
+    if (deskCanvas) {
+      const needDesk = view.desk === true && !view.mini;
+      if (!needDesk) {
+        if (deskCanvas.width !== 0 || deskCanvas.height !== 0) { deskCanvas.width = 0; deskCanvas.height = 0; }
+      } else {
+        const deskPx = Math.max(2, Math.round(scale * Math.max(2, window.devicePixelRatio || 1)));
+        const dw = Pet.W * deskPx, dh = Pet.H * deskPx;
+        if (deskCanvas.width !== dw || deskCanvas.height !== dh) { deskCanvas.width = dw; deskCanvas.height = dh; }
+        deskCanvas.style.width = Pet.W * scale + 'px';
+        deskCanvas.style.height = Pet.H * scale + 'px';
+      }
+    }
+  }
+
   function size() {
     scale = view.scale;
     lastDpr = window.devicePixelRatio || 1;
     pixel = Math.max(1, Math.round(scale * lastDpr));
-    canvas.width = Pet.W * pixel; canvas.height = Pet.H * pixel;
-    if (deskCanvas) {
-      const deskPx = Math.max(2, Math.round(scale * Math.max(2, window.devicePixelRatio || 1)));
-      deskCanvas.width = Pet.W * deskPx;
-      deskCanvas.height = Pet.H * deskPx;
-      deskCanvas.style.width = Pet.W * scale + 'px';
-      deskCanvas.style.height = Pet.H * scale + 'px';
-    }
+    syncCanvasBuffers();
     for (const node of [canvas, img]) { node.style.width = Pet.W * scale + 'px'; node.style.height = Pet.H * scale + 'px'; }
     themeView.layout(Pet.W * scale, Pet.H * scale, scale);
     themeMetrics = null;
@@ -199,6 +214,7 @@
     stage.style.bottom = top == null ? '' : 'auto';
     // transform 要写 none：样式表里平时是 translateX(-50%) 居中
     stage.style.transform = transform || 'none';
+    ensureFrameCap();
   }
   /** 极简模式下探出来；ms 毫秒后自己缩回去（鼠标还在上面、气泡还开着就不缩）。不给 ms 等鼠标移开。 */
   function peek(on, ms = 0) {
@@ -439,9 +455,13 @@
     if (stage.dataset.deskHands !== handsVal) stage.dataset.deskHands = handsVal;
     if (!dm.show) {
       if (!deskCanvas.hidden) deskCanvas.hidden = true;
+      if ((!view || view.desk !== true || view.mini) && (deskCanvas.width !== 0 || deskCanvas.height !== 0)) {
+        deskCanvas.width = 0; deskCanvas.height = 0;
+      }
       lastDeskSig = '';
       return;
     }
+    if (deskCanvas.width === 0 || deskCanvas.height === 0) syncCanvasBuffers();
     const deskStyle = view.deskStyle || 'white';
     const animatedStyle = !reduced.matches && Desk.isAnimatedStyle?.(deskStyle, deskPack);
     const sig = `${dm.state}|${handsVal}|${dm.aiBadge ? 1 : 0}|${view.theme}|${deskStyle}|${deskPack?.id || ''}|${view.pet}|${view.mood}|${dm.aiBadge ? view.phase || '' : ''}|${dm.aiBadge ? view.subagents || 0 : 0}|${nextPriv}|${scale}|${bt.x}|${bt.y}|${nativeHands ? `${Math.round(nativeHands.left.cx)},${Math.round(nativeHands.right.cx)}` : ''}`;
@@ -529,7 +549,7 @@
           seed: workSeed, right, mini: themeMini(), peek: peeking, peekHold: peeking && now - peekAt >= Theme.peekHoldMs(theme),
         });
         const shownImg = themeView.show(pick.file, pick.once ? `${pick.file}#${ctl.serial}` : pick.key || pick.file, !!pick.mirror);
-        if (stage.dataset.image !== shownImg) stage.dataset.image = shownImg;
+        if (stage.dataset.image !== shownImg) { stage.dataset.image = shownImg; ensureFrameCap(); }
         // 眼睛跟着鼠标：捂眼时先看正前方，平时跟鼠标
         if (desk?.covering) themeView.look(0, 0);
         else themeView.look(ctl.look.x / 2, ctl.look.y / 1.5);
@@ -597,6 +617,7 @@
       tune();
     }
     if (changedScale) size();
+    else syncCanvasBuffers();
     if (view.mode === 'work' && !wasWork) workSeed = Math.floor(Math.random() * 1000);
     // 状态切换的过渡（睡前打哈欠，醒来揉眼睛）在 Controller 里
     ctl.setMode(view.mode);
@@ -860,29 +881,49 @@
     return list;
   }
   function stepAnimations() {
-    if (document.visibilityState === 'hidden') return;
+    if (document.visibilityState === 'hidden') { stopFrameCap(); return; }
+    const animations = petAnimations();
+    if (!animations.length) { stopFrameCap(); return; }
     const now = timelineNow();
-    for (const animation of petAnimations()) {
+    let hasActive = false;
+    for (const animation of animations) {
       adopt(animation);
       const at = now - adopted.get(animation);
       // 放完了的一次性动画停在最后一格，不再每格去碰它
       const end = animation.effect?.getComputedTiming?.().endTime;
       if (Number.isFinite(end) && at >= end && (animation.currentTime ?? 0) >= end) continue;
+      hasActive = true;
       if (animation.currentTime !== at) try { animation.currentTime = Number.isFinite(end) ? Math.min(at, end) : at; } catch { /* 已经被取消了 */ }
     }
+    if (!hasActive) stopFrameCap();
+  }
+  function stopFrameCap() {
+    if (capTimer) { clearInterval(capTimer); capTimer = null; }
+  }
+  function ensureFrameCap() {
+    if (capTimer || document.visibilityState === 'hidden') return;
+    if (!petAnimations().length) return;
+    capTimer = setInterval(stepAnimations, Math.round(1000 / petFps));
   }
   // 新动画一出现就接过来（鼠标在动时眼睛的 transition 一直在换新的），不让它先按 300 Hz 跑到下一格
-  const onAnimationStart = event => { for (const animation of event.target.getAnimations?.() || []) adopt(animation); };
+  const onAnimationStart = event => {
+    for (const animation of event.target.getAnimations?.() || []) adopt(animation);
+    ensureFrameCap();
+  };
   for (const target of [document, svgHost.shadowRoot].filter(Boolean)) {
     target.addEventListener('animationstart', onAnimationStart, true);
     target.addEventListener('transitionrun', onAnimationStart, true);
   }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') stopFrameCap();
+    else ensureFrameCap();
+  });
   function setFrameCap(fps) {
     const next = FPS_CHOICES.includes(Number(fps)) ? Number(fps) : 30;
-    if (capTimer && next === petFps) return;
+    const changed = next !== petFps;
     petFps = next;
-    clearInterval(capTimer);
-    capTimer = setInterval(stepAnimations, Math.round(1000 / petFps));
+    if (changed && capTimer) { stopFrameCap(); }
+    ensureFrameCap();
   }
   setFrameCap(30);
   // 测试用：看现在接管了几个动画、帧率上限多少
