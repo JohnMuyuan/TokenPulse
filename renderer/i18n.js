@@ -3511,7 +3511,13 @@
     '重度用量扫描隔离至短驻独立子进程，消除主进程周期性内存尖峰': 'Isolated Short-Lived Scan Utility Process Eliminates Main-Process Memory Spikes',
     '将大日志扫描与报告计算迁至闲置 3 秒即自动退出的独立子进程串行执行，同步优化请求流水对象复用、前置过滤与 Antigravity 后台轻量刷新，消除每分钟后台扫描导致的主进程 +100 MB 周期性内存上涨。': 'Moves heavy JSONL scans and report queries into a serialized short-lived Electron utility process that exits after 3 seconds idle, combined with request-log object interning, pre-filtering, and zero-scan background Antigravity refreshes to eliminate periodic +100 MB main-process spikes.',
     '主进程启用主动内存回收，中文界面跳过英文大词典加载': 'Active Main-Process Memory Trimming & Lazy English i18n Dictionary',
-    '为主进程补齐原生 V8 GC 与主动缓存清理能力（兼容「设置 → 数据」清理缓存入口），同时将 4,000+ 条英文界面词典与正则表改为按需惰性初始化，进一步降低常驻内存与启动开销。': 'Enables native V8 GC and active cache trimming in the main process (wired to Settings → Data cache cleanup) and lazily initializes the 4,000+ entry English i18n dictionary and regex tables on demand to further cut steady-state RAM and startup overhead.'
+    '为主进程补齐原生 V8 GC 与主动缓存清理能力（兼容「设置 → 数据」清理缓存入口），同时将 4,000+ 条英文界面词典与正则表改为按需惰性初始化，进一步降低常驻内存与启动开销。': 'Enables native V8 GC and active cache trimming in the main process (wired to Settings → Data cache cleanup) and lazily initializes the 4,000+ entry English i18n dictionary and regex tables on demand to further cut steady-state RAM and startup overhead.',
+    '四格统计指标卡恢复独立卡片样式，保留总览新排版（v0.4.4）': 'Classic Standalone Stat Cards Restored While Keeping New Overview Layout (v0.4.4)',
+    '将总览与用量明细页顶部的四项核心统计块从拼接通栏改回独立的圆角卡片，恢复柔和图标块、右上角单位标识、底部胶囊式涨跌幅与费用拆分标签，同时保留 v0.4.2 的首页总览板块顺序、大数字双轨额度卡及图表分析排版。': 'Restores the four top summary metrics on Overview and Usage Details from the merged hairline strip back to standalone rounded cards with soft icon tiles, top-right units, and pill delta/cost-split badges, while keeping the v0.4.2 Overview section order, big-number dual-track quota cards, and merged analytics layout.',
+    '全站字体栈、粗体字重与字号层级统一回归 v0.4.2 以前风格': 'App-Wide Font Stack, Bold Weights & Type Scale Restored to Pre-v0.4.2 Style',
+    '恢复原有中英文字体回退顺序与标准展示字重，统一修正主标题、分区标题、大数字指标、额度与余额卡片、使用节奏、工具分布及模型排行的粗细、字号、字距与次要文字对比度，消除页面间的字体突兀感。': 'Restores the original font fallback order and display weights across headings, big metrics, quota and balance cards, rhythm rows, tool distribution, and model rankings—unifying weights, sizing, tracking, and secondary text contrast so typography feels cohesive across every page.',
+    '修复高缩放比例下页面滚动位置轻微偏移的边界问题': 'Fix Minor Scroll-Anchoring Offset Under Fractional DPI Scaling',
+    '为滚动防跳垫片补充 overflow-anchor: none，避免在 150% 等小数 DPI 缩放下切换内容高度时被浏览器滚动锚定拉偏 2 像素。': 'Adds overflow-anchor: none to the scroll-guard spacer so browsers do not anchor onto it and shift scroll position by 2px when content height changes under fractional DPI scaling such as 150%.'
     };
     return _en;
   }

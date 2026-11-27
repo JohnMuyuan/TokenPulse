@@ -1312,14 +1312,10 @@ function windowAnalysis() {
   result.hours = data?.cur?.hours || null;
   return result;
 }
-function deltaInfo(now, previous) {
-  if (!previous) return { badge: null, sub: [now ? '上一时段无记录' : '暂无变化'] };
+function delta(now, previous) {
+  if (!previous) return [now ? '上一时段无记录' : '暂无变化'];
   const pct = ((now - previous) / previous) * 100;
-  const up = pct >= 0;
-  return {
-    badge: el('span', { class: 'stat-delta-top ' + (up ? 'up' : 'down'), text: `${up ? '+' : ''}${pct.toFixed(1)}%` }),
-    sub: ['较上一时段']
-  };
+  return [el('span', { class: 'delta ' + (pct >= 0 ? 'up' : 'down'), text: `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%` }), '较上一时段'];
 }
 function renderStats() {
   if ((state.page === 'usage' || state.page === 'overview') && (analysis.loading || analysis.error)) {
@@ -1331,29 +1327,17 @@ function renderStats() {
   const cache = t.input ? t.cacheRead / t.input * 100 : null;
   const offCost = Number(t.officialCostUsd) || 0;
   const apiCost = Number(t.apiCostUsd) || 0;
-  const splitSum = offCost + apiCost;
   const showCostSplit = state.page === 'usage' || offCost > 0 || apiCost > 0;
-  const tokDelta = deltaInfo(t.tokens, p.tokens);
-  const costDelta = analysis.unpriced ? { badge: null, sub: [`${number(analysis.unpriced)} 次请求未定价`] } : deltaInfo(t.costUsd, p.costUsd);
-  const reqDelta = deltaInfo(t.requests, p.requests);
   const stats = [
-    ['tokens', '总 Tokens', t.tokens, amount, tokDelta.badge, tokDelta.sub, '输入 + 输出'],
-    ['cost', '参考费用', t.costUsd, money, costDelta.badge, costDelta.sub, 'USD'],
-    ['requests', state.page === 'usage' ? '模型调用次数' : '请求次数', t.requests, amount, reqDelta.badge, reqDelta.sub, '次'],
-    ['cache', '缓存读取占比', cache, percent, null, [`${tokens(t.cacheRead)} 缓存读取 / ${tokens(t.input)} 输入`], '输入口径']
+    ['tokens', '总 Tokens', t.tokens, amount, delta(t.tokens, p.tokens), '输入 + 输出'],
+    ['cost', '参考费用', t.costUsd, money, analysis.unpriced ? [`${number(analysis.unpriced)} 次请求未定价`] : delta(t.costUsd, p.costUsd), 'USD'],
+    ['requests', state.page === 'usage' ? '模型调用次数' : '请求次数', t.requests, amount, delta(t.requests, p.requests), '次'],
+    ['cache', '缓存读取占比', cache, percent, [`${tokens(t.cacheRead)} 缓存读取 / ${tokens(t.input)} 输入`], '输入口径']
   ];
-  $('tiles').replaceChildren(...stats.map(([name, label, value, format, topRight, sub, unit]) => {
+  $('tiles').replaceChildren(...stats.map(([name, label, value, format, sub, unit]) => {
     const valueNode = el('span', { class: 'num' });
     countTo(valueNode, 'stat:' + name, value, format);
     const approx = format === amount ? cnApprox(value) : '';
-    let costBar = null;
-    if (name === 'cost' && showCostSplit && splitSum > 0) {
-      const subSeg = el('span', { class: 'seg-sub' });
-      const apiSeg = el('span', { class: 'seg-api' });
-      subSeg.style.width = `${(offCost / splitSum * 100).toFixed(1)}%`;
-      apiSeg.style.width = `${(apiCost / splitSum * 100).toFixed(1)}%`;
-      costBar = el('div', { class: 'stat-cost-bar', 'aria-hidden': 'true' }, [subSeg, apiSeg]);
-    }
     const costSplit = name === 'cost' && showCostSplit
       ? el('div', {
           class: 'stat-cost-split num',
@@ -1363,14 +1347,9 @@ function renderStats() {
           el('span', { class: 'cost-pill api-pay', text: `API 实付 ${money(apiCost)}` }),
         ])
       : null;
-    const accentTile = name === 'cache' && cache != null && cache >= 50;
-    const card = el('article', { class: 'stat' + (accentTile ? ' is-accent' : '') }, [
-      el('div', { class: 'stat-label' }, [
-        el('span', { text: label }),
-        topRight || el('span', { class: 'stat-unit', text: unit })
-      ]),
+    const card = el('article', { class: 'stat' }, [
+      el('div', { class: 'stat-label' }, [el('span', { class: 'stat-icon' }, [icon(name)]), el('span', { text: label }), el('span', { class: 'stat-unit', text: unit })]),
       el('div', { class: 'stat-value' + (format === amount && numberMode === 'exact' && value >= 1e9 ? ' long' : ''), title: format === amount ? number(value) : '' }, [valueNode, approx ? el('small', { class: 'cn-approx', text: approx }) : null]),
-      costBar,
       costSplit,
       el('div', { class: 'stat-sub' }, sub)
     ].filter(Boolean));

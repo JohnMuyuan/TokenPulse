@@ -51,8 +51,8 @@
   --sidebar-w: 236px;
   --ease: cubic-bezier(.22, 1, .36, 1);
   --spring: cubic-bezier(.34, 1.4, .64, 1);
-  --font: "Segoe UI Variable Text", "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
   --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
@@ -105,15 +105,14 @@ html, body { height: 100%; overflow: hidden; }
 body {
   margin: 0;
   font: 14px/1.6 var(--font);
-  font-optical-sizing: auto;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
 
 h1, h2, h3, p { margin: 0; }
-h1 { font: 600 28px/1.22 var(--font-display); letter-spacing: -.028em; }
-h2 { font: 600 15.5px/1.3 var(--font-display); letter-spacing: -.015em; }
+h1 { font: 650 30px/1.3 var(--font-display); letter-spacing: -.02em; }
+h2 { font-size: 16px; font-weight: 650; letter-spacing: -.005em; }
 h3 { font-size: 14px; font-weight: 600; }
 small { font-size: 12px; }
 a { color: inherit; text-decoration: none; }
@@ -256,10 +255,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .brand-svg { display: block; width: 100%; height: 100%; fill: currentColor; }
 
-.num, .n, .stat-value, .quota-remaining, .window-number strong, .breakdown-item strong {
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: "tnum" 1, "lnum" 1;
-}
+.num, .n, .stat-value, .quota-remaining, .window-number strong, .breakdown-item strong { font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); font-size: 13px; display: inline-flex; align-items: center; gap: 6px; }
 .muted .icon { width: 15px; height: 15px; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -531,7 +527,7 @@ body.layout-panel-open .workspace { padding-right: 336px; }
   scrollbar-gutter: stable;
 }
 /* 内容变短时垫在末尾的空白（见 app.js 的 scrollGuard） */
-#scroll-floor { height: 0; pointer-events: none; }
+#scroll-floor { height: 0; pointer-events: none; overflow-anchor: none; }
 .workspace::-webkit-scrollbar { width: 12px; }
 .workspace::-webkit-scrollbar-track { background: transparent; }
 .workspace::-webkit-scrollbar-thumb {
@@ -562,16 +558,16 @@ main { max-width: 1640px; margin: 0 auto; padding: 28px 40px 28px; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; margin-bottom: 22px; }
 body[data-page="overview"] .page-heading { margin-bottom: 16px; }
 body[data-page="overview"] .subtitle { display: none; }
-.eyebrow { font-size: 12px; font-weight: 550; color: var(--accent); letter-spacing: .04em; margin-bottom: 4px; }
-.subtitle { color: var(--muted); font-size: 14.5px; margin-top: 6px; }
+.eyebrow { font-size: 12.5px; font-weight: 600; color: var(--accent); letter-spacing: .06em; margin-bottom: 8px; }
+.subtitle { color: var(--muted); font-size: 15px; margin-top: 8px; }
 .section-heading, .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .section-heading { margin-bottom: 14px; }
-.section-heading h2 { font: 600 15.5px/1.3 var(--font-display); letter-spacing: -.015em; display: flex; align-items: center; }
+.section-heading h2 { font-size: 18px; display: flex; align-items: center; }
 .section-tag {
   display: inline-flex; align-items: center;
-  margin-left: 9px; padding: 2px 9px;
+  margin-left: 10px; padding: 2px 9px;
   border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line);
-  font-size: 11.5px; font-weight: 500; color: var(--muted); white-space: nowrap;
+  font-size: 12px; font-weight: 500; color: var(--muted); white-space: nowrap;
 }
 
 /* 启动页（0.3.38）：第一份能看的数据到之前盖住标题栏以下的整个窗口，只有图标和一行字；引导和弹窗在它上面。 */
@@ -618,8 +614,8 @@ body[data-page="overview"] .subtitle { display: none; }
 }
 .panel { padding: 20px 22px; min-width: 0; }
 .panel-heading { margin-bottom: 16px; }
-.panel-heading p { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
-.quota-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1.5px); border-color: var(--line-strong); }
+.panel-heading p { font-size: 13px; color: var(--muted); margin-top: 3px; }
+.quota-card:hover, .stat:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); border-color: var(--line-strong); }
 
 .empty { padding: 32px 12px; color: var(--muted); font-size: 14px; text-align: center; }
 .empty.large { padding: 64px 30px; line-height: 2; }
@@ -658,11 +654,11 @@ body[data-page="overview"] .subtitle { display: none; }
 
 .account-head { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
 .account-title { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 1px; }
-.account-name { font: 600 14.5px/1.25 var(--font-display); letter-spacing: -.012em; }
+.account-name { font-size: 16px; font-weight: 650; }
 .plan { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; line-height: 1.3; }
 /* 一家多个账号时第二行写账号名：邮箱不转大写，套餐跟在后面 */
-.plan.who { text-transform: none; letter-spacing: 0; font-size: 12px; }
-.plan.who small { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+.plan.who { text-transform: none; letter-spacing: 0; font-size: 12.5px; }
+.plan.who small { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
 /* 账号多过一行时收在剩余宽度里。点一下是切换，按住拖过一段才是排序。看后面的账号用下面那条滚动条，不要在标签上左右拖。 */
 .account-tabs-wrap { flex: 1 1 auto; min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 6px; }
 #account-tabs {
@@ -709,7 +705,7 @@ body[data-page="overview"] .subtitle { display: none; }
 
 .quota-hero { display: flex; flex-direction: column; gap: 5px; margin-bottom: 0; }
 .quota-hero-main { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
-.quota-hero-reset { font-size: 12px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.quota-hero-reset { font-size: 12.5px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
 .ring { position: relative; width: 116px; height: 116px; flex: none; }
 .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
 .ring-track { fill: none; stroke: var(--surface-2); stroke-width: 9; }
@@ -730,27 +726,27 @@ body[data-page="overview"] .subtitle { display: none; }
 .ring.double .quota-remaining small { font-size: 12px; }
 .win-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--card-accent, var(--ring-five)); vertical-align: 1px; }
 .win-dot.week { background: var(--ring-week); }
-.mini-label { display: inline-flex; align-items: center; min-width: 0; font-weight: 500; color: var(--muted); }
-.mini-label small { margin-left: 5px; font-size: 11.5px; font-weight: 450; color: var(--faint); }
+.mini-label { display: inline-flex; align-items: center; min-width: 0; }
+.mini-label small { margin-left: 6px; font-size: 12px; font-weight: 500; color: var(--faint); }
 .warn-text { color: var(--warn); font-weight: 600; }
-.mini-left { color: var(--faint); font-weight: 450; }
-.quota-remaining { font: 590 32px/1.04 var(--font-display); letter-spacing: -.036em; color: var(--text); }
+.mini-left { color: var(--muted); }
+.quota-remaining { font: 650 32px/1.04 var(--font-display); letter-spacing: -.035em; color: var(--text); }
 .quota-remaining.warning { color: var(--warn); }
 .quota-remaining.critical { color: var(--danger); }
-.quota-remaining small { font-size: 15px; font-weight: 550; color: var(--muted); margin-left: 2px; letter-spacing: 0; }
+.quota-remaining small { font-size: 15px; font-weight: 600; color: var(--muted); margin-left: 2px; letter-spacing: 0; }
 .empty-number { color: var(--faint); }
 .quota-hero-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.quota-hero-label { font-size: 12px; color: var(--muted); }
-.quota-hero-value { font-size: 15px; font-weight: 600; }
-.quota-hero-sub { font-size: 12px; color: var(--faint); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-hero-label { font-size: 13px; color: var(--muted); }
+.quota-hero-value { font-size: 16px; font-weight: 650; }
+.quota-hero-sub { font-size: 12.5px; color: var(--muted); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .quota-tracks { display: flex; flex-direction: column; gap: 11px; padding-top: 12px; border-top: 1px solid var(--line); }
 .quota-mini { margin-bottom: 0; }
-.quota-mini-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; margin-bottom: 6px; }
-.quota-mini-head > span:first-child { color: var(--muted); font-weight: 500; }
-.mini-used { color: var(--text-2); font-weight: 550; white-space: nowrap; }
-.mini-reset { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); margin-top: 5px; }
-.mini-reset .icon { width: 12px; height: 12px; opacity: .75; }
+.quota-mini-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; margin-bottom: 7px; }
+.quota-mini-head > span:first-child { color: var(--text-2); font-weight: 550; }
+.mini-used { white-space: nowrap; }
+.mini-reset { display: flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.mini-reset .icon { width: 13px; height: 13px; }
 
 .track { position: relative; height: 4px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
 :root[data-theme=dark] .track { background: var(--tile-neutral); }
@@ -764,23 +760,23 @@ body[data-page="overview"] .subtitle { display: none; }
 .track-fill.week { background: var(--ring-week); opacity: .88; }
 .track-fill.critical { background: var(--danger); }
 
-.quota-missing { flex: 1; font-size: 12.5px; color: var(--muted); line-height: 1.65; padding-top: 10px; border-top: 1px solid var(--line); }
-.quota-missing b { display: block; margin-bottom: 4px; font-size: 14px; font-weight: 600; color: var(--text); }
+.quota-missing { flex: 1; font-size: 13.5px; color: var(--muted); line-height: 1.7; padding-top: 10px; border-top: 1px solid var(--line); }
+.quota-missing b { display: block; margin-bottom: 4px; font-size: 15px; font-weight: 600; color: var(--text); }
 
 .quota-card-foot {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
   margin-top: auto; padding-top: 11px; min-height: 30px;
   border-top: 1px solid var(--line); background: transparent;
-  font-size: 12px; color: var(--muted);
+  font-size: 13px; color: var(--text-2);
 }
 .quota-card-foot > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.quota-card-foot .text-btn { font-size: 12.5px; padding: 2px 0; }
+.quota-card-foot .text-btn { font-size: 13px; padding: 2px 0; }
 
 /* 卡片偏窄时跟卡片宽度自适应，不依赖视口断点 */
-.quota-card .badge { flex: none; padding: 3px 9px; font-size: 11.5px; }
+.quota-card .badge { flex: none; }
 @container quota-card (inline-size <= 310px) {
   .quota-remaining { font-size: 27px; }
-  .quota-hero-reset { font-size: 11.5px; }
+  .quota-hero-reset { font-size: 12px; }
 }
 
 /* ---------------- 筛选条 ---------------- */
@@ -886,45 +882,27 @@ body[data-page="overview"] .subtitle { display: none; }
 .cal-day.edge { background: var(--accent); color: #fff; font-weight: 650; }
 :root[data-theme=dark] .cal-day.edge { color: #06140e; }
 
-/* ---------------- 通栏指标带（Telemetry Strip） ---------------- */
+/* ---------------- 统计块 ---------------- */
 
-.stats-grid {
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
-  margin-bottom: 24px;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
-}
-.stat {
-  display: flex; flex-direction: column;
-  padding: 18px 22px; position: relative; overflow: hidden;
-  background: var(--surface); border: 0; border-radius: 0; box-shadow: none;
-  transition: background-color .18s var(--ease);
-}
-:root[data-theme=dark] .stat { box-shadow: none; }
-:root[data-layout-edit="on"] .stats-grid {
-  gap: 14px; background: transparent; border-color: transparent; box-shadow: none; overflow: visible;
-}
-:root[data-layout-edit="on"] .stat {
-  border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm);
-}
+.stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin-bottom: 24px; }
+.stat { padding: 20px 22px; position: relative; overflow: hidden; }
 .stat-clickable { cursor: pointer; }
-.stat-clickable:hover { background: var(--surface-2); }
-.stat-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.stat-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; font-size: 12.5px; color: var(--muted); font-weight: 500; letter-spacing: .005em; }
-.stat-delta-top { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.stat-delta-top.up { color: var(--accent); }
-.stat-delta-top.down { color: var(--muted); }
-.stat-unit { margin-left: auto; font-size: 11.5px; font-weight: 500; color: var(--faint); white-space: nowrap; }
-.stat-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font: 590 31px/1.08 var(--font-display); letter-spacing: -.036em; color: var(--text); }
-.stat.is-accent .stat-value { color: var(--accent); }
+.stat-clickable:hover { border-color: var(--line-strong); }
+.stat-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.stat-label { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 13.5px; color: var(--text-2); font-weight: 550; }
+.stat-icon {
+  width: 32px; height: 32px; flex: none;
+  display: grid; place-items: center; border-radius: 10px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.stat-icon .icon { width: 17px; height: 17px; }
+.stat-unit { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--faint); }
+.stat-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font: 650 32px/1.15 var(--font-display); letter-spacing: -.03em; }
 /* 精确到个位的十亿级数字太长：字号收一点，免得挤出卡片 */
-.stat-value.long { font-size: 24px; }
+.stat-value.long { font-size: 27px; }
 /* 中文读法的小字「≈30.3亿」 */
-.cn-approx { font-family: var(--font); font-size: 12px; font-weight: 450; line-height: 1.3; letter-spacing: 0; color: var(--faint); white-space: nowrap; }
-.stat-value .cn-approx { font-size: 12.5px; }
+.cn-approx { font-family: var(--font-display); font-size: 12px; font-weight: 500; line-height: 1.3; letter-spacing: 0; color: var(--muted); white-space: nowrap; }
+.stat-value .cn-approx { font-size: 13px; }
 td .cn-approx { display: block; margin-top: 1px; font-size: 11px; }
 td.n { font-variant-numeric: tabular-nums; }
 /* .breakdown-item span 是下面那行小字说明的样式，别套到数字上 */
@@ -935,19 +913,15 @@ td.n { font-variant-numeric: tabular-nums; }
 /* 精确到个位的数字不能被省略号截断：数字自己不缩，放不下时「Tokens / ≈亿」换到下一行 */
 .metric-value { flex-wrap: wrap; row-gap: 0; }
 .metric-value b { flex: none; max-width: 100%; }
-.stat-cost-bar { display: flex; gap: 2px; height: 4px; margin-top: 11px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
-.stat-cost-bar .seg-sub { display: block; height: 100%; background: var(--accent); border-radius: 99px; }
-.stat-cost-bar .seg-api { display: block; height: 100%; background: var(--muted); opacity: .45; border-radius: 99px; }
-.stat-cost-split { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font-size: 11.5px; line-height: 1.35; color: var(--muted); }
-.stat-cost-split .cost-pill { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; white-space: nowrap; }
-.stat-cost-split .cost-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; }
-.stat-cost-split .cost-pill.sub-eq::before { background: var(--accent); }
-.stat-cost-split .cost-pill.api-pay::before { background: var(--muted); opacity: .55; }
-.stat-sub { margin-top: auto; padding-top: 10px; font-size: 12px; color: var(--faint); line-height: 1.4; }
-.stat-cost-split + .stat-sub { padding-top: 6px; }
-.delta { display: inline-block; margin-right: 6px; font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
-.delta.up { color: var(--accent); }
-.delta.down { color: var(--muted); }
+.stat-cost-split { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; font-size: 11.5px; line-height: 1.3; }
+.stat-cost-split .cost-pill { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 6px; font-weight: 550; white-space: nowrap; }
+.stat-cost-split .cost-pill.sub-eq { background: var(--accent-soft); color: var(--accent-strong); }
+.stat-cost-split .cost-pill.api-pay { background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2); }
+.stat-sub { margin-top: 10px; font-size: 13px; color: var(--muted); }
+.stat-cost-split + .stat-sub { margin-top: 7px; }
+.delta { display: inline-block; margin-right: 6px; padding: 1px 8px; border-radius: 999px; font-weight: 600; font-size: 12.5px; }
+.delta.up { background: var(--accent-soft); color: var(--accent); }
+.delta.down { background: var(--surface-2); color: var(--text-2); }
 
 /* ---------------- 图表（融合趋势卡 + 堆叠工具分布 + 行内占比排行） ---------------- */
 
@@ -974,7 +948,7 @@ td.n { font-variant-numeric: tabular-nums; }
 
 .chart { height: 224px; min-width: 0; }
 .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.chart .axis { fill: var(--faint); font-size: 11px; font-family: var(--font); font-variant-numeric: tabular-nums; }
+.chart .axis { fill: var(--muted); font-size: 11.5px; font-family: var(--font); font-variant-numeric: tabular-nums; }
 .chart .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 4; }
 .chart .grid.base { stroke-dasharray: none; }
 .chart .avg-line { stroke: var(--accent); stroke-opacity: .42; stroke-width: 1; stroke-dasharray: 4 4; pointer-events: none; }
@@ -995,7 +969,7 @@ td.n { font-variant-numeric: tabular-nums; }
 .chart .line-path { fill: none; stroke: var(--accent); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .chart .line-area { pointer-events: none; }
 .chart .line-dot { fill: var(--surface); stroke: var(--accent); stroke-width: 2.2; pointer-events: none; }
-.chart-summary { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.chart-summary { display: flex; flex-wrap: wrap; gap: 10px 28px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
 .chart-summary b { margin-left: 7px; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .quota-trend { height: 190px; }
@@ -1004,21 +978,21 @@ td.n { font-variant-numeric: tabular-nums; }
 .quota-trend .trend-dot { fill: var(--surface); stroke: var(--accent); stroke-width: 2.4; }
 
 #rhythm { display: flex; flex-direction: column; flex: 1; }
-.rhythm-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.rhythm-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .rhythm-row:first-child { padding-top: 0; }
 .rhythm-row:last-of-type { border-bottom: 0; }
-.rhythm-row span { color: var(--muted); font-weight: 500; }
-.rhythm-row b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
-.rhythm-row.primary b { font: 590 16px/1.15 var(--font-display); letter-spacing: -.02em; }
+.rhythm-row span { color: var(--muted); }
+.rhythm-row b { font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text); }
+.rhythm-row.primary b { font: 650 16px/1.2 var(--font-display); letter-spacing: -.015em; }
 .rhythm-pulse-wrap { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line); }
-.rhythm-pulse-title { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
+.rhythm-pulse-title { display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; font-weight: 500; color: var(--muted); margin-bottom: 8px; }
 .rhythm-pulse { display: flex; align-items: flex-end; gap: 3px; height: 42px; }
 .rhythm-pulse-bar { flex: 1; min-width: 2px; border-radius: 2px; background: var(--text); opacity: .2; transition: opacity .15s, background-color .15s; cursor: default; }
 .rhythm-pulse-bar.zero { opacity: .07; }
 .rhythm-pulse-bar.peak { background: var(--accent); opacity: .94; }
 .rhythm-pulse-bar:hover { opacity: .95; }
-.rhythm-pulse-axis { display: flex; justify-content: space-between; margin-top: 5px; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
-.rhythm-note { margin-top: 12px; font-size: 12px; line-height: 1.65; color: var(--faint); }
+.rhythm-pulse-axis { display: flex; justify-content: space-between; margin-top: 5px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rhythm-note { margin-top: 14px; font-size: 12.5px; line-height: 1.75; color: var(--muted); }
 
 /* 工具分布：全宽堆叠比例条 + 轻量化细线行 */
 .source-stack { display: flex; gap: 3px; height: 9px; border-radius: 99px; overflow: hidden; margin-bottom: 14px; background: var(--surface-2); }
@@ -1036,17 +1010,17 @@ td.n { font-variant-numeric: tabular-nums; }
 .source-row + .source-row { border-top: 1px solid var(--line); }
 .source-dot { width: 9px; height: 9px; border-radius: 3px; background: var(--src-color, var(--accent)); flex: none; }
 .source-main { min-width: 0; }
-.source-top { display: flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600; color: var(--text); }
-.source-bottom { margin-top: 2px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.source-top { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 550; color: var(--text); }
+.source-bottom { margin-top: 3px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .source-figures { text-align: right; font-variant-numeric: tabular-nums; flex: none; }
-.source-figures .share { display: block; font-size: 13.5px; font-weight: 600; color: var(--text); }
-.source-figures small { display: block; font-size: 12px; color: var(--muted); }
+.source-figures .share { display: block; font-size: 14px; font-weight: 550; color: var(--text-2); }
+.source-figures small { display: block; font-size: 12.5px; color: var(--muted); }
 
 /* 模型用量排行：行内极淡占比底色条 */
 #model-ranking { display: grid; gap: 6px; }
 .rank-row {
   position: relative; overflow: hidden;
-  display: grid; grid-template-columns: 24px auto minmax(0, 1fr) auto; gap: 11px; align-items: center;
+  display: grid; grid-template-columns: 26px auto minmax(0, 1fr) auto; gap: 11px; align-items: center;
   padding: 10px 12px; margin: 0; border-radius: 12px;
   transition: background-color .18s var(--ease);
 }
@@ -1057,13 +1031,13 @@ td.n { font-variant-numeric: tabular-nums; }
 }
 :root[data-theme=dark] .rank-fill { opacity: .13; }
 .rank-row > :not(.rank-fill) { position: relative; z-index: 1; }
-.rank-number { font: 600 12.5px/1 var(--font-display); color: var(--faint); font-variant-numeric: tabular-nums; }
+.rank-number { font: 650 13px/1 var(--font-display); color: var(--faint); font-variant-numeric: tabular-nums; }
 .rank-row:first-child .rank-number { color: var(--accent); }
 .rank-body { min-width: 0; }
-.rank-name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
-.rank-meta { font-size: 12px; color: var(--muted); }
-.rank-value { text-align: right; font-size: 13.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
-.rank-value .rank-meta { font-weight: 450; }
+.rank-name { font-size: 14px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.rank-meta { font-size: 12.5px; color: var(--muted); }
+.rank-value { text-align: right; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text); }
+.rank-value .rank-meta { font-weight: 400; }
 
 /* ---------------- 额度详情 ---------------- */
 
@@ -1817,7 +1791,7 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
 
 @media (max-width: 1280px) {
   .quota-remaining { font-size: 28px; }
-  .stat-value { font-size: 27px; }
+  .stat-value { font-size: 28px; }
   .breakdown-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
@@ -1857,8 +1831,7 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
   main { padding: 28px 24px 24px; }
   .topbar { padding: 0 24px; }
   .quota-grid { gap: 14px; }
-  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  :root[data-layout-edit="on"] .stats-grid { gap: 14px; }
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .analysis-grid { grid-template-columns: minmax(0, 1.8fr) minmax(220px, 1fr); gap: 14px; }
   .split-grid, .quota-window-grid, .quota-history-grid { gap: 14px; }
   .panel { padding: 18px 20px; }
@@ -1900,8 +1873,8 @@ main.entering .rank-row, main.entering .source-row, main.entering .rhythm-row, m
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 @media (forced-colors: active) {
-  .stats-grid, .stat, .quota-card, .panel, .track, .source-stack { border: 1px solid CanvasText; }
-  .track-fill, .source-stack-seg, .stat-cost-bar .seg-sub, .rhythm-pulse-bar.peak { background: Highlight; }
+  .stat, .quota-card, .panel, .track, .source-stack { border: 1px solid CanvasText; }
+  .track-fill, .source-stack-seg, .rhythm-pulse-bar.peak { background: Highlight; }
   .rank-fill { border-inline-start: 3px solid Highlight; }
 }
 
