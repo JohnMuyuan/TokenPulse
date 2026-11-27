@@ -7,6 +7,7 @@ import { queryRequests, recentAlerts } from "./request-log";
 import { scanLocalUsage } from "./usage-scan";
 import { ccSwitchEnabled, syncCcSwitch } from "./cc-switch";
 import { recordCliLogins } from "./login-timeline";
+import { recordPiLogins } from "./pi-accounts";
 import { getSession, hasCurrentSessionIndex, listSessions } from "./sessions";
 import { searchSessions } from "./session-search";
 
@@ -43,6 +44,11 @@ function runTask(data: Record<string, any>) {
       recordCliLogins();
     } catch (error) {
       console.error("[TokenPulse] 读取 CLI 登录失败", error);
+    }
+    try {
+      recordPiLogins();
+    } catch (error) {
+      console.error("[TokenPulse] 读取 pi 登录失败", error);
     }
   }
   const scanned = data.scan ? scanLocalUsage() : null;

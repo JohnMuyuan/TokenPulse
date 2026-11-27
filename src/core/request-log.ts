@@ -10,6 +10,7 @@ import { ccSwitchEnabled, coverKey, readCcSwitch, type CcRequest } from "./cc-sw
 import { routeEvents, routeLogDir, routeReturned, type RouteTiming } from "./route-ledger";
 import { accountLabels, ACCOUNT_KIND_OF_SOURCE, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type AccountLabels, type LoginTimeline, type RequestAccount } from "./login-timeline";
 import { readAgyLoginTimeline, type AgyLoginSpan } from "./antigravity-accounts";
+import { isPiProviderOfficial, readPiLoginStore, resolvePiAccount, type PiLoginStore } from "./pi-accounts";
 import { quotaAttribution } from "./quota-attribution";
 import { readQuotaHistory } from "./quota-history";
 import { windowSegments } from "./quota-monitor";
@@ -61,6 +62,8 @@ export type RequestRecord = {
   autoStep?: number;
   /** cc-switch 的来源名（OpenCode、Claude Code…）。 */
   source?: string;
+  /** 可选的供应商标识（如 pi 的 google-ai-plan、tokenpulse_route）。 */
+  provider?: string;
   /** cc-switch：是不是走它本地代理的请求（型号是从上游响应里读的）。 */
   viaProxy?: boolean;
   /** 会话里直接记下的账号（Claude Code 部分会话与子代理有）。 */
@@ -483,6 +486,8 @@ export type RequestRow = {
   quotaPct?: number;
   /** true = 走官方账号，false = API Key / 中转，undefined = 判断不出来。 */
   official?: boolean;
+  /** 可选的供应商标识（如 pi 的 google-ai-plan）。 */
+  provider?: string;
   /** 发出这次请求的账号。走中转 / API Key 的、或者对不上的为 null。 */
   account: RequestAccount | null;
   status: VerifyStatus;
@@ -620,11 +625,12 @@ export function clearRequestLogCaches() {
 }
 
 /** 对账号要用到的：登录时间线和账号名，一次查询读一次。 */
-type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; labels: AccountLabels; sessions?: ReturnType<typeof sessionMetaIndex>; internedAccounts?: Map<string, RequestAccount> };
+type AccountContext = { timeline: LoginTimeline; agyTimeline: AgyLoginSpan[]; piStore: PiLoginStore; labels: AccountLabels; sessions?: ReturnType<typeof sessionMetaIndex>; internedAccounts?: Map<string, RequestAccount> };
 function accountContext(skipSessionMeta = false): AccountContext {
   return {
     timeline: readLoginTimeline(),
     agyTimeline: readAgyLoginTimeline(),
+    piStore: readPiLoginStore(),
     labels: accountLabels(),
     ...(skipSessionMeta ? {} : { sessions: sessionMetaIndex() }),
     internedAccounts: new Map<string, RequestAccount>(),
@@ -687,12 +693,15 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     // Grok：这一轮的请求在转发记录里全部交给了同一个号池账号（见 usage-scan.ts）
     : record.routedAccount && record.routedAccountBasis === "route-window" ? { id: record.routedAccount, label: accounts.labels.get(record.routedAccount) ?? record.routedAccount, basis: "route-window" }
     : routedAccount(KIND_OF_SOURCE[sourceOf(record)], record.at, accounts.labels, record.responseId);
-  const official = routed ? true : record.kind === "antigravity" ? (fileOfficial ?? true) : fileOfficial;
+  const piOfficial = record.kind === "pi" ? isPiProviderOfficial(record.provider, accounts.piStore) : undefined;
+  const official = routed ? true : record.kind === "antigravity" ? (fileOfficial ?? true) : record.kind === "pi" ? (record.provider ? piOfficial : fileOfficial) : fileOfficial;
   // 走中转 / API Key 的不是官方账号发的；CC Switch 导入的走它代理的也一样
   const account = routed ? routed :
     official === false || (record.kind === "cc-switch" && record.viaProxy)
       ? null
-      : resolveAccount(ACCOUNT_KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt, org: record.accountOrg, orgAt: record.accountOrgAt }, accounts.timeline, accounts.labels, accounts.agyTimeline);
+      : record.kind === "pi"
+        ? resolvePiAccount(record.provider, record.at, accounts.piStore, accounts.labels)
+        : resolveAccount(ACCOUNT_KIND_OF_SOURCE[sourceOf(record)], record.at, { ref: record.accountRef, email: record.accountEmail, at: record.accountAt, org: record.accountOrg, orgAt: record.accountOrgAt }, accounts.timeline, accounts.labels, accounts.agyTimeline);
   const verdict: { status: VerifyStatus; reasons: string[]; channel: string } = record.compaction
     ? { status: "unverified", reasons: [COMPACTION_REASON], channel: "压缩上下文（估算）" }
     : verifyRequest({
@@ -702,6 +711,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     responseId: record.responseId,
     requestId: record.requestId,
     official,
+    provider: record.provider,
     viaProxy: record.viaProxy,
     proxy: record.proxy,
   });
@@ -750,6 +760,7 @@ function toRow(record: RequestRecord, fileOfficial: boolean | undefined, account
     calls: effectiveCalls,
     ...(autoStep ? { autoStep } : {}),
     official,
+    ...(record.provider ? { provider: record.provider } : {}),
     account,
     status: verdict.status,
     statusLabel: STATUS_LABELS[verdict.status],
@@ -1209,7 +1220,7 @@ export function queryRequests(query: RequestQuery): RequestPage {
       if (query.channel === "api" && row.official !== false) return;
       if (query.channel === "unknown" && row.official !== undefined) return;
       if (q) {
-        const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.cwd, row.session, row.sessionTitle, row.agentName, row.swarmTitle, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
+        const haystack = [row.model, row.effort, row.requested, row.returned, row.source, row.provider, row.cwd, row.session, row.sessionTitle, row.agentName, row.swarmTitle, row.responseId, row.requestId, row.statusLabel, row.channel, row.account?.label]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();

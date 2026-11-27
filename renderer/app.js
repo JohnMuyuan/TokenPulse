@@ -2710,10 +2710,12 @@ const ACCOUNT_BASIS_HINT = {
   route: '经 TokenPulse 的号池发出，按本地路由的记录对上号池里的这个账号',
   'route-window': '这次转发交给了这个账号。Grok 的会话按一整轮汇总，TokenPulse 按转发记录把这一轮拆开，记到每次实际用的账号上'
 };
+const PI_FALLBACK_ACCOUNT_LABELS = new Set(['Google AI Plan 账号', 'Anthropic 账号', 'OpenAI Codex 账号', 'OpenAI ChatGPT 账号', 'xAI 账号', 'GitHub Copilot 账号']);
 /** 项目和账号放一格：上面项目，下面是发出这次请求的账号。 */
 function projectAccountCell(row) {
+  const keepAccount = row.account && !PI_FALLBACK_ACCOUNT_LABELS.has(row.account.label);
   const account = row.account
-    ? el('small', { class: 'account-line', title: `${row.account.label}\n${ACCOUNT_BASIS_HINT[row.account.basis]}` }, [icon('user'), el('span', { text: row.account.label, translate: 'no' }), row.account.basis === 'inferred' ? el('em', { text: '推断' }) : null])
+    ? el('small', { class: 'account-line', title: `${row.account.label}\n${ACCOUNT_BASIS_HINT[row.account.basis]}` }, [icon('user'), el('span', { text: row.account.label, translate: keepAccount ? 'no' : null }), row.account.basis === 'inferred' ? el('em', { text: '推断' }) : null])
     : el('small', { class: 'account-line muted', text: row.official === false ? 'API Key / 中转站' : '账号未知' });
   return el('td', { class: 'account-cell' }, [el('span', { class: 'project-name', text: projectOf(row.cwd), title: row.cwd || '', translate: row.cwd ? 'no' : null }), account]);
 }
@@ -2836,7 +2838,7 @@ function requestDetail(row) {
     sessionActions,
     el('div', { class: 'detail-grid' }, fields.map(([label, value, mono, badge, raw]) => el('div', {}, [
       badge ? el('small', { class: 'detail-label-row' }, [el('span', { text: label }), badge]) : el('small', { text: label }),
-      el('span', { class: mono ? 'mono' : '', text: value, title: value, translate: raw || (label === '账号' && row.account) ? 'no' : null })
+      el('span', { class: mono ? 'mono' : '', text: value, title: value, translate: raw || (label === '账号' && row.account && !PI_FALLBACK_ACCOUNT_LABELS.has(row.account.label)) ? 'no' : null })
     ]))),
     row.reasons.length ? el('div', { class: 'detail-reasons' }, row.reasons.map(reason => {
       const problem = (row.status === 'mismatch' || row.status === 'suspect') && !NOTE_PREFIX.test(reason);

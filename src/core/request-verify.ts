@@ -32,6 +32,8 @@ export type VerifyInput = {
   requestId?: string;
   /** 这个会话走不走官方登录账号（false = API Key / 中转站，undefined = 判断不出来）。 */
   official?: boolean;
+  /** 可选的供应商标识（如 pi 的 google-ai-plan）。 */
+  provider?: string;
   /** cc-switch：是不是走它本地代理的请求。 */
   viaProxy?: boolean;
   /** 同一次请求在代理里的记录：它从上游响应里读到的型号。via = "tokenpulse" 是 TokenPulse 自己转发时读到的，没写是 CC Switch 代理。 */
@@ -105,8 +107,9 @@ export function idShape(id?: string) {
 }
 
 /** 从响应 ID 看是哪种接口回的。 */
-export function channelOf(kind: VerifyInput["kind"], responseId?: string) {
+export function channelOf(kind: VerifyInput["kind"], responseId?: string, provider?: string) {
   if (kind === "antigravity") return "Google Antigravity";
+  if (kind === "pi" && provider === "google-ai-plan") return "Google AI Plan";
   const id = responseId || "";
   if (!id) return kind === "grok-build" ? "xAI（Grok Build）" : kind === "deepseek-harness" ? "DeepSeek" : "未知";
   if (/^msg_bdrk_/.test(id)) return "AWS Bedrock";
@@ -126,7 +129,7 @@ export function verifyRequest(input: VerifyInput): VerifyResult {
   const requested = input.requested ?? proxy?.requested;
   const returned = input.returned ?? proxy?.returned;
   const proxyName = proxy?.via === "tokenpulse" ? "TokenPulse 转发时" : "CC Switch 代理";
-  const channel = kind === "cc-switch" ? (input.viaProxy ? "CC Switch 代理" : "CC Switch 导入") : channelOf(kind, responseId);
+  const channel = kind === "cc-switch" ? (input.viaProxy ? "CC Switch 代理" : "CC Switch 导入") : channelOf(kind, responseId, input.provider);
   const problems: string[] = [];
   const notes: string[] = [];
 

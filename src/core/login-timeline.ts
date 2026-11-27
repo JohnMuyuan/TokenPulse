@@ -2,6 +2,7 @@ import { routeAccount } from "./route-ledger";
 import { accountIdOf, readOfficialAccountStore } from "./accounts";
 import { readAgyAccountStore, readAgyLoginTimeline, type AgyLoginSpan } from "./antigravity-accounts";
 import { OFFICIAL_KINDS, readCliAccounts, type OfficialAccountKind } from "./credentials";
+import { readPiLoginStore } from "./pi-accounts";
 import { dataFile, readJson, writeJson } from "./paths";
 
 /**
@@ -115,16 +116,33 @@ export function accountLabels(): AccountLabels {
       rememberOrg(kind, span.id, span.orgId);
     }
   }
+  const aliasByEmail = new Map<string, string>();
   for (const account of readOfficialAccountStore().accounts) {
     labels.set(account.id, account.alias || account.email || account.label || account.id);
-    if (account.email) emails.set(account.id, account.email);
+    if (account.email) {
+      emails.set(account.id, account.email);
+      if (account.alias) aliasByEmail.set(account.email.toLowerCase(), account.alias);
+    }
     rememberOrg(account.kind, account.id, account.orgId);
     const snapAccount = account.cliAuth?.account as Record<string, unknown> | undefined;
     rememberOrg(account.kind, account.id, snapAccount?.organizationUuid);
   }
   for (const account of readAgyAccountStore().accounts) {
     labels.set(account.id, account.alias || account.email || account.label || account.id);
-    if (account.email) emails.set(account.id, account.email);
+    if (account.email) {
+      emails.set(account.id, account.email);
+      if (account.alias) aliasByEmail.set(account.email.toLowerCase(), account.alias);
+    }
+  }
+  const piStore = readPiLoginStore();
+  for (const spans of Object.values(piStore.providers)) {
+    for (const span of spans ?? []) {
+      if (!span?.id) continue;
+      const email = span.email || "";
+      const alias = email ? aliasByEmail.get(email.toLowerCase()) : undefined;
+      labels.set(span.id, alias || email || span.label || span.id);
+      if (email) emails.set(span.id, email);
+    }
   }
   labels.emails = emails;
   labels.orgs = orgs;

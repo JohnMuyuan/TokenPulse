@@ -43,6 +43,7 @@ import { cancelPendingInstall, checkForUpdates, consumeRelaunchHidden, downloadU
 import { listOfficialOAuthStatus, addCliAccounts, loginOfficialOAuth, manageOfficialAccount, reorderOfficialAccountsOf, switchCliLogin } from "./oauth";
 import { migrateLegacyGrokAccounts } from "../core/grok-migrate";
 import { OFFICIAL_KINDS, type OfficialAccountKind } from "../core/credentials";
+import { hasUnresolvedPiOAuth, syncPiAccounts } from "../core/pi-accounts";
 import { checkPrismProxy, fixPrismProxy, installPrism, loginPrism, onPrismChange, prismDiskUsage, prismEndpoint, prismHome, prismLogFile, prismState, releasePrism, removePrism, resumePrism, setPrismAutoStart, startPrism, stopPrism, prismModels, PRISM_ORIGIN, PRISM_PROVIDER_NAME } from "../core/prism-bridge";
 import { autoSwitchCli, autoSwitchStale, describeAutoSwitch, normalizeRule, type AutoSwitchDeps, type AutoSwitchEvent } from "../core/cli-auto-switch";
 import { foregroundAccounts, quietPick } from "../core/quota-quiet";
@@ -948,6 +949,7 @@ function quotaGlances(snapshot: Snapshot | null): QuotaGlance[] {
  */
 async function runRefresh(withQuota: boolean, notifyQuota = false): Promise<Snapshot> {
   if (withQuota) await antigravityQuota.syncLocalLogin().catch(() => {});
+  if (withQuota || hasUnresolvedPiOAuth()) await syncPiAccounts({ force: notifyQuota }).catch(() => {});
   // 先展示已有统计，再更新本地文件；网络慢或断网时仍然可以使用界面。
   await getInitialSnapshot();
   let snapshot = publishSnapshot(await loadSnapshot(true));

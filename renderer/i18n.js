@@ -226,6 +226,12 @@
     "并发历史清理失败": "Could not prune concurrency history",
     "官方透明转发": "Official transparent forwarding",
     "未归属账号": "Unattributed account",
+    "Google AI Plan 账号": "Google AI Plan account",
+    "Anthropic 账号": "Anthropic account",
+    "OpenAI Codex 账号": "OpenAI Codex account",
+    "OpenAI ChatGPT 账号": "OpenAI ChatGPT account",
+    "xAI 账号": "xAI account",
+    "GitHub Copilot 账号": "GitHub Copilot account",
     "仅统计经 TokenPulse 转发的流量。直连未监控；连接包含空闲复用连接，活跃请求包含等待上游的请求。": "Only traffic forwarded through TokenPulse is monitored. Direct traffic is unmonitored; connection counts include idle reusable connections, and active requests include upstream waiting time.",
     "图中显示每个时间段的峰值；空白表示未监控或软件没有运行。": "The chart shows the peak in each interval. Gaps mean monitoring was unavailable or the app was not running.",
     "留空表示不设上限。拒绝只作用于新的 AI 请求，不中断已有请求；连接上限仅提醒。共享或未归属连接不支持个别上限。": "Leave a limit blank to disable it. Rejection applies only to new AI requests; existing requests continue. Connection limits warn only. Shared or unattributed connections do not support individual limits.",
@@ -3517,7 +3523,13 @@
     '全站字体栈、粗体字重与字号层级统一回归 v0.4.2 以前风格': 'App-Wide Font Stack, Bold Weights & Type Scale Restored to Pre-v0.4.2 Style',
     '恢复原有中英文字体回退顺序与标准展示字重，统一修正主标题、分区标题、大数字指标、额度与余额卡片、使用节奏、工具分布及模型排行的粗细、字号、字距与次要文字对比度，消除页面间的字体突兀感。': 'Restores the original font fallback order and display weights across headings, big metrics, quota and balance cards, rhythm rows, tool distribution, and model rankings—unifying weights, sizing, tracking, and secondary text contrast so typography feels cohesive across every page.',
     '修复高缩放比例下页面滚动位置轻微偏移的边界问题': 'Fix Minor Scroll-Anchoring Offset Under Fractional DPI Scaling',
-    '为滚动防跳垫片补充 overflow-anchor: none，避免在 150% 等小数 DPI 缩放下切换内容高度时被浏览器滚动锚定拉偏 2 像素。': 'Adds overflow-anchor: none to the scroll-guard spacer so browsers do not anchor onto it and shift scroll position by 2px when content height changes under fractional DPI scaling such as 150%.'
+    '为滚动防跳垫片补充 overflow-anchor: none，避免在 150% 等小数 DPI 缩放下切换内容高度时被浏览器滚动锚定拉偏 2 像素。': 'Adds overflow-anchor: none to the scroll-guard spacer so browsers do not anchor onto it and shift scroll position by 2px when content height changes under fractional DPI scaling such as 150%.',
+    '适配 pi 的 Google AI Plan 官方登录账号识别（v0.4.5）': 'pi Google AI Plan Account Recognition (v0.4.5)',
+    '针对 Google 官方接入 pi 的 google-ai-plan（Google AI Ultra plan），严格只读 ~/.pi/agent/auth.json（绝不修改凭据也不触发 DPoP 刷新），按单向凭据指纹在本地缓存 Google 邮箱与登录时间线，不再把 pi 的 Google 官方请求显示为「账号未知」，并同步支持换号、登出与同邮箱别名复用。': 'Recognizes Google AI Plan (google-ai-plan) logins in pi by strictly reading ~/.pi/agent/auth.json without modifying credentials or triggering DPoP refreshes, caching resolved Google emails and login spans by one-way fingerprint so pi requests show the real account instead of Unknown account, with account switching, logout tracking, and shared email aliases.',
+    'pi 请求逐条记录供应商，自动区分订阅等价与 API 实付': 'Per-Request pi Provider Attribution & Subscription vs API Cost Split',
+    '扫描 pi 会话时按条记录 provider 并自动一次性重扫老账本补齐历史归属：google-ai-plan 请求归入官方订阅等价并标注「Google AI Plan」通道，tokenpulse_route 与 API Key 请求归入 API 实付且不误归到官方账号，同时支持按账号筛选与搜索 google-ai-plan。': 'Records the provider on each pi request and performs a one-time automatic rescan of existing pi rollups: google-ai-plan requests count under subscription equivalent with the Google AI Plan channel, while tokenpulse_route and API key requests stay under API spend without misattributing accounts, with full account filtering and search support.',
+    '同步支持 pi 的 JWT OAuth 离线解析与过期令牌占位补齐': 'Offline JWT Extraction & Provisional Span Upgrade for Expired pi Tokens',
+    '新增对 openai-codex / openai-chatgpt 等带 JWT 的 pi OAuth 凭据离线邮箱解析；首次遇到已过期的 google-ai-plan 令牌时先记录占位名，待 pi 下次刷新访问令牌后原地升级为真实邮箱，不落盘任何原始令牌或私钥。': 'Extracts emails offline from JWT-based pi OAuth credentials such as openai-codex and openai-chatgpt; if a google-ai-plan access token is already expired on first sight, records a provisional span and upgrades it in-place to the real email once pi refreshes the token, without ever storing raw tokens or private keys.'
     };
     return _en;
   }

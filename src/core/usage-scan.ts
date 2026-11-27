@@ -6,6 +6,7 @@ import { cliDir, authFile } from "./credentials";
 import { dataFile, dshRoot, piDir, readJson, writeJson } from "./paths";
 import { appendRequests, compactRequests, type RequestRecord } from "./request-log";
 import { accountLabels, KIND_OF_SOURCE, readLoginTimeline, resolveAccount, routedAccount, type AccountEvidence, type AccountLabels, type LoginTimeline } from "./login-timeline";
+import { isPiProviderOfficial, readPiLoginStore, type PiLoginStore } from "./pi-accounts";
 import { routeEvents, type RouteEvent } from "./route-ledger";
 import { readLargeZstdFrame, zstdFrames } from "./zstd-frames";
 import { displayModel } from "./knowledge";
@@ -171,6 +172,10 @@ type FileState = {
   routedHours?: Record<string, Record<string, Record<string, UsageBucket>>>;
   /** pi：这个文件是分叉出来的，这个时间之前的记录都是从原会话复制来的（见 piRow）。 */
   piForkAt?: number;
+  /** pi 单独的扫描结构版本（升级只重扫 pi 会话以补齐 provider，不重扫其他 CLI）。 */
+  piV?: number;
+  /** pi：同一会话文件里混用了不同渠道的 provider 时标记，避免整份文件被错误归成单一渠道。 */
+  piMixed?: boolean;
   /** Antigravity：型号的数字 id → 型号名和思考档位（见 antigravity.ts）。offset 在这种来源里是下一次从哪一步读。 */
   agyModels?: Record<string, AgyModel>;
   /** Antigravity：扫的时候还没有显示名的 model_enum。等有了标签整份重算（见 antigravityNeedsRelabel）。 */
@@ -224,6 +229,7 @@ export type UsageRollups = {
  */
 const STATE_VERSION = 20;
 const GROK_ROUTE_VERSION = 1;
+const PI_STATE_VERSION = 1;
 const HOUR_MS = 3_600_000;
 /** 常规批次大小。单个 JSONL 事件超出时，续读到该行结束。 */
 const MAX_CHUNK = 32 * 1024 * 1024;
@@ -537,8 +543,13 @@ function applyAttribution(
   state: FileState,
   official: Record<Kind, boolean | undefined>,
   codex: CodexAuth,
+  piStore?: PiLoginStore,
 ) {
   state.kind = kind;
+  if (kind === "pi") {
+    state.official = state.piMixed ? undefined : isPiProviderOfficial(state.provider, piStore);
+    return;
+  }
   if (kind !== "codex") {
     state.official = official[kind];
     return;
@@ -598,6 +609,8 @@ type Row = {
   stream?: { firstAt: number; tokensPerSec?: number };
   /** pi：这次调用用了多久，CLI 自己记的。 */
   durationMs?: number;
+  /** pi：这次调用使用的供应商标识（如 google-ai-plan、tokenpulse_route）。 */
+  provider?: string;
 };
 
 /* ---------------- 压缩上下文 ---------------- */
@@ -855,10 +868,13 @@ function piRow(obj: Record<string, unknown>, session: string, state: FileState):
   if (!input && !output) return null;
   const named = message?.model ?? obj.model;
   const model = typeof named === "string" && named ? displayModel(named) : state.model || "";
+  const rawProvider = message?.provider ?? obj.provider;
+  const provider = typeof rawProvider === "string" && rawProvider.trim() ? rawProvider.trim() : state.provider || undefined;
   const reported = Number((usage.cost as Record<string, unknown> | undefined)?.total);
   const costUsd = reported > 0 ? reported : /deepseek/i.test(model) ? estimateCost(model, { input, output, cacheRead, cacheWrite }) * (deepseekPeak(at) ? 1 : 0.5) : 0;
   return {
     at, id: `${session}:${String(obj.id || at)}`, model,
+    ...(provider ? { provider } : {}),
     responseId: typeof message?.responseId === "string" && message.responseId ? message.responseId : undefined,
     usage: { input, output, cacheRead, cacheWrite, reasoning: num(usage.reasoning), costUsd, requests: 1 },
     durationMs: num(message?.durationMs) || undefined,
@@ -1029,6 +1045,7 @@ function scanFile(
   out: ScanOutput = { records: [], rescanned: false },
   accountContext: AccountContext = { timeline: readLoginTimeline(), labels: accountLabels() },
   parentEvidence?: AccountEvidence,
+  piStore?: PiLoginStore,
 ) {
   let stat: fs.Stats;
   try {
@@ -1064,11 +1081,14 @@ function scanFile(
     state.lastTurnAt = undefined;
     state.callStartAt = undefined;
     state.piForkAt = undefined;
+    state.piMixed = undefined;
+    if (kind === "pi") { state.provider = undefined; state.official = undefined; }
     state.autoStep = undefined;
   };
-  if (state.v !== STATE_VERSION || (kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION)) {
+  if (state.v !== STATE_VERSION || (kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION) || (kind === "pi" && state.piV !== PI_STATE_VERSION)) {
     state.v = STATE_VERSION;
     if (kind === "grok-build") state.grokRouteVersion = GROK_ROUTE_VERSION;
+    if (kind === "pi") state.piV = PI_STATE_VERSION;
     // 结构升级整份重算，同时清掉旧账号归属（重读的流水扫完会整理去重）。
     reset();
   }
@@ -1204,10 +1224,15 @@ function scanFile(
         if (typeof obj.cwd === "string" && obj.cwd) state.cwd = obj.cwd;
         state.piForkAt = obj.parentSession ? Date.parse(String(obj.timestamp || "")) || undefined : undefined;
       }
-      if (obj.type === "model_change" && typeof obj.modelId === "string" && obj.modelId) state.model = displayModel(obj.modelId);
+      if (obj.type === "model_change") {
+        if (typeof obj.modelId === "string" && obj.modelId) state.model = displayModel(obj.modelId);
+        if (typeof obj.provider === "string" && obj.provider.trim()) state.provider = obj.provider.trim();
+      }
       const message = obj.type === "message" ? (obj.message as Record<string, unknown> | undefined) : undefined;
       const replied = message?.role === "assistant";
       if (replied && typeof message?.model === "string" && message.model) state.model = displayModel(message.model);
+      if (replied && typeof message?.provider === "string" && message.provider.trim()) state.provider = message.provider.trim();
+      else if (obj.type === "usage" && typeof obj.provider === "string" && obj.provider.trim()) state.provider = obj.provider.trim();
       // 思考等级每条回复自己带，别的行不沿用
       state.effort = replied ? normalizeEffort(message?.thinkingLevel) : undefined;
       state.effortSource = state.effort ? "message.thinkingLevel" : undefined;
@@ -1366,6 +1391,16 @@ function scanFile(
         if (otherWeight > 0) pieces.push({ at: row.at, usage: parts[parts.length - 1], id: `${baseId}~other` });
       } else pieces.push({ at: row.at, usage: row.usage, id: baseId, ...(routed ? { account: routed.id, basis: "response-id" as const } : {}) });
       const evidence = effectiveEvidence(state, parentEvidence);
+      if (kind === "pi" && !state.piMixed) {
+        const rowOff = isPiProviderOfficial(row.provider, piStore);
+        const hadRows = Object.keys(state.days).length > 0;
+        if (!hadRows) {
+          state.official = rowOff;
+        } else if (state.official !== rowOff) {
+          state.piMixed = true;
+          state.official = undefined;
+        }
+      }
       if (!metadataOnly) {
         if (poolSplit) {
           for (const piece of pieces) {
@@ -1384,7 +1419,7 @@ function scanFile(
         };
         if (poolSplit) {
           for (const piece of pieces) if (piece.account) { addRouted(piece.account, piece.at, model, piece.usage); addAccountHour(piece.account, piece.at, piece.usage); }
-        } else if (routed || state.official === true) {
+        } else if (routed || (KIND_OF_SOURCE[source] && state.official === true)) {
           const account = routed ?? resolveAccount(
             KIND_OF_SOURCE[source],
             row.at,
@@ -1436,6 +1471,7 @@ function scanFile(
           ...(evidence.orgAt ? { accountOrgAt: evidence.orgAt } : {}),
           ...(piece.account ? { routedAccount: piece.account, routedAccountBasis: piece.basis } : {}),
           ...(piece.routeEventId ? { routeEventId: piece.routeEventId } : {}),
+          ...(row.provider ? { provider: row.provider } : {}),
           ...(row.compaction ? { compaction: true } : {}),
         });
       }
@@ -1576,6 +1612,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
     const alive = new Set<string>();
     const official = configOfficial();
     const codex = codexAuthContext((rollups.codexProviders ??= {}));
+    const piStore = readPiLoginStore();
     const accountContext: AccountContext = { timeline: readLoginTimeline(), labels: accountLabels() };
     let changed = 0;
     let files = 0;
@@ -1600,11 +1637,12 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
           }
           if (stat.ino) state.ino = stat.ino;
         }
-        applyAttribution(file, kind, state, official, codex);
+        applyAttribution(file, kind, state, official, codex, piStore);
         const parentFile = kind === "claude-code" ? claudeParentSessionFile(file) : undefined;
         const parentEvidence = parentFile ? stateEvidence(rollups.files[parentFile]) : undefined;
         // 大小和改动时间都没变就跳过（新文件记的是 0，不会误判成没变）。
-        const unattributed = state.official === true && hasUnattributedAccountHours(state);
+        const isQuotaCli = Boolean(KIND_OF_SOURCE[SOURCES[kind]]);
+        const unattributed = isQuotaCli && state.official === true && hasUnattributedAccountHours(state);
         const retrySig = unattributed ? unattributedSignature(kind, state, accountContext, parentEvidence) : undefined;
         const retryUnattributed = Boolean(
           unattributed &&
@@ -1612,6 +1650,7 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
           canResolveUnattributed(kind, state, accountContext, parentEvidence),
         );
         const needsAccountHours =
+          isQuotaCli &&
           state.official === true &&
           (
             !state.accountHours ||
@@ -1619,11 +1658,12 @@ export function scanLocalUsage(): { files: number; changed: number; skipped: boo
             retryUnattributed
           );
         const needsGrokReplay = kind === "grok-build" && state.grokRouteVersion !== GROK_ROUTE_VERSION;
-        if (stat && state.v === STATE_VERSION && state.offset >= stat.size && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours && !needsGrokReplay) continue;
+        const needsPiReplay = kind === "pi" && state.piV !== PI_STATE_VERSION;
+        if (stat && state.v === STATE_VERSION && state.offset >= stat.size && stat.size === state.size && stat.mtimeMs === state.mtimeMs && !needsAccountHours && !needsGrokReplay && !needsPiReplay) continue;
         // 缺按账号的小时账（含历史上记在空键 "" 现已可归属的账）：得从头重读这个文件才补得出来。
         if (needsAccountHours) state.v = 0;
-        if (scanFile(file, kind, state, out, accountContext, parentEvidence)) changed += 1;
-        if (state.official === true && hasUnattributedAccountHours(state)) {
+        if (scanFile(file, kind, state, out, accountContext, parentEvidence, piStore)) changed += 1;
+        if (isQuotaCli && state.official === true && hasUnattributedAccountHours(state)) {
           state.unattributedSig = unattributedSignature(kind, state, accountContext, parentEvidence);
         } else {
           delete state.unattributedSig;
