@@ -1,6 +1,24 @@
-# 当前接手入口 · `v0.4.4`（已发布至 GitHub Releases）
+# 当前接手入口 · `v0.4.5`（已发布至 GitHub Releases）
 
-## 最新已发布版本 · `v0.4.4` · 2026-11-26
+## 最新已发布版本 · `v0.4.5` · 2026-11-27
+
+- **Git 与发布**。[TokenPulse v0.4.5](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.5) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460786357`，发布时间 `2026-11-27T15:38:57Z`）。发布提交 `be4134a058c149cbdf6289484eb6d4163ad57761` 与签注标签 `v0.4.5`（`0879005e988dbad6ce20a5a09a2211746e26c38c`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
+- **发布内容（`pi` Google AI Plan 官方登录账号识别与订阅/API 拆账适配，对应 [earendil-works/pi#12614](https://github.com/earendil-works/pi/pull/12614)）**：
+  1. **只读识别 `pi` 的 `google-ai-plan` OAuth 账号与登录时间线**：新增 [pi-accounts.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/pi-accounts.ts)，严格只读 `~/.pi/agent/auth.json`（绝不改写文件，也不触碰 `refresh` / `dpopKey` 发刷新请求以免破坏 `pi` 的 DPoP nonce）；以 `dpopKey` 公钥坐标 / `refresh` 的单向 SHA-256 指纹将 Google UserInfo（OIDC 主通道 + OAuth2 v2 回退）解析出的邮箱与登录时间线缓存至 `~/.tokenpulse/pi-logins.json`（不落盘任何原始令牌或私钥），命中缓存后零网络请求；首次遇到已过期令牌先记占位段并在 `pi` 下次刷新 `access` 后原地补齐真实邮箱，同时支持 401 退避、换号/登出时间线及 `openai-codex` / `openai-chatgpt` 等 JWT OAuth 离线解析。
+  2. **`pi` 逐条记录 `provider`、自动重扫老账本并拆分订阅等价 vs API 实付**：[usage-scan.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/usage-scan.ts) 新增 `piV`（`PI_STATE_VERSION = 1`）与 `piMixed`，自动一次性补扫历史 `pi` 会话并记录每条请求的 `provider`（含 `toolResult` / `compaction` 继承），同时保持 `pi` 不写入 `accountHours`；[request-log.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-log.ts)、[request-verify.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/request-verify.ts) 与 [login-timeline.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/login-timeline.ts) 将 `google-ai-plan` 归入官方订阅等价并标注 `Google AI Plan` 通道、`tokenpulse_route` 与 API Key 归入 API 实付且不误归账号，并自动复用同邮箱在 Antigravity / 官方账号里配置的别名。
+  3. **刷新链路、渲染与测试**：[index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)、[report-worker.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/report-worker.ts)、[app.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/app.js)、[i18n.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/i18n.js) 与 [intro.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/intro.js) 完成接入与中英文词典补齐；新增 8 项回归 [test-pi-accounts.cjs](file:///d:/CodePorject/Tools/TokenPulse/scripts/test-pi-accounts.cjs) 并接入 `npm test`。
+- **Windows 构建与线上资产校验**：`npm run dist`（图标 + `tsc` + `electron-builder --publish never`）退出 `0`，`dist/win-unpacked/TokenPulse.exe` 产品版本为 `0.4.5.0`（FileVersion `0.4.5`）；`app.asar` 头部核验 `ASAR_MISSING=[]`、`ASAR_PKG_VERSION=0.4.5`；`dist/latest.yml`（349 B）SHA512 与大小同 `TokenPulse-0.4.5-Setup.exe` 完全一致（`LATEST_YML_SHA512_MATCH=true`、`LATEST_YML_SIZE_MATCH=true`）。发布说明在 [release-0.4.5.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.4.5.md)。4 项附件均已上传至 Release `460786357`（远端 `state: uploaded`，字节数与 SHA256 同本地逐字节一致）：
+  - `dist/latest.yml`：`349` B，SHA256 `c6327ac90122296d09b995b436ce18eeb85e5595e5053e09c8deb5ddd845e09d`
+  - `dist/TokenPulse-0.4.5-Setup.exe`：`113,016,272` B，SHA256 `bab0efa26743f888d1be575c458510183b96ac8f22bdb45ffff46fca51fbe7a0`
+  - `dist/TokenPulse-0.4.5-Setup.exe.blockmap`：`119,661` B，SHA256 `cff2f288a2dbfe3ccfb73932d6bf2de4d606624d04476c4624361ffd2bc74f96`
+  - `dist/TokenPulse-0.4.5-Portable.exe`：`112,759,051` B，SHA256 `16a66b0331bc3244c2ff047ffce7792ac178069cc5bcd815964f35509c1479e8`
+- **验证与收尾**：
+  - 升版后复跑 `npm test`（`tsc` + **78/78** Node 套件，含 `test-pi-usage.cjs` 6/6、`test-pi-accounts.cjs` 8/8、`test-features.cjs` 46/46 与 `test-audit-frontend.cjs` 9/9）与 `test-intro-ui.cjs`（3/3）均退出 `0`；叠加升版前 `test-pi-ui.cjs`、`test-ui.cjs` 全部通过，及隔离临时 `TOKENPULSE_DATA_DIR` 下本机 `~/.pi/agent` 只读实测（25/25 条 `google-ai-plan` 请求归属准确、1,480/1,480 条 `tokenpulse_route` 归为 API/中转、`authUntouched: true`）。未跑 `npm run test:ui` 中其余无关子页脚本及 `npm run test:update`；未触碰用户已安装版软件；`pi` 的 `google-ai-plan` 暂无官方剩余额度接口，本版仅覆盖账号识别、订阅等价口径与通道标注。
+  - 打包与发布后本仓库关联进程 `REPO_PROCS=0`；`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}`、4 项 `v0.4.5` 发行产物及 4 项 `build/` 编译产物共 10 项非破坏性独占打开（`FileShare.None`）检查 `LOCKED_COUNT=0`，全部句柄已在 `finally` 立即关闭。
+
+---
+
+## 历史已发布版本 · `v0.4.4` · 2026-11-26
 
 - **Git 与发布**。[TokenPulse v0.4.4](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.4) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460221523`，发布时间 `2026-11-27T06:01:30Z`）。发布提交 `7e622d8cdcf766e755f4e556ef82ba168c79e800` 与签注标签 `v0.4.4`（`f37d8ce587ee1987c49222e9e7bb5ae811ffa88f`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
 - **发布内容（四格统计卡与全站字体/字重回退至 `v0.4.2` 前，保留 `v0.4.2` 总览排版）**：
