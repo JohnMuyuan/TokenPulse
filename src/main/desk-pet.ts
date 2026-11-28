@@ -21,7 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Snapshot } from "../core/report";
 import { ActivityScanner, type ActivityState, type AgentAsk, type AgentTask, type TaskKind } from "../core/agent-activity";
-import { invalidateAntigravitySwarmCache } from "../core/antigravity";
+import { invalidateAntigravitySwarmCache, noteAntigravityFileChanged } from "../core/antigravity";
 import { listPetSounds } from "../core/pet-sound-file";
 import { accountIdOf } from "../core/accounts";
 import { authFile, claudeProfileFile, readCliAccounts } from "../core/credentials";
@@ -290,6 +290,7 @@ function startTimers() {
         const rel = String(name || "");
         if (!rel || !/\.jsonl(\.zstd)?$|\.db(-wal)?$|members\.json$|subagents[\\/][^\\/]+\.json$/.test(rel)) return;
         if (/members\.json$|subagents[\\/][^\\/]+\.json$/.test(rel)) invalidateAntigravitySwarmCache();
+        else if (/\.db(-wal)?$/.test(rel)) noteAntigravityFileChanged(path.join(dir, rel));
         if (event === "rename" || (!rel.endsWith(".db") && !rel.endsWith(".db-wal") && !rel.endsWith("members.json") && !scanner?.knows(path.join(dir, rel)))) scanner?.poke();
         soon();
       });

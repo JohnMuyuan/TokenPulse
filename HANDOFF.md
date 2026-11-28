@@ -1,4 +1,13 @@
-# 当前接手入口 · `v0.4.6`（已发布至 GitHub Releases）
+# 当前接手入口 · `v0.4.7`（进行中，未发布；最新已发布仍是 `v0.4.6`）
+
+## 进行中 · `v0.4.7` · 2026-11-28 · Antigravity 会话多时桌宠扫描卡死主进程
+
+- **目标**：用户反馈（基于 v0.4.4）开启桌宠且 Antigravity 两小时内有 400+ 对话时主进程持续 85%+ 单核、100 MB/s 读盘。已核实属实，修复后升 `0.4.7` 发布 GitHub。
+- **已核实**：`src/core/antigravity.ts` 的 `phaseCache` 上限 128 且满了整表 `clear()`，两小时内对话多于 128 个时命中率恒为 0，每轮扫描（桌宠 0.9–1.5 s 一次）同步重开全部对话库。合成基准（3341 摘要行 / 450 近期对话）：修复前每轮 ~260 ms、450 次 SQLite 打开。
+- **已完成（检查点 1）**：`antigravity.ts` 新增 `lruGet/lruSet`，`phaseCache`(2048)、`staleDbCache`(8192)、`jsonStatCache`(2048)、`subagentUsageCache`(1024) 改 LRU；`shouldReadPhase` 对主对话收窄到在跑 / 15 分钟内动过 / 上一轮在跑（`recentRunning`）；新增冷 stamp 缓存 `coldStampCache` + `noteAntigravityFileChanged()`（`src/main/desk-pet.ts` 的 fs.watch 调用）；`antigravityStamp` 用 `throwIfNoEntry:false`。基准：每轮 ~11 ms、0 次 SQLite 打开（摘要库每轮都变时 ~17 ms）。
+- **已完成（检查点 2）**：P1 `renderer/desk-pet.js` 空闲降帧（`wantFps/retuneFrameCap`：待机且鼠标 1.5 s 不动 15 FPS、打盹/睡觉 10 FPS，干活/动作/拖动/鼠标动/键鼠互动回到设置帧率；`__petFrameCap.running` 暴露实际帧率）；`--disable-gpu-rasterization` 未改。P2 `src/core/paths.ts` 新增 `cleanStaleTempFiles()`，`src/main/index.ts` 启动 30 s 后调用（只删一天前、匹配自有临时文件名的普通文件，范围：数据目录、`requests`、`session-text`）。新测试 `scripts/test-antigravity-scan-perf.cjs`（6 项，已加入 `npm test`）；`scripts/test-desk-pet-ui.cjs` 的限帧断言改为空闲 15 帧 + 鼠标/干活回 30 帧。`package.json`/`package-lock.json` 已升 `0.4.7`，`renderer/intro.js` + `renderer/i18n.js` 已加 0.4.7 更新说明。
+- **测试（进行中）**：`npm test` 退出 0（含新套件 6/6）。`test-desk-pet-ui` 首跑撞到已知偶发「气泡 8 秒后自己收起」提前收起，单独重跑退出 0（23 PASS，含新降帧断言）。`npm run test:ui` 链在 `test-agent-switch-ui` 侧边栏宽度（236≠76）中断，单独重跑退出 0；其后的 UI 脚本正在逐个补跑。
+- **待做**：等 UI 补跑结果；`npm run dist`；提交、打签注标签、推送、建 Release 上传 4 项资产；补完本节。
 
 ## 最新已发布版本 · `v0.4.6` · 2026-11-27
 

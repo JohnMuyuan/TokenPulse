@@ -55,6 +55,26 @@ function withDb<T>(file: string, fn: (db: Database) => T): T {
   try { return fn(db); } finally { db.close(); }
 }
 
+/**
+ * 有上限的 LRU 缓存（Map 保持插入顺序）：命中时挪到队尾，超出上限只淘汰最久没用的几条。
+ * 不能「满了就整表 clear()」：条目数一旦多于上限（比如两小时内动过的对话有几百个），每轮扫描都会把缓存清空重来，命中率归零，
+ * 每轮都要把所有对话库重新打开一遍（2026-11-28 用户反馈主进程持续 85%+ 单核、100 MB/s 读盘）。
+ */
+export function lruGet<K, V>(map: Map<K, V>, key: K): V | undefined {
+  const value = map.get(key);
+  if (value !== undefined) { map.delete(key); map.set(key, value); }
+  return value;
+}
+export function lruSet<K, V>(map: Map<K, V>, key: K, value: V, cap: number): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > cap) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
+
 /** 对话库文件：只要 <UUID>.db（同时扫描 Antigravity IDE 与 Antigravity CLI 数据目录，同名 UUID 取最近修改的一份）。 */
 export function antigravityConversationFiles(): string[] {
   const byName = new Map<string, { file: string; mtimeMs: number }>();
@@ -78,7 +98,11 @@ export function antigravityConversationFiles(): string[] {
 export function antigravityStamp(file: string): { size: number; mtimeMs: number } | null {
   let size = 0, mtimeMs = 0, found = false;
   for (const part of [file, file + "-wal"]) {
-    try { const stat = fs.statSync(part); size += stat.size; mtimeMs = Math.max(mtimeMs, stat.mtimeMs); found ||= part === file; } catch { /* 没有 -wal 是正常的 */ }
+    // 没有 -wal 是正常的：throwIfNoEntry 让「不存在」直接返回 undefined，不必每次构造异常（每轮扫描要对几百个对话库各查两次）
+    let stat: fs.Stats | undefined;
+    try { stat = fs.statSync(part, { throwIfNoEntry: false }); } catch { stat = undefined; }
+    if (!stat) continue;
+    size += stat.size; mtimeMs = Math.max(mtimeMs, stat.mtimeMs); found ||= part === file;
   }
   return found ? { size, mtimeMs } : null;
 }
@@ -757,14 +781,14 @@ export type AgySwarmMeta = {
 
 const jsonStatCache = new Map<string, { size: number; mtimeMs: number; value: unknown }>();
 function readJsonCached(file: string): { value: unknown; mtimeMs: number } | null {
-  let stat: fs.Stats;
-  try { stat = fs.statSync(file); } catch { return null; }
-  const hit = jsonStatCache.get(file);
+  let stat: fs.Stats | undefined;
+  try { stat = fs.statSync(file, { throwIfNoEntry: false }); } catch { return null; }
+  if (!stat) return null;
+  const hit = lruGet(jsonStatCache, file);
   if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return { value: hit.value, mtimeMs: stat.mtimeMs };
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (jsonStatCache.size > 1024) jsonStatCache.clear();
-    jsonStatCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, value });
+    lruSet(jsonStatCache, file, { size: stat.size, mtimeMs: stat.mtimeMs, value }, 2048);
     return { value, mtimeMs: stat.mtimeMs };
   } catch {
     return null;
@@ -780,12 +804,30 @@ const convFilesCache = new Map<string, { mtimeMs: number; scannedAt: number; fil
 const staleDbCache = new Map<string, { mtimeMs: number; checkedAt: number }>();
 const CONV_FILES_TTL_MS = 5_000;
 const STALE_DB_TTL_MS = 30_000;
+/**
+ * 两小时窗口里「早已停下」的对话库：摘要行的 last_modified_time 没变、库本身也 COLD_STAMP_AGE_MS 以上没动时，
+ * COLD_STAMP_TTL_MS 内直接复用上次的大小/改动时间，不再每轮对库和 -wal 各 stat 一次（几百个对话时每轮要上千次 stat）。
+ * 桌宠的 fs.watch 看到对应 .db / .db-wal 变了会立刻调用 noteAntigravityFileChanged 让这一条失效；在跑的对话永远现查。
+ * key 用小写路径（Windows 路径不分大小写，摘要里的 id 和文件名大小写可能不一致）。
+ */
+const coldStampCache = new Map<string, { stamp: { size: number; mtimeMs: number }; sumAt: number; checkedAt: number }>();
+const COLD_STAMP_TTL_MS = 15_000;
+const COLD_STAMP_AGE_MS = 10 * 60_000;
 
 /** 当 fs.watch 捕捉到 swarm/members.json 或 subagents/*.json 变动时立刻清空缓存。 */
 export function invalidateAntigravitySwarmCache(): void {
   brainIndexCache.clear();
   convFilesCache.clear();
   staleDbCache.clear();
+  coldStampCache.clear();
+}
+
+/** fs.watch 看到某个对话库（.db / .db-wal / .db-shm）变了：丢掉它的冷 stamp 与陈旧标记，下一轮扫描现查。 */
+export function noteAntigravityFileChanged(file: string): void {
+  const db = file.replace(/-(wal|shm)$/i, "");
+  if (!/\.db$/i.test(db)) return;
+  coldStampCache.delete(db.toLowerCase());
+  staleDbCache.delete(db);
 }
 
 function convFileSet(dir: string, now: number): Set<string> | null {
@@ -1052,7 +1094,7 @@ const subagentUsageCache = new Map<string, { size: number; mtimeMs: number; rows
 export function readAntigravitySubagentUsage(file: string, known: Record<string, AgyModel>): AgySubagentUsageRow[] {
   const stamp = antigravityStamp(file);
   if (stamp) {
-    const hit = subagentUsageCache.get(file);
+    const hit = lruGet(subagentUsageCache, file);
     if (hit && hit.size === stamp.size && hit.mtimeMs === stamp.mtimeMs) {
       for (const [k, v] of Object.entries(hit.models)) {
         if (!known[k]) known[k] = v;
@@ -1124,8 +1166,7 @@ export function readAntigravitySubagentUsage(file: string, known: Record<string,
     return out;
   });
   if (stamp) {
-    if (subagentUsageCache.size > 512) subagentUsageCache.clear();
-    subagentUsageCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, rows, models: localModels });
+    lruSet(subagentUsageCache, file, { size: stamp.size, mtimeMs: stamp.mtimeMs, rows, models: localModels }, 1024);
   }
   return rows;
 }
@@ -1394,6 +1435,16 @@ export function sqliteTime(value: unknown): number {
 
 type PhaseResult = Pick<AgyActivity, "phase" | "ended" | "tool" | "ask" | "swarmWaiting" | "pendingContinuation"> & { open?: boolean };
 const phaseCache = new Map<string, { size: number; mtimeMs: number; value: PhaseResult }>();
+/** 阶段缓存上限：要盖住「两小时内动过」的全部对话（实测有人同时有 400+ 个），留足余量。每条只是几个短字段。 */
+const PHASE_CACHE_MAX = 2048;
+/**
+ * 空闲的主对话多久没动就不再读它最后几步：比桌宠「刚完成」列表保留的 10 分钟（agent-activity 的 RECENT_MS）多留 5 分钟。
+ * 更早停下的对话，phase / ended 不会再被用到（不在「刚完成」里，也不会再从在跑变成完成）。
+ */
+const PHASE_IDLE_MS = 15 * 60_000;
+/** 最近还在跑的对话（小写 id → 最后一次看到在跑的时间）：它停下的那一轮一定要读最后几步，才能分出正常完成 / 出错 / 中断。 */
+const recentRunning = new Map<string, number>();
+const RECENT_RUNNING_MAX = 4096;
 const summaryRowsCache = new Map<string, { size: number; mtimeMs: number; rows: Record<string, unknown>[]; parentRows: { conversation_id?: string; parent_id?: string }[] }>();
 const LIGHT_SUMMARY_SQL = "select conversation_id, title, last_modified_time, workspace_uris, status, agent_name, parent_conversation_id, nesting_depth, not_fully_idle, killed, last_user_input_time from conversation_summaries";
 
@@ -1401,7 +1452,7 @@ const LIGHT_SUMMARY_SQL = "select conversation_id, title, last_modified_time, wo
 export function conversationPhase(file: string, knownStamp?: { size: number; mtimeMs: number } | null): PhaseResult {
   const stamp = knownStamp !== undefined ? knownStamp : antigravityStamp(file);
   if (!stamp) return {};
-  const hit = phaseCache.get(file);
+  const hit = lruGet(phaseCache, file);
   if (hit && hit.size === stamp.size && hit.mtimeMs === stamp.mtimeMs) return hit.value;
   try {
     const value = withDb(file, (db) => {
@@ -1457,8 +1508,7 @@ export function conversationPhase(file: string, knownStamp?: { size: number; mti
         ...(pendingContinuation ? { pendingContinuation: true } : {}),
       };
     });
-    if (phaseCache.size > 128) phaseCache.clear();
-    phaseCache.set(file, { size: stamp.size, mtimeMs: stamp.mtimeMs, value });
+    lruSet(phaseCache, file, { size: stamp.size, mtimeMs: stamp.mtimeMs, value }, PHASE_CACHE_MAX);
     return value;
   } catch { return {}; }
 }
@@ -1544,18 +1594,27 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
     }
     return "";
   };
-  const stampFor = (db: string, skipStaleCheck: boolean): { size: number; mtimeMs: number } | null => {
+  /** coldSumAt：传了就允许对「摘要行没变、库也很久没动」的空闲对话复用冷 stamp（见 coldStampCache）；在跑的对话不传，永远现查。 */
+  const stampFor = (db: string, skipStaleCheck: boolean, coldSumAt?: number): { size: number; mtimeMs: number } | null => {
     if (!db) return null;
     if (!skipStaleCheck) {
-      const stale = staleDbCache.get(db);
+      const stale = lruGet(staleDbCache, db);
       if (stale && now - stale.checkedAt < STALE_DB_TTL_MS && stale.mtimeMs < since - 30 * 60_000) return null;
+    }
+    const coldKey = coldSumAt !== undefined ? db.toLowerCase() : "";
+    if (coldKey) {
+      const cold = lruGet(coldStampCache, coldKey);
+      if (cold && cold.sumAt === coldSumAt && cold.checkedAt <= now && now - cold.checkedAt < COLD_STAMP_TTL_MS && now - cold.stamp.mtimeMs > COLD_STAMP_AGE_MS) return cold.stamp;
     }
     const stamp = antigravityStamp(db);
     if (stamp && stamp.mtimeMs < since - 30 * 60_000) {
-      if (staleDbCache.size > 2048) staleDbCache.clear();
-      staleDbCache.set(db, { mtimeMs: stamp.mtimeMs, checkedAt: now });
+      lruSet(staleDbCache, db, { mtimeMs: stamp.mtimeMs, checkedAt: now }, 8192);
     } else if (stamp) {
       staleDbCache.delete(db);
+    }
+    if (coldKey) {
+      if (stamp) lruSet(coldStampCache, coldKey, { stamp, sumAt: coldSumAt as number, checkedAt: now }, 8192);
+      else coldStampCache.delete(coldKey);
     }
     return stamp;
   };
@@ -1643,16 +1702,26 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       Boolean(swarmWorker) ||
       Boolean(swarmCoord);
     const db = needStamp ? resolveConvDb(id) : "";
-    const stamp = needStamp ? stampFor(db, forceKeep || sumRunning || swarmWorking || sumAt >= since) : null;
+    // 在跑 / Swarm 相关 / 强制保留的对话现查；其余空闲对话允许复用冷 stamp
+    const hot = forceKeep || statusRunning || sumRunning || swarmWorking || notFullyIdle || Boolean(swarmWorker) || Boolean(swarmCoord);
+    const stamp = needStamp ? stampFor(db, forceKeep || sumRunning || swarmWorking || sumAt >= since, hot ? undefined : sumAt) : null;
     if (!forceKeep && !sumRunning && !swarmWorking && sumAt < since && (!stamp || stamp.mtimeMs < since)) return null;
 
+    // 主对话：在跑、刚动过（PHASE_IDLE_MS 内）或上一轮还在跑的才读最后几步；两小时窗口里早已停下的历史对话不再每轮打开对话库
+    const lastRunAt = recentRunning.get(lower) ?? 0;
     const shouldReadPhase = Boolean(
       stamp && (
-        !nested ||
         statusRunning ||
         sumRunning ||
         swarmWorking ||
-        (!killed && now - stamp.mtimeMs <= 5 * 60_000)
+        (!killed && now - stamp.mtimeMs <= 5 * 60_000) ||
+        (!nested && (
+          forceKeep ||
+          notFullyIdle ||
+          Boolean(swarmCoord) ||
+          now - Math.max(sumAt, stamp.mtimeMs) <= PHASE_IDLE_MS ||
+          now - lastRunAt <= PHASE_IDLE_MS
+        ))
       ),
     );
     const info = shouldReadPhase ? conversationPhase(db, stamp) : {};
@@ -1802,6 +1871,9 @@ function readSingleDirActivity(since: number, dir: string, allDirs: string[], no
       }
     }
   }
+
+  for (const [lower, item] of byId) if (item.running) { recentRunning.delete(lower); recentRunning.set(lower, now); }
+  for (const [lower, at] of recentRunning) if (now - at > PHASE_IDLE_MS || recentRunning.size > RECENT_RUNNING_MAX) recentRunning.delete(lower);
 
   // Drop idle swarm coordinators whose last update is older than `since` when no workers are active.
   return [...byId.values()].filter((item) => item.running || item.at >= since);

@@ -637,18 +637,31 @@ app.whenReady().then(async () => {
     pet.webContents.send('desk-pet-state', idleView);
     await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg'"), '待机动画');
     assert.equal(await js(`getComputedStyle(${sroot}.querySelector('.bob')).animationName`), 'bob', '动画自带的 CSS 生效（只在 Shadow DOM 里）');
-    // 限帧：主题 SVG 的无限动画被接管（暂停、按 30 帧手动推进），不跟着显示器刷新率（用户的 300 Hz 屏）每秒重画几百次
-    const cap = await js(`new Promise(resolve => {
+    // 限帧：主题 SVG 的无限动画被接管（暂停、手动推进），不跟着显示器刷新率（用户的 300 Hz 屏）每秒重画几百次
+    const measureCap = () => js(`new Promise(resolve => {
       const bob = ${sroot}.querySelector('.bob').getAnimations()[0];
       if (!bob) return resolve(null);
       const seen = new Set(), from = performance.now();
-      const tick = () => { seen.add(bob.currentTime); if (performance.now() - from < 1000) requestAnimationFrame(tick); else resolve({ state: bob.playState, steps: seen.size, fps: window.__petFrameCap.fps }); };
+      const tick = () => { seen.add(bob.currentTime); if (performance.now() - from < 1000) requestAnimationFrame(tick); else resolve({ state: bob.playState, steps: seen.size, fps: window.__petFrameCap.fps, running: window.__petFrameCap.running }); };
       setTimeout(() => requestAnimationFrame(tick), 100);
     })`);
+    // 空闲降帧（0.4.7）：待机、鼠标 1.5 秒没动时只按 15 帧推进（上限仍是设置的 30）
+    await until(() => js('window.__petFrameCap.running === 15'), '待机且鼠标不动：降到 15 帧');
+    const cap = await measureCap();
     assert.ok(cap, '主题的无限动画存在');
     assert.equal(cap.state, 'paused', '动画已被接管（暂停后手动推进）');
     assert.equal(cap.fps, 30);
-    assert.ok(cap.steps >= 15 && cap.steps <= 40, `1 秒里动画时间只推进了约 30 次（实际 ${cap.steps} 次），动画仍在走、但不按刷新率重画`);
+    assert.equal(cap.running, 15, '待机时按空闲帧率推进');
+    assert.ok(cap.steps >= 8 && cap.steps <= 22, `待机 1 秒里动画时间只推进了约 15 次（实际 ${cap.steps} 次），动画仍在走、但不按刷新率重画`);
+    // 鼠标一动：眼睛要跟着转，马上回到设置的 30 帧；停下 1.5 秒后再降回 15 帧
+    pet.webContents.send('desk-pet-cursor', { x: 60, y: -10 });
+    await until(() => js('window.__petFrameCap.running === 30'), '鼠标在动：回到设置的 30 帧');
+    await until(() => js('window.__petFrameCap.running === 15'), '鼠标停下：降回空闲 15 帧', 5000);
+    // 干活时不降帧
+    pet.webContents.send('desk-pet-state', { ...idleView, mode: 'work', tasks: 1 });
+    await until(() => js('window.__petFrameCap.running === 30'), '干活时按设置的 30 帧');
+    pet.webContents.send('desk-pet-state', idleView);
+    await until(() => js("document.getElementById('dp-stage').dataset.image === 'idle.svg'"), '回到待机动画');
     // 设置里改成 60 帧：状态里带上 fps，宠物窗口跟着换上限；改回 30
     pet.webContents.send('desk-pet-state', { ...idleView, fps: 60 });
     await until(() => js('window.__petFrameCap.fps === 60'), '帧率上限换成 60');

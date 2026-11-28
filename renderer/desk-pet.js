@@ -760,6 +760,9 @@
   api.onPack(next => { setPack(next); draw(); });
   api.onDeskPack?.(next => { deskPack = next || null; lastDeskSig = ''; draw(true); });
   api.onCursor(rel => {
+    // 鼠标在动：眼睛要跟着转，空闲降下来的帧率马上回到设置值
+    cursorAt = Date.now();
+    if (capTimer && capFps < petFps) retuneFrameCap();
     // 点击穿透时收不到 mousemove（主进程不再用 forward 的全局鼠标钩子）：用主进程轮询到的窗口内坐标判断鼠标在不在宠物身上。
     // 光标已经出了窗口范围（cx 为空）而还挂着 hover：漏掉的 mouseleave，补上
     if (rel.cx != null) lastCursorIn = { x: rel.cx, y: rel.cy };
@@ -865,7 +868,13 @@
    * 帧率在桌宠设置里选（30 / 60 / 120，默认 30），随状态一起送来（view.fps）。
    */
   const FPS_CHOICES = [30, 60, 120];
-  let petFps = 30, capTimer = null;
+  /*
+   * 空闲降帧（0.4.7）：没任务、没在做动作、鼠标 1.5 秒内没动、也没在键鼠互动时，主题动画（呼吸、眨眼）每秒 15 帧就够了，
+   * 打盹、睡着时每秒 10 帧。界面是 CPU 光栅化（主进程 disable-gpu-rasterization），这个透明置顶窗口每一帧都要软件重画，
+   * 用户反馈只挂着桌宠，宠物窗口 + GPU 进程也常驻 20%～40% 单核（2026-11-28）。干活、做动作、拖动、鼠标在动时回到设置的帧率。
+   */
+  const REST_FPS = 15, SLEEP_FPS = 10, CURSOR_ACTIVE_MS = 1500;
+  let petFps = 30, capTimer = null, capFps = 0, cursorAt = 0;
   const adopted = new WeakMap();
   const timelineNow = () => document.timeline.currentTime ?? performance.now();
   function adopt(animation) {
@@ -900,10 +909,27 @@
   function stopFrameCap() {
     if (capTimer) { clearInterval(capTimer); capTimer = null; }
   }
+  /** 现在该按每秒几帧推进：见上面「空闲降帧」。 */
+  function wantFps(now = Date.now()) {
+    if (!view || !ctl || dragging || press || ctl.action || now - cursorAt < CURSOR_ACTIVE_MS) return petFps;
+    if (desk && view.desk === true && !view.mini && (desk.isUserActive(now) || desk.covering)) return petFps;
+    const state = ctl.stateOf(ctx(now));
+    if (state === 'sleep' || state === 'doze') return Math.min(petFps, SLEEP_FPS);
+    if (state === 'idle') return Math.min(petFps, REST_FPS);
+    return petFps;
+  }
   function ensureFrameCap() {
     if (capTimer || document.visibilityState === 'hidden') return;
     if (!petAnimations().length) return;
-    capTimer = setInterval(stepAnimations, Math.round(1000 / petFps));
+    capFps = wantFps();
+    capTimer = setInterval(stepAnimations, Math.round(1000 / capFps));
+  }
+  /** 状态变了（醒了、开始干活、鼠标动了）：帧率不一样就换一个定时器，下一格就按新帧率走。 */
+  function retuneFrameCap() {
+    if (!capTimer) return;
+    if (wantFps() === capFps) return;
+    stopFrameCap();
+    ensureFrameCap();
   }
   // 新动画一出现就接过来（鼠标在动时眼睛的 transition 一直在换新的），不让它先按 300 Hz 跑到下一格
   const onAnimationStart = event => {
@@ -927,7 +953,7 @@
   }
   setFrameCap(30);
   // 测试用：看现在接管了几个动画、帧率上限多少
-  window.__petFrameCap = { get fps() { return petFps; }, adopted: () => petAnimations().filter(animation => adopted.has(animation) && animation.playState === 'paused').length, total: () => petAnimations().length };
+  window.__petFrameCap = { get fps() { return petFps; }, get running() { return capTimer ? capFps : 0; }, want: () => wantFps(), adopted: () => petAnimations().filter(animation => adopted.has(animation) && animation.playState === 'paused').length, total: () => petAnimations().length };
 
   // 每秒 10 帧；系统开了「减少动画」时每秒 2 帧、不做随机小动作。窗口被藏起来的时候不画；静止时跳过桌面重绘保持零空转
   let last = 0;
@@ -937,6 +963,7 @@
     if (reduced.matches && now - last < 500) return;
     last = now;
     ctl.tick(ctx(), now);
+    retuneFrameCap();
     const deskBusy = desk ? desk.step(now, reduced.matches) : false;
     draw(deskBusy);
   }, 100);

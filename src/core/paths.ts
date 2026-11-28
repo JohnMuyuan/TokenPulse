@@ -60,6 +60,37 @@ export function writeJson(file: string, value: unknown) {
   }
 }
 
+/** 我们自己原子写留下的临时文件名：`<文件>.<pid>.<线程号>.tmp`（writeJson、请求流水、会话索引）、`<文件>.<pid>.tmp`（路由日志）、`.health-<pid>.tmp`。 */
+const OWN_TEMP = /(\.\d+(\.\d+)?\.tmp|^\.health-\d+\.tmp)$/i;
+/** 原子写会落临时文件的目录（数据目录本身 + 这几个子目录）。 */
+const TEMP_DIRS = ["", "requests", "session-text"];
+
+/**
+ * 清理数据目录里遗留的临时文件（0.4.7）。正常写完会 rename 掉、失败会删掉，但写到一半进程被杀、断电，或老版本留下的
+ * 不会有人收拾：用户反馈 ~/.tokenpulse 里攒了几十个 usage-rollups.json.<pid>.<线程>.tmp（共 20 MB+）。
+ * 只删文件名符合上面格式、一天以前的普通文件（正在写的临时文件只存在几毫秒，不会被误删）；删不掉的跳过，下次启动再试。
+ */
+export function cleanStaleTempFiles(root = dataDir(), maxAgeMs = 86_400_000, now = Date.now()): { removed: number; bytes: number } {
+  let removed = 0, bytes = 0;
+  for (const sub of TEMP_DIRS) {
+    const dir = sub ? path.join(root, sub) : root;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isFile() || !OWN_TEMP.test(entry.name)) continue;
+      const file = path.join(dir, entry.name);
+      try {
+        const stat = fs.statSync(file);
+        if (now - stat.mtimeMs < maxAgeMs) continue;
+        fs.rmSync(file, { force: true });
+        removed += 1;
+        bytes += stat.size;
+      } catch { /* 被占用或权限不够：下次启动再试 */ }
+    }
+  }
+  return { removed, bytes };
+}
+
 /*
  * 用户选的文件复制进数据目录：Windows 上 copyFile 会把「只读」属性一起带过来（比如从压缩包、网盘、
  * 别人共享的文件夹里选的文件），之后删除或覆盖这份副本就报 EPERM。复制后把副本改回可写；

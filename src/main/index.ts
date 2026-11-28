@@ -19,7 +19,7 @@ import fs from "fs/promises";
 import path from "path";
 import v8 from "v8";
 import vm from "vm";
-import { dataDir, piDir } from "../core/paths";
+import { cleanStaleTempFiles, dataDir, piDir } from "../core/paths";
 import { appLogFile, errorText, log } from "../core/app-log";
 import { fetchOfficialQuota, quotaIssueNotice, quotaIssueTone, quotaRefreshSummary, type QuotaGlance } from "../core/quota";
 import type { Snapshot } from "../core/report";
@@ -1326,6 +1326,13 @@ if (!app.requestSingleInstanceLock()) {
       refresh: () => backgroundRefresh(true, true),
     });
     initUpdater({ window: () => win, autoUpdate: readPrefs().autoUpdate });
+    // 0.4.7：启动稳定后顺手清掉数据目录里一天以前遗留的原子写临时文件（不和首轮扫描抢磁盘）
+    setTimeout(() => {
+      try {
+        const cleaned = cleanStaleTempFiles();
+        if (cleaned.removed) console.log(`[TokenPulse] 清理遗留临时文件 ${cleaned.removed} 个（${Math.round(cleaned.bytes / 1024)} KB）`);
+      } catch (error) { console.error("[TokenPulse] 清理遗留临时文件失败", error); }
+    }, 30_000).unref();
     // 知识库更新了（新型号的单价）：重算一遍，界面上的费用跟着变
     scheduleKnowledgeChecks(() => backgroundRefresh(false));
 
