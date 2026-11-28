@@ -1,15 +1,28 @@
-# 当前接手入口 · `v0.4.7`（进行中，未发布；最新已发布仍是 `v0.4.6`）
+# 当前接手入口 · `v0.4.7`（已发布至 GitHub Releases）
 
-## 进行中 · `v0.4.7` · 2026-11-28 · Antigravity 会话多时桌宠扫描卡死主进程
+## 最新已发布版本 · `v0.4.7` · 2026-11-28 · 修复 Antigravity 对话多时桌宠扫描卡死主进程
 
-- **目标**：用户反馈（基于 v0.4.4）开启桌宠且 Antigravity 两小时内有 400+ 对话时主进程持续 85%+ 单核、100 MB/s 读盘。已核实属实，修复后升 `0.4.7` 发布 GitHub。
-- **已核实**：`src/core/antigravity.ts` 的 `phaseCache` 上限 128 且满了整表 `clear()`，两小时内对话多于 128 个时命中率恒为 0，每轮扫描（桌宠 0.9–1.5 s 一次）同步重开全部对话库。合成基准（3341 摘要行 / 450 近期对话）：修复前每轮 ~260 ms、450 次 SQLite 打开。
-- **已完成（检查点 1）**：`antigravity.ts` 新增 `lruGet/lruSet`，`phaseCache`(2048)、`staleDbCache`(8192)、`jsonStatCache`(2048)、`subagentUsageCache`(1024) 改 LRU；`shouldReadPhase` 对主对话收窄到在跑 / 15 分钟内动过 / 上一轮在跑（`recentRunning`）；新增冷 stamp 缓存 `coldStampCache` + `noteAntigravityFileChanged()`（`src/main/desk-pet.ts` 的 fs.watch 调用）；`antigravityStamp` 用 `throwIfNoEntry:false`。基准：每轮 ~11 ms、0 次 SQLite 打开（摘要库每轮都变时 ~17 ms）。
-- **已完成（检查点 2）**：P1 `renderer/desk-pet.js` 空闲降帧（`wantFps/retuneFrameCap`：待机且鼠标 1.5 s 不动 15 FPS、打盹/睡觉 10 FPS，干活/动作/拖动/鼠标动/键鼠互动回到设置帧率；`__petFrameCap.running` 暴露实际帧率）；`--disable-gpu-rasterization` 未改。P2 `src/core/paths.ts` 新增 `cleanStaleTempFiles()`，`src/main/index.ts` 启动 30 s 后调用（只删一天前、匹配自有临时文件名的普通文件，范围：数据目录、`requests`、`session-text`）。新测试 `scripts/test-antigravity-scan-perf.cjs`（6 项，已加入 `npm test`）；`scripts/test-desk-pet-ui.cjs` 的限帧断言改为空闲 15 帧 + 鼠标/干活回 30 帧。`package.json`/`package-lock.json` 已升 `0.4.7`，`renderer/intro.js` + `renderer/i18n.js` 已加 0.4.7 更新说明。
-- **测试（进行中）**：`npm test` 退出 0（含新套件 6/6）。`test-desk-pet-ui` 首跑撞到已知偶发「气泡 8 秒后自己收起」提前收起，单独重跑退出 0（23 PASS，含新降帧断言）。`npm run test:ui` 链在 `test-agent-switch-ui` 侧边栏宽度（236≠76）中断，单独重跑退出 0；其后的 UI 脚本正在逐个补跑。
-- **待做**：等 UI 补跑结果；`npm run dist`；提交、打签注标签、推送、建 Release 上传 4 项资产；补完本节。
+- **Git 与发布**。[TokenPulse v0.4.7](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.7) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `461613012`，发布时间 `2026-11-28T14:24:24Z`）。发布提交 `b1760e9ee87bfef761744b50329cabccabf01fdb` 与签注标签 `v0.4.7`（`4b9de54a3031b770c1a21f1087813ff53c1bb734`）已 `git push --atomic` 至 `origin/main`（经 `127.0.0.1:7890` 代理）。本 HANDOFF 收尾另有一条 docs 提交。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
+- **起因与核实**：用户反馈（基于 v0.4.4，3,341 个对话库，两小时内命中 429 个）开启桌宠后主进程持续 85%+ 单核、100 MB/s+ 读盘、整个软件卡顿。核实属实且 0.4.4～0.4.6 代码未变：`src/core/antigravity.ts` 的 `phaseCache` 上限 128、满了整表 `clear()`，两小时内动过的主对话多于 128 个时命中率恒为 0，桌宠每 0.9～1.5 s 一轮的扫描（`ActivityScanner.scan()` → 同步 `readAntigravityActivity`，在 Electron 主线程）都把所有对话库 `DatabaseSync` 重开一遍；`staleDbCache`（2048）同样整表清空。合成基准（3,341 摘要行 / 450 近期对话，脚本 `bench-agy.cjs` 在当次会话 scratchpad，未入库）修复前每轮 ~260 ms、450 次 SQLite 打开。
+- **发布内容**：
+  1. **P0 扫描开销**（[antigravity.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/antigravity.ts)、[desk-pet.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/desk-pet.ts)）：新增导出 `lruGet/lruSet`，`phaseCache`(2048)、`staleDbCache`(8192)、`jsonStatCache`(2048)、`subagentUsageCache`(1024) 改 LRU（目录级小缓存 `summaryRowsCache/convFilesCache/brainIndexCache` 键很少，保持原样）；`shouldReadPhase` 对主对话收窄为：在跑 / `not_fully_idle` / Swarm 协调器 / `forceKeep` / 摘要或库 15 分钟内动过（`PHASE_IDLE_MS`）/ 上一轮还在跑（模块级 `recentRunning`，保证停下那一轮能分出完成、出错、中断）；嵌套对话条件不变。新增冷 stamp 缓存 `coldStampCache`：非热对话、摘要行 `last_modified_time` 没变、库 10 分钟以上没动时 15 s 内复用 stamp；桌宠 fs.watch 收到 `.db/.db-wal` 事件调用新导出 `noteAntigravityFileChanged()` 立即失效；`invalidateAntigravitySwarmCache()` 也会清它。`antigravityStamp` / `readJsonCached` 用 `statSync(..., { throwIfNoEntry: false })`。基准修复后：每轮 ~11 ms、0 次 SQLite 打开；摘要库每轮都变时 ~17 ms。
+  2. **P1 桌宠空闲降帧**（[renderer/desk-pet.js](file:///d:/CodePorject/Tools/TokenPulse/renderer/desk-pet.js)）：`wantFps()/retuneFrameCap()`——待机且鼠标 1.5 s 没动 15 FPS、打盹/睡觉 10 FPS；干活、做动作、拖动、鼠标移动、键鼠互动桌面活跃或捂眼时回到设置帧率（100 ms 主循环和 `onCursor` 里重调定时器）。`window.__petFrameCap` 新增 `running`（实际帧率）与 `want()`。
+  3. **P2 遗留临时文件**（[paths.ts](file:///d:/CodePorject/Tools/TokenPulse/src/core/paths.ts)、[index.ts](file:///d:/CodePorject/Tools/TokenPulse/src/main/index.ts)）：新增 `cleanStaleTempFiles(root?, maxAgeMs=1d)`，只删数据目录、`requests`、`session-text` 下文件名匹配 `.<pid>[.<线程>].tmp` 或 `.health-<pid>.tmp`、且一天以前的普通文件；主进程 `whenReady` 后 30 s（`unref`）调用。`writeJson` 本身早已有 Windows 重试与 catch 清理，残留来自写入中被杀进程或老版本。
+  4. 版本与说明：`package.json`/`package-lock.json` → `0.4.7`；`renderer/intro.js` 加 0.4.7 三条更新说明，`renderer/i18n.js` 补英文。
+- **未做（有意）**：没有把 Antigravity 扫描挪进 `worker_threads`——修复后主线程每轮只剩 ~11–17 ms，常驻 worker 还要多一份 V8 堆并复制各级缓存，收益不划算；如以后数据量再大一个量级可再评估。没有改 `--disable-gpu-rasterization`（0.3.21 起为省 GPU 进程约 100 MB 内存而加，改成开关需要设置页与重启流程，这次只做降帧）。
+- **测试**（日志均在当次会话 scratchpad）：
+  - `npm test` 退出 0（`tsc` + 全部 Node 套件，含新 `scripts/test-antigravity-scan-perf.cjs` 6/6：LRU 语义、>128 个近期对话第二轮 0 次打开、15 分钟前的历史对话只开摘要库、长时间静默后出错停下仍报 `ended=error`、冷 stamp 的 watcher 提示与 TTL 失效、临时文件清理白名单）。
+  - `npm run test:ui`：链条在 `test-agent-switch-ui` 侧栏宽度（236≠76，已知偶发）中断，单独重跑退出 0；其后脚本逐个补跑，`test-intro-ui`（「真实数据目录没有变化」，已知偶发）与 `test-tray-panel-ui`（「高度跟内容一致」等不到）首跑失败、单独重跑分别 3 PASS / 4 PASS 退出 0；其余全部首跑退出 0。`test-desk-pet-ui` 首跑撞已知偶发「气泡 8 秒后自己收起」，重跑 23 PASS（含新降帧断言：待机 15 帧、鼠标动回 30 帧、停下 1.5 s 降回、干活 30 帧），之后补跑批次里再次退出 0。
+  - 未跑 `npm run test:update`；未在用户真实 Antigravity 数据上实测（按约定不碰真实数据），也没有对桌宠渲染/GPU 进程 CPU 做实机采样，降帧效果只有自动化断言。
+- **Windows 构建与线上资产校验**：`npm run dist` 退出 0；`dist/win-unpacked/TokenPulse.exe` ProductVersion `0.4.7.0` / FileVersion `0.4.7`；`app.asar` 核验 `ASAR_PKG_VERSION=0.4.7` 且含全部修复（`check-asar.cjs` → `ASAR_CHECK_OK`）；`dist/latest.yml` version `0.4.7`，SHA512 与大小同安装包一致（`LATEST_YML_SHA512_MATCH=True`、`LATEST_YML_SIZE_MATCH=True`）。发布说明 [release-0.4.7.md](file:///d:/CodePorject/Tools/TokenPulse/dist/release-0.4.7.md)。4 项附件远端 `state: uploaded`，字节数与 SHA256 同本地一致：
+  - `dist/latest.yml`：`349` B，SHA256 `db63b8d38f4d8d9bbffe7c409248b7d1eb322a43afbb8cd6cb023aa2d563c299`
+  - `dist/TokenPulse-0.4.7-Setup.exe`：`113,030,926` B，SHA256 `aba08ec6d68dc93d86f675fe848ac4c44880d7755e26ca1b61bf04530f2551be`
+  - `dist/TokenPulse-0.4.7-Setup.exe.blockmap`：`119,677` B，SHA256 `0754106a0376449fb4beb2515b37257f4d5e3da269f993850a3e44f454f728ff`
+  - `dist/TokenPulse-0.4.7-Portable.exe`：`112,773,701` B，SHA256 `aae3614dc4768ccaf8b0fa93ef8882aca801e2a8867d4d573a6ccf4c62a031fc`
+- **占用与收尾**：打包与发布后路径在本仓库下的进程 `REPO_PROCS=0`；`dist/win-unpacked/{TokenPulse.exe,resources/app.asar}`、4 项 v0.4.7 产物及 4 项 `build/` 核心产物共 10 项非破坏性独占打开检查 `LOCKED_COUNT=0`，句柄已在 `finally` 关闭；scratchpad 里的合成基准数据已删除；终端停在项目根目录。
+- **已知限制**：冷 stamp 在没有 fs.watch（目录监听建不起来）时，一个静止 10 分钟以上、摘要行也没刷新就重新开始写库的对话最多晚 15 s 才被识别为在跑；摘要库变动时仍要整表重读 `conversation_summaries`（3,341 行约 5–6 ms）。
 
-## 最新已发布版本 · `v0.4.6` · 2026-11-27
+## 历史已发布版本 · `v0.4.6` · 2026-11-27
 
 - **Git 与发布**。[TokenPulse v0.4.6](https://github.com/JohnMuyuan/TokenPulse/releases/tag/v0.4.6) 已正式公开（`draft: false`、`prerelease: false`、`Latest`，Release ID `460852175`，发布时间 `2026-11-27T16:45:17Z`）。发布提交 `3ceb6acd044cff12476dcddfdbaa13f51c5b2c76` 与签注标签 `v0.4.6`（`5cca83d589d8b8ca752757d2fa99905533f61b29`）已原子推送至 `origin/main`；`package.json`、`package-lock.json`、`renderer/intro.js` 更新说明与 `renderer/i18n.js` 英文翻译均已同步。原有未跟踪目录 `clawd-pet-extracted/` 保持未动；提交前暂存差异扫描 `CACHED_SECRET_HITS=0`。
 - **发布内容（`pi` 全量 OAuth 账号识别、混合会话拆账修复与三家官方额度深度联动）**：
